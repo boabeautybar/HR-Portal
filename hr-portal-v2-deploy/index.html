@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex,nofollow" />
+<title>BOA HR Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700;800;900&family=Playfair+Display:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  html, body, #root { height: 100%; margin: 0; }
+  body {
+    font-family: "DM Sans", system-ui, sans-serif;
+    background: #FCF5F7;
+    color: #111827;
+  }
+  #initial-loading {
+    display: flex; align-items: center; justify-content: center;
+    height: 100vh;
+    font-family: "Outfit", system-ui, sans-serif;
+    color: #831843;
+    font-size: 18px;
+    letter-spacing: 0.18em;
+    font-weight: 700;
+    text-transform: uppercase;
+    flex-direction: column;
+    gap: 16px;
+  }
+  #initial-loading .spinner {
+    width: 28px; height: 28px;
+    border: 3px solid #FBCFE8; border-top-color: #BE185D;
+    border-radius: 50%; animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<!-- Supabase config (same project the rest of BOA uses) -->
+<script>
+window.BOA_SUPABASE_CONFIG = {
+  url:     "https://kcinqpwkwpzbosxtkwyl.supabase.co",
+  anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtjaW5xcHdrd3B6Ym9zeHRrd3lsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc3MjIwMTYsImV4cCI6MjA5MzI5ODAxNn0.AGL2hXQ5N3uQikqSbWFsZ1uxBlWZUm9o1ipMFlAFjBg"
+};
+</script>
+
+<!-- Loading state shown until React mounts -->
+<div id="root">
+  <div id="initial-loading">
+    <div class="spinner"></div>
+    <div>BOA HR · Loading…</div>
+  </div>
+</div>
+
+<!-- Libraries: React 18 + ReactDOM, Supabase JS, Babel for in-browser JSX -->
+<script crossorigin src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.24.8/babel.min.js"></script>
+
+<!-- Data layer: thin Supabase wrappers shared by App.jsx -->
+<script src="data.js"></script>
+
+<!-- The actual React app (compiled by Babel at runtime so we don't need a build step) -->
+<script type="text/babel" data-presets="react" src="app.jsx"></script>
+
+</body>
+</html>
