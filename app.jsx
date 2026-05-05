@@ -4,12 +4,18 @@ const { useState, useMemo, useEffect } = React;
 // 4-digit PINs. Lookup is by exact PIN string. Each user is recorded against
 // activity log entries so we can see who did each edit / transfer / save.
 const STAFF_USERS = {
-  "1993": { name: "Master",  role: "Master Admin"   },
-  "2023": { name: "Kelly",   role: "Ops Manager"    },
-  "6678": { name: "Joy",     role: "HR Generalist"  },
-  "7890": { name: "Siphe",   role: "Recruiter"      },
-  "5990": { name: "Ops Admin", role: "Ops Admin"    },
-  "1111": { name: "Demo",    role: "Training Demo", demo: true }
+  "1993": { name: "Master",   role: "Master Admin"  },
+  "2023": { name: "Kelly",    role: "Ops Manager",  hideCategories: ["Payroll"] },
+  "6678": { name: "Joy",      role: "HR Generalist" },
+  "7890": { name: "Siphe",    role: "Recruiter"     },
+  "5990": { name: "Ops Admin",role: "Ops Admin"     },
+  // Rochelle: Ops Admin focused on payroll + ops scheduling. Sees Payroll
+  // (Attendance) and the Scheduling / Leave Planner / Mgr Clock-ins tabs in
+  // Operations; everything else is hidden.
+  "3030": { name: "Rochelle", role: "Ops Admin",
+            hideCategories: ["People", "Insights"],
+            hideTabs: ["locations", "mgrPlanner"] },
+  "1111": { name: "Demo",     role: "Training Demo", demo: true }
 };
 const PIN_SESSION_KEY = "boa_hr_current_user_v1";
 
@@ -3435,7 +3441,7 @@ function PinLogin({ onUnlock }) {
       setPin("");
       return;
     }
-    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, signedInAt: new Date().toISOString() };
+    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], signedInAt: new Date().toISOString() };
     try { sessionStorage.setItem(PIN_SESSION_KEY, JSON.stringify(session)); } catch (_) {}
     window.BOA_CURRENT_USER = session;
     onUnlock(session);
@@ -3480,7 +3486,8 @@ function AppGate() {
       if (!raw) return null;
       const s = JSON.parse(raw);
       if (s && STAFF_USERS[s.pin]) {
-        const merged = { ...s, demo: !!STAFF_USERS[s.pin].demo };
+        const u = STAFF_USERS[s.pin];
+        const merged = { ...s, demo: !!u.demo, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [] };
         window.BOA_CURRENT_USER = merged;
         return merged;
       }
@@ -3571,6 +3578,26 @@ function App({ currentUser, onSignOut }) {
   // ── Manager Schedule state ─────────────────────────────────────────
   const [mgrSchedBranch, setMgrSchedBranch] = useState(SALONS[0].name);
   const [mgrSchedCycle, setMgrSchedCycle] = useState(""); // YYYY-MM-25 cycle start
+  const [navCategory, setNavCategory] = useState("People"); // open nav category
+  // Whether the user has explicitly picked a category tile while on the dashboard.
+  // Used to decide whether to show Quick Actions or the category's sub-tabs in the
+  // panel under the tiles when tab === "dashboard".
+  const [navShowCategory, setNavShowCategory] = useState(false);
+  // Map of tab → category name. Kept in sync with the groups list below.
+  const NAV_TAB_TO_CATEGORY = {
+    onboard:"People", offboard:"People", staff:"People", recruitment:"People", maternity:"People",
+    scheduling:"Operations", locations:"Operations", mgrclockins:"Operations", leave:"Operations",
+    attendance:"Payroll",
+    alerts:"Insights", activity:"Insights"
+  };
+  useEffect(() => {
+    // Manager Planner is a virtual tab that lives at recruitment+mgrRecruit+planner
+    // but visually belongs under Operations.
+    const isPlanner = tab === "recruitment" && recruitSubTab === "mgrRecruit" && mgrSubTab === "planner";
+    const cat = isPlanner ? "Operations" : NAV_TAB_TO_CATEGORY[tab];
+    if (cat && cat !== navCategory) setNavCategory(cat);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, recruitSubTab, mgrSubTab]);
   const [mgrSchedTick, setMgrSchedTick] = useState(0);    // bump after edits to force refetch
   const [mgrSchedHist, setMgrSchedHist] = useState({});   // {branch|ym: [grids...]} for undo
 
@@ -3667,6 +3694,14 @@ function App({ currentUser, onSignOut }) {
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     setAttLoading(true);
     const safe = (p) => p.catch(() => null);
+    // Tech schedules in BOA_DB.periodDays use an END-month ym convention
+    // (ym="2026-05" means the cycle April 25 → May 24). Attendance and the
+    // manager schedule use a START-month ym (ym="2026-04" means April 25 →
+    // May 24). Convert attYM (start-month) to the matching tech ym.
+    const _atP = attYM.split("-").map(Number);
+    let _atY = _atP[0], _atM = _atP[1] + 1;
+    if (_atM > 12) { _atM = 1; _atY++; }
+    const techYm = _atY + "-" + String(_atM).padStart(2, "0");
     // Manager schedule grids key cells by YYYY-MM-DD strings (mgrSched line 141),
     // while tech schedule grids and the attendance UI use day-of-month numbers.
     // Re-key the manager grid so a shallow merge by EC works.
@@ -3686,7 +3721,7 @@ function App({ currentUser, onSignOut }) {
     };
     Promise.all([
       safe(window.BOA_DB.loadAttendance(attBranch, attYM)),
-      safe(window.BOA_DB.loadSchedule(attBranch, attYM, false)),
+      safe(window.BOA_DB.loadSchedule(attBranch, techYm, false)),
       safe(window.BOA_DB.loadSchedule(attBranch, attYM, true))
     ]).then(([att, sch, mgrSch]) => {
       setAttGrid((att && att.grid) || {});
@@ -3709,11 +3744,18 @@ function App({ currentUser, onSignOut }) {
     const todayDay = today.getDate();
     const ymd = today.getFullYear() + "-" + String(today.getMonth()+1).padStart(2,"0") + "-" + String(todayDay).padStart(2,"0");
     const ym = window.BOA_DB.currentSchedYm ? window.BOA_DB.currentSchedYm() : (today.getFullYear() + "-" + String(today.getMonth()+1).padStart(2,"0"));
+    // Manager schedule stores under the START-month ym (cycle's 25th-of-month-X
+    // is saved under ym "X"), while currentSchedYm() returns the END-month ym
+    // for the same cycle. Shift back one month for the manager lookup.
+    const _ymP = ym.split("-").map(Number);
+    let _mgrY = _ymP[0], _mgrM = _ymP[1] - 1;
+    if (_mgrM < 1) { _mgrM = 12; _mgrY--; }
+    const mgrYm = _mgrY + "-" + String(_mgrM).padStart(2, "0");
     const safe = (p) => p.catch(() => null);
     Promise.all(SALONS.map(async (sl) => {
       const [tech, mgr] = await Promise.all([
         safe(window.BOA_DB.loadSchedule(sl.name, ym, false)),
-        safe(window.BOA_DB.loadSchedule(sl.name, ym, true))
+        safe(window.BOA_DB.loadSchedule(sl.name, mgrYm, true))
       ]);
       const techGrid = (tech && tech.grid) || {};
       const mgrGrid  = (mgr  && mgr.grid)  || {};
@@ -3739,6 +3781,50 @@ function App({ currentUser, onSignOut }) {
     });
     return () => { cancelled = true; };
   }, [tab, staff, managers]);
+
+  // ── Upcoming-cycle schedule check ── flags branches whose tech / manager
+  // schedule for the coming month hasn't been saved. Deadline is the 15th.
+  // Surfaces as a dashboard "Needs attention" item and as an Alerts entry.
+  const SCHED_ALERT_PINS = new Set(["1993", "2023", "3030"]); // Master, Kelly, Rochelle
+  const [upcomingMissing, setUpcomingMissing] = useState([]); // [{ branch, type, ym }]
+  const [upcomingChecked, setUpcomingChecked] = useState(false);
+  useEffect(() => {
+    if (!SCHED_ALERT_PINS.has(currentUser.pin)) return;
+    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
+    if (!(tab === "dashboard" || tab === "alerts")) return;
+    let cancelled = false;
+    const today = new Date();
+    // Schedules must be saved by the 15th of each month for the FOLLOWING
+    // calendar month. The cycle covering month M+1 starts on the 25th of
+    // month M and ends on the 24th of month M+1.
+    //   - Before the 25th: the next cycle to plan covers next month (M+1).
+    //   - On/after the 25th: that cycle has already begun, so next-to-plan
+    //     covers month M+2.
+    // upStartM/upStartY = the START month/year (manager schedule ym)
+    // upEndM/upEndY     = the END / "covered" month/year (tech schedule ym + display label)
+    let upStartY = today.getFullYear(), upStartM = today.getMonth(); // 0-11
+    if (today.getDate() >= 25) { upStartM++; if (upStartM > 11) { upStartM = 0; upStartY++; } }
+    let upEndY = upStartY, upEndM = upStartM + 1;
+    if (upEndM > 11) { upEndM = 0; upEndY++; }
+    const upMgrYm  = upStartY + "-" + String(upStartM + 1).padStart(2, "0"); // manager save key
+    const upTechYm = upEndY   + "-" + String(upEndM   + 1).padStart(2, "0"); // tech save key
+    const safe = (p) => p.catch(() => null);
+    const isPopulated = (loaded) => {
+      if (!loaded || !loaded.grid) return false;
+      for (const ec in loaded.grid) for (const _ in loaded.grid[ec]) return true;
+      return false;
+    };
+    Promise.all(SALONS.flatMap(sl => [
+      safe(window.BOA_DB.loadSchedule(sl.name, upTechYm, false)).then(r => ({ branch: sl.name, type: "tech", saved: isPopulated(r), ym: upTechYm, endY: upEndY, endM: upEndM })),
+      safe(window.BOA_DB.loadSchedule(sl.name, upMgrYm,  true )).then(r => ({ branch: sl.name, type: "mgr",  saved: isPopulated(r), ym: upMgrYm,  endY: upEndY, endM: upEndM }))
+    ])).then(results => {
+      if (cancelled) return;
+      const missing = results.filter(r => !r.saved).map(r => ({ branch: r.branch, type: r.type, ym: r.ym, endY: r.endY, endM: r.endM }));
+      setUpcomingMissing(missing);
+      setUpcomingChecked(true);
+    });
+    return () => { cancelled = true; };
+  }, [tab, currentUser.pin]);
 
   useEffect(() => {
     if (!window.BOA_DB || !window.BOA_DB.isReady) {
@@ -4257,9 +4343,24 @@ function App({ currentUser, onSignOut }) {
     }
     setSchedSubTab(st);
   };
-  const tabBtn = (t,label) => (
-    <button key={t} onClick={()=>tryChangeTab(t)} style={{ padding:"10px 18px", borderRadius:14, cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:13, border:"none", background:tab===t?"#BE185D":"#FFFFFF", color:tab===t?"#FFFFFF":"#831843", boxShadow:tab===t?"0 4px 12px rgba(190,24,93,0.32)":"0 2px 6px rgba(0,0,0,0.06)", transition:"all .18s", margin:"4px 4px" }}>{label}</button>
-  );
+  // Generic pill button for tabs and pseudo-tabs.
+  // - For a real tab, pass `t`. Active state uses `tab === t` and click routes
+  //   through tryChangeTab(t).
+  // - For a composite/virtual entry that has to set multiple sub-state values,
+  //   pass `isActive` and `onClick` to override.
+  const tabBtnX = ({ t, label, isActive, onClick }) => {
+    const active = isActive != null ? isActive : tab === t;
+    const handle = onClick || (() => tryChangeTab(t));
+    return (
+      <button key={t || label} onClick={handle}
+        style={{ padding:"10px 18px", borderRadius:14, cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:13, border:"none",
+          background: active ? "#BE185D" : "#FFFFFF",
+          color:    active ? "#FFFFFF" : "#831843",
+          boxShadow: active ? "0 4px 12px rgba(190,24,93,0.32)" : "0 2px 6px rgba(0,0,0,0.06)",
+          transition:"all .18s", margin:"4px 4px" }}>{label}</button>
+    );
+  };
+  const tabBtn = (t, label) => tabBtnX({ t, label });
 
   if (loading) return (
     <div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"100vh", flexDirection:"column", gap:14, fontFamily:"'Outfit',system-ui,sans-serif", color:"#831843", letterSpacing:"0.18em", fontSize:14, fontWeight:700, textTransform:"uppercase" }}>
@@ -4278,7 +4379,7 @@ function App({ currentUser, onSignOut }) {
   );
   return (
     <div style={{ minHeight:"100vh", background:cream, fontFamily:"'DM Sans',sans-serif", color:"#831843" }}>
-      <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Cormorant+Garamond:wght@600;700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+      <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Playfair+Display:wght@700;900&family=Cormorant+Garamond:wght@600;700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
       {currentUser?.demo && (
         <div style={{ background:"#fde047", color:"#78350f", borderBottom:"2px solid #ca8a04", padding:"10px 24px", textAlign:"center", fontSize:13, fontWeight:700, letterSpacing:"0.02em" }}>
@@ -4301,40 +4402,155 @@ function App({ currentUser, onSignOut }) {
               </div>
             </div>
             <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
-              {stats.returning60>0 && <div style={{ background:"#065f46", color:"#d1fae5", borderRadius:20, padding:"4px 12px", fontSize:11, fontWeight:700 }}>🔜 {stats.returning60} returning in 60 days</div>}
-              {stats.zna>0 && <div style={{ background:"#BE185D", color:"#fff", borderRadius:20, padding:"4px 12px", fontSize:11, fontWeight:700 }}>🚨 {stats.zna} Z/NA</div>}
               {stats.vacancies>0 && <div style={{ background:"#374151", color:"#fbbf24", borderRadius:20, padding:"4px 12px", fontSize:11, fontWeight:700 }}>🪑 {stats.vacancies} vacancies</div>}
               <button onClick={()=>setStaffModal({ ec:"", name:"", branch:"Sea Point", contract:"Permanent", permit:"sa_citizen", level:"" })}
                 style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:9, padding:"8px 14px", cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:12 }}>+ Add Staff</button>
-              <button onClick={()=>setMatModal({ ec:"", name:"", branch:"Sea Point", matStatus:"on_mat", matStart:"", matEnd:"", returnDate:"", notes:"" })}
-                style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:9, padding:"8px 14px", cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:12 }}>🤱 Log Maternity</button>
             </div>
           </div>
-          <div style={{ display:"flex", gap:3, paddingTop:12, flexWrap:"wrap" }}>
-            {tabBtn("dashboard","🏠 Dashboard")}
-            {tabBtn("staff","👥 Staff List")}
-            {tabBtn("scheduling","📅 Scheduling")}
-            {tabBtn("locations","📍 Locations")}
-            {tabBtn("maternity",`🤱 Maternity (${matRecs.length})`)}
-            {tabBtn("alerts","🔔 Alerts")}
-            {tabBtn("recruitment","🎯 Recruitment")}
-            {(() => {
-              // Onboard count = starters whose start date is within ±31 days
-              const today = new Date(); const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-              const obCount = obList.filter(r => {
-                if (!r.startDate) return false;
-                const sd = new Date(r.startDate + "T00:00:00");
-                const ds = Math.floor((t0 - sd) / 86400000);
-                return ds <= 31;     // matches old-app rule
-              }).length;
-              return tabBtn("onboard", "🌱 Onboarding" + (obCount > 0 ? " (" + obCount + ")" : ""));
-            })()}
-            {tabBtn("offboard", "👋 Off-boarding" + (offList.length > 0 ? " (" + offList.length + ")" : ""))}
-            {tabBtn("attendance", "📕 Attendance")}
-            {tabBtn("leave", "🌴 Leave Planner")}
-            {tabBtn("mgrclockins", "🕐 Mgr Clock-ins")}
-            {tabBtn("activity", "📜 Activity Log")}
-          </div>
+          {(() => {
+            // Onboard count = starters whose start date is within ±31 days.
+            const today = new Date(); const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+            const obCount = obList.filter(r => {
+              if (!r.startDate) return false;
+              const sd = new Date(r.startDate + "T00:00:00");
+              const ds = Math.floor((t0 - sd) / 86400000);
+              return ds <= 31;
+            }).length;
+            const onboardLbl  = "🌱 Onboarding"  + (obCount > 0 ? " (" + obCount + ")" : "");
+            const offboardLbl = "👋 Off-boarding" + (offList.length > 0 ? " (" + offList.length + ")" : "");
+            const matLbl      = "🤱 Maternity ("  + matRecs.length + ")";
+            const groups = [
+              { key:"People",     icon:"👥", title:"People",
+                color:{ bg:"#FDEEF5", bgActive:"#FBCFE8", ink:"#831843" },
+                items: [
+                  { t:"onboard",     l: onboardLbl },
+                  { t:"offboard",    l: offboardLbl },
+                  { t:"staff",       l:"👥 Staff List"    },
+                  { t:"recruitment", l:"🎯 Recruitment"   },
+                  { t:"maternity",   l: matLbl }
+                ] },
+              { key:"Operations", icon:"⚙️", title:"Operations",
+                color:{ bg:"#E0F2FE", bgActive:"#BAE6FD", ink:"#075985" },
+                items: [
+                  { t:"scheduling",  l:"📅 Scheduling"     },
+                  { t:"locations",   l:"📍 Locations"      },
+                  { t:"mgrclockins", l:"🕐 Mgr Clock-ins"  },
+                  { t:"leave",       l:"🌴 Leave Planner"  },
+                  { t:"mgrPlanner",  l:"🧩 Manager Planner",
+                    isActive: tab==="recruitment" && recruitSubTab==="mgrRecruit" && mgrSubTab==="planner",
+                    onClick: () => { setRecruitSubTab("mgrRecruit"); setMgrSubTab("planner"); tryChangeTab("recruitment"); }
+                  }
+                ] },
+              { key:"Payroll",    icon:"💰", title:"Payroll",
+                color:{ bg:"#DCFCE7", bgActive:"#BBF7D0", ink:"#14532d" },
+                items: [
+                  { t:"attendance",  l:"📕 Attendance"     }
+                ] },
+              { key:"Insights",   icon:"📊", title:"Insights",
+                color:{ bg:"#EDE9FE", bgActive:"#DDD6FE", ink:"#5B21B6" },
+                items: [
+                  { t:"alerts",      l:"🔔 Alerts"         },
+                  { t:"activity",    l:"📜 Activity Log"   }
+                ] }
+            ];
+            // Category that owns the currently-active tab.
+            // Permission filter: hide entire categories AND/OR individual tabs.
+            const hideCats = new Set(currentUser.hideCategories || []);
+            const hideTabs = new Set(currentUser.hideTabs || []);
+            const visibleGroups = groups
+              .filter(g => !hideCats.has(g.key))
+              .map(g => ({ ...g, items: g.items.filter(it => !hideTabs.has(it.t)) }))
+              .filter(g => g.items.length > 0);
+            const tabToCategory = {};
+            for (const g of visibleGroups) for (const it of g.items) tabToCategory[it.t] = g.key;
+            const activeCategoryByTab = tabToCategory[tab]; // undefined when on dashboard
+            // Whichever category is "open" — explicit user pick wins, otherwise follow the active tab.
+            const openCategory = navCategory || activeCategoryByTab || visibleGroups[0].key;
+            const openGroup = visibleGroups.find(g => g.key === openCategory) || visibleGroups[0];
+
+            const tileBase = {
+              flex:"1 1 0", minWidth:120, minHeight:108,
+              borderRadius:18, padding:"16px 14px",
+              fontFamily:"inherit", fontWeight:800, fontSize:14,
+              cursor:"pointer", border:"none",
+              display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:6,
+              transition:"all .18s"
+            };
+            // Pink neon ring + glow. Stronger for the active tile.
+            const tileNeon = (active) => ({
+              boxShadow: active
+                ? "0 0 0 3px #F472B6, 0 0 18px rgba(244,114,182,0.9), 0 0 34px rgba(244,114,182,0.55), 0 4px 14px rgba(190,24,93,0.28)"
+                : "0 0 0 2px #FBCFE8, 0 0 10px rgba(244,114,182,0.35), 0 2px 6px rgba(0,0,0,0.05)"
+            });
+            const dashActive = tab === "dashboard";
+            // Light pink palette for the Dashboard tile.
+            const dashColor = { bg:"#FCE7F3", bgActive:"#FBCFE8", ink:"#831843" };
+
+            return (
+              <div style={{ paddingTop:12 }}>
+                {/* Big square category tiles — Dashboard plus the four groups */}
+                <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
+                  <button onClick={()=>{ setNavShowCategory(false); tryChangeTab("dashboard"); }} title="Home"
+                    style={{
+                      ...tileBase, ...tileNeon(dashActive),
+                      background: dashActive ? dashColor.bgActive : dashColor.bg,
+                      color: dashColor.ink,
+                      flex:"0 0 108px", minWidth:108
+                    }}>
+                    <span style={{ fontSize:46, lineHeight:1 }}>🏠</span>
+                  </button>
+                  {visibleGroups.map(g => {
+                    const isOpen = openCategory === g.key && (!dashActive || navShowCategory);
+                    return (
+                      <button key={g.key} onClick={()=>{ setNavCategory(g.key); setNavShowCategory(true); }}
+                        style={{
+                          ...tileBase, ...tileNeon(isOpen),
+                          background: isOpen ? g.color.bgActive : g.color.bg,
+                          color: g.color.ink
+                        }}>
+                        <span style={{ fontSize:32, lineHeight:1 }}>{g.icon}</span>
+                        <span style={{ fontSize:13 }}>{g.title}</span>
+                        <span style={{ fontSize:9, fontWeight:700, color:g.color.ink, letterSpacing:"0.12em", textTransform:"uppercase", opacity:0.65 }}>
+                          {g.items.length} tab{g.items.length !== 1 ? "s" : ""}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Sub-panel underneath the tiles.
+                    On the dashboard, show Quick Actions (most-used tabs) instead of
+                    a category's sub-tabs. Otherwise show the open category's tabs. */}
+                {dashActive && !navShowCategory ? (
+                  <div style={{ marginTop:10, padding:"10px 12px", background:dashColor.bg, border:"1px solid rgba(255,255,255,0.7)", borderRadius:14 }}>
+                    <div style={{ fontSize:9, fontWeight:800, color:dashColor.ink, letterSpacing:"0.2em", textTransform:"uppercase", opacity:0.75, marginBottom:6, paddingLeft:4 }}>
+                      ⚡ Quick actions
+                    </div>
+                    <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                      {[
+                        { t:"staff",       l:"👥 Staff List"   },
+                        { t:"scheduling",  l:"📅 Scheduling"   },
+                        { t:"attendance",  l:"📕 Attendance"   },
+                        { t:"recruitment", l:"🎯 Recruitment"  },
+                        { t:"leave",       l:"🌴 Leave Planner"}
+                      ]
+                        .filter(it => !hideCats.has(NAV_TAB_TO_CATEGORY[it.t]) && !hideTabs.has(it.t))
+                        .map(it => tabBtn(it.t, it.l))}
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ marginTop:10, padding:"10px 12px", background:openGroup.color.bg, border:"1px solid rgba(255,255,255,0.7)", borderRadius:14 }}>
+                    <div style={{ fontSize:9, fontWeight:800, color:openGroup.color.ink, letterSpacing:"0.2em", textTransform:"uppercase", opacity:0.75, marginBottom:6, paddingLeft:4 }}>
+                      {openGroup.icon} {openGroup.title}
+                    </div>
+                    <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                      {openGroup.items.map(it => tabBtnX({ t: it.t, label: it.l, isActive: it.isActive, onClick: it.onClick }))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
           <div style={{ display:"flex", justifyContent:"flex-end", alignItems:"center", gap:10, paddingTop:8, fontSize:11, color:"#831843" }}>
             <span>Signed in as <strong>{currentUser.name}</strong> · {currentUser.role}</span>
             <button onClick={onSignOut}
@@ -4427,62 +4643,87 @@ function App({ currentUser, onSignOut }) {
           const recentDepartures = enriched
             .filter(s => s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft >= 0 && s.offDaysSinceLeft <= 7)
             .sort((a, b) => (a.offDaysSinceLeft ?? 0) - (b.offDaysSinceLeft ?? 0));
+
+          // Shared style tokens (kept inline so we don't disturb the rest of the file)
+          const PINK = { ink:"#831843", accent:"#BE185D", soft:"#FBCFE8", softer:"#FCE7F3", softest:"#FDEEF5", deep:"#9F1A4F" };
+          const sectionTitle = { fontFamily:"'Outfit',system-ui,sans-serif", fontSize:11, fontWeight:700, color:PINK.ink, letterSpacing:"0.22em", textTransform:"uppercase", display:"flex", alignItems:"center", gap:10, marginBottom:12 };
+          const sectionRule  = { flex:1, height:1, background:`linear-gradient(90deg,${PINK.soft} 0%,transparent 100%)` };
+          const card         = { background:"#FFFFFF", border:`1px solid ${PINK.soft}`, borderRadius:16, padding:"18px 20px", boxShadow:"0 1px 6px rgba(190,24,93,0.04)", fontFamily:"'Outfit',system-ui,sans-serif" };
+          const cardTitle    = { fontFamily:"'Outfit',system-ui,sans-serif", fontSize:13, fontWeight:700, color:PINK.ink, marginBottom:12, display:"flex", alignItems:"center", justifyContent:"space-between", letterSpacing:"0.06em" };
+
+          const peopleActions = [
+            { lbl:"Onboarding",   icon:"🌱", to:"onboard"   },
+            { lbl:"Off-boarding", icon:"👋", to:"offboard"  },
+            { lbl:"Maternity",    icon:"🤱", to:"maternity" },
+            { lbl:"Locations",    icon:"📍", to:"locations" }
+          ];
+          const oversightActions = [
+            { lbl:"Mgr Clock-ins", icon:"🕐", to:"mgrclockins" },
+            { lbl:"Activity Log",  icon:"📜", to:"activity"    },
+            { lbl:"Alerts",        icon:"🔔", to:"alerts"      }
+          ];
+
           return (
-            <div>
-              {/* Greeting card */}
-              <div style={{ background:"linear-gradient(135deg,#FCE7F3 0%,#FFFFFF 60%)", border:"1px solid #FBCFE8", borderRadius:18, padding:"22px 26px", marginBottom:18, boxShadow:"0 2px 14px rgba(190,24,93,0.06)" }}>
-                <div style={{ fontFamily:"'Playfair Display',serif", fontSize:30, color:"#831843", fontWeight:700 }}>Good {partOfDay}, {currentUser.name} 👋</div>
-                <div style={{ fontSize:13, color:"#BE185D", marginTop:6, fontWeight:600 }}>{dateLbl} · {timeLbl}</div>
-                <div style={{ fontSize:12, color:"#9F1A4F", marginTop:4 }}>Signed in as {currentUser.role}.</div>
+            <div style={{ fontFamily:"'Outfit',system-ui,sans-serif" }}>
+              {/* ── HERO ── greeting + role + date/time ── */}
+              <div style={{ background:`linear-gradient(135deg,${PINK.softer} 0%,#FFFFFF 65%)`, border:`1px solid ${PINK.soft}`, borderRadius:20, padding:"26px 30px", marginBottom:20, boxShadow:"0 4px 18px rgba(190,24,93,0.07)", display:"flex", justifyContent:"space-between", alignItems:"flex-end", flexWrap:"wrap", gap:18, fontFamily:"'Outfit',system-ui,sans-serif" }}>
+                <div>
+                  <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:11, fontWeight:700, color:PINK.accent, letterSpacing:"0.22em", textTransform:"uppercase" }}>BOA HR · Dashboard</div>
+                  <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:34, color:PINK.ink, fontWeight:700, lineHeight:1.1, marginTop:6, letterSpacing:"-0.01em" }}>Good {partOfDay}, {currentUser.name}</div>
+                  <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:12.5, color:PINK.accent, marginTop:8, fontWeight:500, letterSpacing:"0.02em" }}>{dateLbl}</div>
+                </div>
+                <div style={{ textAlign:"right" }}>
+                  <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:32, fontWeight:600, color:PINK.ink, letterSpacing:"0.02em", lineHeight:1 }}>{timeLbl}</div>
+                  <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:11, color:PINK.deep, marginTop:6, fontWeight:500, letterSpacing:"0.04em" }}>Signed in as <span style={{ color:PINK.accent, fontWeight:700 }}>{currentUser.role}</span></div>
+                </div>
               </div>
 
-              {/* Top stat cards */}
-              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))", gap:11, marginBottom:18 }}>
-                <div style={{ background:"#dbeafe", borderRadius:14, padding:"14px 16px" }}>
-                  <div style={{ fontSize:22 }}>📅</div>
-                  <div style={{ fontSize:30, fontWeight:800, color:"#1e3a8a", lineHeight:1.05 }}>
-                    {dashScheduledToday == null ? "…" : dashScheduledToday}
+              {/* ── SECTION: TODAY ── */}
+              <div style={sectionTitle}>
+                <span>✨ Today at a glance</span>
+                <span style={sectionRule} />
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:11, marginBottom:24 }}>
+                {[
+                  { l:"Scheduled today",   v: dashScheduledToday == null ? "…" : dashScheduledToday, sub:"across all branches",       i:"📅", c:"#1e3a8a", bg:"#dbeafe" },
+                  { l:"Active staff",       v: stats.active,                                          sub:"incl. " + stats.pregnant + " pregnant", i:"👥", c:"#14532d", bg:"#dcfce7" },
+                  { l:"On maternity",       v: stats.onMat,                                           sub: stats.returning60 + " returning ≤60d",  i:"🤱", c:"#7A4258", bg:"#fce7f3" },
+                  { l:"Positions to hire",  v: stats.vacancies,                                       sub:"across " + stats.understaffed + " branch" + (stats.understaffed !== 1 ? "es" : ""), i:"🎯", c:"#7c3aed", bg:"#ede9fe", click:()=>tryChangeTab("recruitment") }
+                ].map(c => (
+                  <div key={c.l} onClick={c.click} style={{ background:c.bg, borderRadius:16, padding:"16px 18px", cursor:c.click ? "pointer" : "default", border:"1px solid rgba(255,255,255,0.6)" }}>
+                    <div style={{ fontSize:24 }}>{c.i}</div>
+                    <div style={{ fontSize:32, fontWeight:800, color:c.c, lineHeight:1.05, marginTop:4 }}>{c.v}</div>
+                    <div style={{ fontSize:10, fontWeight:700, color:c.c, letterSpacing:"0.1em", textTransform:"uppercase", marginTop:6 }}>{c.l}</div>
+                    <div style={{ fontSize:10, color:c.c, opacity:0.6, marginTop:2 }}>{c.sub}</div>
                   </div>
-                  <div style={{ fontSize:10, fontWeight:700, color:"#1e3a8a", letterSpacing:"0.06em", marginTop:4 }}>SCHEDULED TODAY</div>
-                  <div style={{ fontSize:10, color:"#1e3a8a", opacity:0.65, marginTop:2 }}>across all branches</div>
-                </div>
-                <div style={{ background:"#dcfce7", borderRadius:14, padding:"14px 16px" }}>
-                  <div style={{ fontSize:22 }}>👥</div>
-                  <div style={{ fontSize:30, fontWeight:800, color:"#14532d", lineHeight:1.05 }}>{stats.active}</div>
-                  <div style={{ fontSize:10, fontWeight:700, color:"#14532d", letterSpacing:"0.06em", marginTop:4 }}>ACTIVE STAFF</div>
-                  <div style={{ fontSize:10, color:"#14532d", opacity:0.65, marginTop:2 }}>incl. {stats.pregnant} pregnant</div>
-                </div>
-                <div style={{ background:"#fce7f3", borderRadius:14, padding:"14px 16px" }}>
-                  <div style={{ fontSize:22 }}>🤱</div>
-                  <div style={{ fontSize:30, fontWeight:800, color:"#7A4258", lineHeight:1.05 }}>{stats.onMat}</div>
-                  <div style={{ fontSize:10, fontWeight:700, color:"#7A4258", letterSpacing:"0.06em", marginTop:4 }}>ON MATERNITY</div>
-                  <div style={{ fontSize:10, color:"#7A4258", opacity:0.65, marginTop:2 }}>{stats.returning60} returning ≤60d</div>
-                </div>
-                <div style={{ background:"#ede9fe", borderRadius:14, padding:"14px 16px", cursor:"pointer" }} onClick={()=>tryChangeTab("recruitment")} title="Open Recruitment">
-                  <div style={{ fontSize:22 }}>🎯</div>
-                  <div style={{ fontSize:30, fontWeight:800, color:"#7c3aed", lineHeight:1.05 }}>{stats.vacancies}</div>
-                  <div style={{ fontSize:10, fontWeight:700, color:"#7c3aed", letterSpacing:"0.06em", marginTop:4 }}>POSITIONS TO HIRE</div>
-                  <div style={{ fontSize:10, color:"#7c3aed", opacity:0.65, marginTop:2 }}>across {stats.understaffed} branch{stats.understaffed !== 1 ? "es" : ""}</div>
-                </div>
+                ))}
               </div>
 
-              {/* Two-column body */}
-              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(320px,1fr))", gap:14 }}>
+              {/* ── SECTION: OPERATIONS ── */}
+              <div style={sectionTitle}>
+                <span>📋 Operations</span>
+                <span style={sectionRule} />
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(340px,1fr))", gap:14, marginBottom:24 }}>
                 {/* Today by branch */}
-                <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:14, padding:"16px 18px" }}>
-                  <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:18, fontWeight:700, color:"#831843", marginBottom:10 }}>📅 Scheduled today by branch</div>
+                <div style={card}>
+                  <div style={cardTitle}>
+                    <span>📅 Scheduled today by branch</span>
+                    <button onClick={()=>tryChangeTab("scheduling")} style={{ background:"transparent", border:"none", color:PINK.accent, cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit" }}>View schedules →</button>
+                  </div>
                   {dashScheduledToday == null ? (
                     <div style={{ fontSize:12, color:"#9ca3af", fontStyle:"italic" }}>Loading schedules…</div>
-                  ) : Object.keys(dashByBranch).length === 0 ? (
-                    <div style={{ fontSize:12, color:"#9ca3af", fontStyle:"italic" }}>No schedule data for today.</div>
                   ) : (
                     <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))", gap:8 }}>
                       {SALONS.map(sl => {
                         const c = dashByBranch[sl.name] || 0;
                         return (
-                          <div key={sl.name} style={{ background:"#FDEEF5", border:"1px solid #FBCFE8", borderRadius:9, padding:"8px 11px" }}>
-                            <div style={{ fontSize:11, fontWeight:700, color:"#831843" }}>📍 {sl.name}</div>
-                            <div style={{ fontSize:18, fontWeight:800, color: c === 0 ? "#9ca3af" : "#BE185D", marginTop:2 }}>{c}<span style={{ fontSize:10, fontWeight:600, color:"#9F1A4F", marginLeft:4 }}>working</span></div>
+                          <div key={sl.name} style={{ background:PINK.softest, border:`1px solid ${PINK.soft}`, borderRadius:11, padding:"10px 12px" }}>
+                            <div style={{ fontSize:11, fontWeight:700, color:PINK.ink }}>📍 {sl.name}</div>
+                            <div style={{ display:"flex", alignItems:"baseline", gap:5, marginTop:4 }}>
+                              <span style={{ fontSize:22, fontWeight:800, color: c === 0 ? "#9ca3af" : PINK.accent }}>{c}</span>
+                              <span style={{ fontSize:10, fontWeight:600, color:PINK.deep, opacity:0.75 }}>working</span>
+                            </div>
                           </div>
                         );
                       })}
@@ -4491,72 +4732,109 @@ function App({ currentUser, onSignOut }) {
                 </div>
 
                 {/* Recruitment summary */}
-                <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:14, padding:"16px 18px" }}>
-                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
-                    <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:18, fontWeight:700, color:"#831843" }}>🎯 Recruitment needs</div>
-                    <button onClick={()=>tryChangeTab("recruitment")} style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:7, padding:"5px 11px", cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit" }}>Open Recruitment →</button>
+                <div style={card}>
+                  <div style={cardTitle}>
+                    <span>🎯 Recruitment needs</span>
+                    <button onClick={()=>tryChangeTab("recruitment")} style={{ background:PINK.accent, color:"#fff", border:"none", borderRadius:8, padding:"5px 12px", cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit" }}>Open →</button>
                   </div>
                   {stats.vacancies === 0 ? (
-                    <div style={{ fontSize:12, color:"#16a34a", fontWeight:700 }}>✅ All branches fully staffed.</div>
+                    <div style={{ fontSize:13, color:"#16a34a", fontWeight:700, padding:"8px 0" }}>✅ All branches fully staffed.</div>
                   ) : (
                     <>
-                      <div style={{ fontSize:12, color:"#831843", marginBottom:8 }}>
+                      <div style={{ fontSize:12, color:PINK.ink, marginBottom:10 }}>
                         <strong>{stats.vacancies}</strong> position{stats.vacancies !== 1 ? "s" : ""} to fill across <strong>{stats.understaffed}</strong> branch{stats.understaffed !== 1 ? "es" : ""}.
                       </div>
                       <div style={{ display:"grid", gap:6 }}>
                         {understaffedBranches.slice(0, 6).map(b => (
-                          <div key={b.name} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", background:"#fef3c7", border:"1px solid #fde68a", borderRadius:8, padding:"7px 11px" }}>
+                          <div key={b.name} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", background:"#fef3c7", border:"1px solid #fde68a", borderRadius:9, padding:"8px 12px" }}>
                             <span style={{ fontSize:12, color:"#78350f", fontWeight:700 }}>📍 {b.name}</span>
-                            <span style={{ fontSize:12, color:"#92400e", fontWeight:800 }}>{b.gap} needed <span style={{ fontWeight:500, opacity:0.7 }}>· {b.act}/{b.goal}</span></span>
+                            <span style={{ fontSize:12, color:"#92400e", fontWeight:800 }}>+{b.gap} <span style={{ fontWeight:500, opacity:0.7 }}>· {b.act}/{b.goal}</span></span>
                           </div>
                         ))}
                       </div>
                     </>
                   )}
                 </div>
+              </div>
 
-                {/* Compliance + recent departures */}
-                <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:14, padding:"16px 18px" }}>
-                  <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:18, fontWeight:700, color:"#831843", marginBottom:10 }}>⚠ Attention</div>
-                  <div style={{ display:"grid", gap:6, fontSize:12 }}>
-                    {stats.zna > 0 && (
-                      <div style={{ background:"#fee2e2", border:"1px solid #fca5a5", borderRadius:8, padding:"7px 11px", color:"#7f1d1d" }}>
-                        🚨 <strong>{stats.zna}</strong> staff with Z/NA compliance risk
-                      </div>
-                    )}
-                    {stats.noContract > 0 && (
-                      <div style={{ background:"#fee2e2", border:"1px solid #fca5a5", borderRadius:8, padding:"7px 11px", color:"#7f1d1d" }}>
-                        📄 <strong>{stats.noContract}</strong> staff with no contract
-                      </div>
-                    )}
-                    {recentDepartures.length > 0 && (
-                      <div style={{ background:"#f3f4f6", border:"1px solid #d1d5db", borderRadius:8, padding:"7px 11px", color:"#374151" }}>
-                        👋 <strong>{recentDepartures.length}</strong> departure{recentDepartures.length !== 1 ? "s" : ""} in the last 7 days
-                      </div>
-                    )}
-                    {stats.zna === 0 && stats.noContract === 0 && recentDepartures.length === 0 && (
-                      <div style={{ color:"#16a34a", fontWeight:600 }}>✅ Nothing urgent.</div>
-                    )}
+              {/* ── SECTION: ATTENTION ── */}
+              <div style={sectionTitle}>
+                <span>⚠ Needs attention</span>
+                <span style={sectionRule} />
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))", gap:11, marginBottom:24 }}>
+                {(() => {
+                  // Schedule alert: only for users responsible for scheduling.
+                  let schedAlert = null;
+                  if (SCHED_ALERT_PINS.has(currentUser.pin) && upcomingChecked && upcomingMissing.length > 0) {
+                    const today = new Date();
+                    // Display the COVERED (end) month — that's what users mean by
+                    // "the schedule for June". Deadline is the 15th of the start month.
+                    const m0 = upcomingMissing[0];
+                    const monthLbl = new Date(m0.endY, m0.endM, 1).toLocaleDateString("en-ZA", { month:"long", year:"numeric" });
+                    let deadlineY = m0.endY, deadlineM = m0.endM - 1;
+                    if (deadlineM < 0) { deadlineM = 11; deadlineY--; }
+                    const deadline = new Date(deadlineY, deadlineM, 15);
+                    const overdue = today > deadline;
+                    const techMissing = upcomingMissing.filter(m => m.type === "tech").length;
+                    const mgrMissing  = upcomingMissing.filter(m => m.type === "mgr").length;
+                    const parts = [];
+                    if (techMissing > 0) parts.push(techMissing + " nail tech");
+                    if (mgrMissing  > 0) parts.push(mgrMissing  + " manager");
+                    schedAlert = {
+                      i: overdue ? "🚨" : "📆",
+                      l: parts.join(" + ") + " schedule" + (techMissing + mgrMissing !== 1 ? "s" : "") + " not saved for " + monthLbl,
+                      sub: overdue
+                        ? "OVERDUE — was due 15 " + deadline.toLocaleDateString("en-ZA", { month:"short" })
+                        : "Due by 15 " + deadline.toLocaleDateString("en-ZA", { month:"short" }),
+                      c: overdue ? "#7f1d1d" : "#92400e",
+                      bg: overdue ? "#fee2e2" : "#fef3c7",
+                      to:"scheduling"
+                    };
+                  }
+                  return [
+                    schedAlert,
+                    stats.zna           > 0 && { i:"🚨", l: stats.zna + " staff with Z/NA risk", sub:"compliance issue", c:"#7f1d1d", bg:"#fee2e2", to:"staff" },
+                    stats.noContract    > 0 && { i:"📄", l: stats.noContract + " staff with no contract", sub:"upload contracts", c:"#7f1d1d", bg:"#fee2e2", to:"staff" },
+                    recentDepartures.length > 0 && { i:"👋", l: recentDepartures.length + " departure" + (recentDepartures.length !== 1 ? "s" : "") + " this week", sub:"in last 7 days", c:"#374151", bg:"#f3f4f6", to:"offboard" }
+                  ];
+                })().filter(Boolean).map(b => (
+                  <div key={b.l} onClick={()=>tryChangeTab(b.to)} style={{ background:b.bg, border:`1px solid ${b.c}33`, borderRadius:14, padding:"14px 16px", cursor:"pointer" }}>
+                    <div style={{ fontSize:22 }}>{b.i}</div>
+                    <div style={{ fontSize:13, fontWeight:800, color:b.c, marginTop:4 }}>{b.l}</div>
+                    <div style={{ fontSize:10, fontWeight:600, color:b.c, opacity:0.7, marginTop:2 }}>{b.sub}</div>
                   </div>
-                </div>
+                ))}
+                {stats.zna === 0 && stats.noContract === 0 && recentDepartures.length === 0 &&
+                 (!SCHED_ALERT_PINS.has(currentUser.pin) || (upcomingChecked && upcomingMissing.length === 0)) && (
+                  <div style={{ background:"#dcfce7", border:"1px solid #86efac", borderRadius:14, padding:"14px 16px", color:"#14532d", fontWeight:700, fontSize:13 }}>
+                    ✅ Nothing urgent — everything in good shape.
+                  </div>
+                )}
+              </div>
 
-                {/* Quick actions */}
-                <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:14, padding:"16px 18px" }}>
-                  <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:18, fontWeight:700, color:"#831843", marginBottom:10 }}>⚡ Quick actions</div>
-                  <div style={{ display:"flex", flexWrap:"wrap", gap:7 }}>
-                    {[
-                      { lbl:"👥 Staff List",       to:"staff"      },
-                      { lbl:"📅 Scheduling",       to:"scheduling" },
-                      { lbl:"📕 Attendance",       to:"attendance" },
-                      { lbl:"🌴 Leave Planner",    to:"leave"      },
-                      { lbl:"👋 Off-boarding",     to:"offboard"   },
-                      { lbl:"🌱 Onboarding",       to:"onboard"    },
-                      { lbl:"📜 Activity Log",     to:"activity"   }
-                    ].map(b => (
-                      <button key={b.to} onClick={()=>tryChangeTab(b.to)} style={{ background:"#FCE7F3", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, padding:"7px 12px", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>{b.lbl}</button>
-                    ))}
+              {/* ── SECTION: ALL TOOLS ── grouped quick links ── */}
+              <div style={sectionTitle}>
+                <span>🧰 All tools</span>
+                <span style={sectionRule} />
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))", gap:14, marginBottom:8 }}>
+                {[
+                  { title:"People management", items: peopleActions    },
+                  { title:"Oversight",         items: oversightActions }
+                ].map(group => (
+                  <div key={group.title} style={card}>
+                    <div style={{ fontSize:11, fontWeight:700, color:PINK.deep, letterSpacing:"0.16em", textTransform:"uppercase", marginBottom:10 }}>{group.title}</div>
+                    <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))", gap:7 }}>
+                      {group.items.map(a => (
+                        <button key={a.to} onClick={()=>tryChangeTab(a.to)} style={{ background:PINK.softest, color:PINK.ink, border:`1px solid ${PINK.soft}`, borderRadius:10, padding:"9px 12px", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700, textAlign:"left", display:"flex", alignItems:"center", gap:8 }}>
+                          <span style={{ fontSize:16 }}>{a.icon}</span>
+                          <span>{a.lbl}</span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                ))}
               </div>
             </div>
           );
@@ -4998,7 +5276,29 @@ function App({ currentUser, onSignOut }) {
         {/* ── ALERTS TAB ── */}
         {tab==="alerts" && (()=>{
           const active = enriched.filter(s=>!s.onMat);
+          // Upcoming-cycle schedule alerts (only for users responsible for scheduling).
+          const schedAlerts = [];
+          if (SCHED_ALERT_PINS.has(currentUser.pin) && upcomingChecked && upcomingMissing.length > 0) {
+            const today = new Date();
+            const m0 = upcomingMissing[0];
+            const monthLbl = new Date(m0.endY, m0.endM, 1).toLocaleDateString("en-ZA", { month:"long", year:"numeric" });
+            let deadlineY = m0.endY, deadlineM = m0.endM - 1;
+            if (deadlineM < 0) { deadlineM = 11; deadlineY--; }
+            const deadline = new Date(deadlineY, deadlineM, 15);
+            const overdue = today > deadline;
+            const sev = overdue ? "critical" : "warning";
+            for (const m of upcomingMissing) {
+              const what = m.type === "tech" ? "Nail tech schedule" : "Manager schedule";
+              schedAlerts.push({
+                type: sev,
+                msg: m.branch + " — " + what + " for " + monthLbl + " not yet saved." +
+                     (overdue ? " Was due 15 " + deadline.toLocaleDateString("en-ZA", { month:"short" }) + "." : " Due by 15 " + deadline.toLocaleDateString("en-ZA", { month:"short" }) + "."),
+                s: null
+              });
+            }
+          }
           const alertItems = [
+            ...schedAlerts,
             ...matRecs.filter(r=>r.matStatus==="on_mat"&&r.returnDate&&daysDiff(r.returnDate)<0).map(r=>({ type:"warning", msg:`${r.name} (${r.branch}) — return date ${fmt(r.returnDate)} was ${Math.abs(daysDiff(r.returnDate))} days ago. Confirm return or update dates.`, rec:r })),
             ...matRecs.filter(r=>r.matStatus==="on_mat"&&r.returnDate&&daysDiff(r.returnDate)>=0&&daysDiff(r.returnDate)<=14).map(r=>({ type:"info", msg:`${r.name} (${r.branch}) — returning in ${daysDiff(r.returnDate)} day(s) on ${fmt(r.returnDate)}`, rec:r })),
             ...active.filter(s=>s.permit==="z_na").map(s=>({ type:"critical", msg:`${s.name} (${s.branch}) — Z/NA: no valid work permit`, s })),
@@ -5899,7 +6199,14 @@ function App({ currentUser, onSignOut }) {
         })()}
 
         {/* ── ATTENDANCE TAB ── */}
-        {tab==="attendance" && (() => {
+        {tab==="attendance" && (currentUser.hideCategories || []).includes("Payroll") && (
+          <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:14, padding:"30px 26px", textAlign:"center", color:"#831843" }}>
+            <div style={{ fontSize:32, marginBottom:8 }}>🔒</div>
+            <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:14, fontWeight:700 }}>Payroll is not available for your account.</div>
+            <button onClick={()=>tryChangeTab("dashboard")} style={{ marginTop:14, background:"#BE185D", color:"#fff", border:"none", borderRadius:9, padding:"8px 16px", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>Back to Dashboard</button>
+          </div>
+        )}
+        {tab==="attendance" && !((currentUser.hideCategories || []).includes("Payroll")) && (() => {
           // Status code dictionary — labels, colors, categories.
           const STAT = {
             on:     { lbl:"On Time",         bg:"#e5e7eb", fg:"#1f2937", cat:"work" },
@@ -6024,6 +6331,166 @@ function App({ currentUser, onSignOut }) {
           };
 
           // Reset every attendance entry for this branch+cycle (warns first)
+          // ── Import Fresha appointments CSV ── any nail tech with at least one
+          // completed appointment on a given day in the current cycle is marked
+          // "On Time" for that day. Confirmed cells (bold, no leading ~) are
+          // preserved. Unconfirmed and empty cells are overwritten with "on".
+          const importFresha = () => {
+            const input = document.createElement("input");
+            input.type = "file";
+            input.accept = ".csv,text/csv";
+            input.onchange = async (e) => {
+              const file = e.target.files && e.target.files[0];
+              if (!file) return;
+              let text;
+              try { text = await file.text(); }
+              catch (err) { alert("Could not read file: " + (err.message || err)); return; }
+
+              // Tiny CSV parser — handles quoted fields with embedded commas / quotes.
+              const parseCSV = (s) => {
+                const rows = [];
+                let row = [], field = "", inQ = false;
+                for (let i = 0; i < s.length; i++) {
+                  const c = s[i];
+                  if (inQ) {
+                    if (c === '"') { if (s[i+1] === '"') { field += '"'; i++; } else inQ = false; }
+                    else field += c;
+                  } else {
+                    if (c === '"') inQ = true;
+                    else if (c === ',') { row.push(field); field = ""; }
+                    else if (c === '\n' || c === '\r') {
+                      if (field !== "" || row.length > 0) { row.push(field); rows.push(row); row = []; field = ""; }
+                      if (c === '\r' && s[i+1] === '\n') i++;
+                    } else field += c;
+                  }
+                }
+                if (field !== "" || row.length > 0) { row.push(field); rows.push(row); }
+                return rows;
+              };
+              const rows = parseCSV(text);
+              if (rows.length < 2) { alert("CSV looks empty — no rows found after the header."); return; }
+
+              const headers = rows[0].map(h => (h || "").trim().toLowerCase());
+              const findCol = (...names) => {
+                for (const n of names) {
+                  const exact = headers.indexOf(n);
+                  if (exact >= 0) return exact;
+                  const partial = headers.findIndex(h => h.includes(n));
+                  if (partial >= 0) return partial;
+                }
+                return -1;
+              };
+              const dateCol   = findCol("appointment date", "start date", "start time", "date");
+              const staffCol  = findCol("team member", "staff", "employee", "technician", "tech", "stylist");
+              const statusCol = findCol("appointment status", "status");
+              if (dateCol < 0 || staffCol < 0) {
+                alert(
+                  "Could not find the expected columns in this CSV.\n\n" +
+                  "Looking for a date column (e.g. 'Appointment date' / 'Date') and a staff column " +
+                  "(e.g. 'Team member' / 'Staff'). Found: " + headers.join(", ")
+                );
+                return;
+              }
+
+              const parseDate = (raw) => {
+                if (!raw) return null;
+                let v = String(raw).trim();
+                let d = new Date(v);
+                if (!isNaN(d.getTime())) return d;
+                const m = v.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/);
+                if (m) {
+                  let dd = +m[1], mm = +m[2], yy = +m[3];
+                  if (yy < 100) yy += 2000;
+                  d = new Date(yy, mm - 1, dd);
+                  if (!isNaN(d.getTime())) return d;
+                }
+                return null;
+              };
+              const norm = (s) => (s || "").toString().toLowerCase().replace(/[^a-z\s]/g, " ").replace(/\s+/g, " ").trim();
+              const staffByEc = new Map();
+              for (const s of attStaff) staffByEc.set(s.ec, s);
+              const matchEc = (raw) => {
+                const t = norm(raw);
+                if (!t) return null;
+                let best = null, bestScore = 0;
+                for (const s of attStaff) {
+                  const n = norm(s.name);
+                  if (!n) continue;
+                  if (n === t) return s.ec;                                      // exact full
+                  const tp = t.split(" "), np = n.split(" ");
+                  // Both first + last present
+                  if (tp[0] === np[0] && tp[tp.length-1] === np[np.length-1]) return s.ec;
+                  // First-name only match (use as last resort, but confirm uniqueness)
+                  if (tp[0] === np[0]) { best = best ? "AMBIG" : s.ec; bestScore = 1; }
+                }
+                return best === "AMBIG" ? null : best;
+              };
+
+              const next = JSON.parse(JSON.stringify(attGrid));
+              const cycleYmd = new Set(days.map(d => d.ymd));
+              const dayByYmd = {};
+              for (const d of days) dayByYmd[d.ymd] = d.d;
+
+              let total = 0, marked = 0, alreadyConfirmed = 0, outOfCycle = 0, notCompleted = 0;
+              const unmatched = new Set();
+              const seenDayPerEc = new Set(); // dedupe: only count first appt per (ec, day)
+
+              for (let i = 1; i < rows.length; i++) {
+                const r = rows[i];
+                if (!r || r.length === 0) continue;
+                if (r.length === 1 && (r[0] || "").trim() === "") continue;
+                total++;
+                if (statusCol >= 0) {
+                  const st = (r[statusCol] || "").toLowerCase();
+                  if (!(st.includes("complet") || st.includes("done") || st.includes("finished"))) {
+                    notCompleted++; continue;
+                  }
+                }
+                const dt = parseDate(r[dateCol]);
+                if (!dt) { outOfCycle++; continue; }
+                const ymd = dt.getFullYear() + "-" + String(dt.getMonth()+1).padStart(2,"0") + "-" + String(dt.getDate()).padStart(2,"0");
+                if (!cycleYmd.has(ymd)) { outOfCycle++; continue; }
+                const ec = matchEc(r[staffCol]);
+                if (!ec) { unmatched.add((r[staffCol] || "").trim() || "(blank)"); continue; }
+                const dKey = ec + "|" + ymd;
+                if (seenDayPerEc.has(dKey)) continue;
+                seenDayPerEc.add(dKey);
+                const dayNum = dayByYmd[ymd];
+                if (!next[ec]) next[ec] = {};
+                const cur = next[ec][dayNum];
+                if (cur && cur.charAt(0) !== "~") { alreadyConfirmed++; continue; }
+                next[ec][dayNum] = "on";
+                marked++;
+              }
+
+              if (marked === 0) {
+                alert(
+                  "Imported the CSV but didn't mark any cells On Time.\n\n" +
+                  "• Rows read: " + total + "\n" +
+                  "• Skipped (not completed): " + notCompleted + "\n" +
+                  "• Out of " + cycLabel + ": " + outOfCycle + "\n" +
+                  "• Unmatched staff: " + (unmatched.size === 0 ? "0" : unmatched.size + " — " + [...unmatched].slice(0, 6).join(", ") + (unmatched.size > 6 ? ", …" : "")) + "\n" +
+                  "• Already confirmed (kept): " + alreadyConfirmed
+                );
+                return;
+              }
+
+              setAttGrid(next);
+              try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
+              catch (err) { alert("Could not save: " + (err.message || err)); return; }
+              alert(
+                "✓ Fresha import done.\n\n" +
+                "• Rows read: " + total + "\n" +
+                "• Marked On Time: " + marked + "\n" +
+                "• Skipped (not completed): " + notCompleted + "\n" +
+                "• Out of " + cycLabel + ": " + outOfCycle + "\n" +
+                "• Already confirmed (kept): " + alreadyConfirmed +
+                (unmatched.size > 0 ? "\n• Unmatched staff (" + unmatched.size + "): " + [...unmatched].slice(0, 8).join(", ") + (unmatched.size > 8 ? ", …" : "") : "")
+              );
+            };
+            input.click();
+          };
+
           const resetCycle = async () => {
             const msg = "⚠ Reset attendance for " + attBranch + " — " + cycLabel + "?\n\n"
               + "This will undo ALL changes you've made for this cycle. Schedule-derived hints will reappear faded once you re-open the tab.\n\n"
@@ -6330,6 +6797,7 @@ function App({ currentUser, onSignOut }) {
                 <div style={{ flex:1 }} />
                 {attLoading && <span style={{ fontSize:11, color:"#9ca3af", fontStyle:"italic" }}>Loading…</span>}
                 <button onClick={autoFill} style={{ padding:"7px 14px", background:"#fef3c7", color:"#78350f", border:"1px solid #fbbf24", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Fill empty cells from schedule (faded, still unconfirmed)">✓ Auto-fill from Schedule</button>
+                <button onClick={importFresha} style={{ padding:"7px 14px", background:"#dbeafe", color:"#1e3a8a", border:"1px solid #93c5fd", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Upload a Fresha appointments CSV — every nail tech with a completed appointment that day is marked On Time">📤 Import Fresha CSV</button>
                 <button onClick={resetCycle} style={{ padding:"7px 14px", background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fca5a5", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Clear every cell for this branch + cycle (with confirmation)">↺ Reset Cycle</button>
               </div>
 
