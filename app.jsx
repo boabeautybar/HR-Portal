@@ -1307,7 +1307,17 @@ function MatModal({ rec, onClose, onSave, onDelete }) {
 
 // ─── STAFF MODAL ──────────────────────────────────────────────────────────────────
 function StaffModal({ s, onClose, onSave, onTransfer, allStaff }) {
-  const [f, setF] = useState(s);
+  // Split existing "name" into firstName / surname for the form. New records
+  // start blank. Combined back into `name` on save.
+  const splitName = (full) => {
+    const t = (full || "").trim();
+    if (!t) return { firstName:"", surname:"" };
+    const i = t.indexOf(" ");
+    if (i < 0) return { firstName:t, surname:"" };
+    return { firstName:t.slice(0,i), surname:t.slice(i+1).trim() };
+  };
+  const initial = splitName(s.name);
+  const [f, setF] = useState({ ...s, firstName:initial.firstName, surname:initial.surname, position:s.position || s.level || "" });
   const set = (k,v) => setF(p=>({...p,[k]:v}));
   const inp = { width:"100%", padding:"8px 11px", borderRadius:8, border:"1px solid #FBCFE8", background:"#FCE7F3", fontFamily:"inherit", fontSize:13, color:"#111827", boxSizing:"border-box" };
   const lbl = { display:"block", fontSize:10, fontWeight:700, color:"#BE185D", letterSpacing:"0.08em", marginBottom:4, textTransform:"uppercase" };
@@ -1316,7 +1326,23 @@ function StaffModal({ s, onClose, onSave, onTransfer, allStaff }) {
   const dupInOtherBranch = allStaff.find(x =>
     x.ec.trim().toUpperCase() === f.ec.trim().toUpperCase() && x._id !== f._id
   );
-  const blockSave = !!dupInOtherBranch;
+
+  // Required-field validation
+  const missing = [];
+  if (!(f.firstName || "").trim()) missing.push("First name");
+  if (!(f.surname   || "").trim()) missing.push("Surname");
+  if (!(f.startDate || "").trim()) missing.push("Start date");
+  if (!(f.position  || "").trim()) missing.push("Position");
+  const blockSave = !!dupInOtherBranch || missing.length > 0;
+
+  const submit = () => {
+    if (blockSave) return;
+    const fullName = (f.firstName.trim() + " " + f.surname.trim()).trim();
+    const out = { ...f, name: fullName, level: f.position };
+    delete out.firstName;
+    delete out.surname;
+    onSave(out);
+  };
 
   return (
     <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.55)", zIndex:200, display:"flex", alignItems:"center", justifyContent:"center", padding:16 }}
@@ -1327,28 +1353,40 @@ function StaffModal({ s, onClose, onSave, onTransfer, allStaff }) {
           <button onClick={onClose} style={{ background:"none", border:"none", fontSize:24, cursor:"pointer", color:"#9ca3af" }}>×</button>
         </div>
 
-        {blockSave && (
+        {dupInOtherBranch && (
           <div style={{ background:"#FBCFE8", border:"1px solid #fca5a5", borderRadius:10, padding:"11px 14px", marginBottom:14, fontSize:12, color:"#831843" }}>
             🚫 <strong>Duplicate EC</strong> — <strong>{dupInOtherBranch.name}</strong> already has EC <strong>{f.ec}</strong> at <strong>{dupInOtherBranch.branch}</strong>. Use a different EC code.
+          </div>
+        )}
+        {missing.length > 0 && (
+          <div style={{ background:"#fef3c7", border:"1px solid #fbbf24", borderRadius:10, padding:"11px 14px", marginBottom:14, fontSize:12, color:"#78350f" }}>
+            ⚠ <strong>Required:</strong> {missing.join(", ")}
           </div>
         )}
 
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:13 }}>
           <div><label style={lbl}>EC Code</label>
-            <input style={{ ...inp, border:`1px solid ${blockSave?"#fca5a5":"#d1d5db"}`, background:blockSave?"#FAEEF1":"#f9fafb" }}
+            <input style={{ ...inp, border:`1px solid ${dupInOtherBranch?"#fca5a5":"#d1d5db"}`, background:dupInOtherBranch?"#FAEEF1":"#f9fafb" }}
               value={f.ec} onChange={e=>set("ec",e.target.value)} /></div>
-          <div style={{ gridColumn:"1/-1" }}><label style={lbl}>Full Name</label><input style={inp} value={f.name} onChange={e=>set("name",e.target.value)} /></div>
+          <div><label style={lbl}>First Name *</label>
+            <input style={inp} value={f.firstName} onChange={e=>set("firstName",e.target.value)} placeholder="e.g. Thandi" /></div>
+          <div><label style={lbl}>Surname *</label>
+            <input style={inp} value={f.surname} onChange={e=>set("surname",e.target.value)} placeholder="e.g. Mokoena" /></div>
           <div><label style={lbl}>Branch</label>
             <select style={inp} value={f.branch} onChange={e=>set("branch",e.target.value)}>
               {SALONS.map(s=><option key={s.name}>{s.name}</option>)}
             </select>
           </div>
-          <div><label style={lbl}>Level</label>
-            <select style={inp} value={f.level||""} onChange={e=>set("level",e.target.value)}>
-              <option value="">—</option><option>One</option><option>Two</option><option>Three</option>
+          <div><label style={lbl}>Position *</label>
+            <select style={inp} value={f.position||""} onChange={e=>set("position",e.target.value)}>
+              <option value="">—</option>
+              <option>One</option>
+              <option>Two</option>
+              <option>Three</option>
+              <option>Trainee</option>
             </select>
           </div>
-          <div style={{ gridColumn:"1/-1" }}><label style={lbl}>Start Date {f.startDate && (() => {
+          <div style={{ gridColumn:"1/-1" }}><label style={lbl}>Start Date * {f.startDate && (() => {
             const d = new Date(f.startDate + "T00:00:00");
             const days = Math.floor((Date.now() - d) / 86400000);
             const yrs = (days / 365).toFixed(1);
@@ -1383,7 +1421,7 @@ function StaffModal({ s, onClose, onSave, onTransfer, allStaff }) {
           )}
           <div style={{ display:"flex", gap:10, marginLeft:"auto" }}>
             <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:9, border:"1px solid #FBCFE8", background:"#FFFFFF", cursor:"pointer", fontFamily:"inherit", fontSize:13 }}>Cancel</button>
-            <button onClick={()=>!blockSave&&onSave(f)} disabled={blockSave}
+            <button onClick={submit} disabled={blockSave}
               style={{ padding:"9px 22px", borderRadius:9, border:"none", background:blockSave?"#d1d5db":"#b45309", color:"#fff", cursor:blockSave?"not-allowed":"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>Save</button>
           </div>
         </div>
@@ -4280,6 +4318,8 @@ function App({ currentUser, onSignOut }) {
                 <option value="All">All Contracts</option>{["Permanent","Fixed Term","NO CONTRACT","2 Weeks","Induction"].map(c=><option key={c}>{c}</option>)}
               </select>
               <span style={{ marginLeft:"auto", fontSize:11, color:"#BE185D", fontWeight:700 }}>{filtered.length} shown (sorted by EC)</span>
+              <button onClick={()=>setStaffModal({ ec:"", name:"", branch:"Sea Point", contract:"Permanent", permit:"sa_citizen", level:"" })}
+                style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:8, padding:"7px 14px", cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:12 }}>+ Add Staff</button>
             </div>
 
             <div style={{ background:"#FFFFFF", borderRadius:15, border:`1px solid ${bdr}`, overflow:"hidden", boxShadow:"0 2px 12px rgba(0,0,0,.05)" }}>
@@ -5714,6 +5754,19 @@ function App({ currentUser, onSignOut }) {
             catch (e) { alert("Could not save: " + (e.message || e)); }
           };
 
+          // Reset every attendance entry for this branch+cycle (warns first)
+          const resetCycle = async () => {
+            const msg = "⚠ Reset attendance for " + attBranch + " — " + cycLabel + "?\n\n"
+              + "This will undo ALL changes you've made for this cycle. Schedule-derived hints will reappear faded once you re-open the tab.\n\n"
+              + "This cannot be undone. Continue?";
+            if (!confirm(msg)) return;
+            const next = {};
+            setAttGrid(next);
+            try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
+            catch (e) { alert("Could not reset: " + (e.message || e)); return; }
+            alert("✓ Attendance reset for " + attBranch + " — " + cycLabel);
+          };
+
           // Auto-fill empty cells from the schedule (writes "~hint" — italic, unconfirmed)
           const autoFill = async () => {
             if (!confirm("Auto-fill missing days from the schedule? Empty cells will be set to the schedule's value but shown faded/unconfirmed. Click any to confirm individually.")) return;
@@ -5929,6 +5982,7 @@ function App({ currentUser, onSignOut }) {
                 <div style={{ flex:1 }} />
                 {attLoading && <span style={{ fontSize:11, color:"#9ca3af", fontStyle:"italic" }}>Loading…</span>}
                 <button onClick={autoFill} style={{ padding:"7px 14px", background:"#fef3c7", color:"#78350f", border:"1px solid #fbbf24", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Fill empty cells from schedule (faded, still unconfirmed)">✓ Auto-fill from Schedule</button>
+                <button onClick={resetCycle} style={{ padding:"7px 14px", background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fca5a5", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Clear every cell for this branch + cycle (with confirmation)">↺ Reset Cycle</button>
               </div>
 
               <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap", fontSize:11, color:"#831843", marginBottom:8, padding:"8px 12px", background:"#FDEEF5", border:"1px solid #FBCFE8", borderRadius:8 }}>
