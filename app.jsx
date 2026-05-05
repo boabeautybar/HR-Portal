@@ -6172,12 +6172,23 @@ function App({ currentUser, onSignOut }) {
                     {attStaff.length === 0 && (
                       <tr><td colSpan={days.length + 10} style={{ padding:30, textAlign:"center", color:"#9ca3af", fontStyle:"italic" }}>No active staff at {attBranch}.</td></tr>
                     )}
-                    {attStaff.map(s => {
+                    {attStaff.map((s, idx) => {
                       const t = totalsFor(s.ec);
-                      return (
-                        <tr key={s.ec}>
-                          <td style={{ position:"sticky", left:0, background:"#FFFFFF", padding:"6px 10px", borderBottom:"1px solid #FCE7F3", borderRight:"2px solid #FBCFE8", zIndex:2, minWidth:170 }}>
-                            <div style={{ fontSize:11, fontWeight:700, color:"#831843" }}>{s.name}</div>
+                      const isMgr = s.role === "SM" || s.role === "AM";
+                      const prev = idx > 0 ? attStaff[idx-1] : null;
+                      const prevIsMgr = prev ? (prev.role === "SM" || prev.role === "AM") : null;
+                      const showSection = idx === 0 || isMgr !== prevIsMgr;
+                      const sectionRow = showSection ? (
+                        <tr key={"section-" + (isMgr ? "mgr" : "tech")}>
+                          <td colSpan={days.length + 10} style={{ background: isMgr ? "#FCE7F3" : "#FDEEF5", padding:"8px 14px", borderTop:"2px solid #FBCFE8", borderBottom:"1px solid #FBCFE8", fontSize:11, fontWeight:800, color:"#831843", letterSpacing:"0.12em", textTransform:"uppercase" }}>
+                            {isMgr ? "👑 Managers" : "💅 Nail Techs"}
+                          </td>
+                        </tr>
+                      ) : null;
+                      const dataRow = (
+                        <tr key={s.ec} style={isMgr ? { background:"#fffaf0" } : undefined}>
+                          <td style={{ position:"sticky", left:0, background: isMgr ? "#fffaf0" : "#FFFFFF", padding:"6px 10px", borderBottom:"1px solid #FCE7F3", borderRight:"2px solid #FBCFE8", zIndex:2, minWidth:170 }}>
+                            <div style={{ fontSize:11, fontWeight:700, color:"#831843" }}>{isMgr ? (s.role === "SM" ? "👑 " : "⭐ ") : ""}{s.name}</div>
                             <div style={{ fontSize:9, color:"#9ca3af" }}>{s.ec} · {s.role}</div>
                           </td>
                           {days.map(dy => {
@@ -6224,6 +6235,7 @@ function App({ currentUser, onSignOut }) {
                           </td>
                         </tr>
                       );
+                      return <React.Fragment key={s.ec}>{sectionRow}{dataRow}</React.Fragment>;
                     })}
                   </tbody>
                 </table>
