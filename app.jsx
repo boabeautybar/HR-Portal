@@ -3435,7 +3435,7 @@ function PinLogin({ onUnlock }) {
       setPin("");
       return;
     }
-    const session = { pin, name: u.name, role: u.role, signedInAt: new Date().toISOString() };
+    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, signedInAt: new Date().toISOString() };
     try { sessionStorage.setItem(PIN_SESSION_KEY, JSON.stringify(session)); } catch (_) {}
     window.BOA_CURRENT_USER = session;
     onUnlock(session);
@@ -3480,8 +3480,9 @@ function AppGate() {
       if (!raw) return null;
       const s = JSON.parse(raw);
       if (s && STAFF_USERS[s.pin]) {
-        window.BOA_CURRENT_USER = s;
-        return s;
+        const merged = { ...s, demo: !!STAFF_USERS[s.pin].demo };
+        window.BOA_CURRENT_USER = merged;
+        return merged;
       }
     } catch (_) {}
     return null;
