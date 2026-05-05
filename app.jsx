@@ -3667,6 +3667,23 @@ function App({ currentUser, onSignOut }) {
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     setAttLoading(true);
     const safe = (p) => p.catch(() => null);
+    // Manager schedule grids key cells by YYYY-MM-DD strings (mgrSched line 141),
+    // while tech schedule grids and the attendance UI use day-of-month numbers.
+    // Re-key the manager grid so a shallow merge by EC works.
+    const ymdReKey = (rawGrid) => {
+      const out = {};
+      for (const ec in rawGrid) {
+        const row = rawGrid[ec] || {};
+        const conv = {};
+        for (const k in row) {
+          const m = /^\d{4}-\d{2}-(\d{2})$/.exec(k);
+          if (m) conv[parseInt(m[1], 10)] = row[k];
+          else   conv[k] = row[k];
+        }
+        out[ec] = conv;
+      }
+      return out;
+    };
     Promise.all([
       safe(window.BOA_DB.loadAttendance(attBranch, attYM)),
       safe(window.BOA_DB.loadSchedule(attBranch, attYM, false)),
@@ -3674,7 +3691,7 @@ function App({ currentUser, onSignOut }) {
     ]).then(([att, sch, mgrSch]) => {
       setAttGrid((att && att.grid) || {});
       const techGrid = (sch    && sch.grid)    || {};
-      const mgrGrid  = (mgrSch && mgrSch.grid) || {};
+      const mgrGrid  = ymdReKey((mgrSch && mgrSch.grid) || {});
       setAttSched({ ...techGrid, ...mgrGrid });
     }).catch(e => console.error("Attendance load:", e))
       .finally(() => setAttLoading(false));
