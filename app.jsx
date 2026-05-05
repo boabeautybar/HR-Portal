@@ -6380,7 +6380,7 @@ function App({ currentUser, onSignOut }) {
                 }
                 return -1;
               };
-              const dateCol   = findCol("appointment date", "start date", "start time", "date");
+              const dateCol   = findCol("scheduled date", "scheduled at", "appointment date", "appointment start", "start date", "start time", "date");
               const staffCol  = findCol("team member", "staff", "employee", "technician", "tech", "stylist");
               const statusCol = findCol("appointment status", "status");
               if (dateCol < 0 || staffCol < 0) {
@@ -6402,19 +6402,53 @@ function App({ currentUser, onSignOut }) {
                 return;
               }
 
+              // Robust date parser — Fresha exports use "04 May 2026, 2:25pm".
+              // Also handles ISO, DD/MM/YYYY, MMM DD YYYY, and falls back to the
+              // native parser as a last resort.
+              const MONTH_IDX = {
+                jan:0, january:0, feb:1, february:1, mar:2, march:2, apr:3, april:3,
+                may:4, jun:5, june:5, jul:6, july:6, aug:7, august:7,
+                sep:8, sept:8, september:8, oct:9, october:9, nov:10, november:10, dec:11, december:11
+              };
               const parseDate = (raw) => {
                 if (!raw) return null;
-                let v = String(raw).trim();
-                let d = new Date(v);
-                if (!isNaN(d.getTime())) return d;
-                const m = v.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/);
+                const v = String(raw).trim();
+                if (!v) return null;
+                // "DD MMM YYYY[, time]"  e.g. "04 May 2026, 2:25pm"
+                let m = v.match(/^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/);
+                if (m) {
+                  const mi = MONTH_IDX[m[2].toLowerCase()];
+                  if (mi != null) {
+                    const d = new Date(+m[3], mi, +m[1]);
+                    if (!isNaN(d.getTime())) return d;
+                  }
+                }
+                // "MMM DD[,] YYYY"  e.g. "May 04, 2026"
+                m = v.match(/^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})/);
+                if (m) {
+                  const mi = MONTH_IDX[m[1].toLowerCase()];
+                  if (mi != null) {
+                    const d = new Date(+m[3], mi, +m[2]);
+                    if (!isNaN(d.getTime())) return d;
+                  }
+                }
+                // ISO YYYY-MM-DD[Thh:mm…]
+                m = v.match(/^(\d{4})-(\d{2})-(\d{2})/);
+                if (m) {
+                  const d = new Date(+m[1], +m[2]-1, +m[3]);
+                  if (!isNaN(d.getTime())) return d;
+                }
+                // DD/MM/YYYY (or DD-MM, DD.MM)
+                m = v.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/);
                 if (m) {
                   let dd = +m[1], mm = +m[2], yy = +m[3];
                   if (yy < 100) yy += 2000;
-                  d = new Date(yy, mm - 1, dd);
+                  const d = new Date(yy, mm - 1, dd);
                   if (!isNaN(d.getTime())) return d;
                 }
-                return null;
+                // Last resort: native parse
+                const d = new Date(v);
+                return isNaN(d.getTime()) ? null : d;
               };
               const norm = (s) => (s || "").toString().toLowerCase().replace(/[^a-z\s]/g, " ").replace(/\s+/g, " ").trim();
               const staffByEc = new Map();
@@ -6441,9 +6475,10 @@ function App({ currentUser, onSignOut }) {
               const dayByYmd = {};
               for (const d of days) dayByYmd[d.ymd] = d.d;
 
-              let total = 0, marked = 0, alreadyConfirmed = 0, outOfCycle = 0;
+              let total = 0, marked = 0, alreadyConfirmed = 0, outOfCycle = 0, badDate = 0;
               let cancelled = 0, noShow = 0, scheduled = 0, otherStatus = 0;
               const otherStatusSeen = new Set();
+              const badDateSamples = new Set();
               const unmatched = new Set();
               const seenDayPerEc = new Set(); // dedupe: only count first appt per (ec, day)
 
@@ -6465,7 +6500,11 @@ function App({ currentUser, onSignOut }) {
                   continue;
                 }
                 const dt = parseDate(r[dateCol]);
-                if (!dt) { outOfCycle++; continue; }
+                if (!dt) {
+                  badDate++;
+                  if (badDateSamples.size < 4 && (r[dateCol] || "").trim()) badDateSamples.add(String(r[dateCol]).trim());
+                  continue;
+                }
                 const ymd = dt.getFullYear() + "-" + String(dt.getMonth()+1).padStart(2,"0") + "-" + String(dt.getDate()).padStart(2,"0");
                 if (!cycleYmd.has(ymd)) { outOfCycle++; continue; }
                 const ec = matchEc(r[staffCol]);
@@ -6486,7 +6525,10 @@ function App({ currentUser, onSignOut }) {
                 "• No-show: " + noShow + "\n" +
                 "• Scheduled / not yet completed: " + scheduled + "\n" +
                 "• Other status (skipped): " + otherStatus +
-                (otherStatusSeen.size > 0 ? " — " + [...otherStatusSeen].slice(0, 4).join(", ") + (otherStatusSeen.size > 4 ? ", …" : "") : "");
+                (otherStatusSeen.size > 0 ? " — " + [...otherStatusSeen].slice(0, 4).join(", ") + (otherStatusSeen.size > 4 ? ", …" : "") : "") + "\n" +
+                "• Date column read: " + (dateCol >= 0 ? "'" + headers[dateCol] + "'" : "(none)") + "\n" +
+                "• Unparseable dates: " + badDate +
+                (badDateSamples.size > 0 ? " — e.g. " + [...badDateSamples].slice(0, 3).join(" | ") : "");
 
               if (marked === 0) {
                 alert(
