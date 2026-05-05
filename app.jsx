@@ -4260,14 +4260,6 @@ function App({ currentUser, onSignOut }) {
   const tabBtn = (t,label) => (
     <button key={t} onClick={()=>tryChangeTab(t)} style={{ padding:"10px 18px", borderRadius:14, cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:13, border:"none", background:tab===t?"#BE185D":"#FFFFFF", color:tab===t?"#FFFFFF":"#831843", boxShadow:tab===t?"0 4px 12px rgba(190,24,93,0.32)":"0 2px 6px rgba(0,0,0,0.06)", transition:"all .18s", margin:"4px 4px" }}>{label}</button>
   );
-  // Smaller pill for the secondary nav row.
-  const tabBtnSmall = (t, label) => (
-    <button key={t} onClick={()=>tryChangeTab(t)} style={{ padding:"6px 13px", borderRadius:10, cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:11.5, border:`1px solid ${tab===t?"#BE185D":"rgba(255,255,255,0.65)"}`, background:tab===t?"#BE185D":"rgba(255,255,255,0.85)", color:tab===t?"#FFFFFF":"#831843", boxShadow:tab===t?"0 3px 9px rgba(190,24,93,0.28)":"0 1px 3px rgba(0,0,0,0.04)", transition:"all .18s" }}>{label}</button>
-  );
-  // Category label for the secondary nav row.
-  const navGroupLabel = (text) => (
-    <div style={{ fontSize:9, fontWeight:800, color:"#831843", letterSpacing:"0.18em", textTransform:"uppercase", opacity:0.75, padding:"2px 6px 2px 0", whiteSpace:"nowrap", alignSelf:"center" }}>{text}</div>
-  );
 
   if (loading) return (
     <div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"100vh", flexDirection:"column", gap:14, fontFamily:"'Outfit',system-ui,sans-serif", color:"#831843", letterSpacing:"0.18em", fontSize:14, fontWeight:700, textTransform:"uppercase" }}>
@@ -4327,39 +4319,47 @@ function App({ currentUser, onSignOut }) {
               const ds = Math.floor((t0 - sd) / 86400000);
               return ds <= 31;
             }).length;
-            const onboardLbl = "🌱 Onboarding" + (obCount > 0 ? " (" + obCount + ")" : "");
+            const onboardLbl  = "🌱 Onboarding"  + (obCount > 0 ? " (" + obCount + ")" : "");
             const offboardLbl = "👋 Off-boarding" + (offList.length > 0 ? " (" + offList.length + ")" : "");
-            const matLbl = "🤱 Maternity (" + matRecs.length + ")";
+            const matLbl      = "🤱 Maternity ("  + matRecs.length + ")";
+            const groups = [
+              { title: "People",     items: [
+                  { t:"onboard",     l: onboardLbl },
+                  { t:"offboard",    l: offboardLbl },
+                  { t:"staff",       l:"👥 Staff List"    },
+                  { t:"recruitment", l:"🎯 Recruitment"   },
+                  { t:"maternity",   l: matLbl }
+                ] },
+              { title: "Operations", items: [
+                  { t:"scheduling",  l:"📅 Scheduling"     },
+                  { t:"locations",   l:"📍 Locations"      },
+                  { t:"mgrclockins", l:"🕐 Mgr Clock-ins"  },
+                  { t:"leave",       l:"🌴 Leave Planner"  }
+                ] },
+              { title: "Payroll",    items: [
+                  { t:"attendance",  l:"📕 Attendance"     }
+                ] },
+              { title: "Insights",   items: [
+                  { t:"alerts",      l:"🔔 Alerts"         },
+                  { t:"activity",    l:"📜 Activity Log"   }
+                ] }
+            ];
+            const sectionHead = { fontSize:10, fontWeight:800, color:"#FFFFFF", letterSpacing:"0.2em", textTransform:"uppercase", opacity:0.85, marginBottom:6, paddingLeft:6 };
             return (
               <div style={{ paddingTop:12 }}>
-                {/* Primary row — most-used tabs at full size */}
-                <div style={{ display:"flex", gap:3, flexWrap:"wrap", alignItems:"center" }}>
+                {/* Dashboard pinned at the very top, on its own line */}
+                <div style={{ marginBottom:12 }}>
                   {tabBtn("dashboard","🏠 Dashboard")}
-                  {tabBtn("staff","👥 Staff List")}
-                  {tabBtn("scheduling","📅 Scheduling")}
-                  {tabBtn("attendance","📕 Attendance")}
-                  {tabBtn("recruitment","🎯 Recruitment")}
                 </div>
-                {/* Secondary row — grouped, smaller pills */}
-                <div style={{ display:"flex", gap:14, flexWrap:"wrap", alignItems:"center", marginTop:10, paddingTop:10, borderTop:"1px solid rgba(255,255,255,0.45)" }}>
-                  <div style={{ display:"flex", gap:5, alignItems:"center", flexWrap:"wrap" }}>
-                    {navGroupLabel("People")}
-                    {tabBtnSmall("locations", "📍 Locations")}
-                    {tabBtnSmall("onboard",   onboardLbl)}
-                    {tabBtnSmall("offboard",  offboardLbl)}
-                    {tabBtnSmall("maternity", matLbl)}
+                {/* Categorised groups, each on its own row */}
+                {groups.map(g => (
+                  <div key={g.title} style={{ marginBottom:10 }}>
+                    <div style={sectionHead}>{g.title}</div>
+                    <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                      {g.items.map(it => tabBtn(it.t, it.l))}
+                    </div>
                   </div>
-                  <div style={{ display:"flex", gap:5, alignItems:"center", flexWrap:"wrap" }}>
-                    {navGroupLabel("Operations")}
-                    {tabBtnSmall("leave",       "🌴 Leave Planner")}
-                    {tabBtnSmall("mgrclockins", "🕐 Mgr Clock-ins")}
-                  </div>
-                  <div style={{ display:"flex", gap:5, alignItems:"center", flexWrap:"wrap" }}>
-                    {navGroupLabel("Insights")}
-                    {tabBtnSmall("alerts",   "🔔 Alerts")}
-                    {tabBtnSmall("activity", "📜 Activity Log")}
-                  </div>
-                </div>
+                ))}
               </div>
             );
           })()}
