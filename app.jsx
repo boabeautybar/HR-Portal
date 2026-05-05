@@ -6451,50 +6451,65 @@ function App({ currentUser, onSignOut }) {
                 return isNaN(d.getTime()) ? null : d;
               };
               const norm = (s) => (s || "").toString().toLowerCase().replace(/[^a-z\s]/g, " ").replace(/\s+/g, " ").trim();
-              const staffByEc = new Map();
-              for (const s of attStaff) staffByEc.set(s.ec.toUpperCase(), s);
-              // Fresha "Team member" cells often look like "B028 Fatima January" — pull
-              // the EC out so we can resolve directly by code instead of name-matching.
               const extractEc = (raw) => {
                 const m = String(raw || "").match(/^\s*([A-Z][0-9]+[A-Z]?)\b/i);
                 return m ? m[1].toUpperCase() : null;
               };
               const stripEcPrefix = (raw) => String(raw || "").replace(/^\s*[A-Z][0-9]+[A-Z]?\s+/i, "");
-              // Match a row's staff field to a staff member.
-              // Returns { kind: "tech", ec } | { kind: "manager", ec } | { kind: "unknown" }.
-              // Only "tech" results are used for filling cells; managers are tallied
-              // separately and never written.
+
+              // Build a global staff lookup so the importer can match Fresha rows
+              // for every branch in one go — not just the branch currently on screen.
+              const branchSet = new Set(SALONS.map(sl => sl.name));
+              const globalStaff = [
+                ...(enriched || []).filter(s => !s.isShadow && stillInCycle(s.ec)).map(s => ({ ec: s.ec, name: s.name, role: "NT", branch: s.branch })),
+                ...(managers || []).filter(m => stillInCycle(m.ec)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", branch: m.branch }))
+              ];
+              const globalByEc = new Map();
+              for (const s of globalStaff) globalByEc.set(s.ec.toUpperCase(), s);
+
               const matchStaff = (raw) => {
                 const ec = extractEc(raw);
-                if (ec && staffByEc.has(ec)) {
-                  const s = staffByEc.get(ec);
-                  return { kind: s.role === "NT" ? "tech" : "manager", ec: s.ec };
+                if (ec && globalByEc.has(ec)) {
+                  const s = globalByEc.get(ec);
+                  if (s.role !== "NT") return { kind: "manager", branch: s.branch };
+                  return { kind: "tech", ec: s.ec, branch: s.branch };
                 }
                 const t = norm(stripEcPrefix(raw) || raw);
                 if (!t) return { kind: "unknown" };
-                // Exact full-name then first+last, restricted to nail techs.
                 let firstNameAmbig = false, firstNameHit = null;
-                for (const s of attStaff) {
+                for (const s of globalStaff) {
                   if (s.role !== "NT") continue;
                   const n = norm(s.name); if (!n) continue;
-                  if (n === t) return { kind: "tech", ec: s.ec };
+                  if (n === t) return { kind: "tech", ec: s.ec, branch: s.branch };
                   const tp = t.split(" "), np = n.split(" ");
-                  if (tp[0] === np[0] && tp[tp.length-1] === np[np.length-1]) return { kind: "tech", ec: s.ec };
-                  if (tp[0] === np[0]) { if (firstNameHit) firstNameAmbig = true; else firstNameHit = s.ec; }
+                  if (tp[0] === np[0] && tp[tp.length-1] === np[np.length-1]) return { kind: "tech", ec: s.ec, branch: s.branch };
+                  if (tp[0] === np[0]) { if (firstNameHit) firstNameAmbig = true; else firstNameHit = { ec: s.ec, branch: s.branch }; }
                 }
-                if (firstNameHit && !firstNameAmbig) return { kind: "tech", ec: firstNameHit };
-                // No tech match — was the name a manager instead? If so, flag it.
-                for (const s of attStaff) {
+                if (firstNameHit && !firstNameAmbig) return { kind: "tech", ec: firstNameHit.ec, branch: firstNameHit.branch };
+                for (const s of globalStaff) {
                   if (s.role === "NT") continue;
                   const n = norm(s.name); if (!n) continue;
-                  if (n === t) return { kind: "manager", ec: s.ec };
+                  if (n === t) return { kind: "manager", branch: s.branch };
                   const tp = t.split(" "), np = n.split(" ");
-                  if (tp[0] === np[0] && tp[tp.length-1] === np[np.length-1]) return { kind: "manager", ec: s.ec };
+                  if (tp[0] === np[0] && tp[tp.length-1] === np[np.length-1]) return { kind: "manager", branch: s.branch };
                 }
                 return { kind: "unknown" };
               };
 
-              const next = JSON.parse(JSON.stringify(attGrid));
+              // Load every branch's attendance grid for this cycle so we can write
+              // to the right branch per row. The active branch starts from local
+              // state; the others are fetched.
+              const branchGrids = {};
+              const allBranches = SALONS.map(sl => sl.name);
+              await Promise.all(allBranches.map(async b => {
+                if (b === attBranch) {
+                  branchGrids[b] = JSON.parse(JSON.stringify(attGrid || {}));
+                } else {
+                  const data = await safe(window.BOA_DB.loadAttendance(b, attYM));
+                  branchGrids[b] = (data && data.grid) ? JSON.parse(JSON.stringify(data.grid)) : {};
+                }
+              }));
+
               const cycleYmd = new Set(days.map(d => d.ymd));
               const dayByYmd = {};
               for (const d of days) dayByYmd[d.ymd] = d.d;
@@ -6505,7 +6520,8 @@ function App({ currentUser, onSignOut }) {
               const otherStatusSeen = new Set();
               const badDateSamples = new Set();
               const unmatched = new Set();
-              const seenDayPerEc = new Set(); // dedupe: only count first appt per (ec, day)
+              const seenDayPerEc = new Set(); // dedupe: only count first appt per (branch|ec, day)
+              const markedByBranch = {};      // per-branch tally for the summary
 
               // Strict status filter — only these count as actually worked.
               const isCompleted = (st) => st === "completed" || st === "complete" || st === "done" || st === "finished";
@@ -6536,15 +6552,19 @@ function App({ currentUser, onSignOut }) {
                 if (match.kind === "manager") { managerSkipped++; continue; }
                 if (match.kind !== "tech")    { unmatched.add((r[staffCol] || "").trim() || "(blank)"); continue; }
                 const ec = match.ec;
-                const dKey = ec + "|" + ymd;
+                const techBranch = match.branch;
+                const grid = branchGrids[techBranch];
+                if (!grid) { unmatched.add((r[staffCol] || "").trim() + " (unknown branch '" + (techBranch || "?") + "')"); continue; }
+                const dKey = techBranch + "|" + ec + "|" + ymd;
                 if (seenDayPerEc.has(dKey)) continue;
                 seenDayPerEc.add(dKey);
                 const dayNum = dayByYmd[ymd];
-                if (!next[ec]) next[ec] = {};
-                const cur = next[ec][dayNum];
+                if (!grid[ec]) grid[ec] = {};
+                const cur = grid[ec][dayNum];
                 if (cur && cur.charAt(0) !== "~") { alreadyConfirmed++; continue; }
-                next[ec][dayNum] = "on";
+                grid[ec][dayNum] = "on";
                 marked++;
+                markedByBranch[techBranch] = (markedByBranch[techBranch] || 0) + 1;
               }
 
               const skipBreakdown =
@@ -6558,6 +6578,10 @@ function App({ currentUser, onSignOut }) {
                 "• Unparseable dates: " + badDate +
                 (badDateSamples.size > 0 ? " — e.g. " + [...badDateSamples].slice(0, 3).join(" | ") : "");
 
+              const branchSummary = Object.keys(markedByBranch).length === 0
+                ? ""
+                : "\n• Per branch: " + Object.entries(markedByBranch).map(([b, n]) => b + " " + n).join(" · ");
+
               if (marked === 0) {
                 alert(
                   "Imported the CSV but didn't mark any cells On Time.\n\n" +
@@ -6570,13 +6594,17 @@ function App({ currentUser, onSignOut }) {
                 return;
               }
 
-              setAttGrid(next);
-              try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
-              catch (err) { alert("Could not save: " + (err.message || err)); return; }
+              // Save every branch whose grid had cells written this run.
+              const branchesToSave = Object.keys(markedByBranch);
+              try {
+                await Promise.all(branchesToSave.map(b => window.BOA_DB.saveAttendance(b, attYM, branchGrids[b])));
+              } catch (err) { alert("Could not save: " + (err.message || err)); return; }
+              // Refresh the local grid for the branch the user is currently viewing.
+              if (markedByBranch[attBranch]) setAttGrid(branchGrids[attBranch]);
               alert(
-                "✓ Fresha import done — only Completed appointments were counted.\n\n" +
+                "✓ Fresha import done — only Completed nail-tech appointments were counted, across all branches.\n\n" +
                 "• Rows read: " + total + "\n" +
-                "• Marked On Time: " + marked + "\n" +
+                "• Marked On Time: " + marked + branchSummary + "\n" +
                 skipBreakdown + "\n" +
                 "• Out of " + cycLabel + ": " + outOfCycle + "\n" +
                 "• Already confirmed (kept): " + alreadyConfirmed +
