@@ -3580,12 +3580,13 @@ function App({ currentUser, onSignOut }) {
     alerts:"Insights", activity:"Insights"
   };
   useEffect(() => {
-    const cat = NAV_TAB_TO_CATEGORY[tab];
+    // Manager Planner is a virtual tab that lives at recruitment+mgrRecruit+planner
+    // but visually belongs under Operations.
+    const isPlanner = tab === "recruitment" && recruitSubTab === "mgrRecruit" && mgrSubTab === "planner";
+    const cat = isPlanner ? "Operations" : NAV_TAB_TO_CATEGORY[tab];
     if (cat && cat !== navCategory) setNavCategory(cat);
-    // intentionally only triggered on tab change; user clicks on category tiles
-    // call setNavCategory directly and that is fine because tab hasn't changed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab]);
+  }, [tab, recruitSubTab, mgrSubTab]);
   const [mgrSchedTick, setMgrSchedTick] = useState(0);    // bump after edits to force refetch
   const [mgrSchedHist, setMgrSchedHist] = useState({});   // {branch|ym: [grids...]} for undo
 
@@ -4355,14 +4356,7 @@ function App({ currentUser, onSignOut }) {
                   { t:"onboard",     l: onboardLbl },
                   { t:"offboard",    l: offboardLbl },
                   { t:"staff",       l:"👥 Staff List"    },
-                  { t:"recruitment", l:"🎯 Recruitment",
-                    isActive: tab==="recruitment" && !(recruitSubTab==="mgrRecruit" && mgrSubTab==="planner"),
-                    onClick: () => { setRecruitSubTab("nailTech"); tryChangeTab("recruitment"); }
-                  },
-                  { t:"mgrPlanner",  l:"🧩 Manager Planner",
-                    isActive: tab==="recruitment" && recruitSubTab==="mgrRecruit" && mgrSubTab==="planner",
-                    onClick: () => { setRecruitSubTab("mgrRecruit"); setMgrSubTab("planner"); tryChangeTab("recruitment"); }
-                  },
+                  { t:"recruitment", l:"🎯 Recruitment"   },
                   { t:"maternity",   l: matLbl }
                 ] },
               { key:"Operations", icon:"⚙️", title:"Operations",
@@ -4371,7 +4365,11 @@ function App({ currentUser, onSignOut }) {
                   { t:"scheduling",  l:"📅 Scheduling"     },
                   { t:"locations",   l:"📍 Locations"      },
                   { t:"mgrclockins", l:"🕐 Mgr Clock-ins"  },
-                  { t:"leave",       l:"🌴 Leave Planner"  }
+                  { t:"leave",       l:"🌴 Leave Planner"  },
+                  { t:"mgrPlanner",  l:"🧩 Manager Planner",
+                    isActive: tab==="recruitment" && recruitSubTab==="mgrRecruit" && mgrSubTab==="planner",
+                    onClick: () => { setRecruitSubTab("mgrRecruit"); setMgrSubTab("planner"); tryChangeTab("recruitment"); }
+                  }
                 ] },
               { key:"Payroll",    icon:"💰", title:"Payroll",
                 color:{ bg:"#DCFCE7", bgActive:"#BBF7D0", ink:"#14532d" },
