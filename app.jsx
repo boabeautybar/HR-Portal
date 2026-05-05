@@ -5,7 +5,7 @@ const { useState, useMemo, useEffect } = React;
 // activity log entries so we can see who did each edit / transfer / save.
 const STAFF_USERS = {
   "1993": { name: "Master",  role: "Master Admin"   },
-  "2023": { name: "Kelly",   role: "Ops Manager"    },
+  "2023": { name: "Kelly",   role: "Ops Manager",    hideCategories: ["Payroll"] },
   "6678": { name: "Joy",     role: "HR Generalist"  },
   "7890": { name: "Siphe",   role: "Recruiter"      },
   "5990": { name: "Ops Admin", role: "Ops Admin"    },
@@ -3435,7 +3435,7 @@ function PinLogin({ onUnlock }) {
       setPin("");
       return;
     }
-    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, signedInAt: new Date().toISOString() };
+    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, hideCategories: u.hideCategories || [], signedInAt: new Date().toISOString() };
     try { sessionStorage.setItem(PIN_SESSION_KEY, JSON.stringify(session)); } catch (_) {}
     window.BOA_CURRENT_USER = session;
     onUnlock(session);
@@ -3480,7 +3480,8 @@ function AppGate() {
       if (!raw) return null;
       const s = JSON.parse(raw);
       if (s && STAFF_USERS[s.pin]) {
-        const merged = { ...s, demo: !!STAFF_USERS[s.pin].demo };
+        const u = STAFF_USERS[s.pin];
+        const merged = { ...s, demo: !!u.demo, hideCategories: u.hideCategories || [] };
         window.BOA_CURRENT_USER = merged;
         return merged;
       }
@@ -4388,12 +4389,15 @@ function App({ currentUser, onSignOut }) {
                 ] }
             ];
             // Category that owns the currently-active tab.
+            // Permission filter: hide entire categories the user isn't allowed to see.
+            const hideCats = new Set(currentUser.hideCategories || []);
+            const visibleGroups = groups.filter(g => !hideCats.has(g.key));
             const tabToCategory = {};
-            for (const g of groups) for (const it of g.items) tabToCategory[it.t] = g.key;
+            for (const g of visibleGroups) for (const it of g.items) tabToCategory[it.t] = g.key;
             const activeCategoryByTab = tabToCategory[tab]; // undefined when on dashboard
             // Whichever category is "open" — explicit user pick wins, otherwise follow the active tab.
-            const openCategory = navCategory || activeCategoryByTab || groups[0].key;
-            const openGroup = groups.find(g => g.key === openCategory) || groups[0];
+            const openCategory = navCategory || activeCategoryByTab || visibleGroups[0].key;
+            const openGroup = visibleGroups.find(g => g.key === openCategory) || visibleGroups[0];
 
             const tileBase = {
               flex:"1 1 0", minWidth:120, minHeight:108,
@@ -4426,7 +4430,7 @@ function App({ currentUser, onSignOut }) {
                     }}>
                     <span style={{ fontSize:46, lineHeight:1 }}>🏠</span>
                   </button>
-                  {groups.map(g => {
+                  {visibleGroups.map(g => {
                     const isOpen = openCategory === g.key && (!dashActive || navShowCategory);
                     return (
                       <button key={g.key} onClick={()=>{ setNavCategory(g.key); setNavShowCategory(true); }}
@@ -4460,7 +4464,9 @@ function App({ currentUser, onSignOut }) {
                         { t:"attendance",  l:"📕 Attendance"   },
                         { t:"recruitment", l:"🎯 Recruitment"  },
                         { t:"leave",       l:"🌴 Leave Planner"}
-                      ].map(it => tabBtn(it.t, it.l))}
+                      ]
+                        .filter(it => !hideCats.has(NAV_TAB_TO_CATEGORY[it.t]))
+                        .map(it => tabBtn(it.t, it.l))}
                     </div>
                   </div>
                 ) : (
@@ -6070,7 +6076,14 @@ function App({ currentUser, onSignOut }) {
         })()}
 
         {/* ── ATTENDANCE TAB ── */}
-        {tab==="attendance" && (() => {
+        {tab==="attendance" && (currentUser.hideCategories || []).includes("Payroll") && (
+          <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:14, padding:"30px 26px", textAlign:"center", color:"#831843" }}>
+            <div style={{ fontSize:32, marginBottom:8 }}>🔒</div>
+            <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:14, fontWeight:700 }}>Payroll is not available for your account.</div>
+            <button onClick={()=>tryChangeTab("dashboard")} style={{ marginTop:14, background:"#BE185D", color:"#fff", border:"none", borderRadius:9, padding:"8px 16px", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>Back to Dashboard</button>
+          </div>
+        )}
+        {tab==="attendance" && !((currentUser.hideCategories || []).includes("Payroll")) && (() => {
           // Status code dictionary — labels, colors, categories.
           const STAT = {
             on:     { lbl:"On Time",         bg:"#e5e7eb", fg:"#1f2937", cat:"work" },
