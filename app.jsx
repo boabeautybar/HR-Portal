@@ -6391,6 +6391,16 @@ function App({ currentUser, onSignOut }) {
                 );
                 return;
               }
+              if (statusCol < 0) {
+                alert(
+                  "This CSV has no status column — refusing to import to avoid counting " +
+                  "cancelled / no-show / scheduled appointments as worked days.\n\n" +
+                  "Re-export from Fresha with the 'Appointment status' column included " +
+                  "(it is in the default Appointments report).\n\n" +
+                  "Headers found: " + headers.join(", ")
+                );
+                return;
+              }
 
               const parseDate = (raw) => {
                 if (!raw) return null;
@@ -6431,20 +6441,28 @@ function App({ currentUser, onSignOut }) {
               const dayByYmd = {};
               for (const d of days) dayByYmd[d.ymd] = d.d;
 
-              let total = 0, marked = 0, alreadyConfirmed = 0, outOfCycle = 0, notCompleted = 0;
+              let total = 0, marked = 0, alreadyConfirmed = 0, outOfCycle = 0;
+              let cancelled = 0, noShow = 0, scheduled = 0, otherStatus = 0;
+              const otherStatusSeen = new Set();
               const unmatched = new Set();
               const seenDayPerEc = new Set(); // dedupe: only count first appt per (ec, day)
+
+              // Strict status filter — only these count as actually worked.
+              const isCompleted = (st) => st === "completed" || st === "complete" || st === "done" || st === "finished";
 
               for (let i = 1; i < rows.length; i++) {
                 const r = rows[i];
                 if (!r || r.length === 0) continue;
                 if (r.length === 1 && (r[0] || "").trim() === "") continue;
                 total++;
-                if (statusCol >= 0) {
-                  const st = (r[statusCol] || "").toLowerCase();
-                  if (!(st.includes("complet") || st.includes("done") || st.includes("finished"))) {
-                    notCompleted++; continue;
-                  }
+                const stRaw = (r[statusCol] || "").trim();
+                const st = stRaw.toLowerCase();
+                if (!isCompleted(st)) {
+                  if (st.includes("cancel"))                         cancelled++;
+                  else if (st.includes("no show") || st.includes("no-show") || st.includes("noshow")) noShow++;
+                  else if (st.includes("scheduled") || st.includes("booked") || st.includes("upcoming") || st.includes("confirmed")) scheduled++;
+                  else { otherStatus++; if (stRaw) otherStatusSeen.add(stRaw); }
+                  continue;
                 }
                 const dt = parseDate(r[dateCol]);
                 if (!dt) { outOfCycle++; continue; }
@@ -6463,11 +6481,18 @@ function App({ currentUser, onSignOut }) {
                 marked++;
               }
 
+              const skipBreakdown =
+                "• Cancelled: " + cancelled + "\n" +
+                "• No-show: " + noShow + "\n" +
+                "• Scheduled / not yet completed: " + scheduled + "\n" +
+                "• Other status (skipped): " + otherStatus +
+                (otherStatusSeen.size > 0 ? " — " + [...otherStatusSeen].slice(0, 4).join(", ") + (otherStatusSeen.size > 4 ? ", …" : "") : "");
+
               if (marked === 0) {
                 alert(
                   "Imported the CSV but didn't mark any cells On Time.\n\n" +
                   "• Rows read: " + total + "\n" +
-                  "• Skipped (not completed): " + notCompleted + "\n" +
+                  skipBreakdown + "\n" +
                   "• Out of " + cycLabel + ": " + outOfCycle + "\n" +
                   "• Unmatched staff: " + (unmatched.size === 0 ? "0" : unmatched.size + " — " + [...unmatched].slice(0, 6).join(", ") + (unmatched.size > 6 ? ", …" : "")) + "\n" +
                   "• Already confirmed (kept): " + alreadyConfirmed
@@ -6479,10 +6504,10 @@ function App({ currentUser, onSignOut }) {
               try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
               catch (err) { alert("Could not save: " + (err.message || err)); return; }
               alert(
-                "✓ Fresha import done.\n\n" +
+                "✓ Fresha import done — only Completed appointments were counted.\n\n" +
                 "• Rows read: " + total + "\n" +
                 "• Marked On Time: " + marked + "\n" +
-                "• Skipped (not completed): " + notCompleted + "\n" +
+                skipBreakdown + "\n" +
                 "• Out of " + cycLabel + ": " + outOfCycle + "\n" +
                 "• Already confirmed (kept): " + alreadyConfirmed +
                 (unmatched.size > 0 ? "\n• Unmatched staff (" + unmatched.size + "): " + [...unmatched].slice(0, 8).join(", ") + (unmatched.size > 8 ? ", …" : "") : "")
