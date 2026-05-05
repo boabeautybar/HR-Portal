@@ -4,12 +4,18 @@ const { useState, useMemo, useEffect } = React;
 // 4-digit PINs. Lookup is by exact PIN string. Each user is recorded against
 // activity log entries so we can see who did each edit / transfer / save.
 const STAFF_USERS = {
-  "1993": { name: "Master",  role: "Master Admin"   },
-  "2023": { name: "Kelly",   role: "Ops Manager",    hideCategories: ["Payroll"] },
-  "6678": { name: "Joy",     role: "HR Generalist"  },
-  "7890": { name: "Siphe",   role: "Recruiter"      },
-  "5990": { name: "Ops Admin", role: "Ops Admin"    },
-  "1111": { name: "Demo",    role: "Training Demo", demo: true }
+  "1993": { name: "Master",   role: "Master Admin"  },
+  "2023": { name: "Kelly",    role: "Ops Manager",  hideCategories: ["Payroll"] },
+  "6678": { name: "Joy",      role: "HR Generalist" },
+  "7890": { name: "Siphe",    role: "Recruiter"     },
+  "5990": { name: "Ops Admin",role: "Ops Admin"     },
+  // Rochelle: Ops Admin focused on payroll + ops scheduling. Sees Payroll
+  // (Attendance) and the Scheduling / Leave Planner / Mgr Clock-ins tabs in
+  // Operations; everything else is hidden.
+  "3030": { name: "Rochelle", role: "Ops Admin",
+            hideCategories: ["People", "Insights"],
+            hideTabs: ["locations", "mgrPlanner"] },
+  "1111": { name: "Demo",     role: "Training Demo", demo: true }
 };
 const PIN_SESSION_KEY = "boa_hr_current_user_v1";
 
@@ -3435,7 +3441,7 @@ function PinLogin({ onUnlock }) {
       setPin("");
       return;
     }
-    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, hideCategories: u.hideCategories || [], signedInAt: new Date().toISOString() };
+    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], signedInAt: new Date().toISOString() };
     try { sessionStorage.setItem(PIN_SESSION_KEY, JSON.stringify(session)); } catch (_) {}
     window.BOA_CURRENT_USER = session;
     onUnlock(session);
@@ -3481,7 +3487,7 @@ function AppGate() {
       const s = JSON.parse(raw);
       if (s && STAFF_USERS[s.pin]) {
         const u = STAFF_USERS[s.pin];
-        const merged = { ...s, demo: !!u.demo, hideCategories: u.hideCategories || [] };
+        const merged = { ...s, demo: !!u.demo, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [] };
         window.BOA_CURRENT_USER = merged;
         return merged;
       }
@@ -4389,9 +4395,13 @@ function App({ currentUser, onSignOut }) {
                 ] }
             ];
             // Category that owns the currently-active tab.
-            // Permission filter: hide entire categories the user isn't allowed to see.
+            // Permission filter: hide entire categories AND/OR individual tabs.
             const hideCats = new Set(currentUser.hideCategories || []);
-            const visibleGroups = groups.filter(g => !hideCats.has(g.key));
+            const hideTabs = new Set(currentUser.hideTabs || []);
+            const visibleGroups = groups
+              .filter(g => !hideCats.has(g.key))
+              .map(g => ({ ...g, items: g.items.filter(it => !hideTabs.has(it.t)) }))
+              .filter(g => g.items.length > 0);
             const tabToCategory = {};
             for (const g of visibleGroups) for (const it of g.items) tabToCategory[it.t] = g.key;
             const activeCategoryByTab = tabToCategory[tab]; // undefined when on dashboard
@@ -4465,7 +4475,7 @@ function App({ currentUser, onSignOut }) {
                         { t:"recruitment", l:"🎯 Recruitment"  },
                         { t:"leave",       l:"🌴 Leave Planner"}
                       ]
-                        .filter(it => !hideCats.has(NAV_TAB_TO_CATEGORY[it.t]))
+                        .filter(it => !hideCats.has(NAV_TAB_TO_CATEGORY[it.t]) && !hideTabs.has(it.t))
                         .map(it => tabBtn(it.t, it.l))}
                     </div>
                   </div>
