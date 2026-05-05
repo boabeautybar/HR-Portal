@@ -4331,13 +4331,9 @@ function App({ currentUser, onSignOut }) {
               </div>
             </div>
             <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
-              {stats.returning60>0 && <div style={{ background:"#065f46", color:"#d1fae5", borderRadius:20, padding:"4px 12px", fontSize:11, fontWeight:700 }}>🔜 {stats.returning60} returning in 60 days</div>}
-              {stats.zna>0 && <div style={{ background:"#BE185D", color:"#fff", borderRadius:20, padding:"4px 12px", fontSize:11, fontWeight:700 }}>🚨 {stats.zna} Z/NA</div>}
               {stats.vacancies>0 && <div style={{ background:"#374151", color:"#fbbf24", borderRadius:20, padding:"4px 12px", fontSize:11, fontWeight:700 }}>🪑 {stats.vacancies} vacancies</div>}
               <button onClick={()=>setStaffModal({ ec:"", name:"", branch:"Sea Point", contract:"Permanent", permit:"sa_citizen", level:"" })}
                 style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:9, padding:"8px 14px", cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:12 }}>+ Add Staff</button>
-              <button onClick={()=>setMatModal({ ec:"", name:"", branch:"Sea Point", matStatus:"on_mat", matStart:"", matEnd:"", returnDate:"", notes:"" })}
-                style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:9, padding:"8px 14px", cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:12 }}>🤱 Log Maternity</button>
             </div>
           </div>
           {(() => {
