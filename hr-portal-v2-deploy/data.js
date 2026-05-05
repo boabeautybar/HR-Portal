@@ -222,6 +222,113 @@
     if (res.error) throw res.error;
     return v;
   }
+
+  // ---------- Schedule trash (7-day soft-delete) ----------
+  // Single global key holding an array of trash entries. Each entry:
+  //   { id, kind:"manager"|"tech", branch, ym, grid, deletedAt, expiresAt }
+  // expiresAt = deletedAt + 7 days (ISO string). Expired entries are pruned
+  // automatically on every read/write.
+  var SCHED_TRASH_KEY = "boa_sched_trash_v1";
+  var SCHED_TRASH_TTL_DAYS = 7;
+
+  function _trashId() {
+    return "tr_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
+  }
+  function _trashPrune(arr) {
+    var now = Date.now();
+    return (arr || []).filter(function (e) {
+      var t = e && e.expiresAt ? Date.parse(e.expiresAt) : 0;
+      return t > now;
+    });
+  }
+  async function _trashRead() {
+    var res = await sb.from("app_state").select("value").eq("key", SCHED_TRASH_KEY).maybeSingle();
+    if (res.error) { console.error("trashRead:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? _trashPrune(v) : [];
+  }
+  async function _trashWrite(arr) {
+    var res = await sb.from("app_state").upsert({ key: SCHED_TRASH_KEY, value: arr || [] });
+    if (res.error) throw res.error;
+    return arr;
+  }
+
+  // Soft-delete the saved schedule for a (branch, ym, kind). Moves the live
+  // schedule into the trash bucket (7-day retention) and removes the live key.
+  // Returns the trash entry on success, or null if there was nothing to delete.
+  async function deleteSchedule(branch, ym, isManager) {
+    var liveKey = schedKey(branch, ym, isManager);
+    var live = await sb.from("app_state").select("value").eq("key", liveKey).maybeSingle();
+    if (live.error) throw live.error;
+    var liveVal = live.data && live.data.value;
+    if (!liveVal || !liveVal.grid || Object.keys(liveVal.grid).length === 0) {
+      return null;
+    }
+    var now = new Date();
+    var entry = {
+      id:        _trashId(),
+      kind:      isManager ? "manager" : "tech",
+      branch:    branch,
+      ym:        ym,
+      grid:      liveVal.grid,
+      deletedAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + SCHED_TRASH_TTL_DAYS * 86400000).toISOString()
+    };
+    var arr = await _trashRead();
+    arr.unshift(entry);
+    await _trashWrite(arr);
+    // Remove the live key (so the next open regenerates fresh).
+    var del = await sb.from("app_state").delete().eq("key", liveKey);
+    if (del.error) throw del.error;
+    // Also clear the version-history row for this period to keep things tidy.
+    await sb.from("app_state").delete().eq("key", schedHistKey(branch, ym, isManager));
+    return entry;
+  }
+
+  // List all non-expired trash entries (newest first), optionally filtered.
+  async function listDeletedSchedules(opts) {
+    var arr = await _trashRead();
+    // Persist pruned list back so storage doesn't grow forever.
+    _trashWrite(arr).catch(function (e) { console.warn("trash prune persist:", e); });
+    if (opts && opts.branch) arr = arr.filter(function (e) { return e.branch === opts.branch; });
+    if (opts && opts.kind)   arr = arr.filter(function (e) { return e.kind === opts.kind; });
+    return arr;
+  }
+
+  // Restore a trash entry back to its live schedule key. Removes it from trash.
+  async function restoreSchedule(trashId) {
+    var arr = await _trashRead();
+    var idx = arr.findIndex(function (e) { return e.id === trashId; });
+    if (idx < 0) throw new Error("Deleted schedule not found (it may have expired).");
+    var e = arr[idx];
+    var isMgr = e.kind === "manager";
+    await saveSchedule(e.branch, e.ym, e.grid, isMgr);
+    arr.splice(idx, 1);
+    await _trashWrite(arr);
+    return e;
+  }
+
+  // Permanently remove a trash entry (no restore possible afterwards).
+  async function purgeDeletedSchedule(trashId) {
+    var arr = await _trashRead();
+    var next = arr.filter(function (e) { return e.id !== trashId; });
+    await _trashWrite(next);
+    return true;
+  }
+
+  // ---------- Manager off-day requests (boa_mgr_requests_v1) ----------
+  // Each record: { id, ec, name, branch, date (YYYY-MM-DD), note, addedAt }
+  async function loadMgrRequests() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_mgr_requests_v1").maybeSingle();
+    if (res.error) { console.error("loadMgrRequests:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveMgrRequests(records) {
+    var res = await sb.from("app_state").upsert({ key: "boa_mgr_requests_v1", value: records || [] });
+    if (res.error) throw res.error;
+    return records;
+  }
   // helpers used by the grid UI
   function currentSchedYm() {
     var d = new Date(), y = d.getFullYear(), m = d.getMonth() + 1;
@@ -285,6 +392,41 @@
     return records;
   }
 
+  // ---------- Manager clock-ins viewer ----------
+  // Recent manager clock-in rows (joined with staff name) for the HR
+  // portal's spot-check viewer. Photo + GPS lives in app_state under
+  // boa_mgrclockin_meta_<id> — fetch lazily per row.
+  async function listRecentManagerClockins(daysBack) {
+    var since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - (daysBack || 14));
+    var res = await sb.from("clockins")
+      .select("*, staff:staff_id ( id, name, employee_code, role_type, branch )")
+      .gte("ts", since.toISOString())
+      .order("ts", { ascending: false });
+    if (res.error) { console.error("listRecentManagerClockins:", res.error); return []; }
+    return (res.data || []).filter(function (r) { return r.staff && r.staff.role_type === "manager"; });
+  }
+  async function loadClockinMeta(clockinId) {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_mgrclockin_meta_" + clockinId).maybeSingle();
+    if (res.error) { console.warn("loadClockinMeta:", res.error); return null; }
+    return (res.data && res.data.value) || null;
+  }
+
+  // ---------- Manager personal PIN registry (boa_mgr_pins_v1) ----------
+  // Map of {employee_code: 6-digit-pin}. Used by the check-in app's
+  // Clock-in tab so each manager can confirm their own attendance.
+  // Stored separately from the staff table to avoid a schema migration.
+  async function loadManagerPins() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_mgr_pins_v1").maybeSingle();
+    if (res.error) { console.error("loadManagerPins:", res.error); return {}; }
+    var v = res.data && res.data.value;
+    return (v && typeof v === "object" && !Array.isArray(v)) ? v : {};
+  }
+  async function saveManagerPins(map) {
+    var res = await sb.from("app_state").upsert({ key: "boa_mgr_pins_v1", value: map || {} });
+    if (res.error) throw res.error;
+    return map;
+  }
+
   // ---------- Leave records (boa_leave_v1) ----------
   // Each record: {_id, ec, startDate, endDate, type, notes, emergency}
   // type values: "Annual leave" | "Sick leave" | "Maternity" | "Unpaid"
@@ -343,13 +485,19 @@
     saveMat:       saveMat,      deleteMat:     deleteMat,
 
     // Schedules
-    loadSchedule:         loadSchedule,
-    saveSchedule:         saveSchedule,
-    loadScheduleHistory:  loadScheduleHistory,
-    currentSchedYm:       currentSchedYm,
-    periodDays:           periodDays,
-    periodLabel:          periodLabel,
-    shiftYm:              shiftYm,
+    loadSchedule:           loadSchedule,
+    saveSchedule:           saveSchedule,
+    loadScheduleHistory:    loadScheduleHistory,
+    deleteSchedule:         deleteSchedule,
+    listDeletedSchedules:   listDeletedSchedules,
+    restoreSchedule:        restoreSchedule,
+    purgeDeletedSchedule:   purgeDeletedSchedule,
+    loadMgrRequests:        loadMgrRequests,
+    saveMgrRequests:        saveMgrRequests,
+    currentSchedYm:         currentSchedYm,
+    periodDays:             periodDays,
+    periodLabel:            periodLabel,
+    shiftYm:                shiftYm,
 
     // Onboarding & Off-boarding
     loadOnboarding:    loadOnboarding,
@@ -363,6 +511,14 @@
 
     // Leave Planner
     loadLeaveRecords:  loadLeaveRecords,
-    saveLeaveRecords:  saveLeaveRecords
+    saveLeaveRecords:  saveLeaveRecords,
+
+    // Manager personal PINs
+    loadManagerPins:   loadManagerPins,
+    saveManagerPins:   saveManagerPins,
+
+    // Manager clock-ins viewer
+    listRecentManagerClockins: listRecentManagerClockins,
+    loadClockinMeta:           loadClockinMeta
   };
 })();

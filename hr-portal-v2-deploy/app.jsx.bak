@@ -92,7 +92,7 @@ function saHolidays(year) {
 //
 // Returns { managers, dates, grid, conflicts, dayTotals, branch, cycleStart,
 //   cycleEnd, weekOrder, weeksMap }.
-function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, priorContext) {
+function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests) {
   const p2 = z => String(z).padStart(2, "0");
   const fmt = z => z.getFullYear() + "-" + p2(z.getMonth()+1) + "-" + p2(z.getDate());
   const d0 = new Date(cycleStartYmd + "T00:00:00");
@@ -162,41 +162,6 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
     const v = grid[h.ec][x.d];
     if (v === "L" || v === "R" || v === "O") offWk[h.ec][wkOfDay[x.d]]++;
   }
-
-  // ── Cross-month carry-over (leading partial week) ────────────────
-  // Hard rule: no manager may exceed 2 off-days in any Mon–Sun labour
-  // week, even when that week straddles two scheduling cycles. If this
-  // cycle starts mid-week, the leading week overlaps with the prior
-  // cycle's tail. priorContext.priorOffs[ec] holds the count of O/R/L
-  // each manager already had on those overlap days. We seed offWk for
-  // the leading week with that count so every downstream check
-  // (weekend-pair gate, backtracking solver via wkMap[w].length, cross-
-  // week swap accounting) naturally honours the cap.
-  const leadingWk    = wkOrder[0];
-  const trailingWk   = wkOrder[wkOrder.length - 1];
-  const isLeadingPartial  = !!(leadingWk  && wkMap[leadingWk]  && wkMap[leadingWk].length  < 7);
-  const isTrailingPartial = !!(trailingWk && wkMap[trailingWk] && wkMap[trailingWk].length < 7 && trailingWk !== leadingWk);
-  const priorOffs    = (priorContext && priorContext.priorOffs)    || {};
-  const priorMissing = !!(priorContext && priorContext.priorMissing);
-  const nextOffs     = (priorContext && priorContext.nextOffs)     || {};
-  const nextMissing  = !!(priorContext && priorContext.nextMissing);
-  if (isLeadingPartial) {
-    for (const h of f) {
-      const carry = +priorOffs[h.ec] || 0;
-      if (carry > 0) offWk[h.ec][leadingWk] += carry;
-    }
-  }
-  // Trailing partial week — same shared-week problem at the END of the cycle.
-  // The trailing partial week of THIS cycle = the leading partial week of the
-  // NEXT cycle. If the next cycle exists, count the offs each manager already
-  // has on the overlap days (Sat/Sun after our cycleEnd, etc.) and seed
-  // offWk[trailingWk] so we don't add a 3rd off into that combined week.
-  if (isTrailingPartial) {
-    for (const h of f) {
-      const carry = +nextOffs[h.ec] || 0;
-      if (carry > 0) offWk[h.ec][trailingWk] += carry;
-    }
-  }
   const wePairs = (h) => {
     let ct = 0;
     for (let i = 0; i < dates.length-1; i++) {
@@ -260,35 +225,30 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
     }
   }
 
-  // ── Per-week off-day allocation — BACKTRACKING SOLVER ─────────────
-  // Hard rules enforced AT PLACEMENT TIME (not as a post-pass clean-up):
-  //   1. 2 off-days per full ISO week
-  //   2. Min 2 managers working per day (coverage)
-  //   3. Max 6 consecutive working days per manager (the killer rule)
-  // For each manager, backtrack through their non-pair weeks placing
-  // 2 weekday offs at a time. Skip any candidate that would push this
-  // manager's longest W-run ≥ 7. If no candidate satisfies, backtrack
-  // to the previous week and try a different placement. Falls back to
-  // greedy Mon-Tue if backtracking fails entirely (very rare).
+  // ── Per-week off-day allocation (target 2 off per full week) ──────
+  // 1:1 port from the old HTML. Day-of-week preference Mon=6 down to
+  // Fri/Sat=0. Tries an ATOMIC consecutive PAIR first (when 2 offs are
+  // needed for the week) — only accepts if the pair doesn't create a
+  // ≥3-day off-stretch and keeps min-2-working. Otherwise falls back to
+  // iterative single-day picks scored by:
+  //   - dowOrd*10
+  //   - tiered W-coverage (≤0:-10000, <2:-200, =2:-30)
+  //   - W[].off*15 penalty
+  //   - max-run-of-Ws this would create: ≥7:-500, =6:-80
+  //   - max-off-streak this would create: ≥3:-400
+  //   - spacing to nearest existing off: 0:-50, 2:-5, 3..5:+15
+  //   - +120 adjacency boost when manager already has an off this week
+  //     and the candidate is exactly 1 day from it (spacing===1)
   const dowOrd = { 0:3, 1:6, 2:5, 3:4, 4:1, 5:0, 6:0 };
-  // Helper: max W-gap on either side of the candidate, between candidate
-  // and the nearest existing off-day in this manager's grid. Matches OLD's
-  // _maxRun(_dy) — local-gap, NOT global-run.
+  // Helper: longest run of Ws in this manager's grid IF candidate were O
   const maxRunIfOff = (ec, candDay) => {
-    const myOffs = [];
-    for (let i = 0; i < dates.length; i++) {
-      const v = grid[ec][dates[i].d];
-      if (v === "O" || v === "L" || v === "R") myOffs.push(i);
+    let maxR = 0, run = 0;
+    for (const x of dates) {
+      const v = (x.d === candDay) ? "O" : grid[ec][x.d];
+      if (v === "W" || v == null) { run++; if (run > maxR) maxR = run; }
+      else run = 0;
     }
-    const ix = dates.findIndex(x => x.d === candDay);
-    let prev = -2, next = -2;
-    for (const o of myOffs) {
-      if (o < ix && o > prev) prev = o;
-      if (o > ix && (next === -2 || o < next)) next = o;
-    }
-    const bf = prev >= 0 ? ix - prev - 1 : 0;
-    const af = next >= 0 ? next - ix - 1 : 0;
-    return Math.max(bf, af);
+    return maxR;
   };
   // Helper: length of off-streak created by placing candidate as O
   const offStreakIfOff = (ec, candDay) => {
@@ -321,121 +281,85 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
     return best;
   };
 
-  // For each manager, run backtracking solver across all full weeks
-  // that need 2 offs (skipping weeks where the weekend pair already
-  // contributes 2). Backtracking guarantees max-run ≤ 6 if a solution
-  // exists; falls back to greedy if no solution exists.
-  for (const h of f) {
-    // Build the list of full weeks needing offs (with their target need)
-    const weeksToFill = [];
-    for (const w of wkOrder) {
-      const days = wkMap[w];
-      if (days.length < 7) continue;
-      const need = 2 - offWk[h.ec][w];
-      if (need > 0) weeksToFill.push({ w, days, need });
-    }
-    if (weeksToFill.length === 0) continue;
-
-    // Compute longest W/null-run for THIS manager only (treats null as W
-    // since unfilled weeks would otherwise be working).
-    const maxRunForManager = () => {
-      let run = 0, mx = 0;
-      for (const x of dates) {
-        const v = grid[h.ec][x.d];
-        if (v === "O" || v === "L" || v === "R") run = 0;
-        else { run++; if (run > mx) mx = run; }
-      }
-      return mx;
-    };
-    // Best-case max-run: treat NULL as off (we haven't decided yet — they
-    // CAN become offs in a later level). Used as the prune check so we
-    // don't kill branches that are still solvable.
-    const minMaxRunIfNullsBecomeOffs = () => {
-      let run = 0, mx = 0;
-      for (const x of dates) {
-        const v = grid[h.ec][x.d];
-        if (v === "O" || v === "L" || v === "R" || v == null) run = 0;
-        else { run++; if (run > mx) mx = run; }
-      }
-      return mx;
-    };
-
-    // Backtracking search
-    const tryWeek = (i) => {
-      if (i >= weeksToFill.length) {
-        return maxRunForManager() <= 6;
-      }
-      const { days, need } = weeksToFill[i];
-      // Generate candidate combinations
-      const candidates = [];
+  for (const w of wkOrder) {
+    const days = wkMap[w];
+    if (days.length < 7) continue;       // skip partial leading/trailing weeks
+    for (const h of f) {
+      let need = 2 - offWk[h.ec][w];
+      if (need <= 0) continue;
+      // ── Atomic consecutive-pair attempt (when need === 2) ─────────
       if (need === 2) {
-        for (let a = 0; a < days.length; a++) {
-          if (grid[h.ec][days[a].d] != null) continue;
-          if ((m - W[days[a].d].off - W[days[a].d].leave - 1) < 2) continue;
-          for (let b = a + 1; b < days.length; b++) {
-            if (grid[h.ec][days[b].d] != null) continue;
-            if ((m - W[days[b].d].off - W[days[b].d].leave - 1) < 2) continue;
-            candidates.push([days[a], days[b]]);
+        let bestPair = null, bestPairScore = -200;     // threshold: only accept if score > -200
+        for (let pi = 0; pi < days.length-1; pi++) {
+          const d1 = days[pi], d2 = days[pi+1];
+          if (grid[h.ec][d1.d] != null) continue;
+          if (grid[h.ec][d2.d] != null) continue;
+          if ((m - W[d1.d].off - W[d1.d].leave - 1) < 2) continue;
+          if ((m - W[d2.d].off - W[d2.d].leave - 1) < 2) continue;
+          // Stretch cap of 2 (don't grow an existing off-cluster past 2)
+          const i1 = dates.indexOf(d1), i2 = dates.indexOf(d2);
+          let leftCnt = 0;
+          for (let j = i1-1; j >= 0; j--) {
+            const v = grid[h.ec][dates[j].d];
+            if (v === "O" || v === "L" || v === "R") leftCnt++; else break;
           }
+          let rightCnt = 0;
+          for (let j = i2+1; j < dates.length; j++) {
+            const v = grid[h.ec][dates[j].d];
+            if (v === "O" || v === "L" || v === "R") rightCnt++; else break;
+          }
+          if (leftCnt + 2 + rightCnt > 2) continue;
+          // Score the pair
+          let score = (dowOrd[d1.dow] + dowOrd[d2.dow]) * 8;
+          score -= W[d1.d].off * 15 + W[d2.d].off * 15;
+          // Max-run-of-Ws penalty (assuming both go off): roughly
+          // estimate by checking the largest fragment
+          const r1 = maxRunIfOff(h.ec, d1.d);
+          if (r1 >= 6) score -= 80;
+          if (r1 >= 7) score -= 500;
+          if (score > bestPairScore) { bestPairScore = score; bestPair = [d1, d2]; }
         }
-      } else {
-        for (const d of days) {
-          if (grid[h.ec][d.d] != null) continue;
-          if ((m - W[d.d].off - W[d.d].leave - 1) < 2) continue;
-          candidates.push([d]);
-        }
-      }
-      // Score: prefer mid-week (dow weight) + adjacency bonus + late-in-cycle
-      // bonus when a weekend pair sits in the next week.
-      const scoreCombo = (combo) => {
-        let s = 0;
-        for (const d of combo) s += (dowOrd[d.dow] || 0) * 10;
-        if (combo.length === 2) {
-          const idxA = dates.indexOf(combo[0]);
-          const idxB = dates.indexOf(combo[1]);
-          if (Math.abs(idxA - idxB) === 1) s += 30;     // adjacency bonus
-        }
-        // Smooth W-coverage: penalise days that already have many offs
-        for (const d of combo) s -= W[d.d].off * 5;
-        return s;
-      };
-      candidates.sort((a, b) => scoreCombo(b) - scoreCombo(a));
-      // Try each candidate in scored order
-      for (const combo of candidates) {
-        // Apply
-        for (const d of combo) {
-          grid[h.ec][d.d] = "O";
-          W[d.d].off++;
-          offWk[h.ec][wkOfDay[d.d]]++;
-        }
-        // Prune: max-run check after this placement
-        if (maxRunForManager() <= 6) {
-          if (tryWeek(i + 1)) return true;
-        }
-        // Undo
-        for (const d of combo) {
-          grid[h.ec][d.d] = null;
-          W[d.d].off--;
-          offWk[h.ec][wkOfDay[d.d]]--;
+        if (bestPair) {
+          setOff(h.ec, bestPair[0].d);
+          setOff(h.ec, bestPair[1].d);
+          need = 0;
         }
       }
-      return false;
-    };
-
-    if (!tryWeek(0)) {
-      // Backtracking failed — fall back to greedy Mon-Tue placement
-      // for any week still missing offs (will report conflict later).
-      for (const wt of weeksToFill) {
-        let need = 2 - offWk[h.ec][wt.w];
-        for (const d of wt.days) {
-          if (need <= 0) break;
-          if (grid[h.ec][d.d] != null) continue;
-          if ((m - W[d.d].off - W[d.d].leave - 1) < 2) continue;
-          grid[h.ec][d.d] = "O";
-          W[d.d].off++;
-          offWk[h.ec][wkOfDay[d.d]]++;
-          need--;
-        }
+      // ── Iterative single-day fallback ─────────────────────────────
+      let iter = 0;
+      while (need > 0 && iter++ < 10) {
+        const opts = days.filter(x => grid[h.ec][x.d] == null && (m - W[x.d].off - W[x.d].leave - 1) >= 2);
+        if (opts.length === 0) break;
+        opts.sort((a,b) => {
+          const scoreOne = (x) => {
+            let s = (dowOrd[x.dow] || 0) * 10;
+            // Tiered W-coverage
+            const wRem = m - W[x.d].off - W[x.d].leave - 1;
+            if (wRem <= 0)      s -= 10000;
+            else if (wRem < 2)  s -= 200;
+            else if (wRem === 2) s -= 30;
+            s -= W[x.d].off * 15;
+            // Max W-run penalty
+            const mr = maxRunIfOff(h.ec, x.d);
+            if (mr >= 7)        s -= 500;
+            else if (mr === 6)  s -= 80;
+            // Max off-streak penalty
+            const mor = offStreakIfOff(h.ec, x.d);
+            if (mor >= 3) s -= 400;
+            // Spacing tier
+            const sp = spacingTo(h.ec, x.d);
+            if (sp === 0)              s -= 50;
+            else if (sp === 2)         s -= 5;
+            else if (sp >= 3 && sp <= 5) s += 15;
+            // +120 adjacency boost when this week already has my off and spacing===1
+            const wkHasMyOff = days.some(y => grid[h.ec][y.d] === "O" || grid[h.ec][y.d] === "L" || grid[h.ec][y.d] === "R");
+            if (wkHasMyOff && sp === 1) s += 120;
+            return s;
+          };
+          return scoreOne(b) - scoreOne(a);
+        });
+        if (!setOff(h.ec, opts[0].d)) break;
+        need--;
       }
     }
   }
@@ -479,11 +403,9 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
       let fixed = false;
       for (const src of swappable) {
         if (fixed) break;
-        const srcWk = wkOfDay[dates[src].d];
         let bestIx = -1, bestNew = maxRun;
         for (let ix = maxRs; ix <= maxRe; ix++) {
-          // OLD restricts targets to the SAME ISO WEEK as the source-O.
-          if (wkOfDay[dates[ix].d] !== srcWk) continue;
+          if (dates[ix].dow === 0) continue;               // skip Sunday
           const wb = m - W[dates[ix].d].off - W[dates[ix].d].leave;
           if (wb - 1 < 2) continue;                         // target's coverage
           // Try the swap, measure new max run, revert
@@ -512,169 +434,8 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
     if (!anyFix) break;
   }
 
-  // ── Partial-week off allocation (pre-fill so HARD max-6 stays compatible
-  //    with HARD 2-offs-per-FULL-week) ───────────────────────────────────
-  // Full weeks already have their 2 offs from the backtracking solver. The
-  // leading and trailing partial weeks were never touched. With 4-manager
-  // teams and a mid-week cycle start, that leaves runs that span partial+
-  // full+full at 7-10 days. Place offs in the partial weeks now — limited
-  // by the cross-month carry — so the HARD max-6 step that follows can rely
-  // on swap-only moves and never has to push a full week to 3 offs.
-  const isFullWeek    = (wk) => wkMap[wk] && wkMap[wk].length === 7;
-  const isPartialWeek = (wk) => wkMap[wk] && wkMap[wk].length < 7;
-  const partialCarry  = (ec, wk) => {
-    if (wk === leadingWk  && isLeadingPartial)  return +priorOffs[ec] || 0;
-    if (wk === trailingWk && isTrailingPartial) return +nextOffs[ec]  || 0;
-    return 0;
-  };
-  const longestWRun = (ec) => {
-    let run = 0, mx = 0;
-    for (const x of dates) {
-      const v = grid[ec][x.d];
-      if (v === "W" || v === "E") { run++; if (run > mx) mx = run; }
-      else if (v === null || v === undefined) { run++; if (run > mx) mx = run; }
-      else run = 0;
-    }
-    return mx;
-  };
-  for (const h of f) {
-    for (const wk of [leadingWk, trailingWk]) {
-      if (!isPartialWeek(wk)) continue;
-      // offWk already includes the cross-month carry (we seeded it earlier so
-      // the weekend-pair gate respects it). So the cap is simply 2 - offWk[wk].
-      let capacity = 2 - offWk[h.ec][wk];
-      if (capacity <= 0) continue;
-      // Aim for proportional offs: roughly weekLen * 2 / 7, but never above capacity
-      const weekLen = wkMap[wk].length;
-      let want = Math.min(capacity, Math.max(0, Math.round(weekLen * 2 / 7)));
-      if (want <= 0 && longestWRun(h.ec) >= 7) want = Math.min(1, capacity);
-      // For very short partials with carry already at the cap, still try to
-      // place 1 off if the manager would otherwise span the rollover with no
-      // off-day on either side. This keeps the rollover week visibly humane
-      // even when the carry from the adjacent cycle is positioned far from
-      // this end of the week.
-      if (want <= 0 && capacity >= 1) {
-        // Check if this manager has ANY off in the partial week's days within
-        // the current cycle. If not, force-place 1 off here for "seamless flow".
-        let hasOff = false;
-        for (const dy of wkMap[wk]) {
-          const v = grid[h.ec][dy.d];
-          if (v === "O" || v === "L" || v === "R") { hasOff = true; break; }
-        }
-        if (!hasOff) want = 1;
-      }
-      while (want-- > 0) {
-        // Pick the W day in the partial that, when made O, minimises this
-        // manager's max-run (and preserves coverage).
-        let best = null, bestMax = Infinity;
-        for (const dy of wkMap[wk]) {
-          const cur = grid[h.ec][dy.d];
-          if (cur !== "W") continue;
-          if (pairLocked[h.ec].has(dy.d)) continue;
-          if ((m - W[dy.d].off - W[dy.d].leave - 1) < 2) continue;
-          grid[h.ec][dy.d] = "O";
-          const mx = longestWRun(h.ec);
-          grid[h.ec][dy.d] = "W";
-          if (mx < bestMax) { bestMax = mx; best = dy; }
-        }
-        if (!best) break;
-        grid[h.ec][best.d] = "O";
-        W[best.d].working--;
-        W[best.d].off++;
-        offWk[h.ec][wk]++;
-      }
-    }
-  }
-
-  // ── HARD max-6 enforcement (labour law) — preserves 2-offs-per-FULL-week
-  // Both rules are hard. Strategies allowed:
-  //   STEP 1  Same-week swap inside a full week — counts unchanged.
-  //   STEP 2  Cross-week swap where the SOURCE is a partial week (no 2-target)
-  //           AND the TARGET week stays within its cap (full ≤ 2, partial
-  //           ≤ 2 - carry).
-  //   STEP 3  Insert in a partial week with remaining capacity (≤ 2-carry).
-  //   The cross-week-swap-into-full-week-already-at-2 path is BANNED — that
-  //   would push the full week to 3 offs.
-  for (const h of f) {
-    for (let pass = 0; pass < 30; pass++) {
-      let run = 0, rs = -1, maxRun = 0, maxRs = -1, maxRe = -1;
-      for (let i = 0; i < dates.length; i++) {
-        const v = grid[h.ec][dates[i].d];
-        if (v === "W" || v === "E") {
-          if (run === 0) rs = i;
-          run++;
-          if (run > maxRun) { maxRun = run; maxRs = rs; maxRe = i; }
-        } else run = 0;
-      }
-      if (maxRun <= 6) break;
-
-      // STEPS 1+2 — best swap that respects 2-per-full-week
-      let bestSwap = null, bestSwapMax = maxRun;
-      for (let src = 0; src < dates.length; src++) {
-        const sv = grid[h.ec][dates[src].d];
-        if (sv !== "O" && sv !== "E") continue;
-        if (pairLocked[h.ec].has(dates[src].d)) continue;
-        const srcWk = wkOfDay[dates[src].d];
-        for (let ix = maxRs; ix <= maxRe; ix++) {
-          const tgtWk = wkOfDay[dates[ix].d];
-          const sameWk = srcWk === tgtWk;
-          if (!sameWk) {
-            // Cross-week swap allowed only when source is partial AND
-            // target's cap won't be breached.
-            if (!isPartialWeek(srcWk)) continue;
-            if (isFullWeek(tgtWk)) {
-              // target full week — must already be < 2 offs
-              if (offWk[h.ec][tgtWk] >= 2) continue;
-            } else if (isPartialWeek(tgtWk)) {
-              const carryT = partialCarry(h.ec, tgtWk);
-              if (offWk[h.ec][tgtWk] + carryT >= 2) continue;
-            }
-          }
-          const wb = m - W[dates[ix].d].off - W[dates[ix].d].leave;
-          if (wb - 1 < 2) continue;
-          const oS = grid[h.ec][dates[src].d];
-          const oT = grid[h.ec][dates[ix].d];
-          grid[h.ec][dates[src].d] = "W";
-          grid[h.ec][dates[ix].d]  = "O";
-          let nr = 0, nm = 0;
-          for (let j = 0; j < dates.length; j++) {
-            const v2 = grid[h.ec][dates[j].d];
-            if (v2 === "W" || v2 === "E") { nr++; if (nr > nm) nm = nr; } else nr = 0;
-          }
-          grid[h.ec][dates[src].d] = oS;
-          grid[h.ec][dates[ix].d]  = oT;
-          if (nm < bestSwapMax) { bestSwapMax = nm; bestSwap = { src, ix }; }
-        }
-      }
-      if (bestSwap) {
-        const { src, ix } = bestSwap;
-        grid[h.ec][dates[src].d] = "W";
-        W[dates[src].d].off--; W[dates[src].d].working++; offWk[h.ec][wkOfDay[dates[src].d]]--;
-        grid[h.ec][dates[ix].d]  = "O";
-        W[dates[ix].d].working--; W[dates[ix].d].off++; offWk[h.ec][wkOfDay[dates[ix].d]]++;
-        continue;
-      }
-
-      // STEP 3 — insert in a PARTIAL week with capacity (preserves 2/full-week)
-      const insertOrder = [];
-      for (let i = maxRs + 6; i <= maxRe; i++) insertOrder.push(i);
-      for (let i = maxRs + 5; i >= maxRs; i--) insertOrder.push(i);
-      let inserted = false;
-      for (const ix of insertOrder) {
-        const tgtWk = wkOfDay[dates[ix].d];
-        if (!isPartialWeek(tgtWk)) continue;
-        const carryT = partialCarry(h.ec, tgtWk);
-        if (offWk[h.ec][tgtWk] + carryT >= 2) continue;
-        const wb = m - W[dates[ix].d].off - W[dates[ix].d].leave;
-        if (wb - 1 < 2) continue;
-        grid[h.ec][dates[ix].d] = "O";
-        W[dates[ix].d].working--; W[dates[ix].d].off++; offWk[h.ec][wkOfDay[dates[ix].d]]++;
-        inserted = true;
-        break;
-      }
-      if (!inserted) break; // unsolvable with hard 2/week + max-6 — surface as conflict
-    }
-  }
+  // (No additional weekend-pair enforcement — matches old HTML which
+  // relied solely on the soft pairing pass + conflict reporting.)
 
   // ── Day totals + conflicts ────────────────────────────────────────
   const dayTotals = {};
@@ -694,29 +455,13 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
     const w = dayTotals[x.d].working;
     if (w < 2) conflicts.push({ type:"solo_or_empty", msg: x.d + ": only " + w + " manager(s) working", severity:"high", date: x.d });
   }
-  // Map of managers who submitted off-day requests this cycle. A request
-  // can overrule the guaranteed weekend pair (the request takes priority,
-  // and we don't surface a "short weekend" conflict for that manager).
-  const hasReq = new Set();
-  for (const r of (requests || [])) if (r && r.ec) hasReq.add(r.ec);
   for (const h of f) {
     const need = h.role === "SM" ? 2 : 1;
     const have = wePairs(h);
-    if (have < need && !hasReq.has(h.ec)) conflicts.push({ type:"short_weekend", msg: h.name + " has " + have + " weekend(s) off (target " + need + ")", severity:"medium", ec: h.ec });
+    if (have < need) conflicts.push({ type:"short_weekend", msg: h.name + " has " + have + " weekend(s) off (target " + need + ")", severity:"medium", ec: h.ec });
     for (const w of wkOrder) {
       if (wkMap[w].length < 7) continue;
       if (offWk[h.ec][w] < 2) conflicts.push({ type:"short_off_week", msg: h.name + " has " + offWk[h.ec][w] + " off in " + w + " (target 2)", severity:"medium", ec: h.ec, week: w });
-    }
-    // Cross-month rollover: leading partial-week effective off-count
-    // (in-cycle + prior tail) must still respect the 2-cap.
-    if (isLeadingPartial && offWk[h.ec][leadingWk] > 2) {
-      const inCycle = offWk[h.ec][leadingWk] - (+priorOffs[h.ec] || 0);
-      conflicts.push({ type:"rollover_overlimit", msg: h.name + " has " + offWk[h.ec][leadingWk] + " off-days in the rollover week (" + inCycle + " this cycle + " + (+priorOffs[h.ec] || 0) + " prior) — over the 2-cap", severity:"high", ec: h.ec, week: leadingWk });
-    }
-    // Trailing partial — same check on the cycle's tail week.
-    if (isTrailingPartial && offWk[h.ec][trailingWk] > 2) {
-      const inCycle = offWk[h.ec][trailingWk] - (+nextOffs[h.ec] || 0);
-      conflicts.push({ type:"rollover_overlimit", msg: h.name + " has " + offWk[h.ec][trailingWk] + " off-days in the closing rollover week (" + inCycle + " this cycle + " + (+nextOffs[h.ec] || 0) + " next) — over the 2-cap", severity:"high", ec: h.ec, week: trailingWk });
     }
     let run = 0, seen7 = false;
     for (const x of dates) {
@@ -725,15 +470,6 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
         if (run >= 7 && !seen7) { conflicts.push({ type:"consecutive", msg: h.name + " " + run + "+ consecutive working days", severity:"high", ec: h.ec }); seen7 = true; }
       } else { run = 0; seen7 = false; }
     }
-  }
-  // If this cycle starts mid-week but the prior cycle hasn't been
-  // generated yet, the cross-month overlap can't be enforced. Surface
-  // it as a single info-level conflict so the user knows.
-  if (isLeadingPartial && priorMissing) {
-    conflicts.push({ type:"prior_missing", msg: "Prior month's manager schedule not generated yet — the leading rollover week's 2-off cap can't be enforced across the boundary. Generate the prior cycle first for full coverage.", severity:"medium" });
-  }
-  if (isTrailingPartial && nextMissing) {
-    conflicts.push({ type:"next_missing", msg: "Next month's manager schedule not generated yet — the closing rollover week's 2-off cap is provisional. When you generate the next cycle, that boundary will be re-checked.", severity:"medium" });
   }
   // Ghost overlay (offboard / onboarding)
   for (const h of f) {
@@ -752,6 +488,101 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
   return { managers: f, dates, grid, conflicts, dayTotals, branch: branchName, cycleStart: cycleStartYmd, cycleEnd, weekOrder: wkOrder, weeksMap: wkMap };
 }
 
+// ─── WEEKEND-PAIR HARD ENFORCEMENT (stand-alone) ──────────────────────────────────
+// Applied to any grid (fresh-generated or merged-with-saved). Guarantees:
+// every SM has ≥2 weekend pairs off, every AM has ≥1, AND each full ISO
+// week has exactly 2 off-days (the Sat+Sun pair takes the slot, so any
+// pre-existing weekday Os in the same ISO week get cleared back to W).
+//   - Soft trade-off: with only 3 managers, this can produce a 7+ day
+//     working stretch (acceptable per requirement).
+//   - Soft trade-off: coverage may briefly drop below 2 working — but
+//     candidate pairs are scored to pick the least-occupied weekend.
+function enforceWeekendPairs(grid, mgrs, dates, priorOffsByManager) {
+  const wePairsCount = (ec) => {
+    let ct = 0;
+    for (let i = 0; i < dates.length-1; i++) {
+      if (dates[i].dow === 6 && dates[i+1].dow === 0) {
+        const a = grid[ec] && grid[ec][dates[i].d];
+        const b = grid[ec] && grid[ec][dates[i+1].d];
+        if ((a === "O" || a === "L" || a === "R") && (b === "O" || b === "L" || b === "R")) ct++;
+      }
+    }
+    return ct;
+  };
+  const allWePairs = [];
+  for (let i = 0; i < dates.length-1; i++) {
+    if (dates[i].dow === 6 && dates[i+1].dow === 0) allWePairs.push([dates[i], dates[i+1]]);
+  }
+  // ISO week key (matches the per-cycle ISO-week math used elsewhere)
+  const isoWeek = (ymd) => {
+    const dt = new Date(ymd + "T00:00:00");
+    const dn = (dt.getDay() + 6) % 7;
+    const thurs = new Date(dt);
+    thurs.setDate(dt.getDate() - dn + 3);
+    const yearStart = new Date(thurs.getFullYear(), 0, 4);
+    const ysDn = (yearStart.getDay() + 6) % 7;
+    yearStart.setDate(yearStart.getDate() - ysDn + 3);
+    const wk = 1 + Math.round((thurs - yearStart) / (7 * 86400000));
+    return thurs.getFullYear() + "-W" + String(wk).padStart(2, "0");
+  };
+  for (const m of mgrs) {
+    const need = m.role === "SM" ? 2 : 1;
+    let have = wePairsCount(m.ec);
+    if (have >= need) continue;
+    if (!grid[m.ec]) grid[m.ec] = {};
+    // Pick best candidate pairs first: least-occupied weekends
+    const others = mgrs.filter(x => x.ec !== m.ec);
+    const otherOffOn = (d) => others.filter(x => {
+      const v = grid[x.ec] && grid[x.ec][d];
+      return v === "O" || v === "L" || v === "R";
+    }).length;
+    const sorted = allWePairs.slice().sort((a, b) => {
+      const aOcc = otherOffOn(a[0].d) + otherOffOn(a[1].d);
+      const bOcc = otherOffOn(b[0].d) + otherOffOn(b[1].d);
+      return aOcc - bOcc;
+    });
+    // Determine the leading partial's ISO week (if any) — used below to
+    // respect prior-cycle offs when picking a forced weekend pair there.
+    const leadingPartialWeek = (() => {
+      if (!dates || dates.length === 0) return null;
+      // Find the ISO week of the FIRST date and check if it has < 7 days in cycle
+      const firstWk = isoWeek(dates[0].d);
+      const inFirstWk = dates.filter(x => isoWeek(x.d) === firstWk).length;
+      return inFirstWk < 7 ? firstWk : null;
+    })();
+    const priorOffs = (priorOffsByManager && priorOffsByManager[m.ec]) || 0;
+    for (const pair of sorted) {
+      if (have >= need) break;
+      const [fr, sa] = pair;
+      const fv = grid[m.ec][fr.d];
+      const sv = grid[m.ec][sa.d];
+      // Skip leave / request / ghost (don't overwrite explicit user marks)
+      if (fv === "L" || fv === "R" || fv === "X" || sv === "L" || sv === "R" || sv === "X") continue;
+      // Already a Sat-Sun off pair? Just count it.
+      if ((fv === "O" || fv === "L" || fv === "R") && (sv === "O" || sv === "L" || sv === "R")) {
+        have++;
+        continue;
+      }
+      // Cross-cycle: if this pair sits in the leading partial week and the
+      // manager already had off-days in the prior cycle's tail of the same
+      // ISO week, skip — adding the pair would exceed 2 offs/Mon-Sun-week.
+      if (leadingPartialWeek && isoWeek(fr.d) === leadingPartialWeek && priorOffs > 0) continue;
+      // Force assign: convert the weekend cells to O.
+      if (fv !== "O") grid[m.ec][fr.d] = "O";
+      if (sv !== "O") grid[m.ec][sa.d] = "O";
+      // HARD: enforce 2 offs per week. The weekend pair IS this week's
+      // 2 offs, so clear any other weekday Os in the same ISO week.
+      const pairWeek = isoWeek(fr.d);
+      for (const x of dates) {
+        if (x.d === fr.d || x.d === sa.d) continue;
+        if (x.dow === 0 || x.dow === 6) continue;
+        if (grid[m.ec][x.d] !== "O") continue;
+        if (isoWeek(x.d) === pairWeek) grid[m.ec][x.d] = "W";
+      }
+      have++;
+    }
+  }
+}
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────────
 const SALONS = [
@@ -3349,10 +3180,6 @@ function App() {
   // The Manager child further nests Coverage and Planner.
   const [recruitSubTab, setRecruitSubTab] = useState("nailTech");   // "nailTech" | "mgrRecruit"
   const [mgrSubTab, setMgrSubTab] = useState("coverage");           // "coverage" | "planner"
-  // Scheduling is a parent tab with two children (Nail Tech / Manager).
-  const [schedSubTab, setSchedSubTab] = useState("techs");          // "techs" | "managers"
-  // Leave Planner has a similar split.
-  const [leaveSubTab, setLeaveSubTab] = useState("techs");          // "techs" | "managers"
   const [staffModal, setStaffModal] = useState(null);
   const [matModal, setMatModal] = useState(null);
   const [transferModal, setTransferModal] = useState(null);
@@ -3509,7 +3336,7 @@ function App() {
 
   // Default the manager-schedule cycle to "current cycle's 25th" when first opened.
   useEffect(() => {
-    if (!(tab === "scheduling" && schedSubTab === "managers")) return;
+    if (tab !== "mgrSched") return;
     if (mgrSchedCycle) return;
     const today = new Date();
     let y = today.getFullYear();
@@ -3517,147 +3344,78 @@ function App() {
     if (today.getDate() < 25) m--;
     if (m < 0) { m = 11; y--; }
     setMgrSchedCycle(y + "-" + String(m+1).padStart(2,"0") + "-25");
-  }, [tab, schedSubTab, mgrSchedCycle]);
+  }, [tab, mgrSchedCycle]);
 
   // Load saved manager schedule for the selected branch+cycle. Stored under
   // boa_mgrsched_<branch>_<ym> via saveSchedule(..., true).
-  const [mgrSchedSaved, setMgrSchedSaved]     = useState(null);    // grid persisted in DB (or null if none)
-  const [mgrSchedDraft, setMgrSchedDraft]     = useState(null);    // grid currently in the editor
-  const [mgrSchedDirty, setMgrSchedDirty]     = useState(false);   // edits since last save
-  const [mgrSchedSavedAt, setMgrSchedSavedAt] = useState(null);    // ISO timestamp from DB
-  const [mgrSchedSaving, setMgrSchedSaving]   = useState(false);
-  const [mgrSchedLoaded, setMgrSchedLoaded]   = useState(false);
+  const [mgrSchedSaved, setMgrSchedSaved]   = useState(null);
+  const [mgrSchedLoaded, setMgrSchedLoaded] = useState(false);
+  // Prior-cycle off counts for the leading partial's ISO week — used by
+  // mgrSched + enforceWeekendPairs to avoid >2 offs spanning a cycle boundary.
+  const [mgrSchedPriorOffs, setMgrSchedPriorOffs] = useState({});
   useEffect(() => {
-    if (!(tab === "scheduling" && schedSubTab === "managers")) return;
+    if (tab !== "mgrSched") return;
     if (!mgrSchedCycle) return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     setMgrSchedLoaded(false);
     let cancelled = false;
     const ymKey = mgrSchedCycle.slice(0, 7);
-    window.BOA_DB.loadSchedule(mgrSchedBranch, ymKey, true)
-      .then((s) => {
-        if (cancelled) return;
-        const hasGrid = s && s.grid && Object.keys(s.grid).length > 0;
-        setMgrSchedSaved(hasGrid ? s.grid : null);
-        setMgrSchedDraft(hasGrid ? s.grid : null);
-        setMgrSchedSavedAt((s && s.savedAt) || null);
-        setMgrSchedDirty(false);
-        setMgrSchedLoaded(true);
-      })
-      .catch((e) => { console.error("loadMgrSched:", e); if (!cancelled) setMgrSchedLoaded(true); });
-    return () => { cancelled = true; };
-  }, [tab, schedSubTab, mgrSchedBranch, mgrSchedCycle, mgrSchedTick]);
+    // Prior cycle ym (the month before — its data covers our leading partial's prior days)
+    const cycP = mgrSchedCycle.split("-").map(Number);
+    let priorY = cycP[0], priorM = cycP[1] - 1;
+    if (priorM < 1) { priorM = 12; priorY--; }
+    const priorYmKey = priorY + "-" + String(priorM).padStart(2, "0");
 
-  // Browser unload guard — warn if dirty
-  useEffect(() => {
-    if (!mgrSchedDirty) return;
-    const handler = (e) => { e.preventDefault(); e.returnValue = ""; return ""; };
-    window.addEventListener("beforeunload", handler);
-    return () => window.removeEventListener("beforeunload", handler);
-  }, [mgrSchedDirty]);
-
-  // ── Prior-cycle context (cross-month rollover for the leading partial week) ──
-  // Loads the previous cycle's saved manager grid so mgrSched can seed
-  // offWk[leading partial week] with how many off-days each manager
-  // already has on the overlap days. Without this, the strict 2-off-per-
-  // week cap can be silently broken across the 25th boundary.
-  const [mgrPriorCtx, setMgrPriorCtx] = useState({ priorOffs: {}, priorMissing: false, nextOffs: {}, nextMissing: false });
-  useEffect(() => {
-    if (!(tab === "scheduling" && schedSubTab === "managers")) return;
-    if (!mgrSchedCycle) return;
-    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
-    let cancelled = false;
-    (async () => {
-      const fmt = (dt) => dt.getFullYear() + "-" + String(dt.getMonth()+1).padStart(2,"0") + "-" + String(dt.getDate()).padStart(2,"0");
-      // ── LEADING partial: days from previous Monday to (cycleStart - 1) ──
-      const cs = new Date(mgrSchedCycle + "T00:00:00");
-      const csDow = cs.getDay();             // 0=Sun..6=Sat
-      const leadingCarry = (csDow === 0) ? 6 : csDow - 1;   // # days back to prev Monday
-      const leadingOverlap = [];
-      for (let k = leadingCarry; k > 0; k--) {
-        const dt = new Date(cs); dt.setDate(cs.getDate() - k);
-        leadingOverlap.push(fmt(dt));
-      }
-      // ── TRAILING partial: days from (cycleEnd + 1) to next Sunday ──
-      // cycleEnd = 24th of the next month.
-      const cycleEndDate = new Date(cs.getFullYear(), cs.getMonth() + 1, 24);
-      const ceDow = cycleEndDate.getDay();
-      const trailingCarry = (ceDow === 0) ? 0 : (7 - ceDow);   // # days forward to next Sunday
-      const trailingOverlap = [];
-      for (let k = 1; k <= trailingCarry; k++) {
-        const dt = new Date(cycleEndDate); dt.setDate(cycleEndDate.getDate() + k);
-        trailingOverlap.push(fmt(dt));
-      }
+    Promise.all([
+      window.BOA_DB.loadSchedule(mgrSchedBranch, ymKey,        true),
+      window.BOA_DB.loadSchedule(mgrSchedBranch, priorYmKey,   true)
+    ]).then(([s, prior]) => {
+      if (cancelled) return;
+      setMgrSchedSaved(s && s.grid && Object.keys(s.grid).length > 0 ? s.grid : null);
+      // Compute prior offs per manager: count O/R/L cells in prior cycle's
+      // tail days that share an ISO week with this cycle's leading partial.
+      const priorOffs = {};
       try {
-        // Load PRIOR + NEXT cycle schedules in parallel
-        const ymKey   = mgrSchedCycle.slice(0,7);
-        const priorYm = window.BOA_DB.shiftYm(ymKey, -1);
-        const nextYm  = window.BOA_DB.shiftYm(ymKey, +1);
-        const [priorSched, nextSched] = await Promise.all([
-          leadingCarry  > 0 ? window.BOA_DB.loadSchedule(mgrSchedBranch, priorYm, true) : Promise.resolve({ grid: {} }),
-          trailingCarry > 0 ? window.BOA_DB.loadSchedule(mgrSchedBranch, nextYm,  true) : Promise.resolve({ grid: {} })
-        ]);
-        const tally = (sched, days) => {
-          const grid = (sched && sched.grid) || {};
-          const empty = !sched || !sched.grid || Object.keys(sched.grid).length === 0;
-          const offs = {};
-          if (!empty) {
-            for (const ec of Object.keys(grid)) {
-              const row = grid[ec] || {};
-              let n = 0;
-              for (const d of days) {
-                const v = row[d];
-                if (v === "O" || v === "R" || v === "L") n++;
-              }
-              if (n > 0) offs[ec] = n;
-            }
-          }
-          return { offs, empty };
+        const priorGrid = (prior && prior.grid) || {};
+        // ISO week of the cycle start (e.g. "2026-W18" for Apr 25 2026)
+        const cycStartDate = new Date(mgrSchedCycle + "T00:00:00");
+        const isoWeek = (dt) => {
+          const d = new Date(dt);
+          const dn = (d.getDay() + 6) % 7;
+          const thurs = new Date(d);
+          thurs.setDate(d.getDate() - dn + 3);
+          const ys = new Date(thurs.getFullYear(), 0, 4);
+          const ysDn = (ys.getDay() + 6) % 7;
+          ys.setDate(ys.getDate() - ysDn + 3);
+          const wk = 1 + Math.round((thurs - ys) / (7 * 86400000));
+          return thurs.getFullYear() + "-W" + String(wk).padStart(2, "0");
         };
-        const lead  = leadingCarry  > 0 ? tally(priorSched, leadingOverlap) : { offs: {}, empty: false };
-        const trail = trailingCarry > 0 ? tally(nextSched,  trailingOverlap) : { offs: {}, empty: false };
-        if (!cancelled) setMgrPriorCtx({
-          priorOffs:    lead.offs,
-          priorMissing: leadingCarry  > 0 && lead.empty,
-          nextOffs:     trail.offs,
-          nextMissing:  trailingCarry > 0 && trail.empty
-        });
-      } catch (e) {
-        console.warn("loadMgrPriorCtx:", e);
-        if (!cancelled) setMgrPriorCtx({ priorOffs: {}, priorMissing: leadingCarry > 0, nextOffs: {}, nextMissing: trailingCarry > 0 });
-      }
-    })();
+        const cycStartWk = isoWeek(cycStartDate);
+        // Walk backwards from cycle start day-1 until ISO week changes.
+        // Those are the prior cycle days sharing the ISO week with our leading partial.
+        const sharedDays = [];
+        const cur = new Date(cycStartDate);
+        cur.setDate(cur.getDate() - 1);
+        while (isoWeek(cur) === cycStartWk) {
+          sharedDays.push(cur.getFullYear() + "-" + String(cur.getMonth()+1).padStart(2,"0") + "-" + String(cur.getDate()).padStart(2,"0"));
+          cur.setDate(cur.getDate() - 1);
+        }
+        // For each manager in the prior grid, count O/R/L on the shared days
+        for (const ec in priorGrid) {
+          let n = 0;
+          const row = priorGrid[ec] || {};
+          for (const sd of sharedDays) {
+            const v = row[sd];
+            if (v === "O" || v === "R" || v === "L") n++;
+          }
+          if (n > 0) priorOffs[ec] = n;
+        }
+      } catch (_e) { /* ignore — fall back to no carry */ }
+      setMgrSchedPriorOffs(priorOffs);
+      setMgrSchedLoaded(true);
+    }).catch((e) => { console.error("loadMgrSched:", e); if (!cancelled) setMgrSchedLoaded(true); });
     return () => { cancelled = true; };
-  }, [tab, schedSubTab, mgrSchedBranch, mgrSchedCycle, mgrSchedTick]);
-
-  // ── Manager off-day requests ────────────────────────────────────
-  // Stored globally in app_state; we filter to current branch+cycle.
-  const [mgrRequests, setMgrRequests]       = useState([]);
-  const [mgrReqTick, setMgrReqTick]         = useState(0);
-  const [mgrReqModal, setMgrReqModal]       = useState(null);  // {ec, name, date, note} draft
-  useEffect(() => {
-    if (!(tab === "scheduling" && schedSubTab === "managers")) return;
-    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
-    let cancelled = false;
-    window.BOA_DB.loadMgrRequests()
-      .then((arr) => { if (!cancelled) setMgrRequests(arr || []); })
-      .catch((e) => { console.warn("loadMgrRequests:", e); });
-    return () => { cancelled = true; };
-  }, [tab, schedSubTab, mgrSchedTick, mgrReqTick]);
-
-  // ── Manager-schedule trash (7-day soft-delete) ──────────────────
-  const [mgrTrash, setMgrTrash]               = useState([]);
-  const [mgrTrashOpen, setMgrTrashOpen]       = useState(false);
-  const [mgrTrashTick, setMgrTrashTick]       = useState(0);
-  useEffect(() => {
-    if (!(tab === "scheduling" && schedSubTab === "managers")) return;
-    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
-    let cancelled = false;
-    window.BOA_DB.listDeletedSchedules({ kind: "manager" })
-      .then((arr) => { if (!cancelled) setMgrTrash(arr || []); })
-      .catch((e) => { console.warn("listDeletedSchedules:", e); });
-    return () => { cancelled = true; };
-  }, [tab, schedSubTab, mgrSchedBranch, mgrSchedCycle, mgrSchedTick, mgrTrashTick]);
+  }, [tab, mgrSchedBranch, mgrSchedCycle, mgrSchedTick]);
 
   // Load recent manager clock-ins when the viewer tab opens.
   useEffect(() => {
@@ -3939,28 +3697,8 @@ function App() {
   }
 
   const accent="#BE185D", cream="linear-gradient(180deg,#FCE7F3 0%,#FFFFFF 220px)", bdr="#FBCFE8";
-  // Wrap setTab so leaving the manager-schedule tab with unsaved edits prompts.
-  const tryChangeTab = (t) => {
-    if (t === tab) return;
-    if (tab === "scheduling" && schedSubTab === "managers" && mgrSchedDirty) {
-      if (!window.confirm("Are you sure? The manager schedule has unsaved changes. They will be lost if you leave.")) return;
-      setMgrSchedDirty(false);
-      setMgrSchedDraft(mgrSchedSaved);
-    }
-    setTab(t);
-  };
-  // Switching between Scheduling sub-tabs — same unsaved-changes guard.
-  const tryChangeSchedSub = (st) => {
-    if (st === schedSubTab) return;
-    if (schedSubTab === "managers" && mgrSchedDirty) {
-      if (!window.confirm("Are you sure? The manager schedule has unsaved changes. They will be lost if you switch.")) return;
-      setMgrSchedDirty(false);
-      setMgrSchedDraft(mgrSchedSaved);
-    }
-    setSchedSubTab(st);
-  };
   const tabBtn = (t,label) => (
-    <button key={t} onClick={()=>tryChangeTab(t)} style={{ padding:"10px 18px", borderRadius:14, cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:13, border:"none", background:tab===t?"#BE185D":"#FFFFFF", color:tab===t?"#FFFFFF":"#831843", boxShadow:tab===t?"0 4px 12px rgba(190,24,93,0.32)":"0 2px 6px rgba(0,0,0,0.06)", transition:"all .18s", margin:"4px 4px" }}>{label}</button>
+    <button key={t} onClick={()=>setTab(t)} style={{ padding:"10px 18px", borderRadius:14, cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:13, border:"none", background:tab===t?"#BE185D":"#FFFFFF", color:tab===t?"#FFFFFF":"#831843", boxShadow:tab===t?"0 4px 12px rgba(190,24,93,0.32)":"0 2px 6px rgba(0,0,0,0.06)", transition:"all .18s", margin:"4px 4px" }}>{label}</button>
   );
 
   if (loading) return (
@@ -4008,7 +3746,7 @@ function App() {
           </div>
           <div style={{ display:"flex", gap:3, paddingTop:12, flexWrap:"wrap" }}>
             {tabBtn("staff","👥 Staff List")}
-            {tabBtn("scheduling","📅 Scheduling")}
+            {tabBtn("schedules","📅 Schedules")}
             {tabBtn("locations","📍 Locations")}
             {tabBtn("maternity",`🤱 Maternity (${matRecs.length})`)}
             {tabBtn("alerts","🔔 Alerts")}
@@ -4027,6 +3765,7 @@ function App() {
             {tabBtn("offboard", "👋 Off-boarding" + (offList.length > 0 ? " (" + offList.length + ")" : ""))}
             {tabBtn("attendance", "📕 Attendance")}
             {tabBtn("leave", "🌴 Leave Planner")}
+            {tabBtn("mgrSched", "👔 Mgr Schedule")}
             {tabBtn("mgrclockins", "🕐 Mgr Clock-ins")}
           </div>
         </div>
@@ -4189,24 +3928,7 @@ function App() {
         )}
 
         {/* ── SCHEDULES TAB (Phase 2a — manual editor) ── */}
-        {/* ── SCHEDULING (parent tab with sub-tabs: nail tech / manager) ── */}
-        {tab==="scheduling" && (
-          <div style={{ display:"flex", gap:0, marginBottom:24, padding:6, background:"#FCE7F3", borderRadius:14, border:"1px solid #FBCFE8", maxWidth:680 }}>
-            {[
-              { k:"techs",    label:"💅 Nail Tech Schedule" },
-              { k:"managers", label:"👔 Manager Schedule" }
-            ].map(t => {
-              const active = schedSubTab===t.k;
-              return (
-                <button key={t.k} onClick={()=>tryChangeSchedSub(t.k)}
-                  style={{ flex:1, padding:"14px 22px", borderRadius:10, border:"none", background: active ? "#BE185D" : "transparent", color: active ? "#FFFFFF" : "#831843", cursor:"pointer", fontFamily:"inherit", fontSize:15, fontWeight:700, transition:"all .18s", boxShadow: active ? "0 4px 12px rgba(190,24,93,0.32)" : "none", letterSpacing:"0.01em", display:"inline-flex", alignItems:"center", justifyContent:"center", gap:10 }}>
-                  {t.label}
-                </button>
-              );
-            })}
-          </div>
-        )}
-        {tab==="scheduling" && schedSubTab==="techs" && <Schedule allStaff={enriched} />}
+        {tab==="schedules" && <Schedule allStaff={enriched} />}
 
         {/* ── LOCATIONS TAB ── */}
         {tab==="locations" && (
@@ -5858,23 +5580,11 @@ function App() {
           const br = leaveBranch;
           const ym = leaveYM;
           const f  = leaveForm;
-          const isTechMode = leaveSubTab === "techs";
-          const peopleType = isTechMode ? "nail tech" : "manager";
-          const peopleTypePlural = isTechMode ? "nail techs" : "managers";
-          const ROLE_GUARD = isTechMode
-            ? (s) => /^[BT]/.test(s.ec) && !s.offHidden
-            : (m) => m.role === "SM" || m.role === "AM";
-          // Active people of the chosen type at this branch — exclude maternity / off-boarded / wrong role
-          const sourceArr = isTechMode ? enriched : managers;
-          const peopleAtBranch = (sourceArr || [])
-            .filter(p => p.branch === br && !p.onMat && ROLE_GUARD(p))
+          // Active nail techs at this branch — exclude maternity, off-boarded, managers
+          const allTechs = enriched
+            .filter(s => s.branch === br && !s.onMat && /^[BT]/.test(s.ec) && !s.offHidden)
             .sort((a,b) => (a.ec || "").localeCompare(b.ec || ""));
-          // For dropdown — all people of this type across all branches
-          const peopleAllBranches = (sourceArr || [])
-            .filter(p => !p.onMat && ROLE_GUARD(p))
-            .sort((a,b) => (a.ec || "").localeCompare(b.ec || ""));
-          // 20% per-day cap, minimum 1
-          const maxLeave = Math.max(1, Math.floor(peopleAtBranch.length * 0.2));
+          const maxLeave = Math.max(1, Math.floor(allTechs.length * 0.2));
           // 6 PAYROLL CYCLES from selected start cycle. Each cycle runs from
           // the 25th of (M-1) through the 24th of M, named by M (matches the
           // YM convention used everywhere else in the portal).
@@ -5923,9 +5633,8 @@ function App() {
             let ct = 0;
             for (const lv of leaveRecs) {
               if (lv.type !== "Annual leave") continue;
-              const p2 = (isTechMode ? enriched : managers).find(x => x.ec === lv.ec);
-              if (!p2 || p2.branch !== br || p2.onMat) continue;
-              if (!ROLE_GUARD(p2)) continue;
+              const s2 = enriched.find(x => x.ec === lv.ec);
+              if (!s2 || s2.branch !== br || s2.onMat || !/^[BT]/.test(s2.ec)) continue;
               if (iso >= lv.startDate && iso <= lv.endDate) ct++;
             }
             return ct;
@@ -5936,13 +5645,13 @@ function App() {
             catch (e) { alert("Could not save: " + (e.message || e)); }
           };
           const addLeave = () => {
-            if (!f.ec || !f.startDate || !f.endDate) { alert("Please fill in " + peopleType + ", from, and to dates."); return; }
+            if (!f.ec || !f.startDate || !f.endDate) { alert("Please fill in nail tech, from, and to dates."); return; }
             if (new Date(f.startDate) > new Date(f.endDate)) { alert("Start date must be on or before end date."); return; }
-            const stf = (isTechMode ? enriched : managers).find(p => p.ec === f.ec);
-            if (!stf || stf.onMat || !ROLE_GUARD(stf)) { alert("This sub-tab manages annual leave for " + peopleTypePlural + " only."); return; }
+            const stf = enriched.find(s => s.ec === f.ec);
+            if (!stf || stf.onMat || !/^[BT]/.test(stf.ec)) { alert("Leave Planner manages annual leave for nail techs (B/T staff) only."); return; }
             const stBr = stf.branch;
-            const stPeople = (isTechMode ? enriched : managers).filter(p => p.branch === stBr && !p.onMat && ROLE_GUARD(p));
-            const stMx = Math.max(1, Math.floor(stPeople.length * 0.2));
+            const stTechs = enriched.filter(s => s.branch === stBr && !s.onMat && /^[BT]/.test(s.ec) && !s.offHidden);
+            const stMx = Math.max(1, Math.floor(stTechs.length * 0.2));
             // Peak season check (Oct-Apr)
             const sd = new Date(f.startDate), ed = new Date(f.endDate);
             let peakDays = 0;
@@ -5964,12 +5673,12 @@ function App() {
               let ct = 1;
               for (const lv of leaveRecs) {
                 if (lv.type !== "Annual leave") continue;
-                const ls = (isTechMode ? enriched : managers).find(p2 => p2.ec === lv.ec);
-                if (!ls || ls.branch !== stBr || ls.onMat || !ROLE_GUARD(ls)) continue;
+                const ls = enriched.find(s2 => s2.ec === lv.ec);
+                if (!ls || ls.branch !== stBr || ls.onMat || !/^[BT]/.test(ls.ec)) continue;
                 if (ds >= lv.startDate && ds <= lv.endDate) ct++;
               }
               if (ct > stMx) {
-                alert("Cannot add: " + ct + " " + peopleTypePlural + " would be on annual leave on " + ds + ". Max " + stMx + " allowed (20% of " + stPeople.length + " " + peopleTypePlural + " at " + stBr + ").");
+                alert("Cannot add: " + ct + " nail techs would be on annual leave on " + ds + ". Max " + stMx + " allowed (20% of " + stTechs.length + " nail techs at " + stBr + ").");
                 return;
               }
             }
@@ -5983,15 +5692,9 @@ function App() {
             persistLeaves(leaveRecs.filter(x => x._id !== id));
           };
 
-          // Records list, filtered to this branch and the chosen role family
+          // Records list, filtered to this branch
           const storeLeave = leaveRecs
-            .filter(lv => {
-              if (lv.type !== "Annual leave") return false;
-              const p = (isTechMode ? enriched : managers).find(x => x.ec === lv.ec);
-              if (!p) return false;
-              if (p.branch !== br) return false;
-              return ROLE_GUARD(p);
-            })
+            .filter(lv => lv.type === "Annual leave" && (enriched.find(s => s.ec === lv.ec) || {}).branch === br)
             .slice()
             .sort((a, b) => a.startDate.localeCompare(b.startDate));
 
@@ -6040,22 +5743,6 @@ function App() {
                 <div style={{ fontSize:12, color:"#F472B6" }}>Plan annual leave per store. 20% per-day cap enforced. Peak season (Oct–Apr) blocked except for emergency leave with proof.</div>
               </div>
 
-              {/* Sub-tab pill bar */}
-              <div style={{ display:"flex", gap:0, marginBottom:18, padding:6, background:"#FCE7F3", borderRadius:14, border:"1px solid #FBCFE8", maxWidth:680 }}>
-                {[
-                  { k:"techs",    label:"💅 Nail Tech Leave" },
-                  { k:"managers", label:"👔 Manager Leave" }
-                ].map(t => {
-                  const active = leaveSubTab===t.k;
-                  return (
-                    <button key={t.k} onClick={()=>{ setLeaveSubTab(t.k); setLeaveForm({ ec:"", startDate:"", endDate:"", emergency:false, emergencyNote:"" }); }}
-                      style={{ flex:1, padding:"14px 22px", borderRadius:10, border:"none", background: active ? "#BE185D" : "transparent", color: active ? "#FFFFFF" : "#831843", cursor:"pointer", fontFamily:"inherit", fontSize:15, fontWeight:700, transition:"all .18s", boxShadow: active ? "0 4px 12px rgba(190,24,93,0.32)" : "none", letterSpacing:"0.01em", display:"inline-flex", alignItems:"center", justifyContent:"center", gap:10 }}>
-                      {t.label}
-                    </button>
-                  );
-                })}
-              </div>
-
               <div style={{ background:"#FFFFFF", borderRadius:13, padding:"14px 16px", border:"1px solid " + Y, marginBottom:14, display:"flex", flexWrap:"wrap", gap:14, alignItems:"flex-end" }}>
                 <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
                   <label style={{ fontSize:10, fontWeight:700, color:"#F472B6", letterSpacing:"0.06em" }}>STORE</label>
@@ -6068,7 +5755,7 @@ function App() {
                   <input type="month" value={ym} onChange={e=>setLeaveYM(e.target.value)} style={{ padding:"7px 11px", borderRadius:7, border:"1px solid " + Y, fontFamily:"inherit", fontSize:13, background:aA }} />
                 </div>
                 <div style={{ flex:1, minWidth:240, fontSize:12, color:"#831843", lineHeight:1.5 }}>
-                  <div><strong>{peopleAtBranch.length}</strong> active {peopleAtBranch.length !== 1 ? peopleTypePlural : peopleType} at <strong>{br}</strong> · cap: <strong style={{ color:"#F472B6" }}>max {maxLeave} on annual leave per day</strong> (20%)</div>
+                  <div><strong>{allTechs.length}</strong> active nail tech{allTechs.length !== 1 ? "s" : ""} at <strong>{br}</strong> · cap: <strong style={{ color:"#F472B6" }}>max {maxLeave} on annual leave per day</strong> (20%)</div>
                   <div style={{ fontSize:11, color:"#F472B6" }}>Calendar shows 6 payroll cycles (25th → 24th) starting from the selected cycle.</div>
                 </div>
               </div>
@@ -6084,10 +5771,12 @@ function App() {
                 <div style={{ fontWeight:700, color:"#831843", marginBottom:10, fontSize:13 }}>Add Annual Leave</div>
                 <div style={{ display:"grid", gridTemplateColumns:"1.5fr 1fr 1fr auto", gap:8, marginBottom:10, alignItems:"flex-end" }}>
                   <div>
-                    <label style={{ fontSize:10, color:"#F472B6", fontWeight:700 }}>{isTechMode ? "NAIL TECH" : "MANAGER"}</label>
+                    <label style={{ fontSize:10, color:"#F472B6", fontWeight:700 }}>NAIL TECH</label>
                     <select value={f.ec} onChange={e=>setLeaveForm({...f, ec:e.target.value})} style={{ width:"100%", padding:"6px 9px", borderRadius:6, border:"1px solid " + Y, fontFamily:"inherit", fontSize:12, background:aA }}>
                       <option value="">— select —</option>
-                      {peopleAllBranches.map(z => <option key={z.ec} value={z.ec}>{z.ec} · {z.name} ({z.branch}{z.role && !isTechMode ? " · " + z.role : ""})</option>)}
+                      {enriched.filter(s => !s.onMat && /^[BT]/.test(s.ec) && !s.offHidden)
+                        .sort((a,b) => (a.ec || "").localeCompare(b.ec || ""))
+                        .map(z => <option key={z.ec} value={z.ec}>{z.ec} · {z.name} ({z.branch})</option>)}
                     </select>
                   </div>
                   <div>
@@ -6120,7 +5809,7 @@ function App() {
                 <table style={{ borderCollapse:"collapse", fontSize:10, fontFamily:"inherit" }}>
                   <thead>
                     <tr>
-                      <th style={{ padding:"6px 8px", textAlign:"left", position:"sticky", left:0, background:aA, zIndex:2, minWidth:160, fontSize:9, color:"#F472B6", borderBottom:"1px solid " + Y, borderRight:"2px solid " + Y }}>{isTechMode ? "NAIL TECH" : "MANAGER"}</th>
+                      <th style={{ padding:"6px 8px", textAlign:"left", position:"sticky", left:0, background:aA, zIndex:2, minWidth:160, fontSize:9, color:"#F472B6", borderBottom:"1px solid " + Y, borderRight:"2px solid " + Y }}>NAIL TECH</th>
                       {monthLabels.map(ml => (
                         <th key={ml.y + "-" + ml.m} colSpan={ml.len} style={{ padding:"5px 0", textAlign:"center", borderBottom:"1px solid " + Y, background: ml.peak ? "#fef3c7" : aA, fontSize:11, fontWeight:700, color: ml.peak ? "#78350f" : "#831843", borderLeft:"2px solid " + Y }}>
                           {ml.label}{ml.peak ? " ⚠" : ""}
@@ -6138,7 +5827,7 @@ function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {peopleAtBranch.map(st => (
+                    {allTechs.map(st => (
                       <tr key={st.ec}>
                         <td style={{ padding:"4px 8px", position:"sticky", left:0, background:"#fff", zIndex:1, fontSize:11, borderBottom:"1px solid " + aA, borderRight:"2px solid " + Y }}>
                           <div>
@@ -6210,7 +5899,7 @@ function App() {
                 ) : (
                   <div style={{ maxHeight:300, overflow:"auto" }}>
                     {storeLeave.map(lv => {
-                      const s2 = (isTechMode ? enriched : managers).find(x => x.ec === lv.ec);
+                      const s2 = enriched.find(x => x.ec === lv.ec);
                       const stats = computeLeaveDays(lv);
                       return (
                         <div key={lv._id} style={{ display:"grid", gridTemplateColumns:"1.6fr 1fr 1fr auto auto auto", gap:8, alignItems:"center", padding:"7px 0", borderBottom:"1px solid " + aA, fontSize:12 }}>
@@ -6235,8 +5924,8 @@ function App() {
           );
         })()}
 
-        {/* ── MANAGER SCHEDULE TAB (sub-tab of Scheduling) ── */}
-        {tab==="scheduling" && schedSubTab==="managers" && (() => {
+        {/* ── MANAGER SCHEDULE TAB ── */}
+        {tab==="mgrSched" && (() => {
           if (!mgrSchedCycle) return <div style={{ padding:20, color:"#9ca3af" }}>Loading…</div>;
           if (!mgrSchedLoaded) return <div style={{ padding:20, color:"#9ca3af" }}>Loading manager schedule…</div>;
 
@@ -6261,24 +5950,13 @@ function App() {
           const allMgrs = [...mgrsWithOff, ...obMgrs];
           const mgrLeaves = (leaveRecs || []).filter(L => allMgrs.some(m => m.ec === L.ec));
 
-          // Build the structural skeleton (dates, manager filter, weeksMap, etc.).
-          // We always run mgrSched once for that — but the GRID inside it is the
-          // freshly auto-generated one. We only USE that grid when the user
-          // explicitly clicks Generate; otherwise we render from mgrSchedDraft.
-          // Filter requests to this branch and cycle window only.
-          const cycleEndStr = (() => {
-            const cs = new Date(cycleStart + "T00:00:00");
-            const ed = new Date(cs.getFullYear(), cs.getMonth() + 1, 24);
-            return ed.getFullYear() + "-" + String(ed.getMonth()+1).padStart(2,"0") + "-" + String(ed.getDate()).padStart(2,"0");
-          })();
-          const currentRequests = (mgrRequests || []).filter(r =>
-            r && r.branch === branch && r.date >= cycleStart && r.date <= cycleEndStr
-            && allMgrs.some(m => m.ec === r.ec)
-          );
-          let result = mgrSched(branch, cycleStart, allMgrs, mgrLeaves, currentRequests, mgrPriorCtx);
-          const haveDraft = !!mgrSchedDraft;
-          if (haveDraft) {
-            const newGrid = JSON.parse(JSON.stringify(mgrSchedDraft));
+          // Generate fresh + merge with saved if present.
+          // mgrSchedPriorOffs maps {ec: count} of off-days the manager had
+          // in the previous cycle's tail of the same ISO week as our
+          // leading partial — used to avoid >2 offs spanning the boundary.
+          let result = mgrSched(branch, cycleStart, allMgrs, mgrLeaves, [], mgrSchedPriorOffs);
+          if (mgrSchedSaved) {
+            const newGrid = JSON.parse(JSON.stringify(mgrSchedSaved));
             for (const m of result.managers) {
               if (!newGrid[m.ec]) newGrid[m.ec] = result.grid[m.ec] || {};
               else {
@@ -6292,6 +5970,12 @@ function App() {
             }
             for (const ec of Object.keys(newGrid)) if (!result.managers.find(m => m.ec === ec)) delete newGrid[ec];
             result = { ...result, grid: newGrid, _loadedFromSaved: true };
+            // Hard-enforce weekend-pair rule on merged grid too — older
+            // saved schedules may pre-date the rule; this guarantees every
+            // SM has 2 weekend pairs and every AM has 1. Pass prior offs
+            // so we don't add a leading-partial weekend pair when the
+            // prior cycle's tail already used those days.
+            enforceWeekendPairs(newGrid, result.managers, result.dates, mgrSchedPriorOffs);
             // Recompute dayTotals + conflicts from merged grid
             const newDT = {};
             for (const x of result.dates) newDT[x.d] = { dow: x.dow, working: 0, off: 0, leave: 0 };
@@ -6315,116 +5999,24 @@ function App() {
                 if (v === "W" || v === "E") { if (run === 0) rs = i; run++; if (run >= 7) { newConflicts.push({ type:"consecutive", msg: m.name + ": 7+ consecutive working days starting " + result.dates[rs].d, severity:"high" }); break; } } else run = 0;
               }
             }
-            // Cross-month rollover re-check on the merged grid
-            const wkOrderM   = result.weekOrder || [];
-            const wkMapM     = result.weeksMap  || {};
-            const leadingWkM  = wkOrderM[0];
-            const trailingWkM = wkOrderM[wkOrderM.length - 1];
-            const isLeadingPartialM  = !!(leadingWkM  && wkMapM[leadingWkM]  && wkMapM[leadingWkM].length  < 7);
-            const isTrailingPartialM = !!(trailingWkM && wkMapM[trailingWkM] && wkMapM[trailingWkM].length < 7 && trailingWkM !== leadingWkM);
-            const countOffsInWeek = (mEc, wk) => {
-              let n = 0;
-              for (const x of (wkMapM[wk] || [])) {
-                const v = newGrid[mEc] && newGrid[mEc][x.d];
-                if (v === "O" || v === "R" || v === "L") n++;
-              }
-              return n;
-            };
-            if (isLeadingPartialM) {
-              for (const m of result.managers) {
-                const carry = +(mgrPriorCtx.priorOffs && mgrPriorCtx.priorOffs[m.ec]) || 0;
-                const inCycle = countOffsInWeek(m.ec, leadingWkM);
-                if (inCycle + carry > 2) {
-                  newConflicts.push({ type:"rollover_overlimit", msg: m.name + " has " + (inCycle + carry) + " off-days in the leading rollover week (" + inCycle + " this cycle + " + carry + " prior) — over the 2-cap", severity:"high", ec: m.ec, week: leadingWkM });
-                }
-              }
-              if (mgrPriorCtx.priorMissing) {
-                newConflicts.push({ type:"prior_missing", msg: "Prior month's manager schedule not generated yet — the leading rollover week's 2-off cap can't be enforced across the boundary. Generate the prior cycle first for full coverage.", severity:"medium" });
-              }
-            }
-            if (isTrailingPartialM) {
-              for (const m of result.managers) {
-                const carry = +(mgrPriorCtx.nextOffs && mgrPriorCtx.nextOffs[m.ec]) || 0;
-                const inCycle = countOffsInWeek(m.ec, trailingWkM);
-                if (inCycle + carry > 2) {
-                  newConflicts.push({ type:"rollover_overlimit", msg: m.name + " has " + (inCycle + carry) + " off-days in the closing rollover week (" + inCycle + " this cycle + " + carry + " next) — over the 2-cap", severity:"high", ec: m.ec, week: trailingWkM });
-                }
-              }
-              if (mgrPriorCtx.nextMissing) {
-                newConflicts.push({ type:"next_missing", msg: "Next month's manager schedule not generated yet — the closing rollover week's 2-off cap is provisional. When you generate the next cycle, that boundary will be re-checked.", severity:"medium" });
-              }
-            }
             result.conflicts = newConflicts;
           } else {
-            // No draft yet — show an empty grid + Generate CTA. We keep the
-            // structural fields (dates, managers, weeksMap, weekOrder) but
-            // wipe the auto-generated grid and counters so cells render blank.
-            const emptyGrid = {};
-            for (const mm of result.managers) emptyGrid[mm.ec] = {};
-            const emptyTotals = {};
-            for (const x of result.dates) emptyTotals[x.d] = { dow: x.dow, working: 0, off: 0, leave: 0 };
-            result = { ...result, grid: emptyGrid, dayTotals: emptyTotals, conflicts: [] };
+            // First open — auto-save the freshly generated grid
+            window.BOA_DB.saveSchedule(branch, ymKey, result.grid, true).catch(e => console.warn("auto-save mgr schedule:", e));
           }
 
           const editKey = branch + "|" + ymKey;
           const histArr = mgrSchedHist[editKey] || [];
 
-          // Build day → ISO-week lookup from the result for same-week drag enforcement
-          const dayWk = {};
-          if (result.weeksMap) {
-            for (const wk of Object.keys(result.weeksMap)) {
-              for (const x of result.weeksMap[wk]) dayWk[x.d] = wk;
-            }
-          }
-
-          // Drag-swap two days for the same manager (within the same ISO Mon–Sun week only)
+          // Drag-swap two days for the same manager
           const dragSwap = async (ec, fromD, toD) => {
             if (fromD === toD) return;
-            // HARD: same-week only
-            if (dayWk[fromD] && dayWk[toD] && dayWk[fromD] !== dayWk[toD]) {
-              alert("You can only drag off-days within the same week (Mon–Sun).");
-              return;
-            }
             const a = (result.grid[ec] && result.grid[ec][fromD]) || "W";
             const b = (result.grid[ec] && result.grid[ec][toD])   || "W";
             if (a === b) return;
             if (a === "L" || a === "R" || a === "X" || b === "L" || b === "R" || b === "X") {
               alert("Cannot drag onto leave (LV), request (REQ), or pre-start (—) cells.");
               return;
-            }
-            // HARD: cross-month rollover cap. If the swap touches a partial
-            // ISO week (leading OR trailing), the carry-over from the
-            // adjacent month plus the new in-cycle offs in that week mustn't
-            // exceed 2. Same-week O↔W swap doesn't change the per-week count.
-            const dragWk = dayWk[toD] || dayWk[fromD];
-            const wkDays = (result.weeksMap && result.weeksMap[dragWk]) || [];
-            if (dragWk && wkDays.length < 7) {
-              // Determine whether this partial is the leading (use priorOffs)
-              // or the trailing (use nextOffs) one.
-              const wkOrderArr = result.weekOrder || [];
-              const isLeading  = wkOrderArr[0] === dragWk;
-              const isTrailing = wkOrderArr[wkOrderArr.length - 1] === dragWk && !isLeading;
-              const carrySrc = isLeading ? mgrPriorCtx.priorOffs : (isTrailing ? mgrPriorCtx.nextOffs : null);
-              const carryLabel = isLeading ? "prior month" : (isTrailing ? "next month" : "");
-              const carry = +((carrySrc && carrySrc[ec]) || 0);
-              if (carry > 0) {
-                let curOff = 0;
-                for (const x of wkDays) {
-                  const v = result.grid[ec] && result.grid[ec][x.d];
-                  if (v === "O" || v === "R" || v === "L") curOff++;
-                }
-                const wasOff  = (a === "O" || a === "E");
-                const willOff = (b === "O" || b === "E");
-                const fromInWeek = (dayWk[fromD] === dragWk);
-                const toInWeek   = (dayWk[toD]   === dragWk);
-                let delta = 0;
-                if (fromInWeek) delta += (willOff ? 1 : 0) - (wasOff ? 1 : 0);
-                if (toInWeek)   delta += ((a === "O" || a === "E") ? 1 : 0) - ((b === "O" || b === "E") ? 1 : 0);
-                if (curOff + delta + carry > 2) {
-                  alert("Blocked — that swap would put " + (curOff + delta + carry) + " off-days in the rollover week (this cycle + " + carryLabel + "). The 2-cap must hold across the boundary.");
-                  return;
-                }
-              }
             }
             const newGrid = JSON.parse(JSON.stringify(result.grid));
             newGrid[ec][fromD] = b; newGrid[ec][toD] = a;
@@ -6446,7 +6038,7 @@ function App() {
                 warns.push("• " + d2 + " " + (dt ? dowsW[dt.dow] : "") + ": " + w + " manager" + (w===1?"":"s") + " would be working");
               }
             }
-            // Push current grid to history (in-memory only — for undo)
+            // Push current grid to history
             setMgrSchedHist(h => {
               const next = { ...h };
               const arr = (next[editKey] || []).slice(-49);
@@ -6454,14 +6046,15 @@ function App() {
               next[editKey] = arr;
               return next;
             });
-            // Apply locally to draft — DOES NOT touch the DB. Save explicitly.
-            setMgrSchedDraft(newGrid);
-            setMgrSchedDirty(true);
-            if (warns.length > 0) {
-              setTimeout(() => alert("⚠ Coverage warning — below 2 managers on shift:\n\n" + warns.join("\n") + "\n\nSwap applied (not saved yet — click Save). Use Undo to revert."), 50);
-            }
+            try {
+              await window.BOA_DB.saveSchedule(branch, ymKey, newGrid, true);
+              setMgrSchedTick(t => t + 1);
+              if (warns.length > 0) {
+                setTimeout(() => alert("⚠ Coverage warning — below 2 managers on shift:\n\n" + warns.join("\n") + "\n\nSwap applied. Use Undo to revert."), 50);
+              }
+            } catch (e) { alert("Could not save: " + (e.message || e)); }
           };
-          const toggleReq = (ec, d) => {
+          const toggleReq = async (ec, d) => {
             const cur = (result.grid[ec] && result.grid[ec][d]) || "W";
             if (cur !== "O" && cur !== "R" && cur !== "E") {
               alert("Only Off (OFF) cells can be cycled. Drag to make it Off first, then double-click to cycle OFF → REQ → EXT.");
@@ -6469,7 +6062,6 @@ function App() {
             }
             const next = cur === "O" ? "R" : cur === "R" ? "E" : "O";
             const newGrid = JSON.parse(JSON.stringify(result.grid));
-            if (!newGrid[ec]) newGrid[ec] = {};
             newGrid[ec][d] = next;
             setMgrSchedHist(h => {
               const updated = { ...h };
@@ -6478,71 +6070,22 @@ function App() {
               updated[editKey] = arr;
               return updated;
             });
-            setMgrSchedDraft(newGrid);
-            setMgrSchedDirty(true);
+            try { await window.BOA_DB.saveSchedule(branch, ymKey, newGrid, true); setMgrSchedTick(t => t + 1); }
+            catch (e) { alert("Could not save: " + (e.message || e)); }
           };
-          const undo = () => {
+          const undo = async () => {
             const arr = mgrSchedHist[editKey] || [];
             if (arr.length === 0) return;
             const last = arr[arr.length - 1];
-            setMgrSchedDraft(JSON.parse(JSON.stringify(last)));
-            setMgrSchedDirty(true);
-            setMgrSchedHist(h => {
-              const updated = { ...h };
-              updated[editKey] = (h[editKey] || []).slice(0, -1);
-              return updated;
-            });
-          };
-
-          // Generate fresh schedule into the draft (does not save).
-          const generate = () => {
-            if (mgrSchedDirty) {
-              if (!window.confirm("This will replace the current draft with a freshly generated schedule. Discard your unsaved edits?")) return;
-            }
-            const fresh = mgrSched(branch, cycleStart, allMgrs, mgrLeaves, currentRequests, mgrPriorCtx);
-            setMgrSchedDraft(JSON.parse(JSON.stringify(fresh.grid)));
-            setMgrSchedDirty(true);
-            setMgrSchedHist(h => { const n = { ...h }; delete n[editKey]; return n; });
-          };
-
-          // Save the current draft to the DB.
-          const saveDraft = async () => {
-            if (!mgrSchedDraft) { alert("Nothing to save — click Generate first."); return; }
-            setMgrSchedSaving(true);
             try {
-              const v = await window.BOA_DB.saveSchedule(branch, ymKey, mgrSchedDraft, true);
-              setMgrSchedSaved(mgrSchedDraft);
-              setMgrSchedSavedAt((v && v.savedAt) || new Date().toISOString());
-              setMgrSchedDirty(false);
-            } catch (e) {
-              alert("Could not save: " + (e.message || e));
-            } finally {
-              setMgrSchedSaving(false);
-            }
-          };
-
-          // Discard local changes — revert to last-saved (or empty if no save).
-          const discardEdits = () => {
-            if (!mgrSchedDirty) return;
-            if (!window.confirm("Discard unsaved changes and revert to the last saved version?")) return;
-            setMgrSchedDraft(mgrSchedSaved ? JSON.parse(JSON.stringify(mgrSchedSaved)) : null);
-            setMgrSchedDirty(false);
-            setMgrSchedHist(h => { const n = { ...h }; delete n[editKey]; return n; });
-          };
-
-          // Guarded versions of branch/cycle change — warn if unsaved.
-          const tryChangeBranch = (b) => {
-            if (mgrSchedDirty && !window.confirm("You have unsaved changes to this manager schedule. Discard and switch store?")) return;
-            setMgrSchedDirty(false);
-            setMgrSchedBranch(b);
-          };
-          const tryShiftCycle = (delta) => {
-            if (mgrSchedDirty && !window.confirm("You have unsaved changes to this manager schedule. Discard and change cycle?")) return;
-            setMgrSchedDirty(false);
-            let y = csObj.getFullYear(), mo = csObj.getMonth() + delta;
-            while (mo < 0) { mo += 12; y--; }
-            while (mo > 11) { mo -= 12; y++; }
-            setMgrSchedCycle(y + "-" + String(mo+1).padStart(2,"0") + "-25");
+              await window.BOA_DB.saveSchedule(branch, ymKey, last, true);
+              setMgrSchedHist(h => {
+                const updated = { ...h };
+                updated[editKey] = (h[editKey] || []).slice(0, -1);
+                return updated;
+              });
+              setMgrSchedTick(t => t + 1);
+            } catch (e) { alert("Could not undo: " + (e.message || e)); }
           };
 
           // Visual constants
@@ -6554,6 +6097,12 @@ function App() {
           const csObj = new Date(cycleStart + "T00:00:00");
           const ceObj = new Date(result.cycleEnd + "T00:00:00");
           const cycleLabel = csObj.getDate() + " " + moNames[csObj.getMonth()] + " " + csObj.getFullYear() + " → " + ceObj.getDate() + " " + moNames[ceObj.getMonth()] + " " + ceObj.getFullYear();
+          const shiftCycle = (delta) => {
+            let y = csObj.getFullYear(), mo = csObj.getMonth() + delta;
+            while (mo < 0) { mo += 12; y--; }
+            while (mo > 11) { mo -= 12; y++; }
+            setMgrSchedCycle(y + "-" + String(mo+1).padStart(2,"0") + "-25");
+          };
           // Sort managers SM-first, then by name
           const sortedMgrs = [...result.managers].sort((a,b) => (a.role==="SM"?0:1)-(b.role==="SM"?0:1) || (a.name||"").localeCompare(b.name||""));
 
@@ -6567,66 +6116,18 @@ function App() {
               <div style={{ background:"#FFFFFF", borderRadius:11, padding:"12px 14px", border:"1px solid #FBCFE8", marginBottom:14, display:"flex", gap:14, alignItems:"center", flexWrap:"wrap" }}>
                 <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
                   <label style={{ fontSize:10, fontWeight:700, color:"#F472B6", letterSpacing:"0.06em" }}>STORE</label>
-                  <select value={branch} onChange={e=>tryChangeBranch(e.target.value)} style={{ padding:"7px 11px", borderRadius:7, border:"1px solid #FBCFE8", fontSize:13, background:"#fff", minWidth:160 }}>
+                  <select value={branch} onChange={e=>setMgrSchedBranch(e.target.value)} style={{ padding:"7px 11px", borderRadius:7, border:"1px solid #FBCFE8", fontSize:13, background:"#fff", minWidth:160 }}>
                     {SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
                   </select>
                 </div>
                 <div style={{ display:"flex", alignItems:"center", gap:6, background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:8, padding:"4px 6px" }}>
-                  <button onClick={()=>tryShiftCycle(-1)} style={{ background:"transparent", border:"none", color:"#831843", cursor:"pointer", fontSize:16, fontWeight:600, padding:"2px 8px" }} title="Previous cycle">‹</button>
+                  <button onClick={()=>shiftCycle(-1)} style={{ background:"transparent", border:"none", color:"#831843", cursor:"pointer", fontSize:16, fontWeight:600, padding:"2px 8px" }} title="Previous cycle">‹</button>
                   <div style={{ fontSize:12, fontWeight:600, color:"#831843", minWidth:200, textAlign:"center" }}>{cycleLabel}</div>
-                  <button onClick={()=>tryShiftCycle(1)} style={{ background:"transparent", border:"none", color:"#831843", cursor:"pointer", fontSize:16, fontWeight:600, padding:"2px 8px" }} title="Next cycle">›</button>
+                  <button onClick={()=>shiftCycle(1)} style={{ background:"transparent", border:"none", color:"#831843", cursor:"pointer", fontSize:16, fontWeight:600, padding:"2px 8px" }} title="Next cycle">›</button>
                 </div>
-                <button onClick={generate}
-                        title={mgrSchedDraft ? "Re-generate (replaces current draft)" : "Generate a fresh schedule"}
-                        style={{ padding:"7px 14px", background: mgrSchedDraft ? "#FCE7F3" : "#BE185D", color: mgrSchedDraft ? "#831843" : "#fff", border:"1px solid #BE185D", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
-                  ✨ {mgrSchedDraft ? "Re-generate" : "Generate Schedule"}
-                </button>
-                <button onClick={saveDraft} disabled={mgrSchedSaving || !mgrSchedDirty}
-                        style={{ padding:"7px 16px", background: mgrSchedDirty ? "#BE185D" : "#FBCFE8", color: mgrSchedDirty ? "#fff" : "#9F1A4F", border:"none", borderRadius:8, cursor: mgrSchedDirty ? "pointer" : "not-allowed", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
-                  {mgrSchedSaving ? "Saving…" : "💾 Save"}
-                </button>
-                {mgrSchedDirty && (
-                  <button onClick={discardEdits} title="Revert to last saved version"
-                          style={{ padding:"7px 12px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:600 }}>
-                    Discard
-                  </button>
-                )}
                 {histArr.length > 0 && (
                   <button onClick={undo} style={{ padding:"7px 14px", background:"#fef3c7", color:"#78350f", border:"1px solid #fbbf24", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:600 }}>↺ Undo ({histArr.length})</button>
                 )}
-                {/* Save status indicator */}
-                {mgrSchedDirty
-                  ? <span style={{ fontSize:11, color:"#b45309", fontWeight:700 }}>● Unsaved changes</span>
-                  : (mgrSchedSavedAt && mgrSchedDraft)
-                    ? <span style={{ fontSize:11, color:"#15803d", fontStyle:"italic" }}>✓ Saved {new Date(mgrSchedSavedAt).toLocaleString()}</span>
-                    : null
-                }
-                <button
-                  onClick={async () => {
-                    if (!mgrSchedSaved) {
-                      alert("Nothing to delete — this period has no saved schedule yet.");
-                      return;
-                    }
-                    if (!window.confirm("Delete the saved manager schedule for " + branch + " (" + cycleLabel + ")?\n\nIt moves to the trash for 7 days — you can restore it from the Trash button until it expires.")) return;
-                    try {
-                      await window.BOA_DB.deleteSchedule(branch, ymKey, true);
-                      setMgrSchedSaved(null);
-                      setMgrSchedDraft(null);
-                      setMgrSchedSavedAt(null);
-                      setMgrSchedDirty(false);
-                      setMgrSchedHist(h => { const n = { ...h }; delete n[editKey]; return n; });
-                      setMgrSchedTick(t => t + 1);
-                      setMgrTrashTick(t => t + 1);
-                    } catch (e) {
-                      alert("Could not delete schedule: " + (e.message || e));
-                    }
-                  }}
-                  title="Move this saved schedule to trash (kept for 7 days)"
-                  style={{ padding:"7px 14px", background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fca5a5", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:600 }}>🗑 Delete schedule</button>
-                <button
-                  onClick={() => setMgrTrashOpen(true)}
-                  title="Recently deleted schedules (kept for 7 days)"
-                  style={{ padding:"7px 14px", background:"#f3f4f6", color:"#374151", border:"1px solid #d1d5db", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:600 }}>🗂 Trash{mgrTrash.length > 0 ? " (" + mgrTrash.length + ")" : ""}</button>
                 <div style={{ flex:1 }} />
                 <div style={{ display:"flex", gap:8, fontSize:11, color:"#831843", flexWrap:"wrap" }}>
                   {[
@@ -6652,64 +6153,8 @@ function App() {
                 </div>
               )}
 
-              {/* ── Off-day requests panel ── */}
-              <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:11, padding:"12px 14px", marginBottom:14 }}>
-                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: currentRequests.length ? 10 : 0, gap:12, flexWrap:"wrap" }}>
-                  <div>
-                    <div style={{ fontSize:13, fontWeight:700, color:"#831843" }}>📝 Off-day requests for this cycle</div>
-                    <div style={{ fontSize:11, color:"#9ca3af", marginTop:2 }}>The generator counts requests as one of the 2 weekly offs and respects the 2-cap. Requests can override the guaranteed weekend pair.</div>
-                  </div>
-                  <button onClick={() => setMgrReqModal({ ec: (sortedMgrs[0] && sortedMgrs[0].ec) || "", date: cycleStart, note: "" })}
-                          disabled={sortedMgrs.length === 0}
-                          style={{ padding:"7px 14px", background: sortedMgrs.length ? "#BE185D" : "#FBCFE8", color: sortedMgrs.length ? "#fff" : "#9F1A4F", border:"none", borderRadius:8, cursor: sortedMgrs.length ? "pointer" : "not-allowed", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
-                    + Request day off
-                  </button>
-                </div>
-                {currentRequests.length > 0 && (
-                  <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
-                    {currentRequests.map(r => {
-                      const mg = result.managers.find(m => m.ec === r.ec);
-                      const nm = (mg && mg.name) || r.name || r.ec;
-                      const dt = new Date(r.date + "T00:00:00");
-                      const dowAbbr = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][dt.getDay()];
-                      return (
-                        <div key={r.id} style={{ display:"inline-flex", alignItems:"center", gap:8, background:"#FCE7F3", border:"1px solid #FBCFE8", borderRadius:20, padding:"5px 12px", fontSize:11 }}>
-                          <span style={{ fontWeight:700, color:"#831843" }}>{nm}</span>
-                          <span style={{ color:"#831843" }}>· {r.date} ({dowAbbr})</span>
-                          {r.note && <span style={{ color:"#9ca3af", fontStyle:"italic" }}>· "{r.note}"</span>}
-                          <button
-                            onClick={async () => {
-                              if (!window.confirm("Remove the off-day request for " + nm + " on " + r.date + "?")) return;
-                              try {
-                                const next = (mgrRequests || []).filter(x => x.id !== r.id);
-                                await window.BOA_DB.saveMgrRequests(next);
-                                setMgrRequests(next);
-                                setMgrReqTick(t => t + 1);
-                              } catch (e) { alert("Could not remove: " + (e.message || e)); }
-                            }}
-                            title="Remove this request"
-                            style={{ background:"transparent", border:"none", color:"#9F1A4F", cursor:"pointer", fontSize:14, fontWeight:700, lineHeight:1, padding:"0 4px" }}>×</button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              {/* Empty state — no draft yet */}
-              {!mgrSchedDraft && (
-                <div style={{ background:"#FFFFFF", borderRadius:11, border:"1px dashed #FBCFE8", padding:"50px 24px", marginBottom:14, textAlign:"center" }}>
-                  <div style={{ fontSize:48, marginBottom:8 }}>👔</div>
-                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:20, fontWeight:700, color:"#831843", marginBottom:6 }}>No schedule for {branch}</div>
-                  <div style={{ fontSize:13, color:"#9ca3af", marginBottom:18 }}>{cycleLabel}<br />Click below to generate a fresh schedule. You'll need to click <strong>Save</strong> to keep it.</div>
-                  <button onClick={generate} style={{ padding:"11px 28px", background:"#BE185D", color:"#fff", border:"none", borderRadius:9, cursor:"pointer", fontFamily:"inherit", fontSize:14, fontWeight:700, boxShadow:"0 6px 18px rgba(190,24,93,0.3)" }}>
-                    ✨ Generate Schedule
-                  </button>
-                </div>
-              )}
-
               {/* Schedule grid */}
-              {mgrSchedDraft && <div style={{ background:"#FFFFFF", borderRadius:11, border:"1px solid #FBCFE8", overflow:"auto" }}>
+              <div style={{ background:"#FFFFFF", borderRadius:11, border:"1px solid #FBCFE8", overflow:"auto" }}>
                 <table style={{ borderCollapse:"separate", borderSpacing:0, minWidth:"100%", fontSize:11 }}>
                   <thead>
                     <tr>
@@ -6783,163 +6228,7 @@ function App() {
                     </tr>
                   </tfoot>
                 </table>
-              </div>}
-
-              {/* ── Add-request modal ── */}
-              {mgrReqModal && (
-                <div onClick={() => setMgrReqModal(null)}
-                     style={{ position:"fixed", inset:0, background:"rgba(17,24,39,0.55)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:9999 }}>
-                  <div onClick={(e) => e.stopPropagation()}
-                       style={{ background:"#fff", borderRadius:14, padding:"22px 24px", width:"94%", maxWidth:440, boxShadow:"0 30px 90px rgba(0,0,0,0.3)" }}>
-                    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
-                      <div style={{ fontFamily:"'Playfair Display',serif", fontSize:20, color:"#831843", fontWeight:700 }}>📝 Request day off</div>
-                      <button onClick={() => setMgrReqModal(null)}
-                              style={{ background:"transparent", border:"none", color:"#9ca3af", cursor:"pointer", fontSize:22, lineHeight:1 }}>×</button>
-                    </div>
-                    <div style={{ fontSize:11, color:"#9ca3af", marginBottom:14 }}>For {branch} · {cycleLabel}</div>
-
-                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#831843", letterSpacing:"0.04em", marginBottom:4 }}>MANAGER</label>
-                    <select value={mgrReqModal.ec}
-                            onChange={(e) => setMgrReqModal({ ...mgrReqModal, ec: e.target.value })}
-                            style={{ width:"100%", padding:"9px 11px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, background:"#fff", marginBottom:12 }}>
-                      {sortedMgrs.map(m => <option key={m.ec} value={m.ec}>{m.name} ({m.role})</option>)}
-                    </select>
-
-                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#831843", letterSpacing:"0.04em", marginBottom:4 }}>DATE</label>
-                    <input type="date" value={mgrReqModal.date}
-                           min={cycleStart} max={cycleEndStr}
-                           onChange={(e) => setMgrReqModal({ ...mgrReqModal, date: e.target.value })}
-                           style={{ width:"100%", padding:"9px 11px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, background:"#fff", marginBottom:12, fontFamily:"inherit" }} />
-
-                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#831843", letterSpacing:"0.04em", marginBottom:4 }}>NOTE (OPTIONAL)</label>
-                    <input type="text" value={mgrReqModal.note} placeholder="e.g. doctor's appointment"
-                           onChange={(e) => setMgrReqModal({ ...mgrReqModal, note: e.target.value })}
-                           style={{ width:"100%", padding:"9px 11px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, background:"#fff", marginBottom:18, fontFamily:"inherit" }} />
-
-                    <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
-                      <button onClick={() => setMgrReqModal(null)}
-                              style={{ padding:"8px 16px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:600 }}>Cancel</button>
-                      <button
-                        onClick={async () => {
-                          if (!mgrReqModal.ec || !mgrReqModal.date) { alert("Pick a manager and a date."); return; }
-                          if (mgrReqModal.date < cycleStart || mgrReqModal.date > cycleEndStr) { alert("Date must fall within the current cycle."); return; }
-                          // Block duplicates (same ec + date already requested)
-                          if ((mgrRequests || []).some(r => r.ec === mgrReqModal.ec && r.date === mgrReqModal.date)) {
-                            alert("That manager already has a request for that date.");
-                            return;
-                          }
-                          // HARD cap check: combined offs in target ISO week (incl. existing requests, leaves, and any saved schedule cells) must allow another off.
-                          const wkOf = (ymd) => {
-                            const x = new Date(ymd + "T00:00:00");
-                            const dn = (x.getDay()+6) % 7;
-                            x.setDate(x.getDate() - dn + 3);
-                            const ff = new Date(x.getFullYear(), 0, 4);
-                            const fdn = (ff.getDay()+6) % 7;
-                            ff.setDate(ff.getDate() - fdn + 3);
-                            const wk = 1 + Math.round((x - ff) / (7*86400000));
-                            return x.getFullYear() + "-W" + String(wk).padStart(2,"0");
-                          };
-                          const targetWk = wkOf(mgrReqModal.date);
-                          const sameWkRequests = (mgrRequests || []).filter(r => r.ec === mgrReqModal.ec && wkOf(r.date) === targetWk).length;
-                          // Count leave + saved-schedule offs already in this week for this manager
-                          let savedOffs = 0;
-                          if (mgrSchedDraft && mgrSchedDraft[mgrReqModal.ec]) {
-                            for (const day of Object.keys(mgrSchedDraft[mgrReqModal.ec])) {
-                              if (wkOf(day) !== targetWk) continue;
-                              const v = mgrSchedDraft[mgrReqModal.ec][day];
-                              if (v === "L") savedOffs++;
-                            }
-                          }
-                          if (sameWkRequests + savedOffs >= 2) {
-                            alert("Blocked — that manager already has " + (sameWkRequests + savedOffs) + " off-day(s) in that week. The 2-offs-per-week cap is hard.");
-                            return;
-                          }
-                          const mg = sortedMgrs.find(m => m.ec === mgrReqModal.ec);
-                          const newReq = {
-                            id: "req_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2,7),
-                            ec: mgrReqModal.ec,
-                            name: mg ? mg.name : "",
-                            branch,
-                            date: mgrReqModal.date,
-                            note: mgrReqModal.note || "",
-                            addedAt: new Date().toISOString()
-                          };
-                          try {
-                            const next = [...(mgrRequests || []), newReq];
-                            await window.BOA_DB.saveMgrRequests(next);
-                            setMgrRequests(next);
-                            setMgrReqModal(null);
-                            setMgrReqTick(t => t + 1);
-                          } catch (e) { alert("Could not save: " + (e.message || e)); }
-                        }}
-                        style={{ padding:"8px 18px", background:"#BE185D", color:"#fff", border:"none", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>
-                        Save request
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* ── Trash modal: deleted manager schedules (7-day window) ── */}
-              {mgrTrashOpen && (
-                <div onClick={() => setMgrTrashOpen(false)}
-                     style={{ position:"fixed", inset:0, background:"rgba(17,24,39,0.55)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:9999 }}>
-                  <div onClick={(e) => e.stopPropagation()}
-                       style={{ background:"#fff", borderRadius:14, padding:"22px 24px", maxWidth:640, width:"94%", maxHeight:"86vh", overflow:"auto", boxShadow:"0 30px 90px rgba(0,0,0,0.3)" }}>
-                    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
-                      <div>
-                        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:20, color:"#831843", fontWeight:700 }}>🗂 Schedule trash</div>
-                        <div style={{ fontSize:11, color:"#9ca3af", marginTop:2 }}>Deleted manager schedules are kept for 7 days, then permanently removed.</div>
-                      </div>
-                      <button onClick={() => setMgrTrashOpen(false)}
-                              style={{ background:"transparent", border:"none", color:"#9ca3af", cursor:"pointer", fontSize:22, lineHeight:1 }}>×</button>
-                    </div>
-                    {(() => {
-                      const moNamesT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-                      const fmtYm = (ym) => { const p = String(ym||"").split("-"); const m = +p[1]; return (moNamesT[m-1] || ym) + " " + p[0]; };
-                      const fmtTs = (iso) => { try { return new Date(iso).toLocaleString("en-ZA", { day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" }); } catch(_) { return iso; } };
-                      const daysLeft = (iso) => { const ms = Date.parse(iso) - Date.now(); return Math.max(0, Math.ceil(ms / 86400000)); };
-                      if (!mgrTrash || mgrTrash.length === 0) {
-                        return <div style={{ padding:"30px 8px", textAlign:"center", color:"#9ca3af", fontStyle:"italic", fontSize:13 }}>No deleted schedules. When you delete one it appears here for 7 days.</div>;
-                      }
-                      return (
-                        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-                          {mgrTrash.map(t => (
-                            <div key={t.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", background:"#FDEEF5", border:"1px solid #FBCFE8", borderRadius:9 }}>
-                              <div style={{ flex:1, minWidth:0 }}>
-                                <div style={{ fontSize:13, fontWeight:700, color:"#831843" }}>{t.branch} · {fmtYm(t.ym)}</div>
-                                <div style={{ fontSize:10, color:"#9ca3af", marginTop:2 }}>Deleted {fmtTs(t.deletedAt)} · expires in {daysLeft(t.expiresAt)} day{daysLeft(t.expiresAt)===1?"":"s"}</div>
-                              </div>
-                              <button
-                                onClick={async () => {
-                                  if (!window.confirm("Restore the manager schedule for " + t.branch + " (" + fmtYm(t.ym) + ")?\n\nThis will overwrite any current saved schedule for that period.")) return;
-                                  try {
-                                    await window.BOA_DB.restoreSchedule(t.id);
-                                    setMgrTrashTick(x => x + 1);
-                                    if (t.branch === branch && t.ym === ymKey) {
-                                      setMgrSchedTick(x => x + 1);
-                                    }
-                                    alert("Restored " + t.branch + " · " + fmtYm(t.ym) + ".");
-                                  } catch (e) { alert("Could not restore: " + (e.message || e)); }
-                                }}
-                                style={{ padding:"6px 12px", background:"#dcfce7", color:"#14532d", border:"1px solid #86efac", borderRadius:7, cursor:"pointer", fontSize:11, fontWeight:700 }}>↺ Restore</button>
-                              <button
-                                onClick={async () => {
-                                  if (!window.confirm("Permanently delete the trashed schedule for " + t.branch + " (" + fmtYm(t.ym) + ")?\n\nThis cannot be undone.")) return;
-                                  try {
-                                    await window.BOA_DB.purgeDeletedSchedule(t.id);
-                                    setMgrTrashTick(x => x + 1);
-                                  } catch (e) { alert("Could not purge: " + (e.message || e)); }
-                                }}
-                                style={{ padding:"6px 10px", background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fca5a5", borderRadius:7, cursor:"pointer", fontSize:11, fontWeight:700 }}>Purge</button>
-                            </div>
-                          ))}
-                        </div>
-                      );
-                    })()}
-                  </div>
-                </div>
-              )}
+              </div>
             </div>
           );
         })()}
