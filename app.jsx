@@ -3572,6 +3572,20 @@ function App({ currentUser, onSignOut }) {
   const [mgrSchedBranch, setMgrSchedBranch] = useState(SALONS[0].name);
   const [mgrSchedCycle, setMgrSchedCycle] = useState(""); // YYYY-MM-25 cycle start
   const [navCategory, setNavCategory] = useState("People"); // open nav category
+  // Map of tab → category name. Kept in sync with the groups list below.
+  const NAV_TAB_TO_CATEGORY = {
+    onboard:"People", offboard:"People", staff:"People", recruitment:"People", maternity:"People",
+    scheduling:"Operations", locations:"Operations", mgrclockins:"Operations", leave:"Operations",
+    attendance:"Payroll",
+    alerts:"Insights", activity:"Insights"
+  };
+  useEffect(() => {
+    const cat = NAV_TAB_TO_CATEGORY[tab];
+    if (cat && cat !== navCategory) setNavCategory(cat);
+    // intentionally only triggered on tab change; user clicks on category tiles
+    // call setNavCategory directly and that is fine because tab hasn't changed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
   const [mgrSchedTick, setMgrSchedTick] = useState(0);    // bump after edits to force refetch
   const [mgrSchedHist, setMgrSchedHist] = useState({});   // {branch|ym: [grids...]} for undo
 
@@ -4324,49 +4338,60 @@ function App({ currentUser, onSignOut }) {
             const offboardLbl = "👋 Off-boarding" + (offList.length > 0 ? " (" + offList.length + ")" : "");
             const matLbl      = "🤱 Maternity ("  + matRecs.length + ")";
             const groups = [
-              { key:"People",     icon:"👥", title:"People",     items: [
+              { key:"People",     icon:"👥", title:"People",
+                color:{ bg:"#FDEEF5", bgActive:"#FBCFE8", ink:"#831843" },
+                items: [
                   { t:"onboard",     l: onboardLbl },
                   { t:"offboard",    l: offboardLbl },
                   { t:"staff",       l:"👥 Staff List"    },
                   { t:"recruitment", l:"🎯 Recruitment"   },
                   { t:"maternity",   l: matLbl }
                 ] },
-              { key:"Operations", icon:"⚙️", title:"Operations", items: [
+              { key:"Operations", icon:"⚙️", title:"Operations",
+                color:{ bg:"#E0F2FE", bgActive:"#BAE6FD", ink:"#075985" },
+                items: [
                   { t:"scheduling",  l:"📅 Scheduling"     },
                   { t:"locations",   l:"📍 Locations"      },
                   { t:"mgrclockins", l:"🕐 Mgr Clock-ins"  },
                   { t:"leave",       l:"🌴 Leave Planner"  }
                 ] },
-              { key:"Payroll",    icon:"💰", title:"Payroll",    items: [
+              { key:"Payroll",    icon:"💰", title:"Payroll",
+                color:{ bg:"#DCFCE7", bgActive:"#BBF7D0", ink:"#14532d" },
+                items: [
                   { t:"attendance",  l:"📕 Attendance"     }
                 ] },
-              { key:"Insights",   icon:"📊", title:"Insights",   items: [
+              { key:"Insights",   icon:"📊", title:"Insights",
+                color:{ bg:"#EDE9FE", bgActive:"#DDD6FE", ink:"#5B21B6" },
+                items: [
                   { t:"alerts",      l:"🔔 Alerts"         },
                   { t:"activity",    l:"📜 Activity Log"   }
                 ] }
             ];
-            // Category that owns the currently-active tab (so the panel auto-opens to where the user is).
+            // Category that owns the currently-active tab.
             const tabToCategory = {};
             for (const g of groups) for (const it of g.items) tabToCategory[it.t] = g.key;
-            const activeCategoryByTab = tabToCategory[tab];
-            const openCategory = activeCategoryByTab || navCategory;
+            const activeCategoryByTab = tabToCategory[tab]; // undefined when on dashboard
+            // Whichever category is "open" — explicit user pick wins, otherwise follow the active tab.
+            const openCategory = navCategory || activeCategoryByTab || groups[0].key;
             const openGroup = groups.find(g => g.key === openCategory) || groups[0];
 
             const tileBase = {
               flex:"1 1 0", minWidth:120, minHeight:108,
               borderRadius:18, padding:"16px 14px",
-              background:"#FFFFFF", color:"#831843",
               fontFamily:"inherit", fontWeight:800, fontSize:14,
               cursor:"pointer", border:"none",
               display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:6,
               transition:"all .18s"
             };
+            // Pink neon ring + glow. Stronger for the active tile.
             const tileNeon = (active) => ({
               boxShadow: active
-                ? "0 0 0 2px #FF1493, 0 0 14px rgba(255,20,147,0.85), 0 0 28px rgba(255,20,147,0.55), 0 4px 14px rgba(190,24,93,0.32)"
-                : "0 0 0 2px #FBCFE8, 0 0 8px rgba(255,20,147,0.35), 0 2px 6px rgba(0,0,0,0.06)"
+                ? "0 0 0 3px #F472B6, 0 0 18px rgba(244,114,182,0.9), 0 0 34px rgba(244,114,182,0.55), 0 4px 14px rgba(190,24,93,0.28)"
+                : "0 0 0 2px #FBCFE8, 0 0 10px rgba(244,114,182,0.35), 0 2px 6px rgba(0,0,0,0.05)"
             });
             const dashActive = tab === "dashboard";
+            // Light pink palette for the Dashboard tile.
+            const dashColor = { bg:"#FCE7F3", bgActive:"#FBCFE8", ink:"#831843" };
 
             return (
               <div style={{ paddingTop:12 }}>
@@ -4375,8 +4400,8 @@ function App({ currentUser, onSignOut }) {
                   <button onClick={()=>tryChangeTab("dashboard")}
                     style={{
                       ...tileBase, ...tileNeon(dashActive),
-                      background: dashActive ? "#BE185D" : "#FFFFFF",
-                      color: dashActive ? "#FFFFFF" : "#831843"
+                      background: dashActive ? dashColor.bgActive : dashColor.bg,
+                      color: dashColor.ink
                     }}>
                     <span style={{ fontSize:32, lineHeight:1 }}>🏠</span>
                     <span style={{ fontSize:13 }}>Dashboard</span>
@@ -4387,11 +4412,12 @@ function App({ currentUser, onSignOut }) {
                       <button key={g.key} onClick={()=>setNavCategory(g.key)}
                         style={{
                           ...tileBase, ...tileNeon(isOpen),
-                          background: isOpen ? "#FCE7F3" : "#FFFFFF"
+                          background: isOpen ? g.color.bgActive : g.color.bg,
+                          color: g.color.ink
                         }}>
                         <span style={{ fontSize:32, lineHeight:1 }}>{g.icon}</span>
                         <span style={{ fontSize:13 }}>{g.title}</span>
-                        <span style={{ fontSize:9, fontWeight:700, color:"#BE185D", letterSpacing:"0.12em", textTransform:"uppercase", opacity:0.7 }}>
+                        <span style={{ fontSize:9, fontWeight:700, color:g.color.ink, letterSpacing:"0.12em", textTransform:"uppercase", opacity:0.65 }}>
                           {g.items.length} tab{g.items.length !== 1 ? "s" : ""}
                         </span>
                       </button>
@@ -4399,17 +4425,16 @@ function App({ currentUser, onSignOut }) {
                   })}
                 </div>
 
-                {/* Sub-tabs of the open category appear underneath */}
-                {!dashActive && (
-                  <div style={{ marginTop:10, padding:"10px 12px", background:"rgba(255,255,255,0.55)", border:"1px solid rgba(255,255,255,0.7)", borderRadius:14 }}>
-                    <div style={{ fontSize:9, fontWeight:800, color:"#831843", letterSpacing:"0.2em", textTransform:"uppercase", opacity:0.75, marginBottom:6, paddingLeft:4 }}>
-                      {openGroup.icon} {openGroup.title}
-                    </div>
-                    <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-                      {openGroup.items.map(it => tabBtn(it.t, it.l))}
-                    </div>
+                {/* Sub-tabs of the open category — always visible so clicking a category
+                    tile reveals the tabs that fall under it, even from the dashboard. */}
+                <div style={{ marginTop:10, padding:"10px 12px", background:openGroup.color.bg, border:"1px solid rgba(255,255,255,0.7)", borderRadius:14 }}>
+                  <div style={{ fontSize:9, fontWeight:800, color:openGroup.color.ink, letterSpacing:"0.2em", textTransform:"uppercase", opacity:0.75, marginBottom:6, paddingLeft:4 }}>
+                    {openGroup.icon} {openGroup.title}
                   </div>
-                )}
+                  <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                    {openGroup.items.map(it => tabBtn(it.t, it.l))}
+                  </div>
+                </div>
               </div>
             );
           })()}
