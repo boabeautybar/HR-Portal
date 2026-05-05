@@ -5815,8 +5815,14 @@ function App({ currentUser, onSignOut }) {
             if (!confirm("Auto-fill missing days from the schedule? Empty cells will be set to the schedule's value, and faded/unconfirmed cells will be refreshed to match the latest schedule. Confirmed cells are kept as-is.")) return;
             const next = { ...attGrid };
             let filled = 0, refreshed = 0;
+            const noScheduleStaff = [];
             for (const s of attStaff) {
               next[s.ec] = { ...(next[s.ec] || {}) };
+              const schedRow = attSched[s.ec] || {};
+              const schedCellsForCycle = days.filter(dy => schedRow[dy.d]).length;
+              if (schedCellsForCycle === 0) {
+                noScheduleStaff.push(s);
+              }
               for (const dy of days) {
                 const cur = next[s.ec][dy.d];
                 const hint = schedHint(s.ec, dy.d);
@@ -5831,6 +5837,19 @@ function App({ currentUser, onSignOut }) {
                 }
                 // confirmed (no leading ~) cells: leave alone
               }
+            }
+            // Warn loudly if any staff in this branch+cycle have no schedule data.
+            // Most often these are managers whose schedule wasn't saved for this period.
+            if (noScheduleStaff.length > 0) {
+              const list = noScheduleStaff.map(s => "• " + s.name + " (" + s.ec + " · " + s.role + ")").join("\n");
+              const proceedMsg =
+                noScheduleStaff.length + " staff at " + attBranch + " have NO schedule data for " + cycLabel + ":\n\n" +
+                list + "\n\n" +
+                "Their attendance cells will stay blank. Open the Scheduling tab → " +
+                (noScheduleStaff.some(s => s.role !== "NT") ? "Manager Schedule sub-tab → " : "") +
+                "for this branch + cycle, generate or fill, and Save.\n\n" +
+                "Continue auto-filling everyone else?";
+              if (!confirm(proceedMsg)) return;
             }
             if (filled === 0 && refreshed === 0) {
               const validCodes = new Set(["W","WL","O","R","L","X","E"]);
@@ -5871,10 +5890,20 @@ function App({ currentUser, onSignOut }) {
             setAttGrid(next);
             try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
             catch (e) { alert("Could not save: " + (e.message || e)); return; }
+            // Per-role count of staff that ended up with at least one filled cell.
+            const filledByRole = { SM:0, AM:0, NT:0 };
+            for (const s of attStaff) {
+              const row = next[s.ec] || {};
+              if (days.some(dy => row[dy.d])) {
+                filledByRole[s.role] = (filledByRole[s.role] || 0) + 1;
+              }
+            }
             const parts = [];
             if (filled    > 0) parts.push("filled " + filled + " empty cell" + (filled === 1 ? "" : "s"));
             if (refreshed > 0) parts.push("refreshed " + refreshed + " unconfirmed cell" + (refreshed === 1 ? "" : "s") + " to match latest schedule");
-            alert("Auto-fill done — " + parts.join(", ") + ". Faded cells are unconfirmed — click any to confirm.");
+            const roleSummary = "Staff with at least one mirrored cell: " +
+              filledByRole.SM + " SM · " + filledByRole.AM + " AM · " + filledByRole.NT + " NT.";
+            alert("Auto-fill done — " + parts.join(", ") + ".\n\n" + roleSummary + "\n\nFaded cells are unconfirmed — click any to confirm.");
           };
 
           // Term cascade: from a chosen day, mark this period + next 2 cycles as "term"
