@@ -6331,6 +6331,166 @@ function App({ currentUser, onSignOut }) {
           };
 
           // Reset every attendance entry for this branch+cycle (warns first)
+          // ── Import Fresha appointments CSV ── any nail tech with at least one
+          // completed appointment on a given day in the current cycle is marked
+          // "On Time" for that day. Confirmed cells (bold, no leading ~) are
+          // preserved. Unconfirmed and empty cells are overwritten with "on".
+          const importFresha = () => {
+            const input = document.createElement("input");
+            input.type = "file";
+            input.accept = ".csv,text/csv";
+            input.onchange = async (e) => {
+              const file = e.target.files && e.target.files[0];
+              if (!file) return;
+              let text;
+              try { text = await file.text(); }
+              catch (err) { alert("Could not read file: " + (err.message || err)); return; }
+
+              // Tiny CSV parser — handles quoted fields with embedded commas / quotes.
+              const parseCSV = (s) => {
+                const rows = [];
+                let row = [], field = "", inQ = false;
+                for (let i = 0; i < s.length; i++) {
+                  const c = s[i];
+                  if (inQ) {
+                    if (c === '"') { if (s[i+1] === '"') { field += '"'; i++; } else inQ = false; }
+                    else field += c;
+                  } else {
+                    if (c === '"') inQ = true;
+                    else if (c === ',') { row.push(field); field = ""; }
+                    else if (c === '\n' || c === '\r') {
+                      if (field !== "" || row.length > 0) { row.push(field); rows.push(row); row = []; field = ""; }
+                      if (c === '\r' && s[i+1] === '\n') i++;
+                    } else field += c;
+                  }
+                }
+                if (field !== "" || row.length > 0) { row.push(field); rows.push(row); }
+                return rows;
+              };
+              const rows = parseCSV(text);
+              if (rows.length < 2) { alert("CSV looks empty — no rows found after the header."); return; }
+
+              const headers = rows[0].map(h => (h || "").trim().toLowerCase());
+              const findCol = (...names) => {
+                for (const n of names) {
+                  const exact = headers.indexOf(n);
+                  if (exact >= 0) return exact;
+                  const partial = headers.findIndex(h => h.includes(n));
+                  if (partial >= 0) return partial;
+                }
+                return -1;
+              };
+              const dateCol   = findCol("appointment date", "start date", "start time", "date");
+              const staffCol  = findCol("team member", "staff", "employee", "technician", "tech", "stylist");
+              const statusCol = findCol("appointment status", "status");
+              if (dateCol < 0 || staffCol < 0) {
+                alert(
+                  "Could not find the expected columns in this CSV.\n\n" +
+                  "Looking for a date column (e.g. 'Appointment date' / 'Date') and a staff column " +
+                  "(e.g. 'Team member' / 'Staff'). Found: " + headers.join(", ")
+                );
+                return;
+              }
+
+              const parseDate = (raw) => {
+                if (!raw) return null;
+                let v = String(raw).trim();
+                let d = new Date(v);
+                if (!isNaN(d.getTime())) return d;
+                const m = v.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/);
+                if (m) {
+                  let dd = +m[1], mm = +m[2], yy = +m[3];
+                  if (yy < 100) yy += 2000;
+                  d = new Date(yy, mm - 1, dd);
+                  if (!isNaN(d.getTime())) return d;
+                }
+                return null;
+              };
+              const norm = (s) => (s || "").toString().toLowerCase().replace(/[^a-z\s]/g, " ").replace(/\s+/g, " ").trim();
+              const staffByEc = new Map();
+              for (const s of attStaff) staffByEc.set(s.ec, s);
+              const matchEc = (raw) => {
+                const t = norm(raw);
+                if (!t) return null;
+                let best = null, bestScore = 0;
+                for (const s of attStaff) {
+                  const n = norm(s.name);
+                  if (!n) continue;
+                  if (n === t) return s.ec;                                      // exact full
+                  const tp = t.split(" "), np = n.split(" ");
+                  // Both first + last present
+                  if (tp[0] === np[0] && tp[tp.length-1] === np[np.length-1]) return s.ec;
+                  // First-name only match (use as last resort, but confirm uniqueness)
+                  if (tp[0] === np[0]) { best = best ? "AMBIG" : s.ec; bestScore = 1; }
+                }
+                return best === "AMBIG" ? null : best;
+              };
+
+              const next = JSON.parse(JSON.stringify(attGrid));
+              const cycleYmd = new Set(days.map(d => d.ymd));
+              const dayByYmd = {};
+              for (const d of days) dayByYmd[d.ymd] = d.d;
+
+              let total = 0, marked = 0, alreadyConfirmed = 0, outOfCycle = 0, notCompleted = 0;
+              const unmatched = new Set();
+              const seenDayPerEc = new Set(); // dedupe: only count first appt per (ec, day)
+
+              for (let i = 1; i < rows.length; i++) {
+                const r = rows[i];
+                if (!r || r.length === 0) continue;
+                if (r.length === 1 && (r[0] || "").trim() === "") continue;
+                total++;
+                if (statusCol >= 0) {
+                  const st = (r[statusCol] || "").toLowerCase();
+                  if (!(st.includes("complet") || st.includes("done") || st.includes("finished"))) {
+                    notCompleted++; continue;
+                  }
+                }
+                const dt = parseDate(r[dateCol]);
+                if (!dt) { outOfCycle++; continue; }
+                const ymd = dt.getFullYear() + "-" + String(dt.getMonth()+1).padStart(2,"0") + "-" + String(dt.getDate()).padStart(2,"0");
+                if (!cycleYmd.has(ymd)) { outOfCycle++; continue; }
+                const ec = matchEc(r[staffCol]);
+                if (!ec) { unmatched.add((r[staffCol] || "").trim() || "(blank)"); continue; }
+                const dKey = ec + "|" + ymd;
+                if (seenDayPerEc.has(dKey)) continue;
+                seenDayPerEc.add(dKey);
+                const dayNum = dayByYmd[ymd];
+                if (!next[ec]) next[ec] = {};
+                const cur = next[ec][dayNum];
+                if (cur && cur.charAt(0) !== "~") { alreadyConfirmed++; continue; }
+                next[ec][dayNum] = "on";
+                marked++;
+              }
+
+              if (marked === 0) {
+                alert(
+                  "Imported the CSV but didn't mark any cells On Time.\n\n" +
+                  "• Rows read: " + total + "\n" +
+                  "• Skipped (not completed): " + notCompleted + "\n" +
+                  "• Out of " + cycLabel + ": " + outOfCycle + "\n" +
+                  "• Unmatched staff: " + (unmatched.size === 0 ? "0" : unmatched.size + " — " + [...unmatched].slice(0, 6).join(", ") + (unmatched.size > 6 ? ", …" : "")) + "\n" +
+                  "• Already confirmed (kept): " + alreadyConfirmed
+                );
+                return;
+              }
+
+              setAttGrid(next);
+              try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
+              catch (err) { alert("Could not save: " + (err.message || err)); return; }
+              alert(
+                "✓ Fresha import done.\n\n" +
+                "• Rows read: " + total + "\n" +
+                "• Marked On Time: " + marked + "\n" +
+                "• Skipped (not completed): " + notCompleted + "\n" +
+                "• Out of " + cycLabel + ": " + outOfCycle + "\n" +
+                "• Already confirmed (kept): " + alreadyConfirmed +
+                (unmatched.size > 0 ? "\n• Unmatched staff (" + unmatched.size + "): " + [...unmatched].slice(0, 8).join(", ") + (unmatched.size > 8 ? ", …" : "") : "")
+              );
+            };
+            input.click();
+          };
+
           const resetCycle = async () => {
             const msg = "⚠ Reset attendance for " + attBranch + " — " + cycLabel + "?\n\n"
               + "This will undo ALL changes you've made for this cycle. Schedule-derived hints will reappear faded once you re-open the tab.\n\n"
@@ -6637,6 +6797,7 @@ function App({ currentUser, onSignOut }) {
                 <div style={{ flex:1 }} />
                 {attLoading && <span style={{ fontSize:11, color:"#9ca3af", fontStyle:"italic" }}>Loading…</span>}
                 <button onClick={autoFill} style={{ padding:"7px 14px", background:"#fef3c7", color:"#78350f", border:"1px solid #fbbf24", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Fill empty cells from schedule (faded, still unconfirmed)">✓ Auto-fill from Schedule</button>
+                <button onClick={importFresha} style={{ padding:"7px 14px", background:"#dbeafe", color:"#1e3a8a", border:"1px solid #93c5fd", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Upload a Fresha appointments CSV — every nail tech with a completed appointment that day is marked On Time">📤 Import Fresha CSV</button>
                 <button onClick={resetCycle} style={{ padding:"7px 14px", background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fca5a5", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Clear every cell for this branch + cycle (with confirmation)">↺ Reset Cycle</button>
               </div>
 
