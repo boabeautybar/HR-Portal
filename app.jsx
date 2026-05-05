@@ -5822,14 +5822,38 @@ function App({ currentUser, onSignOut }) {
               }
             }
             if (filled === 0) {
-              const schedEcs = Object.keys(attSched || {}).length;
-              const matchingEcs = attStaff.filter(s => attSched[s.ec]).length;
+              const validCodes = new Set(["W","WL","O","R","L","X","E"]);
+              const cycleDays = new Set(days.map(d => d.d));
+              const schedEcs = Object.keys(attSched || {});
+              const matchingEcs = attStaff.filter(s => attSched[s.ec]);
+              let totalCells = 0, cellsInCycle = 0, cellsWithCode = 0;
+              const sampleCodes = new Set();
+              for (const ec of schedEcs) {
+                const row = attSched[ec] || {};
+                for (const k in row) {
+                  totalCells++;
+                  sampleCodes.add(row[k]);
+                  if (cycleDays.has(parseInt(k, 10))) cellsInCycle++;
+                  if (validCodes.has(row[k])) cellsWithCode++;
+                }
+              }
+              const sampleEcs = matchingEcs.slice(0, 4).map(s => s.ec + " (" + s.name + ")").join(", ");
               alert(
                 "Auto-fill found nothing to fill.\n\n" +
                 "• Staff in this branch + cycle: " + attStaff.length + "\n" +
-                "• Schedule rows loaded: " + schedEcs + "\n" +
-                "• Schedule rows matching staff here: " + matchingEcs + "\n\n" +
-                "Most likely the schedule for " + attBranch + " (" + cycLabel + ") hasn't been saved yet. Open the Scheduling tab, save the schedule for this period, then come back."
+                "• Schedule rows loaded: " + schedEcs.length + "\n" +
+                "• Schedule rows matching staff here: " + matchingEcs.length + (sampleEcs ? " — " + sampleEcs : "") + "\n" +
+                "• Total day-cells in those rows: " + totalCells + "\n" +
+                "• Day-cells matching this cycle (" + Math.min(...cycleDays.size ? [...cycleDays] : [0]) + "..): " + cellsInCycle + "\n" +
+                "• Day-cells with valid status codes (W/WL/O/R/L/X/E): " + cellsWithCode + "\n" +
+                "• Codes seen: " + ([...sampleCodes].slice(0, 10).join(", ") || "(none)") + "\n\n" +
+                (totalCells === 0
+                  ? "The schedule rows are present but empty. Open the Scheduling tab on " + attBranch + " for this period and confirm the cells are filled in and saved."
+                  : cellsInCycle === 0
+                    ? "Schedule cells exist but their day numbers don't overlap with this cycle (" + cycLabel + "). The schedule may be saved under a different period."
+                    : cellsWithCode === 0
+                      ? "Schedule cells exist but use unrecognised status codes."
+                      : "Cells exist and look valid — please share this dialog with support.")
               );
               return;
             }
