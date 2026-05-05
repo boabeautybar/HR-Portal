@@ -3571,6 +3571,7 @@ function App({ currentUser, onSignOut }) {
   // ── Manager Schedule state ─────────────────────────────────────────
   const [mgrSchedBranch, setMgrSchedBranch] = useState(SALONS[0].name);
   const [mgrSchedCycle, setMgrSchedCycle] = useState(""); // YYYY-MM-25 cycle start
+  const [navCategory, setNavCategory] = useState("People"); // open nav category
   const [mgrSchedTick, setMgrSchedTick] = useState(0);    // bump after edits to force refetch
   const [mgrSchedHist, setMgrSchedHist] = useState({});   // {branch|ym: [grids...]} for undo
 
@@ -4323,43 +4324,92 @@ function App({ currentUser, onSignOut }) {
             const offboardLbl = "👋 Off-boarding" + (offList.length > 0 ? " (" + offList.length + ")" : "");
             const matLbl      = "🤱 Maternity ("  + matRecs.length + ")";
             const groups = [
-              { title: "People",     items: [
+              { key:"People",     icon:"👥", title:"People",     items: [
                   { t:"onboard",     l: onboardLbl },
                   { t:"offboard",    l: offboardLbl },
                   { t:"staff",       l:"👥 Staff List"    },
                   { t:"recruitment", l:"🎯 Recruitment"   },
                   { t:"maternity",   l: matLbl }
                 ] },
-              { title: "Operations", items: [
+              { key:"Operations", icon:"⚙️", title:"Operations", items: [
                   { t:"scheduling",  l:"📅 Scheduling"     },
                   { t:"locations",   l:"📍 Locations"      },
                   { t:"mgrclockins", l:"🕐 Mgr Clock-ins"  },
                   { t:"leave",       l:"🌴 Leave Planner"  }
                 ] },
-              { title: "Payroll",    items: [
+              { key:"Payroll",    icon:"💰", title:"Payroll",    items: [
                   { t:"attendance",  l:"📕 Attendance"     }
                 ] },
-              { title: "Insights",   items: [
+              { key:"Insights",   icon:"📊", title:"Insights",   items: [
                   { t:"alerts",      l:"🔔 Alerts"         },
                   { t:"activity",    l:"📜 Activity Log"   }
                 ] }
             ];
-            const sectionHead = { fontSize:10, fontWeight:800, color:"#FFFFFF", letterSpacing:"0.2em", textTransform:"uppercase", opacity:0.85, marginBottom:6, paddingLeft:6 };
+            // Category that owns the currently-active tab (so the panel auto-opens to where the user is).
+            const tabToCategory = {};
+            for (const g of groups) for (const it of g.items) tabToCategory[it.t] = g.key;
+            const activeCategoryByTab = tabToCategory[tab];
+            const openCategory = activeCategoryByTab || navCategory;
+            const openGroup = groups.find(g => g.key === openCategory) || groups[0];
+
+            const tileBase = {
+              flex:"1 1 0", minWidth:120, minHeight:108,
+              borderRadius:18, padding:"16px 14px",
+              background:"#FFFFFF", color:"#831843",
+              fontFamily:"inherit", fontWeight:800, fontSize:14,
+              cursor:"pointer", border:"none",
+              display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:6,
+              transition:"all .18s"
+            };
+            const tileNeon = (active) => ({
+              boxShadow: active
+                ? "0 0 0 2px #FF1493, 0 0 14px rgba(255,20,147,0.85), 0 0 28px rgba(255,20,147,0.55), 0 4px 14px rgba(190,24,93,0.32)"
+                : "0 0 0 2px #FBCFE8, 0 0 8px rgba(255,20,147,0.35), 0 2px 6px rgba(0,0,0,0.06)"
+            });
+            const dashActive = tab === "dashboard";
+
             return (
               <div style={{ paddingTop:12 }}>
-                {/* Dashboard pinned at the very top, on its own line */}
-                <div style={{ marginBottom:12 }}>
-                  {tabBtn("dashboard","🏠 Dashboard")}
+                {/* Big square category tiles — Dashboard plus the four groups */}
+                <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
+                  <button onClick={()=>tryChangeTab("dashboard")}
+                    style={{
+                      ...tileBase, ...tileNeon(dashActive),
+                      background: dashActive ? "#BE185D" : "#FFFFFF",
+                      color: dashActive ? "#FFFFFF" : "#831843"
+                    }}>
+                    <span style={{ fontSize:32, lineHeight:1 }}>🏠</span>
+                    <span style={{ fontSize:13 }}>Dashboard</span>
+                  </button>
+                  {groups.map(g => {
+                    const isOpen = openCategory === g.key;
+                    return (
+                      <button key={g.key} onClick={()=>setNavCategory(g.key)}
+                        style={{
+                          ...tileBase, ...tileNeon(isOpen),
+                          background: isOpen ? "#FCE7F3" : "#FFFFFF"
+                        }}>
+                        <span style={{ fontSize:32, lineHeight:1 }}>{g.icon}</span>
+                        <span style={{ fontSize:13 }}>{g.title}</span>
+                        <span style={{ fontSize:9, fontWeight:700, color:"#BE185D", letterSpacing:"0.12em", textTransform:"uppercase", opacity:0.7 }}>
+                          {g.items.length} tab{g.items.length !== 1 ? "s" : ""}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
-                {/* Categorised groups, each on its own row */}
-                {groups.map(g => (
-                  <div key={g.title} style={{ marginBottom:10 }}>
-                    <div style={sectionHead}>{g.title}</div>
+
+                {/* Sub-tabs of the open category appear underneath */}
+                {!dashActive && (
+                  <div style={{ marginTop:10, padding:"10px 12px", background:"rgba(255,255,255,0.55)", border:"1px solid rgba(255,255,255,0.7)", borderRadius:14 }}>
+                    <div style={{ fontSize:9, fontWeight:800, color:"#831843", letterSpacing:"0.2em", textTransform:"uppercase", opacity:0.75, marginBottom:6, paddingLeft:4 }}>
+                      {openGroup.icon} {openGroup.title}
+                    </div>
                     <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-                      {g.items.map(it => tabBtn(it.t, it.l))}
+                      {openGroup.items.map(it => tabBtn(it.t, it.l))}
                     </div>
                   </div>
-                ))}
+                )}
               </div>
             );
           })()}
