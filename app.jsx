@@ -3767,6 +3767,43 @@ function App({ currentUser, onSignOut }) {
     return () => { cancelled = true; };
   }, [tab, staff, managers]);
 
+  // ── Upcoming-cycle schedule check ── flags branches whose tech / manager
+  // schedule for the coming month hasn't been saved. Deadline is the 15th.
+  // Surfaces as a dashboard "Needs attention" item and as an Alerts entry.
+  const SCHED_ALERT_PINS = new Set(["1993", "2023", "3030"]); // Master, Kelly, Rochelle
+  const [upcomingMissing, setUpcomingMissing] = useState([]); // [{ branch, type, ym }]
+  const [upcomingChecked, setUpcomingChecked] = useState(false);
+  useEffect(() => {
+    if (!SCHED_ALERT_PINS.has(currentUser.pin)) return;
+    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
+    if (!(tab === "dashboard" || tab === "alerts")) return;
+    let cancelled = false;
+    const today = new Date();
+    // The cycle that starts on the 25th of the upcoming month (i.e. the next cycle to plan).
+    // - Before the 25th: upcoming = current calendar month's cycle.
+    // - On/after the 25th: the cycle starting in 5 days has already begun, so upcoming = next month.
+    let upY = today.getFullYear();
+    let upM = today.getMonth(); // 0-11
+    if (today.getDate() >= 25) { upM++; if (upM > 11) { upM = 0; upY++; } }
+    const upYm = upY + "-" + String(upM + 1).padStart(2, "0");
+    const safe = (p) => p.catch(() => null);
+    const isPopulated = (loaded) => {
+      if (!loaded || !loaded.grid) return false;
+      for (const ec in loaded.grid) for (const _ in loaded.grid[ec]) return true;
+      return false;
+    };
+    Promise.all(SALONS.flatMap(sl => [
+      safe(window.BOA_DB.loadSchedule(sl.name, upYm, false)).then(r => ({ branch: sl.name, type: "tech", saved: isPopulated(r) })),
+      safe(window.BOA_DB.loadSchedule(sl.name, upYm, true )).then(r => ({ branch: sl.name, type: "mgr",  saved: isPopulated(r) }))
+    ])).then(results => {
+      if (cancelled) return;
+      const missing = results.filter(r => !r.saved).map(r => ({ branch: r.branch, type: r.type, ym: upYm }));
+      setUpcomingMissing(missing);
+      setUpcomingChecked(true);
+    });
+    return () => { cancelled = true; };
+  }, [tab, currentUser.pin]);
+
   useEffect(() => {
     if (!window.BOA_DB || !window.BOA_DB.isReady) {
       setLoadError("Supabase isn't configured yet — fill in BOA_SUPABASE_CONFIG and reload.");
@@ -4704,18 +4741,48 @@ function App({ currentUser, onSignOut }) {
                 <span style={sectionRule} />
               </div>
               <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))", gap:11, marginBottom:24 }}>
-                {[
-                  stats.zna           > 0 && { i:"🚨", l: stats.zna + " staff with Z/NA risk", sub:"compliance issue", c:"#7f1d1d", bg:"#fee2e2", to:"staff" },
-                  stats.noContract    > 0 && { i:"📄", l: stats.noContract + " staff with no contract", sub:"upload contracts", c:"#7f1d1d", bg:"#fee2e2", to:"staff" },
-                  recentDepartures.length > 0 && { i:"👋", l: recentDepartures.length + " departure" + (recentDepartures.length !== 1 ? "s" : "") + " this week", sub:"in last 7 days", c:"#374151", bg:"#f3f4f6", to:"offboard" }
-                ].filter(Boolean).map(b => (
+                {(() => {
+                  // Schedule alert: only for users responsible for scheduling.
+                  let schedAlert = null;
+                  if (SCHED_ALERT_PINS.has(currentUser.pin) && upcomingChecked && upcomingMissing.length > 0) {
+                    const today = new Date();
+                    const upM = today.getDate() >= 25 ? today.getMonth() + 1 : today.getMonth();
+                    const upY = today.getFullYear() + (upM > 11 ? 1 : 0);
+                    const upMnorm = upM > 11 ? 0 : upM;
+                    const monthLbl = new Date(upY, upMnorm, 1).toLocaleDateString("en-ZA", { month:"long", year:"numeric" });
+                    const deadline = new Date(upY, upMnorm, 15);
+                    const overdue = today > deadline;
+                    const techMissing = upcomingMissing.filter(m => m.type === "tech").length;
+                    const mgrMissing  = upcomingMissing.filter(m => m.type === "mgr").length;
+                    const parts = [];
+                    if (techMissing > 0) parts.push(techMissing + " nail tech");
+                    if (mgrMissing  > 0) parts.push(mgrMissing  + " manager");
+                    schedAlert = {
+                      i: overdue ? "🚨" : "📆",
+                      l: parts.join(" + ") + " schedule" + (techMissing + mgrMissing !== 1 ? "s" : "") + " not saved for " + monthLbl,
+                      sub: overdue
+                        ? "OVERDUE — was due 15 " + new Date(upY, upMnorm, 15).toLocaleDateString("en-ZA", { month:"short" })
+                        : "Due by 15 " + new Date(upY, upMnorm, 15).toLocaleDateString("en-ZA", { month:"short" }),
+                      c: overdue ? "#7f1d1d" : "#92400e",
+                      bg: overdue ? "#fee2e2" : "#fef3c7",
+                      to:"scheduling"
+                    };
+                  }
+                  return [
+                    schedAlert,
+                    stats.zna           > 0 && { i:"🚨", l: stats.zna + " staff with Z/NA risk", sub:"compliance issue", c:"#7f1d1d", bg:"#fee2e2", to:"staff" },
+                    stats.noContract    > 0 && { i:"📄", l: stats.noContract + " staff with no contract", sub:"upload contracts", c:"#7f1d1d", bg:"#fee2e2", to:"staff" },
+                    recentDepartures.length > 0 && { i:"👋", l: recentDepartures.length + " departure" + (recentDepartures.length !== 1 ? "s" : "") + " this week", sub:"in last 7 days", c:"#374151", bg:"#f3f4f6", to:"offboard" }
+                  ];
+                })().filter(Boolean).map(b => (
                   <div key={b.l} onClick={()=>tryChangeTab(b.to)} style={{ background:b.bg, border:`1px solid ${b.c}33`, borderRadius:14, padding:"14px 16px", cursor:"pointer" }}>
                     <div style={{ fontSize:22 }}>{b.i}</div>
                     <div style={{ fontSize:13, fontWeight:800, color:b.c, marginTop:4 }}>{b.l}</div>
                     <div style={{ fontSize:10, fontWeight:600, color:b.c, opacity:0.7, marginTop:2 }}>{b.sub}</div>
                   </div>
                 ))}
-                {stats.zna === 0 && stats.noContract === 0 && recentDepartures.length === 0 && (
+                {stats.zna === 0 && stats.noContract === 0 && recentDepartures.length === 0 &&
+                 (!SCHED_ALERT_PINS.has(currentUser.pin) || (upcomingChecked && upcomingMissing.length === 0)) && (
                   <div style={{ background:"#dcfce7", border:"1px solid #86efac", borderRadius:14, padding:"14px 16px", color:"#14532d", fontWeight:700, fontSize:13 }}>
                     ✅ Nothing urgent — everything in good shape.
                   </div>
@@ -5185,7 +5252,29 @@ function App({ currentUser, onSignOut }) {
         {/* ── ALERTS TAB ── */}
         {tab==="alerts" && (()=>{
           const active = enriched.filter(s=>!s.onMat);
+          // Upcoming-cycle schedule alerts (only for users responsible for scheduling).
+          const schedAlerts = [];
+          if (SCHED_ALERT_PINS.has(currentUser.pin) && upcomingChecked && upcomingMissing.length > 0) {
+            const today = new Date();
+            const upM = today.getDate() >= 25 ? today.getMonth() + 1 : today.getMonth();
+            const upMnorm = upM > 11 ? 0 : upM;
+            const upY = today.getFullYear() + (upM > 11 ? 1 : 0);
+            const monthLbl = new Date(upY, upMnorm, 1).toLocaleDateString("en-ZA", { month:"long", year:"numeric" });
+            const deadline = new Date(upY, upMnorm, 15);
+            const overdue = today > deadline;
+            const sev = overdue ? "critical" : "warning";
+            for (const m of upcomingMissing) {
+              const what = m.type === "tech" ? "Nail tech schedule" : "Manager schedule";
+              schedAlerts.push({
+                type: sev,
+                msg: m.branch + " — " + what + " for " + monthLbl + " not yet saved." +
+                     (overdue ? " Was due 15 " + deadline.toLocaleDateString("en-ZA", { month:"short" }) + "." : " Due by 15 " + deadline.toLocaleDateString("en-ZA", { month:"short" }) + "."),
+                s: null
+              });
+            }
+          }
           const alertItems = [
+            ...schedAlerts,
             ...matRecs.filter(r=>r.matStatus==="on_mat"&&r.returnDate&&daysDiff(r.returnDate)<0).map(r=>({ type:"warning", msg:`${r.name} (${r.branch}) — return date ${fmt(r.returnDate)} was ${Math.abs(daysDiff(r.returnDate))} days ago. Confirm return or update dates.`, rec:r })),
             ...matRecs.filter(r=>r.matStatus==="on_mat"&&r.returnDate&&daysDiff(r.returnDate)>=0&&daysDiff(r.returnDate)<=14).map(r=>({ type:"info", msg:`${r.name} (${r.branch}) — returning in ${daysDiff(r.returnDate)} day(s) on ${fmt(r.returnDate)}`, rec:r })),
             ...active.filter(s=>s.permit==="z_na").map(s=>({ type:"critical", msg:`${s.name} (${s.branch}) — Z/NA: no valid work permit`, s })),
