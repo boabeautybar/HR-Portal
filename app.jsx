@@ -3668,10 +3668,13 @@ function App({ currentUser, onSignOut }) {
     setAttLoading(true);
     Promise.all([
       window.BOA_DB.loadAttendance(attBranch, attYM),
-      window.BOA_DB.loadSchedule(attBranch, attYM, false)
-    ]).then(([att, sch]) => {
+      window.BOA_DB.loadSchedule(attBranch, attYM, false),
+      window.BOA_DB.loadSchedule(attBranch, attYM, true)
+    ]).then(([att, sch, mgrSch]) => {
       setAttGrid((att && att.grid) || {});
-      setAttSched((sch && sch.grid) || {});
+      const techGrid = (sch    && sch.grid)    || {};
+      const mgrGrid  = (mgrSch && mgrSch.grid) || {};
+      setAttSched({ ...techGrid, ...mgrGrid });
     }).catch(e => console.error("Attendance load:", e))
       .finally(() => setAttLoading(false));
   }, [tab, attBranch, attYM]);
