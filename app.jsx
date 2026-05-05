@@ -3666,10 +3666,11 @@ function App({ currentUser, onSignOut }) {
     if (tab !== "attendance") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     setAttLoading(true);
+    const safe = (p) => p.catch(() => null);
     Promise.all([
-      window.BOA_DB.loadAttendance(attBranch, attYM),
-      window.BOA_DB.loadSchedule(attBranch, attYM, false),
-      window.BOA_DB.loadSchedule(attBranch, attYM, true)
+      safe(window.BOA_DB.loadAttendance(attBranch, attYM)),
+      safe(window.BOA_DB.loadSchedule(attBranch, attYM, false)),
+      safe(window.BOA_DB.loadSchedule(attBranch, attYM, true))
     ]).then(([att, sch, mgrSch]) => {
       setAttGrid((att && att.grid) || {});
       const techGrid = (sch    && sch.grid)    || {};
@@ -5819,6 +5820,18 @@ function App({ currentUser, onSignOut }) {
                 const hint = schedHint(s.ec, dy.d);
                 if (hint) { next[s.ec][dy.d] = "~" + hint; filled++; }
               }
+            }
+            if (filled === 0) {
+              const schedEcs = Object.keys(attSched || {}).length;
+              const matchingEcs = attStaff.filter(s => attSched[s.ec]).length;
+              alert(
+                "Auto-fill found nothing to fill.\n\n" +
+                "• Staff in this branch + cycle: " + attStaff.length + "\n" +
+                "• Schedule rows loaded: " + schedEcs + "\n" +
+                "• Schedule rows matching staff here: " + matchingEcs + "\n\n" +
+                "Most likely the schedule for " + attBranch + " (" + cycLabel + ") hasn't been saved yet. Open the Scheduling tab, save the schedule for this period, then come back."
+              );
+              return;
             }
             setAttGrid(next);
             try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
