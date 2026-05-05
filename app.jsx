@@ -4272,9 +4272,24 @@ function App({ currentUser, onSignOut }) {
     }
     setSchedSubTab(st);
   };
-  const tabBtn = (t,label) => (
-    <button key={t} onClick={()=>tryChangeTab(t)} style={{ padding:"10px 18px", borderRadius:14, cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:13, border:"none", background:tab===t?"#BE185D":"#FFFFFF", color:tab===t?"#FFFFFF":"#831843", boxShadow:tab===t?"0 4px 12px rgba(190,24,93,0.32)":"0 2px 6px rgba(0,0,0,0.06)", transition:"all .18s", margin:"4px 4px" }}>{label}</button>
-  );
+  // Generic pill button for tabs and pseudo-tabs.
+  // - For a real tab, pass `t`. Active state uses `tab === t` and click routes
+  //   through tryChangeTab(t).
+  // - For a composite/virtual entry that has to set multiple sub-state values,
+  //   pass `isActive` and `onClick` to override.
+  const tabBtnX = ({ t, label, isActive, onClick }) => {
+    const active = isActive != null ? isActive : tab === t;
+    const handle = onClick || (() => tryChangeTab(t));
+    return (
+      <button key={t || label} onClick={handle}
+        style={{ padding:"10px 18px", borderRadius:14, cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:13, border:"none",
+          background: active ? "#BE185D" : "#FFFFFF",
+          color:    active ? "#FFFFFF" : "#831843",
+          boxShadow: active ? "0 4px 12px rgba(190,24,93,0.32)" : "0 2px 6px rgba(0,0,0,0.06)",
+          transition:"all .18s", margin:"4px 4px" }}>{label}</button>
+    );
+  };
+  const tabBtn = (t, label) => tabBtnX({ t, label });
 
   if (loading) return (
     <div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"100vh", flexDirection:"column", gap:14, fontFamily:"'Outfit',system-ui,sans-serif", color:"#831843", letterSpacing:"0.18em", fontSize:14, fontWeight:700, textTransform:"uppercase" }}>
@@ -4344,7 +4359,14 @@ function App({ currentUser, onSignOut }) {
                   { t:"onboard",     l: onboardLbl },
                   { t:"offboard",    l: offboardLbl },
                   { t:"staff",       l:"👥 Staff List"    },
-                  { t:"recruitment", l:"🎯 Recruitment"   },
+                  { t:"recruitment", l:"🎯 Recruitment",
+                    isActive: tab==="recruitment" && !(recruitSubTab==="mgrRecruit" && mgrSubTab==="planner"),
+                    onClick: () => { setRecruitSubTab("nailTech"); tryChangeTab("recruitment"); }
+                  },
+                  { t:"mgrPlanner",  l:"🧩 Manager Planner",
+                    isActive: tab==="recruitment" && recruitSubTab==="mgrRecruit" && mgrSubTab==="planner",
+                    onClick: () => { setRecruitSubTab("mgrRecruit"); setMgrSubTab("planner"); tryChangeTab("recruitment"); }
+                  },
                   { t:"maternity",   l: matLbl }
                 ] },
               { key:"Operations", icon:"⚙️", title:"Operations",
@@ -4397,14 +4419,14 @@ function App({ currentUser, onSignOut }) {
               <div style={{ paddingTop:12 }}>
                 {/* Big square category tiles — Dashboard plus the four groups */}
                 <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
-                  <button onClick={()=>tryChangeTab("dashboard")}
+                  <button onClick={()=>tryChangeTab("dashboard")} title="Home"
                     style={{
                       ...tileBase, ...tileNeon(dashActive),
                       background: dashActive ? dashColor.bgActive : dashColor.bg,
-                      color: dashColor.ink
+                      color: dashColor.ink,
+                      flex:"0 0 108px", minWidth:108
                     }}>
-                    <span style={{ fontSize:32, lineHeight:1 }}>🏠</span>
-                    <span style={{ fontSize:13 }}>Dashboard</span>
+                    <span style={{ fontSize:46, lineHeight:1 }}>🏠</span>
                   </button>
                   {groups.map(g => {
                     const isOpen = openCategory === g.key;
@@ -4432,7 +4454,7 @@ function App({ currentUser, onSignOut }) {
                     {openGroup.icon} {openGroup.title}
                   </div>
                   <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-                    {openGroup.items.map(it => tabBtn(it.t, it.l))}
+                    {openGroup.items.map(it => tabBtnX({ t: it.t, label: it.l, isActive: it.isActive, onClick: it.onClick }))}
                   </div>
                 </div>
               </div>
