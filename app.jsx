@@ -4019,7 +4019,9 @@ function App({ currentUser, onSignOut }) {
     });
   }, [staff, onMatEcs, pregnantEcs, offboardedMap, matRecs]);
 
-  // Filtered & sorted staff list — always sort by EC (B-number then T-number)
+  // Filtered & sorted staff list — always sort by EC (B-number then T-number).
+  // Departed staff (leftDate has passed) are pinned to the bottom for the 31-day
+  // grace window so the active list stays clean.
   const filtered = useMemo(() => {
     let list = enriched.filter(s => {
       if (s.offHidden) return false;          // hide off-boarded staff after the 31-day display window
@@ -4031,7 +4033,13 @@ function App({ currentUser, onSignOut }) {
       if (search && !s.name.toLowerCase().includes(search.toLowerCase()) && !s.ec.toLowerCase().includes(search.toLowerCase())) return false;
       return true;
     });
-    return list.sort(ecSort);
+    const isDeparted = (s) => s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft >= 0;
+    return list.sort((a, b) => {
+      const ad = isDeparted(a) ? 1 : 0;
+      const bd = isDeparted(b) ? 1 : 0;
+      if (ad !== bd) return ad - bd;          // active first, departed last
+      return ecSort(a, b);
+    });
   }, [enriched, fShow, fBranch, fPermit, fContract, search]);
 
   const stats = useMemo(() => {
@@ -4394,12 +4402,14 @@ function App({ currentUser, onSignOut }) {
                     {filtered.length===0 && <tr><td colSpan={10} style={{ textAlign:"center", padding:40, color:"#9ca3af" }}>No results.</td></tr>}
                     {filtered.map(s => {
                       const dBack = s.matRec?.returnDate ? daysDiff(s.matRec.returnDate) : null;
-                      const rowBg = s.onMat ? "#fdf4ff" : s.pregnant ? "#fffbeb" : s.permit==="z_na" ? "#FAEEF1" : "#fff";
+                      const departed = s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft >= 0;
+                      const rowBg = departed ? "#f3f4f6" : s.onMat ? "#fdf4ff" : s.pregnant ? "#fffbeb" : s.permit==="z_na" ? "#FAEEF1" : "#fff";
+                      const rowOpacity = departed ? 0.5 : s.onMat ? 0.6 : 1;
                       return (
-                        <tr key={s._id} style={{ background:rowBg, borderTop:`1px solid ${bdr}`, opacity:s.onMat?0.6:1 }}>
-                          <td style={{ padding:"10px 12px", fontFamily:"monospace", fontSize:11, color:"#8E5570", fontWeight:700 }}>{s.ec}</td>
-                          <td style={{ padding:"10px 12px", fontWeight:700, color:s.onMat?"#7A4258":s.transferring?"#0369a1":"#111827", whiteSpace:"nowrap", fontStyle:s.onMat?"italic":"normal" }}>
-                            {s.onMat?"🤱 ":s.pregnant?"🤰 ":s.isShadow?"🔄 Arriving · ":s.transferring&&!s.isShadow?"🔄 Transferring · ":""}{s.name}
+                        <tr key={s._id} style={{ background:rowBg, borderTop:`1px solid ${bdr}`, opacity:rowOpacity }}>
+                          <td style={{ padding:"10px 12px", fontFamily:"monospace", fontSize:11, color:"#8E5570", fontWeight:700, textDecoration: departed ? "line-through" : "none" }}>{s.ec}</td>
+                          <td style={{ padding:"10px 12px", fontWeight:700, color: departed ? "#6b7280" : s.onMat?"#7A4258":s.transferring?"#0369a1":"#111827", whiteSpace:"nowrap", fontStyle:s.onMat?"italic":"normal", textDecoration: departed ? "line-through" : "none" }}>
+                            {departed?"👋 ":s.onMat?"🤱 ":s.pregnant?"🤰 ":s.isShadow?"🔄 Arriving · ":s.transferring&&!s.isShadow?"🔄 Transferring · ":""}{s.name}
                             {s.transferring&&!s.isShadow&&<span style={{ fontSize:10, marginLeft:5, background:"#FBCFE8", color:"#BE185D", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>→ {s.transferTo} on {s.transferDate?new Date(s.transferDate).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"}):""}</span>}
                             {s.isShadow&&<span style={{ fontSize:10, marginLeft:5, background:"#FBCFE8", color:"#BE185D", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>from {s.transferFrom} on {s.transferDate?new Date(s.transferDate).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"}):""}</span>}
                           </td>
@@ -4422,11 +4432,13 @@ function App({ currentUser, onSignOut }) {
                             })() : <span style={{ color:"#d1d5db" }}>—</span>}
                           </td>
                           <td style={{ padding:"10px 12px" }}>
-                            {s.onMat
-                              ? <Chip bg="#fce7f3" color="#7A4258" border="#fbcfe8">🤱 On Maternity</Chip>
-                              : s.pregnant
-                                ? <Chip bg="#fef3c7" color="#92400e" border="#fde68a">🤰 Pregnant – In Store</Chip>
-                                : <span style={{ color:"#d1d5db", fontSize:11 }}>—</span>}
+                            {departed
+                              ? <Chip bg="#e5e7eb" color="#374151" border="#9ca3af">👋 Left {fmt(s.offRec.leftDate)}{s.offDaysSinceLeft > 0 ? " · " + s.offDaysSinceLeft + "d ago" : s.offDaysSinceLeft === 0 ? " · today" : ""}</Chip>
+                              : s.onMat
+                                ? <Chip bg="#fce7f3" color="#7A4258" border="#fbcfe8">🤱 On Maternity</Chip>
+                                : s.pregnant
+                                  ? <Chip bg="#fef3c7" color="#92400e" border="#fde68a">🤰 Pregnant – In Store</Chip>
+                                  : <span style={{ color:"#d1d5db", fontSize:11 }}>—</span>}
                           </td>
                           <td style={{ padding:"10px 12px", fontSize:11 }}>
                             {s.onMat && s.matRec?.returnDate
