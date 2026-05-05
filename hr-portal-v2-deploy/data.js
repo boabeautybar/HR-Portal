@@ -459,6 +459,36 @@
     return v;
   }
 
+  // ---------- Activity log (boa_activity_log_v1) ----------
+  // Single row holding an array of recent actions (newest-first), capped at
+  // ACTIVITY_LIMIT entries. Each entry:
+  //   { id, when (ISO), who, role, action, target, details }
+  var ACTIVITY_KEY = "boa_activity_log_v1";
+  var ACTIVITY_LIMIT = 1000;
+  async function loadActivity() {
+    var res = await sb.from("app_state").select("value").eq("key", ACTIVITY_KEY).maybeSingle();
+    if (res.error) { console.error("loadActivity:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function appendActivity(entry) {
+    if (!entry || !entry.action) return null;
+    var existing = await loadActivity();
+    var rec = {
+      id:      "act_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7),
+      when:    new Date().toISOString(),
+      who:     entry.who     || "Unknown",
+      role:    entry.role    || "",
+      action:  entry.action  || "",
+      target:  entry.target  || "",
+      details: entry.details || ""
+    };
+    var next = [rec].concat(existing).slice(0, ACTIVITY_LIMIT);
+    var res = await sb.from("app_state").upsert({ key: ACTIVITY_KEY, value: next });
+    if (res.error) { console.error("appendActivity:", res.error); return null; }
+    return rec;
+  }
+
   // ---------- Maternity CRUD ----------
   async function saveMat(m) {
     var row = matToRow(m);
@@ -519,6 +549,10 @@
 
     // Manager clock-ins viewer
     listRecentManagerClockins: listRecentManagerClockins,
-    loadClockinMeta:           loadClockinMeta
+    loadClockinMeta:           loadClockinMeta,
+
+    // Activity log
+    loadActivity:    loadActivity,
+    appendActivity:  appendActivity
   };
 })();

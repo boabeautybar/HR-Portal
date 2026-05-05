@@ -1,5 +1,17 @@
 const { useState, useMemo, useEffect } = React;
 
+// ─── STAFF PIN LOGIN ────────────────────────────────────────────────────────────
+// 4-digit PINs. Lookup is by exact PIN string. Each user is recorded against
+// activity log entries so we can see who did each edit / transfer / save.
+const STAFF_USERS = {
+  "1993": { name: "Master",  role: "Master Admin"   },
+  "2023": { name: "Kelly",   role: "Ops Manager"    },
+  "6678": { name: "Joy",     role: "HR Generalist"  },
+  "7890": { name: "Siphe",   role: "Recruiter"      },
+  "5990": { name: "Ops Admin", role: "Ops Admin"    }
+};
+const PIN_SESSION_KEY = "boa_hr_current_user_v1";
+
 // ─── HELPERS ────────────────────────────────────────────────────────────────────
 const TODAY = new Date("2026-04-27");
 function daysDiff(d) { return d ? Math.ceil((new Date(d) - TODAY) / 86400000) : null; }
@@ -2745,6 +2757,9 @@ function Schedule({ allStaff }) {
     try {
       const v = await window.BOA_DB.saveSchedule(branch, ym, grid, false);
       setSavedAt(v.savedAt); setDirty(false);
+      if (window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY("Saved tech schedule", branch + " · " + ym, "");
+      }
     } catch (e) { alert("Could not save: " + (e.message || e)); }
     finally { setSaving(false); }
   }
@@ -3339,9 +3354,105 @@ function Schedule({ allStaff }) {
   );
 }
 
+// ─── PIN LOGIN SCREEN ─────────────────────────────────────────────────────────
+// Gates the whole app behind a 4-digit personal PIN so the activity log can
+// attribute every edit / transfer / off-board / schedule save to a specific
+// staff member. Session is stored in sessionStorage (cleared on tab close).
+function PinLogin({ onUnlock }) {
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState("");
+
+  const submit = (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    const u = STAFF_USERS[pin];
+    if (!u) {
+      setError("Wrong PIN. Please try again.");
+      setPin("");
+      return;
+    }
+    const session = { pin, name: u.name, role: u.role, signedInAt: new Date().toISOString() };
+    try { sessionStorage.setItem(PIN_SESSION_KEY, JSON.stringify(session)); } catch (_) {}
+    window.BOA_CURRENT_USER = session;
+    onUnlock(session);
+  };
+
+  return (
+    <div style={{ minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center", background:"linear-gradient(180deg,#FCE7F3 0%,#FFFFFF 50%)", fontFamily:"'DM Sans',sans-serif" }}>
+      <form onSubmit={submit} style={{ background:"#fff", padding:"36px 40px", borderRadius:18, border:"1px solid #FBCFE8", boxShadow:"0 10px 30px rgba(190,24,93,0.15)", width:340, textAlign:"center" }}>
+        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:28, color:"#831843", fontWeight:700, marginBottom:6 }}>BOA HR</div>
+        <div style={{ fontSize:12, color:"#BE185D", letterSpacing:"0.16em", textTransform:"uppercase", fontWeight:700, marginBottom:22 }}>Staff Sign-In</div>
+        <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#831843", letterSpacing:"0.08em", textAlign:"left", marginBottom:6 }}>ENTER YOUR 4-DIGIT PIN</label>
+        <input
+          type="password"
+          inputMode="numeric"
+          pattern="[0-9]*"
+          maxLength={4}
+          value={pin}
+          autoFocus
+          onChange={e => { setPin(e.target.value.replace(/\D/g,"").slice(0,4)); setError(""); }}
+          style={{ width:"100%", padding:"12px 14px", fontSize:22, letterSpacing:"0.5em", textAlign:"center", border:"1px solid #FBCFE8", borderRadius:10, fontFamily:"inherit", color:"#831843" }}
+          placeholder="••••"
+        />
+        {error && <div style={{ color:"#dc2626", fontSize:12, marginTop:10, fontWeight:600 }}>{error}</div>}
+        <button type="submit" disabled={pin.length !== 4}
+          style={{ marginTop:18, width:"100%", padding:"11px 14px", background:pin.length===4?"#BE185D":"#FBCFE8", color:pin.length===4?"#fff":"#9F1A4F", border:"none", borderRadius:10, cursor:pin.length===4?"pointer":"not-allowed", fontFamily:"inherit", fontSize:13, fontWeight:700, letterSpacing:"0.06em" }}>
+          UNLOCK
+        </button>
+        <div style={{ fontSize:10, color:"#9CA3AF", marginTop:14 }}>Each action you take is logged with your name.</div>
+      </form>
+    </div>
+  );
+}
+
+// ─── APP GATE ─────────────────────────────────────────────────────────────────
+// Mounts the PIN sign-in screen until a valid user is set. Once unlocked, the
+// real <App/> mounts. Done as a wrapper so <App/>'s hooks always run in the
+// same order — putting the PIN check inside <App/> would change hook count.
+function AppGate() {
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      const raw = sessionStorage.getItem(PIN_SESSION_KEY);
+      if (!raw) return null;
+      const s = JSON.parse(raw);
+      if (s && STAFF_USERS[s.pin]) {
+        window.BOA_CURRENT_USER = s;
+        return s;
+      }
+    } catch (_) {}
+    return null;
+  });
+  if (!currentUser) {
+    return <PinLogin onUnlock={(s) => setCurrentUser(s)} />;
+  }
+  const signOut = () => {
+    try { sessionStorage.removeItem(PIN_SESSION_KEY); } catch (_) {}
+    window.BOA_CURRENT_USER = null;
+    setCurrentUser(null);
+  };
+  return <App currentUser={currentUser} onSignOut={signOut} />;
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────────
 let seed = 5000;
-function App() {
+function App({ currentUser, onSignOut }) {
+  // ── Activity logger — records who did what to the boa_activity_log_v1 row.
+  // Failures are swallowed so a logging hiccup never blocks the actual edit.
+  const logActivity = async (action, target, details) => {
+    if (!window.BOA_DB || !window.BOA_DB.appendActivity) return;
+    const u = currentUser || window.BOA_CURRENT_USER || {};
+    try {
+      await window.BOA_DB.appendActivity({
+        who:     u.name || "Unknown",
+        role:    u.role || "",
+        action:  action || "",
+        target:  target || "",
+        details: details || ""
+      });
+    } catch (e) { console.warn("logActivity:", e); }
+  };
+  // Expose for components defined outside App() (e.g. <Schedule/>).
+  useEffect(() => { window.BOA_LOG_ACTIVITY = logActivity; }, [currentUser]);
+
   const [staff, setStaff] = useState([]);
   const [matRecs, setMatRecs] = useState([]);
   const [tab, setTab] = useState("staff");
@@ -3371,6 +3482,22 @@ function App() {
 
   // ── Manager personal PIN registry (boa_mgr_pins_v1) ─────────────────
   const [mgrPins, setMgrPins] = useState({});         // {ec: "6-digit-pin"}
+
+  // ── Activity log viewer state ──────────────────────────────────────
+  const [activityRows, setActivityRows]   = useState([]);
+  const [activityLoad, setActivityLoad]   = useState(false);
+  const [activityFWho, setActivityFWho]   = useState("All");
+  const [activityFAction, setActivityFAction] = useState("All");
+  const [activityTick, setActivityTick]   = useState(0);
+  useEffect(() => {
+    if (tab !== "activity") return;
+    if (!window.BOA_DB || !window.BOA_DB.loadActivity) return;
+    setActivityLoad(true);
+    window.BOA_DB.loadActivity()
+      .then(rows => setActivityRows(Array.isArray(rows) ? rows : []))
+      .catch(() => setActivityRows([]))
+      .finally(() => setActivityLoad(false));
+  }, [tab, activityTick]);
 
   // ── Manager Schedule state ─────────────────────────────────────────
   const [mgrSchedBranch, setMgrSchedBranch] = useState(SALONS[0].name);
@@ -3857,9 +3984,15 @@ function App() {
 
   async function saveStaff(f) {
     try {
+      const isEdit = f._id !== undefined;
       const saved = await window.BOA_DB.saveStaff(f);
-      setStaff(p => f._id !== undefined ? p.map(x => x._id === f._id ? saved : x) : [...p, saved]);
+      setStaff(p => isEdit ? p.map(x => x._id === f._id ? saved : x) : [...p, saved]);
       setStaffModal(null);
+      logActivity(
+        isEdit ? "Edited staff" : "Added staff",
+        (saved.name || "") + (saved.ec ? " (" + saved.ec + ")" : ""),
+        "Branch: " + (saved.branch || "—")
+      );
     } catch (e) { alert("Could not save staff: " + (e.message || e)); }
   }
 
@@ -3891,6 +4024,13 @@ function App() {
       return list;
     });
     setTransferModal(null);
+    logActivity(
+      isPending ? "Scheduled transfer" : "Transferred staff",
+      (staff.name || "") + (staff.ec ? " (" + staff.ec + ")" : ""),
+      (staff.branch || "—") + " → " + (toBranch || "—") +
+        (transferDate ? " on " + transferDate : "") +
+        (note ? " · " + note : "")
+    );
   }
 
   function cancelTransfer(staff) {
@@ -3904,6 +4044,11 @@ function App() {
       return list;
     });
     setTransferModal(null);
+    logActivity(
+      "Cancelled transfer",
+      (staff.name || "") + (staff.ec ? " (" + staff.ec + ")" : ""),
+      "Was → " + (staff.transferTo || "—")
+    );
   }
   async function saveMat(f) {
     try {
@@ -3918,8 +4063,9 @@ function App() {
   }
   async function saveMgr(f, newPin) {
     try {
+      const isEdit = f._id !== undefined;
       const saved = await window.BOA_DB.saveManager(f);
-      setManagers(p => f._id !== undefined ? p.map(x => x._id === f._id ? saved : x) : [...p, saved]);
+      setManagers(p => isEdit ? p.map(x => x._id === f._id ? saved : x) : [...p, saved]);
       // Persist personal PIN if it was edited (validates 6 digits or empty-to-clear)
       if (newPin !== undefined) {
         const ec = saved.ec || f.ec;
@@ -3931,10 +4077,21 @@ function App() {
         catch (pe) { alert("Manager saved but PIN could not be saved: " + (pe.message || pe)); }
       }
       setMgrModal(null);
+      logActivity(
+        isEdit ? "Edited manager" : "Added manager",
+        (saved.name || "") + (saved.ec ? " (" + saved.ec + ")" : ""),
+        (saved.role || "") + (saved.branch ? " · " + saved.branch : "")
+      );
     } catch (e) { alert("Could not save: " + (e.message || e)); }
   }
   async function delMgr(id) {
-    try { await window.BOA_DB.deleteManager(id); setManagers(p => p.filter(x => x._id !== id)); setMgrModal(null); }
+    const target = managers.find(x => x._id === id);
+    try {
+      await window.BOA_DB.deleteManager(id);
+      setManagers(p => p.filter(x => x._id !== id));
+      setMgrModal(null);
+      if (target) logActivity("Deleted manager", target.name + (target.ec ? " (" + target.ec + ")" : ""), target.branch || "");
+    }
     catch (e) { alert("Could not delete: " + (e.message || e)); }
   }
 
@@ -4028,6 +4185,14 @@ function App() {
             {tabBtn("attendance", "📕 Attendance")}
             {tabBtn("leave", "🌴 Leave Planner")}
             {tabBtn("mgrclockins", "🕐 Mgr Clock-ins")}
+            {tabBtn("activity", "📜 Activity Log")}
+          </div>
+          <div style={{ display:"flex", justifyContent:"flex-end", alignItems:"center", gap:10, paddingTop:8, fontSize:11, color:"#831843" }}>
+            <span>Signed in as <strong>{currentUser.name}</strong> · {currentUser.role}</span>
+            <button onClick={onSignOut}
+              style={{ background:"#fff", border:"1px solid #FBCFE8", color:"#831843", borderRadius:7, padding:"4px 10px", cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit" }}>
+              Sign out
+            </button>
           </div>
         </div>
       </div>
@@ -5078,7 +5243,8 @@ function App() {
           const addOb = () => {
             if (!obForm.name || !obForm.startDate) { alert("Name and start date are required."); return; }
             let next;
-            if (obForm._editId) {
+            const wasEdit = !!obForm._editId;
+            if (wasEdit) {
               next = obList.map(r => r._id === obForm._editId
                 ? { ...r, name: obForm.name, ec: obForm.ec, branch: obForm.branch, position: obForm.position, positionOther: obForm.positionOther||"", startDate: obForm.startDate, notes: obForm.notes, updatedAt: new Date().toISOString() }
                 : r);
@@ -5087,6 +5253,11 @@ function App() {
               next = [...obList, newRec];
             }
             persistOb(next);
+            logActivity(
+              wasEdit ? "Edited onboarding" : "Onboarded staff",
+              obForm.name + (obForm.ec ? " (" + obForm.ec + ")" : ""),
+              (obForm.position || "") + " · " + (obForm.branch || "") + " · start " + obForm.startDate
+            );
             setObForm({ name:"", ec:"", branch: SALONS[0].name, position:"Nail Tech", positionOther:"", startDate:"", notes:"", _editId: null });
           };
           const editOb = (r) => {
@@ -5094,7 +5265,12 @@ function App() {
             try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch(_) {}
           };
           const cancelEdit = () => setObForm({ name:"", ec:"", branch: SALONS[0].name, position:"Nail Tech", positionOther:"", startDate:"", notes:"", _editId:null });
-          const delOb = (id) => { if (!confirm("Remove this onboarding record?")) return; persistOb(obList.filter(r => r._id !== id)); };
+          const delOb = (id) => {
+            if (!confirm("Remove this onboarding record?")) return;
+            const tgt = obList.find(r => r._id === id);
+            persistOb(obList.filter(r => r._id !== id));
+            if (tgt) logActivity("Removed onboarding", (tgt.name || "") + (tgt.ec ? " (" + tgt.ec + ")" : ""), tgt.branch || "");
+          };
 
           return (
             <div>
@@ -5220,13 +5396,20 @@ function App() {
             if (!sRec) { alert("Staff not found."); return; }
             const rec = { ec: sRec.ec, name: sRec.name, branch: sRec.branch||"", leftDate: date, reason, notes, addedAt: new Date().toISOString() };
             persistOff([...offList, rec]);
+            logActivity(
+              "Off-boarded staff",
+              (sRec.name || "") + " (" + sRec.ec + ")",
+              "Last day " + date + (reason ? " · " + reason : "") + (sRec.branch ? " · " + sRec.branch : "")
+            );
             document.getElementById("_offEc").value = "";
             document.getElementById("_offDate").value = todayStr;
             document.getElementById("_offNotes").value = "";
           };
           const undoOff = (ec) => {
             if (!confirm("Restore this person to active staff?")) return;
+            const tgt = offList.find(o => o.ec === ec);
             persistOff(offList.filter(o => o.ec !== ec));
+            if (tgt) logActivity("Restored from off-board", (tgt.name || "") + " (" + tgt.ec + ")", tgt.branch || "");
           };
           const submitQuickPick = () => {
             if (!quickPick) return;
@@ -5239,6 +5422,11 @@ function App() {
             const finalNotes = userNotes ? userNotes + "\n" + autoNote : autoNote;
             const rec = { ec: quickPick.ec, name: quickPick.name, branch: quickPick.branch || "", leftDate: lastDay, reason, notes: finalNotes, addedAt: new Date().toISOString() };
             persistOff([...offList, rec]);
+            logActivity(
+              "Off-boarded staff",
+              (quickPick.name || "") + " (" + quickPick.ec + ")",
+              "Last day " + lastDay + (reason ? " · " + reason : "") + " · auto-detected from attendance"
+            );
             setQuickPick(null);
           };
           const activeStaffOpts = [
@@ -6514,6 +6702,7 @@ function App() {
               setMgrSchedSaved(mgrSchedDraft);
               setMgrSchedSavedAt((v && v.savedAt) || new Date().toISOString());
               setMgrSchedDirty(false);
+              logActivity("Saved manager schedule", branch + " · " + ymKey, "");
             } catch (e) {
               alert("Could not save: " + (e.message || e));
             } finally {
@@ -6617,6 +6806,7 @@ function App() {
                       setMgrSchedHist(h => { const n = { ...h }; delete n[editKey]; return n; });
                       setMgrSchedTick(t => t + 1);
                       setMgrTrashTick(t => t + 1);
+                      logActivity("Deleted manager schedule", branch + " · " + ymKey, "Moved to 7-day trash");
                     } catch (e) {
                       alert("Could not delete schedule: " + (e.message || e));
                     }
@@ -6919,6 +7109,7 @@ function App() {
                                     if (t.branch === branch && t.ym === ymKey) {
                                       setMgrSchedTick(x => x + 1);
                                     }
+                                    logActivity("Restored manager schedule", t.branch + " · " + t.ym, "From trash");
                                     alert("Restored " + t.branch + " · " + fmtYm(t.ym) + ".");
                                   } catch (e) { alert("Could not restore: " + (e.message || e)); }
                                 }}
@@ -6940,6 +7131,97 @@ function App() {
                   </div>
                 </div>
               )}
+            </div>
+          );
+        })()}
+
+        {/* ── ACTIVITY LOG ── */}
+        {tab==="activity" && (() => {
+          const whoOpts    = ["All", ...Array.from(new Set(activityRows.map(r => r.who).filter(Boolean)))];
+          const actionOpts = ["All", ...Array.from(new Set(activityRows.map(r => r.action).filter(Boolean))).sort()];
+          const filtered = activityRows.filter(r =>
+            (activityFWho === "All"    || r.who    === activityFWho) &&
+            (activityFAction === "All" || r.action === activityFAction)
+          );
+          const fmtTs = (iso) => {
+            try { return new Date(iso).toLocaleString("en-ZA", { day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit" }); }
+            catch (_) { return iso; }
+          };
+          const colourFor = (action) => {
+            const a = (action || "").toLowerCase();
+            if (a.includes("delete") || a.includes("removed") || a.includes("off-board")) return { bg:"#fee2e2", fg:"#7f1d1d" };
+            if (a.includes("transfer"))                                                   return { bg:"#dbeafe", fg:"#1e3a8a" };
+            if (a.includes("schedule"))                                                   return { bg:"#fef3c7", fg:"#78350f" };
+            if (a.includes("onboard"))                                                    return { bg:"#dcfce7", fg:"#14532d" };
+            if (a.includes("restored"))                                                   return { bg:"#dcfce7", fg:"#14532d" };
+            return { bg:"#fce7f3", fg:"#831843" };
+          };
+          return (
+            <div>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end", marginBottom:14, flexWrap:"wrap", gap:10 }}>
+                <div>
+                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:26, color:"#831843", fontWeight:700, letterSpacing:"0.02em" }}>📜 Activity Log</div>
+                  <div style={{ fontSize:12, color:"#F472B6", marginTop:3 }}>Who edited what · who transferred / off-boarded · who saved or deleted a schedule. Newest first, last 1,000 entries kept.</div>
+                </div>
+                <button onClick={() => setActivityTick(t => t + 1)}
+                  style={{ padding:"7px 14px", background:"#FFFFFF", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>↻ Refresh</button>
+              </div>
+
+              <div style={{ background:"#FFFFFF", borderRadius:11, padding:"12px 14px", border:"1px solid #FBCFE8", marginBottom:14, display:"flex", gap:14, alignItems:"center", flexWrap:"wrap" }}>
+                <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
+                  <label style={{ fontSize:10, fontWeight:700, color:"#F472B6", letterSpacing:"0.06em" }}>WHO</label>
+                  <select value={activityFWho} onChange={e=>setActivityFWho(e.target.value)} style={{ padding:"7px 11px", borderRadius:7, border:"1px solid #FBCFE8", fontSize:13, background:"#fff", minWidth:140 }}>
+                    {whoOpts.map(o => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                </div>
+                <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
+                  <label style={{ fontSize:10, fontWeight:700, color:"#F472B6", letterSpacing:"0.06em" }}>ACTION</label>
+                  <select value={activityFAction} onChange={e=>setActivityFAction(e.target.value)} style={{ padding:"7px 11px", borderRadius:7, border:"1px solid #FBCFE8", fontSize:13, background:"#fff", minWidth:200 }}>
+                    {actionOpts.map(o => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                </div>
+                <div style={{ marginLeft:"auto", fontSize:11, color:"#831843" }}>
+                  Showing <strong>{filtered.length}</strong> of {activityRows.length}
+                </div>
+              </div>
+
+              <div style={{ background:"#FFFFFF", borderRadius:13, border:"1px solid #FBCFE8", overflow:"hidden" }}>
+                {activityLoad ? (
+                  <div style={{ padding:30, textAlign:"center", color:"#9CA3AF", fontSize:13 }}>Loading…</div>
+                ) : filtered.length === 0 ? (
+                  <div style={{ padding:30, textAlign:"center", color:"#9CA3AF", fontSize:13 }}>No activity yet for the chosen filters.</div>
+                ) : (
+                  <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                    <thead>
+                      <tr style={{ background:"#FCE7F3", color:"#831843", textAlign:"left" }}>
+                        <th style={{ padding:"10px 12px", fontWeight:700, fontSize:10, letterSpacing:"0.08em" }}>WHEN</th>
+                        <th style={{ padding:"10px 12px", fontWeight:700, fontSize:10, letterSpacing:"0.08em" }}>WHO</th>
+                        <th style={{ padding:"10px 12px", fontWeight:700, fontSize:10, letterSpacing:"0.08em" }}>ROLE</th>
+                        <th style={{ padding:"10px 12px", fontWeight:700, fontSize:10, letterSpacing:"0.08em" }}>ACTION</th>
+                        <th style={{ padding:"10px 12px", fontWeight:700, fontSize:10, letterSpacing:"0.08em" }}>TARGET</th>
+                        <th style={{ padding:"10px 12px", fontWeight:700, fontSize:10, letterSpacing:"0.08em" }}>DETAILS</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filtered.map(r => {
+                        const c = colourFor(r.action);
+                        return (
+                          <tr key={r.id || r.when} style={{ borderTop:"1px solid #FCE7F3" }}>
+                            <td style={{ padding:"8px 12px", whiteSpace:"nowrap", color:"#6b7280" }}>{fmtTs(r.when)}</td>
+                            <td style={{ padding:"8px 12px", fontWeight:700, color:"#111827" }}>{r.who}</td>
+                            <td style={{ padding:"8px 12px", color:"#6b7280" }}>{r.role}</td>
+                            <td style={{ padding:"8px 12px" }}>
+                              <span style={{ background:c.bg, color:c.fg, padding:"3px 8px", borderRadius:6, fontWeight:700, fontSize:11 }}>{r.action}</span>
+                            </td>
+                            <td style={{ padding:"8px 12px", color:"#111827" }}>{r.target}</td>
+                            <td style={{ padding:"8px 12px", color:"#6b7280" }}>{r.details}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
             </div>
           );
         })()}
@@ -7120,5 +7402,5 @@ function App() {
 
 // ─── MOUNT ──────────────────────────────────────────────────────────────────
 ReactDOM.createRoot(document.getElementById("root")).render(
-  React.createElement(React.StrictMode, null, React.createElement(App))
+  React.createElement(React.StrictMode, null, React.createElement(AppGate))
 );
