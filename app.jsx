@@ -5809,19 +5809,30 @@ function App({ currentUser, onSignOut }) {
           };
 
           // Auto-fill empty cells from the schedule (writes "~hint" — italic, unconfirmed)
+          // and re-sync unconfirmed cells if the schedule has changed since last fill.
+          // Confirmed cells (no "~" prefix) are preserved.
           const autoFill = async () => {
-            if (!confirm("Auto-fill missing days from the schedule? Empty cells will be set to the schedule's value but shown faded/unconfirmed. Click any to confirm individually.")) return;
+            if (!confirm("Auto-fill missing days from the schedule? Empty cells will be set to the schedule's value, and faded/unconfirmed cells will be refreshed to match the latest schedule. Confirmed cells are kept as-is.")) return;
             const next = { ...attGrid };
-            let filled = 0;
+            let filled = 0, refreshed = 0;
             for (const s of attStaff) {
-              if (!next[s.ec]) next[s.ec] = {};
+              next[s.ec] = { ...(next[s.ec] || {}) };
               for (const dy of days) {
-                if (next[s.ec][dy.d]) continue;
+                const cur = next[s.ec][dy.d];
                 const hint = schedHint(s.ec, dy.d);
-                if (hint) { next[s.ec][dy.d] = "~" + hint; filled++; }
+                if (!hint) continue;
+                const target = "~" + hint;
+                if (!cur) {
+                  next[s.ec][dy.d] = target;
+                  filled++;
+                } else if (cur.charAt(0) === "~" && cur !== target) {
+                  next[s.ec][dy.d] = target;
+                  refreshed++;
+                }
+                // confirmed (no leading ~) cells: leave alone
               }
             }
-            if (filled === 0) {
+            if (filled === 0 && refreshed === 0) {
               const validCodes = new Set(["W","WL","O","R","L","X","E"]);
               const cycleDays = new Set(days.map(d => d.d));
               const schedEcs = Object.keys(attSched || {});
@@ -5860,7 +5871,10 @@ function App({ currentUser, onSignOut }) {
             setAttGrid(next);
             try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
             catch (e) { alert("Could not save: " + (e.message || e)); return; }
-            alert("Auto-filled " + filled + " cell" + (filled === 1 ? "" : "s") + ". Faded cells are unconfirmed — click any to confirm.");
+            const parts = [];
+            if (filled    > 0) parts.push("filled " + filled + " empty cell" + (filled === 1 ? "" : "s"));
+            if (refreshed > 0) parts.push("refreshed " + refreshed + " unconfirmed cell" + (refreshed === 1 ? "" : "s") + " to match latest schedule");
+            alert("Auto-fill done — " + parts.join(", ") + ". Faded cells are unconfirmed — click any to confirm.");
           };
 
           // Term cascade: from a chosen day, mark this period + next 2 cycles as "term"
