@@ -4576,13 +4576,6 @@ function App({ currentUser, onSignOut }) {
           const card         = { background:"#FFFFFF", border:`1px solid ${PINK.soft}`, borderRadius:16, padding:"18px 20px", boxShadow:"0 1px 6px rgba(190,24,93,0.04)" };
           const cardTitle    = { fontFamily:"'Cormorant Garamond',serif", fontSize:18, fontWeight:700, color:PINK.ink, marginBottom:12, display:"flex", alignItems:"center", justifyContent:"space-between" };
 
-          const coreActions = [
-            { lbl:"Staff List",   icon:"👥", to:"staff",       desc:"Roster & details" },
-            { lbl:"Scheduling",   icon:"📅", to:"scheduling",  desc:"Build rosters"    },
-            { lbl:"Attendance",   icon:"📕", to:"attendance",  desc:"Daily log"        },
-            { lbl:"Recruitment",  icon:"🎯", to:"recruitment", desc:"Open vacancies"   },
-            { lbl:"Leave",        icon:"🌴", to:"leave",       desc:"Plan & approve"   }
-          ];
           const peopleActions = [
             { lbl:"Onboarding",   icon:"🌱", to:"onboard"   },
             { lbl:"Off-boarding", icon:"👋", to:"offboard"  },
@@ -4608,23 +4601,6 @@ function App({ currentUser, onSignOut }) {
                   <div style={{ fontFamily:"'Playfair Display',serif", fontSize:30, fontWeight:700, color:PINK.ink, letterSpacing:"0.04em" }}>{timeLbl}</div>
                   <div style={{ fontSize:11, color:PINK.deep, marginTop:4, fontWeight:600 }}>Signed in as <span style={{ color:PINK.accent }}>{currentUser.role}</span></div>
                 </div>
-              </div>
-
-              {/* ── TOP ACTION BAR ── primary navigation ── */}
-              <div style={{ background:"#FFFFFF", border:`1px solid ${PINK.soft}`, borderRadius:16, padding:"10px 12px", marginBottom:24, display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))", gap:8, boxShadow:"0 1px 6px rgba(190,24,93,0.04)" }}>
-                {coreActions.map(a => (
-                  <button key={a.to} onClick={()=>tryChangeTab(a.to)}
-                    style={{ background:PINK.softest, color:PINK.ink, border:`1px solid ${PINK.soft}`, borderRadius:12, padding:"12px 14px", cursor:"pointer", fontFamily:"inherit", textAlign:"left", display:"flex", alignItems:"center", gap:11, transition:"transform 0.08s ease" }}
-                    onMouseDown={e=>e.currentTarget.style.transform="scale(0.98)"}
-                    onMouseUp={e=>e.currentTarget.style.transform=""}
-                    onMouseLeave={e=>e.currentTarget.style.transform=""}>
-                    <span style={{ fontSize:22 }}>{a.icon}</span>
-                    <span style={{ display:"flex", flexDirection:"column" }}>
-                      <span style={{ fontSize:13, fontWeight:800 }}>{a.lbl}</span>
-                      <span style={{ fontSize:10, color:PINK.deep, opacity:0.75, marginTop:1 }}>{a.desc}</span>
-                    </span>
-                  </button>
-                ))}
               </div>
 
               {/* ── SECTION: TODAY ── */}
