@@ -3524,7 +3524,7 @@ function App({ currentUser, onSignOut }) {
 
   const [staff, setStaff] = useState([]);
   const [matRecs, setMatRecs] = useState([]);
-  const [tab, setTab] = useState("staff");
+  const [tab, setTab] = useState("dashboard");
   // Recruitment is now a parent tab with two children (Nail Tech / Manager).
   // The Manager child further nests Coverage and Planner.
   const [recruitSubTab, setRecruitSubTab] = useState("nailTech");   // "nailTech" | "mgrRecruit"
@@ -3696,6 +3696,49 @@ function App({ currentUser, onSignOut }) {
     }).catch(e => console.error("Attendance load:", e))
       .finally(() => setAttLoading(false));
   }, [tab, attBranch, attYM]);
+
+  // ── Dashboard: count staff scheduled to work today across all branches ──
+  const [dashScheduledToday, setDashScheduledToday] = useState(null); // null = loading
+  const [dashByBranch, setDashByBranch] = useState({});
+  useEffect(() => {
+    if (tab !== "dashboard") return;
+    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
+    let cancelled = false;
+    setDashScheduledToday(null);
+    const today = new Date();
+    const todayDay = today.getDate();
+    const ymd = today.getFullYear() + "-" + String(today.getMonth()+1).padStart(2,"0") + "-" + String(todayDay).padStart(2,"0");
+    const ym = window.BOA_DB.currentSchedYm ? window.BOA_DB.currentSchedYm() : (today.getFullYear() + "-" + String(today.getMonth()+1).padStart(2,"0"));
+    const safe = (p) => p.catch(() => null);
+    Promise.all(SALONS.map(async (sl) => {
+      const [tech, mgr] = await Promise.all([
+        safe(window.BOA_DB.loadSchedule(sl.name, ym, false)),
+        safe(window.BOA_DB.loadSchedule(sl.name, ym, true))
+      ]);
+      const techGrid = (tech && tech.grid) || {};
+      const mgrGrid  = (mgr  && mgr.grid)  || {};
+      const isWorking = (v) => v === "W" || v === "WL" || v === "E";
+      let count = 0;
+      for (const ec in techGrid) {
+        const v = techGrid[ec][todayDay];
+        if (isWorking(v)) count++;
+      }
+      for (const ec in mgrGrid) {
+        // manager grid is keyed by YMD strings (mgrSched line 141)
+        const v = mgrGrid[ec][ymd] || mgrGrid[ec][todayDay];
+        if (isWorking(v)) count++;
+      }
+      return [sl.name, count];
+    })).then(pairs => {
+      if (cancelled) return;
+      const map = {};
+      let total = 0;
+      for (const [name, c] of pairs) { map[name] = c; total += c; }
+      setDashByBranch(map);
+      setDashScheduledToday(total);
+    });
+    return () => { cancelled = true; };
+  }, [tab, staff, managers]);
 
   useEffect(() => {
     if (!window.BOA_DB || !window.BOA_DB.isReady) {
@@ -4268,6 +4311,7 @@ function App({ currentUser, onSignOut }) {
             </div>
           </div>
           <div style={{ display:"flex", gap:3, paddingTop:12, flexWrap:"wrap" }}>
+            {tabBtn("dashboard","🏠 Dashboard")}
             {tabBtn("staff","👥 Staff List")}
             {tabBtn("scheduling","📅 Scheduling")}
             {tabBtn("locations","📍 Locations")}
@@ -4303,8 +4347,8 @@ function App({ currentUser, onSignOut }) {
 
       <div style={{ maxWidth:1380, margin:"0 auto", padding:"22px 24px" }}>
 
-        {/* STAT CARDS — hidden on manager-recruitment sub-tab (nail-tech stats only) */}
-        {!(tab==="recruitment" && recruitSubTab==="mgrRecruit") && <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(108px,1fr))", gap:9, marginBottom:16 }}>
+        {/* STAT CARDS — only on recruitment tab (nail-tech sub-tab) */}
+        {tab==="recruitment" && recruitSubTab!=="mgrRecruit" && <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(108px,1fr))", gap:9, marginBottom:16 }}>
           {[
             { l:"Active Staff",   v:stats.active,       i:"👥", c:"#1e3a8a", bg:"#dbeafe", note:"incl. pregnant" },
             { l:"Pregnant (in store)", v:stats.pregnant, i:"🤰", c:"#92400e", bg:"#fef3c7" },
@@ -4325,8 +4369,8 @@ function App({ currentUser, onSignOut }) {
         </div>}
 
 
-        {/* TO HIRE PER BRANCH — hidden on manager-recruitment sub-tab */}
-        {!(tab==="recruitment" && recruitSubTab==="mgrRecruit") && <>
+        {/* TO HIRE PER BRANCH — only on recruitment tab (nail-tech sub-tab) */}
+        {tab==="recruitment" && recruitSubTab!=="mgrRecruit" && <>
         {stats.vacancies > 0 && (
           <div style={{ background:"#FFFFFF", borderRadius:13, border:"1px solid #E8C9D2", marginBottom:16, overflow:"hidden" }}>
             <div style={{ background:"#BE185D", color:"#fff", padding:"10px 18px", display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:8 }}>
@@ -4354,14 +4398,169 @@ function App({ currentUser, onSignOut }) {
             </div>
           </div>
         )}
-
-        {/* LEGEND */}
-        <div style={{ background:"#FFFFFF", borderRadius:11, padding:"10px 16px", border:`1px solid ${bdr}`, marginBottom:14, display:"flex", gap:16, flexWrap:"wrap", alignItems:"center", fontSize:11, color:"#BE185D" }}>
-          <span style={{ fontWeight:700, color:"#831843" }}>Legend:</span>
-          <span>🤰 <strong>Pregnant</strong> = still working in store, counted in active headcount</span>
-          <span>🤱 <strong>On Maternity Leave</strong> = not in store, <em>greyed out & excluded</em> from active count</span>
-        </div>
         </>}
+
+        {/* LEGEND — only relevant on the staff list */}
+        {tab==="staff" && (
+          <div style={{ background:"#FFFFFF", borderRadius:11, padding:"10px 16px", border:`1px solid ${bdr}`, marginBottom:14, display:"flex", gap:16, flexWrap:"wrap", alignItems:"center", fontSize:11, color:"#BE185D" }}>
+            <span style={{ fontWeight:700, color:"#831843" }}>Legend:</span>
+            <span>🤰 <strong>Pregnant</strong> = still working in store, counted in active headcount</span>
+            <span>🤱 <strong>On Maternity Leave</strong> = not in store, <em>greyed out & excluded</em> from active count</span>
+          </div>
+        )}
+
+        {/* ── DASHBOARD TAB ── */}
+        {tab==="dashboard" && (() => {
+          const now = new Date();
+          const hr = now.getHours();
+          const partOfDay = hr < 12 ? "morning" : hr < 17 ? "afternoon" : "evening";
+          const dateLbl = now.toLocaleDateString("en-ZA", { weekday:"long", day:"2-digit", month:"long", year:"numeric" });
+          const timeLbl = now.toLocaleTimeString("en-ZA", { hour:"2-digit", minute:"2-digit" });
+          const understaffedBranches = SALONS
+            .map(sl => {
+              const goal = sl.targetCapacity || sl.capacity;
+              const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.offboarded).length;
+              return { name: sl.name, gap: Math.max(0, goal - act), goal, act };
+            })
+            .filter(x => x.gap > 0)
+            .sort((a, b) => b.gap - a.gap);
+          const recentDepartures = enriched
+            .filter(s => s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft >= 0 && s.offDaysSinceLeft <= 7)
+            .sort((a, b) => (a.offDaysSinceLeft ?? 0) - (b.offDaysSinceLeft ?? 0));
+          return (
+            <div>
+              {/* Greeting card */}
+              <div style={{ background:"linear-gradient(135deg,#FCE7F3 0%,#FFFFFF 60%)", border:"1px solid #FBCFE8", borderRadius:18, padding:"22px 26px", marginBottom:18, boxShadow:"0 2px 14px rgba(190,24,93,0.06)" }}>
+                <div style={{ fontFamily:"'Playfair Display',serif", fontSize:30, color:"#831843", fontWeight:700 }}>Good {partOfDay}, {currentUser.name} 👋</div>
+                <div style={{ fontSize:13, color:"#BE185D", marginTop:6, fontWeight:600 }}>{dateLbl} · {timeLbl}</div>
+                <div style={{ fontSize:12, color:"#9F1A4F", marginTop:4 }}>Signed in as {currentUser.role}.</div>
+              </div>
+
+              {/* Top stat cards */}
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))", gap:11, marginBottom:18 }}>
+                <div style={{ background:"#dbeafe", borderRadius:14, padding:"14px 16px" }}>
+                  <div style={{ fontSize:22 }}>📅</div>
+                  <div style={{ fontSize:30, fontWeight:800, color:"#1e3a8a", lineHeight:1.05 }}>
+                    {dashScheduledToday == null ? "…" : dashScheduledToday}
+                  </div>
+                  <div style={{ fontSize:10, fontWeight:700, color:"#1e3a8a", letterSpacing:"0.06em", marginTop:4 }}>SCHEDULED TODAY</div>
+                  <div style={{ fontSize:10, color:"#1e3a8a", opacity:0.65, marginTop:2 }}>across all branches</div>
+                </div>
+                <div style={{ background:"#dcfce7", borderRadius:14, padding:"14px 16px" }}>
+                  <div style={{ fontSize:22 }}>👥</div>
+                  <div style={{ fontSize:30, fontWeight:800, color:"#14532d", lineHeight:1.05 }}>{stats.active}</div>
+                  <div style={{ fontSize:10, fontWeight:700, color:"#14532d", letterSpacing:"0.06em", marginTop:4 }}>ACTIVE STAFF</div>
+                  <div style={{ fontSize:10, color:"#14532d", opacity:0.65, marginTop:2 }}>incl. {stats.pregnant} pregnant</div>
+                </div>
+                <div style={{ background:"#fce7f3", borderRadius:14, padding:"14px 16px" }}>
+                  <div style={{ fontSize:22 }}>🤱</div>
+                  <div style={{ fontSize:30, fontWeight:800, color:"#7A4258", lineHeight:1.05 }}>{stats.onMat}</div>
+                  <div style={{ fontSize:10, fontWeight:700, color:"#7A4258", letterSpacing:"0.06em", marginTop:4 }}>ON MATERNITY</div>
+                  <div style={{ fontSize:10, color:"#7A4258", opacity:0.65, marginTop:2 }}>{stats.returning60} returning ≤60d</div>
+                </div>
+                <div style={{ background:"#ede9fe", borderRadius:14, padding:"14px 16px", cursor:"pointer" }} onClick={()=>tryChangeTab("recruitment")} title="Open Recruitment">
+                  <div style={{ fontSize:22 }}>🎯</div>
+                  <div style={{ fontSize:30, fontWeight:800, color:"#7c3aed", lineHeight:1.05 }}>{stats.vacancies}</div>
+                  <div style={{ fontSize:10, fontWeight:700, color:"#7c3aed", letterSpacing:"0.06em", marginTop:4 }}>POSITIONS TO HIRE</div>
+                  <div style={{ fontSize:10, color:"#7c3aed", opacity:0.65, marginTop:2 }}>across {stats.understaffed} branch{stats.understaffed !== 1 ? "es" : ""}</div>
+                </div>
+              </div>
+
+              {/* Two-column body */}
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(320px,1fr))", gap:14 }}>
+                {/* Today by branch */}
+                <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:14, padding:"16px 18px" }}>
+                  <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:18, fontWeight:700, color:"#831843", marginBottom:10 }}>📅 Scheduled today by branch</div>
+                  {dashScheduledToday == null ? (
+                    <div style={{ fontSize:12, color:"#9ca3af", fontStyle:"italic" }}>Loading schedules…</div>
+                  ) : Object.keys(dashByBranch).length === 0 ? (
+                    <div style={{ fontSize:12, color:"#9ca3af", fontStyle:"italic" }}>No schedule data for today.</div>
+                  ) : (
+                    <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))", gap:8 }}>
+                      {SALONS.map(sl => {
+                        const c = dashByBranch[sl.name] || 0;
+                        return (
+                          <div key={sl.name} style={{ background:"#FDEEF5", border:"1px solid #FBCFE8", borderRadius:9, padding:"8px 11px" }}>
+                            <div style={{ fontSize:11, fontWeight:700, color:"#831843" }}>📍 {sl.name}</div>
+                            <div style={{ fontSize:18, fontWeight:800, color: c === 0 ? "#9ca3af" : "#BE185D", marginTop:2 }}>{c}<span style={{ fontSize:10, fontWeight:600, color:"#9F1A4F", marginLeft:4 }}>working</span></div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Recruitment summary */}
+                <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:14, padding:"16px 18px" }}>
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+                    <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:18, fontWeight:700, color:"#831843" }}>🎯 Recruitment needs</div>
+                    <button onClick={()=>tryChangeTab("recruitment")} style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:7, padding:"5px 11px", cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit" }}>Open Recruitment →</button>
+                  </div>
+                  {stats.vacancies === 0 ? (
+                    <div style={{ fontSize:12, color:"#16a34a", fontWeight:700 }}>✅ All branches fully staffed.</div>
+                  ) : (
+                    <>
+                      <div style={{ fontSize:12, color:"#831843", marginBottom:8 }}>
+                        <strong>{stats.vacancies}</strong> position{stats.vacancies !== 1 ? "s" : ""} to fill across <strong>{stats.understaffed}</strong> branch{stats.understaffed !== 1 ? "es" : ""}.
+                      </div>
+                      <div style={{ display:"grid", gap:6 }}>
+                        {understaffedBranches.slice(0, 6).map(b => (
+                          <div key={b.name} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", background:"#fef3c7", border:"1px solid #fde68a", borderRadius:8, padding:"7px 11px" }}>
+                            <span style={{ fontSize:12, color:"#78350f", fontWeight:700 }}>📍 {b.name}</span>
+                            <span style={{ fontSize:12, color:"#92400e", fontWeight:800 }}>{b.gap} needed <span style={{ fontWeight:500, opacity:0.7 }}>· {b.act}/{b.goal}</span></span>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* Compliance + recent departures */}
+                <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:14, padding:"16px 18px" }}>
+                  <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:18, fontWeight:700, color:"#831843", marginBottom:10 }}>⚠ Attention</div>
+                  <div style={{ display:"grid", gap:6, fontSize:12 }}>
+                    {stats.zna > 0 && (
+                      <div style={{ background:"#fee2e2", border:"1px solid #fca5a5", borderRadius:8, padding:"7px 11px", color:"#7f1d1d" }}>
+                        🚨 <strong>{stats.zna}</strong> staff with Z/NA compliance risk
+                      </div>
+                    )}
+                    {stats.noContract > 0 && (
+                      <div style={{ background:"#fee2e2", border:"1px solid #fca5a5", borderRadius:8, padding:"7px 11px", color:"#7f1d1d" }}>
+                        📄 <strong>{stats.noContract}</strong> staff with no contract
+                      </div>
+                    )}
+                    {recentDepartures.length > 0 && (
+                      <div style={{ background:"#f3f4f6", border:"1px solid #d1d5db", borderRadius:8, padding:"7px 11px", color:"#374151" }}>
+                        👋 <strong>{recentDepartures.length}</strong> departure{recentDepartures.length !== 1 ? "s" : ""} in the last 7 days
+                      </div>
+                    )}
+                    {stats.zna === 0 && stats.noContract === 0 && recentDepartures.length === 0 && (
+                      <div style={{ color:"#16a34a", fontWeight:600 }}>✅ Nothing urgent.</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Quick actions */}
+                <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:14, padding:"16px 18px" }}>
+                  <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:18, fontWeight:700, color:"#831843", marginBottom:10 }}>⚡ Quick actions</div>
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:7 }}>
+                    {[
+                      { lbl:"👥 Staff List",       to:"staff"      },
+                      { lbl:"📅 Scheduling",       to:"scheduling" },
+                      { lbl:"📕 Attendance",       to:"attendance" },
+                      { lbl:"🌴 Leave Planner",    to:"leave"      },
+                      { lbl:"👋 Off-boarding",     to:"offboard"   },
+                      { lbl:"🌱 Onboarding",       to:"onboard"    },
+                      { lbl:"📜 Activity Log",     to:"activity"   }
+                    ].map(b => (
+                      <button key={b.to} onClick={()=>tryChangeTab(b.to)} style={{ background:"#FCE7F3", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, padding:"7px 12px", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>{b.lbl}</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* ── STAFF TAB ── */}
         {tab==="staff" && (
