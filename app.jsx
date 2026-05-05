@@ -6340,6 +6340,7 @@ function App({ currentUser, onSignOut }) {
             input.type = "file";
             input.accept = ".csv,text/csv";
             input.onchange = async (e) => {
+              try {
               const file = e.target.files && e.target.files[0];
               if (!file) return;
               let text;
@@ -6499,13 +6500,14 @@ function App({ currentUser, onSignOut }) {
               // Load every branch's attendance grid for this cycle so we can write
               // to the right branch per row. The active branch starts from local
               // state; the others are fetched.
+              const safeLoad = (p) => Promise.resolve(p).catch(() => null);
               const branchGrids = {};
               const allBranches = SALONS.map(sl => sl.name);
               await Promise.all(allBranches.map(async b => {
                 if (b === attBranch) {
                   branchGrids[b] = JSON.parse(JSON.stringify(attGrid || {}));
                 } else {
-                  const data = await safe(window.BOA_DB.loadAttendance(b, attYM));
+                  const data = await safeLoad(window.BOA_DB.loadAttendance(b, attYM));
                   branchGrids[b] = (data && data.grid) ? JSON.parse(JSON.stringify(data.grid)) : {};
                 }
               }));
@@ -6610,6 +6612,10 @@ function App({ currentUser, onSignOut }) {
                 "• Already confirmed (kept): " + alreadyConfirmed +
                 (unmatched.size > 0 ? "\n• Unmatched staff (" + unmatched.size + "): " + [...unmatched].slice(0, 8).join(", ") + (unmatched.size > 8 ? ", …" : "") : "")
               );
+              } catch (err) {
+                console.error("Fresha import failed:", err);
+                alert("Fresha import failed:\n\n" + (err && err.message ? err.message : err) + "\n\n(See browser console for details.)");
+              }
             };
             input.click();
           };
