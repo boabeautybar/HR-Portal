@@ -4441,16 +4441,34 @@ function App({ currentUser, onSignOut }) {
                   })}
                 </div>
 
-                {/* Sub-tabs of the open category — always visible so clicking a category
-                    tile reveals the tabs that fall under it, even from the dashboard. */}
-                <div style={{ marginTop:10, padding:"10px 12px", background:openGroup.color.bg, border:"1px solid rgba(255,255,255,0.7)", borderRadius:14 }}>
-                  <div style={{ fontSize:9, fontWeight:800, color:openGroup.color.ink, letterSpacing:"0.2em", textTransform:"uppercase", opacity:0.75, marginBottom:6, paddingLeft:4 }}>
-                    {openGroup.icon} {openGroup.title}
+                {/* Sub-panel underneath the tiles.
+                    On the dashboard, show Quick Actions (most-used tabs) instead of
+                    a category's sub-tabs. Otherwise show the open category's tabs. */}
+                {dashActive ? (
+                  <div style={{ marginTop:10, padding:"10px 12px", background:dashColor.bg, border:"1px solid rgba(255,255,255,0.7)", borderRadius:14 }}>
+                    <div style={{ fontSize:9, fontWeight:800, color:dashColor.ink, letterSpacing:"0.2em", textTransform:"uppercase", opacity:0.75, marginBottom:6, paddingLeft:4 }}>
+                      ⚡ Quick actions
+                    </div>
+                    <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                      {[
+                        { t:"staff",       l:"👥 Staff List"   },
+                        { t:"scheduling",  l:"📅 Scheduling"   },
+                        { t:"attendance",  l:"📕 Attendance"   },
+                        { t:"recruitment", l:"🎯 Recruitment"  },
+                        { t:"leave",       l:"🌴 Leave Planner"}
+                      ].map(it => tabBtn(it.t, it.l))}
+                    </div>
                   </div>
-                  <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-                    {openGroup.items.map(it => tabBtnX({ t: it.t, label: it.l, isActive: it.isActive, onClick: it.onClick }))}
+                ) : (
+                  <div style={{ marginTop:10, padding:"10px 12px", background:openGroup.color.bg, border:"1px solid rgba(255,255,255,0.7)", borderRadius:14 }}>
+                    <div style={{ fontSize:9, fontWeight:800, color:openGroup.color.ink, letterSpacing:"0.2em", textTransform:"uppercase", opacity:0.75, marginBottom:6, paddingLeft:4 }}>
+                      {openGroup.icon} {openGroup.title}
+                    </div>
+                    <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                      {openGroup.items.map(it => tabBtnX({ t: it.t, label: it.l, isActive: it.isActive, onClick: it.onClick }))}
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             );
           })()}
