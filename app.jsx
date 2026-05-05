@@ -4313,7 +4313,7 @@ function App({ currentUser, onSignOut }) {
   );
   return (
     <div style={{ minHeight:"100vh", background:cream, fontFamily:"'DM Sans',sans-serif", color:"#831843" }}>
-      <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Cormorant+Garamond:wght@600;700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+      <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Playfair+Display:wght@700;900&family=Cormorant+Garamond:wght@600;700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
       {currentUser?.demo && (
         <div style={{ background:"#fde047", color:"#78350f", borderBottom:"2px solid #ca8a04", padding:"10px 24px", textAlign:"center", fontSize:13, fontWeight:700, letterSpacing:"0.02em" }}>
@@ -4571,10 +4571,10 @@ function App({ currentUser, onSignOut }) {
 
           // Shared style tokens (kept inline so we don't disturb the rest of the file)
           const PINK = { ink:"#831843", accent:"#BE185D", soft:"#FBCFE8", softer:"#FCE7F3", softest:"#FDEEF5", deep:"#9F1A4F" };
-          const sectionTitle = { fontFamily:"'Playfair Display',serif", fontSize:14, fontWeight:700, color:PINK.ink, letterSpacing:"0.18em", textTransform:"uppercase", display:"flex", alignItems:"center", gap:10, marginBottom:12 };
+          const sectionTitle = { fontFamily:"'Outfit',system-ui,sans-serif", fontSize:11, fontWeight:700, color:PINK.ink, letterSpacing:"0.22em", textTransform:"uppercase", display:"flex", alignItems:"center", gap:10, marginBottom:12 };
           const sectionRule  = { flex:1, height:1, background:`linear-gradient(90deg,${PINK.soft} 0%,transparent 100%)` };
-          const card         = { background:"#FFFFFF", border:`1px solid ${PINK.soft}`, borderRadius:16, padding:"18px 20px", boxShadow:"0 1px 6px rgba(190,24,93,0.04)" };
-          const cardTitle    = { fontFamily:"'Cormorant Garamond',serif", fontSize:18, fontWeight:700, color:PINK.ink, marginBottom:12, display:"flex", alignItems:"center", justifyContent:"space-between" };
+          const card         = { background:"#FFFFFF", border:`1px solid ${PINK.soft}`, borderRadius:16, padding:"18px 20px", boxShadow:"0 1px 6px rgba(190,24,93,0.04)", fontFamily:"'Outfit',system-ui,sans-serif" };
+          const cardTitle    = { fontFamily:"'Outfit',system-ui,sans-serif", fontSize:13, fontWeight:700, color:PINK.ink, marginBottom:12, display:"flex", alignItems:"center", justifyContent:"space-between", letterSpacing:"0.06em" };
 
           const peopleActions = [
             { lbl:"Onboarding",   icon:"🌱", to:"onboard"   },
@@ -4589,17 +4589,17 @@ function App({ currentUser, onSignOut }) {
           ];
 
           return (
-            <div>
+            <div style={{ fontFamily:"'Outfit',system-ui,sans-serif" }}>
               {/* ── HERO ── greeting + role + date/time ── */}
-              <div style={{ background:`linear-gradient(135deg,${PINK.softer} 0%,#FFFFFF 65%)`, border:`1px solid ${PINK.soft}`, borderRadius:20, padding:"26px 30px", marginBottom:20, boxShadow:"0 4px 18px rgba(190,24,93,0.07)", display:"flex", justifyContent:"space-between", alignItems:"flex-end", flexWrap:"wrap", gap:18 }}>
+              <div style={{ background:`linear-gradient(135deg,${PINK.softer} 0%,#FFFFFF 65%)`, border:`1px solid ${PINK.soft}`, borderRadius:20, padding:"26px 30px", marginBottom:20, boxShadow:"0 4px 18px rgba(190,24,93,0.07)", display:"flex", justifyContent:"space-between", alignItems:"flex-end", flexWrap:"wrap", gap:18, fontFamily:"'Outfit',system-ui,sans-serif" }}>
                 <div>
-                  <div style={{ fontSize:11, fontWeight:700, color:PINK.accent, letterSpacing:"0.2em", textTransform:"uppercase" }}>BOA HR · Dashboard</div>
-                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:34, color:PINK.ink, fontWeight:700, lineHeight:1.1, marginTop:6 }}>Good {partOfDay}, {currentUser.name}</div>
-                  <div style={{ fontSize:13, color:PINK.accent, marginTop:8, fontWeight:600 }}>{dateLbl}</div>
+                  <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:11, fontWeight:700, color:PINK.accent, letterSpacing:"0.22em", textTransform:"uppercase" }}>BOA HR · Dashboard</div>
+                  <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:34, color:PINK.ink, fontWeight:700, lineHeight:1.1, marginTop:6, letterSpacing:"-0.01em" }}>Good {partOfDay}, {currentUser.name}</div>
+                  <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:12.5, color:PINK.accent, marginTop:8, fontWeight:500, letterSpacing:"0.02em" }}>{dateLbl}</div>
                 </div>
                 <div style={{ textAlign:"right" }}>
-                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:30, fontWeight:700, color:PINK.ink, letterSpacing:"0.04em" }}>{timeLbl}</div>
-                  <div style={{ fontSize:11, color:PINK.deep, marginTop:4, fontWeight:600 }}>Signed in as <span style={{ color:PINK.accent }}>{currentUser.role}</span></div>
+                  <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:32, fontWeight:600, color:PINK.ink, letterSpacing:"0.02em", lineHeight:1 }}>{timeLbl}</div>
+                  <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:11, color:PINK.deep, marginTop:6, fontWeight:500, letterSpacing:"0.04em" }}>Signed in as <span style={{ color:PINK.accent, fontWeight:700 }}>{currentUser.role}</span></div>
                 </div>
               </div>
 
