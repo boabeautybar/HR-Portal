@@ -3572,6 +3572,10 @@ function App({ currentUser, onSignOut }) {
   const [mgrSchedBranch, setMgrSchedBranch] = useState(SALONS[0].name);
   const [mgrSchedCycle, setMgrSchedCycle] = useState(""); // YYYY-MM-25 cycle start
   const [navCategory, setNavCategory] = useState("People"); // open nav category
+  // Whether the user has explicitly picked a category tile while on the dashboard.
+  // Used to decide whether to show Quick Actions or the category's sub-tabs in the
+  // panel under the tiles when tab === "dashboard".
+  const [navShowCategory, setNavShowCategory] = useState(false);
   // Map of tab → category name. Kept in sync with the groups list below.
   const NAV_TAB_TO_CATEGORY = {
     onboard:"People", offboard:"People", staff:"People", recruitment:"People", maternity:"People",
@@ -4413,7 +4417,7 @@ function App({ currentUser, onSignOut }) {
               <div style={{ paddingTop:12 }}>
                 {/* Big square category tiles — Dashboard plus the four groups */}
                 <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
-                  <button onClick={()=>tryChangeTab("dashboard")} title="Home"
+                  <button onClick={()=>{ setNavShowCategory(false); tryChangeTab("dashboard"); }} title="Home"
                     style={{
                       ...tileBase, ...tileNeon(dashActive),
                       background: dashActive ? dashColor.bgActive : dashColor.bg,
@@ -4423,9 +4427,9 @@ function App({ currentUser, onSignOut }) {
                     <span style={{ fontSize:46, lineHeight:1 }}>🏠</span>
                   </button>
                   {groups.map(g => {
-                    const isOpen = openCategory === g.key;
+                    const isOpen = openCategory === g.key && (!dashActive || navShowCategory);
                     return (
-                      <button key={g.key} onClick={()=>setNavCategory(g.key)}
+                      <button key={g.key} onClick={()=>{ setNavCategory(g.key); setNavShowCategory(true); }}
                         style={{
                           ...tileBase, ...tileNeon(isOpen),
                           background: isOpen ? g.color.bgActive : g.color.bg,
@@ -4444,7 +4448,7 @@ function App({ currentUser, onSignOut }) {
                 {/* Sub-panel underneath the tiles.
                     On the dashboard, show Quick Actions (most-used tabs) instead of
                     a category's sub-tabs. Otherwise show the open category's tabs. */}
-                {dashActive ? (
+                {dashActive && !navShowCategory ? (
                   <div style={{ marginTop:10, padding:"10px 12px", background:dashColor.bg, border:"1px solid rgba(255,255,255,0.7)", borderRadius:14 }}>
                     <div style={{ fontSize:9, fontWeight:800, color:dashColor.ink, letterSpacing:"0.2em", textTransform:"uppercase", opacity:0.75, marginBottom:6, paddingLeft:4 }}>
                       ⚡ Quick actions
