@@ -5639,6 +5639,10 @@ function App({ currentUser, onSignOut }) {
           const holidayLookup = {};
           yearsCovered.forEach(y => Object.assign(holidayLookup, saHolidays(y)));
 
+          // Quick lookup: ec -> leftDate (only people on the off-board list)
+          const offByEc = {};
+          (offList || []).forEach(o => { if (o.ec && o.leftDate) offByEc[o.ec] = o.leftDate; });
+
           // Active staff for this branch + cycle (techs + managers, sorted SM > AM > NT > name).
           // Show anyone who was still employed during this cycle — if their
           // leftDate is on/after cycStart, include them so historical cycles
@@ -5656,10 +5660,6 @@ function App({ currentUser, onSignOut }) {
             const order = { SM:0, AM:1, NT:2 };
             return (order[a.role] ?? 9) - (order[b.role] ?? 9) || a.name.localeCompare(b.name);
           });
-
-          // Quick lookup: ec -> leftDate (only people on the off-board list)
-          const offByEc = {};
-          (offList || []).forEach(o => { if (o.ec && o.leftDate) offByEc[o.ec] = o.leftDate; });
           // For a given (ec, ymd), is this day strictly AFTER their last day?
           const isPostLeftDate = (ec, ymd) => {
             const ld = offByEc[ec];
