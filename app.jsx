@@ -8,7 +8,8 @@ const STAFF_USERS = {
   "2023": { name: "Kelly",   role: "Ops Manager"    },
   "6678": { name: "Joy",     role: "HR Generalist"  },
   "7890": { name: "Siphe",   role: "Recruiter"      },
-  "5990": { name: "Ops Admin", role: "Ops Admin"    }
+  "5990": { name: "Ops Admin", role: "Ops Admin"    },
+  "1111": { name: "Demo",    role: "Training Demo"  }
 };
 const PIN_SESSION_KEY = "boa_hr_current_user_v1";
 
