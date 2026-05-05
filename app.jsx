@@ -9,9 +9,35 @@ const STAFF_USERS = {
   "6678": { name: "Joy",     role: "HR Generalist"  },
   "7890": { name: "Siphe",   role: "Recruiter"      },
   "5990": { name: "Ops Admin", role: "Ops Admin"    },
-  "1111": { name: "Demo",    role: "Training Demo"  }
+  "1111": { name: "Demo",    role: "Training Demo", demo: true }
 };
 const PIN_SESSION_KEY = "boa_hr_current_user_v1";
+
+// Demo-mode shim: when a `demo:true` user is signed in we replace every
+// persistence method on window.BOA_DB with a no-op so changes never reach the
+// server. Local React state still updates, so the user can practice editing
+// staff / attendance / schedules — but a page reload wipes their changes.
+function installDemoMode() {
+  const apply = () => {
+    if (!window.BOA_DB) { setTimeout(apply, 100); return; }
+    if (window.__BOA_DEMO_INSTALLED) return;
+    window.__BOA_DEMO_INSTALLED = true;
+    let demoSeed = 900000;
+    const passthrough = async (arg) => {
+      if (arg && typeof arg === "object" && !Array.isArray(arg) && arg._id === undefined) {
+        return { ...arg, _id: ++demoSeed };
+      }
+      return arg;
+    };
+    const noop = async () => {};
+    ["saveStaff","saveMat","saveManager"].forEach(n => { window.BOA_DB[n] = passthrough; });
+    ["saveSchedule","saveAttendance","saveOnboarding","saveOffboarding",
+     "saveLeaveRecords","saveMgrRequests","saveManagerPins",
+     "deleteMat","deleteManager","deleteSchedule","appendActivity"
+    ].forEach(n => { window.BOA_DB[n] = noop; });
+  };
+  apply();
+}
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────────
 const TODAY = new Date("2026-04-27");
@@ -3492,6 +3518,9 @@ function App({ currentUser, onSignOut }) {
   // Expose for components defined outside App() (e.g. <Schedule/>).
   useEffect(() => { window.BOA_LOG_ACTIVITY = logActivity; }, [currentUser]);
 
+  // Demo accounts: install no-op persistence shim so nothing saves to the server.
+  useEffect(() => { if (currentUser?.demo) installDemoMode(); }, [currentUser]);
+
   const [staff, setStaff] = useState([]);
   const [matRecs, setMatRecs] = useState([]);
   const [tab, setTab] = useState("staff");
@@ -4177,6 +4206,12 @@ function App({ currentUser, onSignOut }) {
   return (
     <div style={{ minHeight:"100vh", background:cream, fontFamily:"'DM Sans',sans-serif", color:"#831843" }}>
       <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Cormorant+Garamond:wght@600;700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+      {currentUser?.demo && (
+        <div style={{ background:"#fde047", color:"#78350f", borderBottom:"2px solid #ca8a04", padding:"10px 24px", textAlign:"center", fontSize:13, fontWeight:700, letterSpacing:"0.02em" }}>
+          ⚠ TRAINING / DEMO LOGIN — You can explore the portal but any changes you make will <u>NOT</u> be saved.
+        </div>
+      )}
 
       {/* HEADER */}
       <div style={{ background:"linear-gradient(135deg, #FBCFE8 0%, #F9A8D4 50%, #F472B6 100%)", color:"#FFFFFF" }}>
