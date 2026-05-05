@@ -3694,6 +3694,14 @@ function App({ currentUser, onSignOut }) {
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     setAttLoading(true);
     const safe = (p) => p.catch(() => null);
+    // Tech schedules in BOA_DB.periodDays use an END-month ym convention
+    // (ym="2026-05" means the cycle April 25 → May 24). Attendance and the
+    // manager schedule use a START-month ym (ym="2026-04" means April 25 →
+    // May 24). Convert attYM (start-month) to the matching tech ym.
+    const _atP = attYM.split("-").map(Number);
+    let _atY = _atP[0], _atM = _atP[1] + 1;
+    if (_atM > 12) { _atM = 1; _atY++; }
+    const techYm = _atY + "-" + String(_atM).padStart(2, "0");
     // Manager schedule grids key cells by YYYY-MM-DD strings (mgrSched line 141),
     // while tech schedule grids and the attendance UI use day-of-month numbers.
     // Re-key the manager grid so a shallow merge by EC works.
@@ -3713,7 +3721,7 @@ function App({ currentUser, onSignOut }) {
     };
     Promise.all([
       safe(window.BOA_DB.loadAttendance(attBranch, attYM)),
-      safe(window.BOA_DB.loadSchedule(attBranch, attYM, false)),
+      safe(window.BOA_DB.loadSchedule(attBranch, techYm, false)),
       safe(window.BOA_DB.loadSchedule(attBranch, attYM, true))
     ]).then(([att, sch, mgrSch]) => {
       setAttGrid((att && att.grid) || {});
@@ -3736,11 +3744,18 @@ function App({ currentUser, onSignOut }) {
     const todayDay = today.getDate();
     const ymd = today.getFullYear() + "-" + String(today.getMonth()+1).padStart(2,"0") + "-" + String(todayDay).padStart(2,"0");
     const ym = window.BOA_DB.currentSchedYm ? window.BOA_DB.currentSchedYm() : (today.getFullYear() + "-" + String(today.getMonth()+1).padStart(2,"0"));
+    // Manager schedule stores under the START-month ym (cycle's 25th-of-month-X
+    // is saved under ym "X"), while currentSchedYm() returns the END-month ym
+    // for the same cycle. Shift back one month for the manager lookup.
+    const _ymP = ym.split("-").map(Number);
+    let _mgrY = _ymP[0], _mgrM = _ymP[1] - 1;
+    if (_mgrM < 1) { _mgrM = 12; _mgrY--; }
+    const mgrYm = _mgrY + "-" + String(_mgrM).padStart(2, "0");
     const safe = (p) => p.catch(() => null);
     Promise.all(SALONS.map(async (sl) => {
       const [tech, mgr] = await Promise.all([
         safe(window.BOA_DB.loadSchedule(sl.name, ym, false)),
-        safe(window.BOA_DB.loadSchedule(sl.name, ym, true))
+        safe(window.BOA_DB.loadSchedule(sl.name, mgrYm, true))
       ]);
       const techGrid = (tech && tech.grid) || {};
       const mgrGrid  = (mgr  && mgr.grid)  || {};
@@ -3779,13 +3794,20 @@ function App({ currentUser, onSignOut }) {
     if (!(tab === "dashboard" || tab === "alerts")) return;
     let cancelled = false;
     const today = new Date();
-    // The cycle that starts on the 25th of the upcoming month (i.e. the next cycle to plan).
-    // - Before the 25th: upcoming = current calendar month's cycle.
-    // - On/after the 25th: the cycle starting in 5 days has already begun, so upcoming = next month.
-    let upY = today.getFullYear();
-    let upM = today.getMonth(); // 0-11
-    if (today.getDate() >= 25) { upM++; if (upM > 11) { upM = 0; upY++; } }
-    const upYm = upY + "-" + String(upM + 1).padStart(2, "0");
+    // Schedules must be saved by the 15th of each month for the FOLLOWING
+    // calendar month. The cycle covering month M+1 starts on the 25th of
+    // month M and ends on the 24th of month M+1.
+    //   - Before the 25th: the next cycle to plan covers next month (M+1).
+    //   - On/after the 25th: that cycle has already begun, so next-to-plan
+    //     covers month M+2.
+    // upStartM/upStartY = the START month/year (manager schedule ym)
+    // upEndM/upEndY     = the END / "covered" month/year (tech schedule ym + display label)
+    let upStartY = today.getFullYear(), upStartM = today.getMonth(); // 0-11
+    if (today.getDate() >= 25) { upStartM++; if (upStartM > 11) { upStartM = 0; upStartY++; } }
+    let upEndY = upStartY, upEndM = upStartM + 1;
+    if (upEndM > 11) { upEndM = 0; upEndY++; }
+    const upMgrYm  = upStartY + "-" + String(upStartM + 1).padStart(2, "0"); // manager save key
+    const upTechYm = upEndY   + "-" + String(upEndM   + 1).padStart(2, "0"); // tech save key
     const safe = (p) => p.catch(() => null);
     const isPopulated = (loaded) => {
       if (!loaded || !loaded.grid) return false;
@@ -3793,11 +3815,11 @@ function App({ currentUser, onSignOut }) {
       return false;
     };
     Promise.all(SALONS.flatMap(sl => [
-      safe(window.BOA_DB.loadSchedule(sl.name, upYm, false)).then(r => ({ branch: sl.name, type: "tech", saved: isPopulated(r) })),
-      safe(window.BOA_DB.loadSchedule(sl.name, upYm, true )).then(r => ({ branch: sl.name, type: "mgr",  saved: isPopulated(r) }))
+      safe(window.BOA_DB.loadSchedule(sl.name, upTechYm, false)).then(r => ({ branch: sl.name, type: "tech", saved: isPopulated(r), ym: upTechYm, endY: upEndY, endM: upEndM })),
+      safe(window.BOA_DB.loadSchedule(sl.name, upMgrYm,  true )).then(r => ({ branch: sl.name, type: "mgr",  saved: isPopulated(r), ym: upMgrYm,  endY: upEndY, endM: upEndM }))
     ])).then(results => {
       if (cancelled) return;
-      const missing = results.filter(r => !r.saved).map(r => ({ branch: r.branch, type: r.type, ym: upYm }));
+      const missing = results.filter(r => !r.saved).map(r => ({ branch: r.branch, type: r.type, ym: r.ym, endY: r.endY, endM: r.endM }));
       setUpcomingMissing(missing);
       setUpcomingChecked(true);
     });
@@ -4746,11 +4768,13 @@ function App({ currentUser, onSignOut }) {
                   let schedAlert = null;
                   if (SCHED_ALERT_PINS.has(currentUser.pin) && upcomingChecked && upcomingMissing.length > 0) {
                     const today = new Date();
-                    const upM = today.getDate() >= 25 ? today.getMonth() + 1 : today.getMonth();
-                    const upY = today.getFullYear() + (upM > 11 ? 1 : 0);
-                    const upMnorm = upM > 11 ? 0 : upM;
-                    const monthLbl = new Date(upY, upMnorm, 1).toLocaleDateString("en-ZA", { month:"long", year:"numeric" });
-                    const deadline = new Date(upY, upMnorm, 15);
+                    // Display the COVERED (end) month — that's what users mean by
+                    // "the schedule for June". Deadline is the 15th of the start month.
+                    const m0 = upcomingMissing[0];
+                    const monthLbl = new Date(m0.endY, m0.endM, 1).toLocaleDateString("en-ZA", { month:"long", year:"numeric" });
+                    let deadlineY = m0.endY, deadlineM = m0.endM - 1;
+                    if (deadlineM < 0) { deadlineM = 11; deadlineY--; }
+                    const deadline = new Date(deadlineY, deadlineM, 15);
                     const overdue = today > deadline;
                     const techMissing = upcomingMissing.filter(m => m.type === "tech").length;
                     const mgrMissing  = upcomingMissing.filter(m => m.type === "mgr").length;
@@ -4761,8 +4785,8 @@ function App({ currentUser, onSignOut }) {
                       i: overdue ? "🚨" : "📆",
                       l: parts.join(" + ") + " schedule" + (techMissing + mgrMissing !== 1 ? "s" : "") + " not saved for " + monthLbl,
                       sub: overdue
-                        ? "OVERDUE — was due 15 " + new Date(upY, upMnorm, 15).toLocaleDateString("en-ZA", { month:"short" })
-                        : "Due by 15 " + new Date(upY, upMnorm, 15).toLocaleDateString("en-ZA", { month:"short" }),
+                        ? "OVERDUE — was due 15 " + deadline.toLocaleDateString("en-ZA", { month:"short" })
+                        : "Due by 15 " + deadline.toLocaleDateString("en-ZA", { month:"short" }),
                       c: overdue ? "#7f1d1d" : "#92400e",
                       bg: overdue ? "#fee2e2" : "#fef3c7",
                       to:"scheduling"
@@ -5256,11 +5280,11 @@ function App({ currentUser, onSignOut }) {
           const schedAlerts = [];
           if (SCHED_ALERT_PINS.has(currentUser.pin) && upcomingChecked && upcomingMissing.length > 0) {
             const today = new Date();
-            const upM = today.getDate() >= 25 ? today.getMonth() + 1 : today.getMonth();
-            const upMnorm = upM > 11 ? 0 : upM;
-            const upY = today.getFullYear() + (upM > 11 ? 1 : 0);
-            const monthLbl = new Date(upY, upMnorm, 1).toLocaleDateString("en-ZA", { month:"long", year:"numeric" });
-            const deadline = new Date(upY, upMnorm, 15);
+            const m0 = upcomingMissing[0];
+            const monthLbl = new Date(m0.endY, m0.endM, 1).toLocaleDateString("en-ZA", { month:"long", year:"numeric" });
+            let deadlineY = m0.endY, deadlineM = m0.endM - 1;
+            if (deadlineM < 0) { deadlineM = 11; deadlineY--; }
+            const deadline = new Date(deadlineY, deadlineM, 15);
             const overdue = today > deadline;
             const sev = overdue ? "critical" : "warning";
             for (const m of upcomingMissing) {
