@@ -4427,62 +4427,111 @@ function App({ currentUser, onSignOut }) {
           const recentDepartures = enriched
             .filter(s => s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft >= 0 && s.offDaysSinceLeft <= 7)
             .sort((a, b) => (a.offDaysSinceLeft ?? 0) - (b.offDaysSinceLeft ?? 0));
+
+          // Shared style tokens (kept inline so we don't disturb the rest of the file)
+          const PINK = { ink:"#831843", accent:"#BE185D", soft:"#FBCFE8", softer:"#FCE7F3", softest:"#FDEEF5", deep:"#9F1A4F" };
+          const sectionTitle = { fontFamily:"'Playfair Display',serif", fontSize:14, fontWeight:700, color:PINK.ink, letterSpacing:"0.18em", textTransform:"uppercase", display:"flex", alignItems:"center", gap:10, marginBottom:12 };
+          const sectionRule  = { flex:1, height:1, background:`linear-gradient(90deg,${PINK.soft} 0%,transparent 100%)` };
+          const card         = { background:"#FFFFFF", border:`1px solid ${PINK.soft}`, borderRadius:16, padding:"18px 20px", boxShadow:"0 1px 6px rgba(190,24,93,0.04)" };
+          const cardTitle    = { fontFamily:"'Cormorant Garamond',serif", fontSize:18, fontWeight:700, color:PINK.ink, marginBottom:12, display:"flex", alignItems:"center", justifyContent:"space-between" };
+
+          const coreActions = [
+            { lbl:"Staff List",   icon:"👥", to:"staff",       desc:"Roster & details" },
+            { lbl:"Scheduling",   icon:"📅", to:"scheduling",  desc:"Build rosters"    },
+            { lbl:"Attendance",   icon:"📕", to:"attendance",  desc:"Daily log"        },
+            { lbl:"Recruitment",  icon:"🎯", to:"recruitment", desc:"Open vacancies"   },
+            { lbl:"Leave",        icon:"🌴", to:"leave",       desc:"Plan & approve"   }
+          ];
+          const peopleActions = [
+            { lbl:"Onboarding",   icon:"🌱", to:"onboard"   },
+            { lbl:"Off-boarding", icon:"👋", to:"offboard"  },
+            { lbl:"Maternity",    icon:"🤱", to:"maternity" },
+            { lbl:"Locations",    icon:"📍", to:"locations" }
+          ];
+          const oversightActions = [
+            { lbl:"Mgr Clock-ins", icon:"🕐", to:"mgrclockins" },
+            { lbl:"Activity Log",  icon:"📜", to:"activity"    },
+            { lbl:"Alerts",        icon:"🔔", to:"alerts"      }
+          ];
+
           return (
             <div>
-              {/* Greeting card */}
-              <div style={{ background:"linear-gradient(135deg,#FCE7F3 0%,#FFFFFF 60%)", border:"1px solid #FBCFE8", borderRadius:18, padding:"22px 26px", marginBottom:18, boxShadow:"0 2px 14px rgba(190,24,93,0.06)" }}>
-                <div style={{ fontFamily:"'Playfair Display',serif", fontSize:30, color:"#831843", fontWeight:700 }}>Good {partOfDay}, {currentUser.name} 👋</div>
-                <div style={{ fontSize:13, color:"#BE185D", marginTop:6, fontWeight:600 }}>{dateLbl} · {timeLbl}</div>
-                <div style={{ fontSize:12, color:"#9F1A4F", marginTop:4 }}>Signed in as {currentUser.role}.</div>
+              {/* ── HERO ── greeting + role + date/time ── */}
+              <div style={{ background:`linear-gradient(135deg,${PINK.softer} 0%,#FFFFFF 65%)`, border:`1px solid ${PINK.soft}`, borderRadius:20, padding:"26px 30px", marginBottom:20, boxShadow:"0 4px 18px rgba(190,24,93,0.07)", display:"flex", justifyContent:"space-between", alignItems:"flex-end", flexWrap:"wrap", gap:18 }}>
+                <div>
+                  <div style={{ fontSize:11, fontWeight:700, color:PINK.accent, letterSpacing:"0.2em", textTransform:"uppercase" }}>BOA HR · Dashboard</div>
+                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:34, color:PINK.ink, fontWeight:700, lineHeight:1.1, marginTop:6 }}>Good {partOfDay}, {currentUser.name}</div>
+                  <div style={{ fontSize:13, color:PINK.accent, marginTop:8, fontWeight:600 }}>{dateLbl}</div>
+                </div>
+                <div style={{ textAlign:"right" }}>
+                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:30, fontWeight:700, color:PINK.ink, letterSpacing:"0.04em" }}>{timeLbl}</div>
+                  <div style={{ fontSize:11, color:PINK.deep, marginTop:4, fontWeight:600 }}>Signed in as <span style={{ color:PINK.accent }}>{currentUser.role}</span></div>
+                </div>
               </div>
 
-              {/* Top stat cards */}
-              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))", gap:11, marginBottom:18 }}>
-                <div style={{ background:"#dbeafe", borderRadius:14, padding:"14px 16px" }}>
-                  <div style={{ fontSize:22 }}>📅</div>
-                  <div style={{ fontSize:30, fontWeight:800, color:"#1e3a8a", lineHeight:1.05 }}>
-                    {dashScheduledToday == null ? "…" : dashScheduledToday}
+              {/* ── TOP ACTION BAR ── primary navigation ── */}
+              <div style={{ background:"#FFFFFF", border:`1px solid ${PINK.soft}`, borderRadius:16, padding:"10px 12px", marginBottom:24, display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))", gap:8, boxShadow:"0 1px 6px rgba(190,24,93,0.04)" }}>
+                {coreActions.map(a => (
+                  <button key={a.to} onClick={()=>tryChangeTab(a.to)}
+                    style={{ background:PINK.softest, color:PINK.ink, border:`1px solid ${PINK.soft}`, borderRadius:12, padding:"12px 14px", cursor:"pointer", fontFamily:"inherit", textAlign:"left", display:"flex", alignItems:"center", gap:11, transition:"transform 0.08s ease" }}
+                    onMouseDown={e=>e.currentTarget.style.transform="scale(0.98)"}
+                    onMouseUp={e=>e.currentTarget.style.transform=""}
+                    onMouseLeave={e=>e.currentTarget.style.transform=""}>
+                    <span style={{ fontSize:22 }}>{a.icon}</span>
+                    <span style={{ display:"flex", flexDirection:"column" }}>
+                      <span style={{ fontSize:13, fontWeight:800 }}>{a.lbl}</span>
+                      <span style={{ fontSize:10, color:PINK.deep, opacity:0.75, marginTop:1 }}>{a.desc}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              {/* ── SECTION: TODAY ── */}
+              <div style={sectionTitle}>
+                <span>✨ Today at a glance</span>
+                <span style={sectionRule} />
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:11, marginBottom:24 }}>
+                {[
+                  { l:"Scheduled today",   v: dashScheduledToday == null ? "…" : dashScheduledToday, sub:"across all branches",       i:"📅", c:"#1e3a8a", bg:"#dbeafe" },
+                  { l:"Active staff",       v: stats.active,                                          sub:"incl. " + stats.pregnant + " pregnant", i:"👥", c:"#14532d", bg:"#dcfce7" },
+                  { l:"On maternity",       v: stats.onMat,                                           sub: stats.returning60 + " returning ≤60d",  i:"🤱", c:"#7A4258", bg:"#fce7f3" },
+                  { l:"Positions to hire",  v: stats.vacancies,                                       sub:"across " + stats.understaffed + " branch" + (stats.understaffed !== 1 ? "es" : ""), i:"🎯", c:"#7c3aed", bg:"#ede9fe", click:()=>tryChangeTab("recruitment") }
+                ].map(c => (
+                  <div key={c.l} onClick={c.click} style={{ background:c.bg, borderRadius:16, padding:"16px 18px", cursor:c.click ? "pointer" : "default", border:"1px solid rgba(255,255,255,0.6)" }}>
+                    <div style={{ fontSize:24 }}>{c.i}</div>
+                    <div style={{ fontSize:32, fontWeight:800, color:c.c, lineHeight:1.05, marginTop:4 }}>{c.v}</div>
+                    <div style={{ fontSize:10, fontWeight:700, color:c.c, letterSpacing:"0.1em", textTransform:"uppercase", marginTop:6 }}>{c.l}</div>
+                    <div style={{ fontSize:10, color:c.c, opacity:0.6, marginTop:2 }}>{c.sub}</div>
                   </div>
-                  <div style={{ fontSize:10, fontWeight:700, color:"#1e3a8a", letterSpacing:"0.06em", marginTop:4 }}>SCHEDULED TODAY</div>
-                  <div style={{ fontSize:10, color:"#1e3a8a", opacity:0.65, marginTop:2 }}>across all branches</div>
-                </div>
-                <div style={{ background:"#dcfce7", borderRadius:14, padding:"14px 16px" }}>
-                  <div style={{ fontSize:22 }}>👥</div>
-                  <div style={{ fontSize:30, fontWeight:800, color:"#14532d", lineHeight:1.05 }}>{stats.active}</div>
-                  <div style={{ fontSize:10, fontWeight:700, color:"#14532d", letterSpacing:"0.06em", marginTop:4 }}>ACTIVE STAFF</div>
-                  <div style={{ fontSize:10, color:"#14532d", opacity:0.65, marginTop:2 }}>incl. {stats.pregnant} pregnant</div>
-                </div>
-                <div style={{ background:"#fce7f3", borderRadius:14, padding:"14px 16px" }}>
-                  <div style={{ fontSize:22 }}>🤱</div>
-                  <div style={{ fontSize:30, fontWeight:800, color:"#7A4258", lineHeight:1.05 }}>{stats.onMat}</div>
-                  <div style={{ fontSize:10, fontWeight:700, color:"#7A4258", letterSpacing:"0.06em", marginTop:4 }}>ON MATERNITY</div>
-                  <div style={{ fontSize:10, color:"#7A4258", opacity:0.65, marginTop:2 }}>{stats.returning60} returning ≤60d</div>
-                </div>
-                <div style={{ background:"#ede9fe", borderRadius:14, padding:"14px 16px", cursor:"pointer" }} onClick={()=>tryChangeTab("recruitment")} title="Open Recruitment">
-                  <div style={{ fontSize:22 }}>🎯</div>
-                  <div style={{ fontSize:30, fontWeight:800, color:"#7c3aed", lineHeight:1.05 }}>{stats.vacancies}</div>
-                  <div style={{ fontSize:10, fontWeight:700, color:"#7c3aed", letterSpacing:"0.06em", marginTop:4 }}>POSITIONS TO HIRE</div>
-                  <div style={{ fontSize:10, color:"#7c3aed", opacity:0.65, marginTop:2 }}>across {stats.understaffed} branch{stats.understaffed !== 1 ? "es" : ""}</div>
-                </div>
+                ))}
               </div>
 
-              {/* Two-column body */}
-              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(320px,1fr))", gap:14 }}>
+              {/* ── SECTION: OPERATIONS ── */}
+              <div style={sectionTitle}>
+                <span>📋 Operations</span>
+                <span style={sectionRule} />
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(340px,1fr))", gap:14, marginBottom:24 }}>
                 {/* Today by branch */}
-                <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:14, padding:"16px 18px" }}>
-                  <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:18, fontWeight:700, color:"#831843", marginBottom:10 }}>📅 Scheduled today by branch</div>
+                <div style={card}>
+                  <div style={cardTitle}>
+                    <span>📅 Scheduled today by branch</span>
+                    <button onClick={()=>tryChangeTab("scheduling")} style={{ background:"transparent", border:"none", color:PINK.accent, cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit" }}>View schedules →</button>
+                  </div>
                   {dashScheduledToday == null ? (
                     <div style={{ fontSize:12, color:"#9ca3af", fontStyle:"italic" }}>Loading schedules…</div>
-                  ) : Object.keys(dashByBranch).length === 0 ? (
-                    <div style={{ fontSize:12, color:"#9ca3af", fontStyle:"italic" }}>No schedule data for today.</div>
                   ) : (
                     <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))", gap:8 }}>
                       {SALONS.map(sl => {
                         const c = dashByBranch[sl.name] || 0;
                         return (
-                          <div key={sl.name} style={{ background:"#FDEEF5", border:"1px solid #FBCFE8", borderRadius:9, padding:"8px 11px" }}>
-                            <div style={{ fontSize:11, fontWeight:700, color:"#831843" }}>📍 {sl.name}</div>
-                            <div style={{ fontSize:18, fontWeight:800, color: c === 0 ? "#9ca3af" : "#BE185D", marginTop:2 }}>{c}<span style={{ fontSize:10, fontWeight:600, color:"#9F1A4F", marginLeft:4 }}>working</span></div>
+                          <div key={sl.name} style={{ background:PINK.softest, border:`1px solid ${PINK.soft}`, borderRadius:11, padding:"10px 12px" }}>
+                            <div style={{ fontSize:11, fontWeight:700, color:PINK.ink }}>📍 {sl.name}</div>
+                            <div style={{ display:"flex", alignItems:"baseline", gap:5, marginTop:4 }}>
+                              <span style={{ fontSize:22, fontWeight:800, color: c === 0 ? "#9ca3af" : PINK.accent }}>{c}</span>
+                              <span style={{ fontSize:10, fontWeight:600, color:PINK.deep, opacity:0.75 }}>working</span>
+                            </div>
                           </div>
                         );
                       })}
@@ -4491,72 +4540,77 @@ function App({ currentUser, onSignOut }) {
                 </div>
 
                 {/* Recruitment summary */}
-                <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:14, padding:"16px 18px" }}>
-                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
-                    <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:18, fontWeight:700, color:"#831843" }}>🎯 Recruitment needs</div>
-                    <button onClick={()=>tryChangeTab("recruitment")} style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:7, padding:"5px 11px", cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit" }}>Open Recruitment →</button>
+                <div style={card}>
+                  <div style={cardTitle}>
+                    <span>🎯 Recruitment needs</span>
+                    <button onClick={()=>tryChangeTab("recruitment")} style={{ background:PINK.accent, color:"#fff", border:"none", borderRadius:8, padding:"5px 12px", cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit" }}>Open →</button>
                   </div>
                   {stats.vacancies === 0 ? (
-                    <div style={{ fontSize:12, color:"#16a34a", fontWeight:700 }}>✅ All branches fully staffed.</div>
+                    <div style={{ fontSize:13, color:"#16a34a", fontWeight:700, padding:"8px 0" }}>✅ All branches fully staffed.</div>
                   ) : (
                     <>
-                      <div style={{ fontSize:12, color:"#831843", marginBottom:8 }}>
+                      <div style={{ fontSize:12, color:PINK.ink, marginBottom:10 }}>
                         <strong>{stats.vacancies}</strong> position{stats.vacancies !== 1 ? "s" : ""} to fill across <strong>{stats.understaffed}</strong> branch{stats.understaffed !== 1 ? "es" : ""}.
                       </div>
                       <div style={{ display:"grid", gap:6 }}>
                         {understaffedBranches.slice(0, 6).map(b => (
-                          <div key={b.name} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", background:"#fef3c7", border:"1px solid #fde68a", borderRadius:8, padding:"7px 11px" }}>
+                          <div key={b.name} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", background:"#fef3c7", border:"1px solid #fde68a", borderRadius:9, padding:"8px 12px" }}>
                             <span style={{ fontSize:12, color:"#78350f", fontWeight:700 }}>📍 {b.name}</span>
-                            <span style={{ fontSize:12, color:"#92400e", fontWeight:800 }}>{b.gap} needed <span style={{ fontWeight:500, opacity:0.7 }}>· {b.act}/{b.goal}</span></span>
+                            <span style={{ fontSize:12, color:"#92400e", fontWeight:800 }}>+{b.gap} <span style={{ fontWeight:500, opacity:0.7 }}>· {b.act}/{b.goal}</span></span>
                           </div>
                         ))}
                       </div>
                     </>
                   )}
                 </div>
+              </div>
 
-                {/* Compliance + recent departures */}
-                <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:14, padding:"16px 18px" }}>
-                  <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:18, fontWeight:700, color:"#831843", marginBottom:10 }}>⚠ Attention</div>
-                  <div style={{ display:"grid", gap:6, fontSize:12 }}>
-                    {stats.zna > 0 && (
-                      <div style={{ background:"#fee2e2", border:"1px solid #fca5a5", borderRadius:8, padding:"7px 11px", color:"#7f1d1d" }}>
-                        🚨 <strong>{stats.zna}</strong> staff with Z/NA compliance risk
-                      </div>
-                    )}
-                    {stats.noContract > 0 && (
-                      <div style={{ background:"#fee2e2", border:"1px solid #fca5a5", borderRadius:8, padding:"7px 11px", color:"#7f1d1d" }}>
-                        📄 <strong>{stats.noContract}</strong> staff with no contract
-                      </div>
-                    )}
-                    {recentDepartures.length > 0 && (
-                      <div style={{ background:"#f3f4f6", border:"1px solid #d1d5db", borderRadius:8, padding:"7px 11px", color:"#374151" }}>
-                        👋 <strong>{recentDepartures.length}</strong> departure{recentDepartures.length !== 1 ? "s" : ""} in the last 7 days
-                      </div>
-                    )}
-                    {stats.zna === 0 && stats.noContract === 0 && recentDepartures.length === 0 && (
-                      <div style={{ color:"#16a34a", fontWeight:600 }}>✅ Nothing urgent.</div>
-                    )}
+              {/* ── SECTION: ATTENTION ── */}
+              <div style={sectionTitle}>
+                <span>⚠ Needs attention</span>
+                <span style={sectionRule} />
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))", gap:11, marginBottom:24 }}>
+                {[
+                  stats.zna           > 0 && { i:"🚨", l: stats.zna + " staff with Z/NA risk", sub:"compliance issue", c:"#7f1d1d", bg:"#fee2e2", to:"staff" },
+                  stats.noContract    > 0 && { i:"📄", l: stats.noContract + " staff with no contract", sub:"upload contracts", c:"#7f1d1d", bg:"#fee2e2", to:"staff" },
+                  recentDepartures.length > 0 && { i:"👋", l: recentDepartures.length + " departure" + (recentDepartures.length !== 1 ? "s" : "") + " this week", sub:"in last 7 days", c:"#374151", bg:"#f3f4f6", to:"offboard" }
+                ].filter(Boolean).map(b => (
+                  <div key={b.l} onClick={()=>tryChangeTab(b.to)} style={{ background:b.bg, border:`1px solid ${b.c}33`, borderRadius:14, padding:"14px 16px", cursor:"pointer" }}>
+                    <div style={{ fontSize:22 }}>{b.i}</div>
+                    <div style={{ fontSize:13, fontWeight:800, color:b.c, marginTop:4 }}>{b.l}</div>
+                    <div style={{ fontSize:10, fontWeight:600, color:b.c, opacity:0.7, marginTop:2 }}>{b.sub}</div>
                   </div>
-                </div>
+                ))}
+                {stats.zna === 0 && stats.noContract === 0 && recentDepartures.length === 0 && (
+                  <div style={{ background:"#dcfce7", border:"1px solid #86efac", borderRadius:14, padding:"14px 16px", color:"#14532d", fontWeight:700, fontSize:13 }}>
+                    ✅ Nothing urgent — everything in good shape.
+                  </div>
+                )}
+              </div>
 
-                {/* Quick actions */}
-                <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:14, padding:"16px 18px" }}>
-                  <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:18, fontWeight:700, color:"#831843", marginBottom:10 }}>⚡ Quick actions</div>
-                  <div style={{ display:"flex", flexWrap:"wrap", gap:7 }}>
-                    {[
-                      { lbl:"👥 Staff List",       to:"staff"      },
-                      { lbl:"📅 Scheduling",       to:"scheduling" },
-                      { lbl:"📕 Attendance",       to:"attendance" },
-                      { lbl:"🌴 Leave Planner",    to:"leave"      },
-                      { lbl:"👋 Off-boarding",     to:"offboard"   },
-                      { lbl:"🌱 Onboarding",       to:"onboard"    },
-                      { lbl:"📜 Activity Log",     to:"activity"   }
-                    ].map(b => (
-                      <button key={b.to} onClick={()=>tryChangeTab(b.to)} style={{ background:"#FCE7F3", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, padding:"7px 12px", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>{b.lbl}</button>
-                    ))}
+              {/* ── SECTION: ALL TOOLS ── grouped quick links ── */}
+              <div style={sectionTitle}>
+                <span>🧰 All tools</span>
+                <span style={sectionRule} />
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))", gap:14, marginBottom:8 }}>
+                {[
+                  { title:"People management", items: peopleActions    },
+                  { title:"Oversight",         items: oversightActions }
+                ].map(group => (
+                  <div key={group.title} style={card}>
+                    <div style={{ fontSize:11, fontWeight:700, color:PINK.deep, letterSpacing:"0.16em", textTransform:"uppercase", marginBottom:10 }}>{group.title}</div>
+                    <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))", gap:7 }}>
+                      {group.items.map(a => (
+                        <button key={a.to} onClick={()=>tryChangeTab(a.to)} style={{ background:PINK.softest, color:PINK.ink, border:`1px solid ${PINK.soft}`, borderRadius:10, padding:"9px 12px", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700, textAlign:"left", display:"flex", alignItems:"center", gap:8 }}>
+                          <span style={{ fontSize:16 }}>{a.icon}</span>
+                          <span>{a.lbl}</span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                ))}
               </div>
             </div>
           );
