@@ -6452,22 +6452,46 @@ function App({ currentUser, onSignOut }) {
               };
               const norm = (s) => (s || "").toString().toLowerCase().replace(/[^a-z\s]/g, " ").replace(/\s+/g, " ").trim();
               const staffByEc = new Map();
-              for (const s of attStaff) staffByEc.set(s.ec, s);
-              const matchEc = (raw) => {
-                const t = norm(raw);
-                if (!t) return null;
-                let best = null, bestScore = 0;
-                for (const s of attStaff) {
-                  const n = norm(s.name);
-                  if (!n) continue;
-                  if (n === t) return s.ec;                                      // exact full
-                  const tp = t.split(" "), np = n.split(" ");
-                  // Both first + last present
-                  if (tp[0] === np[0] && tp[tp.length-1] === np[np.length-1]) return s.ec;
-                  // First-name only match (use as last resort, but confirm uniqueness)
-                  if (tp[0] === np[0]) { best = best ? "AMBIG" : s.ec; bestScore = 1; }
+              for (const s of attStaff) staffByEc.set(s.ec.toUpperCase(), s);
+              // Fresha "Team member" cells often look like "B028 Fatima January" — pull
+              // the EC out so we can resolve directly by code instead of name-matching.
+              const extractEc = (raw) => {
+                const m = String(raw || "").match(/^\s*([A-Z][0-9]+[A-Z]?)\b/i);
+                return m ? m[1].toUpperCase() : null;
+              };
+              const stripEcPrefix = (raw) => String(raw || "").replace(/^\s*[A-Z][0-9]+[A-Z]?\s+/i, "");
+              // Match a row's staff field to a staff member.
+              // Returns { kind: "tech", ec } | { kind: "manager", ec } | { kind: "unknown" }.
+              // Only "tech" results are used for filling cells; managers are tallied
+              // separately and never written.
+              const matchStaff = (raw) => {
+                const ec = extractEc(raw);
+                if (ec && staffByEc.has(ec)) {
+                  const s = staffByEc.get(ec);
+                  return { kind: s.role === "NT" ? "tech" : "manager", ec: s.ec };
                 }
-                return best === "AMBIG" ? null : best;
+                const t = norm(stripEcPrefix(raw) || raw);
+                if (!t) return { kind: "unknown" };
+                // Exact full-name then first+last, restricted to nail techs.
+                let firstNameAmbig = false, firstNameHit = null;
+                for (const s of attStaff) {
+                  if (s.role !== "NT") continue;
+                  const n = norm(s.name); if (!n) continue;
+                  if (n === t) return { kind: "tech", ec: s.ec };
+                  const tp = t.split(" "), np = n.split(" ");
+                  if (tp[0] === np[0] && tp[tp.length-1] === np[np.length-1]) return { kind: "tech", ec: s.ec };
+                  if (tp[0] === np[0]) { if (firstNameHit) firstNameAmbig = true; else firstNameHit = s.ec; }
+                }
+                if (firstNameHit && !firstNameAmbig) return { kind: "tech", ec: firstNameHit };
+                // No tech match — was the name a manager instead? If so, flag it.
+                for (const s of attStaff) {
+                  if (s.role === "NT") continue;
+                  const n = norm(s.name); if (!n) continue;
+                  if (n === t) return { kind: "manager", ec: s.ec };
+                  const tp = t.split(" "), np = n.split(" ");
+                  if (tp[0] === np[0] && tp[tp.length-1] === np[np.length-1]) return { kind: "manager", ec: s.ec };
+                }
+                return { kind: "unknown" };
               };
 
               const next = JSON.parse(JSON.stringify(attGrid));
@@ -6477,6 +6501,7 @@ function App({ currentUser, onSignOut }) {
 
               let total = 0, marked = 0, alreadyConfirmed = 0, outOfCycle = 0, badDate = 0;
               let cancelled = 0, noShow = 0, scheduled = 0, otherStatus = 0;
+              let managerSkipped = 0;
               const otherStatusSeen = new Set();
               const badDateSamples = new Set();
               const unmatched = new Set();
@@ -6507,8 +6532,10 @@ function App({ currentUser, onSignOut }) {
                 }
                 const ymd = dt.getFullYear() + "-" + String(dt.getMonth()+1).padStart(2,"0") + "-" + String(dt.getDate()).padStart(2,"0");
                 if (!cycleYmd.has(ymd)) { outOfCycle++; continue; }
-                const ec = matchEc(r[staffCol]);
-                if (!ec) { unmatched.add((r[staffCol] || "").trim() || "(blank)"); continue; }
+                const match = matchStaff(r[staffCol]);
+                if (match.kind === "manager") { managerSkipped++; continue; }
+                if (match.kind !== "tech")    { unmatched.add((r[staffCol] || "").trim() || "(blank)"); continue; }
+                const ec = match.ec;
                 const dKey = ec + "|" + ymd;
                 if (seenDayPerEc.has(dKey)) continue;
                 seenDayPerEc.add(dKey);
@@ -6524,6 +6551,7 @@ function App({ currentUser, onSignOut }) {
                 "• Cancelled: " + cancelled + "\n" +
                 "• No-show: " + noShow + "\n" +
                 "• Scheduled / not yet completed: " + scheduled + "\n" +
+                "• Manager appointments (skipped): " + managerSkipped + "\n" +
                 "• Other status (skipped): " + otherStatus +
                 (otherStatusSeen.size > 0 ? " — " + [...otherStatusSeen].slice(0, 4).join(", ") + (otherStatusSeen.size > 4 ? ", …" : "") : "") + "\n" +
                 "• Date column read: " + (dateCol >= 0 ? "'" + headers[dateCol] + "'" : "(none)") + "\n" +
