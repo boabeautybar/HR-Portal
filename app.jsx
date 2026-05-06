@@ -3694,6 +3694,7 @@ function App({ currentUser, onSignOut }) {
   const [attYM,     setAttYM]     = useState(window.BOA_DB ? window.BOA_DB.currentSchedYm() : "2026-05");
   const [attGrid,   setAttGrid]   = useState({});      // per-staff per-day status codes
   const [attSched,  setAttSched]  = useState({});      // schedule grid for the same period (for mirror hints)
+  const [attMeta,   setAttMeta]   = useState({});      // sidecar metadata e.g. { freshaCoverage:{through:"YYYY-MM-DD"} }
   const [attLoading,setAttLoading]= useState(false);
 
   // Load attendance grid + schedule grid whenever the tab/branch/period changes.
@@ -3733,6 +3734,7 @@ function App({ currentUser, onSignOut }) {
       safe(window.BOA_DB.loadSchedule(attBranch, attYM, true))
     ]).then(([att, sch, mgrSch]) => {
       setAttGrid((att && att.grid) || {});
+      setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null } : {});
       const techGrid = (sch    && sch.grid)    || {};
       const mgrGrid  = ymdReKey((mgrSch && mgrSch.grid) || {});
       setAttSched({ ...techGrid, ...mgrGrid });
@@ -6571,6 +6573,7 @@ function App({ currentUser, onSignOut }) {
               const unmatched = new Set();
               const seenDayPerEc = new Set(); // dedupe: only count first appt per (branch|ec, day)
               const markedByBranch = {};      // per-branch tally for the summary
+              const freshaThroughByBranch = {}; // max in-cycle ymd seen per branch (drives off-day matching)
 
               // Strict status filter — only these count as actually worked.
               const isCompleted = (st) => st === "completed" || st === "complete" || st === "done" || st === "finished";
@@ -6604,6 +6607,12 @@ function App({ currentUser, onSignOut }) {
                 const techBranch = match.branch;
                 const grid = branchGrids[techBranch];
                 if (!grid) { unmatched.add((r[staffCol] || "").trim() + " (unknown branch '" + (techBranch || "?") + "')"); continue; }
+                // Track the latest in-cycle ymd this branch's CSV has data for. Used to
+                // gate the orange "all-match OFF" banner so future days (no appts yet)
+                // aren't misread as confirmed off-days.
+                if (!freshaThroughByBranch[techBranch] || ymd > freshaThroughByBranch[techBranch]) {
+                  freshaThroughByBranch[techBranch] = ymd;
+                }
                 const dKey = techBranch + "|" + ec + "|" + ymd;
                 if (seenDayPerEc.has(dKey)) continue;
                 seenDayPerEc.add(dKey);
@@ -6643,13 +6652,29 @@ function App({ currentUser, onSignOut }) {
                 return;
               }
 
-              // Save every branch whose grid had cells written this run.
-              const branchesToSave = Object.keys(markedByBranch);
+              // Save every branch whose grid had cells written OR whose Fresha
+              // coverage advanced this run. Carry the freshaCoverage extras so the
+              // orange off-day banner only matches days actually covered by Fresha.
+              const branchesToSave = Array.from(new Set([
+                ...Object.keys(markedByBranch),
+                ...Object.keys(freshaThroughByBranch)
+              ]));
+              const importedAt = new Date().toISOString();
               try {
-                await Promise.all(branchesToSave.map(b => window.BOA_DB.saveAttendance(b, attYM, branchGrids[b])));
+                await Promise.all(branchesToSave.map(b => {
+                  const extras = freshaThroughByBranch[b]
+                    ? { freshaCoverage: { through: freshaThroughByBranch[b], importedAt } }
+                    : null;
+                  return window.BOA_DB.saveAttendance(b, attYM, branchGrids[b], extras);
+                }));
               } catch (err) { alert("Could not save: " + (err.message || err)); return; }
-              // Refresh the local grid for the branch the user is currently viewing.
-              if (markedByBranch[attBranch]) setAttGrid(branchGrids[attBranch]);
+              // Refresh the local grid + meta for the branch the user is viewing.
+              if (markedByBranch[attBranch] || freshaThroughByBranch[attBranch]) {
+                setAttGrid(branchGrids[attBranch]);
+                if (freshaThroughByBranch[attBranch]) {
+                  setAttMeta({ freshaCoverage: { through: freshaThroughByBranch[attBranch], importedAt } });
+                }
+              }
               alert(
                 "✓ Fresha import done — only Completed nail-tech appointments were counted, across all branches.\n\n" +
                 "• Rows read: " + total + "\n" +
@@ -6972,6 +6997,12 @@ function App({ currentUser, onSignOut }) {
                 </div>
                 <div style={{ flex:1 }} />
                 {attLoading && <span style={{ fontSize:11, color:"#9ca3af", fontStyle:"italic" }}>Loading…</span>}
+                {!attLoading && attMeta && attMeta.freshaCoverage && attMeta.freshaCoverage.through && (
+                  <span title={"Fresha imported through this date — orange off-day banners only fire for days up to here. Last import: " + (attMeta.freshaCoverage.importedAt ? new Date(attMeta.freshaCoverage.importedAt).toLocaleString("en-ZA") : "—")}
+                    style={{ fontSize:10, fontWeight:700, color:"#9a3412", background:"#ffedd5", border:"1px solid #fde68a", borderRadius:6, padding:"3px 8px", letterSpacing:"0.04em" }}>
+                    📤 Fresha through {new Date(attMeta.freshaCoverage.through + "T00:00:00").toLocaleDateString("en-ZA", { day:"2-digit", month:"short" })}
+                  </span>
+                )}
                 <button onClick={autoFill} style={{ padding:"7px 14px", background:"#fef3c7", color:"#78350f", border:"1px solid #fbbf24", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Fill empty cells from schedule (faded, still unconfirmed)">✓ Auto-fill from Schedule</button>
                 <button onClick={importFresha} style={{ padding:"7px 14px", background:"#dbeafe", color:"#1e3a8a", border:"1px solid #93c5fd", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Upload a Fresha appointments CSV — every nail tech with a completed appointment that day is marked On Time">📤 Import Fresha CSV</button>
                 <button onClick={resetCycle} style={{ padding:"7px 14px", background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fca5a5", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Clear every cell for this branch + cycle (with confirmation)">↺ Reset Cycle</button>
@@ -7093,9 +7124,13 @@ function App({ currentUser, onSignOut }) {
                             const allMatchWork        = s.role === "NT" && freshaConfirmedWork && scheduleSaysWork && checkinHasIn;
                             // Orange-banner "all-match OFF" — schedule says off, no Fresha
                             // appointment was imported (cell isn't in a working state) and the
-                            // tech wasn't checked in. Confirms a clean rest day on all sources.
+                            // tech wasn't checked in. Only fires for days the most recent Fresha
+                            // import actually covered: future days (no appts in CSV yet) shouldn't
+                            // be misread as confirmed off-days when the user uploads mid-month.
                             const scheduleSaysOff     = hint === "off";
-                            const allMatchOff         = s.role === "NT" && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn;
+                            const freshaThrough       = attMeta && attMeta.freshaCoverage && attMeta.freshaCoverage.through;
+                            const freshaCoversThisDay = !!freshaThrough && dy.ymd <= freshaThrough;
+                            const allMatchOff         = s.role === "NT" && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn && freshaCoversThisDay;
                             const ttl =
                               dy.ymd + ": " + (st.lbl || "—") +
                               (hint ? " — schedule: " + ((STAT[hint] || {}).lbl || "—") : "") +
