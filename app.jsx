@@ -6876,6 +6876,25 @@ function App({ currentUser, onSignOut }) {
 
           const moShort = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
           const cycLabel = cycStart.getDate() + " " + moShort[cycStart.getMonth()] + " → " + cycEnd.getDate() + " " + moShort[cycEnd.getMonth()] + " " + cycEnd.getFullYear();
+          // Effective Fresha "covered through" date — explicit value from the most
+          // recent import wins; otherwise infer from the grid by finding the latest
+          // day that has a confirmed (bold) working cell. Older attendance rows
+          // (saved before freshaCoverage existed) still get the orange off-day
+          // banner this way.
+          let effectiveFreshaThrough = (attMeta && attMeta.freshaCoverage && attMeta.freshaCoverage.through) || null;
+          let effectiveFreshaInferred = false;
+          if (!effectiveFreshaThrough && attGrid) {
+            for (let _i = days.length - 1; _i >= 0; _i--) {
+              const _d = days[_i];
+              let _has = false;
+              for (const _ec in attGrid) {
+                const _v = attGrid[_ec] && attGrid[_ec][_d.d];
+                if (!_v || _v.charAt(0) === "~") continue;
+                if (_v === "on" || _v === "ext" || _v === "late" || _v === "trial" || _v === "swap_o") { _has = true; break; }
+              }
+              if (_has) { effectiveFreshaThrough = _d.ymd; effectiveFreshaInferred = true; break; }
+            }
+          }
           const shiftAttYM = (delta) => {
             let y = ymP[0], m = ymP[1] + delta;
             while (m < 1)  { m += 12; y--; }
@@ -6997,10 +7016,18 @@ function App({ currentUser, onSignOut }) {
                 </div>
                 <div style={{ flex:1 }} />
                 {attLoading && <span style={{ fontSize:11, color:"#9ca3af", fontStyle:"italic" }}>Loading…</span>}
-                {!attLoading && attMeta && attMeta.freshaCoverage && attMeta.freshaCoverage.through && (
-                  <span title={"Fresha imported through this date — orange off-day banners only fire for days up to here. Last import: " + (attMeta.freshaCoverage.importedAt ? new Date(attMeta.freshaCoverage.importedAt).toLocaleString("en-ZA") : "—")}
+                {!attLoading && effectiveFreshaThrough && (
+                  <span title={
+                    (effectiveFreshaInferred
+                      ? "Inferred from existing 'On Time' cells (older imports didn't record this). "
+                      : "From the latest Fresha CSV import. ") +
+                    "Orange off-day banners only fire for days up to here. " +
+                    (attMeta && attMeta.freshaCoverage && attMeta.freshaCoverage.importedAt
+                      ? "Last import: " + new Date(attMeta.freshaCoverage.importedAt).toLocaleString("en-ZA")
+                      : "")
+                  }
                     style={{ fontSize:10, fontWeight:700, color:"#9a3412", background:"#ffedd5", border:"1px solid #fde68a", borderRadius:6, padding:"3px 8px", letterSpacing:"0.04em" }}>
-                    📤 Fresha through {new Date(attMeta.freshaCoverage.through + "T00:00:00").toLocaleDateString("en-ZA", { day:"2-digit", month:"short" })}
+                    📤 Fresha through {new Date(effectiveFreshaThrough + "T00:00:00").toLocaleDateString("en-ZA", { day:"2-digit", month:"short" })}{effectiveFreshaInferred ? " (inferred)" : ""}
                   </span>
                 )}
                 <button onClick={autoFill} style={{ padding:"7px 14px", background:"#fef3c7", color:"#78350f", border:"1px solid #fbbf24", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Fill empty cells from schedule (faded, still unconfirmed)">✓ Auto-fill from Schedule</button>
@@ -7128,8 +7155,7 @@ function App({ currentUser, onSignOut }) {
                             // import actually covered: future days (no appts in CSV yet) shouldn't
                             // be misread as confirmed off-days when the user uploads mid-month.
                             const scheduleSaysOff     = hint === "off";
-                            const freshaThrough       = attMeta && attMeta.freshaCoverage && attMeta.freshaCoverage.through;
-                            const freshaCoversThisDay = !!freshaThrough && dy.ymd <= freshaThrough;
+                            const freshaCoversThisDay = !!effectiveFreshaThrough && dy.ymd <= effectiveFreshaThrough;
                             const allMatchOff         = s.role === "NT" && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn && freshaCoversThisDay;
                             const ttl =
                               dy.ymd + ": " + (st.lbl || "—") +
