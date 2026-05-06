@@ -6982,7 +6982,8 @@ function App({ currentUser, onSignOut }) {
                 <span style={{ fontStyle:"italic", opacity:0.75 }}>italic</span> = mirrored from schedule (no edits yet) ·
                 <span style={{ fontWeight:700 }}>bold</span> = confirmed by you ·
                 <span style={{ display:"inline-block", width:8, height:8, borderRadius:"50%", background:"#be185d" }} /> = differs from schedule (deviation) ·
-                <span style={{ background:"#dcfce7", color:"#15803d", fontWeight:800, padding:"1px 6px", borderRadius:4, borderLeft:"3px solid #16a34a" }}>✓✓</span> = Fresha + schedule + check-in all match ·
+                <span style={{ background:"#dcfce7", color:"#15803d", fontWeight:800, padding:"1px 6px", borderRadius:4, borderLeft:"3px solid #16a34a" }}>✓✓</span> = Fresha + schedule + check-in all match (worked) ·
+                <span style={{ background:"#ffedd5", color:"#9a3412", fontWeight:800, padding:"1px 6px", borderRadius:4, borderLeft:"3px solid #ea580c" }}>✓✓</span> = scheduled off · no appointment · no check-in (rest day match) ·
                 <span style={{ color:"#16a34a", fontWeight:800 }}>✓</span> = checked in via app ·
                 <span style={{ color:"#b45309", fontWeight:800 }}>!</span> = check-in / attendance mismatch ·
                 <span style={{ color:"#b45309", fontWeight:800 }}>!?</span> = Fresha says worked, no check-in
@@ -7090,6 +7091,11 @@ function App({ currentUser, onSignOut }) {
                             const freshaConfirmedWork = override && (isWorking || isLate);
                             const scheduleSaysWork    = hint === "on" || hint === "ext";
                             const allMatchWork        = s.role === "NT" && freshaConfirmedWork && scheduleSaysWork && checkinHasIn;
+                            // Orange-banner "all-match OFF" — schedule says off, no Fresha
+                            // appointment was imported (cell isn't in a working state) and the
+                            // tech wasn't checked in. Confirms a clean rest day on all sources.
+                            const scheduleSaysOff     = hint === "off";
+                            const allMatchOff         = s.role === "NT" && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn;
                             const ttl =
                               dy.ymd + ": " + (st.lbl || "—") +
                               (hint ? " — schedule: " + ((STAT[hint] || {}).lbl || "—") : "") +
@@ -7100,24 +7106,33 @@ function App({ currentUser, onSignOut }) {
                               (missingCheckin  ? "\n⚠ Missing check-in: Fresha shows worked, no check-in record" : "") +
                               (isLate && checkin ? "\n(Late — counts as worked, no discrepancy)" : "");
                             const cellBaseBg = override ? (isHol ? "#fef2f2" : (isWk ? "#fdf4f8" : "#FFFFFF")) : (isHol ? "#fecaca40" : hintBg + "18");
+                            const allMatchBg     = allMatchWork ? "#dcfce7" : allMatchOff ? "#ffedd5" : null;
+                            const allMatchEdge   = allMatchWork ? "3px solid #16a34a" : allMatchOff ? "3px solid #ea580c" : "1px solid #FCE7F3";
+                            const allMatchTxt    = allMatchWork ? "#14532d" : allMatchOff ? "#9a3412" : null;
+                            const allMatchTip    = allMatchWork ? "\n✓ All match — Fresha + schedule + check-in agree"
+                                                  : allMatchOff ? "\n✓ All match OFF — scheduled off, no Fresha appointment, no check-in"
+                                                  : "";
                             return (
-                              <td key={dy.d} style={{ padding:0, borderBottom:"1px solid #FCE7F3", borderLeft: allMatchWork ? "3px solid #16a34a" : "1px solid #FCE7F3", background: allMatchWork ? "#dcfce7" : cellBaseBg, position:"relative" }}>
+                              <td key={dy.d} style={{ padding:0, borderBottom:"1px solid #FCE7F3", borderLeft: allMatchEdge, background: allMatchBg || cellBaseBg, position:"relative" }}>
                                 <div style={{ position:"relative", height:30 }}>
                                   {v && (
-                                    <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle: override ? "normal" : "italic", fontWeight: override ? 700 : 400, color: override ? (allMatchWork ? "#14532d" : st.fg) : hintFg + "70", pointerEvents:"none", letterSpacing:"0.02em" }}>{st.lbl || hintLbl || ""}</div>
+                                    <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle: override ? "normal" : "italic", fontWeight: override ? 700 : 400, color: override ? (allMatchTxt || st.fg) : (allMatchTxt || (hintFg + "70")), pointerEvents:"none", letterSpacing:"0.02em" }}>{st.lbl || hintLbl || ""}</div>
                                   )}
-                                  <select value="" onChange={e=>onCellChange(s, dy, e.target.value)} title={ttl + (allMatchWork ? "\n✓ All match — Fresha + schedule + check-in agree" : "")}
-                                    style={{ width:"100%", height:30, border: deviation ? "2px solid #be185d" : "none", background: allMatchWork ? "transparent" : (override ? st.bg : "transparent"), color:"transparent", fontSize:9, fontWeight:400, opacity:1, textAlign:"center", cursor:"pointer", padding:"0 1px", fontFamily:"inherit", outline:"none", appearance:"none" }}>
+                                  <select value="" onChange={e=>onCellChange(s, dy, e.target.value)} title={ttl + allMatchTip}
+                                    style={{ width:"100%", height:30, border: deviation ? "2px solid #be185d" : "none", background: (allMatchBg ? "transparent" : (override ? st.bg : "transparent")), color:"transparent", fontSize:9, fontWeight:400, opacity:1, textAlign:"center", cursor:"pointer", padding:"0 1px", fontFamily:"inherit", outline:"none", appearance:"none" }}>
                                     <option value="" style={{ color:"#000", background:"#fff" }}>—</option>
                                     {Object.entries(STAT).filter(([k]) => k !== "ph" || isHol).map(([k, vv]) => (
                                       <option key={k} value={k} style={{ color:"#000", background:"#fff" }}>{vv.lbl}</option>
                                     ))}
                                   </select>
-                                  {deviation && !allMatchWork && <span style={{ position:"absolute", top:1, right:1, width:5, height:5, borderRadius:"50%", background:"#be185d", pointerEvents:"none" }} />}
+                                  {deviation && !allMatchWork && !allMatchOff && <span style={{ position:"absolute", top:1, right:1, width:5, height:5, borderRadius:"50%", background:"#be185d", pointerEvents:"none" }} />}
                                   {allMatchWork && (
                                     <span title="Fresha + schedule + check-in all agree" style={{ position:"absolute", top:1, right:1, fontSize:9, lineHeight:1, color:"#15803d", fontWeight:800, pointerEvents:"none" }}>✓✓</span>
                                   )}
-                                  {!allMatchWork && checkinHasIn && !checkinMismatch && (
+                                  {allMatchOff && (
+                                    <span title="Scheduled off · no Fresha appointment · no check-in" style={{ position:"absolute", top:1, right:1, fontSize:9, lineHeight:1, color:"#c2410c", fontWeight:800, pointerEvents:"none" }}>✓✓</span>
+                                  )}
+                                  {!allMatchWork && !allMatchOff && checkinHasIn && !checkinMismatch && (
                                     <span style={{ position:"absolute", bottom:1, left:2, fontSize:9, lineHeight:1, color:"#16a34a", pointerEvents:"none", textShadow:"0 0 1px rgba(255,255,255,0.6)" }}>✓</span>
                                   )}
                                   {checkinMismatch && (
