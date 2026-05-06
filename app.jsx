@@ -8328,7 +8328,7 @@ function App({ currentUser, onSignOut }) {
 
         {/* ── MANAGER CLOCK-INS VIEWER ── */}
         {/* ── DAILY CHECK-INS (nail tech) ── */}
-        {tab==="checkins" && (() => {
+        {tab==="checkins" && (() => { try {
           // Filter rows by branch + range, and group by tech / day for compact display.
           const today = new Date(); const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
           const since = new Date(t0); since.setDate(since.getDate() - (checkinDayRange - 1));
@@ -8341,38 +8341,39 @@ function App({ currentUser, onSignOut }) {
           const rangeOpts = [{v:1,l:"Today"},{v:3,l:"Last 3 days"},{v:7,l:"Last 7 days"},{v:14,l:"Last 14 days"},{v:30,l:"Last 30 days"},{v:60,l:"Last 60 days"}];
 
           // ── Discrepancies vs. Fresha (the active attendance grid) ──
-          // A discrepancy is when the check-in record and the attendance cell disagree
-          // about whether the tech worked. "Late" status counts as worked, so we never
-          // flag it (Fresha can't differentiate late from on time anyway).
-          const isWorkingStatus = (v) => {
-            if (!v) return false;
-            const bare = v.indexOf("~") === 0 ? v.slice(1) : v;
-            return bare === "on" || bare === "late" || bare === "ext" || bare === "trial" || bare === "swap_o";
-          };
+          // Build the active cycle locally — `days` and `cycLabel` are scoped inside
+          // the Attendance tab and aren't available here.
+          const _ymP = (attYM || "").split("-").map(Number);
+          const _p2  = z => String(z).padStart(2, "0");
+          let cycLabelLocal = ""; const cycleYmds = new Set(); const dayMap = {};
+          if (_ymP.length === 2 && !isNaN(_ymP[0]) && !isNaN(_ymP[1])) {
+            const _cycStart = new Date(_ymP[0], _ymP[1]-1, 25);
+            const _cycEnd   = new Date(_ymP[0], _ymP[1],   24);
+            const moShortL = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+            cycLabelLocal = _cycStart.getDate() + " " + moShortL[_cycStart.getMonth()] + " → " + _cycEnd.getDate() + " " + moShortL[_cycEnd.getMonth()] + " " + _cycEnd.getFullYear();
+            for (let cur = new Date(_cycStart); cur <= _cycEnd; cur.setDate(cur.getDate()+1)) {
+              const ymdL = cur.getFullYear() + "-" + _p2(cur.getMonth()+1) + "-" + _p2(cur.getDate());
+              cycleYmds.add(ymdL);
+              dayMap[ymdL] = cur.getDate();
+            }
+          }
           const isOffStatus = (v) => {
             if (!v) return false;
             const bare = v.indexOf("~") === 0 ? v.slice(1) : v;
             return bare === "off" || bare === "swap_i" || bare === "al" || bare === "ph" ||
                    bare === "mat" || bare === "term" || bare === "sick" || bare === "sick_n" || bare === "frl";
           };
-          // Discrepancy-set is computed on demand using the in-memory attGrid (current
-          // branch + cycle). For other branches we'd need separate loads; out of scope
-          // here — that lives behind the Discrepancies button on the Attendance tab.
           const discrepancies = [];
-          const cycleYmds = new Set((days || []).map(d => d.ymd));
           if (checkInsByBranch[attBranch]) {
             for (const ec in checkInsByBranch[attBranch]) {
               const days_ = checkInsByBranch[attBranch][ec];
               for (const ymd in days_) {
                 if (!cycleYmds.has(ymd)) continue;
-                const dayObj = (days || []).find(d => d.ymd === ymd);
-                if (!dayObj) continue;
-                const v = (attGrid && attGrid[ec] && attGrid[ec][dayObj.d]) || "";
+                const dayNum = dayMap[ymd];
+                const v = (attGrid && attGrid[ec] && attGrid[ec][dayNum]) || "";
                 if (isOffStatus(v)) {
                   discrepancies.push({ ec, name: days_[ymd].name, ymd, kind: "checkin_but_off", attendance: v });
                 }
-                // (Other direction — Fresha "on" but no check-in — shown on the
-                // Attendance tab itself per cell so the user can act inline.)
               }
             }
           }
@@ -8406,7 +8407,7 @@ function App({ currentUser, onSignOut }) {
               {discrepancies.length > 0 && (
                 <div style={{ background:"#fef3c7", border:"1px solid #fde68a", borderRadius:11, padding:"12px 14px", marginBottom:14 }}>
                   <div style={{ fontWeight:800, color:"#78350f", marginBottom:6, fontSize:13 }}>
-                    ⚠ {discrepancies.length} discrepanc{discrepancies.length === 1 ? "y" : "ies"} for {attBranch} — {cycLabel}
+                    ⚠ {discrepancies.length} discrepanc{discrepancies.length === 1 ? "y" : "ies"} for {attBranch} — {cycLabelLocal}
                   </div>
                   <div style={{ fontSize:11, color:"#78350f", marginBottom:10 }}>Tech checked in but attendance shows OFF / Annual / Sick / etc. Late status is never flagged (Fresha can't tell late from on-time).</div>
                   <div style={{ display:"grid", gap:6 }}>
@@ -8456,7 +8457,16 @@ function App({ currentUser, onSignOut }) {
               </div>
             </div>
           );
-        })()}
+        } catch (err) {
+          console.error("Daily Check-ins render failed:", err);
+          return (
+            <div style={{ background:"#fee2e2", border:"1px solid #fca5a5", borderRadius:11, padding:"16px 18px", color:"#7f1d1d", fontFamily:"'Outfit',system-ui,sans-serif" }}>
+              <div style={{ fontWeight:800, marginBottom:6 }}>Daily Check-ins failed to render.</div>
+              <div style={{ fontSize:12 }}>{(err && err.message) || String(err)}</div>
+              <div style={{ fontSize:11, marginTop:8, opacity:0.7 }}>See the browser console for details.</div>
+            </div>
+          );
+        } })()}
 
         {tab==="mgrclockins" && (() => {
           const filtered = mgrClockinRows.filter(r =>
