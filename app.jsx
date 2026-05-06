@@ -3586,7 +3586,7 @@ function App({ currentUser, onSignOut }) {
   // Map of tab → category name. Kept in sync with the groups list below.
   const NAV_TAB_TO_CATEGORY = {
     onboard:"People", offboard:"People", staff:"People", recruitment:"People", maternity:"People",
-    scheduling:"Operations", locations:"Operations", mgrclockins:"Operations", leave:"Operations",
+    scheduling:"Operations", locations:"Operations", mgrclockins:"Operations", leave:"Operations", checkins:"Operations",
     attendance:"Payroll",
     alerts:"Insights", activity:"Insights"
   };
@@ -3608,6 +3608,14 @@ function App({ currentUser, onSignOut }) {
   const [mgrClockinDays, setMgrClockinDays] = useState(7);
   const [mgrClockinPhoto, setMgrClockinPhoto] = useState(null);   // {url, name, ts, ...}
   const [mgrClockinSchedCache, setMgrClockinSchedCache] = useState({});  // {branch|ym: grid}
+
+  // ── Daily Check-ins (nail tech) state ──────────────────────────────
+  // Loaded once when the Check-ins tab or the Attendance tab opens, so the
+  // attendance grid can overlay check-in markers without a per-cell fetch.
+  const [techClockinRows, setTechClockinRows] = useState([]);
+  const [techClockinDays, setTechClockinDays] = useState(60);          // load window
+  const [checkinFilterBranch, setCheckinFilterBranch] = useState("All");
+  const [checkinDayRange,     setCheckinDayRange]     = useState(7);    // viewer range
 
   // ── Onboarding / Off-boarding state ────────────────────────────────
   const [obList, setObList] = useState([]);           // joiner records
@@ -4065,6 +4073,44 @@ function App({ currentUser, onSignOut }) {
     return () => { cancelled = true; };
   }, [tab, mgrClockinDays]);
 
+  // Load recent nail-tech clock-ins when either the Check-ins tab or the
+  // Attendance tab opens. The Attendance grid uses these to overlay check-in
+  // markers on each cell and to flag discrepancies vs. the Fresha import.
+  useEffect(() => {
+    if (tab !== "checkins" && tab !== "attendance") return;
+    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
+    if (!window.BOA_DB.listRecentTechClockins) return; // older deploys
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await window.BOA_DB.listRecentTechClockins(techClockinDays);
+        if (!cancelled) setTechClockinRows(rows || []);
+      } catch (e) { console.error("tech clockins load:", e); }
+    })();
+    return () => { cancelled = true; };
+  }, [tab, techClockinDays]);
+
+  // Index check-ins by branch → ec → ymd, with per-day flags. Used by both the
+  // Attendance grid and the Check-ins tab so the data is parsed once.
+  const checkInsByBranch = useMemo(() => {
+    const out = {};
+    for (const r of techClockinRows || []) {
+      if (!r || !r.staff || !r.staff.employee_code) continue;
+      const branch = r.staff.branch || "";
+      const ec = r.staff.employee_code;
+      // ymd in local time so it lines up with the attendance grid's cycle days.
+      const dt = new Date(r.ts);
+      const ymd = dt.getFullYear() + "-" + String(dt.getMonth()+1).padStart(2,"0") + "-" + String(dt.getDate()).padStart(2,"0");
+      if (!out[branch]) out[branch] = {};
+      if (!out[branch][ec]) out[branch][ec] = {};
+      const cell = out[branch][ec][ymd] = out[branch][ec][ymd] || { hasIn:false, hasOut:false, autoOut:false, firstInTs:null, name:r.staff.name || "" };
+      if (r.type === "in")        { cell.hasIn  = true; cell.firstInTs = (cell.firstInTs && cell.firstInTs < dt) ? cell.firstInTs : dt; }
+      if (r.type === "out")       { cell.hasOut = true; }
+      if (r.type === "out_auto")  { cell.hasOut = true; cell.autoOut = true; }   // out_auto alone is NOT proof they clocked in
+    }
+    return out;
+  }, [techClockinRows]);
+
   // Auto-detect pending terminations from attendance grids (current + 2 prior months)
   useEffect(() => {
     if (loading || !window.BOA_DB || !window.BOA_DB.isReady) return;
@@ -4434,6 +4480,7 @@ function App({ currentUser, onSignOut }) {
                 items: [
                   { t:"scheduling",  l:"📅 Scheduling"     },
                   { t:"locations",   l:"📍 Locations"      },
+                  { t:"checkins",    l:"📲 Daily Check-ins" },
                   { t:"mgrclockins", l:"🕐 Mgr Clock-ins"  },
                   { t:"leave",       l:"🌴 Leave Planner"  },
                   { t:"mgrPlanner",  l:"🧩 Manager Planner",
@@ -6934,7 +6981,11 @@ function App({ currentUser, onSignOut }) {
                 <span style={{ fontWeight:700 }}>💡 Reading the grid:</span>
                 <span style={{ fontStyle:"italic", opacity:0.75 }}>italic</span> = mirrored from schedule (no edits yet) ·
                 <span style={{ fontWeight:700 }}>bold</span> = confirmed by you ·
-                <span style={{ display:"inline-block", width:8, height:8, borderRadius:"50%", background:"#be185d" }} /> = differs from schedule (deviation)
+                <span style={{ display:"inline-block", width:8, height:8, borderRadius:"50%", background:"#be185d" }} /> = differs from schedule (deviation) ·
+                <span style={{ background:"#dcfce7", color:"#15803d", fontWeight:800, padding:"1px 6px", borderRadius:4, borderLeft:"3px solid #16a34a" }}>✓✓</span> = Fresha + schedule + check-in all match ·
+                <span style={{ color:"#16a34a", fontWeight:800 }}>✓</span> = checked in via app ·
+                <span style={{ color:"#b45309", fontWeight:800 }}>!</span> = check-in / attendance mismatch ·
+                <span style={{ color:"#b45309", fontWeight:800 }}>!?</span> = Fresha says worked, no check-in
               </div>
 
               <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:14, padding:"10px 12px", background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:8 }}>
@@ -7010,21 +7061,71 @@ function App({ currentUser, onSignOut }) {
                             const hintLbl = hint ? (STAT[hint] || {}).lbl || "" : "";
                             const hintBg  = hint ? (STAT[hint] || {}).bg  || "#FFFFFF" : "#FFFFFF";
                             const hintFg  = hint ? (STAT[hint] || {}).fg  || "#9ca3af" : "#9ca3af";
-                            const ttl = dy.ymd + ": " + (st.lbl || "—") + (hint ? " — schedule: " + ((STAT[hint] || {}).lbl || "—") : "") + (deviation ? " (deviation)" : "") + (!override ? " (mirrored from schedule)" : "");
+                            // Tech check-in for this cell (if any). Only nail-tech rows
+                            // get a check-in badge — managers are out of scope.
+                            const checkin = (s.role === "NT")
+                              ? ((checkInsByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null
+                              : null;
+                            // Discrepancy logic:
+                            //  - Tech checked in but attendance marks them OFF / Annual /
+                            //    Sick / etc → mismatch (manager said not at work but app
+                            //    says they were there).
+                            //  - Fresha said worked but no check-in landed → mismatch
+                            //    (the day of the past).
+                            //  - "late" / "~late" never triggers — Fresha can't tell late
+                            //    from on-time.
+                            const bareV = v ? (v.charAt(0) === "~" ? v.slice(1) : v) : "";
+                            const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_o";
+                            const isLate    = bareV === "late";
+                            const isOff     = bareV === "off" || bareV === "swap_i" || bareV === "al" || bareV === "ph" ||
+                                              bareV === "mat" || bareV === "term" || bareV === "sick" || bareV === "sick_n" || bareV === "frl";
+                            const todayY = new Date(); const t0Ymd = todayY.getFullYear() + "-" + String(todayY.getMonth()+1).padStart(2,"0") + "-" + String(todayY.getDate()).padStart(2,"0");
+                            const isPastOrToday = dy.ymd <= t0Ymd;
+                            const checkinHasIn    = !!(checkin && checkin.hasIn);
+                            const checkinMismatch = checkinHasIn && isOff;                                  // checked in but day marked off
+                            const missingCheckin  = !checkinHasIn && isWorking && override && isPastOrToday; // Fresha confirmed work but no check-in
+                            // Green-banner "all-match" — Fresha (override) AND schedule AND
+                            // manager check-in all confirm this nail tech worked. Late counts
+                            // as worked (Fresha can't tell late from on-time).
+                            const freshaConfirmedWork = override && (isWorking || isLate);
+                            const scheduleSaysWork    = hint === "on" || hint === "ext";
+                            const allMatchWork        = s.role === "NT" && freshaConfirmedWork && scheduleSaysWork && checkinHasIn;
+                            const ttl =
+                              dy.ymd + ": " + (st.lbl || "—") +
+                              (hint ? " — schedule: " + ((STAT[hint] || {}).lbl || "—") : "") +
+                              (deviation ? " (deviation)" : "") +
+                              (!override ? " (mirrored from schedule)" : "") +
+                              (checkin ? "\nChecked in" + (checkin.firstInTs ? " at " + checkin.firstInTs.toLocaleTimeString("en-ZA", { hour:"2-digit", minute:"2-digit" }) : "") + (checkin.autoOut ? " · auto-out" : "") : "") +
+                              (checkinMismatch ? "\n⚠ Discrepancy: tech checked in but day marked " + bareV : "") +
+                              (missingCheckin  ? "\n⚠ Missing check-in: Fresha shows worked, no check-in record" : "") +
+                              (isLate && checkin ? "\n(Late — counts as worked, no discrepancy)" : "");
+                            const cellBaseBg = override ? (isHol ? "#fef2f2" : (isWk ? "#fdf4f8" : "#FFFFFF")) : (isHol ? "#fecaca40" : hintBg + "18");
                             return (
-                              <td key={dy.d} style={{ padding:0, borderBottom:"1px solid #FCE7F3", borderLeft:"1px solid #FCE7F3", background: override ? (isHol ? "#fef2f2" : (isWk ? "#fdf4f8" : "#FFFFFF")) : (isHol ? "#fecaca40" : hintBg + "18"), position:"relative" }}>
+                              <td key={dy.d} style={{ padding:0, borderBottom:"1px solid #FCE7F3", borderLeft: allMatchWork ? "3px solid #16a34a" : "1px solid #FCE7F3", background: allMatchWork ? "#dcfce7" : cellBaseBg, position:"relative" }}>
                                 <div style={{ position:"relative", height:30 }}>
                                   {v && (
-                                    <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle: override ? "normal" : "italic", fontWeight: override ? 700 : 400, color: override ? st.fg : hintFg + "70", pointerEvents:"none", letterSpacing:"0.02em" }}>{st.lbl || hintLbl || ""}</div>
+                                    <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle: override ? "normal" : "italic", fontWeight: override ? 700 : 400, color: override ? (allMatchWork ? "#14532d" : st.fg) : hintFg + "70", pointerEvents:"none", letterSpacing:"0.02em" }}>{st.lbl || hintLbl || ""}</div>
                                   )}
-                                  <select value="" onChange={e=>onCellChange(s, dy, e.target.value)} title={ttl}
-                                    style={{ width:"100%", height:30, border: deviation ? "2px solid #be185d" : "none", background: override ? st.bg : "transparent", color:"transparent", fontSize:9, fontWeight:400, opacity:1, textAlign:"center", cursor:"pointer", padding:"0 1px", fontFamily:"inherit", outline:"none", appearance:"none" }}>
+                                  <select value="" onChange={e=>onCellChange(s, dy, e.target.value)} title={ttl + (allMatchWork ? "\n✓ All match — Fresha + schedule + check-in agree" : "")}
+                                    style={{ width:"100%", height:30, border: deviation ? "2px solid #be185d" : "none", background: allMatchWork ? "transparent" : (override ? st.bg : "transparent"), color:"transparent", fontSize:9, fontWeight:400, opacity:1, textAlign:"center", cursor:"pointer", padding:"0 1px", fontFamily:"inherit", outline:"none", appearance:"none" }}>
                                     <option value="" style={{ color:"#000", background:"#fff" }}>—</option>
                                     {Object.entries(STAT).filter(([k]) => k !== "ph" || isHol).map(([k, vv]) => (
                                       <option key={k} value={k} style={{ color:"#000", background:"#fff" }}>{vv.lbl}</option>
                                     ))}
                                   </select>
-                                  {deviation && <span style={{ position:"absolute", top:1, right:1, width:5, height:5, borderRadius:"50%", background:"#be185d", pointerEvents:"none" }} />}
+                                  {deviation && !allMatchWork && <span style={{ position:"absolute", top:1, right:1, width:5, height:5, borderRadius:"50%", background:"#be185d", pointerEvents:"none" }} />}
+                                  {allMatchWork && (
+                                    <span title="Fresha + schedule + check-in all agree" style={{ position:"absolute", top:1, right:1, fontSize:9, lineHeight:1, color:"#15803d", fontWeight:800, pointerEvents:"none" }}>✓✓</span>
+                                  )}
+                                  {!allMatchWork && checkinHasIn && !checkinMismatch && (
+                                    <span style={{ position:"absolute", bottom:1, left:2, fontSize:9, lineHeight:1, color:"#16a34a", pointerEvents:"none", textShadow:"0 0 1px rgba(255,255,255,0.6)" }}>✓</span>
+                                  )}
+                                  {checkinMismatch && (
+                                    <span title="Tech checked in but day marked off — discrepancy" style={{ position:"absolute", bottom:1, left:2, fontSize:9, lineHeight:1, color:"#b45309", pointerEvents:"none", fontWeight:800 }}>!</span>
+                                  )}
+                                  {missingCheckin && (
+                                    <span title="Fresha shows worked but no check-in" style={{ position:"absolute", bottom:1, right:2, fontSize:9, lineHeight:1, color:"#b45309", pointerEvents:"none", fontWeight:800 }}>!?</span>
+                                  )}
                                 </div>
                               </td>
                             );
@@ -8238,6 +8339,147 @@ function App({ currentUser, onSignOut }) {
         })()}
 
         {/* ── MANAGER CLOCK-INS VIEWER ── */}
+        {/* ── DAILY CHECK-INS (nail tech) ── */}
+        {tab==="checkins" && (() => { try {
+          // Filter rows by branch + range, and group by tech / day for compact display.
+          const today = new Date(); const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+          const since = new Date(t0); since.setDate(since.getDate() - (checkinDayRange - 1));
+          const filtered = (techClockinRows || []).filter(r => {
+            if (!r.staff) return false;
+            if (checkinFilterBranch !== "All" && r.staff.branch !== checkinFilterBranch) return false;
+            return new Date(r.ts) >= since;
+          });
+          const fmtDateTime = (iso) => new Date(iso).toLocaleString("en-ZA", { day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" });
+          const rangeOpts = [{v:1,l:"Today"},{v:3,l:"Last 3 days"},{v:7,l:"Last 7 days"},{v:14,l:"Last 14 days"},{v:30,l:"Last 30 days"},{v:60,l:"Last 60 days"}];
+
+          // ── Discrepancies vs. Fresha (the active attendance grid) ──
+          // Build the active cycle locally — `days` and `cycLabel` are scoped inside
+          // the Attendance tab and aren't available here.
+          const _ymP = (attYM || "").split("-").map(Number);
+          const _p2  = z => String(z).padStart(2, "0");
+          let cycLabelLocal = ""; const cycleYmds = new Set(); const dayMap = {};
+          if (_ymP.length === 2 && !isNaN(_ymP[0]) && !isNaN(_ymP[1])) {
+            const _cycStart = new Date(_ymP[0], _ymP[1]-1, 25);
+            const _cycEnd   = new Date(_ymP[0], _ymP[1],   24);
+            const moShortL = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+            cycLabelLocal = _cycStart.getDate() + " " + moShortL[_cycStart.getMonth()] + " → " + _cycEnd.getDate() + " " + moShortL[_cycEnd.getMonth()] + " " + _cycEnd.getFullYear();
+            for (let cur = new Date(_cycStart); cur <= _cycEnd; cur.setDate(cur.getDate()+1)) {
+              const ymdL = cur.getFullYear() + "-" + _p2(cur.getMonth()+1) + "-" + _p2(cur.getDate());
+              cycleYmds.add(ymdL);
+              dayMap[ymdL] = cur.getDate();
+            }
+          }
+          const isOffStatus = (v) => {
+            if (!v) return false;
+            const bare = v.indexOf("~") === 0 ? v.slice(1) : v;
+            return bare === "off" || bare === "swap_i" || bare === "al" || bare === "ph" ||
+                   bare === "mat" || bare === "term" || bare === "sick" || bare === "sick_n" || bare === "frl";
+          };
+          const discrepancies = [];
+          if (checkInsByBranch[attBranch]) {
+            for (const ec in checkInsByBranch[attBranch]) {
+              const days_ = checkInsByBranch[attBranch][ec];
+              for (const ymd in days_) {
+                if (!cycleYmds.has(ymd)) continue;
+                const dayNum = dayMap[ymd];
+                const v = (attGrid && attGrid[ec] && attGrid[ec][dayNum]) || "";
+                if (isOffStatus(v)) {
+                  discrepancies.push({ ec, name: days_[ymd].name, ymd, kind: "checkin_but_off", attendance: v });
+                }
+              }
+            }
+          }
+
+          return (
+            <div>
+              <div style={{ marginBottom:14 }}>
+                <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>📲 Daily Check-ins</div>
+                <div style={{ fontSize:12, color:"#F472B6" }}>Nail-tech check-ins from the manager check-in app. Used to confirm attendance alongside the Fresha import.</div>
+              </div>
+
+              <div style={{ background:"#FFFFFF", borderRadius:13, padding:"12px 14px", border:"1px solid #FBCFE8", marginBottom:14, display:"flex", gap:14, alignItems:"center", flexWrap:"wrap" }}>
+                <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
+                  <label style={{ fontSize:10, fontWeight:700, color:"#F472B6", letterSpacing:"0.06em" }}>BRANCH</label>
+                  <select value={checkinFilterBranch} onChange={e=>setCheckinFilterBranch(e.target.value)} style={{ padding:"7px 11px", borderRadius:7, border:"1px solid #FBCFE8", fontSize:13, background:"#fff", minWidth:160 }}>
+                    <option value="All">All branches</option>
+                    {SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                  </select>
+                </div>
+                <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
+                  <label style={{ fontSize:10, fontWeight:700, color:"#F472B6", letterSpacing:"0.06em" }}>RANGE</label>
+                  <select value={checkinDayRange} onChange={e=>setCheckinDayRange(parseInt(e.target.value, 10))} style={{ padding:"7px 11px", borderRadius:7, border:"1px solid #FBCFE8", fontSize:13, background:"#fff" }}>
+                    {rangeOpts.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
+                  </select>
+                </div>
+                <div style={{ flex:1 }} />
+                <div style={{ fontSize:12, color:"#831843" }}><strong>{filtered.length}</strong> record{filtered.length !== 1 ? "s" : ""}</div>
+              </div>
+
+              {/* Discrepancies vs Fresha attendance for the active cycle / branch */}
+              {discrepancies.length > 0 && (
+                <div style={{ background:"#fef3c7", border:"1px solid #fde68a", borderRadius:11, padding:"12px 14px", marginBottom:14 }}>
+                  <div style={{ fontWeight:800, color:"#78350f", marginBottom:6, fontSize:13 }}>
+                    ⚠ {discrepancies.length} discrepanc{discrepancies.length === 1 ? "y" : "ies"} for {attBranch} — {cycLabelLocal}
+                  </div>
+                  <div style={{ fontSize:11, color:"#78350f", marginBottom:10 }}>Tech checked in but attendance shows OFF / Annual / Sick / etc. Late status is never flagged (Fresha can't tell late from on-time).</div>
+                  <div style={{ display:"grid", gap:6 }}>
+                    {discrepancies.slice(0, 30).map((d, i) => (
+                      <div key={i} style={{ background:"#FFFFFF", border:"1px solid #fde68a", borderRadius:8, padding:"7px 11px", display:"flex", justifyContent:"space-between", fontSize:12, color:"#78350f" }}>
+                        <span><strong>{d.name}</strong> ({d.ec}) · {d.ymd}</span>
+                        <span style={{ fontFamily:"monospace", color:"#92400e" }}>checked in · attendance = "{d.attendance || "(blank)"}"</span>
+                      </div>
+                    ))}
+                    {discrepancies.length > 30 && <div style={{ fontSize:11, color:"#92400e" }}>… and {discrepancies.length - 30} more.</div>}
+                  </div>
+                </div>
+              )}
+
+              <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:13, overflow:"hidden" }}>
+                <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5 }}>
+                  <thead>
+                    <tr style={{ background:"#831843", color:"#FFFFFF" }}>
+                      {["When","Type","Tech","EC","Branch"].map(h => (
+                        <th key={h} style={{ padding:"10px 12px", textAlign:"left", fontSize:9.5, letterSpacing:"0.07em", fontWeight:600 }}>{h.toUpperCase()}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.length === 0 && (
+                      <tr><td colSpan={5} style={{ textAlign:"center", padding:30, color:"#9ca3af", fontStyle:"italic" }}>No check-ins in this range.</td></tr>
+                    )}
+                    {filtered.map(r => {
+                      const t = r.type === "in"        ? { lbl:"IN",       bg:"#dcfce7", fg:"#14532d" }
+                              : r.type === "out"       ? { lbl:"OUT",      bg:"#fef3c7", fg:"#92400e" }
+                              : r.type === "out_auto"  ? { lbl:"AUTO-OUT", bg:"#fee2e2", fg:"#7f1d1d" }
+                              :                          { lbl:r.type,     bg:"#f3f4f6", fg:"#374151" };
+                      return (
+                        <tr key={r.id} style={{ borderTop:"1px solid #FCE7F3" }}>
+                          <td style={{ padding:"8px 12px", whiteSpace:"nowrap", color:"#831843" }}>{fmtDateTime(r.ts)}</td>
+                          <td style={{ padding:"8px 12px" }}>
+                            <span style={{ background:t.bg, color:t.fg, fontWeight:700, fontSize:10, padding:"2px 8px", borderRadius:5, letterSpacing:"0.05em" }}>{t.lbl}</span>
+                          </td>
+                          <td style={{ padding:"8px 12px", fontWeight:600 }}>{(r.staff && r.staff.name) || "—"}</td>
+                          <td style={{ padding:"8px 12px", fontFamily:"monospace", fontSize:11, color:"#8E5570" }}>{(r.staff && r.staff.employee_code) || ""}</td>
+                          <td style={{ padding:"8px 12px", color:"#831843" }}>📍 {(r.staff && r.staff.branch) || "—"}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        } catch (err) {
+          console.error("Daily Check-ins render failed:", err);
+          return (
+            <div style={{ background:"#fee2e2", border:"1px solid #fca5a5", borderRadius:11, padding:"16px 18px", color:"#7f1d1d", fontFamily:"'Outfit',system-ui,sans-serif" }}>
+              <div style={{ fontWeight:800, marginBottom:6 }}>Daily Check-ins failed to render.</div>
+              <div style={{ fontSize:12 }}>{(err && err.message) || String(err)}</div>
+              <div style={{ fontSize:11, marginTop:8, opacity:0.7 }}>See the browser console for details.</div>
+            </div>
+          );
+        } })()}
+
         {tab==="mgrclockins" && (() => {
           const filtered = mgrClockinRows.filter(r =>
             mgrClockinFilterBranch === "All" || (r.staff && r.staff.branch === mgrClockinFilterBranch)
