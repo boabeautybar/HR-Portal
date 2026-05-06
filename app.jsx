@@ -3090,10 +3090,16 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
           dashboard writes to, so requests submitted there appear here. */}
       {(() => {
         const allReqs = techRequests || [];
+        const norm = (s) => (s || "").toString().toLowerCase().trim();
+        const branchKey = norm(branch);
         const cycleYmds = new Set((days || []).map(d => d.year + "-" + String(d.monthIdx+1).padStart(2,"0") + "-" + String(d.d).padStart(2,"0")));
-        const cycleReqs = allReqs.filter(r =>
-          r && r.date && r.branch === branch && cycleYmds.has(r.date)
-        );
+        // Branch-aware list (in cycle) and a count of requests sitting outside
+        // the current cycle so we can surface them as a hint instead of silently
+        // dropping them.
+        const branchReqs   = allReqs.filter(r => r && r.date && norm(r.branch) === branchKey);
+        const cycleReqs    = branchReqs.filter(r => cycleYmds.has(r.date));
+        const otherCycle   = branchReqs.length - cycleReqs.length;
+        const otherBranch  = allReqs.filter(r => r && r.date && norm(r.branch) !== branchKey).length;
         const dowAbbrLocal = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
         const techsActive = techs.filter(t => !t.onMat);
         const persist = async (next) => {
@@ -3123,6 +3129,16 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
                 </button>
               </div>
             </div>
+            {cycleReqs.length === 0 && (
+              <div style={{ marginTop:8, fontSize:11, color:"#9ca3af", fontStyle:"italic" }}>
+                No off-day requests for {branch} in this cycle yet.
+                {(otherCycle > 0 || otherBranch > 0) && (
+                  <span style={{ marginLeft:6, color:"#9F1A4F", fontStyle:"normal", fontWeight:600 }}>
+                    ({otherCycle > 0 && `${otherCycle} for ${branch} on other dates`}{otherCycle > 0 && otherBranch > 0 && " · "}{otherBranch > 0 && `${otherBranch} for other branches`})
+                  </span>
+                )}
+              </div>
+            )}
             {cycleReqs.length > 0 && (() => {
               // Friendly label for the source field. Requests submitted from the
               // check-in app's manager dashboard typically set source: "checkin_app";
@@ -7882,10 +7898,15 @@ function App({ currentUser, onSignOut }) {
             const ed = new Date(cs.getFullYear(), cs.getMonth() + 1, 24);
             return ed.getFullYear() + "-" + String(ed.getMonth()+1).padStart(2,"0") + "-" + String(ed.getDate()).padStart(2,"0");
           })();
-          const currentRequests = (mgrRequests || []).filter(r =>
-            r && r.branch === branch && r.date >= cycleStart && r.date <= cycleEndStr
+          const _normMgrBranch = (s) => (s || "").toString().toLowerCase().trim();
+          const _branchKeyMgr  = _normMgrBranch(branch);
+          const _branchReqsMgr = (mgrRequests || []).filter(r => r && _normMgrBranch(r.branch) === _branchKeyMgr);
+          const currentRequests = _branchReqsMgr.filter(r =>
+            r.date && r.date >= cycleStart && r.date <= cycleEndStr
             && allMgrs.some(m => m.ec === r.ec)
           );
+          const _otherCycleMgr  = _branchReqsMgr.length - currentRequests.length;
+          const _otherBranchMgr = (mgrRequests || []).filter(r => r && _normMgrBranch(r.branch) !== _branchKeyMgr).length;
           let result = mgrSched(branch, cycleStart, allMgrs, mgrLeaves, currentRequests, mgrPriorCtx);
           const haveDraft = !!mgrSchedDraft;
           if (haveDraft) {
@@ -8278,6 +8299,16 @@ function App({ currentUser, onSignOut }) {
                     + Request day off
                   </button>
                 </div>
+                {currentRequests.length === 0 && (
+                  <div style={{ marginTop:8, fontSize:11, color:"#9ca3af", fontStyle:"italic" }}>
+                    No off-day requests for {branch} in this cycle yet.
+                    {(_otherCycleMgr > 0 || _otherBranchMgr > 0) && (
+                      <span style={{ marginLeft:6, color:"#9F1A4F", fontStyle:"normal", fontWeight:600 }}>
+                        ({_otherCycleMgr > 0 && `${_otherCycleMgr} for ${branch} on other dates`}{_otherCycleMgr > 0 && _otherBranchMgr > 0 && " · "}{_otherBranchMgr > 0 && `${_otherBranchMgr} for other branches`})
+                      </span>
+                    )}
+                  </div>
+                )}
                 {currentRequests.length > 0 && (() => {
                   const dowAbbrLocal = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
                   const sourceLabel = (s) => {
