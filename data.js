@@ -329,6 +329,22 @@
     if (res.error) throw res.error;
     return records;
   }
+
+  // ---------- Nail-tech off-day requests (boa_tech_requests_v1) ----------
+  // Same shape as the manager list. The check-in app's manager dashboard
+  // writes to this same key when a tech submits a day-off request, so the
+  // HR portal sees them automatically.
+  async function loadTechRequests() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_tech_requests_v1").maybeSingle();
+    if (res.error) { console.error("loadTechRequests:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveTechRequests(records) {
+    var res = await sb.from("app_state").upsert({ key: "boa_tech_requests_v1", value: records || [] });
+    if (res.error) throw res.error;
+    return records;
+  }
   // helpers used by the grid UI
   function currentSchedYm() {
     var d = new Date(), y = d.getFullYear(), m = d.getMonth() + 1;
@@ -539,6 +555,8 @@
     purgeDeletedSchedule:   purgeDeletedSchedule,
     loadMgrRequests:        loadMgrRequests,
     saveMgrRequests:        saveMgrRequests,
+    loadTechRequests:       loadTechRequests,
+    saveTechRequests:       saveTechRequests,
     currentSchedYm:         currentSchedYm,
     periodDays:             periodDays,
     periodLabel:            periodLabel,
