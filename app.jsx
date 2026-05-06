@@ -1728,7 +1728,7 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
 }
 
 // ─── SCHEDULE EDITOR (Phase 2a — manual editing, save to Supabase) ──────────────
-function Schedule({ allStaff }) {
+function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
   const [branch, setBranch] = useState(SALONS[0].name);
   const [ym, setYm] = useState(window.BOA_DB ? window.BOA_DB.currentSchedYm() : "2026-05");
   const [grid, setGrid] = useState({});
@@ -1736,6 +1736,7 @@ function Schedule({ allStaff }) {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [techReqModal, setTechReqModal] = useState(null); // {ec, date, note} draft
   // Drag-and-drop state — { ec, day, value, weekIdx } when a cell is being dragged
   const [dragSource, setDragSource] = useState(null);
   // Version history modal state
@@ -1794,6 +1795,22 @@ function Schedule({ allStaff }) {
       if (am !== bm) return am - bm;                       // active before on-mat
       return (a.ec || "").localeCompare(b.ec || "");
     }), [allStaff, branch]);
+
+  // Set of "ec|dayOfMonth" combos that have a pending off-day request in the
+  // active branch + cycle. Used to render a small dot on the schedule cell so
+  // managers can see which cells should still get marked as off / R.
+  const requestedSet = useMemo(() => {
+    const out = new Set();
+    for (const r of (techRequests || [])) {
+      if (!r || r.branch !== branch || !r.date) continue;
+      const dt = new Date(r.date + "T00:00:00");
+      // Only honour requests whose ymd falls in the current period.
+      const inPeriod = days.some(d => d.year === dt.getFullYear() && d.monthIdx === dt.getMonth() && d.d === dt.getDate());
+      if (!inPeriod) continue;
+      out.add(r.ec + "|" + dt.getDate());
+    }
+    return out;
+  }, [techRequests, branch, days]);
 
   const cycle = ["W","WL","O","R","L","E","X",""];
   const cellStyle = (z) => {
@@ -3035,6 +3052,155 @@ function Schedule({ allStaff }) {
         <button onClick={save} disabled={saving || !dirty} style={{ padding:"8px 18px", borderRadius:9, border:"none", background:dirty?"#BE185D":"#FBCFE8", color:dirty?"#fff":"#9F1A4F", cursor:dirty?"pointer":"not-allowed", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>{saving ? "Saving…" : "Save"}</button>
       </div>
 
+      {/* ── Off-day requests for nail techs ── mirrors the manager planner panel.
+          Linked to the same `boa_tech_requests_v1` row the check-in app's manager
+          dashboard writes to, so requests submitted there appear here. */}
+      {(() => {
+        const allReqs = techRequests || [];
+        const cycleYmds = new Set((days || []).map(d => d.year + "-" + String(d.monthIdx+1).padStart(2,"0") + "-" + String(d.d).padStart(2,"0")));
+        const cycleReqs = allReqs.filter(r =>
+          r && r.date && r.branch === branch && cycleYmds.has(r.date)
+        );
+        const dowAbbrLocal = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+        const techsActive = techs.filter(t => !t.onMat);
+        const persist = async (next) => {
+          try {
+            await window.BOA_DB.saveTechRequests(next);
+            if (onTechRequestsChange) onTechRequestsChange(next);
+          } catch (e) { alert("Could not save: " + (e.message || e)); }
+        };
+        const removeReq = async (id) => {
+          if (!window.confirm("Remove this off-day request?")) return;
+          await persist(allReqs.filter(x => x.id !== id));
+        };
+        // Apply all in-cycle requests as "R" cells in the current grid (does not save the
+        // schedule itself — the user still hits Save to persist).
+        const applyToGrid = () => {
+          if (cycleReqs.length === 0) return;
+          const next = JSON.parse(JSON.stringify(grid));
+          let applied = 0;
+          for (const r of cycleReqs) {
+            const day = parseInt(r.date.slice(8, 10), 10);
+            if (!next[r.ec]) next[r.ec] = {};
+            if (next[r.ec][day] === "R") continue;
+            next[r.ec][day] = "R";
+            applied++;
+          }
+          if (applied > 0) { setGrid(next); setDirty(true); }
+          alert("Applied " + applied + " request" + (applied === 1 ? "" : "s") + " as 'R' cells. Click Save to persist.");
+        };
+        return (
+          <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:11, padding:"12px 14px", marginBottom:14 }}>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: cycleReqs.length ? 10 : 0, gap:12, flexWrap:"wrap" }}>
+              <div>
+                <div style={{ fontSize:13, fontWeight:700, color:"#831843" }}>📝 Off-day requests for this cycle</div>
+                <div style={{ fontSize:11, color:"#9ca3af", marginTop:2 }}>Linked to the manager check-in app — techs request a day off there and it shows up here. Click <em>Apply to grid</em> to mark those cells <strong>R</strong>.</div>
+              </div>
+              <div style={{ display:"flex", gap:8 }}>
+                {cycleReqs.length > 0 && (
+                  <button onClick={applyToGrid}
+                    style={{ padding:"7px 14px", background:"#FCE7F3", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
+                    Apply to grid
+                  </button>
+                )}
+                <button onClick={() => setTechReqModal({ ec:(techsActive[0] && techsActive[0].ec) || "", date: (days && days[0] ? (days[0].year + "-" + String(days[0].monthIdx+1).padStart(2,"0") + "-" + String(days[0].d).padStart(2,"0")) : ""), note:"" })}
+                  disabled={techsActive.length === 0}
+                  style={{ padding:"7px 14px", background: techsActive.length ? "#BE185D" : "#FBCFE8", color: techsActive.length ? "#fff" : "#9F1A4F", border:"none", borderRadius:8, cursor: techsActive.length ? "pointer" : "not-allowed", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
+                  + Request day off
+                </button>
+              </div>
+            </div>
+            {cycleReqs.length > 0 && (
+              <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                {cycleReqs.map(r => {
+                  const tx = techs.find(t => t.ec === r.ec);
+                  const nm = (tx && tx.name) || r.name || r.ec;
+                  const dt = new Date(r.date + "T00:00:00");
+                  const dayNum = parseInt(r.date.slice(8, 10), 10);
+                  const cellVal = (grid[r.ec] || {})[dayNum];
+                  const onGrid = cellVal === "R" || cellVal === "O";
+                  return (
+                    <div key={r.id} style={{ display:"inline-flex", alignItems:"center", gap:8, background: onGrid ? "#fee2e2" : "#FCE7F3", border:"1px solid " + (onGrid ? "#fca5a5" : "#FBCFE8"), borderRadius:20, padding:"5px 12px", fontSize:11 }}>
+                      <span style={{ fontWeight:700, color:"#831843" }}>{nm}</span>
+                      <span style={{ color:"#831843" }}>· {r.date} ({dowAbbrLocal[dt.getDay()]})</span>
+                      {onGrid && <span style={{ fontSize:10, fontWeight:700, color:"#7f1d1d", letterSpacing:"0.04em" }}>· on grid</span>}
+                      {r.note && <span style={{ color:"#9ca3af", fontStyle:"italic" }}>· "{r.note}"</span>}
+                      <button onClick={() => removeReq(r.id)} title="Remove this request"
+                        style={{ background:"transparent", border:"none", color:"#9F1A4F", cursor:"pointer", fontSize:14, fontWeight:700, lineHeight:1, padding:"0 4px" }}>×</button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* Tech off-day request modal */}
+      {techReqModal && (
+        <div onClick={() => setTechReqModal(null)} style={{ position:"fixed", inset:0, background:"rgba(131,24,67,0.35)", zIndex:9000, display:"flex", alignItems:"center", justifyContent:"center", padding:"40px 20px" }}>
+          <div onClick={e => e.stopPropagation()} style={{ background:"#fff", borderRadius:13, padding:"22px 24px", width:"min(440px, 100%)", border:"1px solid #FBCFE8" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:14 }}>
+              <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:18, fontWeight:700, color:"#831843" }}>Request day off · {branch}</div>
+              <button onClick={() => setTechReqModal(null)} style={{ background:"transparent", border:"none", color:"#9F1A4F", cursor:"pointer", fontSize:18, fontWeight:700, lineHeight:1 }}>×</button>
+            </div>
+            <div style={{ display:"grid", gap:10, fontSize:13 }}>
+              <label style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>NAIL TECH</span>
+                <select value={techReqModal.ec}
+                  onChange={(e) => setTechReqModal({ ...techReqModal, ec: e.target.value })}
+                  style={{ padding:"7px 10px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13 }}>
+                  {techs.filter(t => !t.onMat).map(t => (
+                    <option key={t.ec} value={t.ec}>{t.name} ({t.ec})</option>
+                  ))}
+                </select>
+              </label>
+              <label style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>DATE</span>
+                <input type="date" value={techReqModal.date}
+                  onChange={(e) => setTechReqModal({ ...techReqModal, date: e.target.value })}
+                  style={{ padding:"7px 10px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13 }} />
+              </label>
+              <label style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>NOTE (optional)</span>
+                <input type="text" value={techReqModal.note}
+                  onChange={(e) => setTechReqModal({ ...techReqModal, note: e.target.value })}
+                  placeholder="e.g. doctor's appointment"
+                  style={{ padding:"7px 10px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13 }} />
+              </label>
+            </div>
+            <div style={{ display:"flex", gap:8, justifyContent:"flex-end", marginTop:16 }}>
+              <button onClick={() => setTechReqModal(null)}
+                style={{ padding:"8px 14px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:13 }}>Cancel</button>
+              <button onClick={async () => {
+                if (!techReqModal.ec || !techReqModal.date) { alert("Pick a tech and a date."); return; }
+                if ((techRequests || []).some(r => r.ec === techReqModal.ec && r.date === techReqModal.date)) {
+                  alert("That tech already has a request on that date."); return;
+                }
+                const tx = techs.find(t => t.ec === techReqModal.ec);
+                const newReq = {
+                  id: "tr_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+                  ec: techReqModal.ec,
+                  name: (tx && tx.name) || "",
+                  branch,
+                  date: techReqModal.date,
+                  note: techReqModal.note || "",
+                  addedAt: new Date().toISOString(),
+                  source: "portal"
+                };
+                const next = [...(techRequests || []), newReq];
+                try {
+                  await window.BOA_DB.saveTechRequests(next);
+                  if (onTechRequestsChange) onTechRequestsChange(next);
+                  setTechReqModal(null);
+                } catch (e) { alert("Could not save: " + (e.message || e)); }
+              }}
+                style={{ padding:"8px 14px", background:"#BE185D", color:"#fff", border:"none", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>Save request</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Version History modal — shows last 5 backups for this branch+period */}
       {historyOpen && (
         <div onClick={() => setHistoryOpen(false)} style={{ position:"fixed", inset:0, background:"rgba(131,24,67,0.35)", zIndex:9000, display:"flex", alignItems:"center", justifyContent:"center", padding:"40px 20px" }}>
@@ -3175,6 +3341,8 @@ function Schedule({ allStaff }) {
                     {days.map(d => {
                       const v = (grid[s.ec] || {})[d.d] || "";
                       const weekEnd = d.dow === 0;
+                      const requested = requestedSet.has(s.ec + "|" + d.d);
+                      const requestUnapplied = requested && v !== "R" && v !== "O";
                       // On-mat cells: flat grey, non-clickable, non-draggable.
                       const matCell = onMat ? { background:"#e5e7eb", color:"#9ca3af" } : cellStyle(v);
                       // Drag-drop visual states
@@ -3193,9 +3361,12 @@ function Schedule({ allStaff }) {
                             onDrop={e => handleDrop(e, s.ec, d.d)}
                             onDragEnd={handleDragEnd}
                             onClick={onMat ? undefined : () => cycleCell(s.ec, d.d)}
-                            title={onMat ? `${s.name} · on maternity leave` : `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · click to cycle, drag to swap within the week`}
-                            style={{ ...matCell, padding:0, height:30, textAlign:"center", borderBottom:"1px solid #FCE7F3", borderLeft:"1px solid #FCE7F3", borderRight: weekEnd ? "3px solid #BE185D" : "none", cursor: dragCursor, fontSize:11, fontWeight:700, userSelect:"none", outline: dropOutline, outlineOffset:-1, opacity: isSrc ? 0.4 : undefined }}>
+                            title={onMat ? `${s.name} · on maternity leave` : `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · click to cycle, drag to swap within the week${requested ? ' · 📝 day-off requested' + (requestUnapplied ? ' (not yet on grid)' : '') : ''}`}
+                            style={{ ...matCell, padding:0, height:30, textAlign:"center", borderBottom:"1px solid #FCE7F3", borderLeft:"1px solid #FCE7F3", borderRight: weekEnd ? "3px solid #BE185D" : "none", cursor: dragCursor, fontSize:11, fontWeight:700, userSelect:"none", outline: dropOutline, outlineOffset:-1, opacity: isSrc ? 0.4 : undefined, position:"relative" }}>
                           {onMat ? "—" : v}
+                          {requestUnapplied && (
+                            <span style={{ position:"absolute", top:1, right:2, fontSize:8, lineHeight:1, color:"#BE185D", pointerEvents:"none" }}>📝</span>
+                          )}
                         </td>
                       );
                     })}
@@ -3989,6 +4160,8 @@ function App({ currentUser, onSignOut }) {
   // ── Manager off-day requests ────────────────────────────────────
   // Stored globally in app_state; we filter to current branch+cycle.
   const [mgrRequests, setMgrRequests]       = useState([]);
+  const [techRequests, setTechRequests]     = useState([]);
+  const [techRequestsTick, setTechRequestsTick] = useState(0);
   const [mgrReqTick, setMgrReqTick]         = useState(0);
   const [mgrReqModal, setMgrReqModal]       = useState(null);  // {ec, name, date, note} draft
   useEffect(() => {
@@ -4000,6 +4173,20 @@ function App({ currentUser, onSignOut }) {
       .catch((e) => { console.warn("loadMgrRequests:", e); });
     return () => { cancelled = true; };
   }, [tab, schedSubTab, mgrSchedTick, mgrReqTick]);
+
+  // Load nail-tech off-day requests from the same app_state row the check-in
+  // app writes to. Refreshed every time the Scheduling tab opens or the tick
+  // is bumped after a local add/remove.
+  useEffect(() => {
+    if (!(tab === "scheduling")) return;
+    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
+    if (!window.BOA_DB.loadTechRequests) return;          // pre-deploy guard
+    let cancelled = false;
+    window.BOA_DB.loadTechRequests()
+      .then((arr) => { if (!cancelled) setTechRequests(arr || []); })
+      .catch((e) => { console.warn("loadTechRequests:", e); });
+    return () => { cancelled = true; };
+  }, [tab, schedSubTab, techRequestsTick]);
 
   // ── Manager-schedule trash (7-day soft-delete) ──────────────────
   const [mgrTrash, setMgrTrash]               = useState([]);
@@ -5007,7 +5194,13 @@ function App({ currentUser, onSignOut }) {
             })}
           </div>
         )}
-        {tab==="scheduling" && schedSubTab==="techs" && <Schedule allStaff={enriched} />}
+        {tab==="scheduling" && schedSubTab==="techs" && (
+          <Schedule
+            allStaff={enriched}
+            techRequests={techRequests}
+            onTechRequestsChange={(next) => { setTechRequests(next); setTechRequestsTick(t => t + 1); }}
+          />
+        )}
 
         {/* ── LOCATIONS TAB ── */}
         {tab==="locations" && (
