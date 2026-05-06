@@ -405,6 +405,18 @@
     if (res.error) { console.error("listRecentManagerClockins:", res.error); return []; }
     return (res.data || []).filter(function (r) { return r.staff && r.staff.role_type === "manager"; });
   }
+  // Same as the manager viewer but filtered to nail-tech clock-ins. Used by
+  // the Daily Check-ins tab and by the Attendance tab to overlay check-in
+  // markers on the grid.
+  async function listRecentTechClockins(daysBack) {
+    var since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - (daysBack || 60));
+    var res = await sb.from("clockins")
+      .select("*, staff:staff_id ( id, name, employee_code, role_type, branch )")
+      .gte("ts", since.toISOString())
+      .order("ts", { ascending: false });
+    if (res.error) { console.error("listRecentTechClockins:", res.error); return []; }
+    return (res.data || []).filter(function (r) { return r.staff && r.staff.role_type !== "manager"; });
+  }
   async function loadClockinMeta(clockinId) {
     var res = await sb.from("app_state").select("value").eq("key", "boa_mgrclockin_meta_" + clockinId).maybeSingle();
     if (res.error) { console.warn("loadClockinMeta:", res.error); return null; }
@@ -549,6 +561,7 @@
 
     // Manager clock-ins viewer
     listRecentManagerClockins: listRecentManagerClockins,
+    listRecentTechClockins:    listRecentTechClockins,
     loadClockinMeta:           loadClockinMeta,
 
     // Activity log
