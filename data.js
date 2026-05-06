@@ -345,6 +345,30 @@
     if (res.error) throw res.error;
     return records;
   }
+
+  // Diagnostic: list every app_state row whose key looks request-related so we
+  // can find where the check-in app actually writes day-off requests.
+  async function listRequestKeys() {
+    var keys = [];
+    var patterns = ["%request%", "%dayoff%", "%day_off%", "%offday%", "%off_day%"];
+    for (var i = 0; i < patterns.length; i++) {
+      var res = await sb.from("app_state").select("key, value").like("key", patterns[i]);
+      if (res.error) continue;
+      (res.data || []).forEach(function (r) {
+        var len = Array.isArray(r.value) ? r.value.length : (r.value ? 1 : 0);
+        if (!keys.find(function (k) { return k.key === r.key; })) {
+          keys.push({ key: r.key, count: len, sample: Array.isArray(r.value) ? r.value[0] : r.value });
+        }
+      });
+    }
+    return keys;
+  }
+  // One-shot load of any app_state row by key, for ad-hoc inspection.
+  async function loadByKey(key) {
+    var res = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
+    if (res.error) return null;
+    return (res.data && res.data.value) || null;
+  }
   // helpers used by the grid UI
   function currentSchedYm() {
     var d = new Date(), y = d.getFullYear(), m = d.getMonth() + 1;
@@ -557,6 +581,8 @@
     saveMgrRequests:        saveMgrRequests,
     loadTechRequests:       loadTechRequests,
     saveTechRequests:       saveTechRequests,
+    listRequestKeys:        listRequestKeys,
+    loadByKey:              loadByKey,
     currentSchedYm:         currentSchedYm,
     periodDays:             periodDays,
     periodLabel:            periodLabel,

@@ -3122,6 +3122,23 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
                 <div style={{ fontSize:11, color:"#9ca3af", marginTop:2 }}>Submitted from the check-in app or here. Each request auto-fills its day on the grid as <strong>R</strong>; the schedule still needs <em>Save</em> to persist.</div>
               </div>
               <div style={{ display:"flex", gap:8 }}>
+                <button onClick={async () => {
+                  if (!window.BOA_DB || !window.BOA_DB.listRequestKeys) { alert("Diagnostic not available — re-deploy after the latest data.js update."); return; }
+                  try {
+                    const keys = await window.BOA_DB.listRequestKeys();
+                    if (!keys.length) {
+                      alert("No request-shaped rows found in app_state.\n\nThe check-in app might be writing to a database table instead of an app_state row. Check the Supabase tables list for 'requests', 'day_off_requests', etc.");
+                      return;
+                    }
+                    const lines = keys.map(k => "• " + k.key + " — " + k.count + " entr" + (k.count === 1 ? "y" : "ies") + (k.sample ? "\n   sample: " + JSON.stringify(k.sample).slice(0, 200) : "")).join("\n\n");
+                    alert("Request-shaped keys found in app_state:\n\n" + lines + "\n\nThe portal currently reads from boa_tech_requests_v1 (techs) and boa_mgr_requests_v1 (managers). Share the key the check-in app actually writes to and I'll align them.");
+                    console.log("Request keys:", keys);
+                  } catch (e) { alert("Diagnostic failed: " + (e.message || e)); }
+                }}
+                  title="List every request-shaped row in app_state — helps find where the check-in app saves day-off requests"
+                  style={{ padding:"7px 14px", background:"#FFFFFF", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:600 }}>
+                  🔍 Diagnose
+                </button>
                 <button onClick={() => setTechReqModal({ ec:(techsActive[0] && techsActive[0].ec) || "", date: (days && days[0] ? (days[0].year + "-" + String(days[0].monthIdx+1).padStart(2,"0") + "-" + String(days[0].d).padStart(2,"0")) : ""), note:"" })}
                   disabled={techsActive.length === 0}
                   style={{ padding:"7px 14px", background: techsActive.length ? "#BE185D" : "#FBCFE8", color: techsActive.length ? "#fff" : "#9F1A4F", border:"none", borderRadius:8, cursor: techsActive.length ? "pointer" : "not-allowed", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
@@ -8293,11 +8310,30 @@ function App({ currentUser, onSignOut }) {
                     <div style={{ fontSize:13, fontWeight:700, color:"#831843" }}>📝 Off-day requests for this cycle</div>
                     <div style={{ fontSize:11, color:"#9ca3af", marginTop:2 }}>Requests submitted from the check-in app or here land as <strong>Pending</strong> first. The generator counts requests as one of the 2 weekly offs (respecting the 2-cap) and they can override the guaranteed weekend pair.</div>
                   </div>
-                  <button onClick={() => setMgrReqModal({ ec: (sortedMgrs[0] && sortedMgrs[0].ec) || "", date: cycleStart, note: "" })}
-                          disabled={sortedMgrs.length === 0}
-                          style={{ padding:"7px 14px", background: sortedMgrs.length ? "#BE185D" : "#FBCFE8", color: sortedMgrs.length ? "#fff" : "#9F1A4F", border:"none", borderRadius:8, cursor: sortedMgrs.length ? "pointer" : "not-allowed", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
-                    + Request day off
-                  </button>
+                  <div style={{ display:"flex", gap:8 }}>
+                    <button onClick={async () => {
+                      if (!window.BOA_DB || !window.BOA_DB.listRequestKeys) { alert("Diagnostic not available — re-deploy after the latest data.js update."); return; }
+                      try {
+                        const keys = await window.BOA_DB.listRequestKeys();
+                        if (!keys.length) {
+                          alert("No request-shaped rows found in app_state.\n\nThe check-in app might be writing to a database table instead of an app_state row. Check the Supabase tables list for 'requests', 'day_off_requests', etc.");
+                          return;
+                        }
+                        const lines = keys.map(k => "• " + k.key + " — " + k.count + " entr" + (k.count === 1 ? "y" : "ies") + (k.sample ? "\n   sample: " + JSON.stringify(k.sample).slice(0, 200) : "")).join("\n\n");
+                        alert("Request-shaped keys found in app_state:\n\n" + lines + "\n\nThe portal currently reads from boa_tech_requests_v1 (techs) and boa_mgr_requests_v1 (managers). Share the key the check-in app actually writes to and I'll align them.");
+                        console.log("Request keys:", keys);
+                      } catch (e) { alert("Diagnostic failed: " + (e.message || e)); }
+                    }}
+                      title="List every request-shaped row in app_state — helps find where the check-in app saves day-off requests"
+                      style={{ padding:"7px 14px", background:"#FFFFFF", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:600 }}>
+                      🔍 Diagnose
+                    </button>
+                    <button onClick={() => setMgrReqModal({ ec: (sortedMgrs[0] && sortedMgrs[0].ec) || "", date: cycleStart, note: "" })}
+                            disabled={sortedMgrs.length === 0}
+                            style={{ padding:"7px 14px", background: sortedMgrs.length ? "#BE185D" : "#FBCFE8", color: sortedMgrs.length ? "#fff" : "#9F1A4F", border:"none", borderRadius:8, cursor: sortedMgrs.length ? "pointer" : "not-allowed", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
+                      + Request day off
+                    </button>
+                  </div>
                 </div>
                 {currentRequests.length === 0 && (
                   <div style={{ marginTop:8, fontSize:11, color:"#9ca3af", fontStyle:"italic" }}>
