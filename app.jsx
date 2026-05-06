@@ -1781,6 +1781,39 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
   }, [branch, ym]);
 
   const days = window.BOA_DB ? window.BOA_DB.periodDays(ym) : [];
+
+  // Auto-stamp 'R' on cells with a pending off-day request — runs after each
+  // schedule load and whenever techRequests changes (e.g. a new request comes
+  // in from the check-in app). Empty cells become R; cells the user has set
+  // to anything else are preserved. If anything was added, the schedule goes
+  // dirty so the user knows to Save.
+  useEffect(() => {
+    if (loading) return;
+    if (!techRequests || techRequests.length === 0) return;
+    if (!days || days.length === 0) return;
+    let changed = false;
+    const next = JSON.parse(JSON.stringify(grid || {}));
+    for (const r of techRequests) {
+      if (!r || r.branch !== branch || !r.date) continue;
+      const dt = new Date(r.date + "T00:00:00");
+      if (isNaN(dt.getTime())) continue;
+      const inPeriod = days.some(d => d.year === dt.getFullYear() && d.monthIdx === dt.getMonth() && d.d === dt.getDate());
+      if (!inPeriod) continue;
+      const dayNum = dt.getDate();
+      if (!next[r.ec]) next[r.ec] = {};
+      if (!next[r.ec][dayNum]) {
+        next[r.ec][dayNum] = "R";
+        changed = true;
+      }
+    }
+    if (changed) {
+      setGrid(next);
+      setDirty(true);
+    }
+    // Intentionally not depending on `grid` to avoid an infinite re-stamp loop;
+    // the effect re-runs when techRequests/branch/ym/loading change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [techRequests, branch, ym, loading]);
   const periodLbl = window.BOA_DB ? window.BOA_DB.periodLabel(ym) : "";
 
   // All scheduled staff at this branch — actively-working first (sorted by EC),
@@ -3073,36 +3106,16 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
           if (!window.confirm("Remove this off-day request?")) return;
           await persist(allReqs.filter(x => x.id !== id));
         };
-        // Apply all in-cycle requests as "R" cells in the current grid (does not save the
-        // schedule itself — the user still hits Save to persist).
-        const applyToGrid = () => {
-          if (cycleReqs.length === 0) return;
-          const next = JSON.parse(JSON.stringify(grid));
-          let applied = 0;
-          for (const r of cycleReqs) {
-            const day = parseInt(r.date.slice(8, 10), 10);
-            if (!next[r.ec]) next[r.ec] = {};
-            if (next[r.ec][day] === "R") continue;
-            next[r.ec][day] = "R";
-            applied++;
-          }
-          if (applied > 0) { setGrid(next); setDirty(true); }
-          alert("Applied " + applied + " request" + (applied === 1 ? "" : "s") + " as 'R' cells. Click Save to persist.");
-        };
+        // Note: requests auto-stamp R on the grid via a useEffect; no manual
+        // "Apply to grid" step needed.
         return (
           <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:11, padding:"12px 14px", marginBottom:14 }}>
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: cycleReqs.length ? 10 : 0, gap:12, flexWrap:"wrap" }}>
               <div>
                 <div style={{ fontSize:13, fontWeight:700, color:"#831843" }}>📝 Off-day requests for this cycle</div>
-                <div style={{ fontSize:11, color:"#9ca3af", marginTop:2 }}>Linked to the manager check-in app — incoming requests show up here as <strong>Pending</strong> first; nothing touches the grid until you click <em>Apply to grid</em> (or set a cell to <strong>R</strong> manually).</div>
+                <div style={{ fontSize:11, color:"#9ca3af", marginTop:2 }}>Submitted from the check-in app or here. Each request auto-fills its day on the grid as <strong>R</strong>; the schedule still needs <em>Save</em> to persist.</div>
               </div>
               <div style={{ display:"flex", gap:8 }}>
-                {cycleReqs.length > 0 && (
-                  <button onClick={applyToGrid}
-                    style={{ padding:"7px 14px", background:"#FCE7F3", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
-                    Apply to grid
-                  </button>
-                )}
                 <button onClick={() => setTechReqModal({ ec:(techsActive[0] && techsActive[0].ec) || "", date: (days && days[0] ? (days[0].year + "-" + String(days[0].monthIdx+1).padStart(2,"0") + "-" + String(days[0].d).padStart(2,"0")) : ""), note:"" })}
                   disabled={techsActive.length === 0}
                   style={{ padding:"7px 14px", background: techsActive.length ? "#BE185D" : "#FBCFE8", color: techsActive.length ? "#fff" : "#9F1A4F", border:"none", borderRadius:8, cursor: techsActive.length ? "pointer" : "not-allowed", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
@@ -3139,49 +3152,25 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
                   addedAt: r.addedAt ? new Date(r.addedAt) : null
                 };
               }).sort((a, b) => a.r.date.localeCompare(b.r.date));
-              const pending  = decorated.filter(d => !d.onGrid);
-              const honoured = decorated.filter(d =>  d.onGrid);
-              const pillBase = (onGrid) => ({
+              const pillBase = {
                 display:"inline-flex", alignItems:"center", gap:8,
-                background: onGrid ? "#fee2e2" : "#FCE7F3",
-                border:"1px solid " + (onGrid ? "#fca5a5" : "#FBCFE8"),
+                background:"#FCE7F3", border:"1px solid #FBCFE8",
                 borderRadius:20, padding:"5px 12px", fontSize:11
-              });
-              const renderPill = (d) => (
-                <div key={d.r.id} style={pillBase(d.onGrid)} title={d.addedAt ? "Added " + d.addedAt.toLocaleString("en-ZA") : ""}>
-                  <span style={{ fontWeight:700, color:"#831843" }}>{d.nm}</span>
-                  <span style={{ color:"#831843" }}>· {d.r.date} ({dowAbbrLocal[d.dt.getDay()]})</span>
-                  {d.onGrid && <span style={{ fontSize:10, fontWeight:700, color:"#7f1d1d", letterSpacing:"0.04em" }}>· on grid</span>}
-                  {d.src && (
-                    <span style={{ fontSize:10, fontWeight:700, color:"#0369a1", background:"#e0f2fe", border:"1px solid #bae6fd", borderRadius:5, padding:"0 5px", letterSpacing:"0.02em" }}>from {d.src}</span>
-                  )}
-                  {d.r.note && <span style={{ color:"#9ca3af", fontStyle:"italic" }}>· "{d.r.note}"</span>}
-                  <button onClick={() => removeReq(d.r.id)} title="Remove this request"
-                    style={{ background:"transparent", border:"none", color:"#9F1A4F", cursor:"pointer", fontSize:14, fontWeight:700, lineHeight:1, padding:"0 4px" }}>×</button>
-                </div>
-              );
+              };
               return (
-                <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-                  {pending.length > 0 && (
-                    <div>
-                      <div style={{ fontSize:10, fontWeight:800, color:"#9F1A4F", letterSpacing:"0.18em", textTransform:"uppercase", marginBottom:6 }}>
-                        Pending — not yet on grid ({pending.length})
-                      </div>
-                      <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
-                        {pending.map(renderPill)}
-                      </div>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                  {decorated.map(d => (
+                    <div key={d.r.id} style={pillBase} title={d.addedAt ? "Added " + d.addedAt.toLocaleString("en-ZA") : ""}>
+                      <span style={{ fontWeight:700, color:"#831843" }}>{d.nm}</span>
+                      <span style={{ color:"#831843" }}>· {d.r.date} ({dowAbbrLocal[d.dt.getDay()]})</span>
+                      {d.src && (
+                        <span style={{ fontSize:10, fontWeight:700, color:"#0369a1", background:"#e0f2fe", border:"1px solid #bae6fd", borderRadius:5, padding:"0 5px", letterSpacing:"0.02em" }}>from {d.src}</span>
+                      )}
+                      {d.r.note && <span style={{ color:"#9ca3af", fontStyle:"italic" }}>· "{d.r.note}"</span>}
+                      <button onClick={() => removeReq(d.r.id)} title="Remove this request"
+                        style={{ background:"transparent", border:"none", color:"#9F1A4F", cursor:"pointer", fontSize:14, fontWeight:700, lineHeight:1, padding:"0 4px" }}>×</button>
                     </div>
-                  )}
-                  {honoured.length > 0 && (
-                    <div>
-                      <div style={{ fontSize:10, fontWeight:800, color:"#7f1d1d", letterSpacing:"0.18em", textTransform:"uppercase", marginBottom:6 }}>
-                        Already on grid ({honoured.length})
-                      </div>
-                      <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
-                        {honoured.map(renderPill)}
-                      </div>
-                    </div>
-                  )}
+                  ))}
                 </div>
               );
             })()}
@@ -8324,49 +8313,25 @@ function App({ currentUser, onSignOut }) {
                       addedAt: r.addedAt ? new Date(r.addedAt) : null
                     };
                   }).sort((a, b) => a.r.date.localeCompare(b.r.date));
-                  const pending  = decorated.filter(d => !d.onGrid);
-                  const honoured = decorated.filter(d =>  d.onGrid);
-                  const pillBase = (onGrid) => ({
+                  const pillBase = {
                     display:"inline-flex", alignItems:"center", gap:8,
-                    background: onGrid ? "#fee2e2" : "#FCE7F3",
-                    border:"1px solid " + (onGrid ? "#fca5a5" : "#FBCFE8"),
+                    background:"#FCE7F3", border:"1px solid #FBCFE8",
                     borderRadius:20, padding:"5px 12px", fontSize:11
-                  });
-                  const renderPill = (d) => (
-                    <div key={d.r.id} style={pillBase(d.onGrid)} title={d.addedAt ? "Added " + d.addedAt.toLocaleString("en-ZA") : ""}>
-                      <span style={{ fontWeight:700, color:"#831843" }}>{d.nm}</span>
-                      <span style={{ color:"#831843" }}>· {d.r.date} ({dowAbbrLocal[d.dt.getDay()]})</span>
-                      {d.onGrid && <span style={{ fontSize:10, fontWeight:700, color:"#7f1d1d", letterSpacing:"0.04em" }}>· on grid</span>}
-                      {d.src && (
-                        <span style={{ fontSize:10, fontWeight:700, color:"#0369a1", background:"#e0f2fe", border:"1px solid #bae6fd", borderRadius:5, padding:"0 5px", letterSpacing:"0.02em" }}>from {d.src}</span>
-                      )}
-                      {d.r.note && <span style={{ color:"#9ca3af", fontStyle:"italic" }}>· "{d.r.note}"</span>}
-                      <button onClick={() => removeReq(d.r)} title="Remove this request"
-                        style={{ background:"transparent", border:"none", color:"#9F1A4F", cursor:"pointer", fontSize:14, fontWeight:700, lineHeight:1, padding:"0 4px" }}>×</button>
-                    </div>
-                  );
+                  };
                   return (
-                    <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-                      {pending.length > 0 && (
-                        <div>
-                          <div style={{ fontSize:10, fontWeight:800, color:"#9F1A4F", letterSpacing:"0.18em", textTransform:"uppercase", marginBottom:6 }}>
-                            Pending — not yet on grid ({pending.length})
-                          </div>
-                          <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
-                            {pending.map(renderPill)}
-                          </div>
+                    <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                      {decorated.map(d => (
+                        <div key={d.r.id} style={pillBase} title={d.addedAt ? "Added " + d.addedAt.toLocaleString("en-ZA") : ""}>
+                          <span style={{ fontWeight:700, color:"#831843" }}>{d.nm}</span>
+                          <span style={{ color:"#831843" }}>· {d.r.date} ({dowAbbrLocal[d.dt.getDay()]})</span>
+                          {d.src && (
+                            <span style={{ fontSize:10, fontWeight:700, color:"#0369a1", background:"#e0f2fe", border:"1px solid #bae6fd", borderRadius:5, padding:"0 5px", letterSpacing:"0.02em" }}>from {d.src}</span>
+                          )}
+                          {d.r.note && <span style={{ color:"#9ca3af", fontStyle:"italic" }}>· "{d.r.note}"</span>}
+                          <button onClick={() => removeReq(d.r)} title="Remove this request"
+                            style={{ background:"transparent", border:"none", color:"#9F1A4F", cursor:"pointer", fontSize:14, fontWeight:700, lineHeight:1, padding:"0 4px" }}>×</button>
                         </div>
-                      )}
-                      {honoured.length > 0 && (
-                        <div>
-                          <div style={{ fontSize:10, fontWeight:800, color:"#7f1d1d", letterSpacing:"0.18em", textTransform:"uppercase", marginBottom:6 }}>
-                            Already on grid ({honoured.length})
-                          </div>
-                          <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
-                            {honoured.map(renderPill)}
-                          </div>
-                        </div>
-                      )}
+                      ))}
                     </div>
                   );
                 })()}
