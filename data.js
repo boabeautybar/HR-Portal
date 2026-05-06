@@ -464,8 +464,11 @@
     if (res.error) { console.error("loadAttendance:", res.error); return null; }
     return (res.data && res.data.value) || null;
   }
-  async function saveAttendance(branch, ym, grid) {
+  async function saveAttendance(branch, ym, grid, extras) {
     var v = { grid: grid || {}, branch: branch, ym: ym, savedAt: new Date().toISOString() };
+    if (extras && typeof extras === "object") {
+      Object.keys(extras).forEach(function (k) { v[k] = extras[k]; });
+    }
     var res = await sb.from("app_state").upsert({ key: "boa_att_" + branch + "_" + ym, value: v });
     if (res.error) throw res.error;
     return v;
