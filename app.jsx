@@ -3117,10 +3117,10 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
               const sourceLabel = (s) => {
                 const k = (s || "").toString().toLowerCase();
                 if (k === "portal" || k === "hr_portal" || k === "hr-portal") return "HR portal";
-                if (k === "checkin_app" || k === "check_in_app" || k === "checkin" || k === "check-in" || k === "manager_app") return "check-in app";
-                if (k === "tech_app" || k === "staff_app") return "staff app";
+                if (k === "checkin_app" || k === "check_in_app" || k === "checkin" || k === "check-in" ||
+                    k === "manager_app" || k === "manager-app" || k === "manager") return "check-in app";
                 if (!k) return null;
-                return s; // unknown — surface the raw string so we can spot new sources
+                return s; // unknown — surface the raw string so we can spot bad data
               };
               // Decorate + split into pending vs honoured.
               const decorated = cycleReqs.map(r => {
