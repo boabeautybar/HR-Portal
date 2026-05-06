@@ -363,6 +363,40 @@
     }
     return keys;
   }
+  // Probe likely Supabase tables for day-off requests. The check-in app may use
+  // a dedicated table instead of an app_state row. Returns one entry per table
+  // we tried, with either a row count + sample or the error message that came
+  // back so the user can paste it for diagnosis.
+  async function probeRequestTables() {
+    var candidates = [
+      "day_off_requests", "dayoff_requests", "time_off_requests", "off_day_requests",
+      "off_requests", "leave_requests", "requests", "day_off", "dayoff",
+      "staff_requests", "manager_requests", "tech_requests"
+    ];
+    var out = [];
+    for (var i = 0; i < candidates.length; i++) {
+      var t = candidates[i];
+      var res = null;
+      try {
+        res = await sb.from(t).select("*").limit(3);
+      } catch (e) {
+        out.push({ table: t, error: (e && e.message) || String(e) });
+        continue;
+      }
+      if (res.error) {
+        // 42P01 = table does not exist; PGRST205 = relation not found in cache.
+        var code = res.error.code || "";
+        if (code === "42P01" || code === "PGRST205" || /relation .* does not exist/i.test(res.error.message || "")) {
+          // Skip — table just isn't there.
+          continue;
+        }
+        out.push({ table: t, error: res.error.message || JSON.stringify(res.error) });
+        continue;
+      }
+      out.push({ table: t, rows: (res.data || []).length, sample: (res.data || [])[0] || null });
+    }
+    return out;
+  }
   // One-shot load of any app_state row by key, for ad-hoc inspection.
   async function loadByKey(key) {
     var res = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
@@ -582,6 +616,7 @@
     loadTechRequests:       loadTechRequests,
     saveTechRequests:       saveTechRequests,
     listRequestKeys:        listRequestKeys,
+    probeRequestTables:     probeRequestTables,
     loadByKey:              loadByKey,
     currentSchedYm:         currentSchedYm,
     periodDays:             periodDays,

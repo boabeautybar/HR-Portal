@@ -3126,13 +3126,21 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
                   if (!window.BOA_DB || !window.BOA_DB.listRequestKeys) { alert("Diagnostic not available — re-deploy after the latest data.js update."); return; }
                   try {
                     const keys = await window.BOA_DB.listRequestKeys();
-                    if (!keys.length) {
-                      alert("No request-shaped rows found in app_state.\n\nThe check-in app might be writing to a database table instead of an app_state row. Check the Supabase tables list for 'requests', 'day_off_requests', etc.");
-                      return;
+                    const tables = window.BOA_DB.probeRequestTables ? await window.BOA_DB.probeRequestTables() : [];
+                    const parts = [];
+                    if (keys.length === 0) {
+                      parts.push("app_state: no request-shaped rows found.");
+                    } else {
+                      parts.push("app_state keys:\n" + keys.map(k => "  • " + k.key + " — " + k.count + " entr" + (k.count === 1 ? "y" : "ies") + (k.sample ? "\n      sample: " + JSON.stringify(k.sample).slice(0, 180) : "")).join("\n"));
                     }
-                    const lines = keys.map(k => "• " + k.key + " — " + k.count + " entr" + (k.count === 1 ? "y" : "ies") + (k.sample ? "\n   sample: " + JSON.stringify(k.sample).slice(0, 200) : "")).join("\n\n");
-                    alert("Request-shaped keys found in app_state:\n\n" + lines + "\n\nThe portal currently reads from boa_tech_requests_v1 (techs) and boa_mgr_requests_v1 (managers). Share the key the check-in app actually writes to and I'll align them.");
-                    console.log("Request keys:", keys);
+                    if (tables.length === 0) {
+                      parts.push("\nSupabase tables probed: none of the candidate names exist or returned data.");
+                    } else {
+                      parts.push("\nSupabase tables found:\n" + tables.map(t => "  • " + t.table + " — " + (t.error ? "error: " + t.error : (t.rows + " row" + (t.rows === 1 ? "" : "s") + (t.sample ? "\n      sample: " + JSON.stringify(t.sample).slice(0, 200) : "")))).join("\n"));
+                    }
+                    parts.push("\n\nPortal currently reads:\n  • boa_tech_requests_v1 (techs)\n  • boa_mgr_requests_v1 (managers)\n\nShare the location the check-in app actually writes to and I'll align them.");
+                    console.log("[BOA] Request diagnostic — keys:", keys, "tables:", tables);
+                    alert(parts.join("\n"));
                   } catch (e) { alert("Diagnostic failed: " + (e.message || e)); }
                 }}
                   title="List every request-shaped row in app_state — helps find where the check-in app saves day-off requests"
