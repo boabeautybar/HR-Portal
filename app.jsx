@@ -3094,7 +3094,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: cycleReqs.length ? 10 : 0, gap:12, flexWrap:"wrap" }}>
               <div>
                 <div style={{ fontSize:13, fontWeight:700, color:"#831843" }}>📝 Off-day requests for this cycle</div>
-                <div style={{ fontSize:11, color:"#9ca3af", marginTop:2 }}>Linked to the manager check-in app — techs request a day off there and it shows up here. Click <em>Apply to grid</em> to mark those cells <strong>R</strong>.</div>
+                <div style={{ fontSize:11, color:"#9ca3af", marginTop:2 }}>Linked to the manager check-in app — incoming requests show up here as <strong>Pending</strong> first; nothing touches the grid until you click <em>Apply to grid</em> (or set a cell to <strong>R</strong> manually).</div>
               </div>
               <div style={{ display:"flex", gap:8 }}>
                 {cycleReqs.length > 0 && (
@@ -3110,28 +3110,81 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
                 </button>
               </div>
             </div>
-            {cycleReqs.length > 0 && (
-              <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
-                {cycleReqs.map(r => {
-                  const tx = techs.find(t => t.ec === r.ec);
-                  const nm = (tx && tx.name) || r.name || r.ec;
-                  const dt = new Date(r.date + "T00:00:00");
-                  const dayNum = parseInt(r.date.slice(8, 10), 10);
-                  const cellVal = (grid[r.ec] || {})[dayNum];
-                  const onGrid = cellVal === "R" || cellVal === "O";
-                  return (
-                    <div key={r.id} style={{ display:"inline-flex", alignItems:"center", gap:8, background: onGrid ? "#fee2e2" : "#FCE7F3", border:"1px solid " + (onGrid ? "#fca5a5" : "#FBCFE8"), borderRadius:20, padding:"5px 12px", fontSize:11 }}>
-                      <span style={{ fontWeight:700, color:"#831843" }}>{nm}</span>
-                      <span style={{ color:"#831843" }}>· {r.date} ({dowAbbrLocal[dt.getDay()]})</span>
-                      {onGrid && <span style={{ fontSize:10, fontWeight:700, color:"#7f1d1d", letterSpacing:"0.04em" }}>· on grid</span>}
-                      {r.note && <span style={{ color:"#9ca3af", fontStyle:"italic" }}>· "{r.note}"</span>}
-                      <button onClick={() => removeReq(r.id)} title="Remove this request"
-                        style={{ background:"transparent", border:"none", color:"#9F1A4F", cursor:"pointer", fontSize:14, fontWeight:700, lineHeight:1, padding:"0 4px" }}>×</button>
+            {cycleReqs.length > 0 && (() => {
+              // Friendly label for the source field. Requests submitted from the
+              // check-in app's manager dashboard typically set source: "checkin_app";
+              // requests added in this portal use source: "portal".
+              const sourceLabel = (s) => {
+                const k = (s || "").toString().toLowerCase();
+                if (k === "portal" || k === "hr_portal" || k === "hr-portal") return "HR portal";
+                if (k === "checkin_app" || k === "check_in_app" || k === "checkin" || k === "check-in" ||
+                    k === "manager_app" || k === "manager-app" || k === "manager") return "check-in app";
+                if (!k) return null;
+                return s; // unknown — surface the raw string so we can spot bad data
+              };
+              // Decorate + split into pending vs honoured.
+              const decorated = cycleReqs.map(r => {
+                const tx = techs.find(t => t.ec === r.ec);
+                const dt = new Date(r.date + "T00:00:00");
+                const dayNum = parseInt(r.date.slice(8, 10), 10);
+                const cellVal = (grid[r.ec] || {})[dayNum];
+                const onGrid = cellVal === "R" || cellVal === "O";
+                return {
+                  r,
+                  nm: (tx && tx.name) || r.name || r.ec,
+                  dt,
+                  dayNum,
+                  onGrid,
+                  src: sourceLabel(r.source),
+                  addedAt: r.addedAt ? new Date(r.addedAt) : null
+                };
+              }).sort((a, b) => a.r.date.localeCompare(b.r.date));
+              const pending  = decorated.filter(d => !d.onGrid);
+              const honoured = decorated.filter(d =>  d.onGrid);
+              const pillBase = (onGrid) => ({
+                display:"inline-flex", alignItems:"center", gap:8,
+                background: onGrid ? "#fee2e2" : "#FCE7F3",
+                border:"1px solid " + (onGrid ? "#fca5a5" : "#FBCFE8"),
+                borderRadius:20, padding:"5px 12px", fontSize:11
+              });
+              const renderPill = (d) => (
+                <div key={d.r.id} style={pillBase(d.onGrid)} title={d.addedAt ? "Added " + d.addedAt.toLocaleString("en-ZA") : ""}>
+                  <span style={{ fontWeight:700, color:"#831843" }}>{d.nm}</span>
+                  <span style={{ color:"#831843" }}>· {d.r.date} ({dowAbbrLocal[d.dt.getDay()]})</span>
+                  {d.onGrid && <span style={{ fontSize:10, fontWeight:700, color:"#7f1d1d", letterSpacing:"0.04em" }}>· on grid</span>}
+                  {d.src && (
+                    <span style={{ fontSize:10, fontWeight:700, color:"#0369a1", background:"#e0f2fe", border:"1px solid #bae6fd", borderRadius:5, padding:"0 5px", letterSpacing:"0.02em" }}>from {d.src}</span>
+                  )}
+                  {d.r.note && <span style={{ color:"#9ca3af", fontStyle:"italic" }}>· "{d.r.note}"</span>}
+                  <button onClick={() => removeReq(d.r.id)} title="Remove this request"
+                    style={{ background:"transparent", border:"none", color:"#9F1A4F", cursor:"pointer", fontSize:14, fontWeight:700, lineHeight:1, padding:"0 4px" }}>×</button>
+                </div>
+              );
+              return (
+                <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                  {pending.length > 0 && (
+                    <div>
+                      <div style={{ fontSize:10, fontWeight:800, color:"#9F1A4F", letterSpacing:"0.18em", textTransform:"uppercase", marginBottom:6 }}>
+                        Pending — not yet on grid ({pending.length})
+                      </div>
+                      <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                        {pending.map(renderPill)}
+                      </div>
                     </div>
-                  );
-                })}
-              </div>
-            )}
+                  )}
+                  {honoured.length > 0 && (
+                    <div>
+                      <div style={{ fontSize:10, fontWeight:800, color:"#7f1d1d", letterSpacing:"0.18em", textTransform:"uppercase", marginBottom:6 }}>
+                        Already on grid ({honoured.length})
+                      </div>
+                      <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                        {honoured.map(renderPill)}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         );
       })()}
@@ -8228,7 +8281,7 @@ function App({ currentUser, onSignOut }) {
                 <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: currentRequests.length ? 10 : 0, gap:12, flexWrap:"wrap" }}>
                   <div>
                     <div style={{ fontSize:13, fontWeight:700, color:"#831843" }}>📝 Off-day requests for this cycle</div>
-                    <div style={{ fontSize:11, color:"#9ca3af", marginTop:2 }}>The generator counts requests as one of the 2 weekly offs and respects the 2-cap. Requests can override the guaranteed weekend pair.</div>
+                    <div style={{ fontSize:11, color:"#9ca3af", marginTop:2 }}>Requests submitted from the check-in app or here land as <strong>Pending</strong> first. The generator counts requests as one of the 2 weekly offs (respecting the 2-cap) and they can override the guaranteed weekend pair.</div>
                   </div>
                   <button onClick={() => setMgrReqModal({ ec: (sortedMgrs[0] && sortedMgrs[0].ec) || "", date: cycleStart, note: "" })}
                           disabled={sortedMgrs.length === 0}
@@ -8236,35 +8289,87 @@ function App({ currentUser, onSignOut }) {
                     + Request day off
                   </button>
                 </div>
-                {currentRequests.length > 0 && (
-                  <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
-                    {currentRequests.map(r => {
-                      const mg = result.managers.find(m => m.ec === r.ec);
-                      const nm = (mg && mg.name) || r.name || r.ec;
-                      const dt = new Date(r.date + "T00:00:00");
-                      const dowAbbr = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][dt.getDay()];
-                      return (
-                        <div key={r.id} style={{ display:"inline-flex", alignItems:"center", gap:8, background:"#FCE7F3", border:"1px solid #FBCFE8", borderRadius:20, padding:"5px 12px", fontSize:11 }}>
-                          <span style={{ fontWeight:700, color:"#831843" }}>{nm}</span>
-                          <span style={{ color:"#831843" }}>· {r.date} ({dowAbbr})</span>
-                          {r.note && <span style={{ color:"#9ca3af", fontStyle:"italic" }}>· "{r.note}"</span>}
-                          <button
-                            onClick={async () => {
-                              if (!window.confirm("Remove the off-day request for " + nm + " on " + r.date + "?")) return;
-                              try {
-                                const next = (mgrRequests || []).filter(x => x.id !== r.id);
-                                await window.BOA_DB.saveMgrRequests(next);
-                                setMgrRequests(next);
-                                setMgrReqTick(t => t + 1);
-                              } catch (e) { alert("Could not remove: " + (e.message || e)); }
-                            }}
-                            title="Remove this request"
-                            style={{ background:"transparent", border:"none", color:"#9F1A4F", cursor:"pointer", fontSize:14, fontWeight:700, lineHeight:1, padding:"0 4px" }}>×</button>
+                {currentRequests.length > 0 && (() => {
+                  const dowAbbrLocal = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+                  const sourceLabel = (s) => {
+                    const k = (s || "").toString().toLowerCase();
+                    if (k === "portal" || k === "hr_portal" || k === "hr-portal") return "HR portal";
+                    if (k === "checkin_app" || k === "check_in_app" || k === "checkin" || k === "check-in" ||
+                        k === "manager_app" || k === "manager-app" || k === "manager") return "check-in app";
+                    if (!k) return null;
+                    return s;
+                  };
+                  const removeReq = async (r) => {
+                    const mg = result.managers.find(m => m.ec === r.ec);
+                    const nm = (mg && mg.name) || r.name || r.ec;
+                    if (!window.confirm("Remove the off-day request for " + nm + " on " + r.date + "?")) return;
+                    try {
+                      const next = (mgrRequests || []).filter(x => x.id !== r.id);
+                      await window.BOA_DB.saveMgrRequests(next);
+                      setMgrRequests(next);
+                      setMgrReqTick(t => t + 1);
+                    } catch (e) { alert("Could not remove: " + (e.message || e)); }
+                  };
+                  const decorated = currentRequests.map(r => {
+                    const mg = result.managers.find(m => m.ec === r.ec);
+                    const dt = new Date(r.date + "T00:00:00");
+                    // mgrSched grid uses YYYY-MM-DD string keys (per mgrSched line 141).
+                    const cellVal = (result.grid[r.ec] && result.grid[r.ec][r.date]) || "";
+                    const onGrid = cellVal === "R" || cellVal === "O";
+                    return {
+                      r, dt,
+                      nm: (mg && mg.name) || r.name || r.ec,
+                      onGrid,
+                      src: sourceLabel(r.source),
+                      addedAt: r.addedAt ? new Date(r.addedAt) : null
+                    };
+                  }).sort((a, b) => a.r.date.localeCompare(b.r.date));
+                  const pending  = decorated.filter(d => !d.onGrid);
+                  const honoured = decorated.filter(d =>  d.onGrid);
+                  const pillBase = (onGrid) => ({
+                    display:"inline-flex", alignItems:"center", gap:8,
+                    background: onGrid ? "#fee2e2" : "#FCE7F3",
+                    border:"1px solid " + (onGrid ? "#fca5a5" : "#FBCFE8"),
+                    borderRadius:20, padding:"5px 12px", fontSize:11
+                  });
+                  const renderPill = (d) => (
+                    <div key={d.r.id} style={pillBase(d.onGrid)} title={d.addedAt ? "Added " + d.addedAt.toLocaleString("en-ZA") : ""}>
+                      <span style={{ fontWeight:700, color:"#831843" }}>{d.nm}</span>
+                      <span style={{ color:"#831843" }}>· {d.r.date} ({dowAbbrLocal[d.dt.getDay()]})</span>
+                      {d.onGrid && <span style={{ fontSize:10, fontWeight:700, color:"#7f1d1d", letterSpacing:"0.04em" }}>· on grid</span>}
+                      {d.src && (
+                        <span style={{ fontSize:10, fontWeight:700, color:"#0369a1", background:"#e0f2fe", border:"1px solid #bae6fd", borderRadius:5, padding:"0 5px", letterSpacing:"0.02em" }}>from {d.src}</span>
+                      )}
+                      {d.r.note && <span style={{ color:"#9ca3af", fontStyle:"italic" }}>· "{d.r.note}"</span>}
+                      <button onClick={() => removeReq(d.r)} title="Remove this request"
+                        style={{ background:"transparent", border:"none", color:"#9F1A4F", cursor:"pointer", fontSize:14, fontWeight:700, lineHeight:1, padding:"0 4px" }}>×</button>
+                    </div>
+                  );
+                  return (
+                    <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                      {pending.length > 0 && (
+                        <div>
+                          <div style={{ fontSize:10, fontWeight:800, color:"#9F1A4F", letterSpacing:"0.18em", textTransform:"uppercase", marginBottom:6 }}>
+                            Pending — not yet on grid ({pending.length})
+                          </div>
+                          <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                            {pending.map(renderPill)}
+                          </div>
                         </div>
-                      );
-                    })}
-                  </div>
-                )}
+                      )}
+                      {honoured.length > 0 && (
+                        <div>
+                          <div style={{ fontSize:10, fontWeight:800, color:"#7f1d1d", letterSpacing:"0.18em", textTransform:"uppercase", marginBottom:6 }}>
+                            Already on grid ({honoured.length})
+                          </div>
+                          <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                            {honoured.map(renderPill)}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Empty state — no draft yet */}
