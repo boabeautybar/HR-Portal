@@ -63,6 +63,137 @@ function ecSort(a, b) {
   return an - bn;
 }
 
+// ─── SCHEDULE EXPORT HELPERS (CSV / PDF) ─────────────────────────────────────
+// Shared by the tech and manager schedule editors. Both editors hold their
+// data as { ec → { dayKey → cellCode } } so a single set of helpers covers
+// them — the caller passes columns (date headers) and rows (staff + values).
+//
+// CSV: a flat grid where each row is one staff member, columns are days.
+//      A "WORKING TOTAL" row is appended so the spreadsheet shows coverage.
+// PDF: opens a print-styled window with a colour-coded HTML table — the
+//      user picks "Save as PDF" in their browser's print dialog. No extra
+//      runtime dependency required.
+function _csvEscape(v) {
+  const s = (v == null) ? "" : String(v);
+  if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+  return s;
+}
+function _safeFile(s) { return String(s || "").replace(/[^A-Za-z0-9._-]+/g, "_"); }
+function _triggerDownload(filename, content, mime) {
+  const blob = new Blob([content], { type: (mime || "text/plain") + ";charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+// opts: { title, subtitle, columns:[{key, label, sub}], rows:[{label, sub, cells:{[key]:{code,text}}}],
+//         legend:[{code,label}], totals:[{key,value}], filenameBase, codeStyles:{[code]:{bg,fg}} }
+function exportScheduleCsv(opts) {
+  const { title, subtitle, columns, rows, totals, filenameBase } = opts;
+  const lines = [];
+  if (title)    lines.push(_csvEscape(title));
+  if (subtitle) lines.push(_csvEscape(subtitle));
+  if (title || subtitle) lines.push("");
+  const head = ["EC", "Name", "Role / Status"].concat(columns.map(c => c.label + (c.sub ? " (" + c.sub + ")" : "")));
+  lines.push(head.map(_csvEscape).join(","));
+  rows.forEach(r => {
+    const cells = columns.map(c => {
+      const v = r.cells && r.cells[c.key];
+      return (v && (v.text || v.code)) || "";
+    });
+    lines.push([r.ec || "", r.name || "", r.sub || ""].concat(cells).map(_csvEscape).join(","));
+  });
+  if (totals && totals.length) {
+    lines.push("");
+    lines.push(["", "", "WORKING TOTAL"].concat(columns.map(c => {
+      const t = totals.find(t => t.key === c.key);
+      return t ? t.value : "";
+    })).map(_csvEscape).join(","));
+  }
+  lines.push("");
+  lines.push(_csvEscape("Generated " + new Date().toLocaleString("en-ZA")));
+  _triggerDownload(_safeFile(filenameBase) + ".csv", lines.join("\r\n"), "text/csv");
+}
+function exportSchedulePdf(opts) {
+  const { title, subtitle, columns, rows, totals, legend, codeStyles, filenameBase } = opts;
+  const styles = codeStyles || {};
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, ch => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[ch]));
+  const colHead = columns.map(c =>
+    '<th><div class="d">' + esc(c.label) + '</div>' + (c.sub ? '<div class="s">' + esc(c.sub) + '</div>' : '') + '</th>'
+  ).join("");
+  const bodyRows = rows.map(r => {
+    const tds = columns.map(c => {
+      const v = (r.cells && r.cells[c.key]) || {};
+      const code = v.code || "";
+      const txt = v.text != null ? v.text : code;
+      const st = styles[code] || {};
+      const style = st.bg || st.fg
+        ? ' style="background:' + (st.bg || "#fff") + ';color:' + (st.fg || "#111") + '"'
+        : '';
+      return '<td' + style + '>' + esc(txt) + '</td>';
+    }).join("");
+    return '<tr><td class="lbl"><div class="n">' + esc(r.name || r.ec || "") + '</div>'
+      + (r.ec ? '<div class="ec">' + esc(r.ec) + '</div>' : '')
+      + (r.sub ? '<div class="sub">' + esc(r.sub) + '</div>' : '')
+      + '</td>' + tds + '</tr>';
+  }).join("");
+  const totalRow = (totals && totals.length)
+    ? '<tr class="tot"><td class="lbl">WORKING TOTAL</td>' + columns.map(c => {
+        const t = totals.find(t => t.key === c.key);
+        return '<td>' + esc(t ? t.value : "") + '</td>';
+      }).join("") + '</tr>'
+    : '';
+  const legendHtml = (legend && legend.length)
+    ? '<div class="legend">' + legend.map(l => {
+        const st = styles[l.code] || {};
+        return '<span class="lg"><i style="background:' + (st.bg || "#eee") + ';color:' + (st.fg || "#111") + '">'
+          + esc(l.text || l.code) + '</i> ' + esc(l.label) + '</span>';
+      }).join("") + '</div>'
+    : '';
+  const html = '<!doctype html><html><head><meta charset="utf-8"><title>' + esc(title || "Schedule") + '</title>'
+    + '<style>'
+    + '@page{size:A4 landscape;margin:10mm}'
+    + 'body{font-family:"DM Sans",system-ui,sans-serif;color:#111;margin:0;padding:14px}'
+    + 'h1{font-family:"Playfair Display",serif;font-size:20px;color:#831843;margin:0 0 4px}'
+    + '.sub{color:#9F1A4F;font-size:12px;margin-bottom:10px}'
+    + '.legend{margin:8px 0 12px;font-size:10px;color:#374151}'
+    + '.legend .lg{display:inline-block;margin-right:10px}'
+    + '.legend i{display:inline-block;font-style:normal;font-weight:700;padding:1px 6px;border-radius:3px;margin-right:3px;font-size:10px}'
+    + 'table{border-collapse:collapse;width:100%;font-size:10px;table-layout:fixed}'
+    + 'th,td{border:1px solid #FBCFE8;padding:3px 4px;text-align:center;vertical-align:middle;word-break:break-word}'
+    + 'th{background:#FCE7F3;color:#831843}'
+    + 'th .d{font-weight:700;font-size:11px}th .s{font-size:8px;font-weight:500;color:#BE185D}'
+    + 'td.lbl{text-align:left;font-size:10px;background:#fff}'
+    + 'td.lbl .n{font-weight:700;color:#831843}'
+    + 'td.lbl .ec{font-size:9px;color:#BE185D}'
+    + 'td.lbl .sub{font-size:9px;color:#9ca3af;margin-bottom:0}'
+    + 'tr.tot td{background:#FDEEF5;color:#831843;font-weight:700}'
+    + '.foot{margin-top:8px;font-size:9px;color:#9ca3af}'
+    + '@media print{button{display:none}}'
+    + '.bar{display:flex;gap:8px;margin-bottom:10px}'
+    + 'button{padding:6px 14px;background:#BE185D;color:#fff;border:none;border-radius:6px;font-size:12px;cursor:pointer;font-family:inherit}'
+    + 'button.sec{background:#fff;color:#831843;border:1px solid #FBCFE8}'
+    + '</style></head><body>'
+    + '<div class="bar"><button onclick="window.print()">🖨 Save as PDF / Print</button>'
+    + '<button class="sec" onclick="window.close()">Close</button></div>'
+    + '<h1>' + esc(title || "Schedule") + '</h1>'
+    + (subtitle ? '<div class="sub">' + esc(subtitle) + '</div>' : '')
+    + legendHtml
+    + '<table><thead><tr><th style="width:140px;text-align:left">Staff</th>' + colHead + '</tr></thead>'
+    + '<tbody>' + bodyRows + '</tbody>'
+    + (totalRow ? '<tfoot>' + totalRow + '</tfoot>' : '')
+    + '</table>'
+    + '<div class="foot">' + esc(filenameBase || "") + ' · generated ' + esc(new Date().toLocaleString("en-ZA")) + '</div>'
+    + '<script>setTimeout(function(){window.focus();}, 100);<\/script>'
+    + '</body></html>';
+  const w = window.open("", "_blank");
+  if (!w) { alert("Pop-up blocked. Allow pop-ups for this site to download the PDF."); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+  try { w.document.title = (filenameBase || "schedule"); } catch (_) {}
+}
+
 // ─── SOUTH AFRICAN PUBLIC HOLIDAYS ──────────────────────────────────────────────
 // Per the Public Holidays Act, 1994. If a holiday falls on a Sunday, the
 // following Monday is also a public holiday ("observed").
@@ -2852,6 +2983,85 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
       "Review the grid + summary table below, then click Save."
     );
   }
+  // Build the column / row payload shared by the CSV and PDF exports.
+  function buildExportPayload() {
+    const monthAbbr = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const dowAbbr   = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+    const cellInfo = {
+      W:  { text:"W",   bg:"#dcfce7", fg:"#14532d" },
+      WL: { text:"WL",  bg:"#86efac", fg:"#14532d" },
+      O:  { text:"OFF", bg:"#fee2e2", fg:"#991b1b" },
+      R:  { text:"REQ", bg:"#fca5a5", fg:"#7f1d1d" },
+      L:  { text:"LV",  bg:"#cbd5e1", fg:"#475569" },
+      E:  { text:"EXT", bg:"#6ee7b7", fg:"#064e3b" },
+      X:  { text:"—",   bg:"#f3f4f6", fg:"#9ca3af" }
+    };
+    const columns = days.map(d => ({
+      key: d.year + "-" + String(d.monthIdx+1).padStart(2,"0") + "-" + String(d.d).padStart(2,"0"),
+      label: d.d + " " + monthAbbr[d.monthIdx],
+      sub: dowAbbr[d.dow],
+      day: d.d
+    }));
+    const rows = techs.map(t => {
+      const cells = {};
+      const row = grid[t.ec] || {};
+      columns.forEach(c => {
+        const code = row[c.day] || "";
+        const info = cellInfo[code];
+        cells[c.key] = { code, text: info ? info.text : "" };
+      });
+      return {
+        ec: t.ec,
+        name: t.name,
+        sub: t.onMat ? "On maternity leave" : "Nail tech",
+        cells
+      };
+    });
+    const totals = columns.map(c => {
+      let w = 0;
+      techs.forEach(t => {
+        const v = (grid[t.ec] || {})[c.day];
+        if (v === "W" || v === "WL" || v === "E") w++;
+      });
+      return { key: c.key, value: w };
+    });
+    const codeStyles = {};
+    Object.keys(cellInfo).forEach(k => { codeStyles[k] = { bg: cellInfo[k].bg, fg: cellInfo[k].fg }; });
+    const legend = [
+      { code:"W",  text:"W",   label:"Working" },
+      { code:"WL", text:"WL",  label:"Working late" },
+      { code:"O",  text:"OFF", label:"Off" },
+      { code:"R",  text:"REQ", label:"Requested off" },
+      { code:"L",  text:"LV",  label:"Leave" },
+      { code:"E",  text:"EXT", label:"Extra off" },
+      { code:"X",  text:"—",   label:"Not scheduled" }
+    ];
+    return {
+      title: "BOA Nail Tech Schedule — " + branch,
+      subtitle: periodLbl + (savedAt ? " · saved " + new Date(savedAt).toLocaleString("en-ZA") : ""),
+      filenameBase: "BOA_tech_schedule_" + branch + "_" + ym,
+      columns, rows, totals, legend, codeStyles
+    };
+  }
+  function downloadCsv() {
+    if (dirty) {
+      if (!confirm("You have unsaved changes — they won't appear in the saved version. Download the current view anyway?")) return;
+    } else if (!savedAt && Object.keys(grid).length === 0) {
+      alert("Nothing to download — generate or save a schedule first.");
+      return;
+    }
+    exportScheduleCsv(buildExportPayload());
+  }
+  function downloadPdf() {
+    if (dirty) {
+      if (!confirm("You have unsaved changes — they won't appear in the saved version. Download the current view anyway?")) return;
+    } else if (!savedAt && Object.keys(grid).length === 0) {
+      alert("Nothing to download — generate or save a schedule first.");
+      return;
+    }
+    exportSchedulePdf(buildExportPayload());
+  }
+
   async function save() {
     // Strengthened overwrite confirmation. If a saved schedule already
     // exists, surface its last-saved time and remind the manager that the
@@ -3081,6 +3291,16 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
         {dirty && <span style={{ fontSize:11, color:"#b45309", fontWeight:600 }}>● Unsaved changes</span>}
         <button onClick={autoFill} style={{ padding:"8px 14px", borderRadius:9, border:"1px solid #BE185D", background:"#FCE7F3", color:"#831843", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>✨ Auto-fill</button>
         <button onClick={openHistory} style={{ padding:"8px 14px", borderRadius:9, border:"1px solid #FBCFE8", background:"#FFFFFF", color:"#BE185D", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:600 }}>🕒 History</button>
+        {(() => {
+          const canDownload = !!savedAt && !dirty && Object.keys(grid).length > 0;
+          const tip = canDownload ? "" : (dirty ? "Save the schedule first to download a clean copy" : "Nothing saved to download yet");
+          return (
+            <>
+              <button onClick={downloadCsv} disabled={!canDownload} title={tip || "Download CSV"} style={{ padding:"8px 12px", borderRadius:9, border:"1px solid #FBCFE8", background: canDownload ? "#FFFFFF" : "#F9FAFB", color: canDownload ? "#BE185D" : "#9CA3AF", cursor: canDownload ? "pointer" : "not-allowed", fontFamily:"inherit", fontSize:13, fontWeight:600 }}>⬇ CSV</button>
+              <button onClick={downloadPdf} disabled={!canDownload} title={tip || "Download PDF"} style={{ padding:"8px 12px", borderRadius:9, border:"1px solid #FBCFE8", background: canDownload ? "#FFFFFF" : "#F9FAFB", color: canDownload ? "#BE185D" : "#9CA3AF", cursor: canDownload ? "pointer" : "not-allowed", fontFamily:"inherit", fontSize:13, fontWeight:600 }}>⬇ PDF</button>
+            </>
+          );
+        })()}
         <button onClick={clearAll} style={{ padding:"8px 14px", borderRadius:9, border:"1px solid #FBCFE8", background:"#FFFFFF", color:"#BE185D", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:600 }}>Clear period</button>
         <button onClick={save} disabled={saving || !dirty} style={{ padding:"8px 18px", borderRadius:9, border:"none", background:dirty?"#BE185D":"#FBCFE8", color:dirty?"#fff":"#9F1A4F", cursor:dirty?"pointer":"not-allowed", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>{saving ? "Saving…" : "Save"}</button>
       </div>
@@ -8162,6 +8382,90 @@ function App({ currentUser, onSignOut }) {
             setMgrSchedHist(h => { const n = { ...h }; delete n[editKey]; return n; });
           };
 
+          // Build the export payload from the current draft (post-save the
+          // draft equals the saved version). Falls back to the saved version
+          // if the draft is empty (e.g. just-loaded existing schedule).
+          const buildMgrExportPayload = () => {
+            const moNamesL = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+            const dowsAbbrL = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+            const cellInfo = {
+              W: { text:"W",   bg:"#dcfce7", fg:"#15803d" },
+              O: { text:"OFF", bg:"#FCE7F3", fg:"#831843" },
+              L: { text:"LV",  bg:"#fde68a", fg:"#92400e" },
+              R: { text:"REQ", bg:"#fbcfe8", fg:"#831843" },
+              E: { text:"EXT", bg:"#6ee7b7", fg:"#064e3b" },
+              X: { text:"—",   bg:"#f3f4f6", fg:"#9ca3af" }
+            };
+            const sourceGrid = (mgrSchedDraft && Object.keys(mgrSchedDraft).length > 0)
+              ? mgrSchedDraft
+              : (mgrSchedSaved || {});
+            const columns = result.dates.map(dy => {
+              const dt = new Date(dy.d + "T00:00:00");
+              return {
+                key: dy.d,
+                label: dt.getDate() + " " + moNamesL[dt.getMonth()],
+                sub: dowsAbbrL[dy.dow]
+              };
+            });
+            const rows = sortedMgrs.map(mg => {
+              const cells = {};
+              const row = sourceGrid[mg.ec] || {};
+              columns.forEach(c => {
+                const code = row[c.key] || "";
+                const info = cellInfo[code];
+                cells[c.key] = { code, text: info ? info.text : "" };
+              });
+              const sub = mg._offGhost
+                ? "Left " + mg._offLeftDate + (mg._offReason ? " · " + mg._offReason : "")
+                : mg._obStarting
+                  ? "Starts " + mg._obStartDate
+                  : (mg.role === "SM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · 9:30–18:30");
+              return { ec: mg.ec, name: mg.name, sub, cells };
+            });
+            const totals = columns.map(c => {
+              let w = 0;
+              sortedMgrs.forEach(mg => {
+                const v = (sourceGrid[mg.ec] || {})[c.key];
+                if (v === "W" || v === "E") w++;
+              });
+              return { key: c.key, value: w };
+            });
+            const codeStyles = {};
+            Object.keys(cellInfo).forEach(k => { codeStyles[k] = { bg: cellInfo[k].bg, fg: cellInfo[k].fg }; });
+            const legend = [
+              { code:"W", text:"W",   label:"Working" },
+              { code:"O", text:"OFF", label:"Off" },
+              { code:"L", text:"LV",  label:"Leave" },
+              { code:"R", text:"REQ", label:"Requested off" },
+              { code:"E", text:"EXT", label:"Extra off" },
+              { code:"X", text:"—",   label:"Not scheduled" }
+            ];
+            return {
+              title: "BOA Manager Schedule — " + branch,
+              subtitle: cycleLabel + (mgrSchedSavedAt ? " · saved " + new Date(mgrSchedSavedAt).toLocaleString("en-ZA") : ""),
+              filenameBase: "BOA_manager_schedule_" + branch + "_" + ymKey,
+              columns, rows, totals, legend, codeStyles
+            };
+          };
+          const downloadMgrCsv = () => {
+            if (mgrSchedDirty) {
+              if (!window.confirm("You have unsaved changes — they won't appear in the saved version. Download the current view anyway?")) return;
+            } else if (!mgrSchedSaved) {
+              alert("Nothing to download — generate and save a schedule first.");
+              return;
+            }
+            exportScheduleCsv(buildMgrExportPayload());
+          };
+          const downloadMgrPdf = () => {
+            if (mgrSchedDirty) {
+              if (!window.confirm("You have unsaved changes — they won't appear in the saved version. Download the current view anyway?")) return;
+            } else if (!mgrSchedSaved) {
+              alert("Nothing to download — generate and save a schedule first.");
+              return;
+            }
+            exportSchedulePdf(buildMgrExportPayload());
+          };
+
           // Save the current draft to the DB.
           const saveDraft = async () => {
             if (!mgrSchedDraft) { alert("Nothing to save — click Generate first."); return; }
@@ -8243,6 +8547,24 @@ function App({ currentUser, onSignOut }) {
                         style={{ padding:"7px 16px", background: mgrSchedDirty ? "#BE185D" : "#FBCFE8", color: mgrSchedDirty ? "#fff" : "#9F1A4F", border:"none", borderRadius:8, cursor: mgrSchedDirty ? "pointer" : "not-allowed", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
                   {mgrSchedSaving ? "Saving…" : "💾 Save"}
                 </button>
+                {(() => {
+                  const canDownload = !!mgrSchedSaved && !mgrSchedDirty;
+                  const tip = canDownload ? "" : (mgrSchedDirty ? "Save the schedule first to download a clean copy" : "Nothing saved to download yet");
+                  return (
+                    <>
+                      <button onClick={downloadMgrCsv} disabled={!canDownload}
+                              title={tip || "Download CSV"}
+                              style={{ padding:"7px 12px", background: canDownload ? "#fff" : "#F9FAFB", color: canDownload ? "#831843" : "#9CA3AF", border:"1px solid #FBCFE8", borderRadius:8, cursor: canDownload ? "pointer" : "not-allowed", fontFamily:"inherit", fontSize:12, fontWeight:600 }}>
+                        ⬇ CSV
+                      </button>
+                      <button onClick={downloadMgrPdf} disabled={!canDownload}
+                              title={tip || "Download PDF"}
+                              style={{ padding:"7px 12px", background: canDownload ? "#fff" : "#F9FAFB", color: canDownload ? "#831843" : "#9CA3AF", border:"1px solid #FBCFE8", borderRadius:8, cursor: canDownload ? "pointer" : "not-allowed", fontFamily:"inherit", fontSize:12, fontWeight:600 }}>
+                        ⬇ PDF
+                      </button>
+                    </>
+                  );
+                })()}
                 {mgrSchedDirty && (
                   <button onClick={discardEdits} title="Revert to last saved version"
                           style={{ padding:"7px 12px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:600 }}>
