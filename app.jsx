@@ -2080,7 +2080,7 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
 }
 
 // ─── SCHEDULE EDITOR (Phase 2a — manual editing, save to Supabase) ──────────────
-function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
+function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
   const [branch, setBranch] = useState(SALONS[0].name);
   const [ym, setYm] = useState(window.BOA_DB ? window.BOA_DB.currentSchedYm() : "2026-05");
   const [grid, setGrid] = useState({});
@@ -2172,6 +2172,43 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
     // the effect re-runs when techRequests/branch/ym/loading change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [techRequests, branch, ym, loading]);
+
+  // Auto-stamp 'L' on cells that fall within an approved leave record. Runs
+  // after each schedule load and whenever the leave list changes (e.g. the
+  // user just added a new leave row in the Leave Planner). Leave overrides
+  // W / WL / O / R cells because the tech is genuinely off; X (ghost cells
+  // for staff who haven't started or have left) is preserved. Existing L
+  // cells stay L. The schedule is marked dirty so the user knows to Save.
+  useEffect(() => {
+    if (loading) return;
+    if (!leaveRecs || leaveRecs.length === 0) return;
+    if (!days || days.length === 0) return;
+    const branchEcs = new Set(allStaff.filter(s => s.branch === branch).map(s => s.ec));
+    let changed = false;
+    const next = JSON.parse(JSON.stringify(grid || {}));
+    for (const lv of leaveRecs) {
+      if (!lv || !lv.ec || !lv.startDate || !lv.endDate) continue;
+      if (!branchEcs.has(lv.ec)) continue;
+      const sd = new Date(lv.startDate + "T00:00:00");
+      const ed = new Date(lv.endDate   + "T00:00:00");
+      if (isNaN(sd.getTime()) || isNaN(ed.getTime())) continue;
+      for (const d of days) {
+        const dt = new Date(d.year, d.monthIdx, d.d);
+        if (dt < sd || dt > ed) continue;
+        if (!next[lv.ec]) next[lv.ec] = {};
+        const cur = next[lv.ec][d.d];
+        if (cur === "X") continue;                  // preserve ghost cells
+        if (cur === "L") continue;                  // already on leave
+        next[lv.ec][d.d] = "L";
+        changed = true;
+      }
+    }
+    if (changed) {
+      setGrid(next);
+      setDirty(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leaveRecs, branch, ym, loading, allStaff]);
   const periodLbl = window.BOA_DB ? window.BOA_DB.periodLabel(ym) : "";
 
   // All scheduled staff at this branch — actively-working first (sorted by EC),
@@ -6802,6 +6839,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             allStaff={enriched}
             techRequests={techRequests}
             onTechRequestsChange={(next) => { setTechRequests(next); setTechRequestsTick(t => t + 1); }}
+            leaveRecs={leaveRecs}
           />
         )}
 
