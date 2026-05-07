@@ -6110,6 +6110,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         pregnant:   pregnantEcs.has(s.ec.trim()),  // still in store
         offboarded: !!off,                         // on the off-boarding list — vacancy now open
         offRec:     off || null,
+        // Off-boarding records live in `offList`, not on the staff
+        // record itself. Propagate the leftDate up to the top level so
+        // every consumer (Schedule grid, leave list, exports, etc.) can
+        // read `s.leftDate` directly without having to know whether the
+        // departure was set via the staff modal (writes s.leftDate) or
+        // via the Off-boarding tab (writes offList → s.offRec.leftDate).
+        leftDate:   s.leftDate || (off && off.leftDate) || null,
         offDaysSinceLeft,                          // -ve / 0 / +ve days since leftDate
         offHidden,                                 // true when past 31-day display window
         matRec:     matRecs.find(r=>r.ec.trim()===s.ec.trim()),
