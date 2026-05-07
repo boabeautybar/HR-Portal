@@ -4524,28 +4524,47 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
                       const weekEnd = d.dow === 0;
                       const requested = requestedSet.has(s.ec + "|" + d.d);
                       const requestUnapplied = requested && v !== "R" && v !== "O";
+                      // Off-boarding: cells AFTER leftDate render flat grey
+                      // and locked, regardless of whatever value is sitting
+                      // in the saved grid. This way the moment leftDate is
+                      // set, the post-departure days visibly disappear from
+                      // the schedule without waiting for an auto-fill or
+                      // sync pass to stamp X.
+                      const dYmd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
+                      const isPastLeft = isLeaving && dYmd > s.leftDate;
+                      const cellLocked = onMat || isPastLeft;
                       // On-mat cells: flat grey, non-clickable, non-draggable.
-                      const matCell = onMat ? { background:"#e5e7eb", color:"#9ca3af" } : cellStyle(v);
+                      // Past-leftDate cells: same greyed treatment.
+                      const matCell = onMat
+                        ? { background:"#e5e7eb", color:"#9ca3af" }
+                        : isPastLeft
+                          ? { background:"#e5e7eb", color:"#9ca3af" }
+                          : cellStyle(v);
                       // Drag-drop visual states
                       const isSrc        = dragSource && dragSource.ec === s.ec && dragSource.day === d.d;
-                      const isValidDrop  = !onMat && isValidDropTarget(s.ec, d.d);
+                      const isValidDrop  = !cellLocked && isValidDropTarget(s.ec, d.d);
                       const dropOutline  = isValidDrop ? "2px solid #15803d"
                                           : isSrc      ? "2px dashed #BE185D"
                                           : d.isToday  ? "1px dashed rgba(190,24,93,0.45)"
                                           :              "none";
-                      const dragCursor   = onMat ? "default" : (v ? "grab" : "pointer");
+                      const dragCursor   = cellLocked ? "default" : (v ? "grab" : "pointer");
+                      const cellTitle    = onMat
+                        ? `${s.name} · on maternity leave`
+                        : isPastLeft
+                          ? `${s.name} · left ${s.leftDate} — no longer scheduled`
+                          : `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · click to cycle, drag to swap within the week${requested ? ' · 📝 day-off requested' + (requestUnapplied ? ' (not yet on grid)' : '') : ''}`;
                       return (
                         <td key={s.ec+'-'+d.d}
-                            draggable={!onMat && !!v}
-                            onDragStart={e => handleDragStart(e, s.ec, d.d, v, onMat)}
+                            draggable={!cellLocked && !!v}
+                            onDragStart={e => handleDragStart(e, s.ec, d.d, v, cellLocked)}
                             onDragOver={e => handleDragOver(e, s.ec, d.d)}
                             onDrop={e => handleDrop(e, s.ec, d.d)}
                             onDragEnd={handleDragEnd}
-                            onClick={onMat ? undefined : () => cycleCell(s.ec, d.d)}
-                            title={onMat ? `${s.name} · on maternity leave` : `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · click to cycle, drag to swap within the week${requested ? ' · 📝 day-off requested' + (requestUnapplied ? ' (not yet on grid)' : '') : ''}`}
+                            onClick={cellLocked ? undefined : () => cycleCell(s.ec, d.d)}
+                            title={cellTitle}
                             style={{ ...matCell, padding:0, height:30, textAlign:"center", borderBottom:"1px solid #FCE7F3", borderLeft:"1px solid #FCE7F3", borderRight: weekEnd ? "3px solid #BE185D" : "none", cursor: dragCursor, fontSize:11, fontWeight:700, userSelect:"none", outline: dropOutline, outlineOffset:-1, opacity: isSrc ? 0.4 : undefined, position:"relative" }}>
-                          {onMat ? "—" : v}
-                          {requestUnapplied && (
+                          {cellLocked ? "—" : v}
+                          {requestUnapplied && !cellLocked && (
                             <span style={{ position:"absolute", top:1, right:2, fontSize:8, lineHeight:1, color:"#BE185D", pointerEvents:"none" }}>📝</span>
                           )}
                         </td>
