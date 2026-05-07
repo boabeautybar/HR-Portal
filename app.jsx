@@ -117,73 +117,198 @@ function exportScheduleCsv(opts) {
   _triggerDownload(_safeFile(filenameBase) + ".csv", lines.join("\r\n"), "text/csv");
 }
 function exportSchedulePdf(opts) {
-  const { title, subtitle, columns, rows, totals, legend, codeStyles, filenameBase } = opts;
-  const styles = codeStyles || {};
+  const { title, subtitle, columns, rows, totals, legend, filenameBase } = opts;
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, ch => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[ch]));
-  const colHead = columns.map(c =>
-    '<th><div class="d">' + esc(c.label) + '</div>' + (c.sub ? '<div class="s">' + esc(c.sub) + '</div>' : '') + '</th>'
-  ).join("");
+  const dowsAbbr = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  const moNames  = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+  // ── Group columns into Mon-Sun chunks ──────────────────────────────────
+  // The first chunk may be partial (cycle starts mid-week). A new chunk
+  // begins on every Monday. Each chunk renders a header banner with the
+  // week label and date range, plus a thick coloured separator before it.
+  const weeks = [];
+  let cur = [];
+  columns.forEach(c => {
+    if (cur.length && c.dow === 1) { weeks.push(cur); cur = []; }
+    cur.push(c);
+  });
+  if (cur.length) weeks.push(cur);
+
+  const fmtDate = (c) => {
+    if (!c) return "";
+    if (c.year != null && c.monthIdx != null && c.day != null) {
+      return c.day + " " + moNames[c.monthIdx];
+    }
+    // c.key is YYYY-MM-DD when supplied that way
+    if (c.key && /^\d{4}-\d{2}-\d{2}$/.test(c.key)) {
+      const dt = new Date(c.key + "T00:00:00");
+      return dt.getDate() + " " + moNames[dt.getMonth()];
+    }
+    return c.label || "";
+  };
+
+  // Week banner row — colspans across the days in each chunk
+  const weekBannerCells = weeks.map((wk, idx) => {
+    const first = wk[0], last = wk[wk.length-1];
+    const partial = wk.length < 7 ? " · partial" : "";
+    const wkOff = wk.filter(c => c.dow === 0 || c.dow === 6).length;
+    const banner = "Week " + (idx + 1) + " — " + fmtDate(first) + " → " + fmtDate(last)
+      + " · " + wk.length + " day" + (wk.length === 1 ? "" : "s") + partial;
+    return '<th class="wkbn" colspan="' + wk.length + '">' + esc(banner) + '</th>';
+  }).join("");
+
+  // Day header cells — Monday opens a thick left border (week separator);
+  // Sat/Sun get a tinted background and red accent on the day-of-week label.
+  const dayHeaderCells = [];
+  weeks.forEach((wk, wi) => {
+    wk.forEach((c, ci) => {
+      const isWeekStart = wi > 0 && ci === 0;
+      const wknd = c.dow === 0 || c.dow === 6;
+      const cls = "dh" + (isWeekStart ? " ws" : "") + (wknd ? " wd" : "");
+      const dowLabel = c.sub || (c.dow != null ? dowsAbbr[c.dow] : "");
+      dayHeaderCells.push(
+        '<th class="' + cls + '">' +
+          '<div class="d">' + esc(c.label) + '</div>' +
+          (dowLabel ? '<div class="s">' + esc(dowLabel) + '</div>' : '') +
+        '</th>'
+      );
+    });
+  });
+
+  // Body rows — same week-start markers + a `c-<code>` class so the CSS
+  // palette (vivid greens for working, vivid pinks/reds for off, ambers
+  // for leave) takes over per cell.
   const bodyRows = rows.map(r => {
-    const tds = columns.map(c => {
-      const v = (r.cells && r.cells[c.key]) || {};
-      const code = v.code || "";
-      const txt = v.text != null ? v.text : code;
-      const st = styles[code] || {};
-      const style = st.bg || st.fg
-        ? ' style="background:' + (st.bg || "#fff") + ';color:' + (st.fg || "#111") + '"'
-        : '';
-      return '<td' + style + '>' + esc(txt) + '</td>';
-    }).join("");
+    const tds = [];
+    weeks.forEach((wk, wi) => {
+      wk.forEach((c, ci) => {
+        const v = (r.cells && r.cells[c.key]) || {};
+        const code = v.code || "";
+        const txt = v.text != null ? v.text : code;
+        const isWeekStart = wi > 0 && ci === 0;
+        const wknd = c.dow === 0 || c.dow === 6;
+        const cls = "c c-" + (code || "blank")
+          + (isWeekStart ? " ws" : "")
+          + (wknd ? " wd" : "");
+        tds.push('<td class="' + cls + '">' + esc(txt) + '</td>');
+      });
+    });
     return '<tr><td class="lbl"><div class="n">' + esc(r.name || r.ec || "") + '</div>'
       + (r.ec ? '<div class="ec">' + esc(r.ec) + '</div>' : '')
-      + (r.sub ? '<div class="sub">' + esc(r.sub) + '</div>' : '')
-      + '</td>' + tds + '</tr>';
+      + (r.sub ? '<div class="rsub">' + esc(r.sub) + '</div>' : '')
+      + '</td>' + tds.join("") + '</tr>';
   }).join("");
-  const totalRow = (totals && totals.length)
-    ? '<tr class="tot"><td class="lbl">WORKING TOTAL</td>' + columns.map(c => {
+
+  // Working-total row — also marks week separators
+  let totalRow = "";
+  if (totals && totals.length) {
+    const totalTds = [];
+    weeks.forEach((wk, wi) => {
+      wk.forEach((c, ci) => {
         const t = totals.find(t => t.key === c.key);
-        return '<td>' + esc(t ? t.value : "") + '</td>';
-      }).join("") + '</tr>'
-    : '';
+        const isWeekStart = wi > 0 && ci === 0;
+        const wknd = c.dow === 0 || c.dow === 6;
+        const cls = "tot-c" + (isWeekStart ? " ws" : "") + (wknd ? " wd" : "");
+        totalTds.push('<td class="' + cls + '">' + esc(t ? t.value : "") + '</td>');
+      });
+    });
+    totalRow = '<tr class="tot"><td class="lbl">WORKING TOTAL</td>' + totalTds.join("") + '</tr>';
+  }
+
+  // Legend — uses the same `c-<code>` palette so legend swatches match cells.
   const legendHtml = (legend && legend.length)
-    ? '<div class="legend">' + legend.map(l => {
-        const st = styles[l.code] || {};
-        return '<span class="lg"><i style="background:' + (st.bg || "#eee") + ';color:' + (st.fg || "#111") + '">'
-          + esc(l.text || l.code) + '</i> ' + esc(l.label) + '</span>';
-      }).join("") + '</div>'
+    ? '<div class="legend">' + legend.map(l =>
+        '<span class="lg"><i class="c c-' + (l.code || "blank") + '">'
+        + esc(l.text || l.code || "") + '</i> ' + esc(l.label) + '</span>'
+      ).join("") + '</div>'
     : '';
+
+  const guideHtml =
+    '<div class="guide">' +
+      '<strong>📅 Reading the schedule:</strong> ' +
+      'each <span class="hl">vertical pink line</span> marks the start of a new <strong>Mon-Sun work week</strong>. ' +
+      'Weekend columns (Sat / Sun) have a soft pink tint and a red day-of-week label. ' +
+      'Working days are <span class="ck c-W">GREEN</span>, off-days are <span class="ck c-O">PINK</span>, ' +
+      'requested off-days are <span class="ck c-R">RED</span>, leave is <span class="ck c-L">AMBER</span>, ' +
+      'extra/manual offs are <span class="ck c-E">TEAL</span>.' +
+    '</div>';
+
   const html = '<!doctype html><html><head><meta charset="utf-8"><title>' + esc(title || "Schedule") + '</title>'
     + '<style>'
-    + '@page{size:A4 landscape;margin:10mm}'
-    + 'body{font-family:"DM Sans",system-ui,sans-serif;color:#111;margin:0;padding:14px}'
-    + 'h1{font-family:"Playfair Display",serif;font-size:20px;color:#831843;margin:0 0 4px}'
-    + '.sub{color:#9F1A4F;font-size:12px;margin-bottom:10px}'
-    + '.legend{margin:8px 0 12px;font-size:10px;color:#374151}'
-    + '.legend .lg{display:inline-block;margin-right:10px}'
-    + '.legend i{display:inline-block;font-style:normal;font-weight:700;padding:1px 6px;border-radius:3px;margin-right:3px;font-size:10px}'
+    // ── Print + base ──
+    + '@page{size:A4 landscape;margin:8mm}'
+    + 'html,body{margin:0;padding:0}'
+    + 'body{font-family:"DM Sans",system-ui,sans-serif;color:#111;padding:14px}'
+    + '*{-webkit-print-color-adjust:exact;print-color-adjust:exact;color-adjust:exact}'
+    + 'h1{font-family:"Playfair Display",serif;font-size:22px;color:#831843;margin:0 0 4px}'
+    + '.sub{color:#9F1A4F;font-size:12px;margin-bottom:8px;font-weight:600}'
+    // ── Reading guide banner ──
+    + '.guide{background:#FDF2F8;border:1px solid #FBCFE8;border-left:4px solid #BE185D;border-radius:6px;padding:8px 12px;margin:6px 0 10px;font-size:10px;color:#374151;line-height:1.55}'
+    + '.guide strong{color:#831843}'
+    + '.guide .hl{color:#BE185D;font-weight:700}'
+    + '.guide .ck{display:inline-block;padding:0 6px;border-radius:3px;font-weight:800;font-size:9px;letter-spacing:0.04em;margin:0 1px}'
+    // ── Legend ──
+    + '.legend{margin:6px 0 10px;font-size:10px;color:#374151;display:flex;flex-wrap:wrap;gap:10px 16px}'
+    + '.legend .lg{display:inline-flex;align-items:center;gap:6px}'
+    + '.legend .c{padding:2px 8px;border-radius:4px;font-style:normal;font-weight:800;font-size:10px;border:1px solid rgba(0,0,0,0.08)}'
+    // ── Table base ──
     + 'table{border-collapse:collapse;width:100%;font-size:10px;table-layout:fixed}'
-    + 'th,td{border:1px solid #FBCFE8;padding:3px 4px;text-align:center;vertical-align:middle;word-break:break-word}'
+    + 'th,td{border:1px solid #FBCFE8;padding:3px 2px;text-align:center;vertical-align:middle;word-break:break-word}'
     + 'th{background:#FCE7F3;color:#831843}'
-    + 'th .d{font-weight:700;font-size:11px}th .s{font-size:8px;font-weight:500;color:#BE185D}'
-    + 'td.lbl{text-align:left;font-size:10px;background:#fff}'
-    + 'td.lbl .n{font-weight:700;color:#831843}'
-    + 'td.lbl .ec{font-size:9px;color:#BE185D}'
-    + 'td.lbl .sub{font-size:9px;color:#9ca3af;margin-bottom:0}'
-    + 'tr.tot td{background:#FDEEF5;color:#831843;font-weight:700}'
+    // ── Week banner row ──
+    + 'th.wkbn{background:#BE185D;color:#fff;font-weight:800;font-size:11px;letter-spacing:0.04em;padding:6px 6px;border:1px solid #831843;border-bottom:2px solid #831843;text-transform:uppercase}'
+    + 'th.wkbn + th.wkbn{border-left:3px solid #FBCFE8}'
+    // ── Day header cells ──
+    + 'th.dh .d{font-weight:800;font-size:12px;color:#831843;line-height:1.1}'
+    + 'th.dh .s{font-size:9px;font-weight:700;color:#9F1A4F;letter-spacing:0.05em;text-transform:uppercase;margin-top:2px}'
+    + 'th.dh.wd{background:#FBCFE8}'
+    + 'th.dh.wd .s{color:#9F1A4F}'
+    // ── Week-start separator (thick pink line on Mondays after week 1) ──
+    + 'th.ws,td.ws{border-left:3px solid #BE185D !important}'
+    // ── Weekend column tint on body rows ──
+    + 'td.wd{background-color:rgba(251,207,232,0.18)}'
+    // ── Staff label column ──
+    + 'td.lbl{text-align:left;font-size:10px;background:#fff;padding:5px 7px}'
+    + 'td.lbl .n{font-weight:700;color:#831843;font-size:11px}'
+    + 'td.lbl .ec{font-size:9px;color:#BE185D;font-weight:600}'
+    + 'td.lbl .rsub{font-size:9px;color:#6b7280;font-style:italic;margin-top:1px}'
+    // ── Cell palette: vivid working / off / leave / etc. ──
+    + 'td.c{font-weight:800;font-size:11px;letter-spacing:0.02em}'
+    + 'td.c-W,.legend .c-W,.guide .c-W{background:#22c55e !important;color:#052e16 !important}'   // working — vivid green
+    + 'td.c-WL,.legend .c-WL,.guide .c-WL{background:#15803d !important;color:#f0fdf4 !important}'// working late — deeper green
+    + 'td.c-O,.legend .c-O,.guide .c-O{background:#fda4af !important;color:#7f1d1d !important}'  // off — soft pink
+    + 'td.c-R,.legend .c-R,.guide .c-R{background:#ef4444 !important;color:#fff !important}'      // requested off — vivid red
+    + 'td.c-L,.legend .c-L,.guide .c-L{background:#fbbf24 !important;color:#7c2d12 !important}'   // leave — amber
+    + 'td.c-E,.legend .c-E,.guide .c-E{background:#5eead4 !important;color:#022c22 !important}'   // extra — teal
+    + 'td.c-X,.legend .c-X,.guide .c-X{background:#f3f4f6 !important;color:#9ca3af !important}'   // ghost / not scheduled
+    + 'td.c-blank{background:#fafafa !important;color:#d1d5db !important}'
+    // Weekend tint should still be visible behind a working cell — soften by overlaying border
+    + 'td.c.wd{box-shadow:inset 0 0 0 999px rgba(0,0,0,0)}'
+    // ── Totals row ──
+    + 'tr.tot td{background:#FDF2F8;color:#831843;font-weight:800;font-size:11px;border-top:2px solid #BE185D}'
+    + 'tr.tot td.lbl{background:#FCE7F3;color:#831843;letter-spacing:0.04em}'
+    + 'tr.tot td.tot-c.ws{border-left:3px solid #BE185D !important}'
+    + 'tr.tot td.tot-c.wd{background:#FBCFE8}'
+    // ── UI chrome (hidden on print) ──
     + '.foot{margin-top:8px;font-size:9px;color:#9ca3af}'
-    + '@media print{button{display:none}}'
+    + '@media print{.bar{display:none}.guide{break-inside:avoid}}'
     + '.bar{display:flex;gap:8px;margin-bottom:10px}'
-    + 'button{padding:6px 14px;background:#BE185D;color:#fff;border:none;border-radius:6px;font-size:12px;cursor:pointer;font-family:inherit}'
-    + 'button.sec{background:#fff;color:#831843;border:1px solid #FBCFE8}'
+    + '.bar button{padding:8px 18px;background:#BE185D;color:#fff;border:none;border-radius:6px;font-size:13px;cursor:pointer;font-family:inherit;font-weight:700}'
+    + '.bar button.sec{background:#fff;color:#831843;border:1px solid #FBCFE8;font-weight:600}'
     + '</style></head><body>'
     + '<div class="bar"><button onclick="window.print()">🖨 Save as PDF / Print</button>'
     + '<button class="sec" onclick="window.close()">Close</button></div>'
     + '<h1>' + esc(title || "Schedule") + '</h1>'
     + (subtitle ? '<div class="sub">' + esc(subtitle) + '</div>' : '')
+    + guideHtml
     + legendHtml
-    + '<table><thead><tr><th style="width:140px;text-align:left">Staff</th>' + colHead + '</tr></thead>'
-    + '<tbody>' + bodyRows + '</tbody>'
-    + (totalRow ? '<tfoot>' + totalRow + '</tfoot>' : '')
+    + '<table>'
+    +   '<thead>'
+    +     '<tr><th class="lbl" rowspan="2" style="width:150px;text-align:left;background:#FCE7F3">Staff</th>' + weekBannerCells + '</tr>'
+    +     '<tr>' + dayHeaderCells.join("") + '</tr>'
+    +   '</thead>'
+    +   '<tbody>' + bodyRows + '</tbody>'
+    +   (totalRow ? '<tfoot>' + totalRow + '</tfoot>' : '')
     + '</table>'
     + '<div class="foot">' + esc(filenameBase || "") + ' · generated ' + esc(new Date().toLocaleString("en-ZA")) + '</div>'
     + '<script>setTimeout(function(){window.focus();}, 100);<\/script>'
@@ -3000,7 +3125,10 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
       key: d.year + "-" + String(d.monthIdx+1).padStart(2,"0") + "-" + String(d.d).padStart(2,"0"),
       label: d.d + " " + monthAbbr[d.monthIdx],
       sub: dowAbbr[d.dow],
-      day: d.d
+      day: d.d,
+      dow: d.dow,
+      year: d.year,
+      monthIdx: d.monthIdx
     }));
     const rows = techs.map(t => {
       const cells = {};
@@ -8404,7 +8532,11 @@ function App({ currentUser, onSignOut }) {
               return {
                 key: dy.d,
                 label: dt.getDate() + " " + moNamesL[dt.getMonth()],
-                sub: dowsAbbrL[dy.dow]
+                sub: dowsAbbrL[dy.dow],
+                dow: dy.dow,
+                year: dt.getFullYear(),
+                monthIdx: dt.getMonth(),
+                day: dt.getDate()
               };
             });
             const rows = sortedMgrs.map(mg => {
