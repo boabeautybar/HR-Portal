@@ -2475,11 +2475,54 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
       );
       if (!ok) return;
     }
-    // Helper: how many off-days each tech "carries in" from the prior
-    // month for a given week index. Only the leading partial week (wIdx=0
-    // when the period starts mid-week) has any carry; all other weeks
-    // return 0 so the existing in-period count stands alone.
-    const _carryFor = (ec, wIdx) => (isLeadingPartial && wIdx === 0) ? (priorOffsLeading[ec] || 0) : 0;
+    // Trailing-partial cross-month carry — mirror of the leading carry.
+    // When this cycle ends mid-week, the labour week containing the trailing
+    // days extends INTO the next cycle, whose leading partial generator will
+    // stamp that labour week's Sunday using `sundayDateParity`. Reserve a
+    // slot here for that future Sunday off so PHASE 4 / 13 / 15 don't fill 2
+    // offs into the trailing partial only to collide with next month's
+    // Sunday once it is generated. Without this, two consecutive Sundays
+    // can land on the same off/work pattern (the user's "partial-week"
+    // bug): the prior cycle uses up the 2-cap on Mon-Sat of the rollover
+    // week, then the new cycle's PASS A is forced to skip the Sunday to
+    // avoid a third off, breaking the one-off-one-on alternation.
+    const trailingWeekRef = weeks.length > 0 ? weeks[weeks.length - 1] : null;
+    const isTrailingPartial = !!(trailingWeekRef && trailingWeekRef.length < 7 && weeks.length > 1);
+    const futureOffsTrailing = {};
+    sortedTechs.forEach(s => { futureOffsTrailing[s.ec] = 0; });
+    if (isTrailingPartial) {
+      const lastDay = trailingWeekRef[trailingWeekRef.length - 1];
+      const lastDate = new Date(lastDay.year, lastDay.monthIdx, lastDay.d);
+      let rolloverSunday = null;
+      for (let k = 1; k <= 7; k++) {
+        const dt = new Date(lastDate); dt.setDate(lastDate.getDate() + k);
+        if (dt.getDay() === 0) {
+          rolloverSunday = { year: dt.getFullYear(), monthIdx: dt.getMonth(), d: dt.getDate() };
+          break;
+        }
+      }
+      if (rolloverSunday) {
+        const rolloverParity = sundayDateParity(rolloverSunday);
+        sortedTechs.forEach(s => {
+          futureOffsTrailing[s.ec] = (sundayGroup[s.ec] === rolloverParity) ? 1 : 0;
+        });
+      }
+    }
+    const trailingWeekIdx = weeks.length - 1;
+    const isCarryWeek = (wIdx) =>
+      (isLeadingPartial && wIdx === 0) ||
+      (isTrailingPartial && wIdx === trailingWeekIdx);
+    // Helper: how many off-days each tech "carries in/out" of the period
+    // for a given week index. The leading partial (wIdx=0 when the cycle
+    // starts mid-week) carries IN from the prior month's tail; the
+    // trailing partial (wIdx=last when the cycle ends mid-week) carries
+    // OUT a reserved slot for the next month's Sunday rotation. Every
+    // other week returns 0 so the existing in-period count stands alone.
+    const _carryFor = (ec, wIdx) => {
+      if (isLeadingPartial && wIdx === 0) return priorOffsLeading[ec] || 0;
+      if (isTrailingPartial && wIdx === trailingWeekIdx) return futureOffsTrailing[ec] || 0;
+      return 0;
+    };
 
     // PHASE E — max-6-consecutive enforcement, ported from the original `c1`.
     // For each tech, find their longest streak ≥ 7 and try to break it by
@@ -2677,19 +2720,25 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
     // PASS A — Sun rotation across ALL weeks first (matches original PHASE 1
     // which uses `K.forEach(...)` outside the per-week PHASE 4 loop). This
     // ensures PHASE 4's adjacency check can see Sundays of OTHER weeks too.
-    // Cross-month strict 2-cap: if a tech already carries ≥2 offs from the
-    // previous month's tail of this same Mon-Sun week, skip their Sun=O —
-    // setting it would push them to 3 offs in a single labour week.
+    //
+    // The Sunday is ALWAYS stamped for the off-group, even when the cycle
+    // starts with a partial leading week and the prior month's tail already
+    // carries 2 offs into the rollover labour week. The visible "one off /
+    // one on" alternation that staff see each week is the user-facing
+    // contract; skipping the Sunday to satisfy a strict cross-month 2-cap
+    // breaks that contract on the leading-partial Sunday. The trailing-
+    // carry reservation above prevents the prior cycle from over-stuffing
+    // the rollover week in the first place when both months are generated
+    // under the new logic, so the cap is upheld in normal operation. If a
+    // legacy prior grid was generated before this fix and the rollover
+    // week ends up with 3 offs, that overage is surfaced as a soft
+    // conflict rather than silently breaking the rotation.
     weeks.forEach((week, wIdx) => {
       const sundayDay = week.find(d => d.dow === 0);
       if (!sundayDay) return;
-      // Date-anchored rotation: parity comes from the Sunday's calendar
-      // date so the alternation continues correctly across cycle
-      // boundaries instead of resetting at wIdx=0 of each cycle.
       const sundayOffGroup = sundayDateParity(sundayDay);
       sortedTechs.forEach(s => {
         if (sundayGroup[s.ec] === sundayOffGroup) {
-          if (_carryFor(s.ec, wIdx) >= 2) return;     // 2-cap already hit by prior month
           newGrid[s.ec][sundayDay.d] = "O";
         }
       });
@@ -3198,9 +3247,10 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
           const lightOffs = techWkOffs(tech.ec, wkLight);
           const heavyQuota = techTarget(tech.ec, wkHeavy);
           const lightQuota = techTarget(tech.ec, wkLight);
-          // Strict cross-month guard: if light is the leading partial and
-          // would now exceed 2 offs (in-period + carry), revert.
-          const lightHardCap = (isLeadingPartial && wkLight === 0) ? 2 : (lightQuota + 1);
+          // Strict cross-month guard: if light is a partial week with
+          // cross-month carry (leading or trailing) and would now exceed
+          // 2 offs (in-period + carry), revert.
+          const lightHardCap = isCarryWeek(wkLight) ? 2 : (lightQuota + 1);
           if (heavyOffs < heavyQuota || lightOffs > lightHardCap) {
             newGrid[tech.ec][heavy.d] = "O"; newGrid[tech.ec][light.d] = "W";
             continue;
@@ -3248,11 +3298,12 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
                 const v = newGrid[ec][dd2.d];
                 if (v === "W" || v === "WL" || v === "E") { r2++; if (r2 >= 7) { ok = false; break; } } else r2 = 0;
               }
-              // Cross-month strict 2-cap: if newOffD lands in leading
-              // partial and tech now exceeds 2 for that Mon-Sun week
+              // Cross-month strict 2-cap: if newOffD lands in a partial
+              // week with cross-month carry (leading or trailing) and
+              // the tech now exceeds 2 for that Mon-Sun week
               // (carry + in-period), revert.
               const newWk = dayToWk.get(newOffD.d);
-              if (ok && isLeadingPartial && newWk === 0 && techWkOffs(ec, newWk) > 2) ok = false;
+              if (ok && isCarryWeek(newWk) && techWkOffs(ec, newWk) > 2) ok = false;
               if (ok) {
                 W[newOffD.d].currentOff++; W[cd.d].currentOff--;
                 fixedAny = true; broke = true;
@@ -3404,7 +3455,8 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
       "• Total staff: " + totalStaff + "  (Group A: " + sortedTechs.filter(s=>sundayGroup[s.ec]==='A').length +
         ", Group B: " + sortedTechs.filter(s=>sundayGroup[s.ec]==='B').length + ")\n" +
       "• Weeks in period: " + weeks.length + "  (busy weeks: " + busyWeekIndices.length +
-        (isLeadingPartial ? ", leading partial carries from prior month" : "") + ")\n" +
+        (isLeadingPartial ? ", leading partial carries from prior month" : "") +
+        (isTrailingPartial ? ", trailing partial reserves a slot for next month's Sunday" : "") + ")\n" +
       "• Day-requests: " + honouredReqs + " of " + totalReqs + " honoured" + skippedNote + "\n" +
       "• Station cap: " + capacity + " techs/day  (Mani " + (salon.mani || 0) + " + Pedi " + (salon.pedi || 0) + ")\n" +
       "• Max-6-consecutive: " + (totalSwaps > 0 ? totalSwaps + " off-days shifted to comply" : "no shifts needed") +
