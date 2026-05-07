@@ -2715,9 +2715,23 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
         return;
       }
       const wk = weeks[wIdx];
+      const dDay = days.find(x => x.d === req.day);
       const existing = newGrid[ec][req.day];
       if (existing === "L") { _logUnhonoured(req, "tech is on leave that day"); return; }
       if (existing === "X") { _logUnhonoured(req, "outside tech's employment dates"); return; }
+      // Sunday rotation guard: a request on a Sunday that ISN'T this tech's
+      // off-rotation Sunday would put them off two consecutive Sundays —
+      // breaks the A/B rule. Reject with a clear reason; the user can
+      // manually override the cell after auto-fill if a special case
+      // genuinely warrants it.
+      if (dDay && dDay.dow === 0) {
+        const myGrp = sundayGroup[ec];
+        const sunGrp = sundayDateParity(dDay);
+        if (myGrp && sunGrp !== myGrp) {
+          _logUnhonoured(req, "would break the Sunday A/B rotation — this is a working Sunday for group " + myGrp + " (off-rotation that week is group " + sunGrp + ")");
+          return;
+        }
+      }
       // Count existing offs in the labour week, EXCLUDING the request day
       // itself (we may be replacing an O there with R, which doesn't change
       // the count). Then add 1 for the new R if existing isn't already off.
@@ -3147,6 +3161,12 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
     });
 
     // PHASE 13 — final fill to target across full weeks.
+    // Sundays are deliberately excluded from this fallback. The A/B Sunday
+    // rotation is a hard rule — converting a tech's working-rotation Sunday
+    // to off here would put them off on two consecutive Sundays. If a tech
+    // can't reach their per-week off target without touching a Sunday, we
+    // leave them under-target and surface the gap via the conflict panels;
+    // breaking rotation is worse than missing one off-day.
     weekChunks.forEach((wk, wkIdx) => {
       if (wk.length < 7) return;
       sortedTechs.forEach(s => {
@@ -3154,7 +3174,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
         let oc = techWkOffs(ec, wkIdx);
         const tg = techTarget(ec, wkIdx);
         if (oc >= tg) return;
-        for (const wD of [1, 2, 3, 4, 0, 5, 6]) {
+        for (const wD of [1, 2, 3, 4, 5, 6]) {
           if (oc >= tg) break;
           for (const dy of wk) {
             if (dy.dow !== wD || newGrid[ec][dy.d] !== "W") continue;
