@@ -2215,14 +2215,28 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
   // then on-maternity-leave at the bottom (also sorted by EC). On-mat staff
   // remain visible so the manager can see who's away, but they're greyed out
   // and excluded from the auto-fill algorithm.
+  // Period start ymd derived from `days` so we can decide visibility for
+  // leaving staff (kept in this month if their leftDate is on/after period
+  // start; dropped completely from the next month onward).
+  const _periodStartYmdForTechs = useMemo(() => {
+    if (!days || days.length === 0) return null;
+    const f = days[0];
+    return f.year + "-" + String(f.monthIdx + 1).padStart(2, "0") + "-" + String(f.d).padStart(2, "0");
+  }, [ym]);
   const techs = useMemo(() => allStaff
-    .filter(s => s.branch === branch && !s.leftDate && !s.isShadow)
+    .filter(s => s.branch === branch && !s.isShadow)
+    // Off-boarding visibility rule: a tech with a leftDate stays on the
+    // grid for the cycle they leave in (greyed-out row + X cells after
+    // leftDate, handled at render and in PHASE 18). From the next cycle
+    // onward — once their leftDate falls strictly before the period
+    // start — they vanish from the schedule entirely.
+    .filter(s => !s.leftDate || !_periodStartYmdForTechs || s.leftDate >= _periodStartYmdForTechs)
     .sort((a, b) => {
       const am = a.onMat ? 1 : 0;
       const bm = b.onMat ? 1 : 0;
       if (am !== bm) return am - bm;                       // active before on-mat
       return (a.ec || "").localeCompare(b.ec || "");
-    }), [allStaff, branch]);
+    }), [allStaff, branch, _periodStartYmdForTechs]);
 
   // Set of "ec|dayOfMonth" combos that have a pending off-day request in the
   // active branch + cycle. Used to render a small dot on the schedule cell so
@@ -2477,36 +2491,24 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
     }
     // Trailing-partial cross-month carry — mirror of the leading carry.
     // When this cycle ends mid-week, the labour week containing the trailing
-    // days extends INTO the next cycle, whose leading partial generator will
-    // stamp that labour week's Sunday using `sundayDateParity`. Reserve a
-    // slot here for that future Sunday off so PHASE 4 / 13 / 15 don't fill 2
-    // offs into the trailing partial only to collide with next month's
-    // Sunday once it is generated. Without this, two consecutive Sundays
-    // can land on the same off/work pattern (the user's "partial-week"
-    // bug): the prior cycle uses up the 2-cap on Mon-Sat of the rollover
-    // week, then the new cycle's PASS A is forced to skip the Sunday to
-    // avoid a third off, breaking the one-off-one-on alternation.
+    // days extends INTO the next cycle. Without a reservation, PHASE 4 fills
+    // the trailing partial to the full 2-cap (e.g. 2 offs in a Mon-Wed tail)
+    // — leaving zero room in the next cycle's leading partial for the same
+    // labour week, which over-staffs the new cycle's Thu-Sat days. Reserve
+    // 1 off-slot here for EVERY tech, regardless of Sunday-rotation group:
+    //   • off-group techs spend their reserved slot on the next cycle's
+    //     Sunday (stamped by PASS A using `sundayDateParity`),
+    //   • on-group techs spend theirs on a Thu-Sat coverage off placed by
+    //     the next cycle's PHASE 4.
+    // Splitting 1 off per cycle-side keeps the labour-week 2-cap intact and
+    // distributes coverage evenly across the cross-month boundary instead
+    // of bunching all the offs in one cycle's tail.
     const trailingWeekRef = weeks.length > 0 ? weeks[weeks.length - 1] : null;
     const isTrailingPartial = !!(trailingWeekRef && trailingWeekRef.length < 7 && weeks.length > 1);
     const futureOffsTrailing = {};
     sortedTechs.forEach(s => { futureOffsTrailing[s.ec] = 0; });
     if (isTrailingPartial) {
-      const lastDay = trailingWeekRef[trailingWeekRef.length - 1];
-      const lastDate = new Date(lastDay.year, lastDay.monthIdx, lastDay.d);
-      let rolloverSunday = null;
-      for (let k = 1; k <= 7; k++) {
-        const dt = new Date(lastDate); dt.setDate(lastDate.getDate() + k);
-        if (dt.getDay() === 0) {
-          rolloverSunday = { year: dt.getFullYear(), monthIdx: dt.getMonth(), d: dt.getDate() };
-          break;
-        }
-      }
-      if (rolloverSunday) {
-        const rolloverParity = sundayDateParity(rolloverSunday);
-        sortedTechs.forEach(s => {
-          futureOffsTrailing[s.ec] = (sundayGroup[s.ec] === rolloverParity) ? 1 : 0;
-        });
-      }
+      sortedTechs.forEach(s => { futureOffsTrailing[s.ec] = 1; });
     }
     const trailingWeekIdx = weeks.length - 1;
     const isCarryWeek = (wIdx) =>
@@ -3456,7 +3458,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
         ", Group B: " + sortedTechs.filter(s=>sundayGroup[s.ec]==='B').length + ")\n" +
       "• Weeks in period: " + weeks.length + "  (busy weeks: " + busyWeekIndices.length +
         (isLeadingPartial ? ", leading partial carries from prior month" : "") +
-        (isTrailingPartial ? ", trailing partial reserves a slot for next month's Sunday" : "") + ")\n" +
+        (isTrailingPartial ? ", trailing partial reserves a slot for next month's leading partial" : "") + ")\n" +
       "• Day-requests: " + honouredReqs + " of " + totalReqs + " honoured" + skippedNote + "\n" +
       "• Station cap: " + capacity + " techs/day  (Mani " + (salon.mani || 0) + " + Pedi " + (salon.pedi || 0) + ")\n" +
       "• Max-6-consecutive: " + (totalSwaps > 0 ? totalSwaps + " off-days shifted to comply" : "no shifts needed") +
@@ -4496,16 +4498,24 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
               {techs.map(s => {
                 const counts = rowCounts(s.ec);
                 const onMat  = !!s.onMat;
-                // On-mat staff: greyed-out row, non-clickable cells, "ON MAT" badge.
-                const rowOpacity = onMat ? 0.55 : 1;
-                const nameBg     = onMat ? "#f3f4f6" : "#fff";
-                const nameColor  = onMat ? "#6b7280" : "#831843";
+                // Off-boarding visibility: row is greyed-out for the
+                // entire cycle they leave in. Cells on/before leftDate
+                // remain editable (real schedule for the days worked);
+                // cells after leftDate are stamped X by PHASE 18 / sync.
+                const isLeaving = !!s.leftDate;
+                // On-mat takes precedence for styling (full lock-out);
+                // leaving rows get a softer grey so the pre-leftDate
+                // cells stay readable.
+                const rowOpacity = onMat ? 0.55 : (isLeaving ? 0.7 : 1);
+                const nameBg     = onMat ? "#f3f4f6" : (isLeaving ? "#f9fafb" : "#fff");
+                const nameColor  = onMat ? "#6b7280" : (isLeaving ? "#6b7280" : "#831843");
                 return (
                   <tr key={s.ec} style={{ opacity: rowOpacity }}>
                     <td style={{ position:"sticky", left:0, background:nameBg, padding:"6px 10px", borderBottom:"1px solid #FCE7F3", color:nameColor, fontWeight:600, fontSize:12 }}>
                       <div style={{ display:"flex", alignItems:"center", gap:6 }}>
                         <span>{s.name}</span>
                         {onMat && <span style={{ background:"#e5e7eb", color:"#374151", padding:"1px 6px", borderRadius:4, fontSize:9, fontWeight:700, letterSpacing:"0.04em" }}>🤱 ON MAT</span>}
+                        {!onMat && isLeaving && <span style={{ background:"#fee2e2", color:"#991b1b", padding:"1px 6px", borderRadius:4, fontSize:9, fontWeight:700, letterSpacing:"0.04em" }}>👋 LEFT {s.leftDate}</span>}
                       </div>
                       <div style={{ fontSize:10, color:"#9CA3AF", marginTop:1, letterSpacing:"0.04em" }}>{s.ec}</div>
                     </td>
