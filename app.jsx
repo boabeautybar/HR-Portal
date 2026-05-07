@@ -3,7 +3,13 @@ const { useState, useMemo, useEffect } = React;
 // ─── STAFF PIN LOGIN ────────────────────────────────────────────────────────────
 // 4-digit PINs. Lookup is by exact PIN string. Each user is recorded against
 // activity log entries so we can see who did each edit / transfer / save.
+//
+// This map is only the FIRST-RUN SEED. After boot, AppGate loads the live
+// user list from app_state (key APP_USERS_KEY) — the Settings tab writes
+// every add / edit / delete back there. To reset the live list to the
+// hardcoded defaults, delete that app_state row in Supabase.
 const STAFF_USERS = {
+  "0864": { name: "Theresa", role: "Owner", isOwner: true },
   "1993": { name: "Master",   role: "Master Admin"  },
   "2023": { name: "Kelly",    role: "Ops Manager",  hideCategories: ["Payroll"] },
   "6678": { name: "Joy",      role: "HR Generalist" },
@@ -15,9 +21,40 @@ const STAFF_USERS = {
   "3030": { name: "Rochelle", role: "Ops Admin",
             hideCategories: ["People", "Insights"],
             hideTabs: ["locations", "mgrPlanner"] },
+  // Farida: Manager Trainer / LSM. Edits schedules, leave, maternity, and
+  // can see daily check-ins + manager clock-ins. View-only on locations,
+  // onboarding, offboarding and recruitment — she can browse the lists but
+  // not save / delete / promote. No payroll, staff directory, alerts or
+  // activity log.
+  "4040": { name: "Farida",   role: "Manager Trainer / LSM",
+            hideCategories: ["Payroll", "Insights"],
+            hideTabs: ["staff"],
+            readOnlyTabs: ["locations", "onboard", "offboard", "recruitment"] },
   "1111": { name: "Demo",     role: "Training Demo", demo: true }
 };
 const PIN_SESSION_KEY = "boa_hr_current_user_v1";
+const APP_USERS_KEY   = "boa_app_users_v1";
+
+// Live PIN → user record store. Seeded from STAFF_USERS on first boot, then
+// edited via the Settings tab. A copy is kept in window.__BOA_APP_USERS so
+// the activity-log / sign-in helpers can resolve names without re-fetching.
+async function loadAppUsersFromDb() {
+  if (!window.BOA_DB || !window.BOA_DB.sb) return null;
+  try {
+    const r = await window.BOA_DB.sb.from("app_state").select("value").eq("key", APP_USERS_KEY).maybeSingle();
+    const v = r.data && r.data.value;
+    if (v && typeof v === "object" && !Array.isArray(v)) return v;
+    return null;
+  } catch (e) { console.warn("loadAppUsersFromDb:", e); return null; }
+}
+async function saveAppUsersToDb(users) {
+  if (!window.BOA_DB || !window.BOA_DB.sb) throw new Error("Supabase not ready");
+  await window.BOA_DB.sb.from("app_state").upsert({ key: APP_USERS_KEY, value: users || {} });
+}
+function lookupUserByPin(pin) {
+  if (window.__BOA_APP_USERS && window.__BOA_APP_USERS[pin]) return window.__BOA_APP_USERS[pin];
+  return STAFF_USERS[pin] || null;
+}
 
 // Demo-mode shim: when a `demo:true` user is signed in we replace every
 // persistence method on window.BOA_DB with a no-op so changes never reach the
@@ -41,6 +78,39 @@ function installDemoMode() {
      "saveLeaveRecords","saveMgrRequests","saveManagerPins",
      "deleteMat","deleteManager","deleteSchedule","appendActivity"
     ].forEach(n => { window.BOA_DB[n] = noop; });
+  };
+  apply();
+}
+
+// Per-tab read-only guard. Wraps every persistence call on window.BOA_DB
+// once at boot. The wrappers consult `window.__BOA_RO_ACTIVE` (set by the
+// App when the active tab is in the user's `readOnlyTabs` list); when the
+// flag is true the call short-circuits with a friendly alert instead of
+// hitting Supabase, so a user with view-only access can still see the
+// edit UI but their changes never persist.
+const READ_ONLY_GUARDED_METHODS = [
+  "saveStaff","saveMat","saveManager","saveSchedule","saveAttendance",
+  "saveOnboarding","saveOffboarding","saveLeaveRecords","saveMgrRequests",
+  "saveTechRequests","saveManagerPins","deleteMat","deleteManager","deleteSchedule"
+];
+function installReadOnlyGuard() {
+  const apply = () => {
+    if (!window.BOA_DB) { setTimeout(apply, 100); return; }
+    if (window.__BOA_RO_INSTALLED) return;
+    window.__BOA_RO_INSTALLED = true;
+    window.__BOA_RO_ACTIVE = false;
+    READ_ONLY_GUARDED_METHODS.forEach(n => {
+      const fn = window.BOA_DB[n];
+      if (typeof fn !== "function") return;
+      const orig = fn.bind(window.BOA_DB);
+      window.BOA_DB[n] = async (...args) => {
+        if (window.__BOA_RO_ACTIVE) {
+          alert("🔒 View-only access — your role can't make changes on this tab. Switching tabs lets you edit again where allowed.");
+          return null;
+        }
+        return orig(...args);
+      };
+    });
   };
   apply();
 }
@@ -4579,19 +4649,21 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
 // Gates the whole app behind a 4-digit personal PIN so the activity log can
 // attribute every edit / transfer / off-board / schedule save to a specific
 // staff member. Session is stored in sessionStorage (cleared on tab close).
-function PinLogin({ onUnlock }) {
+function PinLogin(props) {
+  const { onUnlock } = props;
   const [pin, setPin] = useState("");
   const [error, setError] = useState("");
 
   const submit = (e) => {
     if (e && e.preventDefault) e.preventDefault();
-    const u = STAFF_USERS[pin];
+    const store = (props && props.users) || window.__BOA_APP_USERS || STAFF_USERS;
+    const u = store[pin] || STAFF_USERS[pin];
     if (!u) {
       setError("Wrong PIN. Please try again.");
       setPin("");
       return;
     }
-    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], signedInAt: new Date().toISOString() };
+    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, isOwner: !!u.isOwner, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], readOnlyTabs: u.readOnlyTabs || [], signedInAt: new Date().toISOString() };
     try { sessionStorage.setItem(PIN_SESSION_KEY, JSON.stringify(session)); } catch (_) {}
     window.BOA_CURRENT_USER = session;
     onUnlock(session);
@@ -4630,34 +4702,520 @@ function PinLogin({ onUnlock }) {
 // real <App/> mounts. Done as a wrapper so <App/>'s hooks always run in the
 // same order — putting the PIN check inside <App/> would change hook count.
 function AppGate() {
-  const [currentUser, setCurrentUser] = useState(() => {
-    try {
-      const raw = sessionStorage.getItem(PIN_SESSION_KEY);
-      if (!raw) return null;
-      const s = JSON.parse(raw);
-      if (s && STAFF_USERS[s.pin]) {
-        const u = STAFF_USERS[s.pin];
-        const merged = { ...s, demo: !!u.demo, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [] };
-        window.BOA_CURRENT_USER = merged;
-        return merged;
+  const [appUsers, setAppUsers] = useState(null);          // dynamic store; null while loading
+  const [bootDone, setBootDone] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      // Wait for the data layer to wire itself up (BOA_DB.isReady becomes
+      // true once the Supabase client + helpers are exposed).
+      const waitDB = () => new Promise(res => {
+        const tick = () => {
+          if (window.BOA_DB && window.BOA_DB.isReady) res();
+          else setTimeout(tick, 100);
+        };
+        tick();
+      });
+      try { await waitDB(); } catch (_) {}
+      if (cancelled) return;
+
+      let dynamic = await loadAppUsersFromDb();
+      if (!dynamic || Object.keys(dynamic).length === 0) {
+        // First run — seed Supabase from STAFF_USERS so the Settings tab
+        // can edit the original accounts too. Failure to write isn't fatal:
+        // we'll fall back to the in-memory copy.
+        dynamic = JSON.parse(JSON.stringify(STAFF_USERS));
+        try { await saveAppUsersToDb(dynamic); } catch (_) {}
+      } else {
+        // Make sure any newly-shipped seed user (e.g. Theresa) is present
+        // even if the dynamic row was created before they were defined.
+        let mutated = false;
+        Object.keys(STAFF_USERS).forEach(pin => {
+          if (!dynamic[pin]) {
+            dynamic[pin] = { ...STAFF_USERS[pin] };
+            mutated = true;
+          }
+        });
+        if (mutated) { try { await saveAppUsersToDb(dynamic); } catch (_) {} }
       }
-    } catch (_) {}
-    return null;
-  });
-  if (!currentUser) {
-    return <PinLogin onUnlock={(s) => setCurrentUser(s)} />;
-  }
+      if (cancelled) return;
+      window.__BOA_APP_USERS = dynamic;
+      setAppUsers(dynamic);
+
+      // Restore session if the saved PIN still exists in the live store.
+      try {
+        const raw = sessionStorage.getItem(PIN_SESSION_KEY);
+        if (raw) {
+          const s = JSON.parse(raw);
+          const u = (dynamic && dynamic[s.pin]) || STAFF_USERS[s.pin];
+          if (u) {
+            const merged = {
+              ...s,
+              name: u.name, role: u.role,
+              demo: !!u.demo, isOwner: !!u.isOwner,
+              hideCategories: u.hideCategories || [],
+              hideTabs: u.hideTabs || [],
+              readOnlyTabs: u.readOnlyTabs || []
+            };
+            window.BOA_CURRENT_USER = merged;
+            setCurrentUser(merged);
+          } else {
+            // Saved user no longer exists — drop the session.
+            try { sessionStorage.removeItem(PIN_SESSION_KEY); } catch (_) {}
+          }
+        }
+      } catch (_) {}
+      setBootDone(true);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   const signOut = () => {
     try { sessionStorage.removeItem(PIN_SESSION_KEY); } catch (_) {}
     window.BOA_CURRENT_USER = null;
     setCurrentUser(null);
   };
-  return <App currentUser={currentUser} onSignOut={signOut} />;
+
+  const onUsersUpdate = async (next) => {
+    const cleaned = { ...next };
+    Object.keys(cleaned).forEach(pin => {
+      const u = cleaned[pin];
+      cleaned[pin] = {
+        name: u.name, role: u.role,
+        demo: !!u.demo, isOwner: !!u.isOwner,
+        hideCategories: u.hideCategories || [],
+        hideTabs: u.hideTabs || [],
+        readOnlyTabs: u.readOnlyTabs || []
+      };
+    });
+    await saveAppUsersToDb(cleaned);
+    window.__BOA_APP_USERS = cleaned;
+    setAppUsers(cleaned);
+    if (currentUser) {
+      const u = cleaned[currentUser.pin];
+      if (!u) {
+        // Current user was deleted — sign out.
+        signOut();
+        return;
+      }
+      const merged = {
+        ...currentUser,
+        name: u.name, role: u.role,
+        demo: !!u.demo, isOwner: !!u.isOwner,
+        hideCategories: u.hideCategories || [],
+        hideTabs: u.hideTabs || [],
+        readOnlyTabs: u.readOnlyTabs || []
+      };
+      window.BOA_CURRENT_USER = merged;
+      setCurrentUser(merged);
+      try { sessionStorage.setItem(PIN_SESSION_KEY, JSON.stringify(merged)); } catch (_) {}
+    }
+  };
+
+  if (!bootDone) {
+    return (
+      <div style={{ minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:12, fontFamily:"'Outfit',system-ui,sans-serif", color:"#831843" }}>
+        <div style={{ width:28, height:28, border:"3px solid #FBCFE8", borderTopColor:"#BE185D", borderRadius:"50%", animation:"spin 0.9s linear infinite" }} />
+        <div style={{ fontSize:13, letterSpacing:"0.18em", fontWeight:700, textTransform:"uppercase" }}>BOA HR · Loading…</div>
+        <style>{"@keyframes spin{to{transform:rotate(360deg)}}"}</style>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return <PinLogin users={appUsers} onUnlock={(s) => setCurrentUser(s)} />;
+  }
+
+  return <App currentUser={currentUser} onSignOut={signOut} appUsers={appUsers} onUsersUpdate={onUsersUpdate} />;
+}
+
+// ─── SETTINGS / USER ADMIN ──────────────────────────────────────────────────
+// Owner-only screen for managing PIN logins. Lists every user, lets the
+// owner add new ones, edit permissions, reset PINs and delete accounts.
+// All changes flow through `onUsersUpdate` (defined in AppGate) which
+// upserts the live user store into Supabase under APP_USERS_KEY.
+const SETTINGS_TABS = [
+  { t: "staff",      l: "Staff List",        cat: "People",     icon: "👥" },
+  { t: "onboard",    l: "Onboarding",        cat: "People",     icon: "🌱" },
+  { t: "offboard",   l: "Off-boarding",      cat: "People",     icon: "👋" },
+  { t: "recruitment",l: "Recruitment",       cat: "People",     icon: "🎯" },
+  { t: "maternity",  l: "Maternity",         cat: "People",     icon: "🤱" },
+  { t: "scheduling", l: "Scheduling",        cat: "Operations", icon: "📅" },
+  { t: "locations",  l: "Locations",         cat: "Operations", icon: "📍" },
+  { t: "checkins",   l: "Daily Check-ins",   cat: "Operations", icon: "📲" },
+  { t: "mgrclockins",l: "Mgr Clock-ins",     cat: "Operations", icon: "🕐" },
+  { t: "leave",      l: "Leave Planner",     cat: "Operations", icon: "🌴" },
+  { t: "attendance", l: "Attendance / Payroll", cat: "Payroll", icon: "📕" },
+  { t: "alerts",     l: "Alerts",            cat: "Insights",   icon: "🔔" },
+  { t: "activity",   l: "Activity Log",      cat: "Insights",   icon: "📜" }
+];
+const SETTINGS_CATS = ["People", "Operations", "Payroll", "Insights"];
+
+// Convert a stored user record (hideCategories + hideTabs + readOnlyTabs)
+// into a per-tab matrix the editor can flip checkboxes against.
+function userToPerms(u) {
+  const hideCats = new Set(u.hideCategories || []);
+  const hideTabs = new Set(u.hideTabs || []);
+  const roTabs   = new Set(u.readOnlyTabs || []);
+  const perms = {};
+  SETTINGS_TABS.forEach(({ t, cat }) => {
+    const visible = !hideCats.has(cat) && !hideTabs.has(t);
+    const editable = visible && !roTabs.has(t);
+    perms[t] = { visible, editable };
+  });
+  return perms;
+}
+// Inverse: pack the matrix back into hideTabs / readOnlyTabs. We don't
+// reconstruct hideCategories on save — packing per-tab is simpler and the
+// nav renderer treats "every tab in a category hidden" the same as the
+// category itself being hidden.
+function permsToUser(base, perms) {
+  const hideTabs = [];
+  const readOnlyTabs = [];
+  SETTINGS_TABS.forEach(({ t }) => {
+    const p = perms[t] || { visible: true, editable: true };
+    if (!p.visible) { hideTabs.push(t); return; }
+    if (!p.editable) readOnlyTabs.push(t);
+  });
+  return {
+    name: base.name || "",
+    role: base.role || "",
+    demo: !!base.demo,
+    isOwner: !!base.isOwner,
+    hideCategories: [],     // superseded by hideTabs
+    hideTabs,
+    readOnlyTabs
+  };
+}
+
+function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
+  const users = appUsers || {};
+  const [editing, setEditing] = useState(null);   // {pin, isNew, name, role, demo, isOwner, perms, originalPin}
+  const [busy, setBusy] = useState(false);
+
+  const sortedPins = Object.keys(users).sort((a, b) => {
+    const ua = users[a], ub = users[b];
+    if (!!ub.isOwner !== !!ua.isOwner) return ub.isOwner ? 1 : -1;
+    return (ua.name || "").localeCompare(ub.name || "");
+  });
+
+  const beginAdd = () => {
+    const blankPerms = {};
+    SETTINGS_TABS.forEach(({ t }) => { blankPerms[t] = { visible: true, editable: true }; });
+    setEditing({
+      pin: "",
+      isNew: true,
+      originalPin: null,
+      name: "",
+      role: "",
+      demo: false,
+      isOwner: false,
+      perms: blankPerms
+    });
+  };
+  const beginEdit = (pin) => {
+    const u = users[pin];
+    if (!u) return;
+    setEditing({
+      pin,
+      isNew: false,
+      originalPin: pin,
+      name: u.name || "",
+      role: u.role || "",
+      demo: !!u.demo,
+      isOwner: !!u.isOwner,
+      perms: userToPerms(u)
+    });
+  };
+  const cancelEdit = () => setEditing(null);
+
+  const persist = async (next) => {
+    setBusy(true);
+    try {
+      await onUsersUpdate(next);
+    } catch (e) {
+      alert("Could not save users: " + (e.message || e));
+    } finally { setBusy(false); }
+  };
+
+  const saveEditing = async () => {
+    if (!editing) return;
+    const pin = (editing.pin || "").trim();
+    if (!/^\d{4}$/.test(pin)) { alert("PIN must be exactly 4 digits."); return; }
+    if (!editing.name.trim()) { alert("Name is required."); return; }
+    if (editing.isNew && users[pin]) { alert("That PIN is already taken — pick another."); return; }
+    if (!editing.isNew && pin !== editing.originalPin && users[pin]) {
+      alert("That PIN is already taken by another user.");
+      return;
+    }
+    const packed = permsToUser({
+      name: editing.name.trim(),
+      role: editing.role.trim() || (editing.isOwner ? "Owner" : "Staff"),
+      demo: editing.demo,
+      isOwner: editing.isOwner
+    }, editing.perms);
+    const next = { ...users };
+    if (!editing.isNew && editing.originalPin && editing.originalPin !== pin) {
+      delete next[editing.originalPin];
+    }
+    next[pin] = packed;
+    await persist(next);
+    setEditing(null);
+  };
+
+  const deleteUser = async (pin) => {
+    if (pin === currentUser.pin) {
+      alert("You can't delete your own account while signed in.");
+      return;
+    }
+    const u = users[pin];
+    if (!u) return;
+    if (!window.confirm("Delete the login for " + (u.name || pin) + " (PIN " + pin + ")?\n\nThey'll be signed out next time they try to log in. Activity log entries with their name are preserved.")) return;
+    const next = { ...users };
+    delete next[pin];
+    await persist(next);
+  };
+
+  const resetPin = async (pin) => {
+    const u = users[pin];
+    if (!u) return;
+    const newPin = window.prompt("New 4-digit PIN for " + (u.name || pin) + ":", "");
+    if (newPin == null) return;
+    const trimmed = newPin.trim();
+    if (!/^\d{4}$/.test(trimmed)) { alert("PIN must be 4 digits."); return; }
+    if (trimmed === pin) return;
+    if (users[trimmed]) { alert("That PIN is already taken."); return; }
+    const next = { ...users };
+    next[trimmed] = next[pin];
+    delete next[pin];
+    await persist(next);
+    if (pin === currentUser.pin) {
+      alert("Your own PIN was changed to " + trimmed + ". You'll need to use it next time you sign in.");
+    }
+  };
+
+  const togglePerm = (tab, field) => {
+    if (!editing) return;
+    setEditing(prev => {
+      const cur = prev.perms[tab] || { visible: true, editable: true };
+      const next = { ...cur, [field]: !cur[field] };
+      // Hidden tabs can't be editable.
+      if (!next.visible) next.editable = false;
+      // Editable tabs must be visible.
+      if (next.editable) next.visible = true;
+      return { ...prev, perms: { ...prev.perms, [tab]: next } };
+    });
+  };
+  const setAllInCategory = (cat, visible, editable) => {
+    if (!editing) return;
+    setEditing(prev => {
+      const np = { ...prev.perms };
+      SETTINGS_TABS.filter(x => x.cat === cat).forEach(({ t }) => {
+        np[t] = { visible, editable: visible && editable };
+      });
+      return { ...prev, perms: np };
+    });
+  };
+
+  // ── Render ─────────────────────────────────────────────────────────
+  return (
+    <div>
+      <div style={{ marginBottom:14 }}>
+        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>⚙️ Settings — User Management</div>
+        <div style={{ fontSize:12, color:"#F472B6" }}>Owner-only. Add and remove logins, change permissions, reset PINs. Changes save to Supabase and apply to every other signed-in user on their next page load.</div>
+      </div>
+
+      <div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
+        <button onClick={beginAdd} disabled={busy}
+          style={{ padding:"9px 18px", background:"#BE185D", color:"#fff", border:"none", borderRadius:9, cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>
+          + Add user
+        </button>
+        {busy && <span style={{ alignSelf:"center", fontSize:11, color:"#9F1A4F", fontStyle:"italic" }}>Saving…</span>}
+      </div>
+
+      <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:11, overflow:"hidden" }}>
+        <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+          <thead>
+            <tr style={{ background:"#FCE7F3", color:"#831843" }}>
+              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, letterSpacing:"0.04em" }}>NAME</th>
+              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, letterSpacing:"0.04em" }}>PIN</th>
+              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, letterSpacing:"0.04em" }}>ROLE</th>
+              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, letterSpacing:"0.04em" }}>FLAGS</th>
+              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, letterSpacing:"0.04em" }}>VISIBLE TABS</th>
+              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, letterSpacing:"0.04em" }}>VIEW-ONLY TABS</th>
+              <th style={{ textAlign:"right", padding:"10px 12px", fontSize:11, letterSpacing:"0.04em" }}>ACTIONS</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sortedPins.map(pin => {
+              const u = users[pin];
+              const perms = userToPerms(u);
+              const visibleCount = SETTINGS_TABS.filter(({ t }) => perms[t].visible).length;
+              const totalCount = SETTINGS_TABS.length;
+              const roList = SETTINGS_TABS.filter(({ t }) => perms[t].visible && !perms[t].editable).map(x => x.l);
+              const isMe = pin === currentUser.pin;
+              return (
+                <tr key={pin} style={{ borderTop:"1px solid #FCE7F3", background: isMe ? "#FDF2F8" : "#fff" }}>
+                  <td style={{ padding:"10px 12px", color:"#831843", fontWeight:700 }}>
+                    {u.name || "(unnamed)"}
+                    {isMe && <span style={{ marginLeft:6, fontSize:9, fontWeight:700, color:"#BE185D", background:"#FCE7F3", padding:"1px 5px", borderRadius:4 }}>YOU</span>}
+                  </td>
+                  <td style={{ padding:"10px 12px", color:"#831843", fontFamily:"monospace" }}>{pin}</td>
+                  <td style={{ padding:"10px 12px", color:"#831843" }}>{u.role || "—"}</td>
+                  <td style={{ padding:"10px 12px" }}>
+                    {u.isOwner && <span style={{ display:"inline-block", marginRight:4, fontSize:10, fontWeight:700, color:"#92400e", background:"#FEF3C7", border:"1px solid #FDE68A", padding:"1px 6px", borderRadius:4 }}>OWNER</span>}
+                    {u.demo    && <span style={{ display:"inline-block", marginRight:4, fontSize:10, fontWeight:700, color:"#78350f", background:"#fde047", border:"1px solid #ca8a04", padding:"1px 6px", borderRadius:4 }}>DEMO</span>}
+                    {!u.isOwner && !u.demo && <span style={{ color:"#9CA3AF" }}>—</span>}
+                  </td>
+                  <td style={{ padding:"10px 12px", color:"#374151" }}>
+                    {visibleCount === totalCount
+                      ? <span style={{ color:"#15803d", fontWeight:700 }}>All ({totalCount})</span>
+                      : <span>{visibleCount} / {totalCount}</span>}
+                  </td>
+                  <td style={{ padding:"10px 12px", color:"#374151", fontSize:11 }}>
+                    {roList.length === 0 ? <span style={{ color:"#9CA3AF" }}>—</span> : roList.join(", ")}
+                  </td>
+                  <td style={{ padding:"10px 12px", textAlign:"right", whiteSpace:"nowrap" }}>
+                    <button onClick={() => beginEdit(pin)} disabled={busy}
+                      style={{ padding:"6px 12px", marginRight:6, background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:7, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }}>Edit</button>
+                    <button onClick={() => resetPin(pin)} disabled={busy}
+                      style={{ padding:"6px 12px", marginRight:6, background:"#fff", color:"#0369a1", border:"1px solid #bae6fd", borderRadius:7, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }}>Reset PIN</button>
+                    <button onClick={() => deleteUser(pin)} disabled={busy || isMe}
+                      title={isMe ? "You can't delete yourself" : ""}
+                      style={{ padding:"6px 12px", background: isMe ? "#f3f4f6" : "#fee2e2", color: isMe ? "#9CA3AF" : "#7f1d1d", border:"1px solid " + (isMe ? "#d1d5db" : "#fca5a5"), borderRadius:7, cursor: isMe ? "not-allowed" : "pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }}>Delete</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* ── Add / edit modal ── */}
+      {editing && (
+        <div onClick={cancelEdit} style={{ position:"fixed", inset:0, background:"rgba(131,24,67,0.4)", zIndex:9000, display:"flex", alignItems:"center", justifyContent:"center", padding:"30px 20px", overflow:"auto" }}>
+          <div onClick={e => e.stopPropagation()} style={{ background:"#fff", borderRadius:14, padding:"24px 28px", width:"min(820px, 100%)", maxHeight:"90vh", overflow:"auto", border:"1px solid #FBCFE8", boxShadow:"0 20px 50px rgba(131,24,67,0.25)" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:18 }}>
+              <div>
+                <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, color:"#831843", fontWeight:700 }}>
+                  {editing.isNew ? "Add user" : "Edit " + (editing.name || "user")}
+                </div>
+                <div style={{ fontSize:11, color:"#9F1A4F", marginTop:3 }}>
+                  Tick a tab as <strong>visible</strong> to let the user see it. Tick <strong>edit</strong> to let them change data; leave it unticked for view-only.
+                </div>
+              </div>
+              <button onClick={cancelEdit} style={{ background:"transparent", border:"none", color:"#9F1A4F", cursor:"pointer", fontSize:22, lineHeight:1 }}>×</button>
+            </div>
+
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:14, marginBottom:18 }}>
+              <label style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>NAME</span>
+                <input value={editing.name}
+                  onChange={e => setEditing({ ...editing, name: e.target.value })}
+                  style={{ padding:"8px 11px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, fontFamily:"inherit" }} />
+              </label>
+              <label style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>4-DIGIT PIN</span>
+                <input value={editing.pin}
+                  inputMode="numeric"
+                  maxLength={4}
+                  onChange={e => setEditing({ ...editing, pin: e.target.value.replace(/\D/g,"").slice(0,4) })}
+                  style={{ padding:"8px 11px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, fontFamily:"monospace", letterSpacing:"0.2em" }} />
+              </label>
+              <label style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>ROLE TITLE</span>
+                <input value={editing.role}
+                  onChange={e => setEditing({ ...editing, role: e.target.value })}
+                  placeholder="e.g. Ops Manager"
+                  style={{ padding:"8px 11px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, fontFamily:"inherit" }} />
+              </label>
+            </div>
+
+            <div style={{ display:"flex", gap:18, marginBottom:18, flexWrap:"wrap" }}>
+              <label style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, color:"#831843", fontWeight:600, cursor:"pointer" }}>
+                <input type="checkbox" checked={editing.isOwner} onChange={e => setEditing({ ...editing, isOwner: e.target.checked })} />
+                Owner — can use this Settings tab
+              </label>
+              <label style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, color:"#831843", fontWeight:600, cursor:"pointer" }}>
+                <input type="checkbox" checked={editing.demo} onChange={e => setEditing({ ...editing, demo: e.target.checked })} />
+                Training / demo — changes never save to Supabase
+              </label>
+            </div>
+
+            <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:11, overflow:"hidden", marginBottom:18 }}>
+              <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                <thead>
+                  <tr style={{ background:"#FCE7F3", color:"#831843" }}>
+                    <th style={{ textAlign:"left", padding:"8px 10px", fontSize:11, letterSpacing:"0.04em" }}>TAB</th>
+                    <th style={{ textAlign:"center", padding:"8px 10px", fontSize:11, letterSpacing:"0.04em", width:90 }}>VISIBLE</th>
+                    <th style={{ textAlign:"center", padding:"8px 10px", fontSize:11, letterSpacing:"0.04em", width:90 }}>CAN EDIT</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {SETTINGS_CATS.map(cat => {
+                    const inCat = SETTINGS_TABS.filter(x => x.cat === cat);
+                    const allOn  = inCat.every(({ t }) => editing.perms[t]?.visible);
+                    const allEdit = inCat.every(({ t }) => editing.perms[t]?.editable);
+                    return (
+                      <React.Fragment key={cat}>
+                        <tr style={{ background:"#FDF2F8" }}>
+                          <td style={{ padding:"7px 10px", fontWeight:700, color:"#9F1A4F", fontSize:11, letterSpacing:"0.06em", textTransform:"uppercase" }}>{cat}</td>
+                          <td style={{ padding:"7px 10px", textAlign:"center" }}>
+                            <button onClick={() => setAllInCategory(cat, !allOn, allEdit)}
+                              style={{ background:"transparent", border:"1px solid #FBCFE8", color:"#831843", padding:"3px 8px", borderRadius:6, cursor:"pointer", fontSize:10, fontWeight:600, fontFamily:"inherit" }}>
+                              {allOn ? "Hide all" : "Show all"}
+                            </button>
+                          </td>
+                          <td style={{ padding:"7px 10px", textAlign:"center" }}>
+                            <button onClick={() => setAllInCategory(cat, true, !allEdit)}
+                              style={{ background:"transparent", border:"1px solid #FBCFE8", color:"#831843", padding:"3px 8px", borderRadius:6, cursor:"pointer", fontSize:10, fontWeight:600, fontFamily:"inherit" }}>
+                              {allEdit ? "View only" : "Allow edit"}
+                            </button>
+                          </td>
+                        </tr>
+                        {inCat.map(({ t, l, icon }) => {
+                          const p = editing.perms[t] || { visible: true, editable: true };
+                          return (
+                            <tr key={t} style={{ borderTop:"1px solid #FCE7F3" }}>
+                              <td style={{ padding:"7px 10px 7px 26px", color:"#831843" }}>
+                                <span style={{ marginRight:6 }}>{icon}</span>{l}
+                              </td>
+                              <td style={{ padding:"7px 10px", textAlign:"center" }}>
+                                <input type="checkbox" checked={!!p.visible} onChange={() => togglePerm(t, "visible")} />
+                              </td>
+                              <td style={{ padding:"7px 10px", textAlign:"center" }}>
+                                <input type="checkbox" checked={!!p.editable} disabled={!p.visible} onChange={() => togglePerm(t, "editable")} />
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
+              <button onClick={cancelEdit} disabled={busy}
+                style={{ padding:"9px 16px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:9, cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:600 }}>Cancel</button>
+              <button onClick={saveEditing} disabled={busy}
+                style={{ padding:"9px 18px", background:"#BE185D", color:"#fff", border:"none", borderRadius:9, cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>
+                {busy ? "Saving…" : (editing.isNew ? "Create user" : "Save changes")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────────
 let seed = 5000;
-function App({ currentUser, onSignOut }) {
+function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // ── Activity logger — records who did what to the boa_activity_log_v1 row.
   // Failures are swallowed so a logging hiccup never blocks the actual edit.
   const logActivity = async (action, target, details) => {
@@ -4679,9 +5237,28 @@ function App({ currentUser, onSignOut }) {
   // Demo accounts: install no-op persistence shim so nothing saves to the server.
   useEffect(() => { if (currentUser?.demo) installDemoMode(); }, [currentUser]);
 
+  // Read-only role: install the BOA_DB guard once; the activate flag is
+  // toggled in a separate effect below as the user navigates between tabs.
+  useEffect(() => {
+    if ((currentUser?.readOnlyTabs || []).length > 0) installReadOnlyGuard();
+  }, [currentUser]);
+
   const [staff, setStaff] = useState([]);
   const [matRecs, setMatRecs] = useState([]);
   const [tab, setTab] = useState("dashboard");
+
+  // Whether the active tab is read-only for the signed-in user. Surfaced
+  // via a banner at the top of the page and used to flip the BOA_DB
+  // persistence guard so any save / delete call is short-circuited with
+  // a friendly alert instead of hitting Supabase.
+  const currentTabIsReadOnly = useMemo(() => {
+    const list = currentUser?.readOnlyTabs || [];
+    return list.includes(tab);
+  }, [currentUser, tab]);
+  useEffect(() => {
+    window.__BOA_RO_ACTIVE = !!currentTabIsReadOnly;
+    return () => { window.__BOA_RO_ACTIVE = false; };
+  }, [currentTabIsReadOnly]);
   // Recruitment is now a parent tab with two children (Nail Tech / Manager).
   // The Manager child further nests Coverage and Planner.
   const [recruitSubTab, setRecruitSubTab] = useState("nailTech");   // "nailTech" | "mgrRecruit"
@@ -4738,7 +5315,8 @@ function App({ currentUser, onSignOut }) {
     onboard:"People", offboard:"People", staff:"People", recruitment:"People", maternity:"People",
     scheduling:"Operations", locations:"Operations", mgrclockins:"Operations", leave:"Operations", checkins:"Operations",
     attendance:"Payroll",
-    alerts:"Insights", activity:"Insights"
+    alerts:"Insights", activity:"Insights",
+    settings:"Admin"
   };
   useEffect(() => {
     // Manager Planner is a virtual tab that lives at recruitment+mgrRecruit+planner
@@ -5601,6 +6179,12 @@ function App({ currentUser, onSignOut }) {
         </div>
       )}
 
+      {currentTabIsReadOnly && !currentUser?.demo && (
+        <div style={{ background:"#dbeafe", color:"#1e3a8a", borderBottom:"2px solid #60a5fa", padding:"8px 24px", textAlign:"center", fontSize:12, fontWeight:700, letterSpacing:"0.02em" }}>
+          🔒 VIEW-ONLY — Your role ({currentUser?.role}) can browse this tab but can't save changes here. Edit access is enabled on the tabs your role allows.
+        </div>
+      )}
+
       {/* HEADER */}
       <div style={{ background:"linear-gradient(135deg, #FBCFE8 0%, #F9A8D4 50%, #F472B6 100%)", color:"#FFFFFF" }}>
         <div style={{ maxWidth:1380, margin:"0 auto", padding:"0 24px" }}>
@@ -5666,7 +6250,14 @@ function App({ currentUser, onSignOut }) {
                 items: [
                   { t:"alerts",      l:"🔔 Alerts"         },
                   { t:"activity",    l:"📜 Activity Log"   }
-                ] }
+                ] },
+              ...(currentUser?.isOwner ? [{
+                key:"Admin", icon:"🛡️", title:"Admin",
+                color:{ bg:"#FEF3C7", bgActive:"#FDE68A", ink:"#92400e" },
+                items: [
+                  { t:"settings", l:"⚙️ Settings" }
+                ]
+              }] : [])
             ];
             // Category that owns the currently-active tab.
             // Permission filter: hide entire categories AND/OR individual tabs.
@@ -10059,6 +10650,14 @@ function App({ currentUser, onSignOut }) {
             </div>
           );
         })()}
+
+      {tab === "settings" && currentUser?.isOwner && (
+        <SettingsAdmin
+          appUsers={appUsers}
+          onUsersUpdate={onUsersUpdate}
+          currentUser={currentUser}
+        />
+      )}
 
       {staffModal && <StaffModal s={staffModal} onClose={()=>setStaffModal(null)} onSave={saveStaff} onTransfer={(s)=>setTransferModal(s)} allStaff={staff} />}
       {mgrModal && <ManagerModal m={mgrModal} pin={mgrPins[mgrModal.ec] || ""} onClose={()=>setMgrModal(null)} onSave={saveMgr} onDelete={delMgr} />}
