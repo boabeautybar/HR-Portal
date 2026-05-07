@@ -56,6 +56,32 @@ function lookupUserByPin(pin) {
   return STAFF_USERS[pin] || null;
 }
 
+// ─── SUNDAY ROTATION PARITY ─────────────────────────────────────────────────
+// The auto-fill / sync algorithms split nail techs into groups A and B and
+// alternate which group is off each Sunday. Originally the parity was
+// derived from `wIdx % 2` (the week's index inside the current cycle),
+// which broke at every cycle boundary: the last Sunday of one month and
+// the first Sunday of the next could both land on the same parity, so a
+// tech ended up off two Sundays in a row (or working two in a row).
+// This helper anchors the rotation to the Sunday's calendar date instead,
+// so the alternation stays consistent across cycles, partial weeks, and
+// re-runs of auto-fill.
+function sundayDateParity(sundayDay) {
+  if (!sundayDay) return "A";
+  const ms = Date.UTC(sundayDay.year, sundayDay.monthIdx, sundayDay.d);
+  const weeks = Math.floor(ms / (7 * 86400000));
+  return (weeks % 2 === 0) ? "A" : "B";
+}
+// Convenience: take a week (array of day objects) and return the off-group
+// for that week's Sunday. If the week has no Sunday (unusual partial week),
+// returns null and the caller should skip Sunday rotation for that week.
+function weekSundayOffGroup(week) {
+  if (!week || !week.length) return null;
+  const sun = week.find(d => d.dow === 0);
+  if (!sun) return null;
+  return sundayDateParity(sun);
+}
+
 // Demo-mode shim: when a `demo:true` user is signed in we replace every
 // persistence method on window.BOA_DB with a no-op so changes never reach the
 // server. Local React state still updates, so the user can practice editing
@@ -2290,8 +2316,10 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
       sortedTechs.forEach((s) => {
         if (allFullWeeks.length === 0) { designatedBusyWeek[s.ec] = -1; return; }
         const grp = sundayGroup[s.ec];
-        // Eligible: weeks where this tech WORKS the Sunday (rotation A/B per wIdx parity)
-        const eligible = allFullWeeks.filter(wIdx => ((wIdx % 2 === 0) ? "A" : "B") !== grp);
+        // Eligible: weeks where this tech WORKS the Sunday — Sunday parity
+        // is anchored to the Sunday's calendar date so the rotation stays
+        // consistent across cycle boundaries.
+        const eligible = allFullWeeks.filter(wIdx => weekSundayOffGroup(weeks[wIdx]) !== grp);
         if (eligible.length === 0) return;                      // skip; no designation
         // Sort by busy-day-count DESC — busy weeks tried first
         const sorted = [...eligible].sort((a, b) => busyDayCount(b) - busyDayCount(a));
@@ -2617,15 +2645,17 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
     // setting it would push them to 3 offs in a single labour week.
     weeks.forEach((week, wIdx) => {
       const sundayDay = week.find(d => d.dow === 0);
-      const sundayOffGroup = (wIdx % 2 === 0) ? "A" : "B";
-      if (sundayDay) {
-        sortedTechs.forEach(s => {
-          if (sundayGroup[s.ec] === sundayOffGroup) {
-            if (_carryFor(s.ec, wIdx) >= 2) return;     // 2-cap already hit by prior month
-            newGrid[s.ec][sundayDay.d] = "O";
-          }
-        });
-      }
+      if (!sundayDay) return;
+      // Date-anchored rotation: parity comes from the Sunday's calendar
+      // date so the alternation continues correctly across cycle
+      // boundaries instead of resetting at wIdx=0 of each cycle.
+      const sundayOffGroup = sundayDateParity(sundayDay);
+      sortedTechs.forEach(s => {
+        if (sundayGroup[s.ec] === sundayOffGroup) {
+          if (_carryFor(s.ec, wIdx) >= 2) return;     // 2-cap already hit by prior month
+          newGrid[s.ec][sundayDay.d] = "O";
+        }
+      });
     });
 
     // ── Apply day-off requests, with the 2-off-per-week cap as a hard rule.
@@ -3709,13 +3739,16 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
       const er = existingGrid[t.ec];
       if (!er) return;
       let aOffs = 0, bOffs = 0;
-      weekChunks.forEach((wk, wIdx) => {
+      weekChunks.forEach((wk) => {
         const sun = wk.find(d => d.dow === 0);
         if (!sun) return;
         const v = er[sun.d];
         if (v === "O" || v === "R") {
-          if (wIdx % 2 === 0) aOffs++;
-          else                bOffs++;
+          // Date-anchored parity — same convention used by the bulk
+          // auto-fill above, so the inference matches what the algorithm
+          // would produce.
+          if (sundayDateParity(sun) === "A") aOffs++;
+          else                                 bOffs++;
         }
       });
       if (aOffs > bOffs)      aCount++;
@@ -3756,10 +3789,10 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
       const avail = wk.filter(d => row[d.d] !== "X");
       if (avail.length === 0) return;
 
-      // Sunday rotation
+      // Sunday rotation — date-anchored so the alternation continues
+      // correctly across cycle boundaries.
       const sundayDay = avail.find(d => d.dow === 0);
-      const sundayOffGroup = (wIdx % 2 === 0) ? "A" : "B";
-      if (sundayDay && myGroup === sundayOffGroup && !row[sundayDay.d]) {
+      if (sundayDay && myGroup === sundayDateParity(sundayDay) && !row[sundayDay.d]) {
         row[sundayDay.d] = "O";
       }
 
