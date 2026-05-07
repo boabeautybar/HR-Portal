@@ -15,6 +15,15 @@ const STAFF_USERS = {
   "3030": { name: "Rochelle", role: "Ops Admin",
             hideCategories: ["People", "Insights"],
             hideTabs: ["locations", "mgrPlanner"] },
+  // Farida: Manager Trainer / LSM. Edits schedules, leave, maternity, and
+  // can see daily check-ins + manager clock-ins. View-only on locations,
+  // onboarding, offboarding and recruitment — she can browse the lists but
+  // not save / delete / promote. No payroll, staff directory, alerts or
+  // activity log.
+  "4040": { name: "Farida",   role: "Manager Trainer / LSM",
+            hideCategories: ["Payroll", "Insights"],
+            hideTabs: ["staff"],
+            readOnlyTabs: ["locations", "onboard", "offboard", "recruitment"] },
   "1111": { name: "Demo",     role: "Training Demo", demo: true }
 };
 const PIN_SESSION_KEY = "boa_hr_current_user_v1";
@@ -41,6 +50,39 @@ function installDemoMode() {
      "saveLeaveRecords","saveMgrRequests","saveManagerPins",
      "deleteMat","deleteManager","deleteSchedule","appendActivity"
     ].forEach(n => { window.BOA_DB[n] = noop; });
+  };
+  apply();
+}
+
+// Per-tab read-only guard. Wraps every persistence call on window.BOA_DB
+// once at boot. The wrappers consult `window.__BOA_RO_ACTIVE` (set by the
+// App when the active tab is in the user's `readOnlyTabs` list); when the
+// flag is true the call short-circuits with a friendly alert instead of
+// hitting Supabase, so a user with view-only access can still see the
+// edit UI but their changes never persist.
+const READ_ONLY_GUARDED_METHODS = [
+  "saveStaff","saveMat","saveManager","saveSchedule","saveAttendance",
+  "saveOnboarding","saveOffboarding","saveLeaveRecords","saveMgrRequests",
+  "saveTechRequests","saveManagerPins","deleteMat","deleteManager","deleteSchedule"
+];
+function installReadOnlyGuard() {
+  const apply = () => {
+    if (!window.BOA_DB) { setTimeout(apply, 100); return; }
+    if (window.__BOA_RO_INSTALLED) return;
+    window.__BOA_RO_INSTALLED = true;
+    window.__BOA_RO_ACTIVE = false;
+    READ_ONLY_GUARDED_METHODS.forEach(n => {
+      const fn = window.BOA_DB[n];
+      if (typeof fn !== "function") return;
+      const orig = fn.bind(window.BOA_DB);
+      window.BOA_DB[n] = async (...args) => {
+        if (window.__BOA_RO_ACTIVE) {
+          alert("🔒 View-only access — your role can't make changes on this tab. Switching tabs lets you edit again where allowed.");
+          return null;
+        }
+        return orig(...args);
+      };
+    });
   };
   apply();
 }
@@ -4591,7 +4633,7 @@ function PinLogin({ onUnlock }) {
       setPin("");
       return;
     }
-    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], signedInAt: new Date().toISOString() };
+    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], readOnlyTabs: u.readOnlyTabs || [], signedInAt: new Date().toISOString() };
     try { sessionStorage.setItem(PIN_SESSION_KEY, JSON.stringify(session)); } catch (_) {}
     window.BOA_CURRENT_USER = session;
     onUnlock(session);
@@ -4637,7 +4679,7 @@ function AppGate() {
       const s = JSON.parse(raw);
       if (s && STAFF_USERS[s.pin]) {
         const u = STAFF_USERS[s.pin];
-        const merged = { ...s, demo: !!u.demo, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [] };
+        const merged = { ...s, demo: !!u.demo, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], readOnlyTabs: u.readOnlyTabs || [] };
         window.BOA_CURRENT_USER = merged;
         return merged;
       }
@@ -4679,9 +4721,28 @@ function App({ currentUser, onSignOut }) {
   // Demo accounts: install no-op persistence shim so nothing saves to the server.
   useEffect(() => { if (currentUser?.demo) installDemoMode(); }, [currentUser]);
 
+  // Read-only role: install the BOA_DB guard once; the activate flag is
+  // toggled in a separate effect below as the user navigates between tabs.
+  useEffect(() => {
+    if ((currentUser?.readOnlyTabs || []).length > 0) installReadOnlyGuard();
+  }, [currentUser]);
+
   const [staff, setStaff] = useState([]);
   const [matRecs, setMatRecs] = useState([]);
   const [tab, setTab] = useState("dashboard");
+
+  // Whether the active tab is read-only for the signed-in user. Surfaced
+  // via a banner at the top of the page and used to flip the BOA_DB
+  // persistence guard so any save / delete call is short-circuited with
+  // a friendly alert instead of hitting Supabase.
+  const currentTabIsReadOnly = useMemo(() => {
+    const list = currentUser?.readOnlyTabs || [];
+    return list.includes(tab);
+  }, [currentUser, tab]);
+  useEffect(() => {
+    window.__BOA_RO_ACTIVE = !!currentTabIsReadOnly;
+    return () => { window.__BOA_RO_ACTIVE = false; };
+  }, [currentTabIsReadOnly]);
   // Recruitment is now a parent tab with two children (Nail Tech / Manager).
   // The Manager child further nests Coverage and Planner.
   const [recruitSubTab, setRecruitSubTab] = useState("nailTech");   // "nailTech" | "mgrRecruit"
@@ -5598,6 +5659,12 @@ function App({ currentUser, onSignOut }) {
       {currentUser?.demo && (
         <div style={{ background:"#fde047", color:"#78350f", borderBottom:"2px solid #ca8a04", padding:"10px 24px", textAlign:"center", fontSize:13, fontWeight:700, letterSpacing:"0.02em" }}>
           ⚠ TRAINING / DEMO LOGIN — You can explore the portal but any changes you make will <u>NOT</u> be saved.
+        </div>
+      )}
+
+      {currentTabIsReadOnly && !currentUser?.demo && (
+        <div style={{ background:"#dbeafe", color:"#1e3a8a", borderBottom:"2px solid #60a5fa", padding:"8px 24px", textAlign:"center", fontSize:12, fontWeight:700, letterSpacing:"0.02em" }}>
+          🔒 VIEW-ONLY — Your role ({currentUser?.role}) can browse this tab but can't save changes here. Edit access is enabled on the tabs your role allows.
         </div>
       )}
 
