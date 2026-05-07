@@ -1999,6 +1999,11 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyVersions, setHistoryVersions] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  // Auto-fill diagnostics — populated whenever auto-fill or staff-sync runs.
+  // unhonouredRequests: [{ec, name, date, dayNum, reason}] — request-off days
+  // we couldn't apply without breaking a hard rule (2-off/week is the main
+  // one). Surfaced as a warning banner above the grid.
+  const [unhonouredRequests, setUnhonouredRequests] = useState([]);
 
   async function openHistory() {
     setHistoryOpen(true);
@@ -2032,6 +2037,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
       setGrid((d && d.grid) || {});
       setSavedAt((d && d.savedAt) || null);
       setDirty(false);
+      setUnhonouredRequests([]);
       setLoading(false);
     });
   }, [branch, ym]);
@@ -2476,16 +2482,62 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
       return { totalSwaps, unresolved };
     }
 
-    // Build a quick lookup: requestedDays[ec] = Set(day-numbers) of requested off-days
-    const requestedDays = {};
+    // ── Build a unified request list from BOTH sources ──────────────────
+    //   • dayRequests  — legacy boa_offreq_<branch>_<ym>: { ec, days:[d,...] }
+    //   • techRequests — new boa_tech_requests_v1:        { ec, branch, date }
+    // We dedupe by (ec, day-of-month) and keep the date string so we can
+    // give a precise warning when a request can't be honoured.
+    const reqByEcDay = new Map();
+    const _addReq = (ec, dayNum, date, source, note) => {
+      if (!ec || !dayNum) return;
+      const k = ec + "|" + dayNum;
+      if (reqByEcDay.has(k)) return;
+      reqByEcDay.set(k, { ec, day: dayNum, date: date || "", source: source || "", note: note || "" });
+    };
     dayRequests.forEach(req => {
       if (!req.ec) return;
-      requestedDays[req.ec] = requestedDays[req.ec] || new Set();
-      (req.days || []).forEach(d => requestedDays[req.ec].add(d));
+      (req.days || []).forEach(dnum => {
+        const dd = days.find(x => x.d === dnum);
+        const date = dd ? (dd.year + "-" + String(dd.monthIdx+1).padStart(2,"0") + "-" + String(dnum).padStart(2,"0")) : "";
+        _addReq(req.ec, dnum, date, req.source || "legacy", req.note || "");
+      });
+    });
+    (techRequests || []).forEach(r => {
+      if (!r || !r.ec || !r.date) return;
+      if (r.branch && r.branch !== branch) return;
+      const dt = new Date(r.date + "T00:00:00");
+      if (isNaN(dt.getTime())) return;
+      const inPeriod = days.some(d => d.year === dt.getFullYear() && d.monthIdx === dt.getMonth() && d.d === dt.getDate());
+      if (!inPeriod) return;
+      _addReq(r.ec, dt.getDate(), r.date, r.source || "request", r.note || "");
+    });
+    const consolidatedReqs = Array.from(reqByEcDay.values());
+    const requestedDays = {};
+    consolidatedReqs.forEach(r => {
+      requestedDays[r.ec] = requestedDays[r.ec] || new Set();
+      requestedDays[r.ec].add(r.day);
     });
 
-    // Track conflicts where the algorithm couldn't fully honour requests
-    let unhonouredRequests = 0;
+    // Track requests we couldn't apply (and why) so we can warn the user
+    // above the grid. Each entry: {ec, name, date, dayNum, reason, source, note}.
+    const unhonouredList = [];
+    const techByEc = {};
+    sortedTechs.forEach(t => { techByEc[t.ec] = t; });
+    onMatTechs.forEach(t => { techByEc[t.ec] = t; });
+    const dayToWeekIdx = new Map();
+    weeks.forEach((wk, wIdx) => wk.forEach(d => dayToWeekIdx.set(d.d, wIdx)));
+    const _logUnhonoured = (req, reason) => {
+      const t = techByEc[req.ec];
+      unhonouredList.push({
+        ec: req.ec,
+        name: (t && t.name) || req.ec,
+        date: req.date,
+        dayNum: req.day,
+        reason,
+        source: req.source,
+        note: req.note
+      });
+    };
 
     // PASS A — Sun rotation across ALL weeks first (matches original PHASE 1
     // which uses `K.forEach(...)` outside the per-week PHASE 4 loop). This
@@ -2506,13 +2558,49 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
       }
     });
 
-    // Apply day-off requests across ALL period (no quota check, matches original).
-    sortedTechs.forEach(s => {
-      const reqs = Array.from(requestedDays[s.ec] || []).sort((a,b)=>a-b);
-      for (const d of reqs) {
-        if (!newGrid[s.ec][d]) newGrid[s.ec][d] = "R";
-        else if (newGrid[s.ec][d] === "O") newGrid[s.ec][d] = "R";
+    // ── Apply day-off requests, with the 2-off-per-week cap as a hard rule.
+    // Sundays have already been stamped by PASS A, so we count them in the
+    // per-week off-tally before placing R. If placing an R would push the
+    // tech to >2 offs in any single Mon-Sun labour week (incl. cross-month
+    // carry from the prior cycle for the leading partial), we skip the
+    // request and log it for the warning banner. The remaining auto-fill
+    // phases protect R cells, so a stamped R won't be removed later.
+    consolidatedReqs.sort((a, b) => (a.ec === b.ec ? a.day - b.day : a.ec.localeCompare(b.ec)));
+    consolidatedReqs.forEach(req => {
+      const ec = req.ec;
+      if (!newGrid[ec]) {
+        _logUnhonoured(req, "tech is not in the active scheduling roster (on leave, terminated, or not at this branch)");
+        return;
       }
+      const wIdx = dayToWeekIdx.get(req.day);
+      if (wIdx == null) {
+        _logUnhonoured(req, "date is outside this scheduling cycle");
+        return;
+      }
+      const wk = weeks[wIdx];
+      const existing = newGrid[ec][req.day];
+      if (existing === "L") { _logUnhonoured(req, "tech is on leave that day"); return; }
+      if (existing === "X") { _logUnhonoured(req, "outside tech's employment dates"); return; }
+      // Count existing offs in the labour week, EXCLUDING the request day
+      // itself (we may be replacing an O there with R, which doesn't change
+      // the count). Then add 1 for the new R if existing isn't already off.
+      let curOffOther = 0;
+      for (const dd of wk) {
+        if (dd.d === req.day) continue;
+        const v = newGrid[ec][dd.d];
+        if (v === "O" || v === "R" || v === "L") curOffOther++;
+      }
+      const carry = _carryFor(ec, wIdx);
+      const wouldAddOff = (existing === "O" || existing === "R") ? 0 : 1;
+      if (curOffOther + wouldAddOff + carry > 2) {
+        const reason = "would put " + (curOffOther + wouldAddOff + carry) +
+          " off-days in that Mon-Sun labour week (max 2 allowed" +
+          (carry > 0 ? "; " + carry + " carried over from the prior cycle" : "") + ")";
+        _logUnhonoured(req, reason);
+        return;
+      }
+      // Safe to place — upgrade O→R or stamp empty cell as R.
+      newGrid[ec][req.day] = "R";
     });
 
     // Pre-compute global per-day W counters and helpers used by PHASE 4.
@@ -3091,17 +3179,96 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
       days.forEach(d => { newGrid[t.ec][d.d] = "L"; });
     });
 
+    // ── Rescue pass for requests skipped by the 2-cap pre-pass ────────────
+    // For each unhonoured-because-of-week-cap request, try a same-week swap:
+    // turn an existing O (in the SAME Mon-Sun week, not Sunday) into W and
+    // stamp the request day as R. The week's total off-count stays at 2,
+    // so the per-week rule is preserved. We only accept the swap if it
+    // doesn't violate any other hard rule:
+    //   • capacity on the day made W (working ≤ stations)
+    //   • min-coverage on the day made R (working ≥ minWorkingFor)
+    //   • max-6-consecutive working days for that tech across the period
+    // If no valid swap exists, the request stays unhonoured.
+    const stillUnhonoured = [];
+    const liveStreak7 = (ec) => {
+      let run = 0;
+      for (const dd of days) {
+        const v = newGrid[ec][dd.d];
+        if (v === "W" || v === "WL" || v === "E") { run++; if (run >= 7) return true; }
+        else run = 0;
+      }
+      return false;
+    };
+    const dayWorking = (dnum) => sortedTechs.reduce((n, s) => {
+      const v = newGrid[s.ec][dnum]; return n + ((v === "W" || v === "WL" || v === "E") ? 1 : 0);
+    }, 0);
+    unhonouredList.forEach(u => {
+      // Only attempt rescue for the week-cap reason; other reasons (leave,
+      // ghost, outside cycle, not-in-roster) can't be rescued by swapping.
+      if (!u.reason || u.reason.indexOf("would put") !== 0) {
+        stillUnhonoured.push(u); return;
+      }
+      const ec = u.ec;
+      if (!newGrid[ec]) { stillUnhonoured.push(u); return; }
+      const wIdx = dayToWeekIdx.get(u.dayNum);
+      if (wIdx == null) { stillUnhonoured.push(u); return; }
+      const wk = weeks[wIdx];
+      const dDay = days.find(x => x.d === u.dayNum);
+      if (!dDay) { stillUnhonoured.push(u); return; }
+      // Min-coverage on the request day after R: working drops by 1.
+      const reqDayMin = minWorkingFor(dDay);
+      const reqDayWorkingAfter = dayWorking(u.dayNum) - ((newGrid[ec][u.dayNum] === "W" || newGrid[ec][u.dayNum] === "WL" || newGrid[ec][u.dayNum] === "E") ? 1 : 0);
+      if (reqDayWorkingAfter < reqDayMin) {
+        u.reason = "would drop coverage on " + (u.date || u.dayNum) + " below the minimum (" + reqDayWorkingAfter + " < " + reqDayMin + ")";
+        stillUnhonoured.push(u); return;
+      }
+      // Find an O in the same week (not Sunday, not the request day).
+      const offCells = wk.filter(d =>
+        d.d !== u.dayNum && d.dow !== 0 && newGrid[ec][d.d] === "O"
+      );
+      let swapped = false;
+      for (const cand of offCells) {
+        // Capacity check on cand if it becomes W
+        const candWorkingAfter = dayWorking(cand.d) + 1;
+        if (candWorkingAfter > capacity) continue;
+        // Try the swap
+        const origCand = newGrid[ec][cand.d];
+        const origReq  = newGrid[ec][u.dayNum];
+        newGrid[ec][cand.d]   = "W";
+        newGrid[ec][u.dayNum] = "R";
+        if (liveStreak7(ec)) {
+          newGrid[ec][cand.d]   = origCand;
+          newGrid[ec][u.dayNum] = origReq;
+          continue;
+        }
+        swapped = true;
+        break;
+      }
+      if (!swapped) {
+        // Sharpen the reason: nothing to swap with.
+        if (offCells.length === 0) {
+          u.reason = "no swappable off-day in the same Mon-Sun week (only Sundays / leave / requests in that week)";
+        }
+        stillUnhonoured.push(u);
+      }
+    });
+
     setGrid(newGrid);
     setDirty(true);
-    const totalReqDays = dayRequests.reduce((n, r) => n + (r.days || []).length, 0);
+    setUnhonouredRequests(stillUnhonoured);
+
+    const totalReqs    = consolidatedReqs.length;
+    const honouredReqs = totalReqs - stillUnhonoured.length;
+    const skippedNote = stillUnhonoured.length > 0
+      ? " — " + stillUnhonoured.length + " skipped (see warning above the grid)"
+      : "";
     alert(
       "Schedule auto-filled.\n\n" +
       "• Total staff: " + totalStaff + "  (Group A: " + sortedTechs.filter(s=>sundayGroup[s.ec]==='A').length +
         ", Group B: " + sortedTechs.filter(s=>sundayGroup[s.ec]==='B').length + ")\n" +
       "• Weeks in period: " + weeks.length + "  (busy weeks: " + busyWeekIndices.length +
         (isLeadingPartial ? ", leading partial carries from prior month" : "") + ")\n" +
-      "• Day-requests: " + (totalReqDays - unhonouredRequests) + " of " + totalReqDays + " honoured" +
-        (unhonouredRequests > 0 ? " — " + unhonouredRequests + " skipped (would exceed 2-off/week cap)" : "") + "\n" +
+      "• Day-requests: " + honouredReqs + " of " + totalReqs + " honoured" + skippedNote + "\n" +
       "• Station cap: " + capacity + " techs/day  (Mani " + (salon.mani || 0) + " + Pedi " + (salon.pedi || 0) + ")\n" +
       "• Max-6-consecutive: " + (totalSwaps > 0 ? totalSwaps + " off-days shifted to comply" : "no shifts needed") +
         (unresolved > 0 ? " — ⚠ " + unresolved + " unresolved" : "") + "\n\n" +
@@ -3385,6 +3552,318 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
     });
     return out;
   }, [grid, techs, weekChunks]);
+
+  // ── Selective staff sync ─────────────────────────────────────────────
+  // When a tech joins / leaves AFTER a schedule has been generated, we
+  // don't want a full regen (manual edits would be lost). Instead we
+  // surface a banner with a "Sync staff" button that adds rows for new
+  // joins and cleans up rows for departures, without touching anyone
+  // else's row.
+  const gridHasData = useMemo(
+    () => Object.keys(grid || {}).some(ec => grid[ec] && Object.keys(grid[ec]).length > 0),
+    [grid]
+  );
+  const periodEndYmd = useMemo(() => {
+    if (!days || days.length === 0) return null;
+    const last = days[days.length - 1];
+    return last.year + "-" + String(last.monthIdx + 1).padStart(2, "0") + "-" + String(last.d).padStart(2, "0");
+  }, [days]);
+  const periodStartYmd = useMemo(() => {
+    if (!days || days.length === 0) return null;
+    const first = days[0];
+    return first.year + "-" + String(first.monthIdx + 1).padStart(2, "0") + "-" + String(first.d).padStart(2, "0");
+  }, [days]);
+  // Active techs that don't have a scheduled row yet — almost always new
+  // joiners whose start date lands inside or just before the cycle. Excludes
+  // people whose start date is AFTER the cycle ends (no working days here).
+  const missingTechs = useMemo(() => {
+    if (!gridHasData) return [];
+    return techs.filter(t => {
+      const row = grid[t.ec];
+      if (row && Object.keys(row).length > 0) return false;
+      const startDate = t.startDate || t._startDate;
+      if (startDate && periodEndYmd && startDate > periodEndYmd) return false;
+      return true;
+    });
+  }, [techs, grid, gridHasData, periodEndYmd]);
+  // Rows in the grid for ec's that aren't in the active techs list — usually
+  // terminated staff (leftDate set) or staff who moved branches. Pair each
+  // with the underlying staff record (looked up in allStaff) so syncStaff
+  // can decide whether to mark X cells (leftDate within cycle) or drop the
+  // row entirely (leftDate before cycle / record gone).
+  const staleStaff = useMemo(() => {
+    if (!gridHasData) return [];
+    const activeEcs = new Set(techs.map(t => t.ec));
+    return Object.keys(grid).filter(ec => !activeEcs.has(ec)).map(ec => ({
+      ec,
+      staff: allStaff.find(s => s.ec === ec) || null
+    }));
+  }, [techs, grid, allStaff, gridHasData]);
+
+  // Per-tech mini-scheduler. Only fills cells for `tech.ec` and never
+  // mutates other rows. Honours the same hard rules the bulk auto-fill
+  // enforces:
+  //   • startDate / leftDate ghost cells (X)
+  //   • on-maternity-leave full leave (L)
+  //   • Sunday A/B rotation — group inferred from existing techs to keep
+  //     the per-Sunday split balanced
+  //   • request days within the 2-off-per-week cap (any rejected request
+  //     is returned in `unhonored` for the warning banner)
+  //   • per-day station capacity — if existing techs already fill the
+  //     stations on a day, this tech is forced off that day (counts as
+  //     one of their 2 weekly offs)
+  //   • max-6-consecutive working days (insert an off in any 7+ streak,
+  //     within the 2-cap; otherwise the streak is left for manual review)
+  function fillRowForTech(tech, existingGrid) {
+    const ec = tech.ec;
+    const row = {};
+    const unhonored = [];
+    const _ymd = (d) => d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
+    if (tech.onMat) {
+      days.forEach(d => { row[d.d] = "L"; });
+      return { row, unhonored };
+    }
+    const startDate = tech.startDate || tech._startDate;
+    const isOnboarding = tech._onboarding && startDate;
+    const leftDate = tech.leftDate;
+    days.forEach(d => {
+      const ymd = _ymd(d);
+      if (isOnboarding && ymd < startDate) row[d.d] = "X";
+      if (leftDate && ymd > leftDate)      row[d.d] = "X";
+    });
+    // Infer Sunday A/B group counts from existing techs so the new tech
+    // joins the smaller group.
+    let aCount = 0, bCount = 0;
+    techs.forEach(t => {
+      if (t.ec === ec) return;
+      const er = existingGrid[t.ec];
+      if (!er) return;
+      let aOffs = 0, bOffs = 0;
+      weekChunks.forEach((wk, wIdx) => {
+        const sun = wk.find(d => d.dow === 0);
+        if (!sun) return;
+        const v = er[sun.d];
+        if (v === "O" || v === "R") {
+          if (wIdx % 2 === 0) aOffs++;
+          else                bOffs++;
+        }
+      });
+      if (aOffs > bOffs)      aCount++;
+      else if (bOffs > aOffs) bCount++;
+    });
+    const myGroup = aCount <= bCount ? "A" : "B";
+    // Tech's request days within this cycle
+    const myReqs = new Set();
+    const reqMeta = {};                                  // dayNum → {date, note, source}
+    (techRequests || []).forEach(r => {
+      if (!r || r.ec !== ec) return;
+      if (r.branch && r.branch !== branch) return;
+      const dt = new Date(r.date + "T00:00:00");
+      if (isNaN(dt.getTime())) return;
+      const inP = days.some(d => d.year === dt.getFullYear() && d.monthIdx === dt.getMonth() && d.d === dt.getDate());
+      if (!inP) return;
+      const dn = dt.getDate();
+      myReqs.add(dn);
+      reqMeta[dn] = { date: r.date, note: r.note || "", source: r.source || "request" };
+    });
+    const capacity = (salonForBranch.mani || 0) + (salonForBranch.pedi || 0);
+    // Current working count on a day from EXISTING rows (not this tech).
+    const dayWorkingExisting = (dnum) => {
+      let n = 0;
+      Object.keys(existingGrid).forEach(otherEc => {
+        if (otherEc === ec) return;
+        const v = existingGrid[otherEc] && existingGrid[otherEc][dnum];
+        if (v === "W" || v === "WL" || v === "E") n++;
+      });
+      return n;
+    };
+    const weekOffCount = (wk) => wk.reduce((n, d) => {
+      const v = row[d.d];
+      return n + ((v === "O" || v === "R" || v === "L") ? 1 : 0);
+    }, 0);
+
+    weekChunks.forEach((wk, wIdx) => {
+      const avail = wk.filter(d => row[d.d] !== "X");
+      if (avail.length === 0) return;
+
+      // Sunday rotation
+      const sundayDay = avail.find(d => d.dow === 0);
+      const sundayOffGroup = (wIdx % 2 === 0) ? "A" : "B";
+      if (sundayDay && myGroup === sundayOffGroup && !row[sundayDay.d]) {
+        row[sundayDay.d] = "O";
+      }
+
+      // Apply requested off-days first, with the 2-cap
+      const reqDays = avail.filter(d => myReqs.has(d.d));
+      for (const reqD of reqDays) {
+        const meta = reqMeta[reqD.d] || {};
+        const dt = meta.date || _ymd(reqD);
+        const cur = row[reqD.d];
+        if (cur === "L") {
+          unhonored.push({ ec, name: tech.name, date: dt, dayNum: reqD.d, reason: "tech is on leave that day", source: meta.source, note: meta.note });
+          continue;
+        }
+        if (cur === "X") {
+          unhonored.push({ ec, name: tech.name, date: dt, dayNum: reqD.d, reason: "outside tech's employment dates", source: meta.source, note: meta.note });
+          continue;
+        }
+        if (cur === "O") { row[reqD.d] = "R"; continue; }
+        if (cur === "R") continue;
+        const off = weekOffCount(wk);
+        if (off >= 2) {
+          unhonored.push({ ec, name: tech.name, date: dt, dayNum: reqD.d, reason: "would put 3 off-days in that Mon-Sun labour week (max 2 allowed)", source: meta.source, note: meta.note });
+          continue;
+        }
+        row[reqD.d] = "R";
+      }
+
+      // Top up to 2 offs (full weeks only). Prefer Mon→Tue→Wed and days
+      // where the existing schedule is already at capacity (so this tech
+      // being off relieves the pressure rather than creating excess).
+      if (avail.length >= 7) {
+        let safety = 0;
+        while (weekOffCount(wk) < 2 && safety++ < 10) {
+          const candidates = avail.filter(d => !row[d.d] && d.dow !== 0);
+          if (candidates.length === 0) break;
+          candidates.sort((a, b) => {
+            const sc = (x) => {
+              let s = 0;
+              if (x.dow === 1) s += 60;
+              else if (x.dow === 2) s += 40;
+              else if (x.dow === 3) s += 20;
+              else if (x.dow === 4) s -= 40;
+              else if (x.dow === 5 || x.dow === 6) s -= 45;
+              if (dayWorkingExisting(x.d) >= capacity) s += 100;
+              return s;
+            };
+            return sc(b) - sc(a);
+          });
+          row[candidates[0].d] = "O";
+        }
+      }
+
+      // Fill remaining cells. If a day is already at capacity in the
+      // existing schedule, mark this tech off there (within 2-cap); else
+      // mark them as W.
+      avail.forEach(d => {
+        if (row[d.d]) return;
+        if (d.dow !== 0 && dayWorkingExisting(d.d) >= capacity && weekOffCount(wk) < 2) {
+          row[d.d] = "O";
+        } else {
+          row[d.d] = "W";
+        }
+      });
+    });
+
+    // Max-6-consecutive: try to insert an off inside any 7+ streak,
+    // respecting the 2-cap per week. Bail when no valid insertion exists.
+    for (let attempt = 0; attempt < 10; attempt++) {
+      let run = 0, runStart = -1;
+      let longestRun = 0, longestStart = -1, longestEnd = -1;
+      for (let i = 0; i < days.length; i++) {
+        const v = row[days[i].d];
+        if (v === "W" || v === "WL" || v === "E") {
+          if (run === 0) runStart = i;
+          run++;
+          if (run > longestRun) { longestRun = run; longestStart = runStart; longestEnd = i; }
+        } else { run = 0; }
+      }
+      if (longestRun < 7) break;
+      let inserted = false;
+      for (let ix = longestStart + 1; ix < longestEnd; ix++) {
+        const d = days[ix];
+        if (d.dow === 0) continue;
+        if (row[d.d] !== "W" && row[d.d] !== "WL") continue;
+        const wIdx = weekChunks.findIndex(wk => wk.some(x => x.d === d.d));
+        if (wIdx < 0) continue;
+        if (weekOffCount(weekChunks[wIdx]) >= 2) continue;
+        row[d.d] = "O";
+        inserted = true;
+        break;
+      }
+      if (!inserted) break;
+    }
+
+    return { row, unhonored };
+  }
+
+  async function syncStaff() {
+    const addCount = missingTechs.length;
+    const staleCount = staleStaff.length;
+    if (addCount === 0 && staleCount === 0) {
+      alert("No staff changes to sync — every active tech already has a row, and there are no stale rows.");
+      return;
+    }
+    const lines = [];
+    if (addCount > 0) {
+      lines.push("Add " + addCount + " new tech row" + (addCount === 1 ? "" : "s") + ":");
+      missingTechs.forEach(t => lines.push("  + " + t.name + " (" + t.ec + ")" + (t.startDate ? " · starts " + t.startDate : "")));
+    }
+    if (staleCount > 0) {
+      lines.push((addCount > 0 ? "\n" : "") + "Clean up " + staleCount + " stale row" + (staleCount === 1 ? "" : "s") + ":");
+      staleStaff.forEach(s => {
+        const sf = s.staff;
+        if (sf && sf.leftDate && sf.leftDate >= (periodStartYmd || "") && sf.leftDate <= (periodEndYmd || "")) {
+          lines.push("  − " + (sf.name || s.ec) + " (" + s.ec + ") · left " + sf.leftDate + " — cells after that date marked X");
+        } else if (sf && sf.leftDate) {
+          lines.push("  − " + (sf.name || s.ec) + " (" + s.ec + ") · left " + sf.leftDate + " — row removed");
+        } else {
+          lines.push("  − " + (sf ? (sf.name || s.ec) : s.ec) + " (" + s.ec + ") · no longer at this branch — row removed");
+        }
+      });
+    }
+    if (!confirm(
+      "Sync staff changes?\n\n" +
+      lines.join("\n") + "\n\n" +
+      "Existing rows for unaffected staff will be left untouched. " +
+      "New rows are filled per the schedule rules (2 off-days/week, Sunday rotation, request days where they fit). " +
+      "After syncing, click Save to commit."
+    )) return;
+
+    const newGrid = JSON.parse(JSON.stringify(grid || {}));
+    const allUnh = [];
+
+    missingTechs.forEach(t => {
+      const { row, unhonored } = fillRowForTech(t, newGrid);
+      newGrid[t.ec] = row;
+      allUnh.push(...unhonored);
+    });
+
+    staleStaff.forEach(s => {
+      const ec = s.ec;
+      const staff = s.staff;
+      if (staff && staff.leftDate) {
+        // Mark cells AFTER leftDate as X. Keep cells on/before leftDate
+        // as-is — those days the tech actually worked.
+        const _ymd = (d) => d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
+        let everPre = false;
+        days.forEach(d => {
+          if (_ymd(d) > staff.leftDate) {
+            newGrid[ec] = newGrid[ec] || {};
+            newGrid[ec][d.d] = "X";
+          } else {
+            everPre = true;
+          }
+        });
+        if (!everPre) delete newGrid[ec];
+      } else {
+        delete newGrid[ec];
+      }
+    });
+
+    setGrid(newGrid);
+    setDirty(true);
+    setUnhonouredRequests(allUnh);
+
+    const unhCnt = allUnh.length;
+    alert(
+      "Staff sync complete.\n\n" +
+      (addCount > 0   ? "• Added " + addCount + " new tech row" + (addCount === 1 ? "" : "s") + " (rule-compliant fill).\n" : "") +
+      (staleCount > 0 ? "• Cleaned up " + staleCount + " stale row" + (staleCount === 1 ? "" : "s") + ".\n" : "") +
+      (unhCnt > 0     ? "• ⚠ " + unhCnt + " request day" + (unhCnt === 1 ? "" : "s") + " not honoured (see warning above).\n" : "") +
+      "\nReview the grid, then click Save to commit."
+    );
+  }
 
   return (
     <div>
@@ -3711,6 +4190,75 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange }) {
                 <strong>{c.name}</strong> ({c.ec}) · Week {c.weekIdx} ({c.range}): <strong>{c.count} off-days</strong> ({c.offCells})
               </li>
             ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Auto-fill / sync diagnostic — request days that couldn't be honoured
+          without breaking a hard rule (mainly 2 off-days per week). */}
+      {unhonouredRequests.length > 0 && (
+        <div style={{ background:"#fef3c7", border:"1px solid #fcd34d", borderRadius:10, padding:"12px 14px", marginBottom:14, color:"#92400e", fontSize:12, lineHeight:1.5 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6, gap:12 }}>
+            <div style={{ fontWeight:700, fontSize:13 }}>
+              ⚠ {unhonouredRequests.length} request day{unhonouredRequests.length > 1 ? 's' : ''} could not be applied without violating a schedule rule
+            </div>
+            <button onClick={() => setUnhonouredRequests([])}
+              title="Dismiss this warning"
+              style={{ background:"transparent", border:"none", color:"#92400e", cursor:"pointer", fontSize:14, fontWeight:700, lineHeight:1, padding:"0 4px" }}>×</button>
+          </div>
+          <div style={{ fontSize:11, color:"#92400e", marginBottom:6, fontStyle:"italic" }}>
+            Request off-days never override schedule rules. Re-run auto-fill after adjusting the schedule, or place the off-day manually if a rule can flex.
+          </div>
+          <ul style={{ margin:0, paddingLeft:20 }}>
+            {unhonouredRequests.map((u, i) => (
+              <li key={i}>
+                <strong>{u.name}</strong> ({u.ec}) · <strong>{u.date || u.dayNum}</strong> — {u.reason}
+                {u.note ? <span style={{ fontStyle:"italic", color:"#7c2d12" }}> · "{u.note}"</span> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Selective staff-sync prompt — surfaces when a tech was added or
+          terminated AFTER a schedule was generated. Saves a full regen. */}
+      {(missingTechs.length > 0 || staleStaff.length > 0) && !loading && (
+        <div style={{ background:"#eff6ff", border:"1px solid #93c5fd", borderRadius:10, padding:"12px 14px", marginBottom:14, color:"#1e3a8a", fontSize:12, lineHeight:1.5 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap", marginBottom:6 }}>
+            <div style={{ fontWeight:700, fontSize:13 }}>
+              👥 Staff changes detected — sync without regenerating the whole schedule
+            </div>
+            <button onClick={syncStaff}
+              style={{ padding:"7px 14px", background:"#1e3a8a", color:"#fff", border:"none", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
+              Sync staff now
+            </button>
+          </div>
+          <div style={{ fontSize:11, color:"#1e3a8a", marginBottom:6, fontStyle:"italic" }}>
+            Existing rows are left untouched. New rows are filled per the schedule rules; departures keep pre-leftDate cells and mark post-leftDate cells as X.
+          </div>
+          <ul style={{ margin:0, paddingLeft:20 }}>
+            {missingTechs.map(t => (
+              <li key={"add-" + t.ec}>
+                <strong style={{ color:"#15803d" }}>＋ Add</strong> <strong>{t.name}</strong> ({t.ec})
+                {(t.startDate || t._startDate) ? <> · starts <strong>{t.startDate || t._startDate}</strong></> : null}
+                {t.onMat ? <> · <em>on maternity leave (will be filled as L)</em></> : null}
+              </li>
+            ))}
+            {staleStaff.map(s => {
+              const sf = s.staff;
+              const inCycle = sf && sf.leftDate && periodStartYmd && periodEndYmd
+                && sf.leftDate >= periodStartYmd && sf.leftDate <= periodEndYmd;
+              return (
+                <li key={"rm-" + s.ec}>
+                  <strong style={{ color:"#9F1A4F" }}>− Remove</strong> <strong>{(sf && sf.name) || s.ec}</strong> ({s.ec})
+                  {sf && sf.leftDate
+                    ? (inCycle
+                        ? <> · left <strong>{sf.leftDate}</strong> — cells after will be marked X</>
+                        : <> · left <strong>{sf.leftDate}</strong> — row will be removed</>)
+                    : <> · no longer at this branch — row will be removed</>}
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
