@@ -487,9 +487,12 @@
     var res = await sb.from("clockins")
       .select("*, staff:staff_id ( id, name, employee_code, role_type, branch )")
       .gte("ts", since.toISOString())
-      .order("ts", { ascending: false });
+      .order("ts", { ascending: false })
+      .limit(5000);
     if (res.error) { console.error("listRecentTechClockins:", res.error); return []; }
-    return (res.data || []).filter(function (r) { return r.staff && r.staff.role_type !== "manager"; });
+    // Keep tech rows AND orphan rows (staff join failed) so the Daily Check-ins
+    // tab can surface them as diagnostics. Only manager-tagged rows are dropped.
+    return (res.data || []).filter(function (r) { return !r.staff || r.staff.role_type !== "manager"; });
   }
   async function loadClockinMeta(clockinId) {
     var res = await sb.from("app_state").select("value").eq("key", "boa_mgrclockin_meta_" + clockinId).maybeSingle();
