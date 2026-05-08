@@ -5598,6 +5598,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [attBranch, setAttBranch] = useState(SALONS[0].name);
   const [attYM,     setAttYM]     = useState(window.BOA_DB ? window.BOA_DB.currentSchedYm() : "2026-05");
   const [attGrid,   setAttGrid]   = useState({});      // per-staff per-day status codes
+  // Snapshot of attGrid taken right before a check-in import — drives the
+  // "Undo Check-in Import" button on the attendance toolbar. Null when there
+  // is nothing to undo. Cleared when the branch or cycle changes so we never
+  // try to roll one branch's grid back onto another.
+  const [attCheckinSnapshot, setAttCheckinSnapshot] = useState(null);
+  useEffect(() => { setAttCheckinSnapshot(null); }, [attBranch, attYM]);
   const [attSched,  setAttSched]  = useState({});      // schedule grid for the same period (for mirror hints)
   const [attMeta,   setAttMeta]   = useState({});      // sidecar metadata e.g. { freshaCoverage:{through:"YYYY-MM-DD"} }
   const [attLoading,setAttLoading]= useState(false);
@@ -8327,7 +8333,85 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             catch (e) { alert("Could not save: " + (e.message || e)); }
           };
 
-          // Reset every attendance entry for this branch+cycle (warns first)
+          // ── Import check-ins from the staff check-in app ── any tech with
+          // at least one clock-IN event on a given day in this cycle is
+          // marked "On Time" for that day (or "Extra Day" if the schedule
+          // had them off). Manual / auto clock-OUT alone is NOT proof —
+          // we require a real `in` event to avoid mis-marking a day from
+          // an end-of-shift auto-out. Confirmed cells (bold, no leading
+          // `~`) are preserved so the import only fills in the blanks
+          // and refreshes mirrored cells. Post-leftDate days are
+          // skipped. The pre-import grid is snapshotted so the toolbar's
+          // Undo button can roll the whole import back in one click.
+          const importCheckins = async () => {
+            const branchData = checkInsByBranch[attBranch] || {};
+            const ecsWithCheckins = Object.keys(branchData);
+            if (ecsWithCheckins.length === 0) {
+              alert(
+                "No check-ins found for " + attBranch + " in the last " + techClockinDays + " days.\n\n" +
+                "If you're expecting some, increase the look-back window on the Check-ins tab " +
+                "and try again."
+              );
+              return;
+            }
+            const next = { ...attGrid };
+            let stamped = 0, skippedConfirmed = 0, skippedPostLeft = 0;
+            for (const ec of ecsWithCheckins) {
+              const techCheckins = branchData[ec];
+              for (const day of days) {
+                const cell = techCheckins[day.ymd];
+                if (!cell || !cell.hasIn) continue;          // require explicit clock-IN
+                if (isPostLeftDate(ec, day.ymd)) { skippedPostLeft++; continue; }
+                const cur = (next[ec] || {})[day.d];
+                // Preserve confirmed entries (bold, no leading ~); only
+                // overwrite blanks and unconfirmed (mirrored) cells.
+                if (cur && cur.indexOf("~") !== 0) { skippedConfirmed++; continue; }
+                // If the schedule had them off and they checked in, the
+                // honest mapping is "Extra Day" rather than "On Time".
+                const sv = attSched[ec] && attSched[ec][day.d];
+                const status = (sv === "O" || sv === "R") ? "ext" : "on";
+                if (!next[ec]) next[ec] = { ...(attGrid[ec] || {}) };
+                next[ec][day.d] = status;
+                stamped++;
+              }
+            }
+            if (stamped === 0) {
+              alert(
+                "No cells to mark — every check-in either lands on a confirmed cell, " +
+                "is past someone's last day, or is outside this cycle." +
+                (skippedConfirmed > 0 ? "\n\n• " + skippedConfirmed + " confirmed cell" + (skippedConfirmed === 1 ? "" : "s") + " preserved." : "") +
+                (skippedPostLeft > 0  ? "\n• " + skippedPostLeft  + " post-departure day"  + (skippedPostLeft === 1  ? "" : "s") + " skipped."   : "")
+              );
+              return;
+            }
+            // Snapshot the pre-import grid for Undo. Always overwrite the
+            // existing snapshot so the most recent import is the one that
+            // can be rolled back.
+            setAttCheckinSnapshot(attGrid);
+            setAttGrid(next);
+            try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
+            catch (e) { alert("Could not save: " + (e.message || e)); return; }
+            alert(
+              "✓ Marked " + stamped + " day" + (stamped === 1 ? "" : "s") + " from check-ins (" + attBranch + ")." +
+              (skippedConfirmed > 0 ? "\n\n• " + skippedConfirmed + " confirmed cell" + (skippedConfirmed === 1 ? "" : "s") + " preserved." : "") +
+              (skippedPostLeft > 0  ? "\n• " + skippedPostLeft  + " post-departure day"  + (skippedPostLeft === 1  ? "" : "s") + " skipped."   : "") +
+              "\n\nUse the ↩ Undo button to roll this back."
+            );
+          };
+          // Restore the grid to the snapshot taken before the last
+          // check-in import for this branch + cycle. The snapshot is
+          // cleared automatically when the branch or cycle changes, so
+          // there is no risk of restoring across contexts.
+          const undoCheckinsImport = async () => {
+            if (!attCheckinSnapshot) return;
+            if (!confirm("Undo the last check-in import for " + attBranch + " — " + cycLabel + "?\n\nThis restores the grid to its state right before the import.")) return;
+            const restore = attCheckinSnapshot;
+            setAttGrid(restore);
+            setAttCheckinSnapshot(null);
+            try { await window.BOA_DB.saveAttendance(attBranch, attYM, restore); }
+            catch (e) { alert("Could not save: " + (e.message || e)); return; }
+          };
+
           // ── Import Fresha appointments CSV ── any nail tech with at least one
           // completed appointment on a given day in the current cycle is marked
           // "On Time" for that day. Confirmed cells (bold, no leading ~) are
@@ -8980,6 +9064,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 )}
                 <button onClick={autoFill} style={{ padding:"7px 14px", background:"#fef3c7", color:"#78350f", border:"1px solid #fbbf24", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Fill empty cells from schedule (faded, still unconfirmed)">✓ Auto-fill from Schedule</button>
                 <button onClick={importFresha} style={{ padding:"7px 14px", background:"#dbeafe", color:"#1e3a8a", border:"1px solid #93c5fd", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Upload a Fresha appointments CSV — every nail tech with a completed appointment that day is marked On Time">📤 Import Fresha CSV</button>
+                <button onClick={importCheckins} style={{ padding:"7px 14px", background:"#dcfce7", color:"#14532d", border:"1px solid #86efac", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Pull every clock-in from the staff check-in app and stamp those days as On Time (or Extra Day if scheduled off). Confirmed cells are preserved. Use ↩ Undo to roll the import back.">✓ Import Check-ins</button>
+                {attCheckinSnapshot && (
+                  <button onClick={undoCheckinsImport} style={{ padding:"7px 14px", background:"#fef3c7", color:"#78350f", border:"1px solid #fbbf24", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Restore the attendance grid to its state right before the last check-in import">↩ Undo Check-in Import</button>
+                )}
                 <button onClick={resetCycle} style={{ padding:"7px 14px", background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fca5a5", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Clear every cell for this branch + cycle (with confirmation)">↺ Reset Cycle</button>
               </div>
 
