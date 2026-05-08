@@ -9065,6 +9065,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <button onClick={autoFill} style={{ padding:"7px 14px", background:"#fef3c7", color:"#78350f", border:"1px solid #fbbf24", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Fill empty cells from schedule (faded, still unconfirmed)">✓ Auto-fill from Schedule</button>
                 <button onClick={importFresha} style={{ padding:"7px 14px", background:"#dbeafe", color:"#1e3a8a", border:"1px solid #93c5fd", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Upload a Fresha appointments CSV — every nail tech with a completed appointment that day is marked On Time">📤 Import Fresha CSV</button>
                 <button onClick={importCheckins} style={{ padding:"7px 14px", background:"#dcfce7", color:"#14532d", border:"1px solid #86efac", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Pull every clock-in from the staff check-in app and stamp those days as On Time (or Extra Day if scheduled off). Confirmed cells are preserved. Use ↩ Undo to roll the import back.">✓ Import Check-ins</button>
+                {(() => {
+                  // Visible badge showing how many check-in DAYS landed in
+                  // checkInsByBranch for the current branch + look-back. If 0
+                  // the import button has nothing to do — surface the reason
+                  // (no clock-ins fetched) rather than letting it fail
+                  // silently. Counts unique (ec, ymd) pairs with a real
+                  // clock-IN event.
+                  const branchData = checkInsByBranch[attBranch] || {};
+                  let n = 0;
+                  for (const ec in branchData) {
+                    const byDay = branchData[ec];
+                    for (const ymd in byDay) if (byDay[ymd] && byDay[ymd].hasIn) n++;
+                  }
+                  const total = (techClockinRows || []).length;
+                  const tip = n === 0
+                    ? "Nothing to import — no clock-ins were fetched for " + attBranch + " in the last " + techClockinDays + " days. " +
+                      "Total clock-in rows fetched (all branches, last " + techClockinDays + " days): " + total + ". " +
+                      "Increase the look-back window on the Check-ins tab if the cycle you're viewing is older."
+                    : n + " check-in day" + (n === 1 ? "" : "s") + " loaded for " + attBranch + " in the last " + techClockinDays + " days (across all techs at this branch). " +
+                      "These are the days the Import Check-ins button can stamp.";
+                  return (
+                    <span title={tip} style={{ fontSize:10, fontWeight:700, color: n === 0 ? "#9a3412" : "#14532d", background: n === 0 ? "#ffedd5" : "#dcfce7", border: "1px solid " + (n === 0 ? "#fde68a" : "#86efac"), borderRadius:6, padding:"3px 8px", letterSpacing:"0.04em" }}>
+                      ✓ {n} check-in day{n === 1 ? "" : "s"}{n === 0 ? " (none loaded)" : ""}
+                    </span>
+                  );
+                })()}
                 {attCheckinSnapshot && (
                   <button onClick={undoCheckinsImport} style={{ padding:"7px 14px", background:"#fef3c7", color:"#78350f", border:"1px solid #fbbf24", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Restore the attendance grid to its state right before the last check-in import">↩ Undo Check-in Import</button>
                 )}
