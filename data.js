@@ -505,6 +505,19 @@
     // tab can surface them as diagnostics. Only manager-tagged rows are dropped.
     return (res.data || []).filter(function (r) { return !r.staff || r.staff.role_type !== "manager"; });
   }
+  // Lazily fetch a single proof image from app_state. The kiosk app stores
+  // proof-of-sickness/FRL pictures as data URLs at boa_proof_<branch>_<ym>_<ec>_<day>
+  // wrapped in {__raw: <dataUrl>}. Used by the Daily Check-ins tab when the user
+  // clicks "View proof" on a sick/frl/absent entry.
+  async function loadKioskProof(proofKeyName) {
+    if (!proofKeyName) return null;
+    var res = await sb.from("app_state").select("value").eq("key", proofKeyName).maybeSingle();
+    if (res.error) { console.error("loadKioskProof:", res.error); return null; }
+    var v = res.data && res.data.value;
+    if (v && typeof v === "object" && v.__raw) return v.__raw;
+    if (typeof v === "string") return v;
+    return null;
+  }
   // List kiosk-app submissions across every branch and recent cycles. The kiosk
   // appends each submission to boa_kiosk_log_<branch>_<ym> in app_state with
   // {ec, dayKey, status, note, ts}. We read that log here so Daily Check-ins
@@ -546,16 +559,18 @@
         var ts = new Date(e.ts);
         if (isNaN(ts) || ts < since) return;
         out.push({
-          id:     "kiosk_" + rowBranch + "_" + e.ts + "_" + (e.ec || ""),
-          ts:     e.ts,
-          dayKey: e.dayKey,
-          ymd:    e.ymd || null,
-          type:   "att",
-          status: e.status,
-          note:   e.note || null,
-          ec:     e.ec,
-          branch: rowBranch,
-          source: "kiosk_log"
+          id:       "kiosk_" + rowBranch + "_" + e.ts + "_" + (e.ec || ""),
+          ts:       e.ts,
+          dayKey:   e.dayKey,
+          ymd:      e.ymd || null,
+          type:     "att",
+          status:   e.status,
+          note:     e.note || null,
+          hasProof: !!e.hasProof,
+          proofKey: e.proofKey || null,
+          ec:       e.ec,
+          branch:   rowBranch,
+          source:   "kiosk_log"
         });
       });
     });
@@ -863,6 +878,7 @@
     listRecentTechClockins:    listRecentTechClockins,
     listRecentAttendanceCheckins: listRecentAttendanceCheckins,
     listRecentKioskCheckins:      listRecentKioskCheckins,
+    loadKioskProof:               loadKioskProof,
     probeRecentClockinsRaw:    probeRecentClockinsRaw,
     probeAttendanceGrid:       probeAttendanceGrid,
     loadClockinMeta:           loadClockinMeta,
