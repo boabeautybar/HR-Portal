@@ -9353,9 +9353,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const cellBaseBg = override ? st.bg
                                               : showKioskReason ? kStat.bg
                                               : (isHol ? "#fecaca40" : (isWk ? "#fdf4f8" : "#FFFFFF"));
-                            const allMatchBg     = allMatchWork ? "#dcfce7" : allMatchOff ? "#ffedd5" : (kioskAbsentScheduled ? "#fef3c7" : null);
-                            const allMatchEdge   = allMatchWork ? "3px solid #16a34a" : allMatchOff ? "3px solid #ea580c" : (kioskAbsentScheduled ? "3px solid #f59e0b" : "1px solid #FCE7F3");
-                            const allMatchTxt    = allMatchWork ? "#14532d" : allMatchOff ? "#9a3412" : null;
+                            // Stripes encode schedule (top) + body (kiosk truth) + Fresha
+                            // (bottom). When all three agree the cell reads as one solid colour
+                            // band; any colour break between layers IS the divergence signal —
+                            // we don't paint extra "all match" backgrounds or corner badges on
+                            // top of that or the cell turns into noise.
+                            const allMatchBg     = null;
+                            const allMatchEdge   = "1px solid #FCE7F3";
+                            const allMatchTxt    = null;
                             const allMatchTip    = allMatchWork ? "\n✓ All match — Fresha + schedule + check-in agree"
                                                   : allMatchOff ? "\n✓ All match OFF — scheduled off, no Fresha appointment, no check-in"
                                                   : "";
@@ -9386,31 +9391,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                     <div style={{ position:"absolute", top:3, bottom:3, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle:"italic", fontWeight:600, color: kStat.fg || "#9ca3af", pointerEvents:"none", letterSpacing:"0.02em" }}>{kStat.lbl}</div>
                                   )}
                                   <select value="" onChange={e=>onCellChange(s, dy, e.target.value)} title={ttl + allMatchTip + "\nSchedule: " + (hintLbl || "—") + "\n" + freshaTip}
-                                    style={{ position:"absolute", top:3, bottom:3, left:0, right:0, width:"100%", border: deviation ? "2px solid #be185d" : "none", background: "transparent", color:"transparent", fontSize:9, fontWeight:400, opacity:1, textAlign:"center", cursor:"pointer", padding:"0 1px", fontFamily:"inherit", outline:"none", appearance:"none" }}>
+                                    style={{ position:"absolute", top:3, bottom:3, left:0, right:0, width:"100%", border:"none", background: "transparent", color:"transparent", fontSize:9, fontWeight:400, opacity:1, textAlign:"center", cursor:"pointer", padding:"0 1px", fontFamily:"inherit", outline:"none", appearance:"none" }}>
                                     <option value="" style={{ color:"#000", background:"#fff" }}>—</option>
                                     {Object.entries(STAT).filter(([k]) => k !== "ph" || isHol).map(([k, vv]) => (
                                       <option key={k} value={k} style={{ color:"#000", background:"#fff" }}>{vv.lbl}</option>
                                     ))}
                                   </select>
-                                  {deviation && !allMatchWork && !allMatchOff && <span style={{ position:"absolute", top:4, right:1, width:5, height:5, borderRadius:"50%", background:"#be185d", pointerEvents:"none" }} />}
-                                  {allMatchWork && (
-                                    <span title="Fresha + schedule + check-in all agree" style={{ position:"absolute", top:4, right:1, fontSize:9, lineHeight:1, color:"#15803d", fontWeight:800, pointerEvents:"none" }}>✓✓</span>
-                                  )}
-                                  {allMatchOff && (
-                                    <span title="Scheduled off · no Fresha appointment · no check-in" style={{ position:"absolute", top:4, right:1, fontSize:9, lineHeight:1, color:"#c2410c", fontWeight:800, pointerEvents:"none" }}>✓✓</span>
-                                  )}
-                                  {!allMatchWork && !allMatchOff && checkinHasIn && !checkinMismatch && (
-                                    <span style={{ position:"absolute", bottom:4, left:2, fontSize:9, lineHeight:1, color:"#16a34a", pointerEvents:"none", textShadow:"0 0 1px rgba(255,255,255,0.6)" }}>✓</span>
-                                  )}
-                                  {checkinMismatch && (
-                                    <span title="Tech checked in but day marked off — discrepancy" style={{ position:"absolute", bottom:4, left:2, fontSize:9, lineHeight:1, color:"#b45309", pointerEvents:"none", fontWeight:800 }}>!</span>
-                                  )}
-                                  {missingCheckin && (
-                                    <span title="Fresha shows worked but no check-in" style={{ position:"absolute", bottom:4, right:2, fontSize:9, lineHeight:1, color:"#b45309", pointerEvents:"none", fontWeight:800 }}>!?</span>
-                                  )}
-                                  {kioskAbsentScheduled && !checkinMismatch && (
-                                    <span title={"Schedule mismatch — scheduled to work but kiosk marked " + ((STAT[kioskAbs.status] || {}).lbl || kioskAbs.status)} style={{ position:"absolute", top:4, left:2, fontSize:9, lineHeight:1, color:"#b45309", pointerEvents:"none", fontWeight:800 }}>⚠</span>
-                                  )}
                                 </div>
                               </td>
                             );
