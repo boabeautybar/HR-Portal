@@ -6025,6 +6025,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return () => { cancelled = true; };
   }, [tab, techClockinDays]);
 
+  // Load attendance-grid check-ins (kiosk app submissions) for the same window.
+  // The kiosk writes daily statuses to boa_att_<branch>_<ym>, NOT to clockins,
+  // so without this the Daily Check-ins tab misses everything except Manager
+  // Clock-in PIN+selfie+GPS rows.
+  const [attCheckinRows, setAttCheckinRows] = useState([]);
+  useEffect(() => {
+    if (tab !== "checkins") return;
+    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
+    if (!window.BOA_DB.listRecentAttendanceCheckins) return; // older deploy
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await window.BOA_DB.listRecentAttendanceCheckins(techClockinDays, SALONS.map(s => s.name));
+        if (!cancelled) setAttCheckinRows(rows || []);
+      } catch (e) { console.error("att check-ins load:", e); }
+    })();
+    return () => { cancelled = true; };
+  }, [tab, techClockinDays]);
+
   // Index check-ins by branch → ec → ymd, with per-day flags. Used by both the
   // Attendance grid and the Check-ins tab so the data is parsed once.
   const checkInsByBranch = useMemo(() => {
@@ -10669,11 +10688,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // instead of being silently swallowed. Branch filter only applies when
           // the row has a staff record; orphans always pass through so they're
           // visible regardless of the selected branch.
-          const filtered = (techClockinRows || []).filter(r => {
+          const clockinFiltered = (techClockinRows || []).filter(r => {
             const branch = (r.staff && r.staff.branch) || "";
             if (checkinFilterBranch !== "All" && r.staff && branch !== checkinFilterBranch) return false;
             return new Date(r.ts) >= since;
           });
+          // Look up staff names for attendance-grid rows (which only carry ec).
+          const staffByEc = {};
+          for (const s of (staff || []))    staffByEc[s.ec] = s;
+          for (const m of (managers || [])) staffByEc[m.ec] = m;
+          // Synthesize "clockin-shaped" rows from the kiosk attendance grid so
+          // the existing table renderer can display them next to clockins rows.
+          const attShaped = (attCheckinRows || []).filter(r => {
+            if (checkinFilterBranch !== "All" && r.branch !== checkinFilterBranch) return false;
+            return new Date(r.ts) >= since;
+          }).map(r => {
+            const sRec = staffByEc[r.ec] || null;
+            return {
+              id:       r.id,
+              ts:       r.ts,
+              type:     r.type,        // "att" — special render (status badge instead of IN/OUT pill)
+              status:   r.status,
+              source:   "attendance_grid",
+              staff:    { name: sRec ? sRec.name : "(unknown)", employee_code: r.ec, branch: r.branch }
+            };
+          });
+          // Merge clockins rows + attendance-grid rows, newest first.
+          const filtered = clockinFiltered.concat(attShaped).sort((a, b) =>
+            String(b.ts || "").localeCompare(String(a.ts || ""))
+          );
           // Per-branch tally of every row fetched in the load window — independent
           // of the viewer's branch/range filters above. Lets us see at a glance
           // whether a branch's check-ins reached Supabase at all.
@@ -10683,6 +10726,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             if (!r.staff) { orphanFetched++; continue; }
             const b = r.staff.branch || "(no branch)";
             fetchedByBranch[b] = (fetchedByBranch[b] || 0) + 1;
+          }
+          // Per-branch tally of attendance-grid rows pulled in the load window.
+          const attFetchedByBranch = {};
+          for (const r of attCheckinRows || []) {
+            const b = r.branch || "(no branch)";
+            attFetchedByBranch[b] = (attFetchedByBranch[b] || 0) + 1;
           }
           const fmtDateTime = (iso) => new Date(iso).toLocaleString("en-ZA", { day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" });
           const rangeOpts = [{v:1,l:"Today"},{v:3,l:"Last 3 days"},{v:7,l:"Last 7 days"},{v:14,l:"Last 14 days"},{v:30,l:"Last 30 days"},{v:60,l:"Last 60 days"}];
@@ -10800,7 +10849,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </span>
                   )}
                   {Object.keys(fetchedByBranch).length === 0 && orphanFetched === 0 && (
-                    <span style={{ color:"#9ca3af", fontStyle:"italic" }}>No rows fetched.</span>
+                    <span style={{ color:"#9ca3af", fontStyle:"italic" }}>No clockins rows fetched.</span>
+                  )}
+                </div>
+                <div style={{ marginTop:8, fontSize:11.5, color:"#155e75", fontWeight:600 }}>
+                  Attendance grid (kiosk submissions): {(attCheckinRows || []).length} mark{(attCheckinRows || []).length === 1 ? "" : "s"} fetched
+                </div>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginTop:6 }}>
+                  {Object.keys(attFetchedByBranch).sort().map(b => (
+                    <span key={"att-" + b} style={{ background:"#cffafe", color:"#155e75", padding:"3px 9px", borderRadius:6, fontSize:11.5 }}>
+                      📍 {b}: <strong>{attFetchedByBranch[b]}</strong>
+                    </span>
+                  ))}
+                  {Object.keys(attFetchedByBranch).length === 0 && (
+                    <span style={{ color:"#9ca3af", fontStyle:"italic" }}>No attendance-grid rows. The kiosk hasn't written any check-ins to Supabase for the current cycle.</span>
                   )}
                 </div>
                 {checkinProbeResult && (() => {
@@ -10903,9 +10965,28 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <tr><td colSpan={5} style={{ textAlign:"center", padding:30, color:"#9ca3af", fontStyle:"italic" }}>No check-ins in this range.</td></tr>
                     )}
                     {filtered.map(r => {
+                      const STATUS_BADGE = {
+                        on:     { lbl:"ON TIME",  bg:"#dcfce7", fg:"#14532d" },
+                        late:   { lbl:"LATE",     bg:"#fef3c7", fg:"#92400e" },
+                        ext:    { lbl:"EXTRA",    bg:"#dbeafe", fg:"#1e3a8a" },
+                        trial:  { lbl:"TRIAL",    bg:"#e0e7ff", fg:"#3730a3" },
+                        swap_o: { lbl:"SWAP",     bg:"#cffafe", fg:"#155e75" },
+                        swap_i: { lbl:"SWAP-IN",  bg:"#cffafe", fg:"#155e75" },
+                        off:    { lbl:"OFF",      bg:"#f3f4f6", fg:"#374151" },
+                        sick:   { lbl:"SICK",     bg:"#fee2e2", fg:"#7f1d1d" },
+                        sick_n: { lbl:"SICK-N",   bg:"#fee2e2", fg:"#7f1d1d" },
+                        al:     { lbl:"ANNUAL",   bg:"#e0f2fe", fg:"#075985" },
+                        ph:     { lbl:"PH",       bg:"#e0f2fe", fg:"#075985" },
+                        mat:    { lbl:"MAT",      bg:"#fce7f3", fg:"#9d174d" },
+                        term:   { lbl:"TERM",     bg:"#fee2e2", fg:"#7f1d1d" },
+                        frl:    { lbl:"FRL",      bg:"#fef3c7", fg:"#92400e" },
+                        no:     { lbl:"NO-SHOW",  bg:"#fee2e2", fg:"#7f1d1d" },
+                        unpaid: { lbl:"UNPAID",   bg:"#fef3c7", fg:"#92400e" }
+                      };
                       const t = r.type === "in"        ? { lbl:"IN",       bg:"#dcfce7", fg:"#14532d" }
                               : r.type === "out"       ? { lbl:"OUT",      bg:"#fef3c7", fg:"#92400e" }
                               : r.type === "out_auto"  ? { lbl:"AUTO-OUT", bg:"#fee2e2", fg:"#7f1d1d" }
+                              : r.type === "att"       ? (STATUS_BADGE[r.status] || { lbl:String(r.status||"").toUpperCase(), bg:"#f3f4f6", fg:"#374151" })
                               :                          { lbl:r.type,     bg:"#f3f4f6", fg:"#374151" };
                       const isOrphan = !r.staff;
                       return (
