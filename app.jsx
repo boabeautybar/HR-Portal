@@ -9205,14 +9205,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
               <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap", fontSize:11, color:"#831843", marginBottom:8, padding:"8px 12px", background:"#FDEEF5", border:"1px solid #FBCFE8", borderRadius:8 }}>
                 <span style={{ fontWeight:700 }}>💡 Reading the grid:</span>
-                <span style={{ display:"inline-block", width:18, height:14, position:"relative", verticalAlign:"middle", border:"1px solid #FBCFE8" }}>
-                  <span style={{ position:"absolute", top:0, left:0, right:0, height:3, background:"#dcfce7" }} />
-                  <span style={{ position:"absolute", bottom:0, left:0, right:0, height:3, background:"#86efac" }} />
-                </span> top stripe = schedule · body = kiosk (manager-tagged) · bottom stripe = Fresha ·
-                <span style={{ display:"inline-block", width:18, height:14, verticalAlign:"middle", background:"#86efac", border:"1px solid #FBCFE8" }} /> = all 3 agree (solid colour, no stripes) ·
-                <span style={{ fontStyle:"italic", opacity:0.75 }}>italic</span> = mirrored from schedule ·
-                <span style={{ fontWeight:700 }}>bold</span> = confirmed ·
-                colour break across stripes = sources disagree (hover for detail)
+                <span style={{ display:"inline-block", width:22, height:20, position:"relative", verticalAlign:"middle", border:"1px solid #FBCFE8" }}>
+                  <span style={{ position:"absolute", top:0, left:0, right:0, height:5, background:"#86efac", display:"flex", alignItems:"center", paddingLeft:2 }}><span style={{ fontSize:6, fontWeight:800, color:"rgba(0,0,0,0.45)" }}>S</span></span>
+                  <span style={{ position:"absolute", bottom:0, left:0, right:0, height:5, background:"#86efac", display:"flex", alignItems:"center", paddingLeft:2 }}><span style={{ fontSize:6, fontWeight:800, color:"rgba(0,0,0,0.45)" }}>F</span></span>
+                </span>
+                <strong>S</strong> = Schedule · <strong>middle</strong> = kiosk (manager-tagged) · <strong>F</strong> = Fresha appointments ·
+                <span style={{ display:"inline-block", width:10, height:10, verticalAlign:"middle", background:"#86efac", borderRadius:2 }} /> green = worked ·
+                <span style={{ display:"inline-block", width:10, height:10, verticalAlign:"middle", background:"#cbd5e1", borderRadius:2 }} /> slate = off ·
+                same colour top + middle + bottom = all 3 agree ·
+                colour break = sources disagree (hover for detail)
               </div>
 
               <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:14, padding:"10px 12px", background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:8 }}>
@@ -9364,17 +9365,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               (missingCheckin  ? "\n⚠ Missing check-in: Fresha shows worked, no check-in record" : "") +
                               (kioskAbsentScheduled ? "\n⚠ Schedule mismatch: scheduled to work but kiosk marked " + ((STAT[kioskAbs.status] || {}).lbl || kioskAbs.status) + (kioskAbs.note ? " (" + kioskAbs.note + ")" : "") : "") +
                               (isLate && checkin ? "\n(Late — counts as worked, no discrepancy)" : "");
-                            const cellBaseBg = override ? st.bg
-                                              : showKioskReason ? kStat.bg
+                            // Body colour. Map "on"/"late"/"ext"/"swap_o"/"trial" to the work
+                            // green and "off" to the slate so these cases line up exactly with
+                            // the schedule/Fresha stripe palette (one solid colour when all
+                            // three agree). All other STAT entries (sick, frl, no-show, …)
+                            // keep their unique colour so the divergence is visible.
+                            const presenceBgFor = (k) => (k === "on" || k === "late" || k === "ext" || k === "swap_o" || k === "trial") ? C_WORK
+                                                       : k === "off" ? C_OFF
+                                                       : null;
+                            const cellBaseBg = override ? (presenceBgFor(bareV) || st.bg)
+                                              : showKioskReason ? (presenceBgFor(kioskAbs.status) || kStat.bg)
                                               : (isHol ? "#fecaca40" : (isWk ? "#fdf4f8" : "#FFFFFF"));
-                            // Stripes encode schedule (top) + body (kiosk truth) + Fresha
-                            // (bottom). When all three agree the cell collapses to ONE solid
-                            // colour (no stripes drawn) — green for "all worked", gray for
-                            // "all off" — so a clean grid reads as agreement at a glance and
-                            // any cell with stripes visible IS a cell with a divergence.
-                            const allMatchBg     = allMatchWork ? "#86efac" : allMatchOff ? "#e5e7eb" : null;
+                            // Stripes always show — top = schedule, body = kiosk truth, bottom
+                            // = Fresha. The schedule + Fresha stripes use the same green/slate
+                            // palette as the body (when the body is a presence status), so when
+                            // all three agree the cell naturally renders as one solid colour
+                            // band. Any colour break across the layers IS the divergence.
+                            const allMatchBg     = null;
                             const allMatchEdge   = "1px solid #FCE7F3";
-                            const allMatchTxt    = allMatchWork ? "#14532d" : allMatchOff ? "#475569" : null;
+                            const allMatchTxt    = null;
                             const allMatchTip    = allMatchWork ? "\n✓ All match — Fresha + schedule + check-in agree"
                                                   : allMatchOff ? "\n✓ All match OFF — scheduled off, no Fresha appointment, no check-in"
                                                   : "";
@@ -9382,30 +9391,37 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // (manager-tagged) status, bottom stripe = Fresha appointments.
                             // When all three agree the cell reads as one solid colour band; any
                             // colour break between stripes/body flags a divergence at a glance.
-                            const schedStripeColor = hint ? (STAT[hint] || {}).bg || "transparent" : "transparent";
-                            const freshaStripeColor = freshaWorkedCell ? "#86efac"
-                                                    : freshaCoversThisDay ? "#e5e7eb"
+                            // Simplified presence palette — every source maps to "work" (green)
+                            // or "off" (slate) so when all three sources agree the cell ends up
+                            // a single solid colour band without needing a special override.
+                            const C_WORK = "#86efac", C_OFF = "#cbd5e1";
+                            const schedStripeColor = scheduleSaysWork ? C_WORK
+                                                    : (hint === "off" || hint === "al" || hint === "ph" || hint === "mat" || hint === "term") ? C_OFF
+                                                    : hint ? (STAT[hint] || {}).bg || "transparent"
+                                                    : "transparent";
+                            const freshaStripeColor = freshaWorkedCell ? C_WORK
+                                                    : freshaCoversThisDay ? C_OFF
                                                     : "transparent";
                             const freshaTip = freshaWorkedCell ? "Fresha: worked (appointments imported)"
                                             : freshaCoversThisDay ? "Fresha: no appointments this day"
                                             : "Fresha: no data for this day yet";
                             return (
                               <td key={dy.d} style={{ padding:0, borderBottom:"1px solid #FCE7F3", borderLeft: allMatchEdge, background: allMatchBg || cellBaseBg, position:"relative" }}>
-                                <div style={{ position:"relative", height:30 }}>
-                                  {!allMatchBg && schedStripeColor !== "transparent" && (
-                                    <div title={"Schedule: " + (hintLbl || "—")} style={{ position:"absolute", top:0, left:0, right:0, height:3, background: schedStripeColor, pointerEvents:"none" }} />
-                                  )}
-                                  {!allMatchBg && freshaStripeColor !== "transparent" && (
-                                    <div title={freshaTip} style={{ position:"absolute", bottom:0, left:0, right:0, height:3, background: freshaStripeColor, pointerEvents:"none" }} />
-                                  )}
+                                <div style={{ position:"relative", height:36 }}>
+                                  <div title={"Schedule: " + (hintLbl || "—")} style={{ position:"absolute", top:0, left:0, right:0, height:6, background: schedStripeColor === "transparent" ? "#f9fafb" : schedStripeColor, borderBottom:"1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
+                                    <span style={{ fontSize:7, fontWeight:800, color:"rgba(0,0,0,0.45)", letterSpacing:"0.05em" }}>S</span>
+                                  </div>
+                                  <div title={freshaTip} style={{ position:"absolute", bottom:0, left:0, right:0, height:6, background: freshaStripeColor === "transparent" ? "#f9fafb" : freshaStripeColor, borderTop:"1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
+                                    <span style={{ fontSize:7, fontWeight:800, color:"rgba(0,0,0,0.45)", letterSpacing:"0.05em" }}>F</span>
+                                  </div>
                                   {v && (
-                                    <div style={{ position:"absolute", top:3, bottom:3, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle: override ? "normal" : "italic", fontWeight: override ? 700 : 400, color: override ? (allMatchTxt || st.fg) : (allMatchTxt || (hintFg + "70")), pointerEvents:"none", letterSpacing:"0.02em" }}>{st.lbl || hintLbl || ""}</div>
+                                    <div style={{ position:"absolute", top:6, bottom:6, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle: override ? "normal" : "italic", fontWeight: override ? 700 : 400, color: override ? st.fg : (hintFg + "70"), pointerEvents:"none", letterSpacing:"0.02em" }}>{st.lbl || hintLbl || ""}</div>
                                   )}
                                   {!v && showKioskReason && (
-                                    <div style={{ position:"absolute", top:3, bottom:3, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle:"italic", fontWeight:600, color: kStat.fg || "#9ca3af", pointerEvents:"none", letterSpacing:"0.02em" }}>{kStat.lbl}</div>
+                                    <div style={{ position:"absolute", top:6, bottom:6, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle:"italic", fontWeight:600, color: kStat.fg || "#9ca3af", pointerEvents:"none", letterSpacing:"0.02em" }}>{kStat.lbl}</div>
                                   )}
-                                  <select value="" onChange={e=>onCellChange(s, dy, e.target.value)} title={ttl + allMatchTip + "\nSchedule: " + (hintLbl || "—") + "\n" + freshaTip}
-                                    style={{ position:"absolute", top:3, bottom:3, left:0, right:0, width:"100%", border:"none", background: "transparent", color:"transparent", fontSize:9, fontWeight:400, opacity:1, textAlign:"center", cursor:"pointer", padding:"0 1px", fontFamily:"inherit", outline:"none", appearance:"none" }}>
+                                  <select value="" onChange={e=>onCellChange(s, dy, e.target.value)} title={ttl + "\nSchedule: " + (hintLbl || "—") + "\n" + freshaTip}
+                                    style={{ position:"absolute", top:6, bottom:6, left:0, right:0, width:"100%", border:"none", background: "transparent", color:"transparent", fontSize:9, fontWeight:400, opacity:1, textAlign:"center", cursor:"pointer", padding:"0 1px", fontFamily:"inherit", outline:"none", appearance:"none" }}>
                                     <option value="" style={{ color:"#000", background:"#fff" }}>—</option>
                                     {Object.entries(STAT).filter(([k]) => k !== "ph" || isHol).map(([k, vv]) => (
                                       <option key={k} value={k} style={{ color:"#000", background:"#fff" }}>{vv.lbl}</option>
