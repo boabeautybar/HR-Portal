@@ -9350,7 +9350,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               (missingCheckin  ? "\n⚠ Missing check-in: Fresha shows worked, no check-in record" : "") +
                               (kioskAbsentScheduled ? "\n⚠ Schedule mismatch: scheduled to work but kiosk marked " + ((STAT[kioskAbs.status] || {}).lbl || kioskAbs.status) + (kioskAbs.note ? " (" + kioskAbs.note + ")" : "") : "") +
                               (isLate && checkin ? "\n(Late — counts as worked, no discrepancy)" : "");
-                            const cellBaseBg = override ? (isHol ? "#fef2f2" : (isWk ? "#fdf4f8" : "#FFFFFF")) : (isHol ? "#fecaca40" : hintBg + "18");
+                            const cellBaseBg = override ? (isHol ? "#fef2f2" : (isWk ? "#fdf4f8" : "#FFFFFF"))
+                                              : showKioskReason ? kStat.bg
+                                              : (isHol ? "#fecaca40" : hintBg + "18");
                             const allMatchBg     = allMatchWork ? "#dcfce7" : allMatchOff ? "#ffedd5" : (kioskAbsentScheduled ? "#fef3c7" : null);
                             const allMatchEdge   = allMatchWork ? "3px solid #16a34a" : allMatchOff ? "3px solid #ea580c" : (kioskAbsentScheduled ? "3px solid #f59e0b" : "1px solid #FCE7F3");
                             const allMatchTxt    = allMatchWork ? "#14532d" : allMatchOff ? "#9a3412" : null;
