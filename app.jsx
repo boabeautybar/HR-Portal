@@ -3369,6 +3369,31 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
       days.forEach(d => { newGrid[t.ec][d.d] = "L"; });
     });
 
+    // Annual-leave stamping — for any tech who is still employed (active
+    // row in the grid) and has a leave record on the calendar that
+    // overlaps the cycle, stamp those days as L right here in the auto-
+    // fill so the schedule reflects the calendar without waiting for the
+    // post-render auto-stamp effect (which doesn't re-fire after a fresh
+    // auto-fill resets the grid). Ghost (X) cells are preserved so that
+    // post-leftDate days don't get overwritten with L.
+    if (leaveRecs && leaveRecs.length > 0) {
+      const branchEcs = new Set(allStaff.filter(s => s.branch === branch).map(s => s.ec));
+      for (const lv of leaveRecs) {
+        if (!lv || !lv.ec || !lv.startDate || !lv.endDate) continue;
+        if (!branchEcs.has(lv.ec)) continue;
+        if (!newGrid[lv.ec]) continue;
+        const sd = new Date(lv.startDate + "T00:00:00");
+        const ed = new Date(lv.endDate   + "T00:00:00");
+        if (isNaN(sd.getTime()) || isNaN(ed.getTime())) continue;
+        for (const d of days) {
+          const dt = new Date(d.year, d.monthIdx, d.d);
+          if (dt < sd || dt > ed) continue;
+          if (newGrid[lv.ec][d.d] === "X") continue;     // preserve ghost cells
+          newGrid[lv.ec][d.d] = "L";
+        }
+      }
+    }
+
     // ── Rescue pass for requests skipped by the 2-cap pre-pass ────────────
     // For each unhonoured-because-of-week-cap request, try a same-week swap:
     // turn an existing O (in the SAME Mon-Sun week, not Sunday) into W and
@@ -4524,28 +4549,48 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
                       const weekEnd = d.dow === 0;
                       const requested = requestedSet.has(s.ec + "|" + d.d);
                       const requestUnapplied = requested && v !== "R" && v !== "O";
-                      // On-mat cells: flat grey, non-clickable, non-draggable.
-                      const matCell = onMat ? { background:"#e5e7eb", color:"#9ca3af" } : cellStyle(v);
+                      // Off-boarding: cells AFTER leftDate render flat grey
+                      // and locked, regardless of whatever value is sitting
+                      // in the saved grid. This way the moment leftDate is
+                      // set, the post-departure days visibly disappear from
+                      // the schedule without waiting for an auto-fill or
+                      // sync pass to stamp X.
+                      const dYmd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
+                      const isPastLeft = isLeaving && dYmd > s.leftDate;
+                      const cellLocked = onMat || isPastLeft;
+                      // Maternity leave cells: distinct lavender tint so
+                      // ML reads differently from a regular L (annual
+                      // leave) and from a post-departure ghost cell.
+                      const matCell = onMat
+                        ? { background:"#ede9fe", color:"#6b21a8" }
+                        : isPastLeft
+                          ? { background:"#e5e7eb", color:"#9ca3af" }
+                          : cellStyle(v);
                       // Drag-drop visual states
                       const isSrc        = dragSource && dragSource.ec === s.ec && dragSource.day === d.d;
-                      const isValidDrop  = !onMat && isValidDropTarget(s.ec, d.d);
+                      const isValidDrop  = !cellLocked && isValidDropTarget(s.ec, d.d);
                       const dropOutline  = isValidDrop ? "2px solid #15803d"
                                           : isSrc      ? "2px dashed #BE185D"
                                           : d.isToday  ? "1px dashed rgba(190,24,93,0.45)"
                                           :              "none";
-                      const dragCursor   = onMat ? "default" : (v ? "grab" : "pointer");
+                      const dragCursor   = cellLocked ? "default" : (v ? "grab" : "pointer");
+                      const cellTitle    = onMat
+                        ? `${s.name} · on maternity leave`
+                        : isPastLeft
+                          ? `${s.name} · left ${s.leftDate} — no longer scheduled`
+                          : `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · click to cycle, drag to swap within the week${requested ? ' · 📝 day-off requested' + (requestUnapplied ? ' (not yet on grid)' : '') : ''}`;
                       return (
                         <td key={s.ec+'-'+d.d}
-                            draggable={!onMat && !!v}
-                            onDragStart={e => handleDragStart(e, s.ec, d.d, v, onMat)}
+                            draggable={!cellLocked && !!v}
+                            onDragStart={e => handleDragStart(e, s.ec, d.d, v, cellLocked)}
                             onDragOver={e => handleDragOver(e, s.ec, d.d)}
                             onDrop={e => handleDrop(e, s.ec, d.d)}
                             onDragEnd={handleDragEnd}
-                            onClick={onMat ? undefined : () => cycleCell(s.ec, d.d)}
-                            title={onMat ? `${s.name} · on maternity leave` : `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · click to cycle, drag to swap within the week${requested ? ' · 📝 day-off requested' + (requestUnapplied ? ' (not yet on grid)' : '') : ''}`}
+                            onClick={cellLocked ? undefined : () => cycleCell(s.ec, d.d)}
+                            title={cellTitle}
                             style={{ ...matCell, padding:0, height:30, textAlign:"center", borderBottom:"1px solid #FCE7F3", borderLeft:"1px solid #FCE7F3", borderRight: weekEnd ? "3px solid #BE185D" : "none", cursor: dragCursor, fontSize:11, fontWeight:700, userSelect:"none", outline: dropOutline, outlineOffset:-1, opacity: isSrc ? 0.4 : undefined, position:"relative" }}>
-                          {onMat ? "—" : v}
-                          {requestUnapplied && (
+                          {onMat ? "ML" : isPastLeft ? "—" : v}
+                          {requestUnapplied && !cellLocked && (
                             <span style={{ position:"absolute", top:1, right:2, fontSize:8, lineHeight:1, color:"#BE185D", pointerEvents:"none" }}>📝</span>
                           )}
                         </td>
@@ -4592,10 +4637,10 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
 
       <div style={{ display:"flex", gap:14, flexWrap:"wrap", marginTop:14, fontSize:11, color:"#831843", alignItems:"center" }}>
         <strong>Legend:</strong>
-        {["W","WL","O","R","L","E","X"].map(c => (
+        {["W","WL","O","R","L","ML","E","X"].map(c => (
           <span key={c} style={{ display:"inline-flex", alignItems:"center", gap:6 }}>
-            <span style={{ ...cellStyle(c), padding:"2px 7px", borderRadius:4, fontWeight:700, minWidth:22, textAlign:"center" }}>{c}</span>
-            {c==="W"?"Work":c==="WL"?"Work late":c==="O"?"Off":c==="R"?"Requested off":c==="L"?"Leave":c==="E"?"Extra cover":"Pre-start"}
+            <span style={{ ...(c === "ML" ? { background:"#ede9fe", color:"#6b21a8" } : cellStyle(c)), padding:"2px 7px", borderRadius:4, fontWeight:700, minWidth:22, textAlign:"center" }}>{c}</span>
+            {c==="W"?"Work":c==="WL"?"Work late":c==="O"?"Off":c==="R"?"Requested off":c==="L"?"Leave":c==="ML"?"Maternity leave":c==="E"?"Extra cover":"Pre-start"}
           </span>
         ))}
         <span style={{ display:"inline-flex", alignItems:"center", gap:6, marginLeft:8 }}>
@@ -6065,6 +6110,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         pregnant:   pregnantEcs.has(s.ec.trim()),  // still in store
         offboarded: !!off,                         // on the off-boarding list — vacancy now open
         offRec:     off || null,
+        // Off-boarding records live in `offList`, not on the staff
+        // record itself. Propagate the leftDate up to the top level so
+        // every consumer (Schedule grid, leave list, exports, etc.) can
+        // read `s.leftDate` directly without having to know whether the
+        // departure was set via the staff modal (writes s.leftDate) or
+        // via the Off-boarding tab (writes offList → s.offRec.leftDate).
+        leftDate:   s.leftDate || (off && off.leftDate) || null,
         offDaysSinceLeft,                          // -ve / 0 / +ve days since leftDate
         offHidden,                                 // true when past 31-day display window
         matRec:     matRecs.find(r=>r.ec.trim()===s.ec.trim()),
@@ -9484,12 +9536,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     {storeLeave.map(lv => {
                       const s2 = (isTechMode ? enriched : managers).find(x => x.ec === lv.ec);
                       const stats = computeLeaveDays(lv);
+                      // Grey out leave records for staff who have already
+                      // left so the active leave list reads at a glance.
+                      // Use the offRec.leftDate (not just a flag) so we can
+                      // also show when they left.
+                      const leftDate = s2 && (s2.offRec && s2.offRec.leftDate) || (s2 && s2.leftDate) || null;
+                      const isLeft = !!leftDate;
                       return (
-                        <div key={lv._id} style={{ display:"grid", gridTemplateColumns:"1.6fr 1fr 1fr auto auto auto", gap:8, alignItems:"center", padding:"7px 0", borderBottom:"1px solid " + aA, fontSize:12 }}>
-                          <div><strong>{s2 ? s2.name : "?"}</strong> · <span style={{ color:"#9ca3af", fontSize:11 }}>{lv.ec}</span></div>
+                        <div key={lv._id} style={{ display:"grid", gridTemplateColumns:"1.6fr 1fr 1fr auto auto auto", gap:8, alignItems:"center", padding:"7px 0", borderBottom:"1px solid " + aA, fontSize:12, opacity: isLeft ? 0.55 : 1, color: isLeft ? "#6b7280" : undefined }}>
+                          <div>
+                            <strong style={{ color: isLeft ? "#6b7280" : undefined }}>{s2 ? s2.name : "?"}</strong> · <span style={{ color:"#9ca3af", fontSize:11 }}>{lv.ec}</span>
+                            {isLeft && <span style={{ marginLeft:6, background:"#fee2e2", color:"#991b1b", padding:"1px 6px", borderRadius:4, fontSize:9, fontWeight:700, letterSpacing:"0.04em" }}>👋 LEFT {leftDate}</span>}
+                          </div>
                           <div>{lv.startDate}</div>
                           <div>{lv.endDate}</div>
-                          <div title={stats.cal + " calendar day" + (stats.cal !== 1 ? "s" : "") + ", " + stats.off + " theoretical off-day" + (stats.off !== 1 ? "s" : "") + " excluded, " + stats.used + " leave day" + (stats.used !== 1 ? "s" : "") + " used"} style={{ color:"#831843", fontSize:11, textAlign:"right", lineHeight:1.2 }}>
+                          <div title={stats.cal + " calendar day" + (stats.cal !== 1 ? "s" : "") + ", " + stats.off + " theoretical off-day" + (stats.off !== 1 ? "s" : "") + " excluded, " + stats.used + " leave day" + (stats.used !== 1 ? "s" : "") + " used"} style={{ color: isLeft ? "#6b7280" : "#831843", fontSize:11, textAlign:"right", lineHeight:1.2 }}>
                             <div style={{ fontWeight:700 }}>{stats.used} leave day{stats.used !== 1 ? "s" : ""}</div>
                             <div style={{ fontSize:9, color:"#9ca3af" }}>{stats.cal} cal.{stats.off > 0 ? " (−" + stats.off + " off)" : ""}</div>
                           </div>
