@@ -5598,7 +5598,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // ── Attendance tab state ───────────────────────────────────────────
   const [attBranch, setAttBranch] = useState(SALONS[0].name);
-  const [attYM,     setAttYM]     = useState(window.BOA_DB ? window.BOA_DB.currentSchedYm() : "2026-05");
+  // Attendance grid keys rows by START-month of the 25-to-24 cycle (April 25 →
+  // May 24, 2026 lives at "2026-04"). The kiosk check-in app writes to the same
+  // start-month key. Using currentSchedYm() here would load the FUTURE cycle's
+  // row and silently hide every kiosk check-in for the current cycle.
+  const [attYM,     setAttYM]     = useState(window.BOA_DB ? (window.BOA_DB.currentAttYm ? window.BOA_DB.currentAttYm() : window.BOA_DB.currentSchedYm()) : "2026-04");
   const [attGrid,   setAttGrid]   = useState({});      // per-staff per-day status codes
   // Snapshot of attGrid taken right before a check-in import — drives the
   // "Undo Check-in Import" button on the attendance toolbar. Null when there

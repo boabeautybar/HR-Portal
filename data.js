@@ -409,6 +409,17 @@
     if (d.getDate() > 24) { m += 1; if (m > 12) { m = 1; y += 1; } }
     return y + "-" + String(m).padStart(2, "0");
   }
+  // Start-month ym for the cycle that contains today. The Attendance grid and
+  // manager schedule both key rows by the START-month of the 25th-to-24th cycle
+  // (April 25 → May 24, 2026 lives at "2026-04"). currentSchedYm() returns the
+  // END-month convention used by the tech schedule, which is one month ahead —
+  // do NOT use it as the Attendance tab's default ym or you load the WRONG
+  // cycle's row, which is what was hiding Bree's kiosk check-ins.
+  function currentAttYm() {
+    var d = new Date(), y = d.getFullYear(), m = d.getMonth() + 1;
+    if (d.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y -= 1; } }
+    return y + "-" + String(m).padStart(2, "0");
+  }
   function periodDays(ym) {
     var p = ym.split("-"), y = +p[0], m = +p[1];
     var prevM = m === 1 ? 12 : m - 1, prevY = m === 1 ? y - 1 : y;
@@ -671,6 +682,7 @@
     probeRequestTables:     probeRequestTables,
     loadByKey:              loadByKey,
     currentSchedYm:         currentSchedYm,
+    currentAttYm:           currentAttYm,
     periodDays:             periodDays,
     periodLabel:            periodLabel,
     shiftYm:                shiftYm,
