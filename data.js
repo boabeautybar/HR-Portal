@@ -770,11 +770,18 @@
     return (res.data && res.data.value) || null;
   }
   async function saveAttendance(branch, ym, grid, extras) {
-    var v = { grid: grid || {}, branch: branch, ym: ym, savedAt: new Date().toISOString() };
+    // Preserve sidecar fields (freshaCoverage, freshaWorked, …) that callers
+    // didn't pass explicitly — saveAttendance is invoked from many paths
+    // (single-cell edit, kiosk import, Fresha CSV) and we don't want one
+    // path to clobber the others' metadata.
+    var key = "boa_att_" + branch + "_" + ym;
+    var prior = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
+    var priorVal = (prior.data && prior.data.value) || {};
+    var v = Object.assign({}, priorVal, { grid: grid || {}, branch: branch, ym: ym, savedAt: new Date().toISOString() });
     if (extras && typeof extras === "object") {
       Object.keys(extras).forEach(function (k) { v[k] = extras[k]; });
     }
-    var res = await sb.from("app_state").upsert({ key: "boa_att_" + branch + "_" + ym, value: v });
+    var res = await sb.from("app_state").upsert({ key: key, value: v });
     if (res.error) throw res.error;
     return v;
   }

@@ -5652,7 +5652,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       safe(window.BOA_DB.loadSchedule(attBranch, attYM, true))
     ]).then(([att, sch, mgrSch]) => {
       setAttGrid((att && att.grid) || {});
-      setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null } : {});
+      setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null, freshaWorked: att.freshaWorked || {} } : { freshaWorked: {} });
       const techGrid = (sch    && sch.grid)    || {};
       const mgrGrid  = ymdReKey((mgrSch && mgrSch.grid) || {});
       setAttSched({ ...techGrid, ...mgrGrid });
@@ -6087,6 +6087,28 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     }
     return out;
   }, [techClockinRows, attCheckinRows]);
+
+  // Index kiosk submissions whose status is NOT "on"/"late" — i.e. the manager
+  // marked the tech as not physically present (sick, no-show, off, swap-in,
+  // unpaid, etc.). Used to flag a schedule mismatch on the attendance grid
+  // when a scheduled-to-work day got a non-present kiosk status.
+  const kioskAbsentByBranch = useMemo(() => {
+    const out = {};
+    for (const r of attCheckinRows || []) {
+      if (!r || !r.ec || !r.branch || !r.ymd) continue;
+      if (r.status === "on" || r.status === "late") continue;
+      const br = r.branch, ec = r.ec, ymd = r.ymd;
+      if (!out[br]) out[br] = {};
+      if (!out[br][ec]) out[br][ec] = {};
+      // Keep latest entry per day so the most recent kiosk submission wins.
+      const prior = out[br][ec][ymd];
+      const dt = new Date(r.ts);
+      if (!prior || (prior.ts && dt > prior.ts) || !prior.ts) {
+        out[br][ec][ymd] = { status: r.status, note: r.note || null, ts: dt };
+      }
+    }
+    return out;
+  }, [attCheckinRows]);
 
   // Auto-detect pending terminations from attendance grids (current + 2 prior months)
   useEffect(() => {
@@ -8658,13 +8680,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // state; the others are fetched.
               const safeLoad = (p) => Promise.resolve(p).catch(() => null);
               const branchGrids = {};
+              const branchFreshaWorked = {}; // {branch: {ec: {dayNum: true}}} — tracked separately from grid so kiosk overwrites can't erase the appointment signal
               const allBranches = SALONS.map(sl => sl.name);
               await Promise.all(allBranches.map(async b => {
                 if (b === attBranch) {
                   branchGrids[b] = JSON.parse(JSON.stringify(attGrid || {}));
+                  branchFreshaWorked[b] = JSON.parse(JSON.stringify((attMeta && attMeta.freshaWorked) || {}));
                 } else {
                   const data = await safeLoad(window.BOA_DB.loadAttendance(b, attYM));
                   branchGrids[b] = (data && data.grid) ? JSON.parse(JSON.stringify(data.grid)) : {};
+                  branchFreshaWorked[b] = (data && data.freshaWorked) ? JSON.parse(JSON.stringify(data.freshaWorked)) : {};
                 }
               }));
 
@@ -8724,6 +8749,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 if (seenDayPerEc.has(dKey)) continue;
                 seenDayPerEc.add(dKey);
                 const dayNum = dayByYmd[ymd];
+                // Mark Fresha-worked in the sidecar regardless of grid state —
+                // even if the cell is already confirmed (kiosk / manual), the
+                // Fresha stripe needs to know an appointment was completed.
+                if (!branchFreshaWorked[techBranch][ec]) branchFreshaWorked[techBranch][ec] = {};
+                branchFreshaWorked[techBranch][ec][dayNum] = true;
                 if (!grid[ec]) grid[ec] = {};
                 const cur = grid[ec][dayNum];
                 if (cur && cur.charAt(0) !== "~") { alreadyConfirmed++; continue; }
@@ -8747,7 +8777,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 ? ""
                 : "\n• Per branch: " + Object.entries(markedByBranch).map(([b, n]) => b + " " + n).join(" · ");
 
-              if (marked === 0) {
+              // Even when nothing new is stamped on the grid (marked === 0,
+              // every matched cell was already confirmed by kiosk / manual),
+              // we still need to save the freshaWorked sidecar — otherwise
+              // the bottom Fresha stripe stays gray for techs who definitely
+              // had completed appointments.
+              const freshaWorkedHits = Object.keys(branchFreshaWorked).reduce((n, b) => n + Object.keys(branchFreshaWorked[b] || {}).length, 0);
+              if (marked === 0 && freshaWorkedHits === 0) {
                 alert(
                   "Imported the CSV but didn't mark any cells On Time.\n\n" +
                   "• Rows read: " + total + "\n" +
@@ -8764,23 +8800,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // orange off-day banner only matches days actually covered by Fresha.
               const branchesToSave = Array.from(new Set([
                 ...Object.keys(markedByBranch),
-                ...Object.keys(freshaThroughByBranch)
+                ...Object.keys(freshaThroughByBranch),
+                ...Object.keys(branchFreshaWorked).filter(b => Object.keys(branchFreshaWorked[b] || {}).length)
               ]));
               const importedAt = new Date().toISOString();
               try {
                 await Promise.all(branchesToSave.map(b => {
-                  const extras = freshaThroughByBranch[b]
-                    ? { freshaCoverage: { through: freshaThroughByBranch[b], importedAt } }
-                    : null;
-                  return window.BOA_DB.saveAttendance(b, attYM, branchGrids[b], extras);
+                  const extras = {};
+                  if (freshaThroughByBranch[b]) extras.freshaCoverage = { through: freshaThroughByBranch[b], importedAt };
+                  if (branchFreshaWorked[b] && Object.keys(branchFreshaWorked[b]).length) extras.freshaWorked = branchFreshaWorked[b];
+                  return window.BOA_DB.saveAttendance(b, attYM, branchGrids[b], Object.keys(extras).length ? extras : null);
                 }));
               } catch (err) { alert("Could not save: " + (err.message || err)); return; }
               // Refresh the local grid + meta for the branch the user is viewing.
-              if (markedByBranch[attBranch] || freshaThroughByBranch[attBranch]) {
+              const activeHasFreshaSidecar = branchFreshaWorked[attBranch] && Object.keys(branchFreshaWorked[attBranch]).length > 0;
+              if (markedByBranch[attBranch] || freshaThroughByBranch[attBranch] || activeHasFreshaSidecar) {
                 setAttGrid(branchGrids[attBranch]);
-                if (freshaThroughByBranch[attBranch]) {
-                  setAttMeta({ freshaCoverage: { through: freshaThroughByBranch[attBranch], importedAt } });
-                }
+                setAttMeta({
+                  freshaCoverage: freshaThroughByBranch[attBranch] ? { through: freshaThroughByBranch[attBranch], importedAt } : (attMeta && attMeta.freshaCoverage) || null,
+                  freshaWorked: branchFreshaWorked[attBranch] || {}
+                });
               }
               alert(
                 "✓ Fresha import done — only Completed nail-tech appointments were counted, across all branches.\n\n" +
@@ -9174,14 +9213,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
               <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap", fontSize:11, color:"#831843", marginBottom:8, padding:"8px 12px", background:"#FDEEF5", border:"1px solid #FBCFE8", borderRadius:8 }}>
                 <span style={{ fontWeight:700 }}>💡 Reading the grid:</span>
-                <span style={{ fontStyle:"italic", opacity:0.75 }}>italic</span> = mirrored from schedule (no edits yet) ·
-                <span style={{ fontWeight:700 }}>bold</span> = confirmed by you ·
-                <span style={{ display:"inline-block", width:8, height:8, borderRadius:"50%", background:"#be185d" }} /> = differs from schedule (deviation) ·
-                <span style={{ background:"#dcfce7", color:"#15803d", fontWeight:800, padding:"1px 6px", borderRadius:4, borderLeft:"3px solid #16a34a" }}>✓✓</span> = Fresha + schedule + check-in all match (worked) ·
-                <span style={{ background:"#ffedd5", color:"#9a3412", fontWeight:800, padding:"1px 6px", borderRadius:4, borderLeft:"3px solid #ea580c" }}>✓✓</span> = scheduled off · no appointment · no check-in (rest day match) ·
-                <span style={{ color:"#16a34a", fontWeight:800 }}>✓</span> = checked in via app ·
-                <span style={{ color:"#b45309", fontWeight:800 }}>!</span> = check-in / attendance mismatch ·
-                <span style={{ color:"#b45309", fontWeight:800 }}>!?</span> = Fresha says worked, no check-in
+                <span style={{ display:"inline-block", width:22, height:20, position:"relative", verticalAlign:"middle", border:"1px solid #FBCFE8" }}>
+                  <span style={{ position:"absolute", top:0, left:0, right:0, height:5, background:"#86efac", display:"flex", alignItems:"center", paddingLeft:2 }}><span style={{ fontSize:6, fontWeight:800, color:"rgba(0,0,0,0.45)" }}>S</span></span>
+                  <span style={{ position:"absolute", bottom:0, left:0, right:0, height:5, background:"#86efac", display:"flex", alignItems:"center", paddingLeft:2 }}><span style={{ fontSize:6, fontWeight:800, color:"rgba(0,0,0,0.45)" }}>F</span></span>
+                </span>
+                <strong>S</strong> = Schedule · <strong>middle</strong> = kiosk (manager-tagged) · <strong>F</strong> = Fresha appointments ·
+                <span style={{ display:"inline-block", width:10, height:10, verticalAlign:"middle", background:"#86efac", borderRadius:2 }} /> green = worked ·
+                <span style={{ display:"inline-block", width:10, height:10, verticalAlign:"middle", background:"#cbd5e1", borderRadius:2 }} /> slate = off ·
+                same colour top + middle + bottom = all 3 agree ·
+                colour break = sources disagree (hover for detail)
               </div>
 
               <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:14, padding:"10px 12px", background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:8 }}>
@@ -9279,13 +9319,42 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const isPastOrToday = dy.ymd <= t0Ymd;
                             const checkinHasIn    = !!(checkin && checkin.hasIn);
                             const checkinMismatch = checkinHasIn && isOff;                                  // checked in but day marked off
-                            const missingCheckin  = !checkinHasIn && isWorking && override && isPastOrToday; // Fresha confirmed work but no check-in
-                            // Green-banner "all-match" — Fresha (override) AND schedule AND
-                            // manager check-in all confirm this nail tech worked. Late counts
-                            // as worked (Fresha can't tell late from on-time).
-                            const freshaConfirmedWork = override && (isWorking || isLate);
+                            // Independent Fresha track. Read from the freshaWorked sidecar
+                            // populated by importFresha — NOT from the cell value, since the
+                            // kiosk overwrites the grid (e.g. sick / no-show) and we don't want
+                            // that to erase the Fresha appointment signal.
+                            const freshaWorkedCell    = !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
+                            const missingCheckin  = !checkinHasIn && freshaWorkedCell && isPastOrToday; // Fresha confirmed work but no check-in
                             const scheduleSaysWork    = hint === "on" || hint === "ext";
-                            const allMatchWork        = s.role === "NT" && freshaConfirmedWork && scheduleSaysWork && checkinHasIn;
+                            // Kiosk-absence mismatch: the kiosk recorded a non-present status
+                            // (sick / no-show / off / unpaid / swap_i / frl / etc.) on a day the
+                            // schedule said work. Only "on" and "late" mean the tech was in the
+                            // store; anything else is a manager-confirmed absence that conflicts
+                            // with the schedule. Also surface the reason text on the grid when
+                            // the kiosk wrote to a different cycle key — managers shouldn't have
+                            // to hover or click Import to see what was recorded.
+                            const kioskAbs = (s.role === "NT")
+                              ? ((kioskAbsentByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null
+                              : null;
+                            const kioskAbsentScheduled = !!kioskAbs && scheduleSaysWork;
+                            // Map the kiosk audit-log status to a STAT entry. The recordAbsence
+                            // wrapper writes status="absent" with the reason in the note —
+                            // surface that as a generic absent code so the cell still shows
+                            // something readable.
+                            const kStat = kioskAbs
+                              ? (STAT[kioskAbs.status]
+                                || (kioskAbs.status === "absent"
+                                    ? { lbl: (kioskAbs.note || "ABSENT").toString().toUpperCase().slice(0, 8), bg: "#fee2e2", fg: "#7f1d1d" }
+                                    : { lbl: kioskAbs.status.toString().toUpperCase().slice(0, 8), bg: "#f3f4f6", fg: "#374151" }))
+                              : null;
+                            // Show the kiosk's reason in the cell when the grid hasn't been
+                            // stamped yet (italic, faded — same convention as schedule-mirror).
+                            const showKioskReason = !v && !!kStat;
+                            // True "all three sources agree it was a worked day" — kiosk says
+                            // present (on/late), schedule says work, Fresha imported a completed
+                            // appointment. Drives the solid-colour cell render below.
+                            const kioskSaysPresent    = (showKioskReason && (kioskAbs.status === "on" || kioskAbs.status === "late")) || (override && (isWorking || isLate));
+                            const allMatchWork        = s.role === "NT" && freshaWorkedCell && scheduleSaysWork && (kioskSaysPresent || checkinHasIn);
                             // Orange-banner "all-match OFF" — schedule says off, no Fresha
                             // appointment was imported (cell isn't in a working state) and the
                             // tech wasn't checked in. Only fires for days the most recent Fresha
@@ -9293,7 +9362,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // be misread as confirmed off-days when the user uploads mid-month.
                             const scheduleSaysOff     = hint === "off";
                             const freshaCoversThisDay = !!effectiveFreshaThrough && dy.ymd <= effectiveFreshaThrough;
-                            const allMatchOff         = s.role === "NT" && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn && freshaCoversThisDay;
+                            const allMatchOff         = s.role === "NT" && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn && freshaCoversThisDay && !freshaWorkedCell;
                             const ttl =
                               dy.ymd + ": " + (st.lbl || "—") +
                               (hint ? " — schedule: " + ((STAT[hint] || {}).lbl || "—") : "") +
@@ -9302,43 +9371,58 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               (checkin ? "\nChecked in" + (checkin.firstInTs ? " at " + checkin.firstInTs.toLocaleTimeString("en-ZA", { hour:"2-digit", minute:"2-digit" }) : "") + (checkin.autoOut ? " · auto-out" : "") : "") +
                               (checkinMismatch ? "\n⚠ Discrepancy: tech checked in but day marked " + bareV : "") +
                               (missingCheckin  ? "\n⚠ Missing check-in: Fresha shows worked, no check-in record" : "") +
+                              (kioskAbsentScheduled ? "\n⚠ Schedule mismatch: scheduled to work but kiosk marked " + ((STAT[kioskAbs.status] || {}).lbl || kioskAbs.status) + (kioskAbs.note ? " (" + kioskAbs.note + ")" : "") : "") +
                               (isLate && checkin ? "\n(Late — counts as worked, no discrepancy)" : "");
-                            const cellBaseBg = override ? (isHol ? "#fef2f2" : (isWk ? "#fdf4f8" : "#FFFFFF")) : (isHol ? "#fecaca40" : hintBg + "18");
-                            const allMatchBg     = allMatchWork ? "#dcfce7" : allMatchOff ? "#ffedd5" : null;
-                            const allMatchEdge   = allMatchWork ? "3px solid #16a34a" : allMatchOff ? "3px solid #ea580c" : "1px solid #FCE7F3";
-                            const allMatchTxt    = allMatchWork ? "#14532d" : allMatchOff ? "#9a3412" : null;
+                            // Simplified presence palette — every source (schedule / kiosk /
+                            // Fresha) maps to "work" (green) or "off" (slate) when it represents
+                            // a presence status, so all-agree cells naturally render as one
+                            // solid colour band. Other STAT entries (sick, frl, no-show, …)
+                            // keep their unique colour so the divergence is visible.
+                            const C_WORK = "#86efac", C_OFF = "#cbd5e1";
+                            const presenceBgFor = (k) => (k === "on" || k === "late" || k === "ext" || k === "swap_o" || k === "trial") ? C_WORK
+                                                       : k === "off" ? C_OFF
+                                                       : null;
+                            const cellBaseBg = override ? (presenceBgFor(bareV) || st.bg)
+                                              : showKioskReason ? (presenceBgFor(kioskAbs.status) || kStat.bg)
+                                              : (isHol ? "#fecaca40" : (isWk ? "#fdf4f8" : "#FFFFFF"));
+                            const allMatchBg     = null;
+                            const allMatchEdge   = "1px solid #FCE7F3";
+                            const allMatchTxt    = null;
                             const allMatchTip    = allMatchWork ? "\n✓ All match — Fresha + schedule + check-in agree"
                                                   : allMatchOff ? "\n✓ All match OFF — scheduled off, no Fresha appointment, no check-in"
                                                   : "";
+                            const schedStripeColor = scheduleSaysWork ? C_WORK
+                                                    : (hint === "off" || hint === "al" || hint === "ph" || hint === "mat" || hint === "term") ? C_OFF
+                                                    : hint ? (STAT[hint] || {}).bg || "transparent"
+                                                    : "transparent";
+                            const freshaStripeColor = freshaWorkedCell ? C_WORK
+                                                    : freshaCoversThisDay ? C_OFF
+                                                    : "transparent";
+                            const freshaTip = freshaWorkedCell ? "Fresha: worked (appointments imported)"
+                                            : freshaCoversThisDay ? "Fresha: no appointments this day"
+                                            : "Fresha: no data for this day yet";
                             return (
                               <td key={dy.d} style={{ padding:0, borderBottom:"1px solid #FCE7F3", borderLeft: allMatchEdge, background: allMatchBg || cellBaseBg, position:"relative" }}>
-                                <div style={{ position:"relative", height:30 }}>
+                                <div style={{ position:"relative", height:36 }}>
+                                  <div title={"Schedule: " + (hintLbl || "—")} style={{ position:"absolute", top:0, left:0, right:0, height:6, background: schedStripeColor === "transparent" ? "#f9fafb" : schedStripeColor, borderBottom:"1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
+                                    <span style={{ fontSize:7, fontWeight:800, color:"rgba(0,0,0,0.45)", letterSpacing:"0.05em" }}>S</span>
+                                  </div>
+                                  <div title={freshaTip} style={{ position:"absolute", bottom:0, left:0, right:0, height:6, background: freshaStripeColor === "transparent" ? "#f9fafb" : freshaStripeColor, borderTop:"1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
+                                    <span style={{ fontSize:7, fontWeight:800, color:"rgba(0,0,0,0.45)", letterSpacing:"0.05em" }}>F</span>
+                                  </div>
                                   {v && (
-                                    <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle: override ? "normal" : "italic", fontWeight: override ? 700 : 400, color: override ? (allMatchTxt || st.fg) : (allMatchTxt || (hintFg + "70")), pointerEvents:"none", letterSpacing:"0.02em" }}>{st.lbl || hintLbl || ""}</div>
+                                    <div style={{ position:"absolute", top:6, bottom:6, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle: override ? "normal" : "italic", fontWeight: override ? 700 : 400, color: override ? st.fg : (hintFg + "70"), pointerEvents:"none", letterSpacing:"0.02em" }}>{st.lbl || hintLbl || ""}</div>
                                   )}
-                                  <select value="" onChange={e=>onCellChange(s, dy, e.target.value)} title={ttl + allMatchTip}
-                                    style={{ width:"100%", height:30, border: deviation ? "2px solid #be185d" : "none", background: (allMatchBg ? "transparent" : (override ? st.bg : "transparent")), color:"transparent", fontSize:9, fontWeight:400, opacity:1, textAlign:"center", cursor:"pointer", padding:"0 1px", fontFamily:"inherit", outline:"none", appearance:"none" }}>
+                                  {!v && showKioskReason && (
+                                    <div style={{ position:"absolute", top:6, bottom:6, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle:"italic", fontWeight:600, color: kStat.fg || "#9ca3af", pointerEvents:"none", letterSpacing:"0.02em" }}>{kStat.lbl}</div>
+                                  )}
+                                  <select value="" onChange={e=>onCellChange(s, dy, e.target.value)} title={ttl + "\nSchedule: " + (hintLbl || "—") + "\n" + freshaTip}
+                                    style={{ position:"absolute", top:6, bottom:6, left:0, right:0, width:"100%", border:"none", background: "transparent", color:"transparent", fontSize:9, fontWeight:400, opacity:1, textAlign:"center", cursor:"pointer", padding:"0 1px", fontFamily:"inherit", outline:"none", appearance:"none" }}>
                                     <option value="" style={{ color:"#000", background:"#fff" }}>—</option>
                                     {Object.entries(STAT).filter(([k]) => k !== "ph" || isHol).map(([k, vv]) => (
                                       <option key={k} value={k} style={{ color:"#000", background:"#fff" }}>{vv.lbl}</option>
                                     ))}
                                   </select>
-                                  {deviation && !allMatchWork && !allMatchOff && <span style={{ position:"absolute", top:1, right:1, width:5, height:5, borderRadius:"50%", background:"#be185d", pointerEvents:"none" }} />}
-                                  {allMatchWork && (
-                                    <span title="Fresha + schedule + check-in all agree" style={{ position:"absolute", top:1, right:1, fontSize:9, lineHeight:1, color:"#15803d", fontWeight:800, pointerEvents:"none" }}>✓✓</span>
-                                  )}
-                                  {allMatchOff && (
-                                    <span title="Scheduled off · no Fresha appointment · no check-in" style={{ position:"absolute", top:1, right:1, fontSize:9, lineHeight:1, color:"#c2410c", fontWeight:800, pointerEvents:"none" }}>✓✓</span>
-                                  )}
-                                  {!allMatchWork && !allMatchOff && checkinHasIn && !checkinMismatch && (
-                                    <span style={{ position:"absolute", bottom:1, left:2, fontSize:9, lineHeight:1, color:"#16a34a", pointerEvents:"none", textShadow:"0 0 1px rgba(255,255,255,0.6)" }}>✓</span>
-                                  )}
-                                  {checkinMismatch && (
-                                    <span title="Tech checked in but day marked off — discrepancy" style={{ position:"absolute", bottom:1, left:2, fontSize:9, lineHeight:1, color:"#b45309", pointerEvents:"none", fontWeight:800 }}>!</span>
-                                  )}
-                                  {missingCheckin && (
-                                    <span title="Fresha shows worked but no check-in" style={{ position:"absolute", bottom:1, right:2, fontSize:9, lineHeight:1, color:"#b45309", pointerEvents:"none", fontWeight:800 }}>!?</span>
-                                  )}
                                 </div>
                               </td>
                             );
