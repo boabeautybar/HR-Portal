@@ -6088,6 +6088,28 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return out;
   }, [techClockinRows, attCheckinRows]);
 
+  // Index kiosk submissions whose status is NOT "on"/"late" — i.e. the manager
+  // marked the tech as not physically present (sick, no-show, off, swap-in,
+  // unpaid, etc.). Used to flag a schedule mismatch on the attendance grid
+  // when a scheduled-to-work day got a non-present kiosk status.
+  const kioskAbsentByBranch = useMemo(() => {
+    const out = {};
+    for (const r of attCheckinRows || []) {
+      if (!r || !r.ec || !r.branch || !r.ymd) continue;
+      if (r.status === "on" || r.status === "late") continue;
+      const br = r.branch, ec = r.ec, ymd = r.ymd;
+      if (!out[br]) out[br] = {};
+      if (!out[br][ec]) out[br][ec] = {};
+      // Keep latest entry per day so the most recent kiosk submission wins.
+      const prior = out[br][ec][ymd];
+      const dt = new Date(r.ts);
+      if (!prior || (prior.ts && dt > prior.ts) || !prior.ts) {
+        out[br][ec][ymd] = { status: r.status, note: r.note || null, ts: dt };
+      }
+    }
+    return out;
+  }, [attCheckinRows]);
+
   // Auto-detect pending terminations from attendance grids (current + 2 prior months)
   useEffect(() => {
     if (loading || !window.BOA_DB || !window.BOA_DB.isReady) return;
@@ -9285,6 +9307,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // as worked (Fresha can't tell late from on-time).
                             const freshaConfirmedWork = override && (isWorking || isLate);
                             const scheduleSaysWork    = hint === "on" || hint === "ext";
+                            // Kiosk-absence mismatch: the kiosk recorded a non-present status
+                            // (sick / no-show / off / unpaid / swap_i / frl / etc.) on a day the
+                            // schedule said work. Only "on" and "late" mean the tech was in the
+                            // store; anything else is a manager-confirmed absence that conflicts
+                            // with the schedule.
+                            const kioskAbs = (s.role === "NT")
+                              ? ((kioskAbsentByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null
+                              : null;
+                            const kioskAbsentScheduled = !!kioskAbs && scheduleSaysWork;
                             const allMatchWork        = s.role === "NT" && freshaConfirmedWork && scheduleSaysWork && checkinHasIn;
                             // Orange-banner "all-match OFF" — schedule says off, no Fresha
                             // appointment was imported (cell isn't in a working state) and the
@@ -9302,10 +9333,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               (checkin ? "\nChecked in" + (checkin.firstInTs ? " at " + checkin.firstInTs.toLocaleTimeString("en-ZA", { hour:"2-digit", minute:"2-digit" }) : "") + (checkin.autoOut ? " · auto-out" : "") : "") +
                               (checkinMismatch ? "\n⚠ Discrepancy: tech checked in but day marked " + bareV : "") +
                               (missingCheckin  ? "\n⚠ Missing check-in: Fresha shows worked, no check-in record" : "") +
+                              (kioskAbsentScheduled ? "\n⚠ Schedule mismatch: scheduled to work but kiosk marked " + ((STAT[kioskAbs.status] || {}).lbl || kioskAbs.status) + (kioskAbs.note ? " (" + kioskAbs.note + ")" : "") : "") +
                               (isLate && checkin ? "\n(Late — counts as worked, no discrepancy)" : "");
                             const cellBaseBg = override ? (isHol ? "#fef2f2" : (isWk ? "#fdf4f8" : "#FFFFFF")) : (isHol ? "#fecaca40" : hintBg + "18");
-                            const allMatchBg     = allMatchWork ? "#dcfce7" : allMatchOff ? "#ffedd5" : null;
-                            const allMatchEdge   = allMatchWork ? "3px solid #16a34a" : allMatchOff ? "3px solid #ea580c" : "1px solid #FCE7F3";
+                            const allMatchBg     = allMatchWork ? "#dcfce7" : allMatchOff ? "#ffedd5" : (kioskAbsentScheduled ? "#fef3c7" : null);
+                            const allMatchEdge   = allMatchWork ? "3px solid #16a34a" : allMatchOff ? "3px solid #ea580c" : (kioskAbsentScheduled ? "3px solid #f59e0b" : "1px solid #FCE7F3");
                             const allMatchTxt    = allMatchWork ? "#14532d" : allMatchOff ? "#9a3412" : null;
                             const allMatchTip    = allMatchWork ? "\n✓ All match — Fresha + schedule + check-in agree"
                                                   : allMatchOff ? "\n✓ All match OFF — scheduled off, no Fresha appointment, no check-in"
@@ -9338,6 +9370,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   )}
                                   {missingCheckin && (
                                     <span title="Fresha shows worked but no check-in" style={{ position:"absolute", bottom:1, right:2, fontSize:9, lineHeight:1, color:"#b45309", pointerEvents:"none", fontWeight:800 }}>!?</span>
+                                  )}
+                                  {kioskAbsentScheduled && !checkinMismatch && (
+                                    <span title={"Schedule mismatch — scheduled to work but kiosk marked " + ((STAT[kioskAbs.status] || {}).lbl || kioskAbs.status)} style={{ position:"absolute", top:1, left:2, fontSize:9, lineHeight:1, color:"#b45309", pointerEvents:"none", fontWeight:800 }}>⚠</span>
                                   )}
                                 </div>
                               </td>
