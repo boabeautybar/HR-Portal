@@ -5521,6 +5521,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [techClockinDays, setTechClockinDays] = useState(60);          // load window
   const [checkinFilterBranch, setCheckinFilterBranch] = useState("All");
   const [checkinDayRange,     setCheckinDayRange]     = useState(7);    // viewer range
+  const [checkinProbeResult,  setCheckinProbeResult]  = useState(null); // raw probe panel (Daily Check-ins)
 
   // ── Onboarding / Off-boarding state ────────────────────────────────
   const [obList, setObList] = useState([]);           // joiner records
@@ -10748,8 +10749,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               {/* Independent of the viewer's branch/range filters. If a branch is missing
                   here, the records never reached the clockins table for the load window. */}
               <div style={{ background:"#FFFFFF", borderRadius:13, padding:"10px 14px", border:"1px solid #FBCFE8", marginBottom:14, fontSize:12 }}>
-                <div style={{ fontWeight:700, color:"#831843", marginBottom:6 }}>
-                  Fetched in the last {techClockinDays} days · {(techClockinRows || []).length} row{(techClockinRows || []).length === 1 ? "" : "s"} total
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6, gap:10 }}>
+                  <div style={{ fontWeight:700, color:"#831843" }}>
+                    Fetched in the last {techClockinDays} days · {(techClockinRows || []).length} row{(techClockinRows || []).length === 1 ? "" : "s"} total
+                  </div>
+                  {/* Bypass the staff join + role_type filter and query clockins directly,
+                      so we can confirm whether rows actually exist in the table. */}
+                  <button
+                    onClick={async () => {
+                      try {
+                        if (!window.BOA_DB || !window.BOA_DB.probeRecentClockinsRaw) { setCheckinProbeResult({ error: "probe not available — redeploy needed" }); return; }
+                        const r = await window.BOA_DB.probeRecentClockinsRaw(techClockinDays);
+                        setCheckinProbeResult(r);
+                      } catch (e) {
+                        setCheckinProbeResult({ error: (e && e.message) || String(e) });
+                      }
+                    }}
+                    style={{ background:"#831843", color:"#fff", border:"none", padding:"6px 12px", borderRadius:6, fontSize:11, cursor:"pointer", fontWeight:600 }}
+                  >Probe raw clockins</button>
                 </div>
                 <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
                   {Object.keys(fetchedByBranch).sort().map(b => (
@@ -10766,6 +10783,47 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <span style={{ color:"#9ca3af", fontStyle:"italic" }}>No rows fetched.</span>
                   )}
                 </div>
+                {checkinProbeResult && (() => {
+                  if (checkinProbeResult.error) {
+                    return <div style={{ marginTop:10, background:"#fee2e2", color:"#7f1d1d", padding:"8px 11px", borderRadius:6, fontSize:11.5, fontFamily:"monospace" }}>Probe error: {checkinProbeResult.error}</div>;
+                  }
+                  const rows = checkinProbeResult.rows || [];
+                  const staffById = checkinProbeResult.staffById || {};
+                  // Group raw rows by joined-branch (or unresolved staff_id).
+                  const rawByBranch = {};
+                  let unresolved = 0;
+                  for (const r of rows) {
+                    const s = staffById[r.staff_id];
+                    const key = s ? (s.branch || "(no branch)") : "(unresolved staff_id)";
+                    if (!s) unresolved++;
+                    rawByBranch[key] = (rawByBranch[key] || 0) + 1;
+                  }
+                  return (
+                    <div style={{ marginTop:10, background:"#f9fafb", border:"1px solid #e5e7eb", borderRadius:7, padding:"9px 11px", fontSize:11.5 }}>
+                      <div style={{ fontWeight:700, color:"#374151", marginBottom:6 }}>
+                        Raw probe (no staff join, no role filter): {checkinProbeResult.count} rows since {checkinProbeResult.sinceIso}
+                      </div>
+                      <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:8 }}>
+                        {Object.keys(rawByBranch).sort().map(b => (
+                          <span key={b} style={{ background:"#e5e7eb", color:"#111827", padding:"2px 8px", borderRadius:5 }}>
+                            {b}: <strong>{rawByBranch[b]}</strong>
+                          </span>
+                        ))}
+                      </div>
+                      {unresolved > 0 && (
+                        <div style={{ color:"#7f1d1d", marginBottom:6 }}>
+                          ⚠ {unresolved} row{unresolved === 1 ? "" : "s"} have a staff_id that doesn't resolve in the staff table.
+                        </div>
+                      )}
+                      <details>
+                        <summary style={{ cursor:"pointer", color:"#831843", fontWeight:600 }}>Show first 20 raw rows</summary>
+                        <pre style={{ marginTop:6, background:"#fff", border:"1px solid #e5e7eb", padding:8, borderRadius:5, fontSize:10.5, overflow:"auto", maxHeight:300 }}>
+{JSON.stringify(rows.slice(0, 20).map(r => ({ id: r.id, ts: r.ts, type: r.type, staff_id: r.staff_id, resolved: !!staffById[r.staff_id], branch: staffById[r.staff_id] ? staffById[r.staff_id].branch : null })), null, 2)}
+                        </pre>
+                      </details>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Discrepancies vs Fresha attendance for the active cycle / branch */}
