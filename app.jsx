@@ -9311,11 +9311,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // (sick / no-show / off / unpaid / swap_i / frl / etc.) on a day the
                             // schedule said work. Only "on" and "late" mean the tech was in the
                             // store; anything else is a manager-confirmed absence that conflicts
-                            // with the schedule.
+                            // with the schedule. Also surface the reason text on the grid when
+                            // the kiosk wrote to a different cycle key — managers shouldn't have
+                            // to hover or click Import to see what was recorded.
                             const kioskAbs = (s.role === "NT")
                               ? ((kioskAbsentByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null
                               : null;
                             const kioskAbsentScheduled = !!kioskAbs && scheduleSaysWork;
+                            // Map the kiosk audit-log status to a STAT entry. The recordAbsence
+                            // wrapper writes status="absent" with the reason in the note —
+                            // surface that as a generic absent code so the cell still shows
+                            // something readable.
+                            const kStat = kioskAbs
+                              ? (STAT[kioskAbs.status]
+                                || (kioskAbs.status === "absent"
+                                    ? { lbl: (kioskAbs.note || "ABSENT").toString().toUpperCase().slice(0, 8), bg: "#fee2e2", fg: "#7f1d1d" }
+                                    : { lbl: kioskAbs.status.toString().toUpperCase().slice(0, 8), bg: "#f3f4f6", fg: "#374151" }))
+                              : null;
+                            // Show the kiosk's reason in the cell when the grid hasn't been
+                            // stamped yet (italic, faded — same convention as schedule-mirror).
+                            const showKioskReason = !v && !!kStat;
                             const allMatchWork        = s.role === "NT" && freshaConfirmedWork && scheduleSaysWork && checkinHasIn;
                             // Orange-banner "all-match OFF" — schedule says off, no Fresha
                             // appointment was imported (cell isn't in a working state) and the
@@ -9347,6 +9362,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 <div style={{ position:"relative", height:30 }}>
                                   {v && (
                                     <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle: override ? "normal" : "italic", fontWeight: override ? 700 : 400, color: override ? (allMatchTxt || st.fg) : (allMatchTxt || (hintFg + "70")), pointerEvents:"none", letterSpacing:"0.02em" }}>{st.lbl || hintLbl || ""}</div>
+                                  )}
+                                  {!v && showKioskReason && (
+                                    <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle:"italic", fontWeight:600, color: kStat.fg || "#9ca3af", pointerEvents:"none", letterSpacing:"0.02em" }}>{kStat.lbl}</div>
                                   )}
                                   <select value="" onChange={e=>onCellChange(s, dy, e.target.value)} title={ttl + allMatchTip}
                                     style={{ width:"100%", height:30, border: deviation ? "2px solid #be185d" : "none", background: (allMatchBg ? "transparent" : (override ? st.bg : "transparent")), color:"transparent", fontSize:9, fontWeight:400, opacity:1, textAlign:"center", cursor:"pointer", padding:"0 1px", fontFamily:"inherit", outline:"none", appearance:"none" }}>
