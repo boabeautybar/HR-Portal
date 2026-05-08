@@ -10659,11 +10659,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Filter rows by branch + range, and group by tech / day for compact display.
           const today = new Date(); const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
           const since = new Date(t0); since.setDate(since.getDate() - (checkinDayRange - 1));
+          // Keep orphan rows (staff join failed) so they show up as diagnostics
+          // instead of being silently swallowed. Branch filter only applies when
+          // the row has a staff record; orphans always pass through so they're
+          // visible regardless of the selected branch.
           const filtered = (techClockinRows || []).filter(r => {
-            if (!r.staff) return false;
-            if (checkinFilterBranch !== "All" && r.staff.branch !== checkinFilterBranch) return false;
+            const branch = (r.staff && r.staff.branch) || "";
+            if (checkinFilterBranch !== "All" && r.staff && branch !== checkinFilterBranch) return false;
             return new Date(r.ts) >= since;
           });
+          // Per-branch tally of every row fetched in the load window — independent
+          // of the viewer's branch/range filters above. Lets us see at a glance
+          // whether a branch's check-ins reached Supabase at all.
+          const fetchedByBranch = {};
+          let orphanFetched = 0;
+          for (const r of techClockinRows || []) {
+            if (!r.staff) { orphanFetched++; continue; }
+            const b = r.staff.branch || "(no branch)";
+            fetchedByBranch[b] = (fetchedByBranch[b] || 0) + 1;
+          }
           const fmtDateTime = (iso) => new Date(iso).toLocaleString("en-ZA", { day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" });
           const rangeOpts = [{v:1,l:"Today"},{v:3,l:"Last 3 days"},{v:7,l:"Last 7 days"},{v:14,l:"Last 14 days"},{v:30,l:"Last 30 days"},{v:60,l:"Last 60 days"}];
 
@@ -10730,6 +10744,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div style={{ fontSize:12, color:"#831843" }}><strong>{filtered.length}</strong> record{filtered.length !== 1 ? "s" : ""}</div>
               </div>
 
+              {/* ── Diagnostics: per-branch counts of rows actually fetched from Supabase ── */}
+              {/* Independent of the viewer's branch/range filters. If a branch is missing
+                  here, the records never reached the clockins table for the load window. */}
+              <div style={{ background:"#FFFFFF", borderRadius:13, padding:"10px 14px", border:"1px solid #FBCFE8", marginBottom:14, fontSize:12 }}>
+                <div style={{ fontWeight:700, color:"#831843", marginBottom:6 }}>
+                  Fetched in the last {techClockinDays} days · {(techClockinRows || []).length} row{(techClockinRows || []).length === 1 ? "" : "s"} total
+                </div>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
+                  {Object.keys(fetchedByBranch).sort().map(b => (
+                    <span key={b} style={{ background:"#FCE7F3", color:"#831843", padding:"3px 9px", borderRadius:6, fontSize:11.5 }}>
+                      📍 {b}: <strong>{fetchedByBranch[b]}</strong>
+                    </span>
+                  ))}
+                  {orphanFetched > 0 && (
+                    <span style={{ background:"#fee2e2", color:"#7f1d1d", padding:"3px 9px", borderRadius:6, fontSize:11.5 }}>
+                      ⚠ orphan (no staff link): <strong>{orphanFetched}</strong>
+                    </span>
+                  )}
+                  {Object.keys(fetchedByBranch).length === 0 && orphanFetched === 0 && (
+                    <span style={{ color:"#9ca3af", fontStyle:"italic" }}>No rows fetched.</span>
+                  )}
+                </div>
+              </div>
+
               {/* Discrepancies vs Fresha attendance for the active cycle / branch */}
               {discrepancies.length > 0 && (
                 <div style={{ background:"#fef3c7", border:"1px solid #fde68a", borderRadius:11, padding:"12px 14px", marginBottom:14 }}>
@@ -10767,15 +10805,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               : r.type === "out"       ? { lbl:"OUT",      bg:"#fef3c7", fg:"#92400e" }
                               : r.type === "out_auto"  ? { lbl:"AUTO-OUT", bg:"#fee2e2", fg:"#7f1d1d" }
                               :                          { lbl:r.type,     bg:"#f3f4f6", fg:"#374151" };
+                      const isOrphan = !r.staff;
                       return (
-                        <tr key={r.id} style={{ borderTop:"1px solid #FCE7F3" }}>
+                        <tr key={r.id} style={{ borderTop:"1px solid #FCE7F3", background: isOrphan ? "#fef2f2" : undefined }}>
                           <td style={{ padding:"8px 12px", whiteSpace:"nowrap", color:"#831843" }}>{fmtDateTime(r.ts)}</td>
                           <td style={{ padding:"8px 12px" }}>
                             <span style={{ background:t.bg, color:t.fg, fontWeight:700, fontSize:10, padding:"2px 8px", borderRadius:5, letterSpacing:"0.05em" }}>{t.lbl}</span>
                           </td>
-                          <td style={{ padding:"8px 12px", fontWeight:600 }}>{(r.staff && r.staff.name) || "—"}</td>
+                          <td style={{ padding:"8px 12px", fontWeight:600, color: isOrphan ? "#7f1d1d" : undefined }}>
+                            {isOrphan ? <em>⚠ orphan · staff_id={String(r.staff_id || "(null)")}</em> : (r.staff.name || "—")}
+                          </td>
                           <td style={{ padding:"8px 12px", fontFamily:"monospace", fontSize:11, color:"#8E5570" }}>{(r.staff && r.staff.employee_code) || ""}</td>
-                          <td style={{ padding:"8px 12px", color:"#831843" }}>📍 {(r.staff && r.staff.branch) || "—"}</td>
+                          <td style={{ padding:"8px 12px", color: isOrphan ? "#7f1d1d" : "#831843" }}>📍 {(r.staff && r.staff.branch) || "—"}</td>
                         </tr>
                       );
                     })}
