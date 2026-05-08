@@ -9382,7 +9382,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const cellShowsAbsent  = kioskMarkedAbsent || (override && !!bareV && !isWorking && !isLate);
                             const allAgreeAbsent       = s.role === "NT" && scheduleSaysWork && cellShowsAbsent && !freshaWorkedCell;
                             const apptVsKioskAbsentWarn = s.role === "NT" && cellShowsAbsent && freshaWorkedCell;
-                            const presentNoApptWarn    = s.role === "NT" && checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay;
+                            // presentNoApptWarn — only fires when the cell is actually showing
+                            // a presence status. If the kiosk later marked the tech absent
+                            // (sick / no-show / etc.), that absence supersedes the earlier
+                            // clock-in and the "all 3 agree absent" merge wins instead.
+                            const presentNoApptWarn    = s.role === "NT" && checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
                             const ttl =
                               dy.ymd + ": " + (st.lbl || "—") +
                               (hint ? " — schedule: " + ((STAT[hint] || {}).lbl || "—") : "") +
@@ -9402,17 +9406,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const presenceBgFor = (k) => (k === "on" || k === "late" || k === "ext" || k === "swap_o" || k === "trial") ? C_WORK
                                                        : k === "off" ? C_OFF
                                                        : null;
-                            const cellBaseBg = override ? (presenceBgFor(bareV) || st.bg)
+                            const baseBgRaw = override ? (presenceBgFor(bareV) || st.bg)
                                               : showKioskReason ? (presenceBgFor(kioskAbs.status) || kStat.bg)
                                               : (isHol ? "#fecaca40" : (isWk ? "#fdf4f8" : "#FFFFFF"));
-                            // When all three sources agree the tech was absent, bleed the
-                            // schedule + Fresha stripes into the body colour so the cell reads
-                            // as one solid band — the absence colour (red, purple, peach, etc.).
-                            const stripeMergeBg = allAgreeAbsent ? cellBaseBg : null;
-                            // For BOTH all-worked and all-absent matches the cell already reads
-                            // as one colour band (green for worked, kiosk colour for absent) —
-                            // hide the S / F letter labels so the band looks fully clean.
-                            const cleanFill = allMatchWork || allAgreeAbsent;
+                            // When all three sources agree (worked / off / absent) the cell is
+                            // filled with a single colour and the S / F letter labels hide so
+                            // the cell reads as one fully clean band:
+                            //  • allMatchWork  → green (scheduled + checked-in + Fresha appt)
+                            //  • allMatchOff   → slate (scheduled off + no check-in + no appt)
+                            //  • allAgreeAbsent → kiosk reason colour (sick / no-show / etc.)
+                            const cellBaseBg = allMatchWork ? C_WORK
+                                             : allMatchOff ? C_OFF
+                                             : baseBgRaw;
+                            const cleanFill = !!(allMatchWork || allMatchOff || allAgreeAbsent);
+                            const stripeMergeBg = cleanFill ? cellBaseBg : null;
                             const allMatchBg     = null;
                             const allMatchEdge   = "1px solid #FCE7F3";
                             const allMatchTxt    = null;
