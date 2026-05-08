@@ -9375,9 +9375,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             //  • presentNoApptWarn — kiosk says the tech checked in AND schedule
                             //    said work, but Fresha has no appointments. They were in the
                             //    store for nothing — manager should investigate.
-                            const kioskMarkedAbsent = !!kioskAbs;        // audit log only stores non-presence statuses
-                            const allAgreeAbsent       = s.role === "NT" && scheduleSaysWork && kioskMarkedAbsent && !freshaWorkedCell;
-                            const apptVsKioskAbsentWarn = s.role === "NT" && kioskMarkedAbsent && freshaWorkedCell;
+                            const kioskMarkedAbsent = !!kioskAbs;        // kiosk audit log entry (non-presence status)
+                            // The cell visually says "absent" — either the kiosk audit log
+                            // recorded an absence, or the grid value itself is a non-presence
+                            // status (manual edit or a kiosk write that didn't hit the audit log).
+                            const cellShowsAbsent  = kioskMarkedAbsent || (override && !!bareV && !isWorking && !isLate);
+                            const allAgreeAbsent       = s.role === "NT" && scheduleSaysWork && cellShowsAbsent && !freshaWorkedCell;
+                            const apptVsKioskAbsentWarn = s.role === "NT" && cellShowsAbsent && freshaWorkedCell;
                             const presentNoApptWarn    = s.role === "NT" && checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay;
                             const ttl =
                               dy.ymd + ": " + (st.lbl || "—") +
