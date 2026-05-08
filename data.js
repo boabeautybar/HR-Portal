@@ -494,6 +494,27 @@
     // tab can surface them as diagnostics. Only manager-tagged rows are dropped.
     return (res.data || []).filter(function (r) { return !r.staff || r.staff.role_type !== "manager"; });
   }
+  // Raw probe used by the Daily Check-ins tab to bypass the staff join and any
+  // related RLS filtering. Returns the unfiltered rows + counts so the diagnostic
+  // panel can show whether records exist in clockins at all.
+  async function probeRecentClockinsRaw(daysBack) {
+    var since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - (daysBack || 60));
+    var raw = await sb.from("clockins")
+      .select("*")
+      .gte("ts", since.toISOString())
+      .order("ts", { ascending: false })
+      .limit(5000);
+    if (raw.error) return { error: raw.error.message || JSON.stringify(raw.error), rows: [], count: 0 };
+    var rows = raw.data || [];
+    // Probe distinct staff_ids to see whether they resolve in the staff table.
+    var ids = Array.from(new Set(rows.map(function (r) { return r.staff_id; }).filter(Boolean)));
+    var staffById = {};
+    if (ids.length) {
+      var sres = await sb.from("staff").select("id, name, employee_code, role_type, branch").in("id", ids);
+      if (!sres.error) (sres.data || []).forEach(function (s) { staffById[s.id] = s; });
+    }
+    return { rows: rows, count: rows.length, staffById: staffById, sinceIso: since.toISOString() };
+  }
   async function loadClockinMeta(clockinId) {
     var res = await sb.from("app_state").select("value").eq("key", "boa_mgrclockin_meta_" + clockinId).maybeSingle();
     if (res.error) { console.warn("loadClockinMeta:", res.error); return null; }
@@ -647,6 +668,7 @@
     // Manager clock-ins viewer
     listRecentManagerClockins: listRecentManagerClockins,
     listRecentTechClockins:    listRecentTechClockins,
+    probeRecentClockinsRaw:    probeRecentClockinsRaw,
     loadClockinMeta:           loadClockinMeta,
 
     // Activity log
