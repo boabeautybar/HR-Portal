@@ -6030,10 +6030,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // submission to boa_kiosk_log_<branch>_<ym> in app_state with
   // {ec, dayKey, status, note, ts}. Reading from this log (instead of the
   // attendance grid) means Daily Check-ins shows ONLY kiosk submissions, not
-  // Fresha imports or manual HR-portal edits to the same grid.
+  // Fresha imports or manual HR-portal edits to the same grid. Also feeds
+  // the Attendance grid's green ✓ check (via checkInsByBranch).
   const [attCheckinRows, setAttCheckinRows] = useState([]);
   useEffect(() => {
-    if (tab !== "checkins") return;
+    if (tab !== "checkins" && tab !== "attendance") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     if (!window.BOA_DB.listRecentKioskCheckins) return; // older deploy
     let cancelled = false;
@@ -6047,9 +6048,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }, [tab, techClockinDays]);
 
   // Index check-ins by branch → ec → ymd, with per-day flags. Used by both the
-  // Attendance grid and the Check-ins tab so the data is parsed once.
+  // Attendance grid and the Check-ins tab so the data is parsed once. Pulls
+  // from BOTH the clockins table (Manager Clock-in PIN+selfie+GPS rows) and
+  // the kiosk audit log (Nail Tech Check-in tile submissions) so the green ✓
+  // appears whichever path the manager used.
   const checkInsByBranch = useMemo(() => {
     const out = {};
+    const PRESENCE = { on: 1, late: 1, ext: 1, trial: 1, swap_o: 1 };
     for (const r of techClockinRows || []) {
       if (!r || !r.staff || !r.staff.employee_code) continue;
       const branch = r.staff.branch || "";
@@ -6064,8 +6069,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (r.type === "out")       { cell.hasOut = true; }
       if (r.type === "out_auto")  { cell.hasOut = true; cell.autoOut = true; }   // out_auto alone is NOT proof they clocked in
     }
+    // Layer in kiosk audit log entries — only "presence" statuses (on/late/ext/
+    // trial/swap_o) flip hasIn so the ✓ shows. Off/sick/leave/term don't get
+    // a check-in mark even though they're recorded in the log.
+    for (const r of attCheckinRows || []) {
+      if (!r || !r.ec || !r.branch || !r.ymd) continue;
+      if (!PRESENCE[r.status]) continue;
+      const branch = r.branch;
+      const ec = r.ec;
+      const ymd = r.ymd;
+      if (!out[branch]) out[branch] = {};
+      if (!out[branch][ec]) out[branch][ec] = {};
+      const cell = out[branch][ec][ymd] = out[branch][ec][ymd] || { hasIn:false, hasOut:false, autoOut:false, firstInTs:null, name:"" };
+      cell.hasIn = true;
+      const dt = new Date(r.ts);
+      if (!isNaN(dt) && (!cell.firstInTs || dt < cell.firstInTs)) cell.firstInTs = dt;
+    }
     return out;
-  }, [techClockinRows]);
+  }, [techClockinRows, attCheckinRows]);
 
   // Auto-detect pending terminations from attendance grids (current + 2 prior months)
   useEffect(() => {
