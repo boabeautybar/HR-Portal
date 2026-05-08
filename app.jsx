@@ -5523,6 +5523,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [checkinDayRange,     setCheckinDayRange]     = useState(7);    // viewer range
   const [checkinProbeResult,  setCheckinProbeResult]  = useState(null); // raw probe panel (Daily Check-ins)
   const [attGridProbeResult,  setAttGridProbeResult]  = useState(null); // attendance-grid probe (Daily Check-ins)
+  const [proofModal,          setProofModal]          = useState(null); // { loading, dataUrl, name, ymd, status }
 
   // ── Onboarding / Off-boarding state ────────────────────────────────
   const [obList, setObList] = useState([]);           // joiner records
@@ -10708,9 +10709,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             return {
               id:       r.id,
               ts:       r.ts,
+              ymd:      r.ymd,
               type:     r.type,        // "att" — special render (status badge instead of IN/OUT pill)
               status:   r.status,
               note:     r.note || null,
+              hasProof: !!r.hasProof,
+              proofKey: r.proofKey || null,
               source:   "kiosk_log",
               staff:    { name: sRec ? sRec.name : "(unknown)", employee_code: r.ec, branch: r.branch }
             };
@@ -11002,6 +11006,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               <>
                                 {r.staff.name || "—"}
                                 {r.note && <div style={{ fontWeight:400, fontSize:11, color:"#6b7280", marginTop:2, fontStyle:"italic" }}>📝 {r.note}</div>}
+                                {r.hasProof && r.proofKey && (
+                                  <button
+                                    onClick={async () => {
+                                      setProofModal({ loading: true, name: r.staff.name, ymd: r.ymd || "", status: r.status });
+                                      try {
+                                        const url = await window.BOA_DB.loadKioskProof(r.proofKey);
+                                        setProofModal(p => p ? { ...p, loading: false, dataUrl: url } : null);
+                                      } catch (e) {
+                                        setProofModal(p => p ? { ...p, loading: false, error: (e && e.message) || String(e) } : null);
+                                      }
+                                    }}
+                                    style={{ marginTop:4, background:"#fce7f3", color:"#9d174d", border:"1px solid #fbcfe8", padding:"2px 8px", borderRadius:5, fontSize:10.5, fontWeight:600, cursor:"pointer" }}
+                                  >📎 View proof</button>
+                                )}
                               </>
                             )}
                           </td>
@@ -11013,6 +11031,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </tbody>
                 </table>
               </div>
+
+              {/* Proof image modal — shown when a row's "View proof" is clicked. */}
+              {proofModal && (
+                <div
+                  onClick={() => setProofModal(null)}
+                  style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", zIndex:9999, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+                >
+                  <div onClick={e => e.stopPropagation()} style={{ background:"#fff", borderRadius:13, padding:18, maxWidth:560, width:"100%", maxHeight:"90vh", overflow:"auto" }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+                      <div style={{ fontWeight:700, color:"#831843" }}>
+                        📎 Proof — {proofModal.name || ""}
+                        <span style={{ fontWeight:400, color:"#6b7280", marginLeft:8, fontSize:12 }}>
+                          {proofModal.ymd} · {proofModal.status}
+                        </span>
+                      </div>
+                      <button onClick={() => setProofModal(null)} style={{ background:"transparent", border:"none", fontSize:18, cursor:"pointer", color:"#6b7280" }}>✕</button>
+                    </div>
+                    {proofModal.loading && <div style={{ color:"#6b7280", fontStyle:"italic" }}>Loading proof…</div>}
+                    {proofModal.error && <div style={{ color:"#7f1d1d", fontSize:12 }}>Error: {proofModal.error}</div>}
+                    {!proofModal.loading && !proofModal.error && proofModal.dataUrl && (
+                      <img src={proofModal.dataUrl} alt="proof" style={{ width:"100%", borderRadius:8, border:"1px solid #e5e7eb" }} />
+                    )}
+                    {!proofModal.loading && !proofModal.error && !proofModal.dataUrl && (
+                      <div style={{ color:"#6b7280", fontSize:12, fontStyle:"italic" }}>No proof image found at this key.</div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           );
         } catch (err) {
