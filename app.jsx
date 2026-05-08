@@ -6025,21 +6025,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return () => { cancelled = true; };
   }, [tab, techClockinDays]);
 
-  // Load attendance-grid check-ins (kiosk app submissions) for the same window.
-  // The kiosk writes daily statuses to boa_att_<branch>_<ym>, NOT to clockins,
-  // so without this the Daily Check-ins tab misses everything except Manager
-  // Clock-in PIN+selfie+GPS rows.
+  // Load kiosk-app submissions for the same window. The kiosk appends each
+  // submission to boa_kiosk_log_<branch>_<ym> in app_state with
+  // {ec, dayKey, status, note, ts}. Reading from this log (instead of the
+  // attendance grid) means Daily Check-ins shows ONLY kiosk submissions, not
+  // Fresha imports or manual HR-portal edits to the same grid.
   const [attCheckinRows, setAttCheckinRows] = useState([]);
   useEffect(() => {
     if (tab !== "checkins") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
-    if (!window.BOA_DB.listRecentAttendanceCheckins) return; // older deploy
+    if (!window.BOA_DB.listRecentKioskCheckins) return; // older deploy
     let cancelled = false;
     (async () => {
       try {
-        const rows = await window.BOA_DB.listRecentAttendanceCheckins(techClockinDays, SALONS.map(s => s.name));
+        const rows = await window.BOA_DB.listRecentKioskCheckins(techClockinDays, SALONS.map(s => s.name));
         if (!cancelled) setAttCheckinRows(rows || []);
-      } catch (e) { console.error("att check-ins load:", e); }
+      } catch (e) { console.error("kiosk check-ins load:", e); }
     })();
     return () => { cancelled = true; };
   }, [tab, techClockinDays]);
@@ -10709,7 +10710,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               ts:       r.ts,
               type:     r.type,        // "att" — special render (status badge instead of IN/OUT pill)
               status:   r.status,
-              source:   "attendance_grid",
+              note:     r.note || null,
+              source:   "kiosk_log",
               staff:    { name: sRec ? sRec.name : "(unknown)", employee_code: r.ec, branch: r.branch }
             };
           });
@@ -10853,7 +10855,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   )}
                 </div>
                 <div style={{ marginTop:8, fontSize:11.5, color:"#155e75", fontWeight:600 }}>
-                  Attendance grid (kiosk submissions): {(attCheckinRows || []).length} mark{(attCheckinRows || []).length === 1 ? "" : "s"} fetched
+                  Kiosk submissions (boa_kiosk_log_*): {(attCheckinRows || []).length} entr{(attCheckinRows || []).length === 1 ? "y" : "ies"} fetched
                 </div>
                 <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginTop:6 }}>
                   {Object.keys(attFetchedByBranch).sort().map(b => (
@@ -10862,7 +10864,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </span>
                   ))}
                   {Object.keys(attFetchedByBranch).length === 0 && (
-                    <span style={{ color:"#9ca3af", fontStyle:"italic" }}>No attendance-grid rows. The kiosk hasn't written any check-ins to Supabase for the current cycle.</span>
+                    <span style={{ color:"#9ca3af", fontStyle:"italic" }}>No kiosk-log rows yet. Once you redeploy the kiosk app with the audit-log change, every kiosk submission will land here.</span>
                   )}
                 </div>
                 {checkinProbeResult && (() => {
@@ -10996,7 +10998,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             <span style={{ background:t.bg, color:t.fg, fontWeight:700, fontSize:10, padding:"2px 8px", borderRadius:5, letterSpacing:"0.05em" }}>{t.lbl}</span>
                           </td>
                           <td style={{ padding:"8px 12px", fontWeight:600, color: isOrphan ? "#7f1d1d" : undefined }}>
-                            {isOrphan ? <em>⚠ orphan · staff_id={String(r.staff_id || "(null)")}</em> : (r.staff.name || "—")}
+                            {isOrphan ? <em>⚠ orphan · staff_id={String(r.staff_id || "(null)")}</em> : (
+                              <>
+                                {r.staff.name || "—"}
+                                {r.note && <div style={{ fontWeight:400, fontSize:11, color:"#6b7280", marginTop:2, fontStyle:"italic" }}>📝 {r.note}</div>}
+                              </>
+                            )}
                           </td>
                           <td style={{ padding:"8px 12px", fontFamily:"monospace", fontSize:11, color:"#8E5570" }}>{(r.staff && r.staff.employee_code) || ""}</td>
                           <td style={{ padding:"8px 12px", color: isOrphan ? "#7f1d1d" : "#831843" }}>📍 {(r.staff && r.staff.branch) || "—"}</td>

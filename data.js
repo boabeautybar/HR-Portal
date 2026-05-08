@@ -505,11 +505,67 @@
     // tab can surface them as diagnostics. Only manager-tagged rows are dropped.
     return (res.data || []).filter(function (r) { return !r.staff || r.staff.role_type !== "manager"; });
   }
-  // List attendance-grid marks across every branch and recent cycles, flattened
-  // into per-(branch, ec, ymd, status) records. The check-in kiosk app writes
-  // daily attendance statuses to boa_att_<branch>_<ym> in app_state (NOT to the
-  // clockins table), so the Daily Check-ins tab needs this to show kiosk
-  // submissions alongside the clockins rows.
+  // List kiosk-app submissions across every branch and recent cycles. The kiosk
+  // appends each submission to boa_kiosk_log_<branch>_<ym> in app_state with
+  // {ec, dayKey, status, note, ts}. We read that log here so Daily Check-ins
+  // shows only what the kiosk wrote — NOT the noisy attendance grid which is
+  // also written by Fresha imports and HR-portal manual edits.
+  async function listRecentKioskCheckins(daysBack, branchNames) {
+    var d = daysBack || 60;
+    var now = new Date();
+    var ymKeys = [];
+    var startCycle = (now.getDate() <= 24) ? new Date(now.getFullYear(), now.getMonth() - 1, 1)
+                                            : new Date(now.getFullYear(), now.getMonth(),     1);
+    var cyclesNeeded = Math.max(2, Math.ceil(d / 30) + 1);
+    for (var i = 0; i < cyclesNeeded; i++) {
+      var c = new Date(startCycle.getFullYear(), startCycle.getMonth() - i, 1);
+      ymKeys.push(c.getFullYear() + "-" + String(c.getMonth() + 1).padStart(2, "0"));
+    }
+    var allKeys = [];
+    (branchNames || []).forEach(function (b) {
+      ymKeys.forEach(function (ym) { allKeys.push("boa_kiosk_log_" + b + "_" + ym); });
+    });
+    if (allKeys.length === 0) return [];
+    var rows = [];
+    var CHUNK = 200;
+    for (var off = 0; off < allKeys.length; off += CHUNK) {
+      var slice = allKeys.slice(off, off + CHUNK);
+      var res = await sb.from("app_state").select("key, value").in("key", slice);
+      if (res.error) { console.error("listRecentKioskCheckins chunk:", res.error); continue; }
+      rows = rows.concat(res.data || []);
+    }
+    var since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - d);
+    var out = [];
+    rows.forEach(function (row) {
+      var keyM = /boa_kiosk_log_(.+)_(\d{4}-\d{2})$/.exec(row.key || "");
+      if (!keyM) return;
+      var rowBranch = keyM[1];
+      var entries = Array.isArray(row.value) ? row.value : [];
+      entries.forEach(function (e) {
+        if (!e || !e.ts) return;
+        var ts = new Date(e.ts);
+        if (isNaN(ts) || ts < since) return;
+        out.push({
+          id:     "kiosk_" + rowBranch + "_" + e.ts + "_" + (e.ec || ""),
+          ts:     e.ts,
+          dayKey: e.dayKey,
+          ymd:    e.ymd || null,
+          type:   "att",
+          status: e.status,
+          note:   e.note || null,
+          ec:     e.ec,
+          branch: rowBranch,
+          source: "kiosk_log"
+        });
+      });
+    });
+    out.sort(function (a, b) { return b.ts.localeCompare(a.ts); });
+    return out;
+  }
+  // DEPRECATED: pulled every cell of the attendance grid, including Fresha
+  // imports, manual HR-portal edits, and schedule mirrors — way too noisy.
+  // Kept for the diagnostics probe only. Use listRecentKioskCheckins instead
+  // for the Daily Check-ins display.
   async function listRecentAttendanceCheckins(daysBack, branchNames) {
     var d = daysBack || 60;
     // Cycle keys are START-month of the 25-to-24 cycle. Cover the cycle that
@@ -547,13 +603,14 @@
       var v = row.value || {};
       var grid = v.grid || {};
       var rowBranch = v.branch || "";
-      var rowYm = v.ym || "";
-      // Recover cycStart from key/branch/ym so we can convert dayKey → ymd.
-      // ym uses START-month convention (e.g. "2026-04" = April 25).
-      if (!rowYm) {
-        var m = /boa_att_(.+)_(\d{4}-\d{2})$/.exec(row.key || "");
-        if (m) { rowBranch = rowBranch || m[1]; rowYm = m[2]; }
-      }
+      // Always derive ym from the KEY: the key is reliably written in
+      // START-month convention by both apps (HR portal saves with attYM, kiosk
+      // converts via attKey()). value.ym is unreliable — the kiosk stores its
+      // internal END-month value there, so trusting it shifts every cell forward
+      // by one calendar month (e.g. May 8 cells render as Jun 8).
+      var rowYm = "";
+      var keyM = /boa_att_(.+)_(\d{4}-\d{2})$/.exec(row.key || "");
+      if (keyM) { rowBranch = rowBranch || keyM[1]; rowYm = keyM[2]; }
       if (!rowYm) return;
       var ymP = rowYm.split("-").map(Number);
       var cycY = ymP[0], cycM = ymP[1]; // 1-indexed start month
@@ -563,6 +620,15 @@
           var status = byDay[dayKey];
           if (!status) return;
           if (typeof status === "string" && status.charAt(0) === "~") return; // mirror, not a real check-in
+          // Daily Check-ins is conceptually "who showed up to work today" — drop
+          // every status that isn't a presence code. This excludes off-days,
+          // leave, sick, term, etc. (which get written to the same grid by
+          // Fresha imports and HR-portal admin actions, not by the kiosk's
+          // Nail Tech Check-in tile). Statuses like "deduct:<hours>" still
+          // start with "on" semantics — keep "on"-prefixed values.
+          var bare = status;
+          var PRESENCE = { on: 1, late: 1, ext: 1, trial: 1, swap_o: 1 };
+          if (!PRESENCE[bare]) return;
           // dayKey is "1".."31" within the cycle. Days 25..31 belong to the
           // start month; days 1..24 belong to the next month.
           var dayNum = parseInt(dayKey, 10);
@@ -796,6 +862,7 @@
     listRecentManagerClockins: listRecentManagerClockins,
     listRecentTechClockins:    listRecentTechClockins,
     listRecentAttendanceCheckins: listRecentAttendanceCheckins,
+    listRecentKioskCheckins:      listRecentKioskCheckins,
     probeRecentClockinsRaw:    probeRecentClockinsRaw,
     probeAttendanceGrid:       probeAttendanceGrid,
     loadClockinMeta:           loadClockinMeta,
