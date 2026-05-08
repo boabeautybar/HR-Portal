@@ -5522,6 +5522,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [checkinFilterBranch, setCheckinFilterBranch] = useState("All");
   const [checkinDayRange,     setCheckinDayRange]     = useState(7);    // viewer range
   const [checkinProbeResult,  setCheckinProbeResult]  = useState(null); // raw probe panel (Daily Check-ins)
+  const [attGridProbeResult,  setAttGridProbeResult]  = useState(null); // attendance-grid probe (Daily Check-ins)
 
   // ── Onboarding / Off-boarding state ────────────────────────────────
   const [obList, setObList] = useState([]);           // joiner records
@@ -10755,18 +10756,33 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </div>
                   {/* Bypass the staff join + role_type filter and query clockins directly,
                       so we can confirm whether rows actually exist in the table. */}
-                  <button
-                    onClick={async () => {
-                      try {
-                        if (!window.BOA_DB || !window.BOA_DB.probeRecentClockinsRaw) { setCheckinProbeResult({ error: "probe not available — redeploy needed" }); return; }
-                        const r = await window.BOA_DB.probeRecentClockinsRaw(techClockinDays);
-                        setCheckinProbeResult(r);
-                      } catch (e) {
-                        setCheckinProbeResult({ error: (e && e.message) || String(e) });
-                      }
-                    }}
-                    style={{ background:"#831843", color:"#fff", border:"none", padding:"6px 12px", borderRadius:6, fontSize:11, cursor:"pointer", fontWeight:600 }}
-                  >Probe raw clockins</button>
+                  <div style={{ display:"flex", gap:6 }}>
+                    <button
+                      onClick={async () => {
+                        try {
+                          if (!window.BOA_DB || !window.BOA_DB.probeRecentClockinsRaw) { setCheckinProbeResult({ error: "probe not available — redeploy needed" }); return; }
+                          const r = await window.BOA_DB.probeRecentClockinsRaw(techClockinDays);
+                          setCheckinProbeResult(r);
+                        } catch (e) {
+                          setCheckinProbeResult({ error: (e && e.message) || String(e) });
+                        }
+                      }}
+                      style={{ background:"#831843", color:"#fff", border:"none", padding:"6px 12px", borderRadius:6, fontSize:11, cursor:"pointer", fontWeight:600 }}
+                    >Probe raw clockins</button>
+                    <button
+                      onClick={async () => {
+                        try {
+                          if (!window.BOA_DB || !window.BOA_DB.probeAttendanceGrid) { setAttGridProbeResult({ error: "probe not available — redeploy needed" }); return; }
+                          const branch = checkinFilterBranch !== "All" ? checkinFilterBranch : "Bree";
+                          const r = await window.BOA_DB.probeAttendanceGrid(branch);
+                          setAttGridProbeResult({ ...r, branch });
+                        } catch (e) {
+                          setAttGridProbeResult({ error: (e && e.message) || String(e) });
+                        }
+                      }}
+                      style={{ background:"#0e7490", color:"#fff", border:"none", padding:"6px 12px", borderRadius:6, fontSize:11, cursor:"pointer", fontWeight:600 }}
+                    >Probe attendance grid</button>
+                  </div>
                 </div>
                 <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
                   {Object.keys(fetchedByBranch).sort().map(b => (
@@ -10821,6 +10837,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 {JSON.stringify(rows.slice(0, 20).map(r => ({ id: r.id, ts: r.ts, type: r.type, staff_id: r.staff_id, resolved: !!staffById[r.staff_id], branch: staffById[r.staff_id] ? staffById[r.staff_id].branch : null })), null, 2)}
                         </pre>
                       </details>
+                    </div>
+                  );
+                })()}
+                {attGridProbeResult && (() => {
+                  if (attGridProbeResult.error) {
+                    return <div style={{ marginTop:10, background:"#fee2e2", color:"#7f1d1d", padding:"8px 11px", borderRadius:6, fontSize:11.5, fontFamily:"monospace" }}>Attendance probe error: {attGridProbeResult.error}</div>;
+                  }
+                  const grids = attGridProbeResult.grids || [];
+                  return (
+                    <div style={{ marginTop:10, background:"#ecfeff", border:"1px solid #a5f3fc", borderRadius:7, padding:"9px 11px", fontSize:11.5 }}>
+                      <div style={{ fontWeight:700, color:"#155e75", marginBottom:6 }}>
+                        Attendance grid for {attGridProbeResult.branch || "Bree"} (boa_att_&lt;branch&gt;_&lt;ym&gt; in app_state)
+                      </div>
+                      {grids.length === 0 && (
+                        <div style={{ color:"#7f1d1d" }}>No attendance grid rows found for keys: {(attGridProbeResult.probedKeys || []).join(", ")}</div>
+                      )}
+                      {grids.map(g => (
+                        <div key={g.key} style={{ background:"#fff", border:"1px solid #a5f3fc", borderRadius:5, padding:"7px 9px", marginBottom:6 }}>
+                          <div style={{ fontWeight:700, color:"#0e7490" }}>{g.key} · ym={g.ym} · {g.ecCount} EC{g.ecCount === 1 ? "" : "s"} · saved {g.savedAt || "(no savedAt)"}</div>
+                          <div style={{ color:"#155e75", marginTop:4 }}>
+                            Days with marks: {Object.keys(g.dayCounts).sort((a,b)=>parseInt(a,10)-parseInt(b,10)).map(d => d + " (" + g.dayCounts[d] + ")").join(", ") || "(none)"}
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   );
                 })()}

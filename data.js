@@ -494,6 +494,34 @@
     // tab can surface them as diagnostics. Only manager-tagged rows are dropped.
     return (res.data || []).filter(function (r) { return !r.staff || r.staff.role_type !== "manager"; });
   }
+  // Probe the attendance-grid app_state rows for a branch under both ym conventions
+  // (start-month and end-month). The check-in kiosk app writes daily attendance
+  // statuses there, NOT into the clockins table. Used by the Daily Check-ins tab
+  // diagnostics to confirm where check-ins actually landed.
+  async function probeAttendanceGrid(branch) {
+    var now = new Date();
+    var ymCandidates = [];
+    for (var off = -1; off <= 1; off++) {
+      var d = new Date(now.getFullYear(), now.getMonth() + off, 1);
+      ymCandidates.push(d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"));
+    }
+    var keys = ymCandidates.map(function (ym) { return "boa_att_" + branch + "_" + ym; });
+    var res = await sb.from("app_state").select("key, value").in("key", keys);
+    if (res.error) return { error: res.error.message || JSON.stringify(res.error), grids: [] };
+    var grids = (res.data || []).map(function (row) {
+      var v = row.value || {};
+      var grid = v.grid || {};
+      var ecs = Object.keys(grid);
+      var dayCounts = {};
+      ecs.forEach(function (ec) {
+        Object.keys(grid[ec] || {}).forEach(function (day) {
+          dayCounts[day] = (dayCounts[day] || 0) + 1;
+        });
+      });
+      return { key: row.key, ym: v.ym, savedAt: v.savedAt, ecCount: ecs.length, dayCounts: dayCounts };
+    });
+    return { grids: grids, probedKeys: keys };
+  }
   // Raw probe used by the Daily Check-ins tab to bypass the staff join and any
   // related RLS filtering. Returns the unfiltered rows + counts so the diagnostic
   // panel can show whether records exist in clockins at all.
@@ -669,6 +697,7 @@
     listRecentManagerClockins: listRecentManagerClockins,
     listRecentTechClockins:    listRecentTechClockins,
     probeRecentClockinsRaw:    probeRecentClockinsRaw,
+    probeAttendanceGrid:       probeAttendanceGrid,
     loadClockinMeta:           loadClockinMeta,
 
     // Activity log
