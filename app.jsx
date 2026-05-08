@@ -9375,11 +9375,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             //  • presentNoApptWarn — kiosk says the tech checked in AND schedule
                             //    said work, but Fresha has no appointments. They were in the
                             //    store for nothing — manager should investigate.
-                            const kioskMarkedAbsent = !!kioskAbs;        // kiosk audit log entry (non-presence status)
+                            const kioskMarkedAbsent = !!kioskAbs && kioskAbs.status !== "ext" && kioskAbs.status !== "trial" && kioskAbs.status !== "swap_o";        // kiosk audit log entry, only true non-presence statuses
                             // The cell visually says "absent" — either the kiosk audit log
                             // recorded an absence, or the grid value itself is a non-presence
                             // status (manual edit or a kiosk write that didn't hit the audit log).
                             const cellShowsAbsent  = kioskMarkedAbsent || (override && !!bareV && !isWorking && !isLate);
+                            // Did the manager (kiosk or grid) record an extra-day worked? An
+                            // "ext" cell means the tech actually came in on a non-scheduled day
+                            // — Fresha should have appointments to back that up.
+                            const extDayRecorded   = (override && bareV === "ext") || (!!kioskAbs && kioskAbs.status === "ext");
                             const allAgreeAbsent       = s.role === "NT" && scheduleSaysWork && cellShowsAbsent && !freshaWorkedCell;
                             const apptVsKioskAbsentWarn = s.role === "NT" && cellShowsAbsent && freshaWorkedCell;
                             // presentNoApptWarn — only fires when the cell is actually showing
@@ -9387,6 +9391,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // (sick / no-show / etc.), that absence supersedes the earlier
                             // clock-in and the "all 3 agree absent" merge wins instead.
                             const presentNoApptWarn    = s.role === "NT" && checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
+                            // extDayNoApptWarn — ext day was recorded but Fresha shows no
+                            // completed appointment. Either the ext-day mark is wrong or the
+                            // tech showed up and did no service — manager should investigate.
+                            const extDayNoApptWarn     = s.role === "NT" && extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
                             const ttl =
                               dy.ymd + ": " + (st.lbl || "—") +
                               (hint ? " — schedule: " + ((STAT[hint] || {}).lbl || "—") : "") +
@@ -9447,8 +9455,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   <div title={freshaTip} style={{ position:"absolute", bottom:0, left:0, right:0, height:6, background: freshaStripeColor === "transparent" ? "#f9fafb" : freshaStripeColor, borderTop: cleanFill ? "none" : "1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
                                     {!cleanFill && <span style={{ fontSize:7, fontWeight:800, color:"rgba(0,0,0,0.45)", letterSpacing:"0.05em" }}>F</span>}
                                   </div>
-                                  {(apptVsKioskAbsentWarn || presentNoApptWarn) && (
+                                  {(apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn) && (
                                     <span title={apptVsKioskAbsentWarn ? "⚠ Kiosk marked tech absent but Fresha has a completed appointment that day"
+                                                                       : extDayNoApptWarn ? "⚠ Extra day recorded but Fresha shows no appointments — did they actually do any service?"
                                                                        : "⚠ Tech checked in and was scheduled to work, but Fresha shows no appointments"}
                                           style={{ position:"absolute", top:8, right:3, fontSize:11, lineHeight:1, color:"#dc2626", fontWeight:900, pointerEvents:"none", textShadow:"0 0 2px white, 0 0 2px white" }}>⚠</span>
                                   )}
