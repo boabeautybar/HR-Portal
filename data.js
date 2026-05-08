@@ -505,6 +505,93 @@
     // tab can surface them as diagnostics. Only manager-tagged rows are dropped.
     return (res.data || []).filter(function (r) { return !r.staff || r.staff.role_type !== "manager"; });
   }
+  // List attendance-grid marks across every branch and recent cycles, flattened
+  // into per-(branch, ec, ymd, status) records. The check-in kiosk app writes
+  // daily attendance statuses to boa_att_<branch>_<ym> in app_state (NOT to the
+  // clockins table), so the Daily Check-ins tab needs this to show kiosk
+  // submissions alongside the clockins rows.
+  async function listRecentAttendanceCheckins(daysBack, branchNames) {
+    var d = daysBack || 60;
+    // Cycle keys are START-month of the 25-to-24 cycle. Cover the cycle that
+    // contains today, plus enough prior cycles to span `daysBack` days. One
+    // cycle is ~30 days, so two prior cycles is plenty for the default 60.
+    var now = new Date();
+    var ymKeys = [];
+    var startCycle = (now.getDate() <= 24) ? new Date(now.getFullYear(), now.getMonth() - 1, 1)
+                                            : new Date(now.getFullYear(), now.getMonth(),     1);
+    var cyclesNeeded = Math.max(2, Math.ceil(d / 30) + 1);
+    for (var i = 0; i < cyclesNeeded; i++) {
+      var c = new Date(startCycle.getFullYear(), startCycle.getMonth() - i, 1);
+      ymKeys.push(c.getFullYear() + "-" + String(c.getMonth() + 1).padStart(2, "0"));
+    }
+    var allKeys = [];
+    (branchNames || []).forEach(function (b) {
+      ymKeys.forEach(function (ym) { allKeys.push("boa_att_" + b + "_" + ym); });
+    });
+    if (allKeys.length === 0) return [];
+    // Supabase IN-list cap is 1000+ items, but we chunk to be safe.
+    var rows = [];
+    var CHUNK = 200;
+    for (var off = 0; off < allKeys.length; off += CHUNK) {
+      var slice = allKeys.slice(off, off + CHUNK);
+      var res = await sb.from("app_state").select("key, value").in("key", slice);
+      if (res.error) { console.error("listRecentAttendanceCheckins chunk:", res.error); continue; }
+      rows = rows.concat(res.data || []);
+    }
+    // Flatten grids → one record per (branch, ec, ymd, status). Skip empty days
+    // and the "~" mirror-prefix (those are unconfirmed mirror cells, not real
+    // kiosk submissions).
+    var since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - d);
+    var out = [];
+    rows.forEach(function (row) {
+      var v = row.value || {};
+      var grid = v.grid || {};
+      var rowBranch = v.branch || "";
+      var rowYm = v.ym || "";
+      // Recover cycStart from key/branch/ym so we can convert dayKey → ymd.
+      // ym uses START-month convention (e.g. "2026-04" = April 25).
+      if (!rowYm) {
+        var m = /boa_att_(.+)_(\d{4}-\d{2})$/.exec(row.key || "");
+        if (m) { rowBranch = rowBranch || m[1]; rowYm = m[2]; }
+      }
+      if (!rowYm) return;
+      var ymP = rowYm.split("-").map(Number);
+      var cycY = ymP[0], cycM = ymP[1]; // 1-indexed start month
+      Object.keys(grid).forEach(function (ec) {
+        var byDay = grid[ec] || {};
+        Object.keys(byDay).forEach(function (dayKey) {
+          var status = byDay[dayKey];
+          if (!status) return;
+          if (typeof status === "string" && status.charAt(0) === "~") return; // mirror, not a real check-in
+          // dayKey is "1".."31" within the cycle. Days 25..31 belong to the
+          // start month; days 1..24 belong to the next month.
+          var dayNum = parseInt(dayKey, 10);
+          if (!dayNum) return;
+          var dt;
+          if (dayNum >= 25) {
+            dt = new Date(cycY, cycM - 1, dayNum);
+          } else {
+            var nm = cycM + 1, ny = cycY; if (nm > 12) { nm = 1; ny += 1; }
+            dt = new Date(ny, nm - 1, dayNum);
+          }
+          if (dt < since) return;
+          var ymd = dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
+          out.push({
+            id: "att_" + rowBranch + "_" + ymd + "_" + ec,
+            ts: dt.toISOString(),
+            ymd: ymd,
+            type: "att",
+            status: status,
+            ec: ec,
+            branch: rowBranch,
+            source: "attendance_grid"
+          });
+        });
+      });
+    });
+    out.sort(function (a, b) { return b.ts.localeCompare(a.ts); });
+    return out;
+  }
   // Probe the attendance-grid app_state rows for a branch under both ym conventions
   // (start-month and end-month). The check-in kiosk app writes daily attendance
   // statuses there, NOT into the clockins table. Used by the Daily Check-ins tab
@@ -708,6 +795,7 @@
     // Manager clock-ins viewer
     listRecentManagerClockins: listRecentManagerClockins,
     listRecentTechClockins:    listRecentTechClockins,
+    listRecentAttendanceCheckins: listRecentAttendanceCheckins,
     probeRecentClockinsRaw:    probeRecentClockinsRaw,
     probeAttendanceGrid:       probeAttendanceGrid,
     loadClockinMeta:           loadClockinMeta,
