@@ -9365,36 +9365,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               (missingCheckin  ? "\n⚠ Missing check-in: Fresha shows worked, no check-in record" : "") +
                               (kioskAbsentScheduled ? "\n⚠ Schedule mismatch: scheduled to work but kiosk marked " + ((STAT[kioskAbs.status] || {}).lbl || kioskAbs.status) + (kioskAbs.note ? " (" + kioskAbs.note + ")" : "") : "") +
                               (isLate && checkin ? "\n(Late — counts as worked, no discrepancy)" : "");
-                            // Body colour. Map "on"/"late"/"ext"/"swap_o"/"trial" to the work
-                            // green and "off" to the slate so these cases line up exactly with
-                            // the schedule/Fresha stripe palette (one solid colour when all
-                            // three agree). All other STAT entries (sick, frl, no-show, …)
+                            // Simplified presence palette — every source (schedule / kiosk /
+                            // Fresha) maps to "work" (green) or "off" (slate) when it represents
+                            // a presence status, so all-agree cells naturally render as one
+                            // solid colour band. Other STAT entries (sick, frl, no-show, …)
                             // keep their unique colour so the divergence is visible.
+                            const C_WORK = "#86efac", C_OFF = "#cbd5e1";
                             const presenceBgFor = (k) => (k === "on" || k === "late" || k === "ext" || k === "swap_o" || k === "trial") ? C_WORK
                                                        : k === "off" ? C_OFF
                                                        : null;
                             const cellBaseBg = override ? (presenceBgFor(bareV) || st.bg)
                                               : showKioskReason ? (presenceBgFor(kioskAbs.status) || kStat.bg)
                                               : (isHol ? "#fecaca40" : (isWk ? "#fdf4f8" : "#FFFFFF"));
-                            // Stripes always show — top = schedule, body = kiosk truth, bottom
-                            // = Fresha. The schedule + Fresha stripes use the same green/slate
-                            // palette as the body (when the body is a presence status), so when
-                            // all three agree the cell naturally renders as one solid colour
-                            // band. Any colour break across the layers IS the divergence.
                             const allMatchBg     = null;
                             const allMatchEdge   = "1px solid #FCE7F3";
                             const allMatchTxt    = null;
                             const allMatchTip    = allMatchWork ? "\n✓ All match — Fresha + schedule + check-in agree"
                                                   : allMatchOff ? "\n✓ All match OFF — scheduled off, no Fresha appointment, no check-in"
                                                   : "";
-                            // Three-source stripe layout: top stripe = schedule, body = kiosk
-                            // (manager-tagged) status, bottom stripe = Fresha appointments.
-                            // When all three agree the cell reads as one solid colour band; any
-                            // colour break between stripes/body flags a divergence at a glance.
-                            // Simplified presence palette — every source maps to "work" (green)
-                            // or "off" (slate) so when all three sources agree the cell ends up
-                            // a single solid colour band without needing a special override.
-                            const C_WORK = "#86efac", C_OFF = "#cbd5e1";
                             const schedStripeColor = scheduleSaysWork ? C_WORK
                                                     : (hint === "off" || hint === "al" || hint === "ph" || hint === "mat" || hint === "term") ? C_OFF
                                                     : hint ? (STAT[hint] || {}).bg || "transparent"
