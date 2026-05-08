@@ -8381,43 +8381,72 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             catch (e) { alert("Could not save: " + (e.message || e)); }
           };
 
-          // ── Import check-ins from the staff check-in app ── any tech with
-          // at least one clock-IN event on a given day in this cycle is
-          // marked "On Time" for that day (or "Extra Day" if the schedule
-          // had them off). Manual / auto clock-OUT alone is NOT proof —
-          // we require a real `in` event to avoid mis-marking a day from
-          // an end-of-shift auto-out. Confirmed cells (bold, no leading
-          // `~`) are preserved so the import only fills in the blanks
-          // and refreshes mirrored cells. Post-leftDate days are
-          // skipped. The pre-import grid is snapshotted so the toolbar's
-          // Undo button can roll the whole import back in one click.
+          // ── Import check-ins from the kiosk audit log ── every kiosk submission
+          // (Daily Check-ins entry) for this branch + cycle gets stamped onto
+          // the attendance grid with its ACTUAL status — on / late / ext / sick
+          // / no / etc. — preserving confirmed (bold, no leading ~) cells.
+          // Lets a manager wipe a cycle and rebuild it straight from what was
+          // recorded on the kiosk. Falls back to clockins-table check-ins (the
+          // PIN+selfie+GPS Manager Clock-in path) if the audit log is empty for
+          // that day, so older deploys keep working.
           const importCheckins = async () => {
-            const branchData = checkInsByBranch[attBranch] || {};
-            const ecsWithCheckins = Object.keys(branchData);
-            if (ecsWithCheckins.length === 0) {
+            // Map each kiosk audit-log entry to (ec → ymd → status) for this
+            // branch + cycle. Statuses come straight from the kiosk; we don't
+            // remap on/ext etc. so "Sick + note" stays "sick_n", etc.
+            const cycleYmds = new Set(days.map(d => d.ymd));
+            const dByYmd = {}; for (const d of days) dByYmd[d.ymd] = d.d;
+            const kioskStampsByEc = {};
+            for (const r of (attCheckinRows || [])) {
+              if (!r || r.branch !== attBranch || !r.ec || !r.ymd || !r.status) continue;
+              if (!cycleYmds.has(r.ymd)) continue;
+              if (r.status === "(cleared)") continue;       // log entry that cleared a cell — don't restamp
+              if (r.status.charAt(0) === "~") continue;     // unconfirmed mirror — don't restamp
+              if (!kioskStampsByEc[r.ec]) kioskStampsByEc[r.ec] = {};
+              // Most-recent kiosk submission wins per (ec, day) in case the
+              // manager corrected themselves.
+              const prev = kioskStampsByEc[r.ec][r.ymd];
+              if (!prev || (r.ts || "") > (prev.ts || "")) {
+                kioskStampsByEc[r.ec][r.ymd] = { status: r.status, ts: r.ts || "" };
+              }
+            }
+            // Fall-back: clockins-table presence check-ins for ECs with no
+            // audit-log entry on a given day. Maps clock-in to "on" or "ext"
+            // (the historical behavior) since clockins rows don't carry an
+            // explicit attendance code.
+            const clockinByBranch = checkInsByBranch[attBranch] || {};
+
+            const allEcs = new Set([
+              ...Object.keys(kioskStampsByEc),
+              ...Object.keys(clockinByBranch)
+            ]);
+            if (allEcs.size === 0) {
               alert(
-                "No check-ins found for " + attBranch + " in the last " + techClockinDays + " days.\n\n" +
+                "No kiosk submissions or clock-ins found for " + attBranch + " in this cycle.\n\n" +
                 "If you're expecting some, increase the look-back window on the Check-ins tab " +
                 "and try again."
               );
               return;
             }
+
             const next = { ...attGrid };
             let stamped = 0, skippedConfirmed = 0, skippedPostLeft = 0;
-            for (const ec of ecsWithCheckins) {
-              const techCheckins = branchData[ec];
+            for (const ec of allEcs) {
               for (const day of days) {
-                const cell = techCheckins[day.ymd];
-                if (!cell || !cell.hasIn) continue;          // require explicit clock-IN
+                let status = null;
+                const kStamp = kioskStampsByEc[ec] && kioskStampsByEc[ec][day.ymd];
+                if (kStamp) {
+                  status = kStamp.status;
+                } else {
+                  const cell = clockinByBranch[ec] && clockinByBranch[ec][day.ymd];
+                  if (cell && cell.hasIn) {
+                    const sv = attSched[ec] && attSched[ec][day.d];
+                    status = (sv === "O" || sv === "R") ? "ext" : "on";
+                  }
+                }
+                if (!status) continue;
                 if (isPostLeftDate(ec, day.ymd)) { skippedPostLeft++; continue; }
                 const cur = (next[ec] || {})[day.d];
-                // Preserve confirmed entries (bold, no leading ~); only
-                // overwrite blanks and unconfirmed (mirrored) cells.
                 if (cur && cur.indexOf("~") !== 0) { skippedConfirmed++; continue; }
-                // If the schedule had them off and they checked in, the
-                // honest mapping is "Extra Day" rather than "On Time".
-                const sv = attSched[ec] && attSched[ec][day.d];
-                const status = (sv === "O" || sv === "R") ? "ext" : "on";
                 if (!next[ec]) next[ec] = { ...(attGrid[ec] || {}) };
                 next[ec][day.d] = status;
                 stamped++;
@@ -8425,22 +8454,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }
             if (stamped === 0) {
               alert(
-                "No cells to mark — every check-in either lands on a confirmed cell, " +
+                "No cells to mark — every kiosk entry either lands on a confirmed cell, " +
                 "is past someone's last day, or is outside this cycle." +
                 (skippedConfirmed > 0 ? "\n\n• " + skippedConfirmed + " confirmed cell" + (skippedConfirmed === 1 ? "" : "s") + " preserved." : "") +
                 (skippedPostLeft > 0  ? "\n• " + skippedPostLeft  + " post-departure day"  + (skippedPostLeft === 1  ? "" : "s") + " skipped."   : "")
               );
               return;
             }
-            // Snapshot the pre-import grid for Undo. Always overwrite the
-            // existing snapshot so the most recent import is the one that
-            // can be rolled back.
+            // Snapshot the pre-import grid for Undo.
             setAttCheckinSnapshot(attGrid);
             setAttGrid(next);
             try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
             catch (e) { alert("Could not save: " + (e.message || e)); return; }
             alert(
-              "✓ Marked " + stamped + " day" + (stamped === 1 ? "" : "s") + " from check-ins (" + attBranch + ")." +
+              "✓ Marked " + stamped + " day" + (stamped === 1 ? "" : "s") + " from Daily Check-ins (" + attBranch + ")." +
               (skippedConfirmed > 0 ? "\n\n• " + skippedConfirmed + " confirmed cell" + (skippedConfirmed === 1 ? "" : "s") + " preserved." : "") +
               (skippedPostLeft > 0  ? "\n• " + skippedPostLeft  + " post-departure day"  + (skippedPostLeft === 1  ? "" : "s") + " skipped."   : "") +
               "\n\nUse the ↩ Undo button to roll this back."
