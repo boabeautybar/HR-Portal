@@ -8777,7 +8777,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 ? ""
                 : "\n• Per branch: " + Object.entries(markedByBranch).map(([b, n]) => b + " " + n).join(" · ");
 
-              if (marked === 0) {
+              // Even when nothing new is stamped on the grid (marked === 0,
+              // every matched cell was already confirmed by kiosk / manual),
+              // we still need to save the freshaWorked sidecar — otherwise
+              // the bottom Fresha stripe stays gray for techs who definitely
+              // had completed appointments.
+              const freshaWorkedHits = Object.keys(branchFreshaWorked).reduce((n, b) => n + Object.keys(branchFreshaWorked[b] || {}).length, 0);
+              if (marked === 0 && freshaWorkedHits === 0) {
                 alert(
                   "Imported the CSV but didn't mark any cells On Time.\n\n" +
                   "• Rows read: " + total + "\n" +
@@ -8794,7 +8800,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // orange off-day banner only matches days actually covered by Fresha.
               const branchesToSave = Array.from(new Set([
                 ...Object.keys(markedByBranch),
-                ...Object.keys(freshaThroughByBranch)
+                ...Object.keys(freshaThroughByBranch),
+                ...Object.keys(branchFreshaWorked).filter(b => Object.keys(branchFreshaWorked[b] || {}).length)
               ]));
               const importedAt = new Date().toISOString();
               try {
@@ -8806,7 +8813,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 }));
               } catch (err) { alert("Could not save: " + (err.message || err)); return; }
               // Refresh the local grid + meta for the branch the user is viewing.
-              if (markedByBranch[attBranch] || freshaThroughByBranch[attBranch]) {
+              const activeHasFreshaSidecar = branchFreshaWorked[attBranch] && Object.keys(branchFreshaWorked[attBranch]).length > 0;
+              if (markedByBranch[attBranch] || freshaThroughByBranch[attBranch] || activeHasFreshaSidecar) {
                 setAttGrid(branchGrids[attBranch]);
                 setAttMeta({
                   freshaCoverage: freshaThroughByBranch[attBranch] ? { through: freshaThroughByBranch[attBranch], importedAt } : (attMeta && attMeta.freshaCoverage) || null,
