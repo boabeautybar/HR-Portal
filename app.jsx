@@ -9196,14 +9196,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
               <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap", fontSize:11, color:"#831843", marginBottom:8, padding:"8px 12px", background:"#FDEEF5", border:"1px solid #FBCFE8", borderRadius:8 }}>
                 <span style={{ fontWeight:700 }}>💡 Reading the grid:</span>
+                <span style={{ display:"inline-block", width:18, height:14, position:"relative", verticalAlign:"middle", border:"1px solid #FBCFE8" }}>
+                  <span style={{ position:"absolute", top:0, left:0, right:0, height:3, background:"#dcfce7" }} />
+                  <span style={{ position:"absolute", bottom:0, left:0, right:0, height:3, background:"#86efac" }} />
+                </span> top stripe = schedule · body = kiosk (manager-tagged) · bottom stripe = Fresha ·
                 <span style={{ fontStyle:"italic", opacity:0.75 }}>italic</span> = mirrored from schedule (no edits yet) ·
                 <span style={{ fontWeight:700 }}>bold</span> = confirmed by you ·
-                <span style={{ display:"inline-block", width:8, height:8, borderRadius:"50%", background:"#be185d" }} /> = differs from schedule (deviation) ·
-                <span style={{ background:"#dcfce7", color:"#15803d", fontWeight:800, padding:"1px 6px", borderRadius:4, borderLeft:"3px solid #16a34a" }}>✓✓</span> = Fresha + schedule + check-in all match (worked) ·
-                <span style={{ background:"#ffedd5", color:"#9a3412", fontWeight:800, padding:"1px 6px", borderRadius:4, borderLeft:"3px solid #ea580c" }}>✓✓</span> = scheduled off · no appointment · no check-in (rest day match) ·
-                <span style={{ color:"#16a34a", fontWeight:800 }}>✓</span> = checked in via app ·
-                <span style={{ color:"#b45309", fontWeight:800 }}>!</span> = check-in / attendance mismatch ·
-                <span style={{ color:"#b45309", fontWeight:800 }}>!?</span> = Fresha says worked, no check-in
+                colour break across stripes = sources disagree (hover for detail)
               </div>
 
               <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:14, padding:"10px 12px", background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:8 }}>
