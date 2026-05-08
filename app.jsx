@@ -9221,7 +9221,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <span style={{ display:"inline-block", width:10, height:10, verticalAlign:"middle", background:"#86efac", borderRadius:2 }} /> green = worked ·
                 <span style={{ display:"inline-block", width:10, height:10, verticalAlign:"middle", background:"#cbd5e1", borderRadius:2 }} /> slate = off ·
                 same colour top + middle + bottom = all 3 agree ·
-                colour break = sources disagree (hover for detail)
+                <span style={{ color:"#dc2626", fontWeight:900 }}>⚠</span> = Fresha appointment vs kiosk-absent, or check-in vs no Fresha appointment
               </div>
 
               <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:14, padding:"10px 12px", background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:8 }}>
@@ -9363,6 +9363,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const scheduleSaysOff     = hint === "off";
                             const freshaCoversThisDay = !!effectiveFreshaThrough && dy.ymd <= effectiveFreshaThrough;
                             const allMatchOff         = s.role === "NT" && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn && freshaCoversThisDay && !freshaWorkedCell;
+                            // Cross-source rules across Schedule × Kiosk × Fresha:
+                            //  • allAgreeAbsent — scheduled to work, kiosk marked the tech absent
+                            //    (any reason: sick / no-show / frl / off / unpaid / …), AND Fresha
+                            //    has no completed appointments. All three sources agree the tech
+                            //    didn't actually work that day → paint the whole cell with the
+                            //    kiosk's reason colour, no stripe contrast.
+                            //  • apptVsKioskAbsentWarn — Fresha recorded a completed appointment
+                            //    but the kiosk marked the tech absent. Either Fresha is wrong or
+                            //    attendance is wrong — manager needs to look.
+                            //  • presentNoApptWarn — kiosk says the tech checked in AND schedule
+                            //    said work, but Fresha has no appointments. They were in the
+                            //    store for nothing — manager should investigate.
+                            const kioskMarkedAbsent = !!kioskAbs;        // audit log only stores non-presence statuses
+                            const allAgreeAbsent       = s.role === "NT" && scheduleSaysWork && kioskMarkedAbsent && !freshaWorkedCell;
+                            const apptVsKioskAbsentWarn = s.role === "NT" && kioskMarkedAbsent && freshaWorkedCell;
+                            const presentNoApptWarn    = s.role === "NT" && checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay;
                             const ttl =
                               dy.ymd + ": " + (st.lbl || "—") +
                               (hint ? " — schedule: " + ((STAT[hint] || {}).lbl || "—") : "") +
@@ -9385,17 +9401,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const cellBaseBg = override ? (presenceBgFor(bareV) || st.bg)
                                               : showKioskReason ? (presenceBgFor(kioskAbs.status) || kStat.bg)
                                               : (isHol ? "#fecaca40" : (isWk ? "#fdf4f8" : "#FFFFFF"));
+                            // When all three sources agree the tech was absent, bleed the
+                            // schedule + Fresha stripes into the body colour so the cell reads
+                            // as one solid band — the absence colour (red, purple, peach, etc.).
+                            const stripeMergeBg = allAgreeAbsent ? cellBaseBg : null;
                             const allMatchBg     = null;
                             const allMatchEdge   = "1px solid #FCE7F3";
                             const allMatchTxt    = null;
                             const allMatchTip    = allMatchWork ? "\n✓ All match — Fresha + schedule + check-in agree"
                                                   : allMatchOff ? "\n✓ All match OFF — scheduled off, no Fresha appointment, no check-in"
                                                   : "";
-                            const schedStripeColor = scheduleSaysWork ? C_WORK
+                            const schedStripeColor = stripeMergeBg ? stripeMergeBg
+                                                    : scheduleSaysWork ? C_WORK
                                                     : (hint === "off" || hint === "al" || hint === "ph" || hint === "mat" || hint === "term") ? C_OFF
                                                     : hint ? (STAT[hint] || {}).bg || "transparent"
                                                     : "transparent";
-                            const freshaStripeColor = freshaWorkedCell ? C_WORK
+                            const freshaStripeColor = stripeMergeBg ? stripeMergeBg
+                                                    : freshaWorkedCell ? C_WORK
                                                     : freshaCoversThisDay ? C_OFF
                                                     : "transparent";
                             const freshaTip = freshaWorkedCell ? "Fresha: worked (appointments imported)"
@@ -9404,12 +9426,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             return (
                               <td key={dy.d} style={{ padding:0, borderBottom:"1px solid #FCE7F3", borderLeft: allMatchEdge, background: allMatchBg || cellBaseBg, position:"relative" }}>
                                 <div style={{ position:"relative", height:36 }}>
-                                  <div title={"Schedule: " + (hintLbl || "—")} style={{ position:"absolute", top:0, left:0, right:0, height:6, background: schedStripeColor === "transparent" ? "#f9fafb" : schedStripeColor, borderBottom:"1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
-                                    <span style={{ fontSize:7, fontWeight:800, color:"rgba(0,0,0,0.45)", letterSpacing:"0.05em" }}>S</span>
+                                  <div title={"Schedule: " + (hintLbl || "—")} style={{ position:"absolute", top:0, left:0, right:0, height:6, background: schedStripeColor === "transparent" ? "#f9fafb" : schedStripeColor, borderBottom: stripeMergeBg ? "none" : "1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
+                                    {!stripeMergeBg && <span style={{ fontSize:7, fontWeight:800, color:"rgba(0,0,0,0.45)", letterSpacing:"0.05em" }}>S</span>}
                                   </div>
-                                  <div title={freshaTip} style={{ position:"absolute", bottom:0, left:0, right:0, height:6, background: freshaStripeColor === "transparent" ? "#f9fafb" : freshaStripeColor, borderTop:"1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
-                                    <span style={{ fontSize:7, fontWeight:800, color:"rgba(0,0,0,0.45)", letterSpacing:"0.05em" }}>F</span>
+                                  <div title={freshaTip} style={{ position:"absolute", bottom:0, left:0, right:0, height:6, background: freshaStripeColor === "transparent" ? "#f9fafb" : freshaStripeColor, borderTop: stripeMergeBg ? "none" : "1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
+                                    {!stripeMergeBg && <span style={{ fontSize:7, fontWeight:800, color:"rgba(0,0,0,0.45)", letterSpacing:"0.05em" }}>F</span>}
                                   </div>
+                                  {(apptVsKioskAbsentWarn || presentNoApptWarn) && (
+                                    <span title={apptVsKioskAbsentWarn ? "⚠ Kiosk marked tech absent but Fresha has a completed appointment that day"
+                                                                       : "⚠ Tech checked in and was scheduled to work, but Fresha shows no appointments"}
+                                          style={{ position:"absolute", top:8, right:3, fontSize:11, lineHeight:1, color:"#dc2626", fontWeight:900, pointerEvents:"none", textShadow:"0 0 2px white, 0 0 2px white" }}>⚠</span>
+                                  )}
                                   {v && (
                                     <div style={{ position:"absolute", top:6, bottom:6, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle: override ? "normal" : "italic", fontWeight: override ? 700 : 400, color: override ? st.fg : (hintFg + "70"), pointerEvents:"none", letterSpacing:"0.02em" }}>{st.lbl || hintLbl || ""}</div>
                                   )}
