@@ -9310,12 +9310,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const isPastOrToday = dy.ymd <= t0Ymd;
                             const checkinHasIn    = !!(checkin && checkin.hasIn);
                             const checkinMismatch = checkinHasIn && isOff;                                  // checked in but day marked off
-                            const missingCheckin  = !checkinHasIn && freshaWorkedCell && isPastOrToday; // Fresha confirmed work but no check-in
                             // Independent Fresha track. Read from the freshaWorked sidecar
                             // populated by importFresha — NOT from the cell value, since the
                             // kiosk overwrites the grid (e.g. sick / no-show) and we don't want
                             // that to erase the Fresha appointment signal.
                             const freshaWorkedCell    = !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
+                            const missingCheckin  = !checkinHasIn && freshaWorkedCell && isPastOrToday; // Fresha confirmed work but no check-in
                             const scheduleSaysWork    = hint === "on" || hint === "ext";
                             // Kiosk-absence mismatch: the kiosk recorded a non-present status
                             // (sick / no-show / off / unpaid / swap_i / frl / etc.) on a day the
