@@ -9409,6 +9409,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // schedule + Fresha stripes into the body colour so the cell reads
                             // as one solid band — the absence colour (red, purple, peach, etc.).
                             const stripeMergeBg = allAgreeAbsent ? cellBaseBg : null;
+                            // For BOTH all-worked and all-absent matches the cell already reads
+                            // as one colour band (green for worked, kiosk colour for absent) —
+                            // hide the S / F letter labels so the band looks fully clean.
+                            const cleanFill = allMatchWork || allAgreeAbsent;
                             const allMatchBg     = null;
                             const allMatchEdge   = "1px solid #FCE7F3";
                             const allMatchTxt    = null;
@@ -9430,11 +9434,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             return (
                               <td key={dy.d} style={{ padding:0, borderBottom:"1px solid #FCE7F3", borderLeft: allMatchEdge, background: allMatchBg || cellBaseBg, position:"relative" }}>
                                 <div style={{ position:"relative", height:36 }}>
-                                  <div title={"Schedule: " + (hintLbl || "—")} style={{ position:"absolute", top:0, left:0, right:0, height:6, background: schedStripeColor === "transparent" ? "#f9fafb" : schedStripeColor, borderBottom: stripeMergeBg ? "none" : "1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
-                                    {!stripeMergeBg && <span style={{ fontSize:7, fontWeight:800, color:"rgba(0,0,0,0.45)", letterSpacing:"0.05em" }}>S</span>}
+                                  <div title={"Schedule: " + (hintLbl || "—")} style={{ position:"absolute", top:0, left:0, right:0, height:6, background: schedStripeColor === "transparent" ? "#f9fafb" : schedStripeColor, borderBottom: cleanFill ? "none" : "1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
+                                    {!cleanFill && <span style={{ fontSize:7, fontWeight:800, color:"rgba(0,0,0,0.45)", letterSpacing:"0.05em" }}>S</span>}
                                   </div>
-                                  <div title={freshaTip} style={{ position:"absolute", bottom:0, left:0, right:0, height:6, background: freshaStripeColor === "transparent" ? "#f9fafb" : freshaStripeColor, borderTop: stripeMergeBg ? "none" : "1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
-                                    {!stripeMergeBg && <span style={{ fontSize:7, fontWeight:800, color:"rgba(0,0,0,0.45)", letterSpacing:"0.05em" }}>F</span>}
+                                  <div title={freshaTip} style={{ position:"absolute", bottom:0, left:0, right:0, height:6, background: freshaStripeColor === "transparent" ? "#f9fafb" : freshaStripeColor, borderTop: cleanFill ? "none" : "1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
+                                    {!cleanFill && <span style={{ fontSize:7, fontWeight:800, color:"rgba(0,0,0,0.45)", letterSpacing:"0.05em" }}>F</span>}
                                   </div>
                                   {(apptVsKioskAbsentWarn || presentNoApptWarn) && (
                                     <span title={apptVsKioskAbsentWarn ? "⚠ Kiosk marked tech absent but Fresha has a completed appointment that day"
