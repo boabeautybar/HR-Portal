@@ -6054,7 +6054,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // appears whichever path the manager used.
   const checkInsByBranch = useMemo(() => {
     const out = {};
-    const PRESENCE = { on: 1, late: 1, ext: 1, trial: 1, swap_o: 1 };
+    const PRESENCE = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1 };
     for (const r of techClockinRows || []) {
       if (!r || !r.staff || !r.staff.employee_code) continue;
       const branch = r.staff.branch || "";
@@ -9394,11 +9394,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // completed appointment. Either the ext-day mark is wrong or the
                             // tech showed up and did no service — manager should investigate.
                             const extDayNoApptWarn     = s.role === "NT" && extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
+                            // Future swap-back day — until the date arrives the cell is just a
+                            // placeholder reminding the manager to fill in the proper status.
+                            const isFutureSwap = !isPastOrToday && (bareV === "swap_o" || bareV === "swap_i");
                             const ttl =
                               dy.ymd + ": " + (st.lbl || "—") +
                               (hint ? " — schedule: " + ((STAT[hint] || {}).lbl || "—") : "") +
                               (deviation ? " (deviation)" : "") +
                               (!override ? " (mirrored from schedule)" : "") +
+                              (bareV === "swap_o" ? "\n💡 Owes — tech took today off in exchange for a future day. Counts as off; remember to mark the swap-back day when it arrives." : "") +
+                              (bareV === "swap_i" ? "\n💡 Owed — tech came in today covering for a colleague and is owed a day off later. Counts as worked." : "") +
+                              (isFutureSwap ? "\n(Future swap — placeholder only; fill in the actual status on the day.)" : "") +
                               (checkin ? "\nChecked in" + (checkin.firstInTs ? " at " + checkin.firstInTs.toLocaleTimeString("en-ZA", { hour:"2-digit", minute:"2-digit" }) : "") + (checkin.autoOut ? " · auto-out" : "") : "") +
                               (checkinMismatch ? "\n⚠ Discrepancy: tech checked in but day marked " + bareV : "") +
                               (missingCheckin  ? "\n⚠ Missing check-in: Fresha shows worked, no check-in record" : "") +
@@ -9413,11 +9419,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const presenceBgFor = (k) => (k === "on" || k === "late" || k === "ext" || k === "swap_i" || k === "trial") ? C_WORK
                                                        : (k === "off" || k === "swap_o") ? C_OFF
                                                        : null;
-                            // Future swap-back day — until the date arrives the cell is just a
-                            // placeholder reminding the manager to fill in the proper status.
-                            // Render as italic grey, like the schedule mirror, regardless of
-                            // whether the value is overridden or mirrored.
-                            const isFutureSwap = !isPastOrToday && (bareV === "swap_o" || bareV === "swap_i");
+                            // Future swap renders as italic grey placeholder (defined above).
                             const baseBgRaw = isFutureSwap ? "#f9fafb"
                                               : override ? (presenceBgFor(bareV) || st.bg)
                                               : showKioskReason ? (presenceBgFor(kioskAbs.status) || kStat.bg)
