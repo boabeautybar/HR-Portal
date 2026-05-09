@@ -9298,9 +9298,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const hintLbl = hint ? (STAT[hint] || {}).lbl || "" : "";
                             const hintBg  = hint ? (STAT[hint] || {}).bg  || "#FFFFFF" : "#FFFFFF";
                             const hintFg  = hint ? (STAT[hint] || {}).fg  || "#9ca3af" : "#9ca3af";
-                            // Tech check-in for this cell (if any). Only nail-tech rows
-                            // get a check-in badge — managers are out of scope.
-                            const checkin = (s.role === "NT")
+                            const todayY = new Date(); const t0Ymd = todayY.getFullYear() + "-" + String(todayY.getMonth()+1).padStart(2,"0") + "-" + String(todayY.getDate()).padStart(2,"0");
+                            const isPastOrToday = dy.ymd <= t0Ymd;
+                            // Tech check-in for this cell (if any). Only nail-tech rows get
+                            // a check-in badge — managers are out of scope. Future-dated kiosk
+                            // entries are advance planning, not actual check-ins, so ignore
+                            // them here.
+                            const checkin = (s.role === "NT" && isPastOrToday)
                               ? ((checkInsByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null
                               : null;
                             // Discrepancy logic:
@@ -9316,11 +9320,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const isLate    = bareV === "late";
                             const isOff     = bareV === "off" || bareV === "swap_o" || bareV === "al" || bareV === "ph" ||
                                               bareV === "mat" || bareV === "term" || bareV === "sick" || bareV === "sick_n" || bareV === "frl";
-                            const todayY = new Date(); const t0Ymd = todayY.getFullYear() + "-" + String(todayY.getMonth()+1).padStart(2,"0") + "-" + String(todayY.getDate()).padStart(2,"0");
-                            const isPastOrToday = dy.ymd <= t0Ymd;
                             // Kiosk audit log entry for this cell (only non-presence statuses
-                            // — sick / no-show / off / swap_o / etc.).
-                            const kioskAbs = (s.role === "NT")
+                            // — sick / no-show / off / swap_o / etc.). Future-dated kiosk
+                            // entries are advance planning, not actual records — ignore them
+                            // so they don't trigger "checked in" / mismatch signals on days
+                            // that haven't happened yet.
+                            const kioskAbs = (s.role === "NT" && isPastOrToday)
                               ? ((kioskAbsentByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null
                               : null;
                             // swap_o explicitly means "took today off, owes a day back" — the
@@ -9403,7 +9408,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               (hint ? " — schedule: " + ((STAT[hint] || {}).lbl || "—") : "") +
                               (deviation ? " (deviation)" : "") +
                               (!override ? " (mirrored from schedule)" : "") +
-                              (bareV === "swap_o" ? "\n💡 Owes — tech took today off in exchange for a future day. Counts as off; remember to mark the swap-back day when it arrives." : "") +
+                              (bareV === "swap_o" ? "\n💡 Owes — tech took today off because she worked on her off day on a previous date for a colleague. Counts as off." : "") +
                               (bareV === "swap_i" ? "\n💡 Owed — tech came in today because she took off on a previous day when a colleague filled in for her." : "") +
                               (isFutureSwap ? "\n(Future swap — placeholder only; fill in the actual status on the day.)" : "") +
                               (checkin ? "\nChecked in" + (checkin.firstInTs ? " at " + checkin.firstInTs.toLocaleTimeString("en-ZA", { hour:"2-digit", minute:"2-digit" }) : "") + (checkin.autoOut ? " · auto-out" : "") : "") +
