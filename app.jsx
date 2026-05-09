@@ -8298,8 +8298,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             deduct: { lbl:"Hours Deduction", bg:"#fed7aa", fg:"#7f1d1d", cat:"unpaid_h" },
             trial:  { lbl:"Trial Day",       bg:"#fde047", fg:"#713f12", cat:"work" },
             term:   { lbl:"TERMINATED",      bg:"#dc2626", fg:"#FFFFFF", cat:"none" },
-            swap_o: { lbl:"Swap (owes)",     bg:"#bae6fd", fg:"#075985", cat:"swap" },
-            swap_i: { lbl:"Swap (owed)",     bg:"#bfdbfe", fg:"#1e40af", cat:"swap" }
+            swap_o: { lbl:"Owes",            bg:"#cbd5e1", fg:"#dc2626", cat:"swap" },
+            swap_i: { lbl:"Owed",            bg:"#86efac", fg:"#14532d", cat:"swap" }
           };
           const resolveStat = (v) => {
             if (!v) return null;
@@ -9005,8 +9005,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               else if (v === "trial")  t.td++;
               else if (v === "on")     t.worked++;
               else if (v === "off")    t.off++;
-              else if (v === "swap_i") t.off++;
-              else if (v === "swap_o") t.worked++;
+              else if (v === "swap_i") t.worked++;
+              else if (v === "swap_o") t.off++;
               else if (v === "term")   { t.term++; t.unpaid++; }
               else if (v && v.indexOf("deduct") === 0) {
                 let h = 0; if (v.indexOf(":") > 0) h = parseFloat(v.split(":")[1]) || 0;
@@ -9312,9 +9312,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             //  - "late" / "~late" never triggers — Fresha can't tell late
                             //    from on-time.
                             const bareV = v ? (v.charAt(0) === "~" ? v.slice(1) : v) : "";
-                            const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_o";
+                            const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i";
                             const isLate    = bareV === "late";
-                            const isOff     = bareV === "off" || bareV === "swap_i" || bareV === "al" || bareV === "ph" ||
+                            const isOff     = bareV === "off" || bareV === "swap_o" || bareV === "al" || bareV === "ph" ||
                                               bareV === "mat" || bareV === "term" || bareV === "sick" || bareV === "sick_n" || bareV === "frl";
                             const todayY = new Date(); const t0Ymd = todayY.getFullYear() + "-" + String(todayY.getMonth()+1).padStart(2,"0") + "-" + String(todayY.getDate()).padStart(2,"0");
                             const isPastOrToday = dy.ymd <= t0Ymd;
@@ -9410,10 +9410,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // solid colour band. Other STAT entries (sick, frl, no-show, …)
                             // keep their unique colour so the divergence is visible.
                             const C_WORK = "#86efac", C_OFF = "#cbd5e1";
-                            const presenceBgFor = (k) => (k === "on" || k === "late" || k === "ext" || k === "swap_o" || k === "trial") ? C_WORK
-                                                       : k === "off" ? C_OFF
+                            const presenceBgFor = (k) => (k === "on" || k === "late" || k === "ext" || k === "swap_i" || k === "trial") ? C_WORK
+                                                       : (k === "off" || k === "swap_o") ? C_OFF
                                                        : null;
-                            const baseBgRaw = override ? (presenceBgFor(bareV) || st.bg)
+                            // Future swap-back day — until the date arrives the cell is just a
+                            // placeholder reminding the manager to fill in the proper status.
+                            // Render as italic grey, like the schedule mirror, regardless of
+                            // whether the value is overridden or mirrored.
+                            const isFutureSwap = !isPastOrToday && (bareV === "swap_o" || bareV === "swap_i");
+                            const baseBgRaw = isFutureSwap ? "#f9fafb"
+                                              : override ? (presenceBgFor(bareV) || st.bg)
                                               : showKioskReason ? (presenceBgFor(kioskAbs.status) || kStat.bg)
                                               : (isHol ? "#fecaca40" : (isWk ? "#fdf4f8" : "#FFFFFF"));
                             // When all three sources agree (worked / off / absent) the cell is
@@ -9461,7 +9467,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                           style={{ position:"absolute", top:8, right:3, fontSize:11, lineHeight:1, color:"#dc2626", fontWeight:900, pointerEvents:"none", textShadow:"0 0 2px white, 0 0 2px white" }}>⚠</span>
                                   )}
                                   {v && (
-                                    <div style={{ position:"absolute", top:6, bottom:6, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle: override ? "normal" : "italic", fontWeight: override ? 700 : 400, color: override ? st.fg : (hintFg + "70"), pointerEvents:"none", letterSpacing:"0.02em" }}>{st.lbl || hintLbl || ""}</div>
+                                    <div style={{ position:"absolute", top:6, bottom:6, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle: (override && !isFutureSwap) ? "normal" : "italic", fontWeight: (override && !isFutureSwap) ? 700 : 400, color: isFutureSwap ? "#9ca3af" : (override ? st.fg : (hintFg + "70")), pointerEvents:"none", letterSpacing:"0.02em" }}>{st.lbl || hintLbl || ""}</div>
                                   )}
                                   {!v && showKioskReason && (
                                     <div style={{ position:"absolute", top:6, bottom:6, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle:"italic", fontWeight:600, color: kStat.fg || "#9ca3af", pointerEvents:"none", letterSpacing:"0.02em" }}>{kStat.lbl}</div>
