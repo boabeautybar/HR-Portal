@@ -8293,6 +8293,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             ph:     { lbl:"Public Holiday",  bg:"#86efac", fg:"#14532d", cat:"paid" },
             mat:    { lbl:"Maternity",       bg:"#d6c2a8", fg:"#7c2d12", cat:"paid" },
             no:     { lbl:"NO SHOW",         bg:"#e9d5ff", fg:"#581c87", cat:"unpaid" },
+            absent: { lbl:"Absent",          bg:"#fca5a5", fg:"#7f1d1d", cat:"unpaid" },
             unpaid: { lbl:"Unpaid",          bg:"#e9d5ff", fg:"#581c87", cat:"unpaid" },
             deduct: { lbl:"Hours Deduction", bg:"#fed7aa", fg:"#7f1d1d", cat:"unpaid_h" },
             trial:  { lbl:"Trial Day",       bg:"#fde047", fg:"#713f12", cat:"work" },
@@ -8998,7 +8999,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               else if (v === "frl")    t.frl++;
               else if (v === "ph")     t.ph++;
               else if (v === "mat")    t.mat++;
-              else if (v === "no" || v === "unpaid") t.unpaid++;
+              else if (v === "no" || v === "unpaid" || v === "absent") t.unpaid++;
               else if (v === "ext")    t.ext++;
               else if (v === "late")   t.late++;
               else if (v === "trial")  t.td++;
@@ -9343,9 +9344,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // something readable.
                             const kStat = kioskAbs
                               ? (STAT[kioskAbs.status]
-                                || (kioskAbs.status === "absent"
-                                    ? { lbl: (kioskAbs.note || "ABSENT").toString().toUpperCase().slice(0, 8), bg: "#fee2e2", fg: "#7f1d1d" }
-                                    : { lbl: kioskAbs.status.toString().toUpperCase().slice(0, 8), bg: "#f3f4f6", fg: "#374151" }))
+                                || { lbl: kioskAbs.status.toString().toUpperCase().slice(0, 8), bg: "#f3f4f6", fg: "#374151" })
                               : null;
                             // Show the kiosk's reason in the cell when the grid hasn't been
                             // stamped yet (italic, faded — same convention as schedule-mirror).
