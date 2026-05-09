@@ -9404,7 +9404,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               (deviation ? " (deviation)" : "") +
                               (!override ? " (mirrored from schedule)" : "") +
                               (bareV === "swap_o" ? "\n💡 Owes — tech took today off in exchange for a future day. Counts as off; remember to mark the swap-back day when it arrives." : "") +
-                              (bareV === "swap_i" ? "\n💡 Owed — tech came in today covering for a colleague and is owed a day off later. Counts as worked." : "") +
+                              (bareV === "swap_i" ? "\n💡 Owed — tech came in today because she took off on a previous day when a colleague filled in for her." : "") +
                               (isFutureSwap ? "\n(Future swap — placeholder only; fill in the actual status on the day.)" : "") +
                               (checkin ? "\nChecked in" + (checkin.firstInTs ? " at " + checkin.firstInTs.toLocaleTimeString("en-ZA", { hour:"2-digit", minute:"2-digit" }) : "") + (checkin.autoOut ? " · auto-out" : "") : "") +
                               (checkinMismatch ? "\n⚠ Discrepancy: tech checked in but day marked " + bareV : "") +
