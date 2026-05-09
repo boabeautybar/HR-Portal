@@ -6070,7 +6070,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (r.type === "out_auto")  { cell.hasOut = true; cell.autoOut = true; }   // out_auto alone is NOT proof they clocked in
     }
     // Layer in kiosk audit log entries — only "presence" statuses (on/late/ext/
-    // trial/swap_o) flip hasIn so the ✓ shows. Off/sick/leave/term don't get
+    // trial/swap_i) flip hasIn so the ✓ shows. Off/sick/leave/term don't get
     // a check-in mark even though they're recorded in the log.
     for (const r of attCheckinRows || []) {
       if (!r || !r.ec || !r.branch || !r.ymd) continue;
@@ -6084,6 +6084,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       cell.hasIn = true;
       const dt = new Date(r.ts);
       if (!isNaN(dt) && (!cell.firstInTs || dt < cell.firstInTs)) cell.firstInTs = dt;
+    }
+    // Manager-tagged absences override any earlier clock-in. If the manager
+    // marked the tech no-show / sick / sick-with-note / FRL / absent on the
+    // kiosk, that's the authoritative call — the tech is NOT at work that
+    // day, regardless of any clock-in record from earlier in the day.
+    const ABSENT = { no: 1, sick: 1, sick_n: 1, frl: 1, absent: 1 };
+    for (const r of attCheckinRows || []) {
+      if (!r || !r.ec || !r.branch || !r.ymd) continue;
+      if (!ABSENT[r.status]) continue;
+      const branch = r.branch, ec = r.ec, ymd = r.ymd;
+      if (out[branch] && out[branch][ec] && out[branch][ec][ymd]) {
+        out[branch][ec][ymd].hasIn = false;
+        out[branch][ec][ymd].firstInTs = null;
+      }
     }
     return out;
   }, [techClockinRows, attCheckinRows]);
