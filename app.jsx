@@ -9318,7 +9318,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                               bareV === "mat" || bareV === "term" || bareV === "sick" || bareV === "sick_n" || bareV === "frl";
                             const todayY = new Date(); const t0Ymd = todayY.getFullYear() + "-" + String(todayY.getMonth()+1).padStart(2,"0") + "-" + String(todayY.getDate()).padStart(2,"0");
                             const isPastOrToday = dy.ymd <= t0Ymd;
-                            const checkinHasIn    = !!(checkin && checkin.hasIn);
+                            // Kiosk audit log entry for this cell (only non-presence statuses
+                            // — sick / no-show / off / swap_o / etc.).
+                            const kioskAbs = (s.role === "NT")
+                              ? ((kioskAbsentByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null
+                              : null;
+                            // swap_o explicitly means "took today off, owes a day back" — the
+                            // tech was NOT present, even if a PIN-clockin record happened to
+                            // land on this day. Suppress the check-in entirely on swap_o cells
+                            // so they don't trigger the green ✓ or the spurious "checked in
+                            // but day marked off" discrepancy tooltip.
+                            const swapOwesCell    = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
+                            const checkinHasIn    = !!(checkin && checkin.hasIn) && !swapOwesCell;
                             const checkinMismatch = checkinHasIn && isOff;                                  // checked in but day marked off
                             // Independent Fresha track. Read from the freshaWorked sidecar
                             // populated by importFresha — NOT from the cell value, since the
@@ -9327,16 +9338,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const freshaWorkedCell    = !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
                             const missingCheckin  = !checkinHasIn && freshaWorkedCell && isPastOrToday; // Fresha confirmed work but no check-in
                             const scheduleSaysWork    = hint === "on" || hint === "ext";
-                            // Kiosk-absence mismatch: the kiosk recorded a non-present status
-                            // (sick / no-show / off / unpaid / swap_i / frl / etc.) on a day the
-                            // schedule said work. Only "on" and "late" mean the tech was in the
-                            // store; anything else is a manager-confirmed absence that conflicts
-                            // with the schedule. Also surface the reason text on the grid when
-                            // the kiosk wrote to a different cycle key — managers shouldn't have
-                            // to hover or click Import to see what was recorded.
-                            const kioskAbs = (s.role === "NT")
-                              ? ((kioskAbsentByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null
-                              : null;
                             const kioskAbsentScheduled = !!kioskAbs && scheduleSaysWork;
                             // Map the kiosk audit-log status to a STAT entry. The recordAbsence
                             // wrapper writes status="absent" with the reason in the note —
