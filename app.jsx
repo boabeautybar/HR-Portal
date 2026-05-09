@@ -9395,29 +9395,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // completed appointment. Either the ext-day mark is wrong or the
                             // tech showed up and did no service — manager should investigate.
                             const extDayNoApptWarn     = s.role === "NT" && extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
-                            // Swap placeholder = the schedule has mirrored a swap_o / swap_i
-                            // here but the manager hasn't confirmed it yet (override=false).
-                            // Render as italic grey, regardless of past / today / future, so
-                            // the cell visibly reads as "needs attention" until confirmed.
-                            const swapDirection = bareV === "swap_o" ? "off" : bareV === "swap_i" ? "in" : null;
-                            const isSwapPlaceholder = !override && !!swapDirection;
-                            const isFutureSwap = isSwapPlaceholder;        // renamed for clarity, kept same name for downstream refs
-                            const isToday = dy.ymd === t0Ymd;
+                            // Future swap-back day — until the date arrives the cell is just a
+                            // placeholder reminding the manager to fill in the proper status.
+                            const isFutureSwap = !isPastOrToday && (bareV === "swap_o" || bareV === "swap_i");
                             const ttl =
                               dy.ymd + ": " + (st.lbl || "—") +
                               (hint ? " — schedule: " + ((STAT[hint] || {}).lbl || "—") : "") +
                               (deviation ? " (deviation)" : "") +
                               (!override ? " (mirrored from schedule)" : "") +
-                              // Confirmed swap (the actual day the swap happened)
-                              (override && swapDirection === "off" ? "\n💡 Owes — tech took today off; counts as off, will repay with a worked day later." : "") +
-                              (override && swapDirection === "in"  ? "\n💡 Owed — tech came in today covering for a colleague; counts as worked, gets an off day later." : "") +
-                              // Placeholder swap on TODAY = the swap-back day has arrived
-                              (isSwapPlaceholder && swapDirection === "off" && isToday ? "\n💡 TODAY is a swap day — tech can take off (already worked in a colleague's place earlier). Fill in the actual status when confirmed." : "") +
-                              (isSwapPlaceholder && swapDirection === "in"  && isToday ? "\n💡 TODAY is a swap-back day — tech needs to come in (took an off day earlier in exchange). Fill in the actual status when confirmed." : "") +
-                              // Placeholder on a future date
-                              (isSwapPlaceholder && !isPastOrToday ? "\n(Future swap-back — placeholder; fill in the actual status on the day.)" : "") +
-                              // Placeholder on a past date the manager forgot to confirm
-                              (isSwapPlaceholder && isPastOrToday && !isToday ? "\n(Past swap day not yet confirmed — please mark what actually happened.)" : "") +
+                              (bareV === "swap_o" ? "\n💡 Owes — tech took today off in exchange for a future day. Counts as off; remember to mark the swap-back day when it arrives." : "") +
+                              (bareV === "swap_i" ? "\n💡 Owed — tech came in today covering for a colleague and is owed a day off later. Counts as worked." : "") +
+                              (isFutureSwap ? "\n(Future swap — placeholder only; fill in the actual status on the day.)" : "") +
                               (checkin ? "\nChecked in" + (checkin.firstInTs ? " at " + checkin.firstInTs.toLocaleTimeString("en-ZA", { hour:"2-digit", minute:"2-digit" }) : "") + (checkin.autoOut ? " · auto-out" : "") : "") +
                               (checkinMismatch ? "\n⚠ Discrepancy: tech checked in but day marked " + bareV : "") +
                               (missingCheckin  ? "\n⚠ Missing check-in: Fresha shows worked, no check-in record" : "") +
