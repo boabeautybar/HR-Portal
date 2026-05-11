@@ -9218,44 +9218,46 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           };
 
           // Cell change handler
-          const onCellChange = async (s, dy, val, hadWarning) => {
+          const onCellChange = async (s, dy, val) => {
             if (!val) return;
             // Block manual edits on auto-derived TERMINATED cells (post-leftDate).
             if (isPostLeftDate(s.ec, dy.ymd)) {
               alert(s.name + " left on " + offByEc[s.ec] + " — this day is automatically TERMINATED. Remove them from the Off-boarding tab to edit attendance after this date.");
               return;
             }
-            // Wraps setCell so a warning cell edit ALSO records the auto-review.
-            const setCellAndMaybeReview = async (ec, d, finalValue) => {
+            // Every admin edit auto-records a review so the cell gets the ✓
+            // mark — both warning-cell decisions AND ordinary manual entries
+            // ("Sick NO note", "Annual", etc.) read as "admin reviewed this".
+            const setCellAndReview = async (ec, d, finalValue) => {
               await setCell(ec, d, finalValue);
-              if (hadWarning) await autoRecordReview(ec, d, finalValue);
+              await autoRecordReview(ec, d, finalValue);
             };
             if (val === "deduct") {
               const hStr = prompt("How many hours unpaid? (e.g. 1.5 for 1h30)\n\nEnter a number between 0.5 and 9.", "1");
               if (hStr == null) return;
               const h = parseFloat(hStr);
               if (isNaN(h) || h <= 0 || h > 9) { alert("Please enter a valid number of hours between 0.5 and 9."); return; }
-              return setCellAndMaybeReview(s.ec, dy.d, "deduct:" + h);
+              return setCellAndReview(s.ec, dy.d, "deduct:" + h);
             }
             if (val === "sick_n") {
               const ok = await checkSickEligibility(s.ec, s.name, dy.ymd);
               if (!ok) return;
-              return setCellAndMaybeReview(s.ec, dy.d, "sick_n");
+              return setCellAndReview(s.ec, dy.d, "sick_n");
             }
             if (val === "frl") {
               if (!checkFRLEligibility(s.ec, s.name, dy.ymd)) return;
-              return setCellAndMaybeReview(s.ec, dy.d, "frl");
+              return setCellAndReview(s.ec, dy.d, "frl");
             }
             if (val === "term") {
               return cascadeTerm(s.ec, dy.ymd, s.name);
             }
             if ((val === "on" || val === "late") && holidayLookup && holidayLookup[dy.ymd]) {
-              if (val === "on") return setCellAndMaybeReview(s.ec, dy.d, "ph");
-              await setCellAndMaybeReview(s.ec, dy.d, "ph");
+              if (val === "on") return setCellAndReview(s.ec, dy.d, "ph");
+              await setCellAndReview(s.ec, dy.d, "ph");
               setTimeout(() => alert("This day is a public holiday — marked as Public Holiday (paid). Use Late manually after if needed."), 50);
               return;
             }
-            return setCellAndMaybeReview(s.ec, dy.d, val);
+            return setCellAndReview(s.ec, dy.d, val);
           };
 
           return (
@@ -9592,27 +9594,33 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   <div title={freshaTip} style={{ position:"absolute", bottom:0, left:0, right:0, height:6, background: freshaStripeColor === "transparent" ? "#f9fafb" : freshaStripeColor, borderTop: cleanFill ? "none" : "1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
                                     {!cleanFill && <span style={{ fontSize:7, fontWeight:800, color:"rgba(0,0,0,0.45)", letterSpacing:"0.05em" }}>F</span>}
                                   </div>
-                                  {(apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn) && (() => {
-                                    const review = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
-                                    const reviewed = review && review.valueAtReview === (v || "");
-                                    const warnTitle = apptVsKioskAbsentWarn ? "⚠ Kiosk marked tech absent but Fresha has a completed appointment that day"
-                                                    : extDayNoApptWarn      ? "⚠ Extra day recorded but Fresha shows no appointments — did they actually do any service?"
-                                                                            : "⚠ Tech checked in and was scheduled to work, but Fresha shows no appointments";
-                                    if (reviewed) {
+                                  {(() => {
+                                    const warning  = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn;
+                                    const review   = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
+                                    const reviewed = !!review && review.valueAtReview === (v || "");
+                                    // Cell with active warning + not yet reviewed → red ⚠
+                                    if (warning && !reviewed) {
+                                      const warnTitle = apptVsKioskAbsentWarn ? "⚠ Kiosk marked tech absent but Fresha has a completed appointment that day"
+                                                      : extDayNoApptWarn      ? "⚠ Extra day recorded but Fresha shows no appointments — did they actually do any service?"
+                                                                              : "⚠ Tech checked in and was scheduled to work, but Fresha shows no appointments";
+                                      return (
+                                        <span title={warnTitle + "\n\n(Click to mark as reviewed for payroll)"}
+                                              onClick={(e) => { e.stopPropagation(); markCellReviewed(s.ec, dy.d, v); }}
+                                              style={{ position:"absolute", top:6, right:1, fontSize:12, lineHeight:1, color:"#dc2626", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:3 }}>⚠</span>
+                                      );
+                                    }
+                                    // Reviewed cell (warning resolved OR a plain admin-entered value) → small green ✓
+                                    if (reviewed && v) {
                                       const reviewTitle = "✓ Reviewed by " + (review.reviewer || "admin") +
                                                         "\n  " + new Date(review.ts).toLocaleString("en-ZA") +
                                                         (review.note ? "\n  \"" + review.note + "\"" : "") +
                                                         "\n\n(Click to clear the reviewed mark)";
                                       return (
                                         <span title={reviewTitle} onClick={(e) => { e.stopPropagation(); markCellReviewed(s.ec, dy.d, v); }}
-                                              style={{ position:"absolute", top:6, right:1, fontSize:11, lineHeight:1, color:"#16a34a", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:3 }}>✓</span>
+                                              style={{ position:"absolute", top:6, right:1, fontSize:10, lineHeight:1, color:"#16a34a", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:3 }}>✓</span>
                                       );
                                     }
-                                    return (
-                                      <span title={warnTitle + "\n\n(Click to mark as reviewed for payroll)"}
-                                            onClick={(e) => { e.stopPropagation(); markCellReviewed(s.ec, dy.d, v); }}
-                                            style={{ position:"absolute", top:6, right:1, fontSize:12, lineHeight:1, color:"#dc2626", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:3 }}>⚠</span>
-                                    );
+                                    return null;
                                   })()}
                                   {v && (
                                     <div style={{ position:"absolute", top:6, bottom:6, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle: (override && !isFutureSwap) ? "normal" : "italic", fontWeight: (override && !isFutureSwap) ? 700 : 400, color: isFutureSwap ? "#9ca3af" : (override ? st.fg : (hintFg + "70")), pointerEvents:"none", letterSpacing:"0.02em" }}>{st.lbl || hintLbl || ""}</div>
@@ -9620,7 +9628,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   {!v && showKioskReason && (
                                     <div style={{ position:"absolute", top:6, bottom:6, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle:"italic", fontWeight:600, color: kStat.fg || "#9ca3af", pointerEvents:"none", letterSpacing:"0.02em" }}>{kStat.lbl}</div>
                                   )}
-                                  <select value="" onChange={e=>onCellChange(s, dy, e.target.value, apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn)} title={ttl + "\nSchedule: " + (hintLbl || "—") + "\n" + freshaTip}
+                                  <select value="" onChange={e=>onCellChange(s, dy, e.target.value)} title={ttl + "\nSchedule: " + (hintLbl || "—") + "\n" + freshaTip}
                                     style={{ position:"absolute", top:6, bottom:6, left:0, right:0, width:"100%", border:"none", background: "transparent", color:"transparent", fontSize:9, fontWeight:400, opacity:1, textAlign:"center", cursor:"pointer", padding:"0 1px", fontFamily:"inherit", outline:"none", appearance:"none" }}>
                                     <option value="" style={{ color:"#000", background:"#fff" }}>—</option>
                                     {Object.entries(STAT).filter(([k]) => k !== "ph" || isHol).map(([k, vv]) => (
