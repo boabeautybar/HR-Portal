@@ -5724,9 +5724,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 total++;
                 const rev = (bReview[s.ec] || {})[dy.d];
                 if (rev && rev.valueAtReview === (rawV || "")) reviewed++;
-              } else if (branch === "Sea Point" && (bareV === "sick_n" || bareV === "frl" || bareV === "sick" || bareV === "no" || bareV === "absent")) {
-                // Diagnostic: any absence-like cell that didn't fire a warning
-                console.log("[payroll-overview] Sea Point missed", { ec: s.ec, day: dy.d, ymd: dy.ymd, rawV, bareV, hasKioskAbs: !!kioskAbs, freshaWorkedCell, bFThru, freshaCoversThisDay, override });
               }
             }
           }
@@ -6140,7 +6137,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Attendance tab opens. The Attendance grid uses these to overlay check-in
   // markers on each cell and to flag discrepancies vs. the Fresha import.
   useEffect(() => {
-    if (tab !== "checkins" && tab !== "attendance") return;
+    if (tab !== "checkins" && tab !== "attendance" && tab !== "payrollProgress") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     if (!window.BOA_DB.listRecentTechClockins) return; // older deploys
     let cancelled = false;
@@ -6161,7 +6158,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // the Attendance grid's green ✓ check (via checkInsByBranch).
   const [attCheckinRows, setAttCheckinRows] = useState([]);
   useEffect(() => {
-    if (tab !== "checkins" && tab !== "attendance") return;
+    if (tab !== "checkins" && tab !== "attendance" && tab !== "payrollProgress") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     if (!window.BOA_DB.listRecentKioskCheckins) return; // older deploy
     let cancelled = false;
@@ -9283,13 +9280,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   total++;
                   const review = (reviewedMap[s.ec] || {})[dy.d];
                   if (review && review.valueAtReview === (v || "")) reviewed++;
-                  if (attBranch === "Sea Point") {
-                    console.log("[dashboard] WARN", { ec: s.ec, day: dy.d, ymd: dy.ymd, v, bareV, apptVsKioskAbsentWarn, presentNoApptWarn, extDayNoApptWarn, proofPending });
-                  }
                 }
               }
             }
-            if (attBranch === "Sea Point") console.log("[dashboard] Sea Point total =", total, "reviewed =", reviewed);
             return { total, reviewed, open: total - reviewed };
           })();
 
