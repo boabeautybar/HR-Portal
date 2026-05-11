@@ -5749,7 +5749,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
               const missingCheckin    = !checkinHasIn && freshaWorkedCell;
               const proofPending      = (bareV === "sick_n" || bareV === "frl");
-              const absentNeedsReview = (bareV === "sick" || bareV === "no" || bareV === "absent");
+              const trustedAbsence    = (bareV === "sick" || bareV === "no") && scheduleSaysWork && kioskMarkedAbsent && !freshaWorkedCell;
+              const absentNeedsReview = ((bareV === "sick" || bareV === "no") && !trustedAbsence) || bareV === "absent";
               if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending || missingCheckin || absentNeedsReview) {
                 total++;
                 const rev = (bReview[s.ec] || {})[dy.d];
@@ -9467,7 +9468,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
                 const missingCheckin    = !checkinHasIn && freshaWorkedCell;
                 const proofPending      = (bareV === "sick_n" || bareV === "frl");
-                const absentNeedsReview = (bareV === "sick" || bareV === "no" || bareV === "absent");
+                // Sick NO note / NO SHOW only need review when something disagrees —
+                // if the schedule said work + kiosk recorded the absence + Fresha
+                // shows no appointment, all three sources line up and the manager
+                // has nothing left to verify. Absent always needs review.
+                const trustedAbsence    = (bareV === "sick" || bareV === "no") && scheduleSaysWork && kioskMarkedAbsent && !freshaWorkedCell;
+                const absentNeedsReview = ((bareV === "sick" || bareV === "no") && !trustedAbsence) || bareV === "absent";
                 if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending || missingCheckin || absentNeedsReview) {
                   total++;
                   const review = (reviewedMap[s.ec] || {})[dy.d];
@@ -9926,7 +9932,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                               style={{ position:"absolute", top:6, right:1, fontSize:12, lineHeight:1, color:"#dc2626", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:3 }}>⚠</span>
                                       );
                                     }
-                                    const absentNeedsReview = bareV === "sick" || bareV === "no" || bareV === "absent";
+                                    // Sick NO note / NO SHOW only require review when the three
+                                    // sources disagree. When schedule said work, kiosk recorded
+                                    // the absence and Fresha has no appointment, all three line
+                                    // up — no admin verification needed (the cell will already
+                                    // render as one solid absent-colour band via allAgreeAbsent).
+                                    const trustedAbsenceCell = (bareV === "sick" || bareV === "no") && scheduleSaysWork && kioskMarkedAbsent && !freshaWorkedCell;
+                                    const absentNeedsReview = ((bareV === "sick" || bareV === "no") && !trustedAbsenceCell) || bareV === "absent";
                                     const warning  = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || missingCheckin || absentNeedsReview;
                                     const review   = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
                                     const reviewed = !!review && review.valueAtReview === (v || "");
