@@ -9105,6 +9105,38 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             alert("✓ Attendance reset for " + attBranch + " — " + cycLabel);
           };
 
+          // Total reset — also deletes the kiosk audit log, absence reasons,
+          // extra-day approvers and uploaded proofs for this cycle. The
+          // schedule grids stay (they're planning data, not part of one
+          // cycle), but everything attendance-derived for the branch + cycle
+          // is wiped from app_state.
+          const totalResetCycle = async () => {
+            const step1 = "⚠ TOTAL reset for " + attBranch + " — " + cycLabel + "?\n\n"
+              + "This deletes EVERY attendance-related record for this branch + cycle:\n"
+              + "  • Attendance grid + reviewed marks\n"
+              + "  • Fresha coverage data\n"
+              + "  • Kiosk audit log (all submissions)\n"
+              + "  • Uploaded sick notes / FRL proofs\n"
+              + "  • Absence reasons + extra-day approvers\n\n"
+              + "The schedule for this cycle is kept. This cannot be undone. Continue?";
+            if (!confirm(step1)) return;
+            const step2 = window.prompt("Type RESET to confirm. This will permanently delete all attendance + kiosk data for " + attBranch + " — " + cycLabel + ".");
+            if ((step2 || "").trim().toUpperCase() !== "RESET") { alert("Cancelled — type RESET to confirm."); return; }
+            if (!window.BOA_DB || !window.BOA_DB.deleteAttendanceAll) {
+              alert("Total reset requires a newer deploy of the data layer. Please redeploy and try again.");
+              return;
+            }
+            try {
+              const r = await window.BOA_DB.deleteAttendanceAll(attBranch, attYM);
+              if (r && r.error) throw r.error;
+            } catch (e) { alert("Could not total-reset: " + (e.message || e)); return; }
+            setAttGrid({});
+            setAttMeta({ freshaWorked: {}, reviewedWarnings: {} });
+            setAttCheckinSnapshot(null);
+            logActivity("Total reset (cycle + kiosk log + proofs)", attBranch + " · " + cycLabel, "All attendance + kiosk data wiped", "Bulk");
+            alert("✓ Total reset done for " + attBranch + " — " + cycLabel);
+          };
+
           // Auto-fill empty cells from the schedule (writes "~hint" — italic, unconfirmed)
           // and re-sync unconfirmed cells if the schedule has changed since last fill.
           // Confirmed cells (no "~" prefix) are preserved.
@@ -9515,6 +9547,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <button onClick={undoCheckinsImport} style={{ padding:"7px 14px", background:"#fef3c7", color:"#78350f", border:"1px solid #fbbf24", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Restore the attendance grid to its state right before the last check-in import">↩ Undo Check-in Import</button>
                 )}
                 <button onClick={resetCycle} style={{ padding:"7px 14px", background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fca5a5", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Clear every cell for this branch + cycle (with confirmation)">↺ Reset Cycle</button>
+                <button onClick={totalResetCycle} style={{ padding:"7px 14px", background:"#7f1d1d", color:"#fff", border:"1px solid #7f1d1d", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:700 }} title="Permanently delete the attendance grid, kiosk audit log, proofs and absence sidecars for this branch + cycle">⚠ Total Reset</button>
               </div>
 
               {warningCounts.total > 0 && (

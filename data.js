@@ -786,6 +786,32 @@
     return v;
   }
 
+  // ---------- Total reset of a cycle ----------
+  // Wipes every key in app_state related to one (branch, ym) cycle:
+  //   • boa_att_<branch>_<ym>          attendance grid + sidecars
+  //   • boa_kiosk_log_<branch>_<ym>    kiosk audit log
+  //   • boa_absences_<branch>_<ym>     absence-reason sidecar
+  //   • boa_extras_<branch>_<ym>       extra-day approver sidecar
+  //   • boa_proof_<branch>_<ym>_*      uploaded sick / FRL proofs
+  // The schedule grids (boa_sched_*, boa_mgr_sched_*) are intentionally NOT
+  // touched — those are planning data that doesn't belong to one cycle.
+  async function deleteAttendanceAll(branch, ym) {
+    var prefix = "boa_proof_" + branch + "_" + ym + "_";
+    var keys = [
+      "boa_att_"      + branch + "_" + ym,
+      "boa_kiosk_log_" + branch + "_" + ym,
+      "boa_absences_" + branch + "_" + ym,
+      "boa_extras_"   + branch + "_" + ym
+    ];
+    var [exactDel, proofDel] = await Promise.all([
+      sb.from("app_state").delete().in("key", keys),
+      sb.from("app_state").delete().like("key", prefix + "%")
+    ]);
+    if (exactDel.error) console.warn("deleteAttendanceAll exact:", exactDel.error);
+    if (proofDel.error) console.warn("deleteAttendanceAll proof:", proofDel.error);
+    return { error: exactDel.error || proofDel.error || null };
+  }
+
   // ---------- Activity log (boa_activity_log_v1) ----------
   // Single row holding an array of recent actions (newest-first), capped at
   // ACTIVITY_LIMIT entries. Each entry:
@@ -871,7 +897,8 @@
 
     // Attendance
     loadAttendance:    loadAttendance,
-    saveAttendance:    saveAttendance,
+    saveAttendance:        saveAttendance,
+    deleteAttendanceAll:   deleteAttendanceAll,
 
     // Leave Planner
     loadLeaveRecords:  loadLeaveRecords,
