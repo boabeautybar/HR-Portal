@@ -9632,7 +9632,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // a check-in badge — managers are out of scope. Future-dated kiosk
                             // entries are advance planning, not actual check-ins, so ignore
                             // them here.
-                            const checkin = (s.role === "NT" && isPastOrToday)
+                            const checkin = (s.role === "NT" && isPastOrToday && !mirrorSuppressed)
                               ? ((checkInsByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null
                               : null;
                             // Discrepancy logic:
@@ -9653,7 +9653,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // entries are advance planning, not actual records — ignore them
                             // so they don't trigger "checked in" / mismatch signals on days
                             // that haven't happened yet.
-                            const kioskAbs = (s.role === "NT" && isPastOrToday)
+                            const kioskAbs = (s.role === "NT" && isPastOrToday && !mirrorSuppressed)
                               ? ((kioskAbsentByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null
                               : null;
                             // swap_o explicitly means "took today off, owes a day back" — the
@@ -9668,7 +9668,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // populated by importFresha — NOT from the cell value, since the
                             // kiosk overwrites the grid (e.g. sick / no-show) and we don't want
                             // that to erase the Fresha appointment signal.
-                            const freshaWorkedCell    = !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
+                            const freshaWorkedCell    = !mirrorSuppressed && !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
                             const missingCheckin  = !checkinHasIn && freshaWorkedCell && isPastOrToday; // Fresha confirmed work but no check-in
                             const scheduleSaysWork    = hint === "on" || hint === "ext";
                             const kioskAbsentScheduled = !!kioskAbs && scheduleSaysWork;
@@ -9694,7 +9694,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // import actually covered: future days (no appts in CSV yet) shouldn't
                             // be misread as confirmed off-days when the user uploads mid-month.
                             const scheduleSaysOff     = hint === "off";
-                            const freshaCoversThisDay = !!effectiveFreshaThrough && dy.ymd <= effectiveFreshaThrough;
+                            const freshaCoversThisDay = !mirrorSuppressed && !!effectiveFreshaThrough && dy.ymd <= effectiveFreshaThrough;
                             const allMatchOff         = s.role === "NT" && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn && freshaCoversThisDay && !freshaWorkedCell;
                             // Cross-source rules across Schedule × Kiosk × Fresha:
                             //  • allAgreeAbsent — scheduled to work, kiosk marked the tech absent
