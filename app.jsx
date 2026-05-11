@@ -8781,7 +8781,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // Snapshot the pre-import grid for Undo.
             setAttCheckinSnapshot(attGrid);
             setAttGrid(next);
-            try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
+            setAttMeta({ ...(attMeta || {}), mirrorSuppressed: false });        // re-enable display after Total Reset
+            try { await window.BOA_DB.saveAttendance(attBranch, attYM, next, { mirrorSuppressed: false }); }
             catch (e) { alert("Could not save: " + (e.message || e)); return; }
             logActivity("Imported check-ins", attBranch + " · " + cycLabel,
               "Stamped " + stamped + " day" + (stamped === 1 ? "" : "s") + " · " + skippedConfirmed + " confirmed kept · " + skippedPostLeft + " post-leave skipped", "Bulk");
@@ -9103,10 +9104,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const importedAt = new Date().toISOString();
               try {
                 await Promise.all(branchesToSave.map(b => {
-                  const extras = {};
+                  const extras = { mirrorSuppressed: false };        // re-enable schedule/kiosk/Fresha display after Total Reset
                   if (freshaThroughByBranch[b]) extras.freshaCoverage = { through: freshaThroughByBranch[b], importedAt };
                   if (branchFreshaWorked[b] && Object.keys(branchFreshaWorked[b]).length) extras.freshaWorked = branchFreshaWorked[b];
-                  return window.BOA_DB.saveAttendance(b, attYM, branchGrids[b], Object.keys(extras).length ? extras : null);
+                  return window.BOA_DB.saveAttendance(b, attYM, branchGrids[b], extras);
                 }));
               } catch (err) { alert("Could not save: " + (err.message || err)); return; }
               // Refresh the local grid + meta for the branch the user is viewing.
@@ -9116,7 +9117,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 setAttMeta({
                   freshaCoverage: freshaThroughByBranch[attBranch] ? { through: freshaThroughByBranch[attBranch], importedAt } : (attMeta && attMeta.freshaCoverage) || null,
                   freshaWorked: branchFreshaWorked[attBranch] || {},
-                  reviewedWarnings: (attMeta && attMeta.reviewedWarnings) || {}
+                  reviewedWarnings: (attMeta && attMeta.reviewedWarnings) || {},
+                  mirrorSuppressed: false
                 });
               }
               logActivity("Imported Fresha CSV", cycLabel,
