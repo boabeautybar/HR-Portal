@@ -9120,8 +9120,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               + "  • Absence reasons + extra-day approvers\n\n"
               + "The schedule for this cycle is kept. This cannot be undone. Continue?";
             if (!confirm(step1)) return;
-            const step2 = window.prompt("Type RESET to confirm. This will permanently delete all attendance + kiosk data for " + attBranch + " — " + cycLabel + ".");
-            if ((step2 || "").trim().toUpperCase() !== "RESET") { alert("Cancelled — type RESET to confirm."); return; }
+            const step2 = window.prompt("Enter the Total Reset PIN to confirm permanently deleting all attendance + kiosk data for " + attBranch + " — " + cycLabel + ".");
+            if (step2 === null) return;
+            if ((step2 || "").trim() !== "2002") { alert("Cancelled — incorrect PIN."); return; }
             if (!window.BOA_DB || !window.BOA_DB.deleteAttendanceAll) {
               alert("Total reset requires a newer deploy of the data layer. Please redeploy and try again.");
               return;
