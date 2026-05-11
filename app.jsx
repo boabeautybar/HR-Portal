@@ -9171,19 +9171,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // glance which stores still have open warnings before running
           // payroll. Lazy — only fires when the panel is opened.
           const loadPayrollOverview = async () => {
-            console.log("[payroll-overview] loading for cycle", attYM, "across", SALONS.length, "branches");
-            setPayrollOverview({ loading: true, ym: attYM, byBranch: {} });
-            // Tech schedules use END-month YM, attendance + manager schedule use
-            // START-month YM. Same convention as the per-branch load.
-            const _atP = attYM.split("-").map(Number);
-            let _techY = _atP[0], _techM = _atP[1] + 1;
-            if (_techM > 12) { _techM = 1; _techY++; }
-            const techYmCross = _techY + "-" + p2(_techM);
-            const todayDt = new Date();
-            const t0YmdLocal = todayDt.getFullYear() + "-" + p2(todayDt.getMonth()+1) + "-" + p2(todayDt.getDate());
-            const safe = (p) => p.catch(() => null);
-            const results = {};
-            await Promise.all(SALONS.map(async (sl) => {
+            try {
+              console.log("[payroll-overview] loading for cycle", attYM, "across", SALONS.length, "branches");
+              setPayrollOverview({ loading: true, ym: attYM, byBranch: {} });
+              // Tech schedules use END-month YM, attendance + manager schedule use
+              // START-month YM. Same convention as the per-branch load.
+              const _atP = attYM.split("-").map(Number);
+              let _techY = _atP[0], _techM = _atP[1] + 1;
+              if (_techM > 12) { _techM = 1; _techY++; }
+              const techYmCross = _techY + "-" + p2(_techM);
+              const todayDt = new Date();
+              const t0YmdLocal = todayDt.getFullYear() + "-" + p2(todayDt.getMonth()+1) + "-" + p2(todayDt.getDate());
+              const safe = (p) => p && p.catch ? p.catch(() => null) : Promise.resolve(null);
+              const results = {};
+              await Promise.all(SALONS.map(async (sl) => {
               const branch = sl.name;
               try {
                 const [att, sch, mgrSch] = await Promise.all([
@@ -9255,9 +9256,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 results[branch] = { total, reviewed, open: total - reviewed };
               } catch (e) { results[branch] = { error: (e && e.message) || String(e), total: 0, reviewed: 0, open: 0 }; }
             }));
-            const totalCount = Object.values(results).reduce((a, r) => a + ((r && r.total) || 0), 0);
-            console.log("[payroll-overview] done", { totalAcrossBranches: totalCount, results });
-            setPayrollOverview({ loading: false, ym: attYM, byBranch: results });
+              const totalCount = Object.values(results).reduce((a, r) => a + ((r && r.total) || 0), 0);
+              console.log("[payroll-overview] done", { totalAcrossBranches: totalCount, results });
+              setPayrollOverview({ loading: false, ym: attYM, byBranch: results });
+            } catch (err) {
+              console.error("[payroll-overview] failed:", err);
+              setPayrollOverview({ loading: false, ym: attYM, byBranch: {}, error: (err && err.message) || String(err) });
+            }
           };
           // Re-fetch the overview when the cycle changes or it becomes stale.
           const overviewReady = payrollOverview && !payrollOverview.loading && payrollOverview.ym === attYM;
