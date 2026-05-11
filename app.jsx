@@ -5654,7 +5654,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const bGrid   = (att && att.grid) || {};
           const bReview = (att && att.reviewedWarnings) || {};
           const bFW     = (att && att.freshaWorked) || {};
-          const bFThru  = (att && att.freshaCoverage && att.freshaCoverage.through) || null;
+          let   bFThru  = (att && att.freshaCoverage && att.freshaCoverage.through) || null;
+          // Same fallback as the per-branch dashboard: infer the Fresha-
+          // through date from the latest confirmed worked cell on the grid
+          // when freshaCoverage hasn't been explicitly saved yet — without
+          // this every cell falls into "Fresha: no data" and presence /
+          // ext-day warnings never fire, leaving the count too low.
+          if (!bFThru) {
+            for (let _i = daysX.length - 1; _i >= 0; _i--) {
+              const _d = daysX[_i];
+              let _has = false;
+              for (const _ec in bGrid) {
+                const _v = bGrid[_ec] && bGrid[_ec][_d.d];
+                if (!_v || _v.charAt(0) === "~") continue;
+                if (_v === "on" || _v === "ext" || _v === "late" || _v === "trial" || _v === "swap_i") { _has = true; break; }
+              }
+              if (_has) { bFThru = _d.ymd; break; }
+            }
+          }
           const reKey = (raw) => {
             const out = {};
             for (const ec in (raw || {})) {
