@@ -5798,7 +5798,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       safe(window.BOA_DB.loadSchedule(attBranch, attYM, true))
     ]).then(([att, sch, mgrSch]) => {
       setAttGrid((att && att.grid) || {});
-      setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null, freshaWorked: att.freshaWorked || {}, reviewedWarnings: att.reviewedWarnings || {} } : { freshaWorked: {}, reviewedWarnings: {} });
+      setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null, freshaWorked: att.freshaWorked || {}, reviewedWarnings: att.reviewedWarnings || {}, mirrorSuppressed: !!att.mirrorSuppressed } : { freshaWorked: {}, reviewedWarnings: {}, mirrorSuppressed: false });
       const techGrid = (sch    && sch.grid)    || {};
       const mgrGrid  = ymdReKey((mgrSch && mgrSch.grid) || {});
       setAttSched({ ...techGrid, ...mgrGrid });
@@ -8509,6 +8509,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           };
 
           // Helpers
+          const mirrorSuppressed = !!(attMeta && attMeta.mirrorSuppressed);
           const getStatus = (ec, d) => {
             // Cross-tab rule: anyone on the off-board list shows TERMINATED
             // automatically from the day AFTER their leftDate, regardless of
@@ -8518,6 +8519,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
             const v = attGrid[ec] && attGrid[ec][d];
             if (v) return v.indexOf("~") === 0 ? v.slice(1) : v;
+            // After a Total Reset the schedule mirror is suppressed so the
+            // grid reads as truly empty until the admin runs Auto-fill.
+            if (mirrorSuppressed) return "";
             // Fall back to schedule hint
             const sv = attSched[ec] && attSched[ec][d];
             if (sv === "O" || sv === "R") return "off";
@@ -8536,6 +8540,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             return !!v && v.indexOf("~") !== 0;
           };
           const schedHint = (ec, d) => {
+            if (mirrorSuppressed) return null;        // hide schedule signal after a Total Reset
             const sv = attSched[ec] && attSched[ec][d];
             if (!sv) return null;
             if (sv === "W" || sv === "WL") return "on";
@@ -9105,37 +9110,36 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             alert("✓ Attendance reset for " + attBranch + " — " + cycLabel);
           };
 
-          // Total reset — also deletes the kiosk audit log, absence reasons,
-          // extra-day approvers and uploaded proofs for this cycle. The
-          // schedule grids stay (they're planning data, not part of one
-          // cycle), but everything attendance-derived for the branch + cycle
-          // is wiped from app_state.
+          // Total reset — clears the attendance grid + every sidecar tied to
+          // it (reviewedWarnings, freshaCoverage, freshaWorked) AND hides the
+          // schedule mirror so the grid renders truly blank. Kiosk data
+          // (audit log, uploaded proofs, absence reasons, extra-day
+          // approvers) is preserved so the admin can re-import it anytime.
+          // The schedule itself stays untouched.
           const totalResetCycle = async () => {
             const step1 = "⚠ TOTAL reset for " + attBranch + " — " + cycLabel + "?\n\n"
-              + "This deletes EVERY attendance-related record for this branch + cycle:\n"
-              + "  • Attendance grid + reviewed marks\n"
-              + "  • Fresha coverage data\n"
-              + "  • Kiosk audit log (all submissions)\n"
-              + "  • Uploaded sick notes / FRL proofs\n"
-              + "  • Absence reasons + extra-day approvers\n\n"
-              + "The schedule for this cycle is kept. This cannot be undone. Continue?";
+              + "Clears the attendance grid + reviewed marks + Fresha sidecar AND hides the schedule mirror — the grid reads as blank.\n\n"
+              + "Kept: kiosk check-ins, uploaded proofs, schedule. Re-import the kiosk anytime to repopulate.\n\n"
+              + "Continue?";
             if (!confirm(step1)) return;
-            const step2 = window.prompt("Enter the Total Reset PIN to confirm permanently deleting all attendance + kiosk data for " + attBranch + " — " + cycLabel + ".");
+            const step2 = window.prompt("Enter the Total Reset PIN to confirm.");
             if (step2 === null) return;
             if ((step2 || "").trim() !== "2002") { alert("Cancelled — incorrect PIN."); return; }
-            if (!window.BOA_DB || !window.BOA_DB.deleteAttendanceAll) {
-              alert("Total reset requires a newer deploy of the data layer. Please redeploy and try again.");
-              return;
-            }
-            try {
-              const r = await window.BOA_DB.deleteAttendanceAll(attBranch, attYM);
-              if (r && r.error) throw r.error;
-            } catch (e) { alert("Could not total-reset: " + (e.message || e)); return; }
-            setAttGrid({});
-            setAttMeta({ freshaWorked: {}, reviewedWarnings: {} });
+            const nextGrid = {};
+            const nextMeta = { freshaWorked: {}, reviewedWarnings: {}, freshaCoverage: null, mirrorSuppressed: true };
+            setAttGrid(nextGrid);
+            setAttMeta(nextMeta);
             setAttCheckinSnapshot(null);
-            logActivity("Total reset (cycle + kiosk log + proofs)", attBranch + " · " + cycLabel, "All attendance + kiosk data wiped", "Bulk");
-            alert("✓ Total reset done for " + attBranch + " — " + cycLabel);
+            try {
+              await window.BOA_DB.saveAttendance(attBranch, attYM, nextGrid, {
+                freshaWorked: {},
+                reviewedWarnings: {},
+                freshaCoverage: null,
+                mirrorSuppressed: true
+              });
+            } catch (e) { alert("Could not total-reset: " + (e.message || e)); return; }
+            logActivity("Total reset (cycle display)", attBranch + " · " + cycLabel, "Grid + sidecars cleared, schedule mirror suppressed, kiosk data preserved", "Bulk");
+            alert("✓ Total reset done for " + attBranch + " — " + cycLabel + ". Run Auto-fill or Import Check-ins to repopulate.");
           };
 
           // Auto-fill empty cells from the schedule (writes "~hint" — italic, unconfirmed)
@@ -9146,6 +9150,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const next = { ...attGrid };
             let filled = 0, refreshed = 0;
             const noScheduleStaff = [];
+            // After a Total Reset the schedule mirror was hidden — autoFill
+            // is the explicit "rebuild from schedule" action so we read the
+            // schedule directly here, bypassing the suppressed schedHint.
+            const rawHintFor = (ec, d) => {
+              const sv = attSched[ec] && attSched[ec][d];
+              if (!sv) return null;
+              if (sv === "W" || sv === "WL") return "on";
+              if (sv === "O" || sv === "R")  return "off";
+              if (sv === "L") return "al";
+              if (sv === "X") return "term";
+              if (sv === "E") return "ext";
+              return null;
+            };
             for (const s of attStaff) {
               next[s.ec] = { ...(next[s.ec] || {}) };
               const schedRow = attSched[s.ec] || {};
@@ -9155,7 +9172,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               }
               for (const dy of days) {
                 const cur = next[s.ec][dy.d];
-                const hint = schedHint(s.ec, dy.d);
+                const hint = rawHintFor(s.ec, dy.d);
                 if (!hint) continue;
                 const target = "~" + hint;
                 if (!cur) {
@@ -9218,7 +9235,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               return;
             }
             setAttGrid(next);
-            try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
+            // Auto-fill is the explicit "show the schedule again" action, so
+            // also clear the mirrorSuppressed flag from any prior Total Reset.
+            const nextMeta = { ...(attMeta || {}), mirrorSuppressed: false };
+            setAttMeta(nextMeta);
+            try { await window.BOA_DB.saveAttendance(attBranch, attYM, next, { mirrorSuppressed: false }); }
             catch (e) { alert("Could not save: " + (e.message || e)); return; }
             // Per-role count of staff that ended up with at least one filled cell.
             const filledByRole = { SM:0, AM:0, NT:0 };
