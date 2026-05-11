@@ -5024,7 +5024,8 @@ const SETTINGS_TABS = [
   { t: "checkins",   l: "Daily Check-ins",   cat: "Operations", icon: "📲" },
   { t: "mgrclockins",l: "Mgr Clock-ins",     cat: "Operations", icon: "🕐" },
   { t: "leave",      l: "Leave Planner",     cat: "Operations", icon: "🌴" },
-  { t: "attendance", l: "Attendance / Payroll", cat: "Payroll", icon: "📕" },
+  { t: "attendance",     l: "Attendance / Payroll", cat: "Payroll", icon: "📕" },
+  { t: "payrollProgress",l: "Payroll Progress",     cat: "Payroll", icon: "📊" },
   { t: "alerts",     l: "Alerts",            cat: "Insights",   icon: "🔔" },
   { t: "activity",   l: "Activity Log",      cat: "Insights",   icon: "📜" }
 ];
@@ -5491,7 +5492,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const NAV_TAB_TO_CATEGORY = {
     onboard:"People", offboard:"People", staff:"People", recruitment:"People", maternity:"People",
     scheduling:"Operations", locations:"Operations", mgrclockins:"Operations", leave:"Operations", checkins:"Operations",
-    attendance:"Payroll",
+    attendance:"Payroll", payrollProgress:"Payroll",
     alerts:"Insights", activity:"Insights",
     settings:"Admin"
   };
@@ -5616,9 +5617,130 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [attLoading,setAttLoading]= useState(false);
   // Cross-branch payroll overview — lazy-loaded counts of cells needing
   // admin review per branch for the active cycle. Lives at component scope
-  // so it survives the IIFE re-render and only refetches when ym changes.
+  // so it can be triggered from the dedicated Payroll Progress tab.
   const [payrollOverview, setPayrollOverview] = useState(null);   // null | { loading, ym, byBranch }
-  const [payrollOpen, setPayrollOpen]         = useState(false);
+  const loadPayrollOverviewForCycle = async (ymForLoad) => {
+    try {
+      const ym = ymForLoad;
+      console.log("[payroll-overview] loading for cycle", ym, "across", SALONS.length, "branches");
+      setPayrollOverview({ loading: true, ym, byBranch: {} });
+      const p2x = (z) => String(z).padStart(2, "0");
+      const ymP = ym.split("-").map(Number);
+      const cycStart = new Date(ymP[0], ymP[1]-1, 25);
+      const cycEnd   = new Date(ymP[0], ymP[1],   24);
+      const cycStartYmd = cycStart.getFullYear() + "-" + p2x(cycStart.getMonth()+1) + "-" + p2x(cycStart.getDate());
+      const daysX = [];
+      for (let cur = new Date(cycStart); cur <= cycEnd; cur.setDate(cur.getDate()+1)) {
+        daysX.push({ d: cur.getDate(), ymd: cur.getFullYear() + "-" + p2x(cur.getMonth()+1) + "-" + p2x(cur.getDate()) });
+      }
+      let _techY = ymP[0], _techM = ymP[1] + 1;
+      if (_techM > 12) { _techM = 1; _techY++; }
+      const techYmCross = _techY + "-" + p2x(_techM);
+      const todayDt = new Date();
+      const t0YmdLocal = todayDt.getFullYear() + "-" + p2x(todayDt.getMonth()+1) + "-" + p2x(todayDt.getDate());
+      const offByEcX = {};
+      (offList || []).forEach(o => { if (o.ec && o.leftDate) offByEcX[o.ec] = o.leftDate; });
+      const stillInCycleX = (ec) => { const ld = offByEcX[ec]; return !ld || ld >= cycStartYmd; };
+      const safe = (p) => p && p.catch ? p.catch(() => null) : Promise.resolve(null);
+      const results = {};
+      await Promise.all(SALONS.map(async (sl) => {
+        const branch = sl.name;
+        try {
+          const [att, sch, mgrSch] = await Promise.all([
+            safe(window.BOA_DB.loadAttendance(branch, ym)),
+            safe(window.BOA_DB.loadSchedule(branch, techYmCross, false)),
+            safe(window.BOA_DB.loadSchedule(branch, ym, true))
+          ]);
+          const bGrid   = (att && att.grid) || {};
+          const bReview = (att && att.reviewedWarnings) || {};
+          const bFW     = (att && att.freshaWorked) || {};
+          let   bFThru  = (att && att.freshaCoverage && att.freshaCoverage.through) || null;
+          // Same fallback as the per-branch dashboard: infer the Fresha-
+          // through date from the latest confirmed worked cell on the grid
+          // when freshaCoverage hasn't been explicitly saved yet — without
+          // this every cell falls into "Fresha: no data" and presence /
+          // ext-day warnings never fire, leaving the count too low.
+          if (!bFThru) {
+            for (let _i = daysX.length - 1; _i >= 0; _i--) {
+              const _d = daysX[_i];
+              let _has = false;
+              for (const _ec in bGrid) {
+                const _v = bGrid[_ec] && bGrid[_ec][_d.d];
+                if (!_v || _v.charAt(0) === "~") continue;
+                if (_v === "on" || _v === "ext" || _v === "late" || _v === "trial" || _v === "swap_i") { _has = true; break; }
+              }
+              if (_has) { bFThru = _d.ymd; break; }
+            }
+          }
+          const reKey = (raw) => {
+            const out = {};
+            for (const ec in (raw || {})) {
+              const row = raw[ec] || {}; const conv = {};
+              for (const k in row) {
+                const m = /^\d{4}-\d{2}-(\d{2})$/.exec(k);
+                conv[m ? parseInt(m[1], 10) : k] = row[k];
+              }
+              out[ec] = conv;
+            }
+            return out;
+          };
+          const bSched = { ...((sch && sch.grid) || {}), ...reKey((mgrSch && mgrSch.grid) || {}) };
+          const bStaff = staff.filter(p => p.branch === branch && stillInCycleX(p.ec));
+          const getHint = (ec, d) => {
+            const sv = bSched[ec] && bSched[ec][d];
+            if (!sv) return null;
+            if (sv === "W" || sv === "WL") return "on";
+            if (sv === "O" || sv === "R")  return "off";
+            if (sv === "L") return "al";
+            if (sv === "X") return "term";
+            if (sv === "E") return "ext";
+            return null;
+          };
+          let total = 0, reviewed = 0;
+          for (const s of bStaff) {
+            for (const dy of daysX) {
+              if (dy.ymd > t0YmdLocal) continue;
+              const rawV = (bGrid[s.ec] && bGrid[s.ec][dy.d]) || null;
+              const bareV = rawV ? (rawV.charAt(0) === "~" ? rawV.slice(1) : rawV) : "";
+              const override = !!rawV && rawV.indexOf("~") !== 0;
+              const hint = getHint(s.ec, dy.d);
+              const scheduleSaysWork = hint === "on" || hint === "ext";
+              const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i";
+              const isLate    = bareV === "late";
+              const kioskAbs = ((kioskAbsentByBranch[branch] || {})[s.ec] || {})[dy.ymd] || null;
+              const checkin  = ((checkInsByBranch[branch] || {})[s.ec] || {})[dy.ymd] || null;
+              const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
+              const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
+              const freshaWorkedCell = !!((bFW[s.ec] || {})[dy.d]);
+              const freshaCoversThisDay = !!bFThru && dy.ymd <= bFThru;
+              const kioskMarkedAbsent = !!kioskAbs && kioskAbs.status !== "ext" && kioskAbs.status !== "trial" && kioskAbs.status !== "swap_o";
+              const cellShowsAbsent = kioskMarkedAbsent || (override && !!bareV && !isWorking && !isLate);
+              const extDayRecorded  = (override && bareV === "ext") || (!!kioskAbs && kioskAbs.status === "ext");
+              const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
+              const presentNoApptWarn = checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
+              const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
+              const proofPending      = (bareV === "sick_n" || bareV === "frl");
+              if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending) {
+                total++;
+                const rev = (bReview[s.ec] || {})[dy.d];
+                if (rev && rev.valueAtReview === (rawV || "")) reviewed++;
+              } else if (branch === "Sea Point" && (bareV === "sick_n" || bareV === "frl" || bareV === "sick" || bareV === "no" || bareV === "absent")) {
+                // Diagnostic: any absence-like cell that didn't fire a warning
+                console.log("[payroll-overview] Sea Point missed", { ec: s.ec, day: dy.d, ymd: dy.ymd, rawV, bareV, hasKioskAbs: !!kioskAbs, freshaWorkedCell, bFThru, freshaCoversThisDay, override });
+              }
+            }
+          }
+          results[branch] = { total, reviewed, open: total - reviewed };
+        } catch (e) { results[branch] = { error: (e && e.message) || String(e), total: 0, reviewed: 0, open: 0 }; }
+      }));
+      const totalCount = Object.values(results).reduce((a, r) => a + ((r && r.total) || 0), 0);
+      console.log("[payroll-overview] done", { totalAcrossBranches: totalCount, results });
+      setPayrollOverview({ loading: false, ym, byBranch: results });
+    } catch (err) {
+      console.error("[payroll-overview] failed:", err);
+      setPayrollOverview({ loading: false, ym: ymForLoad, byBranch: {}, error: (err && err.message) || String(err) });
+    }
+  };
 
   // Load attendance grid + schedule grid whenever the tab/branch/period changes.
   useEffect(() => {
@@ -6109,7 +6231,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const prior = out[br][ec][ymd];
       const dt = new Date(r.ts);
       if (!prior || (prior.ts && dt > prior.ts) || !prior.ts) {
-        out[br][ec][ymd] = { status: r.status, note: r.note || null, ts: dt };
+        out[br][ec][ymd] = { status: r.status, note: r.note || null, ts: dt, hasProof: !!r.hasProof, proofKey: r.proofKey || null };
       }
     }
     return out;
@@ -6508,7 +6630,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               { key:"Payroll",    icon:"💰", title:"Payroll",
                 color:{ bg:"#DCFCE7", bgActive:"#BBF7D0", ink:"#14532d" },
                 items: [
-                  { t:"attendance",  l:"📕 Attendance"     }
+                  { t:"attendance",     l:"📕 Attendance"        },
+                  { t:"payrollProgress",l:"📊 Payroll Progress"  }
                 ] },
               { key:"Insights",   icon:"📊", title:"Insights",
                 color:{ bg:"#EDE9FE", bgActive:"#DDD6FE", ink:"#5B21B6" },
@@ -9155,103 +9278,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
                 const presentNoApptWarn = checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
                 const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
-                if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn) {
+                const proofPending      = (bareV === "sick_n" || bareV === "frl");
+                if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending) {
                   total++;
                   const review = (reviewedMap[s.ec] || {})[dy.d];
                   if (review && review.valueAtReview === (v || "")) reviewed++;
+                  if (attBranch === "Sea Point") {
+                    console.log("[dashboard] WARN", { ec: s.ec, day: dy.d, ymd: dy.ymd, v, bareV, apptVsKioskAbsentWarn, presentNoApptWarn, extDayNoApptWarn, proofPending });
+                  }
                 }
               }
             }
+            if (attBranch === "Sea Point") console.log("[dashboard] Sea Point total =", total, "reviewed =", reviewed);
             return { total, reviewed, open: total - reviewed };
           })();
 
-          // Load every branch's attendance + schedule for the active cycle
-          // and compute per-branch unreviewed-warning counts. Used to render
-          // the all-branch payroll overview panel — admins can spot at a
-          // glance which stores still have open warnings before running
-          // payroll. Lazy — only fires when the panel is opened.
-          const loadPayrollOverview = async () => {
-            setPayrollOverview({ loading: true, ym: attYM, byBranch: {} });
-            const todayDt = new Date();
-            const t0YmdLocal = todayDt.getFullYear() + "-" + p2(todayDt.getMonth()+1) + "-" + p2(todayDt.getDate());
-            const results = {};
-            await Promise.all(SALONS.map(async (sl) => {
-              const branch = sl.name;
-              try {
-                const [att, sch, mgrSch] = await Promise.all([
-                  window.BOA_DB.loadAttendance(branch, attYM),
-                  window.BOA_DB.loadTechSched(branch, attYM),
-                  window.BOA_DB.loadMgrSched(branch, attYM)
-                ]);
-                const bGrid    = (att && att.grid) || {};
-                const bReview  = (att && att.reviewedWarnings) || {};
-                const bFW      = (att && att.freshaWorked) || {};
-                const bFThru   = (att && att.freshaCoverage && att.freshaCoverage.through) || null;
-                const reKey = (raw) => {
-                  const out = {};
-                  for (const ec in (raw || {})) {
-                    const row = raw[ec] || {}; const conv = {};
-                    for (const k in row) {
-                      const m = /^\d{4}-\d{2}-(\d{2})$/.exec(k);
-                      conv[m ? parseInt(m[1], 10) : k] = row[k];
-                    }
-                    out[ec] = conv;
-                  }
-                  return out;
-                };
-                const bSched   = { ...((sch && sch.grid) || {}), ...reKey((mgrSch && mgrSch.grid) || {}) };
-                const bStaff   = staff.filter(p => p.branch === branch);
-                const getV = (ec, d) => (bGrid[ec] && bGrid[ec][d]) || null;
-                const getHint = (ec, d) => {
-                  const sv = bSched[ec] && bSched[ec][d];
-                  if (!sv) return null;
-                  if (sv === "W" || sv === "WL") return "on";
-                  if (sv === "O" || sv === "R")  return "off";
-                  if (sv === "L") return "al";
-                  if (sv === "X") return "term";
-                  if (sv === "E") return "ext";
-                  return null;
-                };
-                let total = 0, reviewed = 0;
-                for (const s of bStaff) {
-                  if (s.role !== "NT") continue;
-                  for (const dy of days) {
-                    if (dy.ymd > t0YmdLocal) continue;
-                    const rawV = getV(s.ec, dy.d);
-                    const v = rawV;
-                    const bareV = v ? (v.charAt(0) === "~" ? v.slice(1) : v) : "";
-                    const override = !!rawV && rawV.indexOf("~") !== 0;
-                    const hint = getHint(s.ec, dy.d);
-                    const scheduleSaysWork = hint === "on" || hint === "ext";
-                    const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i";
-                    const isLate    = bareV === "late";
-                    const kioskAbs = ((kioskAbsentByBranch[branch] || {})[s.ec] || {})[dy.ymd] || null;
-                    const checkin  = ((checkInsByBranch[branch] || {})[s.ec] || {})[dy.ymd] || null;
-                    const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
-                    const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
-                    const freshaWorkedCell = !!((bFW[s.ec] || {})[dy.d]);
-                    const freshaCoversThisDay = !!bFThru && dy.ymd <= bFThru;
-                    const kioskMarkedAbsent = !!kioskAbs && kioskAbs.status !== "ext" && kioskAbs.status !== "trial" && kioskAbs.status !== "swap_o";
-                    const cellShowsAbsent = kioskMarkedAbsent || (override && !!bareV && !isWorking && !isLate);
-                    const extDayRecorded = (override && bareV === "ext") || (!!kioskAbs && kioskAbs.status === "ext");
-                    const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
-                    const presentNoApptWarn = checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
-                    const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
-                    if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn) {
-                      total++;
-                      const rev = (bReview[s.ec] || {})[dy.d];
-                      if (rev && rev.valueAtReview === (v || "")) reviewed++;
-                    }
-                  }
-                }
-                results[branch] = { total, reviewed, open: total - reviewed };
-              } catch (e) { results[branch] = { error: (e && e.message) || String(e), total: 0, reviewed: 0, open: 0 }; }
-            }));
-            setPayrollOverview({ loading: false, ym: attYM, byBranch: results });
-          };
-          // Re-fetch the overview when the cycle changes or it becomes stale.
-          const overviewReady = payrollOverview && !payrollOverview.loading && payrollOverview.ym === attYM;
-          const overviewLoading = payrollOverview && payrollOverview.loading;
 
           // BCEA eligibility checks for sick_n + frl
           const findStartDate = (ec) => {
@@ -9422,71 +9463,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 )}
                 <button onClick={resetCycle} style={{ padding:"7px 14px", background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fca5a5", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Clear every cell for this branch + cycle (with confirmation)">↺ Reset Cycle</button>
               </div>
-
-              <div style={{ marginBottom:8 }}>
-                <button onClick={() => {
-                    const next = !payrollOpen;
-                    setPayrollOpen(next);
-                    if (next && (!payrollOverview || payrollOverview.ym !== attYM)) loadPayrollOverview();
-                  }}
-                  style={{ background:"#831843", color:"#fff", border:"none", borderRadius:7, padding:"7px 14px", cursor:"pointer", fontWeight:700, fontSize:12 }}>
-                  📊 Payroll overview — all branches{payrollOpen ? " ▾" : " ▸"}
-                </button>
-              </div>
-              {payrollOpen && (
-                <div style={{ marginBottom:8, padding:"12px 14px", background:"#fff", border:"1px solid " + Y, borderRadius:8 }}>
-                  {overviewLoading && <div style={{ fontSize:12, color:"#831843" }}>Loading branch data…</div>}
-                  {overviewReady && (() => {
-                    const entries = SALONS.map(sl => ({ branch: sl.name, ...((payrollOverview.byBranch || {})[sl.name] || { total:0, reviewed:0, open:0 }) }));
-                    const grand   = entries.reduce((a, e) => ({ total:a.total+e.total, reviewed:a.reviewed+e.reviewed, open:a.open+e.open }), { total:0, reviewed:0, open:0 });
-                    const sorted  = entries.slice().sort((a,b) => b.open - a.open || b.total - a.total || a.branch.localeCompare(b.branch));
-                    return (
-                      <div>
-                        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
-                          <div style={{ fontSize:13, fontWeight:700, color:"#831843" }}>
-                            Payroll readiness · {cycLabel}
-                          </div>
-                          <div style={{ fontSize:12, color: grand.open > 0 ? "#7f1d1d" : "#166534", fontWeight:700 }}>
-                            {grand.open > 0
-                              ? "⚠ " + grand.open + " open · ✓ " + grand.reviewed + " reviewed · " + grand.total + " total"
-                              : "✓ All " + grand.total + " warnings reviewed across every branch"}
-                          </div>
-                        </div>
-                        <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
-                          <thead>
-                            <tr style={{ background:"#FDEEF5", color:"#831843" }}>
-                              <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid " + Y }}>Branch</th>
-                              <th style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, borderBottom:"1px solid " + Y }}>Open</th>
-                              <th style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, borderBottom:"1px solid " + Y }}>Reviewed</th>
-                              <th style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, borderBottom:"1px solid " + Y }}>Total warnings</th>
-                              <th style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, borderBottom:"1px solid " + Y }}></th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {sorted.map(e => (
-                              <tr key={e.branch} style={{ background: e.open > 0 ? "#fef2f2" : (e.total > 0 ? "#f0fdf4" : "transparent") }}>
-                                <td style={{ padding:"6px 10px", borderBottom:"1px solid " + aA, color:"#831843", fontWeight: e.branch === attBranch ? 800 : 500 }}>{e.branch}{e.branch === attBranch ? " (current)" : ""}</td>
-                                <td style={{ padding:"6px 10px", borderBottom:"1px solid " + aA, textAlign:"right", color: e.open > 0 ? "#7f1d1d" : "#9ca3af", fontWeight:700 }}>{e.open}</td>
-                                <td style={{ padding:"6px 10px", borderBottom:"1px solid " + aA, textAlign:"right", color:"#166534", fontWeight:600 }}>{e.reviewed}</td>
-                                <td style={{ padding:"6px 10px", borderBottom:"1px solid " + aA, textAlign:"right", color:"#831843", fontWeight:600 }}>{e.total}</td>
-                                <td style={{ padding:"6px 10px", borderBottom:"1px solid " + aA, textAlign:"right" }}>
-                                  {e.branch !== attBranch && e.total > 0 && (
-                                    <button onClick={() => setAttBranch(e.branch)} style={{ background:"transparent", border:"1px solid " + Y, color:"#831843", cursor:"pointer", padding:"2px 8px", borderRadius:5, fontSize:11 }}>Open →</button>
-                                  )}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                        <div style={{ marginTop:10, fontSize:11, color:"#831843", opacity:0.7 }}>
-                          Only counts cells with at least one warning (one of the three checks disagrees). Cells where Schedule × Kiosk × Fresha all match are skipped — no admin investigation needed.
-                          <button onClick={loadPayrollOverview} style={{ marginLeft:8, background:"transparent", border:"none", color:"#831843", cursor:"pointer", textDecoration:"underline", fontSize:11 }}>↻ Refresh</button>
-                        </div>
-                      </div>
-                    );
-                  })()}
-                </div>
-              )}
 
               {warningCounts.total > 0 && (
                 <div style={{ display:"flex", alignItems:"center", gap:14, flexWrap:"wrap", fontSize:12, color: warningCounts.open > 0 ? "#7f1d1d" : "#166534", marginBottom:8, padding:"10px 14px", background: warningCounts.open > 0 ? "#fef2f2" : "#f0fdf4", border: warningCounts.open > 0 ? "1px solid #fecaca" : "1px solid #bbf7d0", borderRadius:8, fontWeight:700 }}>
@@ -9749,10 +9725,43 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   <div title={"Schedule: " + (hintLbl || "—")} style={{ position:"absolute", top:0, left:0, right:0, height:6, background: schedStripeColor === "transparent" ? "#f9fafb" : schedStripeColor, borderBottom: cleanFill ? "none" : "1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
                                     {!cleanFill && <span style={{ fontSize:7, fontWeight:800, color:"rgba(0,0,0,0.45)", letterSpacing:"0.05em" }}>S</span>}
                                   </div>
-                                  <div title={freshaTip} style={{ position:"absolute", bottom:0, left:0, right:0, height:6, background: freshaStripeColor === "transparent" ? "#f9fafb" : freshaStripeColor, borderTop: cleanFill ? "none" : "1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
-                                    {!cleanFill && <span style={{ fontSize:7, fontWeight:800, color:"rgba(0,0,0,0.45)", letterSpacing:"0.05em" }}>F</span>}
-                                  </div>
+                                  {s.role === "NT" && (
+                                    <div title={freshaTip} style={{ position:"absolute", bottom:0, left:0, right:0, height:6, background: freshaStripeColor === "transparent" ? "#f9fafb" : freshaStripeColor, borderTop: cleanFill ? "none" : "1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
+                                      {!cleanFill && <span style={{ fontSize:7, fontWeight:800, color:"rgba(0,0,0,0.45)", letterSpacing:"0.05em" }}>F</span>}
+                                    </div>
+                                  )}
                                   {(() => {
+                                    // Sick + note / FRL + proof cells need an explicit admin review:
+                                    // open the proof image, verify the date matches the cell day,
+                                    // and only then click Confirm to record the review.
+                                    const isProofStatus = bareV === "sick_n" || bareV === "frl";
+                                    const reviewForProof = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
+                                    const proofReviewed  = !!reviewForProof && reviewForProof.valueAtReview === (v || "");
+                                    const kioskProofKey  = kioskAbs && kioskAbs.proofKey;
+                                    if (isProofStatus && !proofReviewed && s.role === "NT") {
+                                      const openProofModal = (e) => {
+                                        e.stopPropagation();
+                                        const proofKey = kioskProofKey || ("boa_proof_" + attBranch + "_" + attYM + "_" + s.ec + "_" + dy.d);
+                                        setProofModal({
+                                          loading: !!proofKey,
+                                          name: s.name,
+                                          ymd: dy.ymd,
+                                          status: bareV === "sick_n" ? "Sick + note" : "FRL + proof",
+                                          note: (kioskAbs && kioskAbs.note) || null,
+                                          onConfirm: async () => { await autoRecordReview(s.ec, dy.d, v); }
+                                        });
+                                        if (proofKey) {
+                                          window.BOA_DB.loadKioskProof(proofKey)
+                                            .then(url => setProofModal(p => p ? { ...p, loading: false, dataUrl: url } : null))
+                                            .catch(err => setProofModal(p => p ? { ...p, loading: false, error: (err && err.message) || String(err) } : null));
+                                        }
+                                      };
+                                      return (
+                                        <span title={"📎 Review proof and confirm before payroll — click to open the uploaded " + (bareV === "sick_n" ? "sick note" : "FRL proof")}
+                                              onClick={openProofModal}
+                                              style={{ position:"absolute", top:6, right:1, fontSize:11, lineHeight:1, color:"#831843", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:3 }}>📎</span>
+                                      );
+                                    }
                                     const warning  = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn;
                                     const review   = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
                                     const reviewed = !!review && review.valueAtReview === (v || "");
@@ -9781,13 +9790,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                     return null;
                                   })()}
                                   {v && (
-                                    <div style={{ position:"absolute", top:6, bottom:6, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle: (override && !isFutureSwap) ? "normal" : "italic", fontWeight: (override && !isFutureSwap) ? 700 : 400, color: isFutureSwap ? "#9ca3af" : (override ? st.fg : (hintFg + "70")), pointerEvents:"none", letterSpacing:"0.02em" }}>{st.lbl || hintLbl || ""}</div>
+                                    <div style={{ position:"absolute", top:6, bottom: s.role === "NT" ? 6 : 0, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle: (override && !isFutureSwap) ? "normal" : "italic", fontWeight: (override && !isFutureSwap) ? 700 : 400, color: isFutureSwap ? "#9ca3af" : (override ? st.fg : (hintFg + "70")), pointerEvents:"none", letterSpacing:"0.02em" }}>{st.lbl || hintLbl || ""}</div>
                                   )}
                                   {!v && showKioskReason && (
-                                    <div style={{ position:"absolute", top:6, bottom:6, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle:"italic", fontWeight:600, color: kStat.fg || "#9ca3af", pointerEvents:"none", letterSpacing:"0.02em" }}>{kStat.lbl}</div>
+                                    <div style={{ position:"absolute", top:6, bottom: s.role === "NT" ? 6 : 0, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle:"italic", fontWeight:600, color: kStat.fg || "#9ca3af", pointerEvents:"none", letterSpacing:"0.02em" }}>{kStat.lbl}</div>
                                   )}
-                                  <select value="" onChange={e=>onCellChange(s, dy, e.target.value)} title={ttl + "\nSchedule: " + (hintLbl || "—") + "\n" + freshaTip}
-                                    style={{ position:"absolute", top:6, bottom:6, left:0, right:0, width:"100%", border:"none", background: "transparent", color:"transparent", fontSize:9, fontWeight:400, opacity:1, textAlign:"center", cursor:"pointer", padding:"0 1px", fontFamily:"inherit", outline:"none", appearance:"none" }}>
+                                  <select value="" onChange={e=>onCellChange(s, dy, e.target.value)} title={ttl + "\nSchedule: " + (hintLbl || "—") + (s.role === "NT" ? "\n" + freshaTip : "")}
+                                    style={{ position:"absolute", top:6, bottom: s.role === "NT" ? 6 : 0, left:0, right:0, width:"100%", border:"none", background: "transparent", color:"transparent", fontSize:9, fontWeight:400, opacity:1, textAlign:"center", cursor:"pointer", padding:"0 1px", fontFamily:"inherit", outline:"none", appearance:"none" }}>
                                     <option value="" style={{ color:"#000", background:"#fff" }}>—</option>
                                     {Object.entries(STAT).filter(([k]) => k !== "ph" || isHol).map(([k, vv]) => (
                                       <option key={k} value={k} style={{ color:"#000", background:"#fff" }}>{vv.lbl}</option>
@@ -9815,6 +9824,83 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     })}
                   </tbody>
                 </table>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ── PAYROLL PROGRESS TAB ── */}
+        {tab === "payrollProgress" && (() => {
+          const ym = attYM;
+          const overviewReady   = payrollOverview && !payrollOverview.loading && payrollOverview.ym === ym;
+          const overviewLoading = payrollOverview && payrollOverview.loading;
+          const triggerLoad = () => loadPayrollOverviewForCycle(ym);
+          return (
+            <div style={{ padding:"24px 26px" }}>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14, gap:12, flexWrap:"wrap" }}>
+                <div>
+                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>📊 Payroll Progress</div>
+                  <div style={{ fontSize:12, color:"#9d4d6e" }}>Open warnings per branch for the current attendance cycle ({ym}). Click any row to jump to that branch's attendance grid.</div>
+                </div>
+                <button onClick={triggerLoad} style={{ background:"#831843", color:"#fff", border:"none", borderRadius:7, padding:"7px 14px", cursor:"pointer", fontWeight:700, fontSize:12 }}>
+                  {overviewLoading ? "Loading…" : (payrollOverview ? "↻ Refresh" : "Load now")}
+                </button>
+              </div>
+
+              <div style={{ padding:"14px 16px", background:"#fff", border:"1px solid #F9A8D4", borderRadius:10 }}>
+                {!payrollOverview && (
+                  <div style={{ fontSize:13, color:"#831843" }}>No data yet — click <strong>Load now</strong> above to pull every branch.</div>
+                )}
+                {overviewLoading && (
+                  <div style={{ fontSize:13, color:"#831843" }}>Loading branch data… <span style={{ opacity:0.6 }}>({SALONS.length} branches × cycle {ym})</span></div>
+                )}
+                {overviewReady && (() => {
+                  const entries = SALONS.map(sl => ({ branch: sl.name, ...((payrollOverview.byBranch || {})[sl.name] || { total:0, reviewed:0, open:0 }) }));
+                  const grand   = entries.reduce((a, e) => ({ total:a.total+e.total, reviewed:a.reviewed+e.reviewed, open:a.open+e.open }), { total:0, reviewed:0, open:0 });
+                  const sorted  = entries.slice().sort((a,b) => b.open - a.open || b.total - a.total || a.branch.localeCompare(b.branch));
+                  return (
+                    <div>
+                      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12, padding:"10px 14px", background: grand.open > 0 ? "#fef2f2" : "#f0fdf4", border: grand.open > 0 ? "1px solid #fecaca" : "1px solid #bbf7d0", borderRadius:8 }}>
+                        <div style={{ fontSize:13, fontWeight:700, color: grand.open > 0 ? "#7f1d1d" : "#166534" }}>
+                          {grand.open > 0
+                            ? "⚠ " + grand.open + " cell" + (grand.open === 1 ? "" : "s") + " still need review"
+                            : "✓ All " + grand.total + " warning" + (grand.total === 1 ? "" : "s") + " reviewed — payroll ready"}
+                        </div>
+                        <div style={{ fontSize:12, color:"#831843", opacity:0.75 }}>
+                          {grand.reviewed} of {grand.total} reviewed across {SALONS.length} branches
+                        </div>
+                      </div>
+                      <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+                        <thead>
+                          <tr style={{ background:"#FDEEF5", color:"#831843" }}>
+                            <th style={{ padding:"8px 12px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #F9A8D4" }}>Branch</th>
+                            <th style={{ padding:"8px 12px", textAlign:"right", fontWeight:700, borderBottom:"1px solid #F9A8D4" }}>Open</th>
+                            <th style={{ padding:"8px 12px", textAlign:"right", fontWeight:700, borderBottom:"1px solid #F9A8D4" }}>Reviewed</th>
+                            <th style={{ padding:"8px 12px", textAlign:"right", fontWeight:700, borderBottom:"1px solid #F9A8D4" }}>Total warnings</th>
+                            <th style={{ padding:"8px 12px", textAlign:"right", fontWeight:700, borderBottom:"1px solid #F9A8D4" }}></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {sorted.map(e => (
+                            <tr key={e.branch} style={{ background: e.open > 0 ? "#fef2f2" : (e.total > 0 ? "#f0fdf4" : "transparent"), cursor:"pointer" }}
+                                onClick={() => { setAttBranch(e.branch); setTab("attendance"); }}>
+                              <td style={{ padding:"8px 12px", borderBottom:"1px solid #FDEEF5", color:"#831843", fontWeight:600 }}>{e.branch}</td>
+                              <td style={{ padding:"8px 12px", borderBottom:"1px solid #FDEEF5", textAlign:"right", color: e.open > 0 ? "#7f1d1d" : "#9ca3af", fontWeight:700 }}>{e.open}</td>
+                              <td style={{ padding:"8px 12px", borderBottom:"1px solid #FDEEF5", textAlign:"right", color:"#166534", fontWeight:600 }}>{e.reviewed}</td>
+                              <td style={{ padding:"8px 12px", borderBottom:"1px solid #FDEEF5", textAlign:"right", color:"#831843", fontWeight:600 }}>{e.total}</td>
+                              <td style={{ padding:"8px 12px", borderBottom:"1px solid #FDEEF5", textAlign:"right" }}>
+                                <button onClick={(ev) => { ev.stopPropagation(); setAttBranch(e.branch); setTab("attendance"); }} style={{ background:"transparent", border:"1px solid #F9A8D4", color:"#831843", cursor:"pointer", padding:"4px 10px", borderRadius:5, fontSize:11 }}>Open →</button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      <div style={{ marginTop:14, fontSize:12, color:"#831843", opacity:0.7 }}>
+                        Only counts cells with at least one warning (Schedule × Kiosk × Fresha disagree). Cells where all three sources match are skipped — no admin investigation needed.
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           );
@@ -11538,33 +11624,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </table>
               </div>
 
-              {/* Proof image modal — shown when a row's "View proof" is clicked. */}
-              {proofModal && (
-                <div
-                  onClick={() => setProofModal(null)}
-                  style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", zIndex:9999, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
-                >
-                  <div onClick={e => e.stopPropagation()} style={{ background:"#fff", borderRadius:13, padding:18, maxWidth:560, width:"100%", maxHeight:"90vh", overflow:"auto" }}>
-                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
-                      <div style={{ fontWeight:700, color:"#831843" }}>
-                        📎 Proof — {proofModal.name || ""}
-                        <span style={{ fontWeight:400, color:"#6b7280", marginLeft:8, fontSize:12 }}>
-                          {proofModal.ymd} · {proofModal.status}
-                        </span>
-                      </div>
-                      <button onClick={() => setProofModal(null)} style={{ background:"transparent", border:"none", fontSize:18, cursor:"pointer", color:"#6b7280" }}>✕</button>
-                    </div>
-                    {proofModal.loading && <div style={{ color:"#6b7280", fontStyle:"italic" }}>Loading proof…</div>}
-                    {proofModal.error && <div style={{ color:"#7f1d1d", fontSize:12 }}>Error: {proofModal.error}</div>}
-                    {!proofModal.loading && !proofModal.error && proofModal.dataUrl && (
-                      <img src={proofModal.dataUrl} alt="proof" style={{ width:"100%", borderRadius:8, border:"1px solid #e5e7eb" }} />
-                    )}
-                    {!proofModal.loading && !proofModal.error && !proofModal.dataUrl && (
-                      <div style={{ color:"#6b7280", fontSize:12, fontStyle:"italic" }}>No proof image found at this key.</div>
-                    )}
-                  </div>
-                </div>
-              )}
             </div>
           );
         } catch (err) {
@@ -11748,6 +11807,55 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           onUsersUpdate={onUsersUpdate}
           currentUser={currentUser}
         />
+      )}
+
+      {/* Proof image modal — shared between Daily Check-ins and Attendance.
+          When proofModal.onConfirm is set, an admin "✓ Confirm" button shows
+          to mark the cell as reviewed for payroll once the proof is OK. */}
+      {proofModal && (
+        <div
+          onClick={() => setProofModal(null)}
+          style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", zIndex:9999, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+        >
+          <div onClick={e => e.stopPropagation()} style={{ background:"#fff", borderRadius:13, padding:18, maxWidth:560, width:"100%", maxHeight:"90vh", overflow:"auto" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+              <div style={{ fontWeight:700, color:"#831843" }}>
+                📎 Proof — {proofModal.name || ""}
+                <span style={{ fontWeight:400, color:"#6b7280", marginLeft:8, fontSize:12 }}>
+                  {proofModal.ymd} · {proofModal.status}
+                </span>
+              </div>
+              <button onClick={() => setProofModal(null)} style={{ background:"transparent", border:"none", fontSize:18, cursor:"pointer", color:"#6b7280" }}>✕</button>
+            </div>
+            {proofModal.note && (
+              <div style={{ background:"#fef9c3", color:"#854d0e", padding:"6px 10px", borderRadius:6, fontSize:12, marginBottom:10 }}>
+                📝 {proofModal.note}
+              </div>
+            )}
+            {proofModal.loading && <div style={{ color:"#6b7280", fontStyle:"italic" }}>Loading proof…</div>}
+            {proofModal.error && <div style={{ color:"#7f1d1d", fontSize:12 }}>Error: {proofModal.error}</div>}
+            {!proofModal.loading && !proofModal.error && proofModal.dataUrl && (
+              <img src={proofModal.dataUrl} alt="proof" style={{ width:"100%", borderRadius:8, border:"1px solid #e5e7eb" }} />
+            )}
+            {!proofModal.loading && !proofModal.error && !proofModal.dataUrl && (
+              <div style={{ color:"#6b7280", fontSize:12, fontStyle:"italic" }}>No proof image was uploaded for this cell.</div>
+            )}
+            {proofModal.onConfirm && !proofModal.loading && (
+              <div style={{ marginTop:14, padding:"10px 12px", background:"#FDEEF5", borderRadius:8, fontSize:12, color:"#831843" }}>
+                <div style={{ marginBottom:8 }}>
+                  <strong>Before confirming:</strong> check the date on the proof matches <strong>{proofModal.ymd}</strong>, the tech's name matches <strong>{proofModal.name}</strong>, and the proof is legible.
+                </div>
+                <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
+                  <button onClick={() => setProofModal(null)} style={{ background:"#fff", color:"#831843", border:"1px solid #F9A8D4", borderRadius:6, padding:"6px 12px", cursor:"pointer", fontSize:12, fontWeight:600 }}>Cancel</button>
+                  <button onClick={async () => { try { await proofModal.onConfirm(); } finally { setProofModal(null); } }}
+                          style={{ background:"#15803d", color:"#fff", border:"none", borderRadius:6, padding:"6px 14px", cursor:"pointer", fontSize:12, fontWeight:700 }}>
+                    ✓ Confirm proof
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {staffModal && <StaffModal s={staffModal} onClose={()=>setStaffModal(null)} onSave={saveStaff} onTransfer={(s)=>setTransferModal(s)} allStaff={staff} />}
