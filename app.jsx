@@ -5749,7 +5749,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
               const missingCheckin    = !checkinHasIn && freshaWorkedCell;
               const proofPending      = (bareV === "sick_n" || bareV === "frl");
-              if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending || missingCheckin) {
+              const absentNeedsReview = (bareV === "sick" || bareV === "no" || bareV === "absent");
+              if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending || missingCheckin || absentNeedsReview) {
                 total++;
                 const rev = (bReview[s.ec] || {})[dy.d];
                 if (rev && rev.valueAtReview === (rawV || "")) reviewed++;
@@ -9466,7 +9467,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
                 const missingCheckin    = !checkinHasIn && freshaWorkedCell;
                 const proofPending      = (bareV === "sick_n" || bareV === "frl");
-                if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending || missingCheckin) {
+                const absentNeedsReview = (bareV === "sick" || bareV === "no" || bareV === "absent");
+                if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending || missingCheckin || absentNeedsReview) {
                   total++;
                   const review = (reviewedMap[s.ec] || {})[dy.d];
                   if (review && review.valueAtReview === (v || "")) reviewed++;
@@ -9924,13 +9926,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                               style={{ position:"absolute", top:6, right:1, fontSize:11, lineHeight:1, color:"#831843", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:3 }}>📎</span>
                                       );
                                     }
-                                    const warning  = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || missingCheckin;
+                                    const absentNeedsReview = bareV === "sick" || bareV === "no" || bareV === "absent";
+                                    const warning  = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || missingCheckin || absentNeedsReview;
                                     const review   = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
                                     const reviewed = !!review && review.valueAtReview === (v || "");
                                     // Cell with active warning + not yet reviewed → red ⚠
                                     if (warning && !reviewed) {
                                       const warnTitle = apptVsKioskAbsentWarn ? "⚠ Kiosk marked tech absent but Fresha has a completed appointment that day"
                                                       : extDayNoApptWarn      ? "⚠ Extra day recorded but Fresha shows no appointments — did they actually do any service?"
+                                                      : absentNeedsReview      ? ("⚠ Absent day — admin must confirm " + ((STAT[bareV] || {}).lbl || bareV) + " for payroll")
                                                       : missingCheckin         ? "⚠ Fresha shows appointments + scheduled to work, but no kiosk check-in recorded"
                                                                               : "⚠ Tech checked in and was scheduled to work, but Fresha shows no appointments";
                                       return (
