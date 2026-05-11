@@ -9301,6 +9301,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const t = { al:0, sick:0, sickNote:0, frl:0, ph:0, mat:0, unpaid:0, ext:0, late:0, td:0, worked:0, off:0, term:0, unpaidHours:0 };
             for (const dy of days) {
               const v = getStatus(ec, dy.d);
+              const isHol = !!(holidayLookup && holidayLookup[dy.ymd]);
               if      (v === "al")     t.al++;
               else if (v === "sick")   { t.sick++; t.unpaid++; }
               else if (v === "sick_n") t.sickNote++;
@@ -9308,12 +9309,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               else if (v === "ph")     t.ph++;
               else if (v === "mat")    t.mat++;
               else if (v === "no" || v === "unpaid" || v === "absent") t.unpaid++;
-              else if (v === "ext")    t.ext++;
-              else if (v === "late")   t.late++;
+              else if (v === "ext")    { t.ext++; if (isHol) t.ph++; }
+              else if (v === "late")   { t.late++; if (isHol) t.ph++; }
               else if (v === "trial")  t.td++;
-              else if (v === "on")     t.worked++;
+              else if (v === "on")     { t.worked++; if (isHol) t.ph++; }
               else if (v === "off")    t.off++;
-              else if (v === "swap_i") t.worked++;
+              else if (v === "swap_i") { t.worked++; if (isHol) t.ph++; }
               else if (v === "swap_o") t.off++;
               else if (v === "term")   { t.term++; t.unpaid++; }
               else if (v && v.indexOf("deduct") === 0) {
