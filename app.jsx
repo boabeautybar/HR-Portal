@@ -5396,16 +5396,39 @@ let seed = 5000;
 function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // ── Activity logger — records who did what to the boa_activity_log_v1 row.
   // Failures are swallowed so a logging hiccup never blocks the actual edit.
-  const logActivity = async (action, target, details) => {
+  // Signature: logActivity(action, target, details, category?). If category is
+  // omitted, it's inferred from the action keyword so legacy callers still
+  // get bucketed correctly.
+  const inferCategory = (action) => {
+    const a = (action || "").toLowerCase();
+    if (a.includes("attendance") || a.includes("cell"))                          return "Attendance";
+    if (a.includes("schedule"))                                                   return "Schedule";
+    if (a.includes("leave"))                                                      return "Leave";
+    if (a.includes("maternity") || a.includes("mat "))                            return "Maternity";
+    if (a.includes("onboard"))                                                    return "Onboarding";
+    if (a.includes("off-board") || a.includes("offboard") || a.includes("term"))  return "Off-boarding";
+    if (a.includes("transfer"))                                                   return "Transfer";
+    if (a.includes("manager") || a.includes("pin"))                               return "Manager";
+    if (a.includes("staff") || a.includes("tech"))                                return "Staff";
+    if (a.includes("fresha"))                                                     return "Fresha";
+    if (a.includes("check-in") || a.includes("checkin") || a.includes("clockin")) return "Check-ins";
+    if (a.includes("proof") || a.includes("review"))                              return "Review";
+    if (a.includes("user") || a.includes("permission") || a.includes("password")) return "Users";
+    if (a.includes("setting") || a.includes("config") || a.includes("branch"))    return "Settings";
+    if (a.includes("import") || a.includes("export") || a.includes("reset"))      return "Bulk";
+    return "Other";
+  };
+  const logActivity = async (action, target, details, category) => {
     if (!window.BOA_DB || !window.BOA_DB.appendActivity) return;
     const u = currentUser || window.BOA_CURRENT_USER || {};
     try {
       await window.BOA_DB.appendActivity({
-        who:     u.name || "Unknown",
-        role:    u.role || "",
-        action:  action || "",
-        target:  target || "",
-        details: details || ""
+        who:      u.name || "Unknown",
+        role:     u.role || "",
+        category: category || inferCategory(action),
+        action:   action || "",
+        target:   target || "",
+        details:  details || ""
       });
     } catch (e) { console.warn("logActivity:", e); }
   };
@@ -5469,6 +5492,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [activityLoad, setActivityLoad]   = useState(false);
   const [activityFWho, setActivityFWho]   = useState("All");
   const [activityFAction, setActivityFAction] = useState("All");
+  const [activityFCategory, setActivityFCategory] = useState("All");
   const [activityTick, setActivityTick]   = useState(0);
   useEffect(() => {
     if (tab !== "activity") return;
@@ -6461,8 +6485,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     } catch (e) { alert("Could not save: " + (e.message || e)); }
   }
   async function delMat(id) {
-    try { await window.BOA_DB.deleteMat(id); setMatRecs(p => p.filter(x => x._id !== id)); setMatModal(null); }
-    catch (e) { alert("Could not delete: " + (e.message || e)); }
+    const rec = matRecs.find(r => r._id === id);
+    try {
+      await window.BOA_DB.deleteMat(id);
+      setMatRecs(p => p.filter(x => x._id !== id));
+      setMatModal(null);
+      if (rec) logActivity("Deleted maternity record", rec.name || rec.ec, rec.matStatus || "", "Maternity");
+    } catch (e) { alert("Could not delete: " + (e.message || e)); }
   }
   async function saveMgr(f, newPin) {
     try {
@@ -8521,12 +8550,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
           // Persist a single cell change (and update local React state)
           const setCell = async (ec, d, v) => {
+            const prev = attGrid[ec] && attGrid[ec][d];
             const next = { ...attGrid, [ec]: { ...(attGrid[ec] || {}) } };
             if (v === "" || v == null) delete next[ec][d];
             else                       next[ec][d] = v;
             setAttGrid(next);
             try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
             catch (e) { alert("Could not save: " + (e.message || e)); }
+            const staffName = (attStaff.find(s => s.ec === ec) || {}).name || ec;
+            logActivity("Edited attendance cell", staffName + " · day " + d + " · " + cycLabel,
+              "Branch " + attBranch + " · " + (prev ? prev + " → " : "") + (v || "(cleared)"), "Attendance");
           };
 
           // Auto-record a review when the admin changes a warning cell via the
@@ -8543,6 +8576,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             setAttMeta(nextMeta);
             try { await window.BOA_DB.saveAttendance(attBranch, attYM, gridAtSave || attGrid, { reviewedWarnings: nextRW }); }
             catch (e) { alert("Could not save review: " + (e.message || e)); }
+            const staffName = (attStaff.find(s => s.ec === ec) || {}).name || ec;
+            logActivity("Reviewed attendance cell", staffName + " · day " + d + " · " + cycLabel,
+              "Confirmed value " + (finalValue || "(cleared)") + " in " + attBranch, "Review");
           };
           // Resolve a warning cell via explicit click. The admin's pick is the
           // FINAL status for that day — the cell value is set (override=true)
@@ -8595,6 +8631,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // Single save with both grid + extras so they can't drift.
             try { await window.BOA_DB.saveAttendance(attBranch, attYM, nextGrid, { reviewedWarnings: nextRW }); }
             catch (e) { alert("Could not save: " + (e.message || e)); }
+            const staffName = (attStaff.find(s => s.ec === ec) || {}).name || ec;
+            logActivity("Reviewed warning cell", staffName + " · day " + d + " · " + cycLabel,
+              "Final status " + (cleaned || "(cleared)") + " · " + attBranch + ((note || "").trim() ? " · note: " + note.trim() : ""), "Review");
           };
 
           // ── Import check-ins from the kiosk audit log ── every kiosk submission
@@ -8682,6 +8721,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             setAttGrid(next);
             try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
             catch (e) { alert("Could not save: " + (e.message || e)); return; }
+            logActivity("Imported check-ins", attBranch + " · " + cycLabel,
+              "Stamped " + stamped + " day" + (stamped === 1 ? "" : "s") + " · " + skippedConfirmed + " confirmed kept · " + skippedPostLeft + " post-leave skipped", "Bulk");
             alert(
               "✓ Marked " + stamped + " day" + (stamped === 1 ? "" : "s") + " from Daily Check-ins (" + attBranch + ")." +
               (skippedConfirmed > 0 ? "\n\n• " + skippedConfirmed + " confirmed cell" + (skippedConfirmed === 1 ? "" : "s") + " preserved." : "") +
@@ -9016,6 +9057,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   reviewedWarnings: (attMeta && attMeta.reviewedWarnings) || {}
                 });
               }
+              logActivity("Imported Fresha CSV", cycLabel,
+                "Marked " + marked + " · cancelled " + cancelled + " · no-show " + noShow + " · out-of-cycle " + outOfCycle + branchSummary, "Fresha");
               alert(
                 "✓ Fresha import done — only Completed nail-tech appointments were counted, across all branches.\n\n" +
                 "• Rows read: " + total + "\n" +
@@ -9042,6 +9085,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             setAttGrid(next);
             try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
             catch (e) { alert("Could not reset: " + (e.message || e)); return; }
+            logActivity("Reset attendance cycle", attBranch + " · " + cycLabel, "All cells cleared", "Bulk");
             alert("✓ Attendance reset for " + attBranch + " — " + cycLabel);
           };
 
@@ -10022,11 +10066,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const notes = f.emergency ? "[EMERGENCY] " + f.emergencyNote : "";
             const newRec = { _id: Date.now(), ec: f.ec, startDate: f.startDate, endDate: f.endDate, type: "Annual leave", notes, emergency: !!f.emergency };
             persistLeaves([...leaveRecs, newRec]);
+            const subj = stf ? (stf.name + " (" + stf.ec + ")") : f.ec;
+            logActivity("Added leave", subj, f.startDate + " → " + f.endDate + (f.emergency ? " · emergency" : "") + (f.emergencyNote ? " · " + f.emergencyNote : ""), "Leave");
             setLeaveForm({ ec:"", startDate:"", endDate:"", emergency:false, emergencyNote:"" });
           };
           const removeLeave = (id) => {
+            const lv = leaveRecs.find(x => x._id === id);
             if (!confirm("Remove this leave record?")) return;
             persistLeaves(leaveRecs.filter(x => x._id !== id));
+            if (lv) {
+              const st = staff.find(x => x.ec === lv.ec) || managers.find(x => x.ec === lv.ec);
+              const subj = st ? (st.name + " (" + st.ec + ")") : lv.ec;
+              logActivity("Removed leave", subj, lv.startDate + " → " + lv.endDate + (lv.notes ? " · " + lv.notes : ""), "Leave");
+            }
           };
 
           // Records list, filtered to this branch and the chosen role family
@@ -11178,9 +11230,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         {tab==="activity" && (() => {
           const whoOpts    = ["All", ...Array.from(new Set(activityRows.map(r => r.who).filter(Boolean)))];
           const actionOpts = ["All", ...Array.from(new Set(activityRows.map(r => r.action).filter(Boolean))).sort()];
+          const catOf      = (r) => r.category || (r.action && r.action.includes("schedule") ? "Schedule" : r.action && r.action.includes("staff") ? "Staff" : "Other");
+          const catOpts    = ["All", ...Array.from(new Set(activityRows.map(catOf).filter(Boolean))).sort()];
           const filtered = activityRows.filter(r =>
             (activityFWho === "All"    || r.who    === activityFWho) &&
-            (activityFAction === "All" || r.action === activityFAction)
+            (activityFAction === "All" || r.action === activityFAction) &&
+            (activityFCategory === "All" || catOf(r) === activityFCategory)
           );
           const fmtTs = (iso) => {
             try { return new Date(iso).toLocaleString("en-ZA", { day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit" }); }
@@ -11214,6 +11269,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </select>
                 </div>
                 <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
+                  <label style={{ fontSize:10, fontWeight:700, color:"#F472B6", letterSpacing:"0.06em" }}>CATEGORY</label>
+                  <select value={activityFCategory} onChange={e=>setActivityFCategory(e.target.value)} style={{ padding:"7px 11px", borderRadius:7, border:"1px solid #FBCFE8", fontSize:13, background:"#fff", minWidth:160 }}>
+                    {catOpts.map(o => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                </div>
+                <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
                   <label style={{ fontSize:10, fontWeight:700, color:"#F472B6", letterSpacing:"0.06em" }}>ACTION</label>
                   <select value={activityFAction} onChange={e=>setActivityFAction(e.target.value)} style={{ padding:"7px 11px", borderRadius:7, border:"1px solid #FBCFE8", fontSize:13, background:"#fff", minWidth:200 }}>
                     {actionOpts.map(o => <option key={o} value={o}>{o}</option>)}
@@ -11236,6 +11297,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <th style={{ padding:"10px 12px", fontWeight:700, fontSize:10, letterSpacing:"0.08em" }}>WHEN</th>
                         <th style={{ padding:"10px 12px", fontWeight:700, fontSize:10, letterSpacing:"0.08em" }}>WHO</th>
                         <th style={{ padding:"10px 12px", fontWeight:700, fontSize:10, letterSpacing:"0.08em" }}>ROLE</th>
+                        <th style={{ padding:"10px 12px", fontWeight:700, fontSize:10, letterSpacing:"0.08em" }}>CATEGORY</th>
                         <th style={{ padding:"10px 12px", fontWeight:700, fontSize:10, letterSpacing:"0.08em" }}>ACTION</th>
                         <th style={{ padding:"10px 12px", fontWeight:700, fontSize:10, letterSpacing:"0.08em" }}>TARGET</th>
                         <th style={{ padding:"10px 12px", fontWeight:700, fontSize:10, letterSpacing:"0.08em" }}>DETAILS</th>
@@ -11249,6 +11311,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             <td style={{ padding:"8px 12px", whiteSpace:"nowrap", color:"#6b7280" }}>{fmtTs(r.when)}</td>
                             <td style={{ padding:"8px 12px", fontWeight:700, color:"#111827" }}>{r.who}</td>
                             <td style={{ padding:"8px 12px", color:"#6b7280" }}>{r.role}</td>
+                            <td style={{ padding:"8px 12px", color:"#831843", fontWeight:600, whiteSpace:"nowrap" }}>{catOf(r)}</td>
                             <td style={{ padding:"8px 12px" }}>
                               <span style={{ background:c.bg, color:c.fg, padding:"3px 8px", borderRadius:6, fontWeight:700, fontSize:11 }}>{r.action}</span>
                             </td>
