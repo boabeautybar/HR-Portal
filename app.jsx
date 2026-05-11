@@ -9171,6 +9171,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // glance which stores still have open warnings before running
           // payroll. Lazy — only fires when the panel is opened.
           const loadPayrollOverview = async () => {
+            console.log("[payroll-overview] loading for cycle", attYM, "across", SALONS.length, "branches");
             setPayrollOverview({ loading: true, ym: attYM, byBranch: {} });
             // Tech schedules use END-month YM, attendance + manager schedule use
             // START-month YM. Same convention as the per-branch load.
@@ -9254,6 +9255,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 results[branch] = { total, reviewed, open: total - reviewed };
               } catch (e) { results[branch] = { error: (e && e.message) || String(e), total: 0, reviewed: 0, open: 0 }; }
             }));
+            const totalCount = Object.values(results).reduce((a, r) => a + ((r && r.total) || 0), 0);
+            console.log("[payroll-overview] done", { totalAcrossBranches: totalCount, results });
             setPayrollOverview({ loading: false, ym: attYM, byBranch: results });
           };
           // Re-fetch the overview when the cycle changes or it becomes stale.
@@ -9442,7 +9445,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
               {payrollOpen && (
                 <div style={{ marginBottom:8, padding:"12px 14px", background:"#fff", border:"1px solid " + Y, borderRadius:8 }}>
-                  {overviewLoading && <div style={{ fontSize:12, color:"#831843" }}>Loading branch data…</div>}
+                  {!payrollOverview && (
+                    <div style={{ fontSize:12, color:"#831843", display:"flex", gap:10, alignItems:"center" }}>
+                      <span>Overview not loaded yet.</span>
+                      <button onClick={loadPayrollOverview} style={{ background:"#831843", color:"#fff", border:"none", borderRadius:5, padding:"4px 10px", cursor:"pointer", fontSize:11 }}>Load now</button>
+                    </div>
+                  )}
+                  {overviewLoading && <div style={{ fontSize:12, color:"#831843" }}>Loading branch data… <span style={{ opacity:0.6 }}>({SALONS.length} branches × cycle {attYM})</span></div>}
                   {overviewReady && (() => {
                     const entries = SALONS.map(sl => ({ branch: sl.name, ...((payrollOverview.byBranch || {})[sl.name] || { total:0, reviewed:0, open:0 }) }));
                     const grand   = entries.reduce((a, e) => ({ total:a.total+e.total, reviewed:a.reviewed+e.reviewed, open:a.open+e.open }), { total:0, reviewed:0, open:0 });
