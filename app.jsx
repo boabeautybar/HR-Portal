@@ -5747,6 +5747,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
               const presentNoApptWarn = checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
               const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
+              const missingCheckin    = !checkinHasIn && freshaWorkedCell;
               const proofPending      = (bareV === "sick_n" || bareV === "frl");
               if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending || missingCheckin) {
                 total++;
@@ -9455,6 +9456,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
                 const presentNoApptWarn = checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
                 const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
+                const missingCheckin    = !checkinHasIn && freshaWorkedCell;
                 const proofPending      = (bareV === "sick_n" || bareV === "frl");
                 if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending || missingCheckin) {
                   total++;
