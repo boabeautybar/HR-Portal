@@ -5719,7 +5719,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
               const presentNoApptWarn = checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
               const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
-              if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn) {
+              const proofPending      = (bareV === "sick_n" || bareV === "frl");
+              if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending) {
                 total++;
                 const rev = (bReview[s.ec] || {})[dy.d];
                 if (rev && rev.valueAtReview === (rawV || "")) reviewed++;
@@ -6227,7 +6228,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const prior = out[br][ec][ymd];
       const dt = new Date(r.ts);
       if (!prior || (prior.ts && dt > prior.ts) || !prior.ts) {
-        out[br][ec][ymd] = { status: r.status, note: r.note || null, ts: dt };
+        out[br][ec][ymd] = { status: r.status, note: r.note || null, ts: dt, hasProof: !!r.hasProof, proofKey: r.proofKey || null };
       }
     }
     return out;
@@ -9274,7 +9275,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
                 const presentNoApptWarn = checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
                 const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
-                if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn) {
+                const proofPending      = (bareV === "sick_n" || bareV === "frl");
+                if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending) {
                   total++;
                   const review = (reviewedMap[s.ec] || {})[dy.d];
                   if (review && review.valueAtReview === (v || "")) reviewed++;
@@ -9722,6 +9724,37 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                     </div>
                                   )}
                                   {(() => {
+                                    // Sick + note / FRL + proof cells need an explicit admin review:
+                                    // open the proof image, verify the date matches the cell day,
+                                    // and only then click Confirm to record the review.
+                                    const isProofStatus = bareV === "sick_n" || bareV === "frl";
+                                    const reviewForProof = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
+                                    const proofReviewed  = !!reviewForProof && reviewForProof.valueAtReview === (v || "");
+                                    const kioskProofKey  = kioskAbs && kioskAbs.proofKey;
+                                    if (isProofStatus && !proofReviewed && s.role === "NT") {
+                                      const openProofModal = (e) => {
+                                        e.stopPropagation();
+                                        const proofKey = kioskProofKey || ("boa_proof_" + attBranch + "_" + attYM + "_" + s.ec + "_" + dy.d);
+                                        setProofModal({
+                                          loading: !!proofKey,
+                                          name: s.name,
+                                          ymd: dy.ymd,
+                                          status: bareV === "sick_n" ? "Sick + note" : "FRL + proof",
+                                          note: (kioskAbs && kioskAbs.note) || null,
+                                          onConfirm: async () => { await autoRecordReview(s.ec, dy.d, v); }
+                                        });
+                                        if (proofKey) {
+                                          window.BOA_DB.loadKioskProof(proofKey)
+                                            .then(url => setProofModal(p => p ? { ...p, loading: false, dataUrl: url } : null))
+                                            .catch(err => setProofModal(p => p ? { ...p, loading: false, error: (err && err.message) || String(err) } : null));
+                                        }
+                                      };
+                                      return (
+                                        <span title={"📎 Review proof and confirm before payroll — click to open the uploaded " + (bareV === "sick_n" ? "sick note" : "FRL proof")}
+                                              onClick={openProofModal}
+                                              style={{ position:"absolute", top:6, right:1, fontSize:11, lineHeight:1, color:"#831843", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:3 }}>📎</span>
+                                      );
+                                    }
                                     const warning  = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn;
                                     const review   = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
                                     const reviewed = !!review && review.valueAtReview === (v || "");
@@ -11584,33 +11617,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </table>
               </div>
 
-              {/* Proof image modal — shown when a row's "View proof" is clicked. */}
-              {proofModal && (
-                <div
-                  onClick={() => setProofModal(null)}
-                  style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", zIndex:9999, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
-                >
-                  <div onClick={e => e.stopPropagation()} style={{ background:"#fff", borderRadius:13, padding:18, maxWidth:560, width:"100%", maxHeight:"90vh", overflow:"auto" }}>
-                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
-                      <div style={{ fontWeight:700, color:"#831843" }}>
-                        📎 Proof — {proofModal.name || ""}
-                        <span style={{ fontWeight:400, color:"#6b7280", marginLeft:8, fontSize:12 }}>
-                          {proofModal.ymd} · {proofModal.status}
-                        </span>
-                      </div>
-                      <button onClick={() => setProofModal(null)} style={{ background:"transparent", border:"none", fontSize:18, cursor:"pointer", color:"#6b7280" }}>✕</button>
-                    </div>
-                    {proofModal.loading && <div style={{ color:"#6b7280", fontStyle:"italic" }}>Loading proof…</div>}
-                    {proofModal.error && <div style={{ color:"#7f1d1d", fontSize:12 }}>Error: {proofModal.error}</div>}
-                    {!proofModal.loading && !proofModal.error && proofModal.dataUrl && (
-                      <img src={proofModal.dataUrl} alt="proof" style={{ width:"100%", borderRadius:8, border:"1px solid #e5e7eb" }} />
-                    )}
-                    {!proofModal.loading && !proofModal.error && !proofModal.dataUrl && (
-                      <div style={{ color:"#6b7280", fontSize:12, fontStyle:"italic" }}>No proof image found at this key.</div>
-                    )}
-                  </div>
-                </div>
-              )}
             </div>
           );
         } catch (err) {
@@ -11794,6 +11800,55 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           onUsersUpdate={onUsersUpdate}
           currentUser={currentUser}
         />
+      )}
+
+      {/* Proof image modal — shared between Daily Check-ins and Attendance.
+          When proofModal.onConfirm is set, an admin "✓ Confirm" button shows
+          to mark the cell as reviewed for payroll once the proof is OK. */}
+      {proofModal && (
+        <div
+          onClick={() => setProofModal(null)}
+          style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", zIndex:9999, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+        >
+          <div onClick={e => e.stopPropagation()} style={{ background:"#fff", borderRadius:13, padding:18, maxWidth:560, width:"100%", maxHeight:"90vh", overflow:"auto" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+              <div style={{ fontWeight:700, color:"#831843" }}>
+                📎 Proof — {proofModal.name || ""}
+                <span style={{ fontWeight:400, color:"#6b7280", marginLeft:8, fontSize:12 }}>
+                  {proofModal.ymd} · {proofModal.status}
+                </span>
+              </div>
+              <button onClick={() => setProofModal(null)} style={{ background:"transparent", border:"none", fontSize:18, cursor:"pointer", color:"#6b7280" }}>✕</button>
+            </div>
+            {proofModal.note && (
+              <div style={{ background:"#fef9c3", color:"#854d0e", padding:"6px 10px", borderRadius:6, fontSize:12, marginBottom:10 }}>
+                📝 {proofModal.note}
+              </div>
+            )}
+            {proofModal.loading && <div style={{ color:"#6b7280", fontStyle:"italic" }}>Loading proof…</div>}
+            {proofModal.error && <div style={{ color:"#7f1d1d", fontSize:12 }}>Error: {proofModal.error}</div>}
+            {!proofModal.loading && !proofModal.error && proofModal.dataUrl && (
+              <img src={proofModal.dataUrl} alt="proof" style={{ width:"100%", borderRadius:8, border:"1px solid #e5e7eb" }} />
+            )}
+            {!proofModal.loading && !proofModal.error && !proofModal.dataUrl && (
+              <div style={{ color:"#6b7280", fontSize:12, fontStyle:"italic" }}>No proof image was uploaded for this cell.</div>
+            )}
+            {proofModal.onConfirm && !proofModal.loading && (
+              <div style={{ marginTop:14, padding:"10px 12px", background:"#FDEEF5", borderRadius:8, fontSize:12, color:"#831843" }}>
+                <div style={{ marginBottom:8 }}>
+                  <strong>Before confirming:</strong> check the date on the proof matches <strong>{proofModal.ymd}</strong>, the tech's name matches <strong>{proofModal.name}</strong>, and the proof is legible.
+                </div>
+                <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
+                  <button onClick={() => setProofModal(null)} style={{ background:"#fff", color:"#831843", border:"1px solid #F9A8D4", borderRadius:6, padding:"6px 12px", cursor:"pointer", fontSize:12, fontWeight:600 }}>Cancel</button>
+                  <button onClick={async () => { try { await proofModal.onConfirm(); } finally { setProofModal(null); } }}
+                          style={{ background:"#15803d", color:"#fff", border:"none", borderRadius:6, padding:"6px 14px", cursor:"pointer", fontSize:12, fontWeight:700 }}>
+                    ✓ Confirm proof
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {staffModal && <StaffModal s={staffModal} onClose={()=>setStaffModal(null)} onSave={saveStaff} onTransfer={(s)=>setTransferModal(s)} allStaff={staff} />}
