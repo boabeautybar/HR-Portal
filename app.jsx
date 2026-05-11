@@ -5652,7 +5652,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       safe(window.BOA_DB.loadSchedule(attBranch, attYM, true))
     ]).then(([att, sch, mgrSch]) => {
       setAttGrid((att && att.grid) || {});
-      setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null, freshaWorked: att.freshaWorked || {} } : { freshaWorked: {} });
+      setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null, freshaWorked: att.freshaWorked || {}, reviewedWarnings: att.reviewedWarnings || {} } : { freshaWorked: {}, reviewedWarnings: {} });
       const techGrid = (sch    && sch.grid)    || {};
       const mgrGrid  = ymdReKey((mgrSch && mgrSch.grid) || {});
       setAttSched({ ...techGrid, ...mgrGrid });
@@ -8404,6 +8404,59 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             catch (e) { alert("Could not save: " + (e.message || e)); }
           };
 
+          // Resolve a warning cell. The admin's pick is treated as the FINAL
+          // status for that day — the cell value is set (override=true) AND a
+          // review record is stored in attMeta.reviewedWarnings, so the green
+          // ✓ + reviewer + note stick for payroll's audit trail. If the
+          // underlying value later changes, the review expires (handled at
+          // render time by comparing to valueAtReview).
+          const VALID_STAT_CODES = ["on","late","off","sick","sick_n","frl","no","absent","al","ph","mat","ext","trial","swap_o","swap_i","unpaid","term"];
+          const markCellReviewed = async (ec, d, currentValue) => {
+            const existing = ((attMeta && attMeta.reviewedWarnings) || {})[ec] || {};
+            const already  = existing[d];
+            const reviewer = (currentUser && (currentUser.name || currentUser.email)) || "admin";
+            // Already reviewed for the current value → offer to clear the mark.
+            if (already && already.valueAtReview === (currentValue || "")) {
+              if (!confirm("Clear the reviewed mark on this cell?")) return;
+              const nextEc = { ...(existing) }; delete nextEc[d];
+              const nextRW = { ...((attMeta && attMeta.reviewedWarnings) || {}) };
+              if (Object.keys(nextEc).length) nextRW[ec] = nextEc; else delete nextRW[ec];
+              const nextMeta = { ...(attMeta || {}), reviewedWarnings: nextRW };
+              setAttMeta(nextMeta);
+              try { await window.BOA_DB.saveAttendance(attBranch, attYM, attGrid, { reviewedWarnings: nextRW }); }
+              catch (e) { alert("Could not save: " + (e.message || e)); }
+              return;
+            }
+            // Otherwise ask the admin to pick the FINAL status for payroll.
+            const finalStatus = window.prompt(
+              "Set the FINAL status for payroll on this day.\n\n" +
+              "Valid codes: " + VALID_STAT_CODES.join(", ") + "\n\n" +
+              "Leave blank to clear the cell.",
+              currentValue || ""
+            );
+            if (finalStatus === null) return;                                            // Cancel
+            const cleaned = (finalStatus || "").trim();
+            if (cleaned && !VALID_STAT_CODES.includes(cleaned)) {
+              alert("Unknown status code: " + cleaned + "\n\nPlease use one of: " + VALID_STAT_CODES.join(", "));
+              return;
+            }
+            const note = window.prompt("Optional note (why is this OK for payroll?)", "");
+            if (note === null) return;
+            // Build the next grid (set / clear the cell).
+            const nextGrid = { ...attGrid, [ec]: { ...(attGrid[ec] || {}) } };
+            if (cleaned) nextGrid[ec][d] = cleaned; else delete nextGrid[ec][d];
+            setAttGrid(nextGrid);
+            // Build the next reviewed-warnings map.
+            const record = { reviewer, ts: new Date().toISOString(), note: (note || "").trim() || null, valueAtReview: cleaned };
+            const nextEc = { ...existing, [d]: record };
+            const nextRW = { ...((attMeta && attMeta.reviewedWarnings) || {}), [ec]: nextEc };
+            const nextMeta = { ...(attMeta || {}), reviewedWarnings: nextRW };
+            setAttMeta(nextMeta);
+            // Single save with both grid + extras so they can't drift.
+            try { await window.BOA_DB.saveAttendance(attBranch, attYM, nextGrid, { reviewedWarnings: nextRW }); }
+            catch (e) { alert("Could not save: " + (e.message || e)); }
+          };
+
           // ── Import check-ins from the kiosk audit log ── every kiosk submission
           // (Daily Check-ins entry) for this branch + cycle gets stamped onto
           // the attendance grid with its ACTUAL status — on / late / ext / sick
@@ -8819,7 +8872,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 setAttGrid(branchGrids[attBranch]);
                 setAttMeta({
                   freshaCoverage: freshaThroughByBranch[attBranch] ? { through: freshaThroughByBranch[attBranch], importedAt } : (attMeta && attMeta.freshaCoverage) || null,
-                  freshaWorked: branchFreshaWorked[attBranch] || {}
+                  freshaWorked: branchFreshaWorked[attBranch] || {},
+                  reviewedWarnings: (attMeta && attMeta.reviewedWarnings) || {}
                 });
               }
               alert(
@@ -9049,6 +9103,48 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             setAttYM(y + "-" + p2(m));
           };
 
+          // Count warning cells in the current grid view so the dashboard
+          // strip can show "X cells need review · Y resolved · Z open" and
+          // surface how much of the cycle is still pending an admin decision.
+          const warningCounts = (() => {
+            let total = 0, reviewed = 0;
+            const todayY = new Date();
+            const t0Ymd = todayY.getFullYear() + "-" + p2(todayY.getMonth()+1) + "-" + p2(todayY.getDate());
+            const reviewedMap = (attMeta && attMeta.reviewedWarnings) || {};
+            for (const s of attStaff) {
+              if (s.role !== "NT") continue;
+              for (const dy of days) {
+                const isPastOrToday = dy.ymd <= t0Ymd;
+                if (!isPastOrToday) continue;        // future days never warn
+                const v = getStatus(s.ec, dy.d);
+                const bareV = v ? (v.charAt(0) === "~" ? v.slice(1) : v) : "";
+                const hint = schedHint(s.ec, dy.d);
+                const scheduleSaysWork = hint === "on" || hint === "ext";
+                const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i";
+                const isLate    = bareV === "late";
+                const kioskAbs = ((kioskAbsentByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null;
+                const checkin  = ((checkInsByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null;
+                const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
+                const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
+                const freshaWorkedCell = !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
+                const freshaCoversThisDay = !!effectiveFreshaThrough && dy.ymd <= effectiveFreshaThrough;
+                const override = hasOverride(s.ec, dy.d);
+                const kioskMarkedAbsent = !!kioskAbs && kioskAbs.status !== "ext" && kioskAbs.status !== "trial" && kioskAbs.status !== "swap_o";
+                const cellShowsAbsent = kioskMarkedAbsent || (override && !!bareV && !isWorking && !isLate);
+                const extDayRecorded = (override && bareV === "ext") || (!!kioskAbs && kioskAbs.status === "ext");
+                const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
+                const presentNoApptWarn = checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
+                const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
+                if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn) {
+                  total++;
+                  const review = (reviewedMap[s.ec] || {})[dy.d];
+                  if (review && review.valueAtReview === (v || "")) reviewed++;
+                }
+              }
+            }
+            return { total, reviewed, open: total - reviewed };
+          })();
+
           // BCEA eligibility checks for sick_n + frl
           const findStartDate = (ec) => {
             const obRec = obList.find(o => (o.ec || "") === ec);
@@ -9211,6 +9307,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 )}
                 <button onClick={resetCycle} style={{ padding:"7px 14px", background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fca5a5", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Clear every cell for this branch + cycle (with confirmation)">↺ Reset Cycle</button>
               </div>
+
+              {warningCounts.total > 0 && (
+                <div style={{ display:"flex", alignItems:"center", gap:14, flexWrap:"wrap", fontSize:12, color: warningCounts.open > 0 ? "#7f1d1d" : "#166534", marginBottom:8, padding:"10px 14px", background: warningCounts.open > 0 ? "#fef2f2" : "#f0fdf4", border: warningCounts.open > 0 ? "1px solid #fecaca" : "1px solid #bbf7d0", borderRadius:8, fontWeight:700 }}>
+                  {warningCounts.open > 0
+                    ? (<><span style={{ fontSize:14 }}>⚠</span> <span>{warningCounts.open} cell{warningCounts.open === 1 ? "" : "s"} need review for payroll</span><span style={{ fontWeight:500, opacity:0.7 }}>· {warningCounts.reviewed} of {warningCounts.total} resolved · click any ⚠ to set the final status</span></>)
+                    : (<><span style={{ fontSize:14 }}>✓</span> <span>All {warningCounts.total} warning{warningCounts.total === 1 ? "" : "s"} reviewed for this cycle</span></>)}
+                </div>
+              )}
 
               <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap", fontSize:11, color:"#831843", marginBottom:8, padding:"8px 12px", background:"#FDEEF5", border:"1px solid #FBCFE8", borderRadius:8 }}>
                 <span style={{ fontWeight:700 }}>💡 Reading the grid:</span>
@@ -9468,12 +9572,28 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   <div title={freshaTip} style={{ position:"absolute", bottom:0, left:0, right:0, height:6, background: freshaStripeColor === "transparent" ? "#f9fafb" : freshaStripeColor, borderTop: cleanFill ? "none" : "1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
                                     {!cleanFill && <span style={{ fontSize:7, fontWeight:800, color:"rgba(0,0,0,0.45)", letterSpacing:"0.05em" }}>F</span>}
                                   </div>
-                                  {(apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn) && (
-                                    <span title={apptVsKioskAbsentWarn ? "⚠ Kiosk marked tech absent but Fresha has a completed appointment that day"
-                                                                       : extDayNoApptWarn ? "⚠ Extra day recorded but Fresha shows no appointments — did they actually do any service?"
-                                                                       : "⚠ Tech checked in and was scheduled to work, but Fresha shows no appointments"}
-                                          style={{ position:"absolute", top:8, right:3, fontSize:11, lineHeight:1, color:"#dc2626", fontWeight:900, pointerEvents:"none", textShadow:"0 0 2px white, 0 0 2px white" }}>⚠</span>
-                                  )}
+                                  {(apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn) && (() => {
+                                    const review = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
+                                    const reviewed = review && review.valueAtReview === (v || "");
+                                    const warnTitle = apptVsKioskAbsentWarn ? "⚠ Kiosk marked tech absent but Fresha has a completed appointment that day"
+                                                    : extDayNoApptWarn      ? "⚠ Extra day recorded but Fresha shows no appointments — did they actually do any service?"
+                                                                            : "⚠ Tech checked in and was scheduled to work, but Fresha shows no appointments";
+                                    if (reviewed) {
+                                      const reviewTitle = "✓ Reviewed by " + (review.reviewer || "admin") +
+                                                        "\n  " + new Date(review.ts).toLocaleString("en-ZA") +
+                                                        (review.note ? "\n  \"" + review.note + "\"" : "") +
+                                                        "\n\n(Click to clear the reviewed mark)";
+                                      return (
+                                        <span title={reviewTitle} onClick={(e) => { e.stopPropagation(); markCellReviewed(s.ec, dy.d, v); }}
+                                              style={{ position:"absolute", top:6, right:1, fontSize:11, lineHeight:1, color:"#16a34a", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:3 }}>✓</span>
+                                      );
+                                    }
+                                    return (
+                                      <span title={warnTitle + "\n\n(Click to mark as reviewed for payroll)"}
+                                            onClick={(e) => { e.stopPropagation(); markCellReviewed(s.ec, dy.d, v); }}
+                                            style={{ position:"absolute", top:6, right:1, fontSize:12, lineHeight:1, color:"#dc2626", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:3 }}>⚠</span>
+                                    );
+                                  })()}
                                   {v && (
                                     <div style={{ position:"absolute", top:6, bottom:6, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle: (override && !isFutureSwap) ? "normal" : "italic", fontWeight: (override && !isFutureSwap) ? 700 : 400, color: isFutureSwap ? "#9ca3af" : (override ? st.fg : (hintFg + "70")), pointerEvents:"none", letterSpacing:"0.02em" }}>{st.lbl || hintLbl || ""}</div>
                                   )}
