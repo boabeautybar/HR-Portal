@@ -6609,7 +6609,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               { key:"Payroll",    icon:"💰", title:"Payroll",
                 color:{ bg:"#DCFCE7", bgActive:"#BBF7D0", ink:"#14532d" },
                 items: [
-                  { t:"attendance",  l:"📕 Attendance"     }
+                  { t:"attendance",     l:"📕 Attendance"        },
+                  { t:"payrollProgress",l:"📊 Payroll Progress"  }
                 ] },
               { key:"Insights",   icon:"📊", title:"Insights",
                 color:{ bg:"#EDE9FE", bgActive:"#DDD6FE", ink:"#5B21B6" },
