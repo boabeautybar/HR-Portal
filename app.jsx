@@ -9172,16 +9172,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // payroll. Lazy — only fires when the panel is opened.
           const loadPayrollOverview = async () => {
             setPayrollOverview({ loading: true, ym: attYM, byBranch: {} });
+            // Tech schedules use END-month YM, attendance + manager schedule use
+            // START-month YM. Same convention as the per-branch load.
+            const _atP = attYM.split("-").map(Number);
+            let _techY = _atP[0], _techM = _atP[1] + 1;
+            if (_techM > 12) { _techM = 1; _techY++; }
+            const techYmCross = _techY + "-" + p2(_techM);
             const todayDt = new Date();
             const t0YmdLocal = todayDt.getFullYear() + "-" + p2(todayDt.getMonth()+1) + "-" + p2(todayDt.getDate());
+            const safe = (p) => p.catch(() => null);
             const results = {};
             await Promise.all(SALONS.map(async (sl) => {
               const branch = sl.name;
               try {
                 const [att, sch, mgrSch] = await Promise.all([
-                  window.BOA_DB.loadAttendance(branch, attYM),
-                  window.BOA_DB.loadTechSched(branch, attYM),
-                  window.BOA_DB.loadMgrSched(branch, attYM)
+                  safe(window.BOA_DB.loadAttendance(branch, attYM)),
+                  safe(window.BOA_DB.loadSchedule(branch, techYmCross, false)),
+                  safe(window.BOA_DB.loadSchedule(branch, attYM, true))
                 ]);
                 const bGrid    = (att && att.grid) || {};
                 const bReview  = (att && att.reviewedWarnings) || {};
