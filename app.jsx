@@ -5645,12 +5645,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const results = {};
       await Promise.all(SALONS.map(async (sl) => {
         const branch = sl.name;
+        // For the currently-active branch, use the in-memory state instead
+        // of re-loading from DB. The local state is always at least as fresh
+        // as the DB (setCell saves immediately, but state updates synchronously)
+        // and matches what the per-branch dashboard is counting exactly.
+        const isActive = branch === attBranch;
         try {
-          const [att, sch, mgrSch] = await Promise.all([
-            safe(window.BOA_DB.loadAttendance(branch, ym)),
-            safe(window.BOA_DB.loadSchedule(branch, techYmCross, false)),
-            safe(window.BOA_DB.loadSchedule(branch, ym, true))
-          ]);
+          let att, sch, mgrSch;
+          if (isActive) {
+            att    = { grid: attGrid, reviewedWarnings: (attMeta && attMeta.reviewedWarnings) || {}, freshaWorked: (attMeta && attMeta.freshaWorked) || {}, freshaCoverage: (attMeta && attMeta.freshaCoverage) || null };
+            sch    = null;
+            mgrSch = null;
+          } else {
+            [att, sch, mgrSch] = await Promise.all([
+              safe(window.BOA_DB.loadAttendance(branch, ym)),
+              safe(window.BOA_DB.loadSchedule(branch, techYmCross, false)),
+              safe(window.BOA_DB.loadSchedule(branch, ym, true))
+            ]);
+          }
           const bGrid   = (att && att.grid) || {};
           const bReview = (att && att.reviewedWarnings) || {};
           const bFW     = (att && att.freshaWorked) || {};
@@ -5684,7 +5696,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }
             return out;
           };
-          const bSched = { ...((sch && sch.grid) || {}), ...reKey((mgrSch && mgrSch.grid) || {}) };
+          const bSched = isActive
+            ? (attSched || {})
+            : { ...((sch && sch.grid) || {}), ...reKey((mgrSch && mgrSch.grid) || {}) };
           const bStaff = staff.filter(p => p.branch === branch && stillInCycleX(p.ec));
           const getHint = (ec, d) => {
             const sv = bSched[ec] && bSched[ec][d];
