@@ -5546,8 +5546,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [techClockinDays, setTechClockinDays] = useState(60);          // load window
   const [checkinFilterBranch, setCheckinFilterBranch] = useState("All");
   const [checkinDayRange,     setCheckinDayRange]     = useState(7);    // viewer range
-  const [checkinProbeResult,  setCheckinProbeResult]  = useState(null); // raw probe panel (Daily Check-ins)
-  const [attGridProbeResult,  setAttGridProbeResult]  = useState(null); // attendance-grid probe (Daily Check-ins)
   const [proofModal,          setProofModal]          = useState(null); // { loading, dataUrl, name, ymd, status }
 
   // ── Onboarding / Off-boarding state ────────────────────────────────
@@ -11479,35 +11477,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <div style={{ fontWeight:700, color:"#831843" }}>
                     Fetched in the last {techClockinDays} days · {(techClockinRows || []).length} row{(techClockinRows || []).length === 1 ? "" : "s"} total
                   </div>
-                  {/* Bypass the staff join + role_type filter and query clockins directly,
-                      so we can confirm whether rows actually exist in the table. */}
-                  <div style={{ display:"flex", gap:6 }}>
-                    <button
-                      onClick={async () => {
-                        try {
-                          if (!window.BOA_DB || !window.BOA_DB.probeRecentClockinsRaw) { setCheckinProbeResult({ error: "probe not available — redeploy needed" }); return; }
-                          const r = await window.BOA_DB.probeRecentClockinsRaw(techClockinDays);
-                          setCheckinProbeResult(r);
-                        } catch (e) {
-                          setCheckinProbeResult({ error: (e && e.message) || String(e) });
-                        }
-                      }}
-                      style={{ background:"#831843", color:"#fff", border:"none", padding:"6px 12px", borderRadius:6, fontSize:11, cursor:"pointer", fontWeight:600 }}
-                    >Probe raw clockins</button>
-                    <button
-                      onClick={async () => {
-                        try {
-                          if (!window.BOA_DB || !window.BOA_DB.probeAttendanceGrid) { setAttGridProbeResult({ error: "probe not available — redeploy needed" }); return; }
-                          const branch = checkinFilterBranch !== "All" ? checkinFilterBranch : "Bree";
-                          const r = await window.BOA_DB.probeAttendanceGrid(branch);
-                          setAttGridProbeResult({ ...r, branch });
-                        } catch (e) {
-                          setAttGridProbeResult({ error: (e && e.message) || String(e) });
-                        }
-                      }}
-                      style={{ background:"#0e7490", color:"#fff", border:"none", padding:"6px 12px", borderRadius:6, fontSize:11, cursor:"pointer", fontWeight:600 }}
-                    >Probe attendance grid</button>
-                  </div>
                 </div>
                 <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
                   {Object.keys(fetchedByBranch).sort().map(b => (
@@ -11537,91 +11506,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <span style={{ color:"#9ca3af", fontStyle:"italic" }}>No kiosk-log rows yet. Once you redeploy the kiosk app with the audit-log change, every kiosk submission will land here.</span>
                   )}
                 </div>
-                {checkinProbeResult && (() => {
-                  if (checkinProbeResult.error) {
-                    return <div style={{ marginTop:10, background:"#fee2e2", color:"#7f1d1d", padding:"8px 11px", borderRadius:6, fontSize:11.5, fontFamily:"monospace" }}>Probe error: {checkinProbeResult.error}</div>;
-                  }
-                  const rows = checkinProbeResult.rows || [];
-                  const staffById = checkinProbeResult.staffById || {};
-                  // Group raw rows by joined-branch (or unresolved staff_id).
-                  const rawByBranch = {};
-                  let unresolved = 0;
-                  for (const r of rows) {
-                    const s = staffById[r.staff_id];
-                    const key = s ? (s.branch || "(no branch)") : "(unresolved staff_id)";
-                    if (!s) unresolved++;
-                    rawByBranch[key] = (rawByBranch[key] || 0) + 1;
-                  }
-                  return (
-                    <div style={{ marginTop:10, background:"#f9fafb", border:"1px solid #e5e7eb", borderRadius:7, padding:"9px 11px", fontSize:11.5 }}>
-                      <div style={{ fontWeight:700, color:"#374151", marginBottom:6 }}>
-                        Raw probe (no staff join, no role filter): {checkinProbeResult.count} rows since {checkinProbeResult.sinceIso}
-                      </div>
-                      <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:8 }}>
-                        {Object.keys(rawByBranch).sort().map(b => (
-                          <span key={b} style={{ background:"#e5e7eb", color:"#111827", padding:"2px 8px", borderRadius:5 }}>
-                            {b}: <strong>{rawByBranch[b]}</strong>
-                          </span>
-                        ))}
-                      </div>
-                      {unresolved > 0 && (
-                        <div style={{ color:"#7f1d1d", marginBottom:6 }}>
-                          ⚠ {unresolved} row{unresolved === 1 ? "" : "s"} have a staff_id that doesn't resolve in the staff table.
-                        </div>
-                      )}
-                      <details>
-                        <summary style={{ cursor:"pointer", color:"#831843", fontWeight:600 }}>Show first 20 raw rows</summary>
-                        <pre style={{ marginTop:6, background:"#fff", border:"1px solid #e5e7eb", padding:8, borderRadius:5, fontSize:10.5, overflow:"auto", maxHeight:300 }}>
-{JSON.stringify(rows.slice(0, 20).map(r => ({ id: r.id, ts: r.ts, type: r.type, staff_id: r.staff_id, resolved: !!staffById[r.staff_id], branch: staffById[r.staff_id] ? staffById[r.staff_id].branch : null })), null, 2)}
-                        </pre>
-                      </details>
-                    </div>
-                  );
-                })()}
-                {attGridProbeResult && (() => {
-                  if (attGridProbeResult.error) {
-                    return <div style={{ marginTop:10, background:"#fee2e2", color:"#7f1d1d", padding:"8px 11px", borderRadius:6, fontSize:11.5, fontFamily:"monospace" }}>Attendance probe error: {attGridProbeResult.error}</div>;
-                  }
-                  const grids = attGridProbeResult.grids || [];
-                  return (
-                    <div style={{ marginTop:10, background:"#ecfeff", border:"1px solid #a5f3fc", borderRadius:7, padding:"9px 11px", fontSize:11.5 }}>
-                      <div style={{ fontWeight:700, color:"#155e75", marginBottom:6 }}>
-                        Attendance grid for {attGridProbeResult.branch || "Bree"} (boa_att_&lt;branch&gt;_&lt;ym&gt; in app_state)
-                      </div>
-                      {grids.length === 0 && (
-                        <div style={{ color:"#7f1d1d" }}>No attendance grid rows found for keys: {(attGridProbeResult.probedKeys || []).join(", ")}</div>
-                      )}
-                      {grids.map(g => (
-                        <div key={g.key} style={{ background:"#fff", border:"1px solid #a5f3fc", borderRadius:5, padding:"7px 9px", marginBottom:6 }}>
-                          <div style={{ fontWeight:700, color:"#0e7490" }}>{g.key} · ym={g.ym} · {g.ecCount} EC{g.ecCount === 1 ? "" : "s"} · saved {g.savedAt || "(no savedAt)"}</div>
-                          <div style={{ color:"#155e75", marginTop:4 }}>
-                            Days with marks: {Object.keys(g.dayCounts).sort((a,b)=>parseInt(a,10)-parseInt(b,10)).map(d => d + " (" + g.dayCounts[d] + ")").join(", ") || "(none)"}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  );
-                })()}
               </div>
-
-              {/* Discrepancies vs Fresha attendance for the active cycle / branch */}
-              {discrepancies.length > 0 && (
-                <div style={{ background:"#fef3c7", border:"1px solid #fde68a", borderRadius:11, padding:"12px 14px", marginBottom:14 }}>
-                  <div style={{ fontWeight:800, color:"#78350f", marginBottom:6, fontSize:13 }}>
-                    ⚠ {discrepancies.length} discrepanc{discrepancies.length === 1 ? "y" : "ies"} for {attBranch} — {cycLabelLocal}
-                  </div>
-                  <div style={{ fontSize:11, color:"#78350f", marginBottom:10 }}>Tech checked in but attendance shows OFF / Annual / Sick / etc. Late status is never flagged (Fresha can't tell late from on-time).</div>
-                  <div style={{ display:"grid", gap:6 }}>
-                    {discrepancies.slice(0, 30).map((d, i) => (
-                      <div key={i} style={{ background:"#FFFFFF", border:"1px solid #fde68a", borderRadius:8, padding:"7px 11px", display:"flex", justifyContent:"space-between", fontSize:12, color:"#78350f" }}>
-                        <span><strong>{d.name}</strong> ({d.ec}) · {d.ymd}</span>
-                        <span style={{ fontFamily:"monospace", color:"#92400e" }}>checked in · attendance = "{d.attendance || "(blank)"}"</span>
-                      </div>
-                    ))}
-                    {discrepancies.length > 30 && <div style={{ fontSize:11, color:"#92400e" }}>… and {discrepancies.length - 30} more.</div>}
-                  </div>
-                </div>
-              )}
 
               <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:13, overflow:"hidden" }}>
                 <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5 }}>
