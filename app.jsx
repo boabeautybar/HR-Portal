@@ -8548,6 +8548,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             return null;
           };
 
+          // Status code → human label (handles "deduct:h" hour codes too).
+          const statLabel = (code) => {
+            if (!code) return "(cleared)";
+            const bare = code.charAt(0) === "~" ? code.slice(1) : code;
+            if (bare.indexOf("deduct") === 0) {
+              const h = bare.indexOf(":") > 0 ? parseFloat(bare.split(":")[1]) || 0 : 0;
+              return "Hours Deduction (" + h + "h)";
+            }
+            return (STAT[bare] && STAT[bare].lbl) || bare;
+          };
           // Persist a single cell change (and update local React state)
           const setCell = async (ec, d, v) => {
             const prev = attGrid[ec] && attGrid[ec][d];
@@ -8558,8 +8568,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
             catch (e) { alert("Could not save: " + (e.message || e)); }
             const staffName = (attStaff.find(s => s.ec === ec) || {}).name || ec;
-            logActivity("Edited attendance cell", staffName + " · day " + d + " · " + cycLabel,
-              "Branch " + attBranch + " · " + (prev ? prev + " → " : "") + (v || "(cleared)"), "Attendance");
+            const dayObj = days.find(x => x.d === d);
+            const dayDesc = dayObj ? new Date(dayObj.ymd + "T00:00:00").toLocaleDateString("en-ZA", { day:"2-digit", month:"short" }) : ("day " + d);
+            const action = !prev ? "Marked " + statLabel(v)
+                          : !v   ? "Cleared " + statLabel(prev)
+                                 : "Changed " + statLabel(prev) + " → " + statLabel(v);
+            logActivity(action, staffName + " · " + dayDesc + " · " + attBranch, cycLabel, "Attendance");
           };
 
           // Auto-record a review when the admin changes a warning cell via the
@@ -8577,8 +8591,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             try { await window.BOA_DB.saveAttendance(attBranch, attYM, gridAtSave || attGrid, { reviewedWarnings: nextRW }); }
             catch (e) { alert("Could not save review: " + (e.message || e)); }
             const staffName = (attStaff.find(s => s.ec === ec) || {}).name || ec;
-            logActivity("Reviewed attendance cell", staffName + " · day " + d + " · " + cycLabel,
-              "Confirmed value " + (finalValue || "(cleared)") + " in " + attBranch, "Review");
+            const dayObj = days.find(x => x.d === d);
+            const dayDesc = dayObj ? new Date(dayObj.ymd + "T00:00:00").toLocaleDateString("en-ZA", { day:"2-digit", month:"short" }) : ("day " + d);
+            logActivity("Confirmed " + statLabel(finalValue), staffName + " · " + dayDesc + " · " + attBranch, cycLabel, "Review");
           };
           // Resolve a warning cell via explicit click. The admin's pick is the
           // FINAL status for that day — the cell value is set (override=true)
@@ -8632,8 +8647,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             try { await window.BOA_DB.saveAttendance(attBranch, attYM, nextGrid, { reviewedWarnings: nextRW }); }
             catch (e) { alert("Could not save: " + (e.message || e)); }
             const staffName = (attStaff.find(s => s.ec === ec) || {}).name || ec;
-            logActivity("Reviewed warning cell", staffName + " · day " + d + " · " + cycLabel,
-              "Final status " + (cleaned || "(cleared)") + " · " + attBranch + ((note || "").trim() ? " · note: " + note.trim() : ""), "Review");
+            const dayObj2 = days.find(x => x.d === d);
+            const dayDesc2 = dayObj2 ? new Date(dayObj2.ymd + "T00:00:00").toLocaleDateString("en-ZA", { day:"2-digit", month:"short" }) : ("day " + d);
+            const reviewNote = (note || "").trim();
+            logActivity("Resolved warning → " + statLabel(cleaned), staffName + " · " + dayDesc2 + " · " + attBranch,
+              cycLabel + (reviewNote ? " · note: " + reviewNote : ""), "Review");
           };
 
           // ── Import check-ins from the kiosk audit log ── every kiosk submission
