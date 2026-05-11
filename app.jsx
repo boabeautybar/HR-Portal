@@ -5748,7 +5748,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const presentNoApptWarn = checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
               const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
               const proofPending      = (bareV === "sick_n" || bareV === "frl");
-              if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending) {
+              if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending || missingCheckin) {
                 total++;
                 const rev = (bReview[s.ec] || {})[dy.d];
                 if (rev && rev.valueAtReview === (rawV || "")) reviewed++;
@@ -9456,7 +9456,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const presentNoApptWarn = checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
                 const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
                 const proofPending      = (bareV === "sick_n" || bareV === "frl");
-                if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending) {
+                if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending || missingCheckin) {
                   total++;
                   const review = (reviewedMap[s.ec] || {})[dy.d];
                   if (review && review.valueAtReview === (v || "")) reviewed++;
@@ -9692,7 +9692,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const v = getStatus(s.ec, dy.d);
                             const hint = schedHint(s.ec, dy.d);
                             const override = hasOverride(s.ec, dy.d);
-                            const st = resolveStat(v) || { lbl:"", bg:"#FFFFFF", fg:"#9ca3af" };
+                            let st = resolveStat(v) || { lbl:"", bg:"#FFFFFF", fg:"#9ca3af" };
                             const isWk = dy.dow === 0 || dy.dow === 6;
                             const deviation = override && hint && hint !== v;
                             const isHol = !!(holidayLookup && holidayLookup[dy.ymd]);
@@ -9761,6 +9761,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // appointment. Drives the solid-colour cell render below.
                             const kioskSaysPresent    = (showKioskReason && (kioskAbs.status === "on" || kioskAbs.status === "late")) || (override && (isWorking || isLate));
                             const allMatchWork        = s.role === "NT" && freshaWorkedCell && scheduleSaysWork && (kioskSaysPresent || checkinHasIn);
+                            // Auto-display worked public holidays as "Public Holiday" once
+                            // payroll can trust the cell (same gate as the PH total: all 3
+                            // sources agree OR admin reviewed). On Time / Late / Ext / Swap-in
+                            // cells on a holiday get promoted to PH styling so the grid reads
+                            // the same way payroll counts.
+                            const cellReviewRec  = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
+                            const cellReviewed   = !!cellReviewRec && cellReviewRec.valueAtReview === (v || "");
+                            const workedOnHol    = isHol && (bareV === "on" || bareV === "late" || bareV === "ext" || bareV === "swap_i");
+                            const phAuto         = workedOnHol && (allMatchWork || cellReviewed);
+                            if (phAuto && STAT.ph) { st = STAT.ph; }
                             // Orange-banner "all-match OFF" — schedule says off, no Fresha
                             // appointment was imported (cell isn't in a working state) and the
                             // tech wasn't checked in. Only fires for days the most recent Fresha
@@ -9904,13 +9914,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                               style={{ position:"absolute", top:6, right:1, fontSize:11, lineHeight:1, color:"#831843", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:3 }}>📎</span>
                                       );
                                     }
-                                    const warning  = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn;
+                                    const warning  = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || missingCheckin;
                                     const review   = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
                                     const reviewed = !!review && review.valueAtReview === (v || "");
                                     // Cell with active warning + not yet reviewed → red ⚠
                                     if (warning && !reviewed) {
                                       const warnTitle = apptVsKioskAbsentWarn ? "⚠ Kiosk marked tech absent but Fresha has a completed appointment that day"
                                                       : extDayNoApptWarn      ? "⚠ Extra day recorded but Fresha shows no appointments — did they actually do any service?"
+                                                      : missingCheckin         ? "⚠ Fresha shows appointments + scheduled to work, but no kiosk check-in recorded"
                                                                               : "⚠ Tech checked in and was scheduled to work, but Fresha shows no appointments";
                                       return (
                                         <span title={warnTitle + "\n\n(Click to mark as reviewed for payroll)"}
