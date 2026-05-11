@@ -8404,10 +8404,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             catch (e) { alert("Could not save: " + (e.message || e)); }
           };
 
-          // Resolve a warning cell. The admin's pick is treated as the FINAL
-          // status for that day — the cell value is set (override=true) AND a
-          // review record is stored in attMeta.reviewedWarnings, so the green
-          // ✓ + reviewer + note stick for payroll's audit trail. If the
+          // Auto-record a review when the admin changes a warning cell via the
+          // regular dropdown. Their edit IS the decision — no need to click
+          // the ⚠ separately. Stored alongside the explicit-review records
+          // in attMeta.reviewedWarnings so the ✓ shows uniformly.
+          const autoRecordReview = async (ec, d, finalValue, gridAtSave) => {
+            const reviewer = (currentUser && (currentUser.name || currentUser.email)) || "admin";
+            const record = { reviewer, ts: new Date().toISOString(), note: null, valueAtReview: finalValue || "" };
+            const existing = ((attMeta && attMeta.reviewedWarnings) || {})[ec] || {};
+            const nextEc = { ...existing, [d]: record };
+            const nextRW = { ...((attMeta && attMeta.reviewedWarnings) || {}), [ec]: nextEc };
+            const nextMeta = { ...(attMeta || {}), reviewedWarnings: nextRW };
+            setAttMeta(nextMeta);
+            try { await window.BOA_DB.saveAttendance(attBranch, attYM, gridAtSave || attGrid, { reviewedWarnings: nextRW }); }
+            catch (e) { alert("Could not save review: " + (e.message || e)); }
+          };
+          // Resolve a warning cell via explicit click. The admin's pick is the
+          // FINAL status for that day — the cell value is set (override=true)
+          // AND a review record is stored in attMeta.reviewedWarnings, so the
+          // green ✓ + reviewer + note stick for payroll's audit trail. If the
           // underlying value later changes, the review expires (handled at
           // render time by comparing to valueAtReview).
           const VALID_STAT_CODES = ["on","late","off","sick","sick_n","frl","no","absent","al","ph","mat","ext","trial","swap_o","swap_i","unpaid","term"];
@@ -9203,39 +9218,44 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           };
 
           // Cell change handler
-          const onCellChange = async (s, dy, val) => {
+          const onCellChange = async (s, dy, val, hadWarning) => {
             if (!val) return;
             // Block manual edits on auto-derived TERMINATED cells (post-leftDate).
             if (isPostLeftDate(s.ec, dy.ymd)) {
               alert(s.name + " left on " + offByEc[s.ec] + " — this day is automatically TERMINATED. Remove them from the Off-boarding tab to edit attendance after this date.");
               return;
             }
+            // Wraps setCell so a warning cell edit ALSO records the auto-review.
+            const setCellAndMaybeReview = async (ec, d, finalValue) => {
+              await setCell(ec, d, finalValue);
+              if (hadWarning) await autoRecordReview(ec, d, finalValue);
+            };
             if (val === "deduct") {
               const hStr = prompt("How many hours unpaid? (e.g. 1.5 for 1h30)\n\nEnter a number between 0.5 and 9.", "1");
               if (hStr == null) return;
               const h = parseFloat(hStr);
               if (isNaN(h) || h <= 0 || h > 9) { alert("Please enter a valid number of hours between 0.5 and 9."); return; }
-              return setCell(s.ec, dy.d, "deduct:" + h);
+              return setCellAndMaybeReview(s.ec, dy.d, "deduct:" + h);
             }
             if (val === "sick_n") {
               const ok = await checkSickEligibility(s.ec, s.name, dy.ymd);
               if (!ok) return;
-              return setCell(s.ec, dy.d, "sick_n");
+              return setCellAndMaybeReview(s.ec, dy.d, "sick_n");
             }
             if (val === "frl") {
               if (!checkFRLEligibility(s.ec, s.name, dy.ymd)) return;
-              return setCell(s.ec, dy.d, "frl");
+              return setCellAndMaybeReview(s.ec, dy.d, "frl");
             }
             if (val === "term") {
               return cascadeTerm(s.ec, dy.ymd, s.name);
             }
             if ((val === "on" || val === "late") && holidayLookup && holidayLookup[dy.ymd]) {
-              if (val === "on") return setCell(s.ec, dy.d, "ph");
-              await setCell(s.ec, dy.d, "ph");
+              if (val === "on") return setCellAndMaybeReview(s.ec, dy.d, "ph");
+              await setCellAndMaybeReview(s.ec, dy.d, "ph");
               setTimeout(() => alert("This day is a public holiday — marked as Public Holiday (paid). Use Late manually after if needed."), 50);
               return;
             }
-            return setCell(s.ec, dy.d, val);
+            return setCellAndMaybeReview(s.ec, dy.d, val);
           };
 
           return (
@@ -9600,7 +9620,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   {!v && showKioskReason && (
                                     <div style={{ position:"absolute", top:6, bottom:6, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle:"italic", fontWeight:600, color: kStat.fg || "#9ca3af", pointerEvents:"none", letterSpacing:"0.02em" }}>{kStat.lbl}</div>
                                   )}
-                                  <select value="" onChange={e=>onCellChange(s, dy, e.target.value)} title={ttl + "\nSchedule: " + (hintLbl || "—") + "\n" + freshaTip}
+                                  <select value="" onChange={e=>onCellChange(s, dy, e.target.value, apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn)} title={ttl + "\nSchedule: " + (hintLbl || "—") + "\n" + freshaTip}
                                     style={{ position:"absolute", top:6, bottom:6, left:0, right:0, width:"100%", border:"none", background: "transparent", color:"transparent", fontSize:9, fontWeight:400, opacity:1, textAlign:"center", cursor:"pointer", padding:"0 1px", fontFamily:"inherit", outline:"none", appearance:"none" }}>
                                     <option value="" style={{ color:"#000", background:"#fff" }}>—</option>
                                     {Object.entries(STAT).filter(([k]) => k !== "ph" || isHol).map(([k, vv]) => (
