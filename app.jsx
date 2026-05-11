@@ -5636,6 +5636,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   useEffect(() => { setAttCheckinSnapshot(null); }, [attBranch, attYM]);
   const [attSched,  setAttSched]  = useState({});      // schedule grid for the same period (for mirror hints)
   const [attMeta,   setAttMeta]   = useState({});      // sidecar metadata e.g. { freshaCoverage:{through:"YYYY-MM-DD"} }
+  // Per-edit undo stack for the attendance grid — pushed before every manual
+  // setCell / markCellReviewed / autoRecordReview, capped at 10 entries.
+  // Cleared whenever the branch or cycle changes so we never restore into
+  // the wrong context.
+  const [attEditStack, setAttEditStack] = useState([]);
+  useEffect(() => { setAttEditStack([]); }, [attBranch, attYM]);
   const [attLoading,setAttLoading]= useState(false);
   // Cross-branch payroll overview — lazy-loaded counts of cells needing
   // admin review per branch for the active cycle. Lives at component scope
@@ -8561,8 +8567,40 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }
             return (STAT[bare] && STAT[bare].lbl) || bare;
           };
+          // Snapshot the current grid + sidecar metadata so the next manual
+          // edit / review / reset can be undone. Cleaned up automatically when
+          // the user switches branch or cycle (see useEffect above).
+          const pushUndo = (label) => {
+            const snap = {
+              grid: JSON.parse(JSON.stringify(attGrid || {})),
+              meta: JSON.parse(JSON.stringify(attMeta || {})),
+              label: label || "edit",
+              ts:    new Date().toISOString()
+            };
+            setAttEditStack(prev => [snap, ...(prev || [])].slice(0, 10));
+          };
+          const undoLastEdit = async () => {
+            if (!attEditStack || attEditStack.length === 0) return;
+            const [last, ...rest] = attEditStack;
+            const restoredGrid = last.grid || {};
+            const restoredMeta = last.meta || {};
+            setAttGrid(restoredGrid);
+            setAttMeta(restoredMeta);
+            setAttEditStack(rest);
+            try {
+              await window.BOA_DB.saveAttendance(attBranch, attYM, restoredGrid, {
+                freshaWorked:      restoredMeta.freshaWorked      || {},
+                freshaCoverage:    restoredMeta.freshaCoverage    || null,
+                reviewedWarnings:  restoredMeta.reviewedWarnings  || {},
+                mirrorSuppressed:  !!restoredMeta.mirrorSuppressed
+              });
+            } catch (e) { alert("Could not undo: " + (e.message || e)); return; }
+            logActivity("Undid " + (last.label || "edit"), attBranch + " · " + cycLabel, "Restored to " + new Date(last.ts).toLocaleString("en-ZA"), "Attendance");
+          };
+
           // Persist a single cell change (and update local React state)
           const setCell = async (ec, d, v) => {
+            pushUndo("cell edit");
             const prev = attGrid[ec] && attGrid[ec][d];
             const next = { ...attGrid, [ec]: { ...(attGrid[ec] || {}) } };
             if (v === "" || v == null) delete next[ec][d];
@@ -8584,6 +8622,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // the ⚠ separately. Stored alongside the explicit-review records
           // in attMeta.reviewedWarnings so the ✓ shows uniformly.
           const autoRecordReview = async (ec, d, finalValue, gridAtSave) => {
+            pushUndo("review");
             const reviewer = (currentUser && (currentUser.name || currentUser.email)) || "admin";
             const record = { reviewer, ts: new Date().toISOString(), note: null, valueAtReview: finalValue || "" };
             const existing = ((attMeta && attMeta.reviewedWarnings) || {})[ec] || {};
@@ -8606,6 +8645,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // render time by comparing to valueAtReview).
           const VALID_STAT_CODES = ["on","late","off","sick","sick_n","frl","no","absent","al","ph","mat","ext","trial","swap_o","swap_i","unpaid","term"];
           const markCellReviewed = async (ec, d, currentValue) => {
+            pushUndo("warning resolution");
             const existing = ((attMeta && attMeta.reviewedWarnings) || {})[ec] || {};
             const already  = existing[d];
             const reviewer = (currentUser && (currentUser.name || currentUser.email)) || "admin";
@@ -9100,8 +9140,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const resetCycle = async () => {
             const msg = "⚠ Reset attendance for " + attBranch + " — " + cycLabel + "?\n\n"
               + "This will undo ALL changes you've made for this cycle. Schedule-derived hints will reappear faded once you re-open the tab.\n\n"
-              + "This cannot be undone. Continue?";
+              + "Continue? (You can still ↶ Undo the reset itself.)";
             if (!confirm(msg)) return;
+            pushUndo("Reset Cycle");
             const next = {};
             setAttGrid(next);
             try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
@@ -9125,6 +9166,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const step2 = window.prompt("Enter the Total Reset PIN to confirm.");
             if (step2 === null) return;
             if ((step2 || "").trim() !== "2002") { alert("Cancelled — incorrect PIN."); return; }
+            pushUndo("Total Reset");
             const nextGrid = {};
             const nextMeta = { freshaWorked: {}, reviewedWarnings: {}, freshaCoverage: null, mirrorSuppressed: true };
             setAttGrid(nextGrid);
@@ -9551,6 +9593,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <button onClick={importCheckins} style={{ padding:"7px 14px", background:"#dcfce7", color:"#14532d", border:"1px solid #86efac", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Pull every clock-in from the staff check-in app and stamp those days as On Time (or Extra Day if scheduled off). Confirmed cells are preserved. Use ↩ Undo to roll the import back.">✓ Import Check-ins</button>
                 {attCheckinSnapshot && (
                   <button onClick={undoCheckinsImport} style={{ padding:"7px 14px", background:"#fef3c7", color:"#78350f", border:"1px solid #fbbf24", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Restore the attendance grid to its state right before the last check-in import">↩ Undo Check-in Import</button>
+                )}
+                {attEditStack.length > 0 && (
+                  <button onClick={undoLastEdit}
+                          title={"Undo the last manual action: " + attEditStack[0].label + " (" + new Date(attEditStack[0].ts).toLocaleTimeString("en-ZA", { hour:"2-digit", minute:"2-digit" }) + ")\n\n" + attEditStack.length + " action" + (attEditStack.length === 1 ? "" : "s") + " in history"}
+                          style={{ padding:"7px 14px", background:"#fef3c7", color:"#78350f", border:"1px solid #fbbf24", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }}>
+                    ↶ Undo {attEditStack[0].label} ({attEditStack.length})
+                  </button>
                 )}
                 <button onClick={resetCycle} style={{ padding:"7px 14px", background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fca5a5", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Clear every cell for this branch + cycle (with confirmation)">↺ Reset Cycle</button>
                 <button onClick={totalResetCycle} style={{ padding:"7px 14px", background:"#7f1d1d", color:"#fff", border:"1px solid #7f1d1d", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:700 }} title="Permanently delete the attendance grid, kiosk audit log, proofs and absence sidecars for this branch + cycle">⚠ Total Reset</button>
