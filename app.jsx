@@ -9970,10 +9970,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           } else if (d.peak) bg = "#fefce8";
                           else if (d.dow === 0 || d.dow === 6) bg = "#fafafa";
                           const isMS = di === 0 || d.m !== allDays[di-1].m;
-                          const ttl = lv ? (lv.type + ": " + lv.startDate + " → " + lv.endDate + (lv.notes ? " · " + lv.notes : ""))
+                          const ttl = lv ? (lv.type + ": " + lv.startDate + " → " + lv.endDate + (lv.notes ? " · " + lv.notes : "") + "\n\n(Click to remove this leave)")
                                           : d.peak ? (d.iso + " (peak season)") : d.iso;
                           return (
-                            <td key={d.iso} title={ttl} style={{ padding:0, minWidth:18, height:22, textAlign:"center", borderBottom:"1px solid " + aA, background:bg, color:fg, borderLeft: isMS ? "2px solid " + Y : "none", fontSize:9, fontWeight:700 }}>{lbl}</td>
+                            <td key={d.iso} title={ttl}
+                                onClick={lv ? () => {
+                                  if (confirm("Remove this leave?\n\n" + (st.name || st.ec) + "\n" + lv.type + ": " + lv.startDate + " → " + lv.endDate)) removeLeave(lv._id);
+                                } : undefined}
+                                style={{ padding:0, minWidth:18, height:22, textAlign:"center", borderBottom:"1px solid " + aA, background:bg, color:fg, borderLeft: isMS ? "2px solid " + Y : "none", fontSize:9, fontWeight:700, cursor: lv ? "pointer" : "default" }}>{lbl}</td>
                           );
                         })}
                       </tr>
