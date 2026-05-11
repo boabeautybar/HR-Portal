@@ -9921,9 +9921,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                         }
                                       };
                                       return (
-                                        <span title={"📎 Review proof and confirm before payroll — click to open the uploaded " + (bareV === "sick_n" ? "sick note" : "FRL proof")}
+                                        <span title={"⚠ Review proof + confirm before payroll — click to open the uploaded " + (bareV === "sick_n" ? "sick note" : "FRL proof")}
                                               onClick={openProofModal}
-                                              style={{ position:"absolute", top:6, right:1, fontSize:11, lineHeight:1, color:"#831843", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:3 }}>📎</span>
+                                              style={{ position:"absolute", top:6, right:1, fontSize:12, lineHeight:1, color:"#dc2626", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:3 }}>⚠</span>
                                       );
                                     }
                                     const absentNeedsReview = bareV === "sick" || bareV === "no" || bareV === "absent";
