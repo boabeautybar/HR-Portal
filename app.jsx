@@ -9449,7 +9449,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </button>
               </div>
               {payrollOpen && (
-                <div style={{ marginBottom:8, padding:"12px 14px", background:"#fff", border:"1px solid " + Y, borderRadius:8 }}>
+                <div style={{ marginBottom:8, padding:"12px 14px", background:"#fff", border:"1px solid #F9A8D4", borderRadius:8 }}>
                   {!payrollOverview && (
                     <div style={{ fontSize:12, color:"#831843", display:"flex", gap:10, alignItems:"center" }}>
                       <span>Overview not loaded yet.</span>
@@ -9476,23 +9476,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
                           <thead>
                             <tr style={{ background:"#FDEEF5", color:"#831843" }}>
-                              <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid " + Y }}>Branch</th>
-                              <th style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, borderBottom:"1px solid " + Y }}>Open</th>
-                              <th style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, borderBottom:"1px solid " + Y }}>Reviewed</th>
-                              <th style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, borderBottom:"1px solid " + Y }}>Total warnings</th>
-                              <th style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, borderBottom:"1px solid " + Y }}></th>
+                              <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #F9A8D4" }}>Branch</th>
+                              <th style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, borderBottom:"1px solid #F9A8D4" }}>Open</th>
+                              <th style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, borderBottom:"1px solid #F9A8D4" }}>Reviewed</th>
+                              <th style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, borderBottom:"1px solid #F9A8D4" }}>Total warnings</th>
+                              <th style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, borderBottom:"1px solid #F9A8D4" }}></th>
                             </tr>
                           </thead>
                           <tbody>
                             {sorted.map(e => (
                               <tr key={e.branch} style={{ background: e.open > 0 ? "#fef2f2" : (e.total > 0 ? "#f0fdf4" : "transparent") }}>
-                                <td style={{ padding:"6px 10px", borderBottom:"1px solid " + aA, color:"#831843", fontWeight: e.branch === attBranch ? 800 : 500 }}>{e.branch}{e.branch === attBranch ? " (current)" : ""}</td>
-                                <td style={{ padding:"6px 10px", borderBottom:"1px solid " + aA, textAlign:"right", color: e.open > 0 ? "#7f1d1d" : "#9ca3af", fontWeight:700 }}>{e.open}</td>
-                                <td style={{ padding:"6px 10px", borderBottom:"1px solid " + aA, textAlign:"right", color:"#166534", fontWeight:600 }}>{e.reviewed}</td>
-                                <td style={{ padding:"6px 10px", borderBottom:"1px solid " + aA, textAlign:"right", color:"#831843", fontWeight:600 }}>{e.total}</td>
-                                <td style={{ padding:"6px 10px", borderBottom:"1px solid " + aA, textAlign:"right" }}>
+                                <td style={{ padding:"6px 10px", borderBottom:"1px solid #FDEEF5", color:"#831843", fontWeight: e.branch === attBranch ? 800 : 500 }}>{e.branch}{e.branch === attBranch ? " (current)" : ""}</td>
+                                <td style={{ padding:"6px 10px", borderBottom:"1px solid #FDEEF5", textAlign:"right", color: e.open > 0 ? "#7f1d1d" : "#9ca3af", fontWeight:700 }}>{e.open}</td>
+                                <td style={{ padding:"6px 10px", borderBottom:"1px solid #FDEEF5", textAlign:"right", color:"#166534", fontWeight:600 }}>{e.reviewed}</td>
+                                <td style={{ padding:"6px 10px", borderBottom:"1px solid #FDEEF5", textAlign:"right", color:"#831843", fontWeight:600 }}>{e.total}</td>
+                                <td style={{ padding:"6px 10px", borderBottom:"1px solid #FDEEF5", textAlign:"right" }}>
                                   {e.branch !== attBranch && e.total > 0 && (
-                                    <button onClick={() => setAttBranch(e.branch)} style={{ background:"transparent", border:"1px solid " + Y, color:"#831843", cursor:"pointer", padding:"2px 8px", borderRadius:5, fontSize:11 }}>Open →</button>
+                                    <button onClick={() => setAttBranch(e.branch)} style={{ background:"transparent", border:"1px solid #F9A8D4", color:"#831843", cursor:"pointer", padding:"2px 8px", borderRadius:5, fontSize:11 }}>Open →</button>
                                   )}
                                 </td>
                               </tr>
