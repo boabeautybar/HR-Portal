@@ -802,13 +802,14 @@
     if (!entry || !entry.action) return null;
     var existing = await loadActivity();
     var rec = {
-      id:      "act_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7),
-      when:    new Date().toISOString(),
-      who:     entry.who     || "Unknown",
-      role:    entry.role    || "",
-      action:  entry.action  || "",
-      target:  entry.target  || "",
-      details: entry.details || ""
+      id:       "act_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7),
+      when:     new Date().toISOString(),
+      who:      entry.who      || "Unknown",
+      role:     entry.role     || "",
+      category: entry.category || "",
+      action:   entry.action   || "",
+      target:   entry.target   || "",
+      details:  entry.details  || ""
     };
     var next = [rec].concat(existing).slice(0, ACTIVITY_LIMIT);
     var res = await sb.from("app_state").upsert({ key: ACTIVITY_KEY, value: next });
