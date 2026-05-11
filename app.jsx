@@ -9209,7 +9209,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   return out;
                 };
                 const bSched   = { ...((sch && sch.grid) || {}), ...reKey((mgrSch && mgrSch.grid) || {}) };
-                const bStaff   = staff.filter(p => p.branch === branch);
+                // `staff` is the nail-tech array (managers live separately) and
+                // the records don't carry an explicit role field — drop the
+                // role gate that was here before, otherwise every record gets
+                // skipped and the cross-branch counts stay at 0.
+                const bStaff   = staff.filter(p => p.branch === branch && stillInCycle(p.ec));
                 const getV = (ec, d) => (bGrid[ec] && bGrid[ec][d]) || null;
                 const getHint = (ec, d) => {
                   const sv = bSched[ec] && bSched[ec][d];
@@ -9223,7 +9227,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 };
                 let total = 0, reviewed = 0;
                 for (const s of bStaff) {
-                  if (s.role !== "NT") continue;
                   for (const dy of days) {
                     if (dy.ymd > t0YmdLocal) continue;
                     const rawV = getV(s.ec, dy.d);
