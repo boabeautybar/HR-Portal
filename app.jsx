@@ -5614,6 +5614,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [attSched,  setAttSched]  = useState({});      // schedule grid for the same period (for mirror hints)
   const [attMeta,   setAttMeta]   = useState({});      // sidecar metadata e.g. { freshaCoverage:{through:"YYYY-MM-DD"} }
   const [attLoading,setAttLoading]= useState(false);
+  // Cross-branch payroll overview — lazy-loaded counts of cells needing
+  // admin review per branch for the active cycle. Lives at component scope
+  // so it survives the IIFE re-render and only refetches when ym changes.
+  const [payrollOverview, setPayrollOverview] = useState(null);   // null | { loading, ym, byBranch }
+  const [payrollOpen, setPayrollOpen]         = useState(false);
 
   // Load attendance grid + schedule grid whenever the tab/branch/period changes.
   useEffect(() => {
@@ -9160,6 +9165,94 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             return { total, reviewed, open: total - reviewed };
           })();
 
+          // Load every branch's attendance + schedule for the active cycle
+          // and compute per-branch unreviewed-warning counts. Used to render
+          // the all-branch payroll overview panel — admins can spot at a
+          // glance which stores still have open warnings before running
+          // payroll. Lazy — only fires when the panel is opened.
+          const loadPayrollOverview = async () => {
+            setPayrollOverview({ loading: true, ym: attYM, byBranch: {} });
+            const todayDt = new Date();
+            const t0YmdLocal = todayDt.getFullYear() + "-" + p2(todayDt.getMonth()+1) + "-" + p2(todayDt.getDate());
+            const results = {};
+            await Promise.all(SALONS.map(async (sl) => {
+              const branch = sl.name;
+              try {
+                const [att, sch, mgrSch] = await Promise.all([
+                  window.BOA_DB.loadAttendance(branch, attYM),
+                  window.BOA_DB.loadTechSched(branch, attYM),
+                  window.BOA_DB.loadMgrSched(branch, attYM)
+                ]);
+                const bGrid    = (att && att.grid) || {};
+                const bReview  = (att && att.reviewedWarnings) || {};
+                const bFW      = (att && att.freshaWorked) || {};
+                const bFThru   = (att && att.freshaCoverage && att.freshaCoverage.through) || null;
+                const reKey = (raw) => {
+                  const out = {};
+                  for (const ec in (raw || {})) {
+                    const row = raw[ec] || {}; const conv = {};
+                    for (const k in row) {
+                      const m = /^\d{4}-\d{2}-(\d{2})$/.exec(k);
+                      conv[m ? parseInt(m[1], 10) : k] = row[k];
+                    }
+                    out[ec] = conv;
+                  }
+                  return out;
+                };
+                const bSched   = { ...((sch && sch.grid) || {}), ...reKey((mgrSch && mgrSch.grid) || {}) };
+                const bStaff   = staff.filter(p => p.branch === branch);
+                const getV = (ec, d) => (bGrid[ec] && bGrid[ec][d]) || null;
+                const getHint = (ec, d) => {
+                  const sv = bSched[ec] && bSched[ec][d];
+                  if (!sv) return null;
+                  if (sv === "W" || sv === "WL") return "on";
+                  if (sv === "O" || sv === "R")  return "off";
+                  if (sv === "L") return "al";
+                  if (sv === "X") return "term";
+                  if (sv === "E") return "ext";
+                  return null;
+                };
+                let total = 0, reviewed = 0;
+                for (const s of bStaff) {
+                  if (s.role !== "NT") continue;
+                  for (const dy of days) {
+                    if (dy.ymd > t0YmdLocal) continue;
+                    const rawV = getV(s.ec, dy.d);
+                    const v = rawV;
+                    const bareV = v ? (v.charAt(0) === "~" ? v.slice(1) : v) : "";
+                    const override = !!rawV && rawV.indexOf("~") !== 0;
+                    const hint = getHint(s.ec, dy.d);
+                    const scheduleSaysWork = hint === "on" || hint === "ext";
+                    const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i";
+                    const isLate    = bareV === "late";
+                    const kioskAbs = ((kioskAbsentByBranch[branch] || {})[s.ec] || {})[dy.ymd] || null;
+                    const checkin  = ((checkInsByBranch[branch] || {})[s.ec] || {})[dy.ymd] || null;
+                    const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
+                    const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
+                    const freshaWorkedCell = !!((bFW[s.ec] || {})[dy.d]);
+                    const freshaCoversThisDay = !!bFThru && dy.ymd <= bFThru;
+                    const kioskMarkedAbsent = !!kioskAbs && kioskAbs.status !== "ext" && kioskAbs.status !== "trial" && kioskAbs.status !== "swap_o";
+                    const cellShowsAbsent = kioskMarkedAbsent || (override && !!bareV && !isWorking && !isLate);
+                    const extDayRecorded = (override && bareV === "ext") || (!!kioskAbs && kioskAbs.status === "ext");
+                    const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
+                    const presentNoApptWarn = checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
+                    const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
+                    if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn) {
+                      total++;
+                      const rev = (bReview[s.ec] || {})[dy.d];
+                      if (rev && rev.valueAtReview === (v || "")) reviewed++;
+                    }
+                  }
+                }
+                results[branch] = { total, reviewed, open: total - reviewed };
+              } catch (e) { results[branch] = { error: (e && e.message) || String(e), total: 0, reviewed: 0, open: 0 }; }
+            }));
+            setPayrollOverview({ loading: false, ym: attYM, byBranch: results });
+          };
+          // Re-fetch the overview when the cycle changes or it becomes stale.
+          const overviewReady = payrollOverview && !payrollOverview.loading && payrollOverview.ym === attYM;
+          const overviewLoading = payrollOverview && payrollOverview.loading;
+
           // BCEA eligibility checks for sick_n + frl
           const findStartDate = (ec) => {
             const obRec = obList.find(o => (o.ec || "") === ec);
@@ -9329,6 +9422,71 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 )}
                 <button onClick={resetCycle} style={{ padding:"7px 14px", background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fca5a5", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Clear every cell for this branch + cycle (with confirmation)">↺ Reset Cycle</button>
               </div>
+
+              <div style={{ marginBottom:8 }}>
+                <button onClick={() => {
+                    const next = !payrollOpen;
+                    setPayrollOpen(next);
+                    if (next && (!payrollOverview || payrollOverview.ym !== attYM)) loadPayrollOverview();
+                  }}
+                  style={{ background:"#831843", color:"#fff", border:"none", borderRadius:7, padding:"7px 14px", cursor:"pointer", fontWeight:700, fontSize:12 }}>
+                  📊 Payroll overview — all branches{payrollOpen ? " ▾" : " ▸"}
+                </button>
+              </div>
+              {payrollOpen && (
+                <div style={{ marginBottom:8, padding:"12px 14px", background:"#fff", border:"1px solid " + Y, borderRadius:8 }}>
+                  {overviewLoading && <div style={{ fontSize:12, color:"#831843" }}>Loading branch data…</div>}
+                  {overviewReady && (() => {
+                    const entries = SALONS.map(sl => ({ branch: sl.name, ...((payrollOverview.byBranch || {})[sl.name] || { total:0, reviewed:0, open:0 }) }));
+                    const grand   = entries.reduce((a, e) => ({ total:a.total+e.total, reviewed:a.reviewed+e.reviewed, open:a.open+e.open }), { total:0, reviewed:0, open:0 });
+                    const sorted  = entries.slice().sort((a,b) => b.open - a.open || b.total - a.total || a.branch.localeCompare(b.branch));
+                    return (
+                      <div>
+                        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+                          <div style={{ fontSize:13, fontWeight:700, color:"#831843" }}>
+                            Payroll readiness · {cycLabel}
+                          </div>
+                          <div style={{ fontSize:12, color: grand.open > 0 ? "#7f1d1d" : "#166534", fontWeight:700 }}>
+                            {grand.open > 0
+                              ? "⚠ " + grand.open + " open · ✓ " + grand.reviewed + " reviewed · " + grand.total + " total"
+                              : "✓ All " + grand.total + " warnings reviewed across every branch"}
+                          </div>
+                        </div>
+                        <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                          <thead>
+                            <tr style={{ background:"#FDEEF5", color:"#831843" }}>
+                              <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid " + Y }}>Branch</th>
+                              <th style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, borderBottom:"1px solid " + Y }}>Open</th>
+                              <th style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, borderBottom:"1px solid " + Y }}>Reviewed</th>
+                              <th style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, borderBottom:"1px solid " + Y }}>Total warnings</th>
+                              <th style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, borderBottom:"1px solid " + Y }}></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {sorted.map(e => (
+                              <tr key={e.branch} style={{ background: e.open > 0 ? "#fef2f2" : (e.total > 0 ? "#f0fdf4" : "transparent") }}>
+                                <td style={{ padding:"6px 10px", borderBottom:"1px solid " + aA, color:"#831843", fontWeight: e.branch === attBranch ? 800 : 500 }}>{e.branch}{e.branch === attBranch ? " (current)" : ""}</td>
+                                <td style={{ padding:"6px 10px", borderBottom:"1px solid " + aA, textAlign:"right", color: e.open > 0 ? "#7f1d1d" : "#9ca3af", fontWeight:700 }}>{e.open}</td>
+                                <td style={{ padding:"6px 10px", borderBottom:"1px solid " + aA, textAlign:"right", color:"#166534", fontWeight:600 }}>{e.reviewed}</td>
+                                <td style={{ padding:"6px 10px", borderBottom:"1px solid " + aA, textAlign:"right", color:"#831843", fontWeight:600 }}>{e.total}</td>
+                                <td style={{ padding:"6px 10px", borderBottom:"1px solid " + aA, textAlign:"right" }}>
+                                  {e.branch !== attBranch && e.total > 0 && (
+                                    <button onClick={() => setAttBranch(e.branch)} style={{ background:"transparent", border:"1px solid " + Y, color:"#831843", cursor:"pointer", padding:"2px 8px", borderRadius:5, fontSize:11 }}>Open →</button>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        <div style={{ marginTop:10, fontSize:11, color:"#831843", opacity:0.7 }}>
+                          Only counts cells with at least one warning (one of the three checks disagrees). Cells where Schedule × Kiosk × Fresha all match are skipped — no admin investigation needed.
+                          <button onClick={loadPayrollOverview} style={{ marginLeft:8, background:"transparent", border:"none", color:"#831843", cursor:"pointer", textDecoration:"underline", fontSize:11 }}>↻ Refresh</button>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
 
               {warningCounts.total > 0 && (
                 <div style={{ display:"flex", alignItems:"center", gap:14, flexWrap:"wrap", fontSize:12, color: warningCounts.open > 0 ? "#7f1d1d" : "#166534", marginBottom:8, padding:"10px 14px", background: warningCounts.open > 0 ? "#fef2f2" : "#f0fdf4", border: warningCounts.open > 0 ? "1px solid #fecaca" : "1px solid #bbf7d0", borderRadius:8, fontWeight:700 }}>
