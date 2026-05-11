@@ -9055,7 +9055,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 if (!grid[ec]) grid[ec] = {};
                 const cur = grid[ec][dayNum];
                 if (cur && cur.charAt(0) !== "~") { alreadyConfirmed++; continue; }
-                grid[ec][dayNum] = "on";
+                // Fresha is data, not authority — write the mirror form so the
+                // cell shows faded "On Time" until the kiosk also confirms (or
+                // the admin manually overrides). This keeps allMatchWork +
+                // kioskSaysPresent from short-circuiting via override=true on
+                // cells where no kiosk check-in actually exists, so the
+                // missingCheckin ⚠ fires correctly.
+                grid[ec][dayNum] = "~on";
                 marked++;
                 markedByBranch[techBranch] = (markedByBranch[techBranch] || 0) + 1;
               }
