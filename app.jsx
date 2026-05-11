@@ -6250,7 +6250,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const prior = out[br][ec][ymd];
       const dt = new Date(r.ts);
       if (!prior || (prior.ts && dt > prior.ts) || !prior.ts) {
-        out[br][ec][ymd] = { status: r.status, note: r.note || null, ts: dt, hasProof: !!r.hasProof, proofKey: r.proofKey || null };
+        out[br][ec][ymd] = { status: r.status, note: r.note || null, ts: dt, hasProof: !!r.hasProof, proofKey: r.proofKey || null, markedBy: r.markedBy || null };
       }
     }
     return out;
@@ -9742,7 +9742,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               (checkin ? "\nChecked in" + (checkin.firstInTs ? " at " + checkin.firstInTs.toLocaleTimeString("en-ZA", { hour:"2-digit", minute:"2-digit" }) : "") + (checkin.autoOut ? " · auto-out" : "") : "") +
                               (checkinMismatch ? "\n⚠ Discrepancy: tech checked in but day marked " + bareV : "") +
                               (missingCheckin  ? "\n⚠ Missing check-in: Fresha shows worked, no check-in record" : "") +
-                              (kioskAbsentScheduled ? "\n⚠ Schedule mismatch: scheduled to work but kiosk marked " + ((STAT[kioskAbs.status] || {}).lbl || kioskAbs.status) + (kioskAbs.note ? " (" + kioskAbs.note + ")" : "") : "") +
+                              (kioskAbs ? "\n📲 Kiosk: marked " + ((STAT[kioskAbs.status] || {}).lbl || kioskAbs.status) + (kioskAbs.markedBy ? " by " + kioskAbs.markedBy : "") + (kioskAbs.note ? " · " + kioskAbs.note : "") : "") +
+                              (kioskAbsentScheduled ? "\n⚠ Schedule mismatch: scheduled to work but kiosk marked " + ((STAT[kioskAbs.status] || {}).lbl || kioskAbs.status) : "") +
                               (isLate && checkin ? "\n(Late — counts as worked, no discrepancy)" : "");
                             // Simplified presence palette — every source (schedule / kiosk /
                             // Fresha) maps to "work" (green) or "off" (slate) when it represents
@@ -11571,6 +11572,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             {isOrphan ? <em>⚠ orphan · staff_id={String(r.staff_id || "(null)")}</em> : (
                               <>
                                 {r.staff.name || "—"}
+                                {r.markedBy && <div style={{ fontWeight:500, fontSize:11, color:"#831843", marginTop:2 }}>👤 Marked by {r.markedBy}</div>}
                                 {r.note && <div style={{ fontWeight:400, fontSize:11, color:"#6b7280", marginTop:2, fontStyle:"italic" }}>📝 {r.note}</div>}
                                 {r.hasProof && r.proofKey && (
                                   <button
