@@ -9299,22 +9299,45 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Per-staff totals
           const totalsFor = (ec) => {
             const t = { al:0, sick:0, sickNote:0, frl:0, ph:0, mat:0, unpaid:0, ext:0, late:0, td:0, worked:0, off:0, term:0, unpaidHours:0 };
+            const reviewedMapL = (attMeta && attMeta.reviewedWarnings) || {};
+            // PH credit only when payroll can trust the day:
+            //  (a) Schedule × Kiosk × Fresha all agree the tech worked, or
+            //  (b) the admin reviewed the cell and confirmed the current value.
+            const phEligible = (dy, rawV, bareV) => {
+              // a) admin-confirmed
+              const rec = (reviewedMapL[ec] || {})[dy.d];
+              if (rec && rec.valueAtReview === (rawV || "")) return true;
+              // b) all-3-agree (mirrors the allMatchWork logic on the cell)
+              const hint = schedHint(ec, dy.d);
+              const scheduleSaysWork = hint === "on" || hint === "ext";
+              const freshaWorkedCell = !!((((attMeta || {}).freshaWorked || {})[ec] || {})[dy.d]);
+              const checkin = ((checkInsByBranch[attBranch] || {})[ec] || {})[dy.ymd] || null;
+              const kioskAbs = ((kioskAbsentByBranch[attBranch] || {})[ec] || {})[dy.ymd] || null;
+              const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
+              const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
+              const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i" || bareV === "late";
+              const kioskSaysPresent = checkinHasIn || isWorking;
+              return scheduleSaysWork && freshaWorkedCell && kioskSaysPresent;
+            };
             for (const dy of days) {
               const v = getStatus(ec, dy.d);
+              const rawV = (attGrid[ec] && attGrid[ec][dy.d]) || "";
+              const bareV = v ? (v.charAt(0) === "~" ? v.slice(1) : v) : "";
               const isHol = !!(holidayLookup && holidayLookup[dy.ymd]);
+              const phOk = isHol && phEligible(dy, rawV, bareV);
               if      (v === "al")     t.al++;
               else if (v === "sick")   { t.sick++; t.unpaid++; }
               else if (v === "sick_n") t.sickNote++;
               else if (v === "frl")    t.frl++;
-              else if (v === "ph")     t.ph++;
+              else if (v === "ph")     t.ph++;        // explicit PH always counts
               else if (v === "mat")    t.mat++;
               else if (v === "no" || v === "unpaid" || v === "absent") t.unpaid++;
-              else if (v === "ext")    { t.ext++; if (isHol) t.ph++; }
-              else if (v === "late")   { t.late++; if (isHol) t.ph++; }
+              else if (v === "ext")    { t.ext++; if (phOk) t.ph++; }
+              else if (v === "late")   { t.late++; if (phOk) t.ph++; }
               else if (v === "trial")  t.td++;
-              else if (v === "on")     { t.worked++; if (isHol) t.ph++; }
+              else if (v === "on")     { t.worked++; if (phOk) t.ph++; }
               else if (v === "off")    t.off++;
-              else if (v === "swap_i") { t.worked++; if (isHol) t.ph++; }
+              else if (v === "swap_i") { t.worked++; if (phOk) t.ph++; }
               else if (v === "swap_o") t.off++;
               else if (v === "term")   { t.term++; t.unpaid++; }
               else if (v && v.indexOf("deduct") === 0) {
