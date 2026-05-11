@@ -5723,10 +5723,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending) {
                 total++;
                 const rev = (bReview[s.ec] || {})[dy.d];
-                // valueAtReview is stored without the "~" mirror prefix, so
-                // compare against bareV (also stripped) to stay in sync with
-                // the per-branch warningCounts loop.
-                if (rev && rev.valueAtReview === bareV) reviewed++;
+                if (rev && rev.valueAtReview === (rawV || "")) reviewed++;
               }
             }
           }
