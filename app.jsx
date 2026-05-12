@@ -3606,6 +3606,48 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
     finally { setSaving(false); }
   }
 
+  // Save a named "final version" snapshot of the current grid alongside
+  // who made it + who approved it. Stored in app_state under
+  // boa_schedapproved_<branch>_<ym> via window.BOA_DB.saveApprovedSchedule.
+  async function saveFinalVersion() {
+    if (!window.BOA_DB || !window.BOA_DB.saveApprovedSchedule) {
+      alert("This deploy doesn't yet have the saved-versions API. Please redeploy.");
+      return;
+    }
+    if (!grid || Object.keys(grid).length === 0) {
+      alert("Nothing to save — the schedule is empty for this period.");
+      return;
+    }
+    const name = window.prompt("Name this version (e.g. \"Final v1\", \"After Theresa review\"):", "");
+    if (name === null) return;
+    if (!name.trim()) { alert("Cancelled — a name is required."); return; }
+    const madeBy = window.prompt("Who made this schedule? (manager / scheduler name)", "");
+    if (madeBy === null) return;
+    const approvedBy = window.prompt("Who approved it?", "");
+    if (approvedBy === null) return;
+    const note = window.prompt("Optional note (anything else worth recording):", "");
+    if (note === null) return;
+    setSaving(true);
+    try {
+      const u = window.BOA_CURRENT_USER || {};
+      const saved = await window.BOA_DB.saveApprovedSchedule(branch, ym, false, {
+        name:       name.trim(),
+        grid:       JSON.parse(JSON.stringify(grid)),
+        madeBy:     madeBy.trim(),
+        approvedBy: approvedBy.trim(),
+        note:       note.trim(),
+        savedBy:    u.name || ""
+      });
+      if (window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY("Saved final tech schedule version", branch + " · " + ym + " · " + (saved && saved.name || name),
+          "Made by " + (madeBy || "—") + " · approved by " + (approvedBy || "—"), "Schedule");
+      }
+      alert("✓ Saved final version: " + (saved && saved.name || name));
+    } catch (e) {
+      alert("Could not save final version: " + (e.message || e));
+    } finally { setSaving(false); }
+  }
+
   const monthAbbr = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   const dowAbbr = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 
@@ -4129,6 +4171,10 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
         })()}
         <button onClick={clearAll} style={{ padding:"8px 14px", borderRadius:9, border:"1px solid #FBCFE8", background:"#FFFFFF", color:"#BE185D", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:600 }}>Clear period</button>
         <button onClick={save} disabled={saving || !dirty} style={{ padding:"8px 18px", borderRadius:9, border:"none", background:dirty?"#BE185D":"#FBCFE8", color:dirty?"#fff":"#9F1A4F", cursor:dirty?"pointer":"not-allowed", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>{saving ? "Saving…" : "Save"}</button>
+        <button onClick={saveFinalVersion} disabled={saving} title="Snapshot the current grid as a named 'final version' with who made + approved it. Survives future overwrites."
+                style={{ padding:"8px 14px", borderRadius:9, border:"1px solid #15803d", background:"#dcfce7", color:"#14532d", cursor:saving?"not-allowed":"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>
+          📌 Save Final
+        </button>
       </div>
 
       {/* ── Off-day requests for nail techs ── mirrors the manager planner panel.
@@ -11088,6 +11134,43 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             setMgrSchedDirty(false);
             setMgrSchedHist(h => { const n = { ...h }; delete n[editKey]; return n; });
           };
+          const saveMgrFinalVersion = async () => {
+            if (!window.BOA_DB || !window.BOA_DB.saveApprovedSchedule) {
+              alert("This deploy doesn't yet have the saved-versions API. Please redeploy.");
+              return;
+            }
+            const draft = mgrSchedDraft || mgrSchedSaved;
+            if (!draft || Object.keys(draft).length === 0) {
+              alert("Nothing to save — the manager schedule is empty for this cycle.");
+              return;
+            }
+            const name = window.prompt("Name this version (e.g. \"Final v1\", \"After Theresa review\"):", "");
+            if (name === null) return;
+            if (!name.trim()) { alert("Cancelled — a name is required."); return; }
+            const madeBy = window.prompt("Who made this schedule?", "");
+            if (madeBy === null) return;
+            const approvedBy = window.prompt("Who approved it?", "");
+            if (approvedBy === null) return;
+            const note = window.prompt("Optional note:", "");
+            if (note === null) return;
+            setMgrSchedSaving(true);
+            try {
+              const u = window.BOA_CURRENT_USER || currentUser || {};
+              const saved = await window.BOA_DB.saveApprovedSchedule(branch, ymKey, true, {
+                name:       name.trim(),
+                grid:       JSON.parse(JSON.stringify(draft)),
+                madeBy:     madeBy.trim(),
+                approvedBy: approvedBy.trim(),
+                note:       note.trim(),
+                savedBy:    u.name || ""
+              });
+              logActivity("Saved final manager schedule version", branch + " · " + ymKey + " · " + (saved && saved.name || name),
+                "Made by " + (madeBy || "—") + " · approved by " + (approvedBy || "—"), "Schedule");
+              alert("✓ Saved final version: " + (saved && saved.name || name));
+            } catch (e) {
+              alert("Could not save final version: " + (e.message || e));
+            } finally { setMgrSchedSaving(false); }
+          };
 
           // Guarded versions of branch/cycle change — warn if unsaved.
           const tryChangeBranch = (b) => {
@@ -11143,6 +11226,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <button onClick={saveDraft} disabled={mgrSchedSaving || !mgrSchedDirty}
                         style={{ padding:"7px 16px", background: mgrSchedDirty ? "#BE185D" : "#FBCFE8", color: mgrSchedDirty ? "#fff" : "#9F1A4F", border:"none", borderRadius:8, cursor: mgrSchedDirty ? "pointer" : "not-allowed", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
                   {mgrSchedSaving ? "Saving…" : "💾 Save"}
+                </button>
+                <button onClick={saveMgrFinalVersion} disabled={mgrSchedSaving}
+                        title="Snapshot the current manager schedule as a named 'final version' with who made + approved it. Survives future overwrites."
+                        style={{ padding:"7px 14px", background:"#dcfce7", color:"#14532d", border:"1px solid #15803d", borderRadius:8, cursor: mgrSchedSaving ? "not-allowed" : "pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
+                  📌 Save Final
                 </button>
                 {(() => {
                   const canDownload = !!mgrSchedSaved && !mgrSchedDirty;
