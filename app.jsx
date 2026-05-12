@@ -7249,14 +7249,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
               <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:11, marginBottom:24 }}>
                 {[
-                  // Today's store-opening status — bright green when all open,
-                  // amber otherwise with the first few still-closed branches listed.
+                  // Today's store-opening status — bright green when every
+                  // branch is open, red the moment ANY branch is still closed
+                  // (no amber middle state) so it pops on the dashboard until
+                  // resolved. While loading, fall back to the neutral amber.
                   { l:"Stores open today",
                     v: showStoreCard ? (storeOpenedCount + " / " + SALONS.length) : "…",
                     sub: storeOpenSub,
-                    i: stillClosedBranches.length === 0 ? "🔓" : "⚠",
-                    c: showStoreCard && stillClosedBranches.length === 0 ? "#166534" : "#7c2d12",
-                    bg: showStoreCard && stillClosedBranches.length === 0 ? "#dcfce7" : "#fef3c7",
+                    i: !showStoreCard ? "⚠" : (stillClosedBranches.length === 0 ? "🔓" : "🚨"),
+                    c: !showStoreCard ? "#7c2d12" : (stillClosedBranches.length === 0 ? "#166534" : "#7f1d1d"),
+                    bg: !showStoreCard ? "#fef3c7" : (stillClosedBranches.length === 0 ? "#dcfce7" : "#fee2e2"),
                     click:()=>tryChangeTab("storeOpenings") },
                   { l:"Scheduled today",   v: dashScheduledToday == null ? "…" : dashScheduledToday, sub:"across all branches",       i:"📅", c:"#1e3a8a", bg:"#dbeafe" },
                   { l:"Active staff",       v: stats.active,                                          sub:"incl. " + stats.pregnant + " pregnant", i:"👥", c:"#14532d", bg:"#dcfce7" },
