@@ -1,0 +1,1838 @@
+/* ============================================================
+   BOA Check-in App — Staff Dashboard
+   Two tiles: Check In/Out  and  Cash Up
+   ============================================================ */
+(function () {
+  var root = null;
+  var cfg  = window.APP_CONFIG || {};
+  if (cfg._picker) return;     // branch picker showing — skip bootstrapping
+
+  // Configurable hooks used by the render functions below. Defaults match
+  // staff-mode behaviour. Manager-mode reuses these flows by calling
+  // window.BOA_FLOWS.configure(...) before invoking a render function.
+  var _mainElId   = "staff-main";          // element render functions write into
+  var _backHandler = function () { renderLanding(); }; // what "← Back" does
+
+  document.addEventListener("app:authed", function (e) {
+    if (e.detail.role !== "staff") return;
+    boot();
+  });
+
+  function getGreeting() {
+    var h = new Date().getHours();
+    if (h >= 5  && h < 12) return "Good morning";
+    if (h >= 12 && h < 17) return "Good afternoon";
+    if (h >= 17 && h < 21) return "Good evening";
+    return "Good night";
+  }
+
+  function boot() {
+    root = document.getElementById("app-root");
+    if (!root) return;
+    var nextMonth = window.APP_DATA ? window.APP_DATA.nextMonthLabel().split(" ")[0] : "Off";
+    root.innerHTML =
+      '<header class="app-header gp-header">' +
+        '<div class="gp-greeting">' +
+          '<div class="gp-greeting-line">' + esc(getGreeting()) + ' · ' + esc(cfg.branchDisplayName || cfg.branchName || "BOA Check-in") + '</div>' +
+          '<div class="gp-sublabel" id="gp-sublabel">HOME</div>' +
+        '</div>' +
+        '<div class="gp-actions">' +
+          '<button class="gp-btn"  data-action="home"     type="button"><span>🏠</span> Home</button>' +
+          '<button class="gp-btn"  data-action="news"     type="button"><span>📰</span> News<span class="gp-badge" id="gp-news-count" style="display:none">0</span></button>' +
+          '<button class="gp-btn"  data-action="schedule" type="button"><span>📅</span> Schedule</button>' +
+          '<button class="gp-btn"  data-action="offreq"   type="button" id="gp-btn-off"><span>📝</span> ' + esc(nextMonth) + ' Off</button>' +
+          '<button class="gp-btn gp-logout" data-action="logout" type="button">LOG OUT</button>' +
+        '</div>' +
+      '</header>' +
+      '<main id="staff-main"></main>';
+
+    document.querySelector(".gp-actions").addEventListener("click", function (e) {
+      var btn = e.target.closest("button[data-action]"); if (!btn) return;
+      var a = btn.dataset.action;
+      if (a === "logout")   window.APP_LOGOUT();
+      if (a === "home")     renderLanding();
+      if (a === "news")     renderNews();
+      if (a === "schedule") renderSchedule();
+      if (a === "offreq")   renderOffRequests();
+    });
+
+    refreshNewsBadge();
+    setInterval(refreshNewsBadge, 60 * 1000);
+
+    renderLanding();
+  }
+
+  function setMain(html) {
+    var el = document.getElementById(_mainElId);
+    if (el) el.innerHTML = html;
+  }
+  function setSublabel(t) { var e = document.getElementById("gp-sublabel"); if (e) e.textContent = t; }
+
+  async function refreshNewsBadge() {
+    if (!window.APP_DATA || !window.APP_DATA.isConfigured()) return;
+    var n = (await window.APP_DATA.listNews()).length;
+    var b = document.getElementById("gp-news-count");
+    if (b) { b.textContent = n; b.style.display = n > 0 ? "" : "none"; }
+  }
+
+  function renderLanding() {
+    setSublabel("HOME");
+    setMain(
+      '<div class="hero hero-big">' +
+        '<div class="hero-brand">' + esc(cfg.branchDisplayName || cfg.branchName || "BOA Check-in") + '</div>' +
+        '<div class="hero-title">What would you like to do?</div>' +
+      '</div>' +
+      '<div class="tile-grid tile-grid-4">' +
+        '<button class="tile tile-big" id="tile-checkin" type="button">' +
+          '<div class="tile-icon">✍️</div>' +
+          '<div class="tile-label">Daily Check In</div>' +
+          '<div class="tile-hint">SIGN IN FOR TODAY</div>' +
+        '</button>' +
+        '<button class="tile tile-big" id="tile-schedule" type="button">' +
+          '<div class="tile-icon">📅</div>' +
+          '<div class="tile-label">Schedule</div>' +
+          '<div class="tile-hint">VIEW THIS PERIOD</div>' +
+        '</button>' +
+        '<button class="tile tile-big" id="tile-offreq" type="button">' +
+          '<div class="tile-icon">📝</div>' +
+          '<div class="tile-label">Request Days</div>' +
+          '<div class="tile-hint">TIME OFF</div>' +
+        '</button>' +
+        '<button class="tile tile-big" id="tile-cashup" type="button">' +
+          '<div class="tile-icon">💵</div>' +
+          '<div class="tile-label">Cash Up</div>' +
+          '<div class="tile-hint">SUBMIT DAILY TOTALS</div>' +
+        '</button>' +
+      '</div>'
+    );
+    document.getElementById("tile-checkin").onclick  = renderCheckin;
+    document.getElementById("tile-schedule").onclick = renderSchedule;
+    document.getElementById("tile-offreq").onclick   = renderOffRequests;
+    document.getElementById("tile-cashup").onclick   = renderCashup;
+  }
+
+  // ---------------- News (read-only viewer) ----------------
+  async function renderNews() {
+    setSublabel("News");
+    setMain(
+      '<div class="panel">' +
+        '<div class="panel-head">' +
+          '<h2>📰 Daily Updates</h2>' +
+          '<button class="link-btn link-btn-dark" id="back-home">← Back</button>' +
+        '</div>' +
+        '<div id="news-body">Loading…</div>' +
+      '</div>'
+    );
+    document.getElementById("back-home").onclick = function () { _backHandler(); };
+    if (!window.APP_DATA || !window.APP_DATA.isConfigured()) {
+      document.getElementById("news-body").innerHTML = configMissingHtml();
+      return;
+    }
+    var posts = await window.APP_DATA.listNews();
+    var body = document.getElementById("news-body");
+    if (posts.length === 0) {
+      body.innerHTML = '<div class="empty">📭 No updates yet. Check back later!</div>';
+      return;
+    }
+    body.innerHTML = '<div class="news-list">' +
+      posts.map(function (n) {
+        return '<div class="news-item">' +
+                 '<div class="news-time">' + esc(formatRelative(n.ts)) + '</div>' +
+                 '<div class="news-body">' + esc(n.body || "") + '</div>' +
+               '</div>';
+      }).join("") + '</div>';
+  }
+
+  // ---------------- Off-day Requests ----------------
+  async function renderOffRequests() {
+    var label = window.APP_DATA ? window.APP_DATA.nextMonthLabel() : "";
+    setSublabel("Time-Off Requests");
+    setMain(
+      '<div class="panel">' +
+        '<div class="panel-head">' +
+          '<h2>📝 ' + esc(label) + ' Off Requests</h2>' +
+          '<button class="link-btn link-btn-dark" id="back-home">← Back</button>' +
+        '</div>' +
+        '<div id="offreq-body">Loading…</div>' +
+      '</div>'
+    );
+    document.getElementById("back-home").onclick = function () { _backHandler(); };
+    if (!window.APP_DATA || !window.APP_DATA.isConfigured()) {
+      document.getElementById("offreq-body").innerHTML = configMissingHtml();
+      return;
+    }
+    await refreshOffRequests();
+  }
+
+  async function refreshOffRequests() {
+    var body = document.getElementById("offreq-body");
+    if (!body) return;
+    var targetYm = window.APP_DATA.nextMonthYm();
+    var label    = window.APP_DATA.nextMonthLabel();
+    // Exclude staff currently on maternity / annual leave (already away).
+    // Managers stay in the picker — addOffRequest routes their entries to
+    // boa_mgr_requests_v1 and techs to boa_tech_requests_v1, both of which
+    // the HR portal already reads.
+    var cats     = await window.APP_DATA.categorizeStaff(new Date(), { activeOnly: true });
+    var staff    = cats.active;
+    var existing = await window.APP_DATA.listOffRequests(targetYm);
+
+    // Render the cycle, not the calendar month. For "June" (targetYm
+    // "2026-06") that's May 25 → June 24. periodDays returns the cycle as
+    // a 30-or-31-day array of {day, monthIdx, year} entries.
+    var cycleDays = window.APP_DATA.periodDays(targetYm);
+    var cycleLabel = window.APP_DATA.periodLabel(targetYm);  // "May 25 — June 24, 2026"
+    var firstEntry = cycleDays[0];
+    var firstDt    = new Date(firstEntry.year, firstEntry.monthIdx, firstEntry.day);
+    var firstIdx   = (firstDt.getDay() + 6) % 7;
+    var DOW        = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+    var monthAbbr  = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+    var html =
+      '<label class="lbl">Staff member</label>' +
+      '<select id="off-staff" class="input">' +
+        '<option value="">Choose person…</option>' +
+        // Managers first, in BOA pink so they stand out at a glance
+        (function () {
+          var mgrs  = staff.filter(function (s) { return s.role_type === "manager"; });
+          var techs = staff.filter(function (s) { return s.role_type !== "manager"; });
+          var optHtml = "";
+          if (mgrs.length > 0) {
+            optHtml += '<optgroup label="👑 Managers">' +
+              mgrs.map(function (s) {
+                return '<option value="' + s.id + '" style="color:#BE185D;font-weight:700;background:#FCE7F3">' +
+                  esc(s.name) + (s.employee_code ? " · " + esc(s.employee_code) : "") +
+                '</option>';
+              }).join("") +
+            '</optgroup>';
+          }
+          if (techs.length > 0) {
+            optHtml += '<optgroup label="Nail Techs">' +
+              techs.map(function (s) {
+                return '<option value="' + s.id + '">' +
+                  esc(s.name) + (s.employee_code ? " · " + esc(s.employee_code) : "") +
+                '</option>';
+              }).join("") +
+            '</optgroup>';
+          }
+          return optHtml;
+        })() +
+      '</select>' +
+      '<label class="lbl">Days off requested · ' + esc(cycleLabel) + '</label>' +
+      '<div class="off-day-grid">';
+    DOW.forEach(function (d) { html += '<div class="off-dow">' + d + '</div>'; });
+    for (var i = 0; i < firstIdx; i++) html += '<button class="off-day off-spacer" type="button" disabled></button>';
+    cycleDays.forEach(function (cd, idx) {
+      var dt   = new Date(cd.year, cd.monthIdx, cd.day);
+      var dow  = dt.getDay();
+      var weekend = dow === 0 || dow === 6;
+      var ymd  = window.APP_DATA.isoDate(dt);
+      // Show the month abbreviation on the very first day of the cycle and
+      // on the 1st of any new month inside it, so May 25 / Jun 1 read clearly.
+      var lbl  = (idx === 0 || cd.day === 1) ? (cd.day + ' ' + monthAbbr[cd.monthIdx]) : String(cd.day);
+      html += '<button class="off-day' + (weekend ? ' off-weekend' : '') +
+              '" type="button" data-date="' + ymd + '">' + lbl + '</button>';
+    });
+    html += '</div>' +
+      '<label class="lbl">Notes (optional)</label>' +
+      '<textarea id="off-notes" class="input" rows="2" placeholder="Reason or context (e.g. wedding, doctor, family commitment)"></textarea>' +
+      '<div class="btn-row"><button class="btn btn-primary" id="off-submit" disabled>Submit Request</button></div>' +
+      '<div class="off-existing-head">Off-day requests (' + existing.length + ')</div>' +
+      '<div class="off-existing-list">' +
+        (existing.length === 0
+          ? '<div class="empty">None yet — either nothing has been submitted or marked as Requested in the HR portal schedule.</div>'
+          : existing.map(function (r) {
+              var fromSchedule = r.source === "schedule";
+              var chips = (r.dates && r.dates.length)
+                ? r.dates.map(function (iso) { return '<span class="off-chip">' + esc(formatChipDate(iso)) + '</span>'; }).join("")
+                : (r.days || []).map(function (d) { return '<span class="off-chip">' + d + '</span>'; }).join("");
+              var sourceBadge = fromSchedule
+                ? '<span class="pill pill-ok" style="margin-left:8px">From schedule</span>'
+                : '<span class="pill pill-warn" style="margin-left:8px">Submitted</span>';
+              var actionBtn = fromSchedule
+                ? '<span class="off-item-time" style="margin:0;color:var(--gray-500)">Edit in HR portal schedule</span>'
+                : '<button class="link-btn link-btn-dark off-del" type="button">Delete</button>';
+              return '<div class="off-item" data-id="' + r.id + '" data-source="' + r.source + '">' +
+                       '<div class="off-item-head">' +
+                         '<span class="off-item-name">' + esc(r.name || "") + sourceBadge + '</span>' +
+                         actionBtn +
+                       '</div>' +
+                       '<div class="off-item-days">' + chips + '</div>' +
+                       (r.notes ? '<div class="off-item-notes">' + esc(r.notes) + '</div>' : "") +
+                       (fromSchedule ? "" : '<div class="off-item-time">Submitted ' + esc(formatRelative(r.ts)) + '</div>') +
+                     '</div>';
+            }).join("")
+        ) +
+      '</div>';
+    body.innerHTML = html;
+
+    // Wire day grid — selectedDates holds full YYYY-MM-DD strings so we
+    // get the right month (May vs June) for cycle days that span the
+    // 25th-of-the-previous-month rollover.
+    var selectedDates = new Set();
+    Array.prototype.forEach.call(body.querySelectorAll(".off-day:not(.off-spacer)"), function (b) {
+      b.addEventListener("click", function () {
+        var ymd = b.dataset.date;
+        if (selectedDates.has(ymd)) { selectedDates.delete(ymd); b.classList.remove("off-day-on"); }
+        else { selectedDates.add(ymd); b.classList.add("off-day-on"); }
+        updateState();
+      });
+    });
+    var staffSel  = document.getElementById("off-staff");
+    var notesEl   = document.getElementById("off-notes");
+    var submitBtn = document.getElementById("off-submit");
+    function updateState() { submitBtn.disabled = !staffSel.value || selectedDates.size === 0; }
+    staffSel.onchange = updateState;
+
+    submitBtn.onclick = async function () {
+      submitBtn.disabled = true;
+      var picked = staff.find(function (s) { return s.id === staffSel.value; });
+      try {
+        await window.APP_DATA.addOffRequest(targetYm, {
+          ec:       picked && picked.employee_code,
+          name:     picked && picked.name,
+          roleType: picked && picked.role_type,    // routes to mgr vs tech key
+          dates:    Array.from(selectedDates),
+          notes:    notesEl.value
+        });
+        await refreshOffRequests();
+      } catch (e) {
+        alert("Could not save: " + (e.message || e));
+        submitBtn.disabled = false;
+      }
+    };
+
+    // Wire delete on existing items
+    Array.prototype.forEach.call(body.querySelectorAll(".off-del"), function (b) {
+      b.onclick = async function () {
+        if (!confirm("Delete this off request?")) return;
+        var id = b.closest(".off-item").dataset.id;
+        try {
+          await window.APP_DATA.deleteOffRequest(targetYm, id);
+          await refreshOffRequests();
+        } catch (e) { alert("Could not delete: " + (e.message || e)); }
+      };
+    });
+  }
+
+  function formatChipDate(iso) {
+    // "2026-06-05" → "5 Jun"
+    try {
+      var p = iso.split("-");
+      var months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+      return parseInt(p[2], 10) + " " + months[parseInt(p[1], 10) - 1];
+    } catch (_e) { return iso; }
+  }
+
+  function formatRelative(ts) {
+    var d = new Date(ts), now = new Date();
+    if (d.toDateString() === now.toDateString()) {
+      return "Today, " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+    var yest = new Date(now); yest.setDate(yest.getDate() - 1);
+    if (d.toDateString() === yest.toDateString()) {
+      return "Yesterday, " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+    var days = Math.floor((now - d) / 86400000);
+    if (days < 7) return days + " days ago";
+    return d.toLocaleDateString();
+  }
+
+  // ---------------- Schedule (read-only view from HR portal) ----------------
+  async function renderSchedule() {
+    setSublabel("Schedule");
+    var ym = window.APP_DATA ? window.APP_DATA.currentSchedYm() : "";
+    setMain(
+      '<div class="panel">' +
+        '<div class="panel-head">' +
+          '<h2>📅 Schedule</h2>' +
+          '<button class="link-btn link-btn-dark" id="back-home">← Back</button>' +
+        '</div>' +
+        '<div class="sched-period">' + (ym ? esc(window.APP_DATA.periodLabel(ym)) + ' · View only' : '') + '</div>' +
+        '<div id="sched-body">Loading schedule…</div>' +
+      '</div>'
+    );
+    document.getElementById("back-home").onclick = function () { _backHandler(); };
+
+    if (!window.APP_DATA || !window.APP_DATA.isConfigured()) {
+      document.getElementById("sched-body").innerHTML = configMissingHtml();
+      return;
+    }
+
+    var staff = await window.APP_DATA.listStaff({ activeOnly: false });
+    var sched = await window.APP_DATA.getSchedule(ym);
+    var grid  = (sched && sched.grid) || {};
+    var days  = window.APP_DATA.periodDays(ym);
+    var monthAbbr = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+    // Show staff who have employee_codes that match the schedule grid;
+    // those without a matching code can't be looked up so they stay hidden.
+    var rows = staff.filter(function (s) {
+      return s.employee_code && grid[s.employee_code];
+    });
+    rows.sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
+
+    var body = document.getElementById("sched-body");
+    if (rows.length === 0) {
+      body.innerHTML = '<div class="empty">No schedule has been posted for this period yet, or staff don\'t have employee codes matching the HR portal.</div>';
+      return;
+    }
+
+    var dowAbbr = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+    var html = '<div class="sched-wrap"><table class="sched-table">';
+    html += '<thead><tr><th class="sched-name-h">Staff</th>';
+    days.forEach(function (d) {
+      var dt = new Date(d.year, d.monthIdx, d.day);
+      var dow = dowAbbr[dt.getDay()];
+      var isWeekend = dt.getDay() === 0 || dt.getDay() === 6;
+      html += '<th class="' + (d.isToday ? 'sched-today' : '') + (isWeekend ? ' sched-weekend' : '') + '">' +
+                '<div class="sched-day-num">' + d.day + '</div>' +
+                '<div class="sched-mon">' + monthAbbr[d.monthIdx] + '</div>' +
+                '<div class="sched-dow">' + dow + '</div>' +
+              '</th>';
+    });
+    html += '</tr></thead><tbody>';
+    rows.forEach(function (s) {
+      html += '<tr><td class="sched-name" title="' + esc(s.name) + '">' + esc(s.name) + '</td>';
+      days.forEach(function (d) {
+        var cell = grid[s.employee_code] && grid[s.employee_code][d.day];
+        if (cell) {
+          html += '<td class="sched-cell sched-st-' + cell + (d.isToday ? ' sched-today' : '') + '">' + cell + '</td>';
+        } else {
+          html += '<td class="' + (d.isToday ? 'sched-today' : '') + '"></td>';
+        }
+      });
+      html += '</tr>';
+    });
+    html += '</tbody></table></div>';
+
+    html += '<div class="sched-legend">' +
+              '<span><span class="sched-st-W">W</span> Work</span>' +
+              '<span><span class="sched-st-WL">WL</span> Work late</span>' +
+              '<span><span class="sched-st-E">E</span> Extra (covering)</span>' +
+              '<span><span class="sched-st-O">O</span> Off</span>' +
+              '<span><span class="sched-st-R">R</span> Requested off</span>' +
+              '<span><span class="sched-st-L">L</span> Leave</span>' +
+              '<span class="sched-legend-note">Today highlighted</span>' +
+            '</div>';
+    body.innerHTML = html;
+  }
+
+  // ---------------- Daily Check-in (attendance-grid style) ----------------
+  // Mirrors the HR portal's Attendance tab. Writes directly to
+  // app_state under boa_att_<branch>_<ym>, which the HR portal reads
+  // through its sync shim, so totals on the HR Attendance tab update.
+  var _dlyCurrentDate = null;
+
+  async function renderCheckin() {
+    setSublabel("Daily Check-in");
+    setMain(
+      '<div class="panel">' +
+        '<div class="panel-head">' +
+          '<h2>⚠️ Daily Check-in</h2>' +
+          '<button class="link-btn link-btn-dark" id="back-home">← Back</button>' +
+        '</div>' +
+        '<div class="dly-sub">Quick attendance log for one store, one day. Mark exceptions and the totals on the Attendance tab update automatically.</div>' +
+
+        '<div class="dly-toolbar">' +
+          '<div class="dly-date-nav">' +
+            '<button class="dly-nav-btn" data-act="prev" type="button">‹</button>' +
+            '<div class="dly-date" id="dly-date-label"></div>' +
+            '<button class="dly-nav-btn" data-act="next" type="button">›</button>' +
+          '</div>' +
+          '<div class="dly-status-badge" id="dly-status-badge"></div>' +
+        '</div>' +
+
+        '<div class="dly-progress" id="dly-progress"></div>' +
+
+        '<div class="dly-section-head" id="dly-section-head"></div>' +
+
+        '<div id="dly-list">Loading roster…</div>' +
+      '</div>'
+    );
+    document.getElementById("back-home").onclick = function () { _backHandler(); };
+
+    if (!window.APP_DATA || !window.APP_DATA.isConfigured()) {
+      document.getElementById("dly-list").innerHTML = configMissingHtml();
+      return;
+    }
+
+    _dlyCurrentDate = new Date();
+
+    document.querySelector('[data-act="prev"]').onclick = function () {
+      _dlyCurrentDate.setDate(_dlyCurrentDate.getDate() - 1);
+      renderDay();
+    };
+    document.querySelector('[data-act="next"]').onclick = function () {
+      // Don't allow check-ins for future dates — the next button stops at today.
+      if (_isToday(_dlyCurrentDate)) return;
+      _dlyCurrentDate.setDate(_dlyCurrentDate.getDate() + 1);
+      renderDay();
+    };
+
+    await renderDay();
+  }
+
+  // True if `d` is on today's calendar date (local time).
+  function _isToday(d) {
+    var t = new Date();
+    return d.getFullYear() === t.getFullYear()
+        && d.getMonth()    === t.getMonth()
+        && d.getDate()     === t.getDate();
+  }
+  // True if `d`'s calendar date is strictly after today.
+  function _isFuture(d) {
+    var dm = new Date(d.getTime()); dm.setHours(0,0,0,0);
+    var tm = new Date();            tm.setHours(0,0,0,0);
+    return dm > tm;
+  }
+
+  async function renderDay() {
+    // Defensive: if the current date is somehow in the future (e.g. dev
+    // tools tampered with state), snap back to today before rendering so
+    // a manager can't mark attendance ahead of time.
+    if (_isFuture(_dlyCurrentDate)) _dlyCurrentDate = new Date();
+
+    var date = _dlyCurrentDate;
+    document.getElementById("dly-date-label").textContent =
+      date.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+
+    // Grey out the › button when we're already on today.
+    var nextBtn = document.querySelector('[data-act="next"]');
+    if (nextBtn) {
+      var atToday = _isToday(date);
+      nextBtn.disabled        = atToday;
+      nextBtn.style.opacity   = atToday ? "0.3" : "";
+      nextBtn.style.cursor    = atToday ? "not-allowed" : "";
+      nextBtn.title           = atToday ? "Can't check in for future dates" : "";
+    }
+
+    var ym     = window.APP_DATA.ymForDate(date);
+    var dayKey = String(date.getDate());
+
+    // Bucket staff into active / on-maternity / on-annual-leave for the
+    // viewed date. Maternity/leave staff are excluded from the roster and
+    // off-today section entirely — they appear in their own read-only
+    // sections below so the manager can still see they're away.
+    //
+    // All seven of these reads are independent of each other, so we fire
+    // them in parallel via Promise.all. This used to be 7 sequential
+    // round-trips (≈800ms+ on tablet data); now it's the cost of the
+    // single slowest one.
+    var loaded = await Promise.all([
+      window.APP_DATA.categorizeStaff(date, { activeOnly: true }),
+      window.APP_DATA.getSchedule(ym),
+      window.APP_DATA.getAttendance(ym),
+      window.APP_DATA.getDailyRecord(date),
+      window.APP_DATA.getSwaps(ym),
+      window.APP_DATA.getExtras(ym),
+      window.APP_DATA.getAbsences(ym),
+      window.APP_DATA.getEarlyLeaves(ym)
+    ]);
+    var cats         = loaded[0];
+    var staff        = cats.active;
+    var staffOnMat   = cats.onMat;
+    var staffOnLeave = cats.onLeave;
+    var sched        = loaded[1];
+    var attendance   = loaded[2];
+    var dailyRec     = loaded[3];
+    var swaps        = loaded[4];
+    var extras       = loaded[5];
+    var absences     = loaded[6];
+    var earlyLeaves  = loaded[7] || {};
+    var grid       = (sched && sched.grid) || {};
+    // Day is locked once signed off — only proof-uploads (sick → sick+note,
+    // absent → sick+note / FRL+proof) are allowed afterwards.
+    var alreadySigned = !!(dailyRec && dailyRec.signedBy);
+    // A day in the past is also locked: managers can browse to inspect the
+    // record (and attach notes/proof that surfaced later) but can't change
+    // any status — that would silently rewrite history.
+    var isPast     = (function () {
+      var dm = new Date(date.getTime()); dm.setHours(0,0,0,0);
+      var tm = new Date();              tm.setHours(0,0,0,0);
+      return dm < tm;
+    })();
+    var isLocked   = alreadySigned || isPast;
+    // The "Left early" tag is a separate, looser gate than isLocked:
+    // it stays editable AFTER the day's check-ins are submitted, but only
+    // until 20:00 that same calendar day. Past days are still off-limits.
+    var isEarlyEditAllowed = (function () {
+      if (!_isToday(date)) return false;
+      var now = new Date();
+      var cutoff = new Date(now.getTime());
+      cutoff.setHours(20, 0, 0, 0);
+      return now < cutoff;
+    })();
+    var attGrid    = (attendance && attendance.grid) || {};
+    var todayIso   = window.APP_DATA.isoDate(date);
+
+    // The seven explicit status codes managers can click. The green ✓
+    // (dly-confirmed) and the "confirmed" progress counter ONLY treat these
+    // as a real tagging — placement markers like swap_i / swap_o / ext are
+    // structural, not a check-in decision, so they don't earn the tick on
+    // their own (the manager still needs to record on-time/late/etc).
+    var TAGGED_STATUSES = { on: 1, late: 1, sick_n: 1, sick: 1, absent: 1, no: 1, frl: 1 };
+    function isTagged(st) { return !!(st && TAGGED_STATUSES[st]); }
+
+    // Helper: for an EC, find a swap that touches today and return partner info.
+    // Includes the swap id so the row can offer an "Undo swap" button.
+    function findSwapInfoFor(ec) {
+      for (var i = 0; i < swaps.length; i++) {
+        var s = swaps[i];
+        if (s.dateA === todayIso) {
+          if (s.oweEc   === ec) return { id: s.id, partner: s.coverName, otherDate: s.dateB, isBack: false, role: "off"   };
+          if (s.coverEc === ec) return { id: s.id, partner: s.oweName,   otherDate: s.dateB, isBack: false, role: "cover" };
+        }
+        if (s.dateB === todayIso) {
+          if (s.oweEc   === ec) return { id: s.id, partner: s.coverName, otherDate: s.dateA, isBack: true,  role: "cover" };
+          if (s.coverEc === ec) return { id: s.id, partner: s.oweName,   otherDate: s.dateA, isBack: true,  role: "off"   };
+        }
+      }
+      return null;
+    }
+    function approverFor(ec) {
+      var rec = extras[dayKey] && extras[dayKey][ec];
+      return rec ? rec.approvedBy : null;
+    }
+    function absenceReasonFor(ec) {
+      var rec = absences[dayKey] && absences[dayKey][ec];
+      return rec ? rec.reason : null;
+    }
+    function earlyLeaveFor(ec) {
+      var rec = earlyLeaves[dayKey] && earlyLeaves[dayKey][ec];
+      return rec || null;
+    }
+
+    // Helper: is this person flagged as an Extra Day worker today? The
+    // canonical source is the extras sidecar. We also accept legacy data
+    // where the attendance grid was written as "ext" (older versions of
+    // recordExtraDay did that — newer ones don't, so on-time/late can be
+    // tagged on top without losing the Extra Day designation).
+    function hasExtraDayFor(ec) {
+      if (extras[dayKey] && extras[dayKey][ec]) return true;
+      var att = attGrid[ec] && attGrid[ec][dayKey];
+      return att === "ext";
+    }
+
+    // Roster = ONLY active staff who are scheduled to work today
+    //          (W = work, WL = work late, E = extra cover) or who have
+    //          been flagged in as a same-day cover.
+    //
+    // We deliberately do NOT pull anyone in just because they have an
+    // attendance value set today: stale attendance from past clicking would
+    // otherwise leak ex-employees and unscheduled people back onto the list.
+    //
+    // Exceptions for genuine same-day covers:
+    //   - swap_i (the off-day person who came in to cover)
+    //   - an extras sidecar entry (Extra Day approved)
+    //   - legacy attendance value "ext" (pre-fix records still in Supabase)
+    var rosterMap = {};
+    staff.forEach(function (s) {
+      if (!s.employee_code) return;
+      var schSt = grid[s.employee_code] && grid[s.employee_code][dayKey];
+      var attSt = attGrid[s.employee_code] && attGrid[s.employee_code][dayKey];
+      var isScheduled      = (schSt === "W" || schSt === "WL" || schSt === "E");
+      var isSameDayCoverer = (attSt === "swap_i" || hasExtraDayFor(s.employee_code));
+      if (isScheduled || isSameDayCoverer) {
+        rosterMap[s.id] = { staff: s, schedStatus: schSt || null, current: attSt || null };
+      }
+    });
+    var scheduled = Object.keys(rosterMap).map(function (k) { return rosterMap[k]; });
+    scheduled.sort(function (a, b) { return (a.staff.name || "").localeCompare(b.staff.name || ""); });
+
+    // If the schedule for this period hasn't been loaded at all, surface
+    // that distinct from "no one is scheduled today" so the manager knows
+    // it's a data issue and not literally nobody-working.
+    var scheduleHasAnyEntries = false;
+    var gridKeys = Object.keys(grid);
+    for (var gi = 0; gi < gridKeys.length; gi++) {
+      if (grid[gridKeys[gi]] && Object.keys(grid[gridKeys[gi]]).length > 0) {
+        scheduleHasAnyEntries = true; break;
+      }
+    }
+
+    // All staff scheduled off today (used for the grey "Off today" section).
+    // Includes O/R/L/X. Action buttons are only enabled for O and R though —
+    // L (Leave) and X (Pre-start) are informational.
+    var offTodayAll = staff.filter(function (s) {
+      if (!s.employee_code) return false;
+      if (rosterMap[s.id]) return false;
+      var st = grid[s.employee_code] && grid[s.employee_code][dayKey];
+      return st === "O" || st === "R" || st === "L" || st === "X";
+    }).sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
+
+    // Subset of the above eligible for swap/extra (O or R only)
+    var offToday = offTodayAll.filter(function (s) {
+      var st = grid[s.employee_code] && grid[s.employee_code][dayKey];
+      return st === "O" || st === "R";
+    });
+
+    var listEl  = document.getElementById("dly-list");
+    var headEl  = document.getElementById("dly-section-head");
+    var progEl  = document.getElementById("dly-progress");
+    var badgeEl = document.getElementById("dly-status-badge");
+
+    if (scheduled.length === 0) {
+      headEl.textContent  = "";
+      progEl.innerHTML    = "";
+      badgeEl.textContent = "";
+      badgeEl.className   = "dly-status-badge";
+      // Two distinct empty states: schedule simply has no one in today,
+      // versus no schedule loaded at all for this branch + cycle.
+      if (!scheduleHasAnyEntries) {
+        listEl.innerHTML =
+          '<div class="empty" style="text-align:left;line-height:1.5">' +
+            '<strong>No schedule loaded for this period.</strong><br>' +
+            'The check-in list only shows staff who are scheduled to work today ' +
+            '(per the schedule saved in Supabase for this store). Make sure the ' +
+            'schedule for this cycle has been published from the HR portal, then ' +
+            'reload this page.' +
+          '</div>';
+      } else {
+        listEl.innerHTML = '<div class="empty">No one is scheduled to work on this day.</div>';
+      }
+      return;
+    }
+
+    // Counters
+    // Note: `scheduled` contains rosterMap entries of shape
+    // { staff, schedStatus, current }, so the attendance status is on
+    // r.current (already pulled from attGrid during the roster build).
+    // Looking up r.employee_code directly is a bug — that field lives on
+    // r.staff.employee_code — and was previously freezing confirmed at 0.
+    var confirmed = 0, onTime = 0;
+    scheduled.forEach(function (r) {
+      var st = r.current;
+      if (isTagged(st)) confirmed++;
+      if (st === "on") onTime++;
+    });
+    var total = scheduled.length;
+
+    if (onTime === total)        { badgeEl.innerHTML = '✓ All ' + total + ' On Time'; badgeEl.className = 'dly-status-badge dly-status-good'; }
+    else if (confirmed === total){ badgeEl.innerHTML = '✓ All confirmed';              badgeEl.className = 'dly-status-badge dly-status-good'; }
+    else                         { badgeEl.innerHTML = (total - confirmed) + ' need a status'; badgeEl.className = 'dly-status-badge dly-status-pending'; }
+
+    var pct = Math.round((confirmed / total) * 100);
+    progEl.innerHTML =
+      '<div class="dly-progress-text">Progress: <strong>' + confirmed + '/' + total + ' confirmed</strong>' +
+        (confirmed < total ? ' — ' + (total - confirmed) + ' still need a status' : '') +
+      '</div>' +
+      '<div class="dly-progress-bar"><div class="dly-progress-fill" style="width:' + pct + '%"></div></div>';
+
+    headEl.innerHTML = '📍 Scheduled to work · ' + total + ' staff';
+
+    var statusButtons = [
+      { code: "on",     label: "On Time"       },
+      { code: "late",   label: "Late"          },
+      { code: "sick_n", label: "Sick + note"   },
+      { code: "sick",   label: "Sick NO note"  },
+      { code: "absent", label: "Absent"        },
+      { code: "no",     label: "NO SHOW"       },
+      { code: "frl",    label: "FRL + proof"   }
+    ];
+
+    listEl.innerHTML = scheduled.map(function (r) {
+      var s         = r.staff;
+      var current   = r.current;
+      // hasStatus drives the green ✓ — only TRUE when the manager has
+      // explicitly clicked one of the seven status buttons. Placement
+      // markers (swap_i / swap_o / ext) DON'T earn the tick on their own.
+      var hasStatus = isTagged(current);
+      var schedSt   = r.schedStatus;
+      var isExtraDay = hasExtraDayFor(s.employee_code);
+      // Indicate WHY this person is in the roster: scheduled, or here via
+      // swap, or marked Extra Day. The Extra Day tag is derived from the
+      // sidecar so it stays visible even after the manager tags On Time /
+      // Late on top.
+      var rosterTag = "";
+      if (schedSt === "WL")                       rosterTag = '<span class="row-tag row-tag-warn">WL · work late</span>';
+      else if (schedSt === "E")                   rosterTag = '<span class="row-tag row-tag-info">E · extra cover</span>';
+      else if (isExtraDay)                        rosterTag = '<span class="row-tag row-tag-info">Extra cover</span>';
+      else if (!schedSt && current === "swap_i")  rosterTag = '<span class="row-tag row-tag-swap">Covering (swap-in)</span>';
+      else if (!schedSt && current === "swap_o")  rosterTag = '<span class="row-tag row-tag-swap">Off (swap-out)</span>';
+
+      // Swap targets: ONLY staff who are off today (O or R). Two scheduled
+      // staff cannot swap with each other — both are needed.
+      var swapOff = offToday.map(function (other) {
+        var st = grid[other.employee_code] && grid[other.employee_code][dayKey];
+        var lbl = other.name + " — off today (" + st + ")";
+        return '<option value="off:' + esc(other.employee_code) + '">' + esc(lbl) + '</option>';
+      });
+      var swapPlaceholder = swapOff.length === 0
+        ? '<option value="" disabled>No off-today staff available to swap</option>'
+        : '<option value="">⇄ Swap with off-today staff…</option>';
+
+      // Build a footnote line under the name+code if this row is part of a
+      // swap, or has an Extra-Day approver attached.
+      var swapInfo = findSwapInfoFor(s.employee_code);
+      var noteLine = "";
+      if (swapInfo) {
+        var dateTxt = formatChipDate(swapInfo.otherDate);
+        if (swapInfo.role === "cover") {
+          noteLine = swapInfo.isBack
+            ? '↩ Working in return for <strong>' + esc(swapInfo.partner) + '</strong> · original swap ' + esc(dateTxt)
+            : '↪ Covering <strong>' + esc(swapInfo.partner) + '</strong> · returns ' + esc(dateTxt);
+        } else { // off
+          noteLine = swapInfo.isBack
+            ? '↩ Off, paid back by <strong>' + esc(swapInfo.partner) + '</strong> · original swap ' + esc(dateTxt)
+            : '↪ Off — <strong>' + esc(swapInfo.partner) + '</strong> covering · returns ' + esc(dateTxt);
+        }
+      } else if (isExtraDay) {
+        var who = approverFor(s.employee_code);
+        noteLine = who
+          ? '＋ Extra Day · approved by <strong>' + esc(who) + '</strong>'
+          : '＋ Extra Day';
+      } else if (current === "absent") {
+        var why = absenceReasonFor(s.employee_code);
+        if (why) noteLine = '🚫 Absent · reason: <strong>' + esc(why) + '</strong> · counts as unpaid';
+        else     noteLine = '🚫 Absent · counts as unpaid';
+      }
+
+      // Early-leave note line (appended below any other note). HR portal
+      // deducts these hours from the tech's day total.
+      var earlyRec = earlyLeaveFor(s.employee_code);
+      if (earlyRec && earlyRec.hours) {
+        var earlyHtml = '🏃 Left <strong>' + earlyRec.hours + 'h</strong> early · counts as deduction' +
+          (earlyRec.recordedBy ? ' · recorded by <strong>' + esc(earlyRec.recordedBy) + '</strong>' : '');
+        noteLine = noteLine ? (noteLine + '<br>' + earlyHtml) : earlyHtml;
+      }
+
+      // After signoff (or when viewing a past day) the day is locked. Status
+      // buttons go disabled and we surface a single "Upload proof" path for
+      // the two allowed transitions:
+      //   sick   → sick+note  (proof: doctor's note)
+      //   absent → sick+note  OR  FRL+proof
+      // Everything else is read-only.
+      var actionsHtml;
+      if (isLocked) {
+        var locked = statusButtons.map(function (b) {
+          return '<button type="button" disabled class="dly-act dly-act-' + b.code +
+                 (current === b.code ? ' dly-act-active' : '') +
+                 '" style="opacity:0.45;cursor:not-allowed" data-status="' + b.code + '">' + b.label + '</button>';
+        }).join("");
+        var convert = "";
+        if (current === "sick") {
+          convert =
+            '<button type="button" class="dly-act dly-act-convert" data-convert="sick_n" ' +
+            'style="background:#fef3c7;color:#78350f;border:1px solid #fbbf24" ' +
+            'title="Tech brought a doctor\'s note — upload it to upgrade Sick → Sick + note">' +
+            '📎 Add sick note → Sick + note</button>';
+        } else if (current === "absent") {
+          convert =
+            '<button type="button" class="dly-act dly-act-convert" data-convert="sick_n" ' +
+            'style="background:#fef3c7;color:#78350f;border:1px solid #fbbf24" ' +
+            'title="Tech provided a doctor\'s note — upgrade Absent → Sick + note">' +
+            '📎 Add sick note → Sick + note</button>' +
+            '<button type="button" class="dly-act dly-act-convert" data-convert="frl" ' +
+            'style="background:#dbeafe;color:#1e3a8a;border:1px solid #93c5fd" ' +
+            'title="Tech provided FRL proof — upgrade Absent → FRL + proof">' +
+            '📎 Add FRL proof → FRL + proof</button>';
+        }
+        actionsHtml = locked + (convert ? '<div class="dly-convert-row" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">' + convert + '</div>' : '');
+      } else {
+        actionsHtml = statusButtons.map(function (b) {
+          return '<button type="button" class="dly-act dly-act-' + b.code + (current === b.code ? ' dly-act-active' : '') + '" data-status="' + b.code + '">' + b.label + '</button>';
+        }).join("");
+      }
+
+      // "Left early" sub-row — runs on its own gate, independent of isLocked:
+      // editable today until 20:00 even after the day's been signed off, so
+      // a tech leaving at 17:30 can be recorded after the daily sign-off at,
+      // say, 18:00. After 20:00 (or on any other day), the row just shows
+      // the note above without any edit buttons.
+      if (isEarlyEditAllowed) {
+        var earlyBtnLabel = earlyRec && earlyRec.hours
+          ? '🏃 Left ' + earlyRec.hours + 'h early · change'
+          : '🏃 Mark left early';
+        actionsHtml +=
+          '<div class="dly-early-row" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">' +
+            '<button type="button" class="dly-act dly-act-early" data-ec="' + esc(s.employee_code) + '" data-name="' + esc(s.name) + '" ' +
+              'style="background:#FFEDD5;color:#9A3412;border:1px solid #FB923C;font-weight:700">' +
+              earlyBtnLabel +
+            '</button>' +
+            (earlyRec && earlyRec.hours
+              ? '<button type="button" class="dly-act dly-act-early-clear" data-ec="' + esc(s.employee_code) + '" data-name="' + esc(s.name) + '" ' +
+                  'style="background:#fff;color:#9A3412;border:1px solid #FB923C">' +
+                  '✕ Clear early' +
+                '</button>'
+              : '') +
+          '</div>';
+      }
+
+      // Swap area: if the row is already part of a swap AND the day is not
+      // locked, show an "Undo swap" button instead of the swap dropdown.
+      // Once the day is signed off, the undo disappears (locked state).
+      var swapAreaHtml;
+      if (!isLocked && swapInfo) {
+        swapAreaHtml =
+          '<button type="button" class="dly-undo-swap" data-swap-id="' + esc(swapInfo.id) + '" ' +
+            'title="Undo this swap — both dates will be reverted (only allowed before the day is signed off)" ' +
+            'style="padding:8px 12px;border-radius:9px;border:1px solid #FBCFE8;background:#fff;color:#831843;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">' +
+            '↺ Undo swap' +
+          '</button>';
+      } else {
+        swapAreaHtml =
+          '<select class="dly-swap" data-ec="' + esc(s.employee_code) + '" data-name="' + esc(s.name) + '"' +
+            ((swapOff.length === 0 || isLocked) ? ' disabled' : '') + '>' +
+            swapPlaceholder +
+            swapOff.join("") +
+          '</select>';
+      }
+
+      return '<div class="dly-row' + (hasStatus ? ' dly-confirmed' : '') + (isLocked ? ' dly-locked' : '') + '" data-ec="' + esc(s.employee_code) + '" data-id="' + s.id + '" data-name="' + esc(s.name) + '">' +
+        '<div class="dly-row-info">' +
+          '<div class="dly-checkmark">' + (hasStatus ? '✓' : '') + '</div>' +
+          '<div class="dly-row-text">' +
+            '<div class="dly-name">' + esc(s.name) + '</div>' +
+            '<div class="dly-code">' + esc(s.employee_code) + (rosterTag ? ' · ' + rosterTag : '') + '</div>' +
+            (noteLine ? '<div class="dly-note">' + noteLine + '</div>' : '') +
+          '</div>' +
+        '</div>' +
+        '<div class="dly-actions">' + actionsHtml + '</div>' +
+        swapAreaHtml +
+      '</div>';
+    }).join("");
+
+    // Optimistic UI helpers — paint the row immediately on click so the
+    // manager doesn't wait for the round-trip before seeing feedback.
+    // If the save then fails, we alert + re-render so the canonical
+    // server state takes over.
+    function paintRowStatus(row, status) {
+      // Re-style status buttons in this row to reflect the new active code.
+      var acts = row.querySelectorAll(".dly-act");
+      Array.prototype.forEach.call(acts, function (b) {
+        if (b.dataset.convert) return; // post-signoff convert buttons untouched
+        if (status && b.dataset.status === status) b.classList.add("dly-act-active");
+        else                                       b.classList.remove("dly-act-active");
+      });
+      // Checkmark + confirmed class follow whether ANY status is set.
+      var cm = row.querySelector(".dly-checkmark");
+      if (cm) cm.textContent = status ? "✓" : "";
+      if (status) row.classList.add("dly-confirmed");
+      else        row.classList.remove("dly-confirmed");
+    }
+    function setRowSaving(row, saving) {
+      var acts = row.querySelectorAll(".dly-act, .dly-swap");
+      Array.prototype.forEach.call(acts, function (el) { el.disabled = !!saving; });
+      row.classList.toggle("dly-saving", !!saving);
+    }
+
+    // Wire status buttons (toggle off if same code clicked again).
+    // For sick_n and frl, intercept and open the proof-upload modal first.
+    // For absent, prompt for a reason. After signoff the disabled buttons
+    // are skipped (browser blocks the click) and the dedicated `data-convert`
+    // buttons take over for the two allowed transitions.
+    Array.prototype.forEach.call(listEl.querySelectorAll(".dly-act"), function (btn) {
+      btn.onclick = async function () {
+        if (btn.disabled) return;
+
+        var row    = btn.closest(".dly-row");
+        var ec     = row.dataset.ec;
+        var name   = row.dataset.name;
+        var cur    = attGrid[ec] && attGrid[ec][dayKey];
+
+        // Post-signoff conversion path: only sick→sick_n and absent→sick_n/frl
+        // are reachable, and they must go through the proof modal.
+        if (btn.dataset.convert) {
+          var target = btn.dataset.convert;
+          if (isLocked && cur !== "sick" && cur !== "absent") return;
+          openProofModal({
+            status:    target,
+            label:     target === "sick_n" ? "Sick + note" : "FRL + proof",
+            staffEc:   ec,
+            staffName: name,
+            ym:        ym,
+            dayKey:    dayKey,
+            requireProof: true,    // no "Save without proof" fallback after signoff
+            onSaved:   async function () {
+              // If converting from absent, drop the absence reason metadata —
+              // it's now superseded by the paid leave classification.
+              if (cur === "absent") {
+                try { await window.APP_DATA.clearAbsence(ym, dayKey, ec); } catch (_e) {}
+              }
+              await renderDay();
+            }
+          });
+          return;
+        }
+
+        var status = btn.dataset.status;
+
+        // Toggle off if same code (clears any sidecar absence metadata too)
+        if (cur === status) {
+          // Optimistic: clear visually first, lock the row, then save.
+          paintRowStatus(row, null);
+          setRowSaving(row, true);
+          try {
+            await window.APP_DATA.setAttendanceStatus(ym, dayKey, ec, null);
+            if (status === "absent") { try { await window.APP_DATA.clearAbsence(ym, dayKey, ec); } catch (_e) {} }
+            await renderDay();
+          } catch (e) {
+            alert("Could not save: " + (e.message || e));
+            await renderDay(); // resync — the optimistic paint may now be wrong
+          }
+          return;
+        }
+
+        // Sick + note OR FRL → require proof (or downgrade to unpaid)
+        if (status === "sick_n" || status === "frl") {
+          openProofModal({
+            status:   status,
+            label:    status === "sick_n" ? "Sick + note" : "FRL + proof",
+            staffEc:  ec,
+            staffName: name,
+            ym:       ym,
+            dayKey:   dayKey,
+            onSaved:  renderDay
+          });
+          return;
+        }
+
+        // Absent → require a reason (≥2 chars). Without a reason the manager
+        // should be using NO SHOW instead.
+        if (status === "absent") {
+          var reason = window.prompt(
+            "Mark " + name + " as Absent\n\n" +
+            "Absent days count as UNPAID and always require an explanation.\n" +
+            "If there's no communication from " + name + ", click NO SHOW instead.\n\n" +
+            "If proof (sick note / FRL letter) arrives later, you'll be able to\n" +
+            "upgrade this from the locked day to Sick + note or FRL + proof.\n\n" +
+            "Why is " + name + " absent today?"
+          );
+          if (reason === null) return;
+          reason = String(reason).trim();
+          if (reason.length < 2) {
+            alert("A reason is required to mark someone Absent.\nIf there's no communication, click NO SHOW.");
+            return;
+          }
+          try {
+            await window.APP_DATA.recordAbsence(ym, dayKey, ec, reason);
+            await renderDay();
+          } catch (e) { alert("Could not save: " + (e.message || e)); }
+          return;
+        }
+
+        // Default path — fast statuses (on / late / sick / no). We paint
+        // the row immediately so the click feels instant, then save in
+        // the background. If the save fails we re-render to resync from
+        // the server.
+        paintRowStatus(row, status);
+        setRowSaving(row, true);
+        try {
+          await window.APP_DATA.setAttendanceStatus(ym, dayKey, ec, status);
+          await renderDay();
+        } catch (e) {
+          alert("Could not save: " + (e.message || e));
+          await renderDay(); // resync — the optimistic paint may now be wrong
+        }
+      };
+    });
+
+    // Wire swap selects — every swap goes through the modal (which captures
+    // the required swap-back date inside the same payroll cycle).
+    Array.prototype.forEach.call(listEl.querySelectorAll(".dly-swap"), function (sel) {
+      sel.onchange = function () {
+        var v = sel.value;
+        if (!v || v.indexOf("off:") !== 0) return;
+        var oweEc     = sel.dataset.ec;
+        var oweName   = sel.dataset.name;
+        var coverEc   = v.slice(4);
+        var coverObj  = offToday.find(function (o) { return o.employee_code === coverEc; });
+        var coverName = (coverObj && coverObj.name) || coverEc;
+        openSwapModal({
+          currentDate: date, ym: ym, dayKey: dayKey,
+          oweEc: oweEc, oweName: oweName, coverEc: coverEc, coverName: coverName,
+          schedGrid: grid,
+          onDone: renderDay
+        });
+        sel.value = "";
+      };
+    });
+
+    // Wire "🏃 Mark left early" buttons. Opens a small modal to capture the
+    // number of hours, then writes to the boa_early_<branch>_<ym> sidecar
+    // for the HR portal to deduct. Only present on un-locked days.
+    Array.prototype.forEach.call(listEl.querySelectorAll(".dly-act-early"), function (btn) {
+      btn.onclick = function () {
+        var ec       = btn.dataset.ec;
+        var nm       = btn.dataset.name;
+        var existing = earlyLeaveFor(ec);
+        openEarlyLeaveModal({
+          staffName: nm,
+          staffEc:   ec,
+          prevHours: existing ? existing.hours : null,
+          prevBy:    existing ? existing.recordedBy : "",
+          onSave: async function (hours, by) {
+            try {
+              await window.APP_DATA.recordEarlyLeave(ym, dayKey, ec, hours, by);
+              await renderDay();
+            } catch (e) {
+              alert("Could not save early leave: " + (e.message || e));
+            }
+          }
+        });
+      };
+    });
+
+    // Wire "✕ Clear early" — removes the early-leave record for this row.
+    Array.prototype.forEach.call(listEl.querySelectorAll(".dly-act-early-clear"), function (btn) {
+      btn.onclick = async function () {
+        var ec = btn.dataset.ec;
+        var nm = btn.dataset.name;
+        if (!window.confirm("Remove the early-leave record for " + nm + "?")) return;
+        btn.disabled = true;
+        try {
+          await window.APP_DATA.clearEarlyLeave(ym, dayKey, ec);
+          await renderDay();
+        } catch (e) {
+          alert("Could not clear: " + (e.message || e));
+          btn.disabled = false;
+        }
+      };
+    });
+
+    // Wire "↺ Undo swap" buttons. Only present on non-locked days for rows
+    // that are part of a swap. The data layer refuses if either touched
+    // day was signed off in the meantime.
+    Array.prototype.forEach.call(listEl.querySelectorAll(".dly-undo-swap"), function (btn) {
+      btn.onclick = async function () {
+        var swapId = btn.dataset.swapId;
+        var swap = null;
+        for (var i = 0; i < swaps.length; i++) {
+          if (swaps[i] && swaps[i].id === swapId) { swap = swaps[i]; break; }
+        }
+        if (!swap) {
+          alert("Swap not found — the list may be out of date. Refreshing.");
+          await renderDay();
+          return;
+        }
+        var ok = window.confirm(
+          "Undo this swap?\n\n" +
+          (swap.oweName || swap.oweEc)  + " — off " + formatChipDate(swap.dateA) + "\n" +
+          (swap.coverName || swap.coverEc) + " — covering " + formatChipDate(swap.dateA) +
+          ", paying it back on " + formatChipDate(swap.dateB) + "\n\n" +
+          "Both dates' swap entries will be cleared. " +
+          "This can only be done before either day is signed off."
+        );
+        if (!ok) return;
+        var originalText = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = "Undoing…";
+        try {
+          await window.APP_DATA.undoSwap(ym, swapId);
+          await renderDay();
+        } catch (e) {
+          alert("Could not undo swap: " + (e.message || e));
+          btn.disabled = false;
+          btn.innerHTML = originalText;
+        }
+      };
+    });
+
+    // ---------------- Off-today section (greyed) ----------------
+    var offEl = document.getElementById("dly-off-section");
+    if (!offEl) {
+      offEl = document.createElement("div");
+      offEl.id = "dly-off-section";
+      listEl.parentNode.insertBefore(offEl, listEl.nextSibling);
+    }
+    if (offTodayAll.length === 0) {
+      offEl.innerHTML = "";
+    } else {
+      var offHtml =
+        '<div class="dly-section-head dly-section-head-off">🌿 Off today · ' + offTodayAll.length + ' staff</div>' +
+        '<div class="dly-list dly-list-off">' +
+          offTodayAll.map(function (s) {
+            var st = grid[s.employee_code] && grid[s.employee_code][dayKey];
+            var canAct = (st === "O" || st === "R");
+            var stLbl = ({O:"Off", R:"Requested off", L:"Leave", X:"Pre-start"})[st] || st;
+            // Build swap target list (the scheduled-to-work people on this day)
+            var swapTargets = scheduled
+              .filter(function (r) { return r.staff.id !== s.id; })
+              .map(function (r) { return '<option value="off-row:' + esc(r.staff.employee_code) + '">' + esc(r.staff.name) + '</option>'; });
+            var swapPh = swapTargets.length === 0
+              ? '<option value="" disabled>No scheduled staff to swap with</option>'
+              : '<option value="">⇄ Cover for…</option>';
+
+            // After signoff (or when viewing a past day) the off-today
+            // section is read-only too: no Mark-Extra-Day, no swaps. Off
+            // staff who'd otherwise be actionable just show a lock label.
+            var actionHtml = isLocked
+              ? '<span class="dly-no-action">🔒 ' + (alreadySigned ? 'Day signed off' : 'Past day · view only') + '</span>'
+              : (canAct
+                  ? '<button type="button" class="dly-act dly-act-extra" data-action="extra">＋ Mark Extra Day</button>'
+                  : '<span class="dly-no-action">No action</span>');
+            var swapHtml = (isLocked || !canAct)
+              ? '<span></span>'
+              : '<select class="dly-swap dly-swap-off" data-ec="' + esc(s.employee_code) + '" data-name="' + esc(s.name) + '"' +
+                  (swapTargets.length === 0 ? ' disabled' : '') + '>' +
+                  swapPh + swapTargets.join("") +
+                '</select>';
+
+            return '<div class="dly-row dly-row-off" data-ec="' + esc(s.employee_code) + '" data-id="' + s.id + '" data-name="' + esc(s.name) + '">' +
+              '<div class="dly-row-info">' +
+                '<div class="dly-checkmark dly-checkmark-off">·</div>' +
+                '<div class="dly-row-text">' +
+                  '<div class="dly-name">' + esc(s.name) + '</div>' +
+                  '<div class="dly-code">' + esc(s.employee_code) + ' · <span class="row-tag row-tag-off">' + esc(st) + ' · ' + esc(stLbl) + '</span></div>' +
+                '</div>' +
+              '</div>' +
+              '<div class="dly-actions">' + actionHtml + '</div>' +
+              swapHtml +
+            '</div>';
+          }).join("") +
+        '</div>';
+      offEl.innerHTML = offHtml;
+
+      // Wire "Mark Extra Day" buttons.
+      // Extra days pay at a higher rate, so the company requires written
+      // approval from a higher manager. We capture that name and store it
+      // alongside the attendance.
+      Array.prototype.forEach.call(offEl.querySelectorAll('.dly-act-extra'), function (btn) {
+        btn.onclick = async function () {
+          var row  = btn.closest(".dly-row");
+          var ec   = row.dataset.ec;
+          var name = row.dataset.name;
+
+          var approver = window.prompt(
+            "Mark " + name + " as Extra Day\n\n" +
+            "Extra days are paid at a higher rate. The company requires sign-off " +
+            "by a higher manager before paying for unscheduled cover.\n\n" +
+            "Which higher manager approved this?\n" +
+            "(Type their full name to record the approval.)"
+          );
+          if (approver === null) return;                  // cancelled
+          approver = String(approver).trim();
+          if (approver.length < 2) {
+            window.alert("Approver name is required to mark an Extra Day.");
+            return;
+          }
+          try {
+            await window.APP_DATA.recordExtraDay(ym, dayKey, ec, approver);
+            await renderDay();
+          } catch (e) { window.alert("Could not save: " + ((e && e.message) || e)); }
+        };
+      });
+
+      // Wire swap dropdowns from off-rows: this row's person becomes the
+      // cover (working today), the picked scheduled person becomes the owe
+      // (taking today off).
+      Array.prototype.forEach.call(offEl.querySelectorAll('.dly-swap-off'), function (sel) {
+        sel.onchange = function () {
+          var v = sel.value;
+          if (!v || v.indexOf("off-row:") !== 0) return;
+          var oweEc   = v.slice("off-row:".length);
+          var coverEc = sel.dataset.ec;
+          var coverName = sel.dataset.name;
+          var oweRow = scheduled.find(function (r) { return r.staff.employee_code === oweEc; });
+          var oweName = oweRow ? oweRow.staff.name : oweEc;
+          openSwapModal({
+            currentDate: date, ym: ym, dayKey: dayKey,
+            oweEc: oweEc, oweName: oweName, coverEc: coverEc, coverName: coverName,
+            schedGrid: grid,
+            onDone: renderDay
+          });
+          sel.value = "";
+        };
+      });
+    }
+
+    // ---------------- Maternity & Annual leave sections (read-only) ----------------
+    // These staff are excluded from the daily roster entirely. They render
+    // in their own greyed sections below so the manager can confirm who's
+    // away without being able to mark them on/late/sick/etc.
+    var awayEl = document.getElementById("dly-away-section");
+    if (!awayEl) {
+      awayEl = document.createElement("div");
+      awayEl.id = "dly-away-section";
+      listEl.parentNode.insertBefore(awayEl, listEl.nextSibling.nextSibling || null);
+    }
+    var awayHtml = "";
+    if (staffOnMat.length > 0) {
+      awayHtml +=
+        '<div class="dly-section-head dly-section-head-off">🍼 Staff on maternity leave · ' + staffOnMat.length + '</div>' +
+        '<div class="dly-list dly-list-off">' +
+          staffOnMat.map(function (m) {
+            var s = m.staff, rec = m.record || {};
+            var until = rec.return_date || rec.mat_end;
+            var untilTxt = until ? ' · returns ' + esc(formatChipDate(until)) : '';
+            return '<div class="dly-row dly-row-off">' +
+              '<div class="dly-row-info">' +
+                '<div class="dly-checkmark dly-checkmark-off">·</div>' +
+                '<div class="dly-row-text">' +
+                  '<div class="dly-name">' + esc(s.name) + '</div>' +
+                  '<div class="dly-code">' + esc(s.employee_code || "") +
+                    ' · <span class="row-tag row-tag-off">🍼 Maternity</span>' + untilTxt +
+                  '</div>' +
+                '</div>' +
+              '</div>' +
+              '<div class="dly-actions"><span class="dly-no-action">No action</span></div>' +
+              '<span></span>' +
+            '</div>';
+          }).join("") +
+        '</div>';
+    }
+    if (staffOnLeave.length > 0) {
+      awayHtml +=
+        '<div class="dly-section-head dly-section-head-off">🌴 Staff on annual leave · ' + staffOnLeave.length + '</div>' +
+        '<div class="dly-list dly-list-off">' +
+          staffOnLeave.map(function (l) {
+            var s = l.staff, rec = l.record || {};
+            var range = "";
+            if (rec.startDate && rec.endDate) range = ' · ' + esc(formatChipDate(rec.startDate)) + ' → ' + esc(formatChipDate(rec.endDate));
+            else if (rec.endDate)             range = ' · until ' + esc(formatChipDate(rec.endDate));
+            return '<div class="dly-row dly-row-off">' +
+              '<div class="dly-row-info">' +
+                '<div class="dly-checkmark dly-checkmark-off">·</div>' +
+                '<div class="dly-row-text">' +
+                  '<div class="dly-name">' + esc(s.name) + '</div>' +
+                  '<div class="dly-code">' + esc(s.employee_code || "") +
+                    ' · <span class="row-tag row-tag-off">🌴 Annual leave</span>' + range +
+                  '</div>' +
+                '</div>' +
+              '</div>' +
+              '<div class="dly-actions"><span class="dly-no-action">No action</span></div>' +
+              '<span></span>' +
+            '</div>';
+          }).join("") +
+        '</div>';
+    }
+    awayEl.innerHTML = awayHtml;
+
+    // ---------------- Sign-off section ----------------
+    var signoffEl = document.getElementById("dly-signoff");
+    if (!signoffEl) {
+      signoffEl = document.createElement("div");
+      signoffEl.id = "dly-signoff";
+      signoffEl.className = "dly-signoff";
+      // place after the list
+      listEl.parentNode.appendChild(signoffEl);
+    }
+    var allConfirmed = (confirmed === total) && total > 0;
+
+    if (alreadySigned) {
+      // Day is locked. No "Re-edit" — only the per-row proof-conversion
+      // buttons (sick → sick+note, absent → sick+note / FRL+proof) can change
+      // a status from here on.
+      signoffEl.innerHTML =
+        '<div class="dly-signed">' +
+          '<div class="dly-signed-head">🔒 Day signed off — attendance locked</div>' +
+          '<div class="dly-signed-body">By <strong>' + esc(dailyRec.signedBy) + '</strong>' +
+            (dailyRec.signedRole ? ' (' + esc(dailyRec.signedRole) + ')' : '') +
+            ' at ' + esc(fmtTime(dailyRec.signedAt)) +
+            ' · ' + esc(String(dailyRec.staffCount)) + ' staff' +
+          '</div>' +
+          '<div class="dly-signed-body" style="margin-top:8px;font-size:12px;line-height:1.5;color:#7f1d1d">' +
+            'Statuses can no longer be changed. The only allowed updates are:<br>' +
+            '· <strong>Sick NO note → Sick + note</strong> if a doctor\'s note arrives later<br>' +
+            '· <strong>Absent → Sick + note / FRL + proof</strong> if proof arrives later<br>' +
+            'Use the 📎 buttons on each row to upload the proof.' +
+          '</div>' +
+        '</div>';
+    } else if (isPast) {
+      // Past day, never signed off: no signoff form (you can't sign off a
+      // day you weren't there for), no status edits. Notes/proof can still
+      // be attached via the per-row 📎 buttons.
+      signoffEl.innerHTML =
+        '<div class="dly-signed">' +
+          '<div class="dly-signed-head">🔒 Past day — view only</div>' +
+          '<div class="dly-signed-body" style="font-size:12px;line-height:1.5;color:#7f1d1d">' +
+            'You\'re looking at a previous day. Statuses can no longer be changed. ' +
+            'The only updates still allowed are:<br>' +
+            '· <strong>Sick NO note → Sick + note</strong> if a doctor\'s note arrives later<br>' +
+            '· <strong>Absent → Sick + note / FRL + proof</strong> if proof arrives later<br>' +
+            'Use the 📎 buttons on each row to upload the proof.' +
+          '</div>' +
+        '</div>';
+    } else {
+      renderSignoffForm();
+    }
+
+    function renderSignoffForm() {
+      signoffEl.innerHTML =
+        '<div class="dly-signoff-head">📝 Confirm and sign off</div>' +
+        '<div class="dly-signoff-info">' +
+          (allConfirmed
+            ? 'All ' + total + ' staff confirmed. Sign off to finalise the day — totals on the HR portal\'s Attendance tab will update automatically.'
+            : '<strong>' + (total - confirmed) + ' staff still need a status above</strong> before you can sign off.') +
+        '</div>' +
+        '<div class="dly-signoff-form">' +
+          '<input id="dly-signoff-name" class="input" type="text" placeholder="Manager full name" autocomplete="name">' +
+          '<input id="dly-signoff-role" class="input" type="text" placeholder="Role (e.g. Store Manager)">' +
+        '</div>' +
+        '<button id="dly-signoff-submit" class="btn btn-primary" disabled>Confirm and submit attendance</button>' +
+        '<div class="dly-signoff-msg" style="margin-top:8px;font-size:11px;color:#7f1d1d;line-height:1.4">' +
+          '⚠ Once submitted, statuses are <strong>locked</strong>. The only later changes allowed are upgrading ' +
+          'Sick (no note) → Sick + note, and Absent → Sick / FRL when proof arrives.' +
+        '</div>' +
+        '<div id="dly-signoff-msg" class="dly-signoff-msg"></div>';
+
+      var nameEl = document.getElementById("dly-signoff-name");
+      var roleEl = document.getElementById("dly-signoff-role");
+      var subBtn = document.getElementById("dly-signoff-submit");
+      function refreshDisabled() {
+        var hasName = nameEl.value.trim().length >= 2;
+        var hasRole = roleEl.value.trim().length >= 2;
+        subBtn.disabled = !(allConfirmed && hasName && hasRole);
+      }
+      nameEl.addEventListener("input", refreshDisabled);
+      roleEl.addEventListener("input", refreshDisabled);
+      subBtn.onclick = async function () {
+        // Final confirmation — make the lock crystal clear before we save.
+        var ok = window.confirm(
+          "Submit attendance for " +
+          date.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", year: "numeric" }) +
+          "?\n\n" +
+          "After this, statuses are LOCKED. The only updates allowed afterwards are:\n" +
+          "  • Sick NO note → Sick + note (if the tech brings a doctor's note later)\n" +
+          "  • Absent → Sick + note / FRL + proof (if proof arrives later)\n\n" +
+          "Everything else is final. Proceed?"
+        );
+        if (!ok) return;
+        subBtn.disabled = true;
+        try {
+          await window.APP_DATA.saveDailyRecord(date, nameEl.value, roleEl.value, total);
+          await renderDay();
+        } catch (e) {
+          document.getElementById("dly-signoff-msg").textContent = "Could not save: " + (e.message || e);
+          subBtn.disabled = false;
+        }
+      };
+    }
+  }
+
+  // ---------------- Swap-back modal ----------------
+  // Opened when the manager picks an off-today person from the swap dropdown.
+  // Only offers dates where, per the current schedule:
+  //   - the cover person is scheduled to work (W/WL/E), AND
+  //   - the owe person is scheduled to be off (O/R)
+  // ...within the current payroll period (before the next 25th).
+  function findSwapBackCandidates(currentDate, oweEc, coverEc, schedGrid) {
+    var start = new Date(currentDate.getTime());
+    start.setDate(start.getDate() + 1);
+    var end = window.APP_DATA.endOfSchedulePeriod(currentDate);
+    // Swap-back must be a regular work day for the cover person — W or WL only.
+    // E (Extra) days are paid at a higher rate and aren't used to balance swaps.
+    var WORK_SWAPPABLE = { W: 1, WL: 1 };
+    var OFF            = { O: 1, R: 1 };
+    var out = [];
+    for (var d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      var dayKey  = String(d.getDate());
+      var coverSt = schedGrid[coverEc] && schedGrid[coverEc][dayKey];
+      var oweSt   = schedGrid[oweEc]   && schedGrid[oweEc][dayKey];
+      if (WORK_SWAPPABLE[coverSt] && OFF[oweSt]) {
+        out.push({
+          iso:       window.APP_DATA.isoDate(d),
+          dayLabel:  d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" }),
+          coverSt:   coverSt,
+          oweSt:     oweSt
+        });
+      }
+    }
+    return out;
+  }
+
+  // ---------------- Proof-upload modal (sick_n / frl) ----------------
+  // Without proof, the status is downgraded to "unpaid" — this is the
+  // policy: paid sick/FRL requires a doctor's note or letter.
+  // When opened post-signoff (opts.requireProof === true) the "Save without
+  // proof" fallback is hidden — the only way to convert is by uploading proof.
+  // ---------------- Early-leave modal ----------------
+  // Asks the manager how many hours early the tech left. Writes through
+  // the data layer's recordEarlyLeave, which appends to the kiosk audit log
+  // so the HR portal can deduct those hours on the attendance grid.
+  function openEarlyLeaveModal(opts) {
+    var prev = document.getElementById("boa-early-modal");
+    if (prev) prev.remove();
+
+    var modal = document.createElement("div");
+    modal.id = "boa-early-modal";
+    modal.className = "boa-modal-backdrop";
+    var prevHours = (opts.prevHours != null) ? String(opts.prevHours) : "";
+    var prevBy    = opts.prevBy || "";
+    modal.innerHTML =
+      '<div class="boa-modal-card">' +
+        '<h2 class="boa-modal-title">🏃 Left early — ' + esc(opts.staffName) + '</h2>' +
+        '<p class="boa-modal-body">' +
+          'How many hours early did ' + esc(opts.staffName) + ' leave? The HR portal will ' +
+          'deduct these hours from their day total on the attendance grid.' +
+        '</p>' +
+        '<label class="lbl" style="margin-top:10px">Hours early (30-minute intervals)</label>' +
+        '<input id="boa-early-hours" type="number" class="input" min="0.5" max="12" step="0.5" ' +
+          'placeholder="e.g. 1.5" value="' + esc(prevHours) + '" autocomplete="off">' +
+        '<label class="lbl" style="margin-top:10px">Recorded by (optional)</label>' +
+        '<input id="boa-early-by" type="text" class="input" ' +
+          'placeholder="Manager name" value="' + esc(prevBy) + '" autocomplete="off">' +
+        '<div id="boa-early-err" class="err-line"></div>' +
+        '<div class="btn-row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">' +
+          '<button type="button" class="link-btn link-btn-dark" id="boa-early-cancel">Cancel</button>' +
+          '<button type="button" class="btn btn-primary" id="boa-early-save">' +
+            (prevHours ? 'Update' : 'Save') +
+          '</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(modal);
+
+    var hoursEl  = document.getElementById("boa-early-hours");
+    var byEl     = document.getElementById("boa-early-by");
+    var errEl    = document.getElementById("boa-early-err");
+    var saveBtn  = document.getElementById("boa-early-save");
+    var cancelBtn= document.getElementById("boa-early-cancel");
+    function close() { modal.remove(); }
+    cancelBtn.onclick = close;
+    modal.addEventListener("click", function (e) { if (e.target === modal) close(); });
+    setTimeout(function () { try { hoursEl.focus(); hoursEl.select(); } catch (_e) {} }, 50);
+
+    saveBtn.onclick = function () {
+      errEl.textContent = "";
+      var raw = (hoursEl.value || "").trim();
+      var h   = Number(raw);
+      if (!raw || !isFinite(h) || h <= 0) {
+        errEl.textContent = "Enter a positive number of hours (e.g. 1.5).";
+        return;
+      }
+      if (h > 12) {
+        errEl.textContent = "12 hours is the max — please double-check the value.";
+        return;
+      }
+      saveBtn.disabled = true;
+      saveBtn.textContent = "Saving…";
+      Promise.resolve(opts.onSave(h, byEl.value)).then(function () { close(); }).catch(function () {
+        saveBtn.disabled = false; saveBtn.textContent = "Save";
+      });
+    };
+
+    hoursEl.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") saveBtn.click();
+    });
+  }
+
+  function openProofModal(opts) {
+    var prev = document.getElementById("boa-proof-modal");
+    if (prev) prev.remove();
+
+    var hint = (opts.status === "sick_n")
+      ? "Upload a doctor's note or sick certificate."
+      : "Upload proof for family responsibility leave (e.g. school letter, hospital appointment, funeral notice).";
+
+    var bodySub = opts.requireProof
+      ? 'Proof is required to upgrade ' + esc(opts.staffName) + '\'s status. Cancel if you don\'t have it yet.'
+      : 'Without proof, ' + esc(opts.staffName) + '\'s status will be saved as <strong>Unpaid</strong>.';
+
+    var modal = document.createElement("div");
+    modal.id = "boa-proof-modal";
+    modal.className = "boa-modal-backdrop";
+    modal.innerHTML =
+      '<div class="boa-modal-card">' +
+        '<h2 class="boa-modal-title">📎 Proof for ' + esc(opts.label) + '</h2>' +
+        '<p class="boa-modal-body">' +
+          esc(hint) + '<br>' +
+          bodySub +
+        '</p>' +
+        '<input id="boa-proof-file" type="file" accept="image/*" capture="environment" class="input">' +
+        '<div id="boa-proof-preview" style="margin-top:10px"></div>' +
+        '<div id="boa-proof-err" class="err-line"></div>' +
+        '<div class="btn-row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">' +
+          '<button type="button" class="link-btn link-btn-dark" id="boa-proof-cancel">Cancel</button>' +
+          '<div style="display:flex;gap:8px">' +
+            (opts.requireProof
+              ? ''
+              : '<button type="button" class="link-btn link-btn-dark" id="boa-proof-skip">Save without proof (Unpaid)</button>') +
+            '<button type="button" class="btn btn-primary" id="boa-proof-save" disabled>Save with proof</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+
+    document.body.appendChild(modal);
+
+    var fileEl    = document.getElementById("boa-proof-file");
+    var saveBtn   = document.getElementById("boa-proof-save");
+    var skipBtn   = document.getElementById("boa-proof-skip");
+    var cancelBtn = document.getElementById("boa-proof-cancel");
+    var errEl     = document.getElementById("boa-proof-err");
+    var prevEl    = document.getElementById("boa-proof-preview");
+    var compressedDataUrl = null;
+
+    function close() { modal.remove(); }
+    cancelBtn.onclick = close;
+    modal.addEventListener("click", function (e) { if (e.target === modal) close(); });
+
+    fileEl.onchange = function () {
+      errEl.textContent = "";
+      var file = fileEl.files[0];
+      if (!file) {
+        compressedDataUrl = null;
+        prevEl.innerHTML = "";
+        saveBtn.disabled = true;
+        return;
+      }
+      compressImage(file, 1600, 0.8, function (dataUrl, err) {
+        if (err) { errEl.textContent = err; saveBtn.disabled = true; return; }
+        compressedDataUrl = dataUrl;
+        prevEl.innerHTML = '<img src="' + dataUrl + '" alt="proof" style="max-width:100%;max-height:240px;border-radius:8px;display:block;border:1px solid var(--pink-100)">';
+        saveBtn.disabled = false;
+      });
+    };
+
+    saveBtn.onclick = async function () {
+      if (!compressedDataUrl) return;
+      saveBtn.disabled = true; saveBtn.textContent = "Saving…";
+      try {
+        await window.APP_DATA.setProof(opts.ym, opts.staffEc, opts.dayKey, compressedDataUrl);
+        await window.APP_DATA.setAttendanceStatus(opts.ym, opts.dayKey, opts.staffEc, opts.status);
+        close();
+        if (opts.onSaved) await opts.onSaved();
+      } catch (e) {
+        errEl.textContent = (e && e.message) || String(e);
+        saveBtn.disabled = false; saveBtn.textContent = "Save with proof";
+      }
+    };
+
+    if (skipBtn) {
+      skipBtn.onclick = async function () {
+        skipBtn.disabled = true;
+        try {
+          // Save as Unpaid — no proof = no paid leave
+          await window.APP_DATA.setAttendanceStatus(opts.ym, opts.dayKey, opts.staffEc, "unpaid");
+          close();
+          if (opts.onSaved) await opts.onSaved();
+        } catch (e) {
+          errEl.textContent = (e && e.message) || String(e);
+          skipBtn.disabled = false;
+        }
+      };
+    }
+  }
+
+  // Compress an image File into a JPEG data-URL bounded by maxDim and quality.
+  // Falls back to FileReader's raw data-URL if the file isn't actually an image.
+  function compressImage(file, maxDim, quality, callback) {
+    if (!file.type || file.type.indexOf("image/") !== 0) {
+      callback(null, "Only image files are accepted as proof.");
+      return;
+    }
+    var reader = new FileReader();
+    reader.onerror = function () { callback(null, "Could not read file."); };
+    reader.onload  = function () {
+      var img = new Image();
+      img.onerror = function () { callback(null, "Couldn't load image."); };
+      img.onload  = function () {
+        var ratio = Math.min(maxDim / img.width, maxDim / img.height, 1);
+        var w = Math.round(img.width  * ratio);
+        var h = Math.round(img.height * ratio);
+        var canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        try {
+          callback(canvas.toDataURL("image/jpeg", quality), null);
+        } catch (e) {
+          callback(null, "Could not compress image.");
+        }
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  // Uses the browser's native prompt() — matches the simpler iOS-style window.
+  async function openSwapModal(opts) {
+    var grid = opts.schedGrid || {};
+    var candidates = findSwapBackCandidates(opts.currentDate, opts.oweEc, opts.coverEc, grid);
+
+    if (candidates.length === 0) {
+      window.alert(
+        "No valid swap-back days remain in this payroll cycle.\n\n" +
+        opts.coverName + " needs a future day where they're scheduled to work AND " +
+        opts.oweName + " is scheduled off — and there isn't one before the next 25th.\n\n" +
+        "Adjust the schedule first if you still want to swap."
+      );
+      return;
+    }
+
+    var listStr = candidates.map(function (c, i) {
+      return (i + 1) + ") " + c.dayLabel;
+    }).join("\n");
+
+    var msg = "Pick the future day this week where they swap back\n\n" + listStr + "\n\nEnter the number:";
+
+    var answer = window.prompt(msg, "1");
+    if (answer === null) return; // cancelled
+
+    var n = parseInt(String(answer).trim(), 10);
+    if (isNaN(n) || n < 1 || n > candidates.length) {
+      window.alert("Please pick a number from 1 to " + candidates.length + ".");
+      return openSwapModal(opts);  // re-prompt
+    }
+
+    var chosen = candidates[n - 1];
+    try {
+      await window.APP_DATA.recordSwap({
+        dateA:     window.APP_DATA.isoDate(opts.currentDate),
+        dateB:     chosen.iso,
+        oweEc:     opts.oweEc,    oweName:   opts.oweName,
+        coverEc:   opts.coverEc,  coverName: opts.coverName
+      });
+      if (opts.onDone) await opts.onDone();
+    } catch (e) {
+      window.alert("Could not save: " + ((e && e.message) || e));
+    }
+  }
+
+  // ---------------- Cash-up ----------------
+  async function renderCashup() {
+    setSublabel("Cash Up");
+    setMain(
+      '<div class="panel">' +
+        '<div class="panel-head">' +
+          '<h2>Cash Up</h2>' +
+          '<button class="link-btn link-btn-dark" id="back-home">← Back</button>' +
+        '</div>' +
+        '<div id="cashup-body">Loading…</div>' +
+      '</div>'
+    );
+    document.getElementById("back-home").onclick = function () { _backHandler(); };
+
+    if (!window.APP_DATA || !window.APP_DATA.isConfigured()) {
+      document.getElementById("cashup-body").innerHTML = configMissingHtml();
+      return;
+    }
+
+    var existing = await window.APP_DATA.todaysCashup();
+    if (existing) {
+      document.getElementById("cashup-body").innerHTML =
+        '<div class="result-card result-ok">' +
+          '<div class="result-icon">✓</div>' +
+          '<div class="result-title">Today\'s cash-up already submitted</div>' +
+          '<div class="result-sub">Signed by ' + esc(existing.signed_by) + ' at ' + fmtTime(existing.created_at) + '</div>' +
+        '</div>' +
+        '<div class="cashup-summary">' +
+          row("Yoco (Card)",      existing.yoco) +
+          row("Cash",             existing.cash) +
+          row("Vouchers",         existing.vouchers) +
+          row("Discounts",        -Math.abs(existing.discounts), true) +
+          row("Total",            existing.total, false, true) +
+          (existing.notes ? '<div class="cashup-notes">"' + esc(existing.notes) + '"</div>' : "") +
+        '</div>';
+      return;
+    }
+
+    document.getElementById("cashup-body").innerHTML =
+      '<div class="cashup-form">' +
+        amountField("yoco",      "💳 Yoco (Card)") +
+        amountField("cash",      "💵 Cash") +
+        amountField("vouchers",  "🎟️ Vouchers") +
+        amountField("discounts", "− Discounts") +
+
+        '<div class="cashup-total-box">' +
+          '<div><div class="lbl">Total Revenue</div>' +
+          '<div class="cashup-breakdown" id="cu-brk">Enter amounts above</div></div>' +
+          '<div class="cashup-total" id="cu-total">R 0.00</div>' +
+        '</div>' +
+
+        '<label class="lbl">Notes (optional)</label>' +
+        '<textarea id="cu-notes" class="input" rows="3" placeholder="Till shortage, banking done, anything unusual…"></textarea>' +
+
+        '<label class="lbl">Your full name (sign-off)</label>' +
+        '<input id="cu-name" class="input" type="text" autocomplete="name" placeholder="Type your name to sign off">' +
+        '<div class="cashup-fineprint">🔒 By entering your name you confirm these figures are accurate and complete.</div>' +
+
+        '<div class="btn-row"><button class="btn btn-primary" id="cu-submit" disabled>Submit Cash Up</button></div>' +
+        '<div id="cu-result"></div>' +
+      '</div>';
+
+    var ids = ["yoco", "cash", "vouchers", "discounts"];
+    ids.forEach(function (id) { document.getElementById("cu-" + id).addEventListener("input", recalc); });
+    document.getElementById("cu-name").addEventListener("input", recalc);
+
+    document.getElementById("cu-submit").onclick = async function () {
+      var btn = this; btn.disabled = true;
+      var resEl = document.getElementById("cu-result");
+      try {
+        await window.APP_DATA.addCashup({
+          yoco:      val("yoco"),
+          cash:      val("cash"),
+          vouchers:  val("vouchers"),
+          discounts: val("discounts"),
+          notes:     document.getElementById("cu-notes").value,
+          signedBy:  document.getElementById("cu-name").value
+        });
+        resEl.innerHTML = '<div class="result-card result-ok"><div class="result-icon">✓</div><div class="result-title">Cash-up saved. Thank you!</div></div>';
+        setTimeout(renderCashup, 800);
+      } catch (err) {
+        resEl.innerHTML = '<div class="result-card result-err">Could not save: ' + esc(err.message || err) + '</div>';
+        btn.disabled = false;
+      }
+    };
+  }
+
+  function amountField(id, label) {
+    return '<div class="cashup-field">' +
+             '<label class="lbl" for="cu-' + id + '">' + label + '</label>' +
+             '<div class="amount-wrap"><span class="amount-prefix">R</span>' +
+               '<input id="cu-' + id + '" class="input amount-input" type="number" inputmode="decimal" step="0.01" min="0" placeholder="0.00">' +
+             '</div>' +
+           '</div>';
+  }
+  function val(id) { return parseFloat(document.getElementById("cu-" + id).value) || 0; }
+  function recalc() {
+    var y = val("yoco"), c = val("cash"), v = val("vouchers"), d = val("discounts");
+    var t = Math.max(0, y + c + v - d);
+    document.getElementById("cu-total").textContent = fmtMoney(t);
+    var parts = [];
+    if (y) parts.push("Yoco "      + fmtMoney(y));
+    if (c) parts.push("Cash "      + fmtMoney(c));
+    if (v) parts.push("Vouchers "  + fmtMoney(v));
+    if (d) parts.push("− Disc "    + fmtMoney(d));
+    document.getElementById("cu-brk").textContent = parts.length ? parts.join(" · ") : "Enter amounts above";
+    var hasAmt = (y > 0 || c > 0 || v > 0);
+    var name   = document.getElementById("cu-name").value.trim();
+    document.getElementById("cu-submit").disabled = !(hasAmt && name.length >= 2);
+  }
+
+  // ---------------- helpers ----------------
+  function row(label, n, neg, big) {
+    return '<div class="cashup-row' + (big ? " cashup-row-total" : "") + '">' +
+             '<span>' + esc(label) + '</span>' +
+             '<span>' + (neg ? "− " : "") + fmtMoney(Math.abs(n)) + '</span>' +
+           '</div>';
+  }
+  function fmtMoney(n) {
+    var v = Number(n) || 0;
+    return "R " + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  }
+  function fmtTime(iso) {
+    try {
+      var d = new Date(iso);
+      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    } catch (_e) { return iso; }
+  }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function configMissingHtml() {
+    return '<div class="warn">' +
+             '<strong>Supabase isn\'t connected yet.</strong><br>' +
+             'Open <code>js/config.js</code> and fill in the URL and anon key, then reload.' +
+           '</div>';
+  }
+
+  // ---------- Shared flows (used by manager-app.js too) ----------
+  // Manager dashboard reuses these so we don't duplicate ~600 lines of UI.
+  // Call configure() once to redirect output to a different element and
+  // override what "← Back" does, then invoke any render function.
+  window.BOA_FLOWS = {
+    configure: function (opts) {
+      opts = opts || {};
+      if (opts.mainElId) _mainElId = opts.mainElId;
+      if (typeof opts.onBack === "function") _backHandler = opts.onBack;
+    },
+    renderCheckin:      function () { return renderCheckin.apply(null, arguments); },
+    renderCashup:       function () { return renderCashup.apply(null, arguments); },
+    renderOffRequests:  function () { return renderOffRequests.apply(null, arguments); },
+    renderSchedule:     function () { return renderSchedule.apply(null, arguments); },
+    renderNews:         function () { return renderNews.apply(null, arguments); },
+    refreshNewsBadge:   function () { return refreshNewsBadge.apply(null, arguments); }
+  };
+})();

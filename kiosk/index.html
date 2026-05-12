@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>BOA Check-in</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Playfair+Display:wght@500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+
+<!-- PIN overlay -->
+<div id="pin-overlay">
+  <div class="pin-card">
+    <div class="pin-logo" id="pin-brand">BOA Check-in</div>
+    <div class="pin-sub">ENTER YOUR PIN</div>
+    <div class="pin-inputs">
+      <input type="password" inputmode="numeric" maxlength="1" class="pin-digit" autocomplete="off">
+      <input type="password" inputmode="numeric" maxlength="1" class="pin-digit" autocomplete="off">
+      <input type="password" inputmode="numeric" maxlength="1" class="pin-digit" autocomplete="off">
+      <input type="password" inputmode="numeric" maxlength="1" class="pin-digit" autocomplete="off">
+    </div>
+    <div class="pin-error" id="pin-error">&nbsp;</div>
+  </div>
+</div>
+
+<!-- App root (filled by staff-app.js or manager-app.js based on PIN) -->
+<div id="app-root"></div>
+
+<!-- Supabase JS SDK from CDN (no build step needed) -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+
+<!-- App scripts. Order matters: config → data → gate → role apps -->
+<script src="js/config.js"></script>
+<script src="js/data.js"></script>
+<script src="js/pin-gate.js"></script>
+<script src="js/staff-app.js"></script>
+<script src="js/manager-app.js"></script>
+
+</body>
+</html>
