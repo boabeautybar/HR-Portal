@@ -2088,6 +2088,10 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(false);
+  // Saved "final versions" list for this (branch, ym). Loaded on mount + on
+  // branch/ym change so the count badge on 📋 Versions is accurate.
+  const [versions, setVersions]   = useState([]);
+  const [versionsOpen, setVersionsOpen] = useState(false);
   const [techReqModal, setTechReqModal] = useState(null); // {ec, date, note} draft
   // Drag-and-drop state — { ec, day, value, weekIdx } when a cell is being dragged
   const [dragSource, setDragSource] = useState(null);
@@ -3609,6 +3613,49 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
   // Save a named "final version" snapshot of the current grid alongside
   // who made it + who approved it. Stored in app_state under
   // boa_schedapproved_<branch>_<ym> via window.BOA_DB.saveApprovedSchedule.
+  // Refresh the saved-versions list whenever the (branch, ym) the user
+  // is looking at changes.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!window.BOA_DB || !window.BOA_DB.loadApprovedSchedules) { setVersions([]); return; }
+      try {
+        const list = await window.BOA_DB.loadApprovedSchedules(branch, ym, false);
+        if (!cancelled) setVersions(list || []);
+      } catch (_) { if (!cancelled) setVersions([]); }
+    })();
+    return () => { cancelled = true; };
+  }, [branch, ym]);
+
+  // Restore a saved version's grid into the current draft. The user still
+  // has to click Save to persist it as the live schedule — restoring just
+  // pulls the snapshot into the editable grid.
+  function restoreVersion(v) {
+    if (!v || !v.grid) return;
+    if (dirty && !window.confirm("You have unsaved changes in the current grid. Restore version \"" + v.name + "\" and discard those edits?")) return;
+    if (!dirty && !window.confirm("Restore version \"" + v.name + "\" into the editor? (Click Save afterwards to make it the live schedule.)")) return;
+    setGrid(JSON.parse(JSON.stringify(v.grid)));
+    setDirty(true);
+    setVersionsOpen(false);
+    if (window.BOA_LOG_ACTIVITY) {
+      window.BOA_LOG_ACTIVITY("Restored final tech schedule version", branch + " · " + ym + " · " + v.name,
+        "Loaded snapshot saved " + new Date(v.savedAt).toLocaleString("en-ZA"), "Schedule");
+    }
+  }
+
+  async function deleteVersion(v) {
+    if (!v) return;
+    if (!window.confirm("Delete saved version \"" + v.name + "\"?\n\nThis cannot be undone.")) return;
+    try {
+      const next = await window.BOA_DB.deleteApprovedSchedule(branch, ym, false, v.id);
+      setVersions(next || []);
+      if (window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY("Deleted final tech schedule version", branch + " · " + ym + " · " + v.name,
+          "Made by " + (v.madeBy || "—") + " · approved by " + (v.approvedBy || "—"), "Schedule");
+      }
+    } catch (e) { alert("Could not delete: " + (e.message || e)); }
+  }
+
   async function saveFinalVersion() {
     // Visible-without-DevTools diagnostic. Reports exactly which check
     // fails (API missing / empty grid / cancel / save error / persisted-
@@ -3662,6 +3709,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
               "Open DevTools → Console for the [saveFinal] log lines and paste them back.");
         return;
       }
+      setVersions(after);
       if (window.BOA_LOG_ACTIVITY) {
         window.BOA_LOG_ACTIVITY("Saved final tech schedule version", branch + " · " + ym + " · " + (saved && saved.name || name),
           "Made by " + (madeBy || "—") + " · approved by " + (approvedBy || "—"), "Schedule");
@@ -4200,7 +4248,50 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
                 style={{ padding:"8px 14px", borderRadius:9, border:"1px solid #15803d", background:"#dcfce7", color:"#14532d", cursor:saving?"not-allowed":"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>
           📌 Save Final
         </button>
+        <button onClick={() => setVersionsOpen(o => !o)} title="View, restore or delete previously saved final versions for this branch + cycle."
+                style={{ padding:"8px 14px", borderRadius:9, border:"1px solid #15803d", background:versionsOpen ? "#86efac" : "#FFFFFF", color:"#14532d", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>
+          📋 Versions ({versions.length}) {versionsOpen ? "▾" : "▸"}
+        </button>
       </div>
+      {versionsOpen && (
+        <div style={{ marginTop:10, padding:"12px 16px", background:"#FFFFFF", border:"1px solid #15803d", borderRadius:10 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:"#14532d", marginBottom:10 }}>Final versions for {branch} · {ym}</div>
+          {versions.length === 0 && (
+            <div style={{ fontSize:12, color:"#6b7280", fontStyle:"italic" }}>No versions saved yet. Click 📌 Save Final to snapshot the current grid.</div>
+          )}
+          {versions.length > 0 && (
+            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+              <thead>
+                <tr style={{ background:"#dcfce7", color:"#14532d" }}>
+                  <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #86efac" }}>Name</th>
+                  <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #86efac" }}>Made by</th>
+                  <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #86efac" }}>Approved by</th>
+                  <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #86efac" }}>Saved at</th>
+                  <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #86efac" }}>Note</th>
+                  <th style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, borderBottom:"1px solid #86efac" }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {versions.map(v => (
+                  <tr key={v.id} style={{ borderTop:"1px solid #f0fdf4" }}>
+                    <td style={{ padding:"6px 10px", color:"#14532d", fontWeight:600 }}>{v.name}</td>
+                    <td style={{ padding:"6px 10px", color:"#14532d" }}>{v.madeBy || "—"}</td>
+                    <td style={{ padding:"6px 10px", color:"#14532d" }}>{v.approvedBy || "—"}</td>
+                    <td style={{ padding:"6px 10px", color:"#374151", fontSize:11, whiteSpace:"nowrap" }}>{v.savedAt ? new Date(v.savedAt).toLocaleString("en-ZA", { day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit" }) : "—"}</td>
+                    <td style={{ padding:"6px 10px", color:"#374151", fontSize:11, fontStyle:v.note ? "normal" : "italic" }}>{v.note || "—"}</td>
+                    <td style={{ padding:"6px 10px", textAlign:"right", whiteSpace:"nowrap" }}>
+                      <button onClick={() => restoreVersion(v)} title="Load this version into the editor (you still need to click Save to make it the live schedule)"
+                              style={{ background:"#dcfce7", color:"#14532d", border:"1px solid #86efac", borderRadius:6, padding:"3px 9px", cursor:"pointer", fontSize:11, fontWeight:700, marginRight:4 }}>↺ Restore</button>
+                      <button onClick={() => deleteVersion(v)} title="Permanently delete this saved version"
+                              style={{ background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fca5a5", borderRadius:6, padding:"3px 9px", cursor:"pointer", fontSize:11, fontWeight:700 }}>🗑</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
 
       {/* ── Off-day requests for nail techs ── mirrors the manager planner panel.
           Linked to the same `boa_tech_requests_v1` row the check-in app's manager
@@ -6058,6 +6149,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [mgrSchedSavedAt, setMgrSchedSavedAt] = useState(null);    // ISO timestamp from DB
   const [mgrSchedSaving, setMgrSchedSaving]   = useState(false);
   const [mgrSchedLoaded, setMgrSchedLoaded]   = useState(false);
+  const [mgrSchedVersions, setMgrSchedVersions]     = useState([]);
+  const [mgrSchedVersionsOpen, setMgrSchedVersionsOpen] = useState(false);
   useEffect(() => {
     if (!(tab === "scheduling" && schedSubTab === "managers")) return;
     if (!mgrSchedCycle) return;
@@ -6076,6 +6169,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         setMgrSchedLoaded(true);
       })
       .catch((e) => { console.error("loadMgrSched:", e); if (!cancelled) setMgrSchedLoaded(true); });
+    return () => { cancelled = true; };
+  }, [tab, schedSubTab, mgrSchedBranch, mgrSchedCycle, mgrSchedTick]);
+
+  // Saved "final versions" list for the manager schedule.
+  useEffect(() => {
+    if (!(tab === "scheduling" && schedSubTab === "managers")) return;
+    if (!mgrSchedCycle) return;
+    if (!window.BOA_DB || !window.BOA_DB.loadApprovedSchedules) { setMgrSchedVersions([]); return; }
+    let cancelled = false;
+    const ymKey = mgrSchedCycle.slice(0, 7);
+    window.BOA_DB.loadApprovedSchedules(mgrSchedBranch, ymKey, true)
+      .then(list => { if (!cancelled) setMgrSchedVersions(list || []); })
+      .catch(() => { if (!cancelled) setMgrSchedVersions([]); });
     return () => { cancelled = true; };
   }, [tab, schedSubTab, mgrSchedBranch, mgrSchedCycle, mgrSchedTick]);
 
@@ -11202,6 +11308,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       "Open DevTools → Console for the [saveFinal] log lines and paste them back.");
                 return;
               }
+              setMgrSchedVersions(after);
               logActivity("Saved final manager schedule version", branch + " · " + ymKey + " · " + (saved.name || name),
                 "Made by " + (madeBy || "—") + " · approved by " + (approvedBy || "—"), "Schedule");
               alert("✓ Saved final version: " + (saved.name || name) + "\n\n" + after.length + " version" + (after.length === 1 ? "" : "s") + " on file for " + branch + " · " + ymKey);
@@ -11209,6 +11316,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               console.error("[saveFinal] manager — failed", e);
               alert("Could not save final version: " + (e.message || e) + "\n\nSee DevTools → Console for details.");
             } finally { setMgrSchedSaving(false); }
+          };
+          const restoreMgrVersion = (v) => {
+            if (!v || !v.grid) return;
+            if (mgrSchedDirty && !window.confirm("Unsaved changes in the editor will be discarded. Restore version \"" + v.name + "\"?")) return;
+            if (!mgrSchedDirty && !window.confirm("Restore version \"" + v.name + "\" into the editor? (Click Save afterwards to make it the live schedule.)")) return;
+            setMgrSchedDraft(JSON.parse(JSON.stringify(v.grid)));
+            setMgrSchedDirty(true);
+            setMgrSchedVersionsOpen(false);
+            logActivity("Restored final manager schedule version", branch + " · " + ymKey + " · " + v.name,
+              "Loaded snapshot saved " + new Date(v.savedAt).toLocaleString("en-ZA"), "Schedule");
+          };
+          const deleteMgrVersion = async (v) => {
+            if (!v) return;
+            if (!window.confirm("Delete saved version \"" + v.name + "\"?\n\nThis cannot be undone.")) return;
+            try {
+              const next = await window.BOA_DB.deleteApprovedSchedule(branch, ymKey, true, v.id);
+              setMgrSchedVersions(next || []);
+              logActivity("Deleted final manager schedule version", branch + " · " + ymKey + " · " + v.name,
+                "Made by " + (v.madeBy || "—") + " · approved by " + (v.approvedBy || "—"), "Schedule");
+            } catch (e) { alert("Could not delete: " + (e.message || e)); }
           };
 
           // Guarded versions of branch/cycle change — warn if unsaved.
@@ -11270,6 +11397,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         title="Snapshot the current manager schedule as a named 'final version' with who made + approved it. Survives future overwrites."
                         style={{ padding:"7px 14px", background:"#dcfce7", color:"#14532d", border:"1px solid #15803d", borderRadius:8, cursor: mgrSchedSaving ? "not-allowed" : "pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
                   📌 Save Final
+                </button>
+                <button onClick={() => setMgrSchedVersionsOpen(o => !o)}
+                        title="View, restore or delete previously saved final versions for this branch + cycle."
+                        style={{ padding:"7px 14px", background: mgrSchedVersionsOpen ? "#86efac" : "#FFFFFF", color:"#14532d", border:"1px solid #15803d", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
+                  📋 Versions ({mgrSchedVersions.length}) {mgrSchedVersionsOpen ? "▾" : "▸"}
                 </button>
                 {(() => {
                   const canDownload = !!mgrSchedSaved && !mgrSchedDirty;
@@ -11343,6 +11475,46 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   ].map(c => <span key={c.l} style={{ display:"inline-flex", alignItems:"center", gap:4 }}><span style={{ display:"inline-block", width:10, height:10, background:c.bg, borderRadius:2 }} /> {c.l}</span>)}
                 </div>
               </div>
+
+              {mgrSchedVersionsOpen && (
+                <div style={{ marginBottom:14, padding:"12px 16px", background:"#FFFFFF", border:"1px solid #15803d", borderRadius:10 }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:"#14532d", marginBottom:10 }}>Final versions for {branch} · {ymKey}</div>
+                  {mgrSchedVersions.length === 0 && (
+                    <div style={{ fontSize:12, color:"#6b7280", fontStyle:"italic" }}>No versions saved yet. Click 📌 Save Final to snapshot the current schedule.</div>
+                  )}
+                  {mgrSchedVersions.length > 0 && (
+                    <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                      <thead>
+                        <tr style={{ background:"#dcfce7", color:"#14532d" }}>
+                          <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #86efac" }}>Name</th>
+                          <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #86efac" }}>Made by</th>
+                          <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #86efac" }}>Approved by</th>
+                          <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #86efac" }}>Saved at</th>
+                          <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #86efac" }}>Note</th>
+                          <th style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, borderBottom:"1px solid #86efac" }}></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {mgrSchedVersions.map(v => (
+                          <tr key={v.id} style={{ borderTop:"1px solid #f0fdf4" }}>
+                            <td style={{ padding:"6px 10px", color:"#14532d", fontWeight:600 }}>{v.name}</td>
+                            <td style={{ padding:"6px 10px", color:"#14532d" }}>{v.madeBy || "—"}</td>
+                            <td style={{ padding:"6px 10px", color:"#14532d" }}>{v.approvedBy || "—"}</td>
+                            <td style={{ padding:"6px 10px", color:"#374151", fontSize:11, whiteSpace:"nowrap" }}>{v.savedAt ? new Date(v.savedAt).toLocaleString("en-ZA", { day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit" }) : "—"}</td>
+                            <td style={{ padding:"6px 10px", color:"#374151", fontSize:11, fontStyle:v.note ? "normal" : "italic" }}>{v.note || "—"}</td>
+                            <td style={{ padding:"6px 10px", textAlign:"right", whiteSpace:"nowrap" }}>
+                              <button onClick={() => restoreMgrVersion(v)} title="Load this version into the editor (you still need to click Save to make it the live schedule)"
+                                      style={{ background:"#dcfce7", color:"#14532d", border:"1px solid #86efac", borderRadius:6, padding:"3px 9px", cursor:"pointer", fontSize:11, fontWeight:700, marginRight:4 }}>↺ Restore</button>
+                              <button onClick={() => deleteMgrVersion(v)} title="Permanently delete this saved version"
+                                      style={{ background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fca5a5", borderRadius:6, padding:"3px 9px", cursor:"pointer", fontSize:11, fontWeight:700 }}>🗑</button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
 
               {/* Conflicts panel */}
               {result.conflicts && result.conflicts.length > 0 && (
