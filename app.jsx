@@ -8521,7 +8521,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const hLbl = h === Math.floor(h) ? h + "h" : Math.floor(h) + "h" + Math.round((h - Math.floor(h))*60);
               return { lbl: hLbl + " Unpaid", bg:"#fed7aa", fg:"#7f1d1d", cat:"unpaid_h", hours:h };
             }
-            return STAT[bare] || null;
+            // "Left work early" tag from the kiosk. Accepts every plausible
+            // encoding the kiosk might use:
+            //   left_30 / left:30 / left-30
+            //   left_early_30 / left_early:30 / leftearly30
+            //   early_30 / early:30 / early-30
+            // → mins = the trailing number, hours = mins / 60. Same orange
+            // unpaid-hours palette as the existing deduct:Nh codes so it
+            // rolls into the NET UNPAID column on the right of the grid.
+            const leftMatch = bare.match(/^(?:left(?:[_\-:]?early)?|early)[_\-:]?(\d+)$/i);
+            if (leftMatch) {
+              const mins = parseInt(leftMatch[1], 10) || 0;
+              const h = mins / 60;
+              const lbl = mins === 0 ? "Left Early"
+                        : mins < 60 ? "Left " + mins + "m"
+                        : mins % 60 === 0 ? "Left " + (mins/60) + "h"
+                        : "Left " + Math.floor(mins/60) + "h" + (mins % 60) + "m";
+              return { lbl, bg:"#fed7aa", fg:"#7f1d1d", cat:"unpaid_h", hours:h };
+            }
+            const known = STAT[bare];
+            if (known) return known;
+            // Unrecognised status — surface the raw code in light grey (up
+            // to 8 chars) so a new kiosk tag never silently renders blank;
+            // we can identify the format and add it to the parser.
+            return { lbl: bare.toString().toUpperCase().slice(0, 8), bg:"#f3f4f6", fg:"#374151", cat:"unknown" };
           };
 
           // Build the cycle (25th-24th) day list
@@ -8618,6 +8641,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             if (bare.indexOf("deduct") === 0) {
               const h = bare.indexOf(":") > 0 ? parseFloat(bare.split(":")[1]) || 0 : 0;
               return "Hours Deduction (" + h + "h)";
+            }
+            const lm = bare.match(/^(?:left(?:[_\-:]?early)?|early)[_\-:]?(\d+)$/i);
+            if (lm) {
+              const mins = parseInt(lm[1], 10) || 0;
+              if (mins === 0) return "Left Early";
+              if (mins < 60) return "Left " + mins + "m";
+              if (mins % 60 === 0) return "Left " + (mins/60) + "h";
+              return "Left " + Math.floor(mins/60) + "h" + (mins % 60) + "m";
             }
             return (STAT[bare] && STAT[bare].lbl) || bare;
           };
@@ -9447,6 +9478,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               else if (v && v.indexOf("deduct") === 0) {
                 let h = 0; if (v.indexOf(":") > 0) h = parseFloat(v.split(":")[1]) || 0;
                 t.unpaidHours += h;
+              }
+              else if (v) {
+                // Kiosk "Left work early" tag (any of: left_30 / left:30 /
+                // left_early_30 / early_30 / …) rolls minutes into the
+                // unpaid-hours total exactly like deduct:Nh does.
+                const lm = v.match(/^(?:left(?:[_\-:]?early)?|early)[_\-:]?(\d+)$/i);
+                if (lm) t.unpaidHours += (parseInt(lm[1], 10) || 0) / 60;
               }
             }
             t.unpaidFromHours = t.unpaidHours / 9;
