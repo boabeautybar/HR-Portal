@@ -5024,6 +5024,7 @@ const SETTINGS_TABS = [
   { t: "checkins",   l: "Daily Check-ins",   cat: "Operations", icon: "📲" },
   { t: "mgrclockins",l: "Mgr Clock-ins",     cat: "Operations", icon: "🕐" },
   { t: "leave",      l: "Leave Planner",     cat: "Operations", icon: "🌴" },
+  { t: "storeOpenings", l: "Store Openings",  cat: "Operations", icon: "🔓" },
   { t: "attendance",     l: "Attendance / Payroll", cat: "Payroll", icon: "📕" },
   { t: "payrollProgress",l: "Payroll Progress",     cat: "Payroll", icon: "📊" },
   { t: "alerts",     l: "Alerts",            cat: "Insights",   icon: "🔔" },
@@ -5493,6 +5494,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [activityFWho, setActivityFWho]   = useState("All");
   const [activityFAction, setActivityFAction] = useState("All");
   const [activityFCategory, setActivityFCategory] = useState("All");
+  // Store-opening dashboard (Operations → Store Openings) — daily snapshot of
+  // which branches have hit the kiosk's "open the store" button.
+  const [storeOpenYmd,  setStoreOpenYmd]  = useState(() => { const t = new Date(); return t.getFullYear() + "-" + String(t.getMonth()+1).padStart(2,"0") + "-" + String(t.getDate()).padStart(2,"0"); });
+  const [storeOpenRows, setStoreOpenRows] = useState(null);    // null = not loaded, [] = loaded empty
+  const [storeOpenLoading, setStoreOpenLoading] = useState(false);
+  const loadStoreOpenings = async (ymdArg) => {
+    if (!window.BOA_DB || !window.BOA_DB.listStoreOpenings) {
+      setStoreOpenRows([]);
+      return;
+    }
+    setStoreOpenLoading(true);
+    try {
+      const rows = await window.BOA_DB.listStoreOpenings(ymdArg || storeOpenYmd);
+      setStoreOpenRows(rows || []);
+    } catch (e) {
+      console.error("listStoreOpenings:", e);
+      setStoreOpenRows([]);
+    } finally { setStoreOpenLoading(false); }
+  };
+  useEffect(() => {
+    if (tab !== "storeOpenings" && tab !== "dashboard") return;
+    loadStoreOpenings(storeOpenYmd);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, storeOpenYmd]);
   const [activityTick, setActivityTick]   = useState(0);
   useEffect(() => {
     if (tab !== "activity") return;
@@ -5515,7 +5540,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Map of tab → category name. Kept in sync with the groups list below.
   const NAV_TAB_TO_CATEGORY = {
     onboard:"People", offboard:"People", staff:"People", recruitment:"People", maternity:"People",
-    scheduling:"Operations", locations:"Operations", mgrclockins:"Operations", leave:"Operations", checkins:"Operations",
+    scheduling:"Operations", locations:"Operations", mgrclockins:"Operations", leave:"Operations", checkins:"Operations", storeOpenings:"Operations",
     attendance:"Payroll", payrollProgress:"Payroll",
     alerts:"Insights", activity:"Insights",
     settings:"Admin"
@@ -6655,6 +6680,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t:"checkins",    l:"📲 Daily Check-ins" },
                   { t:"mgrclockins", l:"🕐 Mgr Clock-ins"  },
                   { t:"leave",       l:"🌴 Leave Planner"  },
+                  { t:"storeOpenings", l:"🔓 Store Openings" },
                   { t:"mgrPlanner",  l:"🧩 Manager Planner",
                     isActive: tab==="recruitment" && recruitSubTab==="mgrRecruit" && mgrSubTab==="planner",
                     onClick: () => { setRecruitSubTab("mgrRecruit"); setMgrSubTab("planner"); tryChangeTab("recruitment"); }
@@ -6871,6 +6897,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             .filter(s => s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft >= 0 && s.offDaysSinceLeft <= 7)
             .sort((a, b) => (a.offDaysSinceLeft ?? 0) - (b.offDaysSinceLeft ?? 0));
 
+          // Today's store-openings snapshot (loaded by the useEffect above).
+          // null while the first load is in flight; show "…" until data lands.
+          const todayY = new Date();
+          const todayYmd = todayY.getFullYear() + "-" + String(todayY.getMonth()+1).padStart(2,"0") + "-" + String(todayY.getDate()).padStart(2,"0");
+          const showStoreCard = storeOpenYmd === todayYmd && storeOpenRows !== null;
+          const openedBranchSet = new Set(showStoreCard ? (storeOpenRows || []).map(r => r.branch) : []);
+          const stillClosedBranches = showStoreCard
+            ? SALONS.map(s => s.name).filter(n => !openedBranchSet.has(n))
+            : [];
+          const storeOpenedCount = SALONS.length - stillClosedBranches.length;
+          const storeOpenSub = !showStoreCard
+            ? "loading…"
+            : stillClosedBranches.length === 0
+              ? "✓ every branch open"
+              : "Closed: " + stillClosedBranches.slice(0, 3).join(", ") + (stillClosedBranches.length > 3 ? " +" + (stillClosedBranches.length - 3) + " more" : "");
+
           // Shared style tokens (kept inline so we don't disturb the rest of the file)
           const PINK = { ink:"#831843", accent:"#BE185D", soft:"#FBCFE8", softer:"#FCE7F3", softest:"#FDEEF5", deep:"#9F1A4F" };
           const sectionTitle = { fontFamily:"'Outfit',system-ui,sans-serif", fontSize:11, fontWeight:700, color:PINK.ink, letterSpacing:"0.22em", textTransform:"uppercase", display:"flex", alignItems:"center", gap:10, marginBottom:12 };
@@ -6912,6 +6954,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
               <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:11, marginBottom:24 }}>
                 {[
+                  // Today's store-opening status — bright green when all open,
+                  // amber otherwise with the first few still-closed branches listed.
+                  { l:"Stores open today",
+                    v: showStoreCard ? (storeOpenedCount + " / " + SALONS.length) : "…",
+                    sub: storeOpenSub,
+                    i: stillClosedBranches.length === 0 ? "🔓" : "⚠",
+                    c: showStoreCard && stillClosedBranches.length === 0 ? "#166534" : "#7c2d12",
+                    bg: showStoreCard && stillClosedBranches.length === 0 ? "#dcfce7" : "#fef3c7",
+                    click:()=>tryChangeTab("storeOpenings") },
                   { l:"Scheduled today",   v: dashScheduledToday == null ? "…" : dashScheduledToday, sub:"across all branches",       i:"📅", c:"#1e3a8a", bg:"#dbeafe" },
                   { l:"Active staff",       v: stats.active,                                          sub:"incl. " + stats.pregnant + " pregnant", i:"👥", c:"#14532d", bg:"#dcfce7" },
                   { l:"On maternity",       v: stats.onMat,                                           sub: stats.returning60 + " returning ≤60d",  i:"🤱", c:"#7A4258", bg:"#fce7f3" },
@@ -10483,6 +10534,85 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     })}
                   </div>
                 )}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ── STORE OPENINGS TAB ── */}
+        {tab === "storeOpenings" && (() => {
+          const rows = storeOpenRows || [];
+          const byBranch = {};
+          rows.forEach(r => { if (r && r.branch) byBranch[r.branch] = r; });
+          // Sort: still-closed first (so the ops manager sees who needs chasing),
+          // then opened (sorted by openedAt). Stable on branch name.
+          const sorted = SALONS.slice().map(sl => {
+            const rec = byBranch[sl.name];
+            return { branch: sl.name, opened: !!rec, openedAt: rec ? rec.openedAt : null, openedBy: rec ? rec.openedBy : null };
+          }).sort((a, b) => {
+            if (a.opened !== b.opened) return a.opened ? 1 : -1;
+            if (a.opened && b.opened) return (a.openedAt || "").localeCompare(b.openedAt || "");
+            return a.branch.localeCompare(b.branch);
+          });
+          const openedCount = sorted.filter(s => s.opened).length;
+          const closedCount = sorted.length - openedCount;
+          const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString("en-ZA", { hour:"2-digit", minute:"2-digit" }) : "—";
+          const todayStr = new Date().toISOString().slice(0, 10);
+          return (
+            <div style={{ padding:"24px 26px" }}>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14, gap:12, flexWrap:"wrap" }}>
+                <div>
+                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>🔓 Store Openings</div>
+                  <div style={{ fontSize:12, color:"#9d4d6e" }}>Which branches have hit the kiosk's "open the store" button today. Closed branches are at the top — those are the ones the ops manager still needs to chase.</div>
+                </div>
+                <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                  <input type="date" value={storeOpenYmd} max={todayStr} onChange={(e) => setStoreOpenYmd(e.target.value)}
+                         style={{ padding:"6px 9px", borderRadius:6, border:"1px solid #F9A8D4", fontSize:12, background:"#fff" }} />
+                  <button onClick={() => loadStoreOpenings(storeOpenYmd)}
+                          style={{ background:"#831843", color:"#fff", border:"none", borderRadius:7, padding:"7px 14px", cursor:"pointer", fontWeight:700, fontSize:12 }}>
+                    {storeOpenLoading ? "Loading…" : "↻ Refresh"}
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12, padding:"10px 14px", background: closedCount > 0 ? "#fef2f2" : "#f0fdf4", border: closedCount > 0 ? "1px solid #fecaca" : "1px solid #bbf7d0", borderRadius:8 }}>
+                <div style={{ fontSize:13, fontWeight:700, color: closedCount > 0 ? "#7f1d1d" : "#166534" }}>
+                  {closedCount > 0
+                    ? "⚠ " + closedCount + " branch" + (closedCount === 1 ? "" : "es") + " not opened yet for " + storeOpenYmd
+                    : "✓ All " + sorted.length + " branches opened on " + storeOpenYmd}
+                </div>
+                <div style={{ fontSize:12, color:"#831843", opacity:0.75 }}>
+                  {openedCount} of {sorted.length} opened
+                </div>
+              </div>
+
+              <div style={{ background:"#fff", border:"1px solid #F9A8D4", borderRadius:10, overflow:"hidden" }}>
+                <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+                  <thead>
+                    <tr style={{ background:"#FDEEF5", color:"#831843" }}>
+                      <th style={{ padding:"8px 12px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #F9A8D4" }}>Branch</th>
+                      <th style={{ padding:"8px 12px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #F9A8D4" }}>Status</th>
+                      <th style={{ padding:"8px 12px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #F9A8D4" }}>Opened at</th>
+                      <th style={{ padding:"8px 12px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #F9A8D4" }}>Opened by</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sorted.map(s => (
+                      <tr key={s.branch} style={{ background: s.opened ? "#f0fdf4" : "#fef2f2" }}>
+                        <td style={{ padding:"8px 12px", borderBottom:"1px solid #FDEEF5", color:"#831843", fontWeight:600 }}>{s.branch}</td>
+                        <td style={{ padding:"8px 12px", borderBottom:"1px solid #FDEEF5", color: s.opened ? "#166534" : "#7f1d1d", fontWeight:700 }}>
+                          {s.opened ? "✓ Open" : "⚠ Closed"}
+                        </td>
+                        <td style={{ padding:"8px 12px", borderBottom:"1px solid #FDEEF5", color:"#831843" }}>{fmtTime(s.openedAt)}</td>
+                        <td style={{ padding:"8px 12px", borderBottom:"1px solid #FDEEF5", color:"#831843" }}>{s.openedBy || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div style={{ marginTop:14, fontSize:11, color:"#831843", opacity:0.7 }}>
+                Reads <code>boa_store_open_&lt;branch&gt;_&lt;YYYY-MM-DD&gt;</code> rows from <code>app_state</code> — the kiosk writes one of these every time a manager taps "open the store". Date picker defaults to today; switch to view past days.
               </div>
             </div>
           );

@@ -578,6 +578,37 @@
     out.sort(function (a, b) { return b.ts.localeCompare(a.ts); });
     return out;
   }
+
+  // ---------- Store-opening status ----------
+  // The kiosk's "open the store" button writes one row per (branch, ymd) to
+  // app_state under boa_store_open_<branch>_<YYYY-MM-DD> with value
+  // { openedAt: ISO, openedBy: "Manager Name", branch: "..." }. Used by the
+  // Operations "Store Openings" tab to flag branches still closed for the
+  // day so the ops manager knows who to chase.
+  async function listStoreOpenings(ymd) {
+    if (!ymd) {
+      var today = new Date();
+      ymd = today.getFullYear() + "-" + String(today.getMonth()+1).padStart(2, "0") + "-" + String(today.getDate()).padStart(2, "0");
+    }
+    var like = "boa_store_open_%_" + ymd;
+    var res = await sb.from("app_state").select("key,value").like("key", like);
+    if (res.error) { console.error("listStoreOpenings:", res.error); return []; }
+    var rows = res.data || [];
+    var out = [];
+    rows.forEach(function (row) {
+      var m = /^boa_store_open_(.+)_(\d{4}-\d{2}-\d{2})$/.exec(row.key || "");
+      if (!m) return;
+      var val = row.value || {};
+      out.push({
+        branch:   val.branch || m[1],
+        ymd:      val.ymd || m[2],
+        openedAt: val.openedAt || null,
+        openedBy: val.openedBy || null
+      });
+    });
+    return out;
+  }
+
   // DEPRECATED: pulled every cell of the attendance grid, including Fresha
   // imports, manual HR-portal edits, and schedule mirrors — way too noisy.
   // Kept for the diagnostics probe only. Use listRecentKioskCheckins instead
@@ -887,6 +918,7 @@
     listRecentTechClockins:    listRecentTechClockins,
     listRecentAttendanceCheckins: listRecentAttendanceCheckins,
     listRecentKioskCheckins:      listRecentKioskCheckins,
+    listStoreOpenings:            listStoreOpenings,
     loadKioskProof:               loadKioskProof,
     probeRecentClockinsRaw:    probeRecentClockinsRaw,
     probeAttendanceGrid:       probeAttendanceGrid,
