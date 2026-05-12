@@ -5698,38 +5698,51 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }, [tab, storeOpenYmd]);
 
   // Schedule-finalisation tracker for the dashboard widget. Business rule:
-  // by the 15th of each calendar month, both the nail-tech AND manager
-  // schedules for the NEXT cycle (May 25 → Jun 24, i.e. tech-ym = 2026-06,
-  // mgr-ym = 2026-05) must have an approved snapshot saved. We probe
-  // app_state for any boa_(mgr)schedapproved_<branch>_<ym> row per branch.
-  const [schedFinalStatus, setSchedFinalStatus] = useState(null); // null=not loaded; { ymTech, ymMgr, deadline, byBranch:{[branch]:{tech,mgr}} }
+  // every cycle starts on the 25th, so the cycle we currently need to
+  // finalise is the one starting on the NEXT 25th. Deadline = 15th of the
+  // month that 25th falls in.
+  //   • Today < 25th of current month → finalise cycle starting 25th this month
+  //   • Today ≥ 25th of current month → finalise cycle starting 25th next month
+  // Tech schedule ym uses END-month convention; manager schedule + attendance
+  // use START-month. We probe boa_(mgr)schedapproved_<branch>_<ym> per branch.
+  // To avoid the off-by-one frustration of saving under the current cycle
+  // when the dashboard is checking the next, also probe the CURRENT cycle
+  // and merge — if a branch has finalised either, count it as done.
+  const [schedFinalStatus, setSchedFinalStatus] = useState(null);
   const loadSchedFinalStatus = async () => {
     if (!window.BOA_DB || !window.BOA_DB.loadApprovedSchedules) return;
     const today = new Date();
-    const m = today.getMonth(), y = today.getFullYear();
-    // Next cycle = May 25 → Jun 24 if today is in May. Tech ym uses the
-    // END-month convention; manager + attendance ym use START-month.
-    const startMonth = m + 1, startYear = y;
-    let endMonth = m + 2, endYear = y;
-    while (endMonth > 12) { endMonth -= 12; endYear += 1; }
-    let _sm = startMonth, _sy = startYear;
-    while (_sm > 12) { _sm -= 12; _sy += 1; }
-    const ymMgr  = _sy + "-" + String(_sm).padStart(2, "0");
-    const ymTech = endYear + "-" + String(endMonth).padStart(2, "0");
-    const deadline = new Date(y, m, 15);            // 15th of this calendar month
+    const y = today.getFullYear(), m = today.getMonth(), d = today.getDate();
+    // Cycle start (a Date) = next 25th from today
+    const cycStart = d < 25 ? new Date(y, m, 25) : new Date(y, m + 1, 25);
+    const cycEnd   = new Date(cycStart.getFullYear(), cycStart.getMonth() + 1, 24);
+    const ymMgr    = cycStart.getFullYear() + "-" + String(cycStart.getMonth() + 1).padStart(2, "0");
+    const ymTech   = cycEnd.getFullYear()   + "-" + String(cycEnd.getMonth() + 1).padStart(2, "0");
+    // Also the cycle currently RUNNING (the one before cycStart), to tolerate
+    // saves under the current cycle's ym.
+    const prevStart = new Date(cycStart.getFullYear(), cycStart.getMonth() - 1, 25);
+    const prevEnd   = new Date(cycStart.getFullYear(), cycStart.getMonth(), 24);
+    const ymMgrPrev  = prevStart.getFullYear() + "-" + String(prevStart.getMonth() + 1).padStart(2, "0");
+    const ymTechPrev = prevEnd.getFullYear()   + "-" + String(prevEnd.getMonth() + 1).padStart(2, "0");
+    const deadline = new Date(cycStart.getFullYear(), cycStart.getMonth(), 15); // 15th of month the cycle starts in
+    const cycLabel = cycStart.toLocaleDateString("en-ZA", { day:"2-digit", month:"short" }) + " → " + cycEnd.toLocaleDateString("en-ZA", { day:"2-digit", month:"short" });
     try {
       const results = {};
       await Promise.all(SALONS.map(async (sl) => {
         const branch = sl.name;
         try {
-          const [t, mg] = await Promise.all([
-            window.BOA_DB.loadApprovedSchedules(branch, ymTech, false),
-            window.BOA_DB.loadApprovedSchedules(branch, ymMgr, true)
+          const [t, mg, tPrev, mgPrev] = await Promise.all([
+            window.BOA_DB.loadApprovedSchedules(branch, ymTech,     false),
+            window.BOA_DB.loadApprovedSchedules(branch, ymMgr,      true),
+            window.BOA_DB.loadApprovedSchedules(branch, ymTechPrev, false),
+            window.BOA_DB.loadApprovedSchedules(branch, ymMgrPrev,  true)
           ]);
-          results[branch] = { tech: Array.isArray(t) && t.length > 0, mgr: Array.isArray(mg) && mg.length > 0 };
+          const techDone = (Array.isArray(t) && t.length > 0) || (Array.isArray(tPrev) && tPrev.length > 0);
+          const mgrDone  = (Array.isArray(mg) && mg.length > 0) || (Array.isArray(mgPrev) && mgPrev.length > 0);
+          results[branch] = { tech: techDone, mgr: mgrDone };
         } catch (e) { results[branch] = { tech: false, mgr: false }; }
       }));
-      setSchedFinalStatus({ ymTech, ymMgr, deadline: deadline.toISOString(), byBranch: results });
+      setSchedFinalStatus({ ymTech, ymMgr, deadline: deadline.toISOString(), cycLabel, byBranch: results });
     } catch (e) { console.error("loadSchedFinalStatus:", e); }
   };
   useEffect(() => {
@@ -7172,17 +7185,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 return !(r.tech && r.mgr);
               })
             : [];
-          const today15 = new Date();
-          const deadline15 = new Date(today15.getFullYear(), today15.getMonth(), 15);
-          const daysToDeadline = Math.ceil((deadline15 - new Date(today15.getFullYear(), today15.getMonth(), today15.getDate())) / 86400000);
+          const _todayMid = new Date();
+          const _today0   = new Date(_todayMid.getFullYear(), _todayMid.getMonth(), _todayMid.getDate());
+          const deadline15 = schedReady && schedFinalStatus.deadline ? new Date(schedFinalStatus.deadline) : new Date(_today0.getFullYear(), _today0.getMonth(), 15);
+          const daysToDeadline = Math.ceil((deadline15 - _today0) / 86400000);
           const overdue = schedReady && schedDone < schedTotal && daysToDeadline < 0;
+          const cycSuffix = schedReady && schedFinalStatus.cycLabel ? " · " + schedFinalStatus.cycLabel : "";
           const schedSub = !schedReady
             ? "loading…"
             : schedDone === schedTotal
-              ? "✓ all branches finalised"
+              ? "✓ all branches finalised" + cycSuffix
               : overdue
-                ? "⚠ overdue " + Math.abs(daysToDeadline) + " day" + (Math.abs(daysToDeadline) === 1 ? "" : "s") + " · " + schedMissing.slice(0, 2).join(", ") + (schedMissing.length > 2 ? " +" + (schedMissing.length - 2) + " more" : "")
-                : (daysToDeadline >= 0 ? daysToDeadline + " day" + (daysToDeadline === 1 ? "" : "s") + " left · " : "") + "Pending: " + schedMissing.slice(0, 2).join(", ") + (schedMissing.length > 2 ? " +" + (schedMissing.length - 2) + " more" : "");
+                ? "⚠ overdue " + Math.abs(daysToDeadline) + " day" + (Math.abs(daysToDeadline) === 1 ? "" : "s") + " · " + schedMissing.slice(0, 2).join(", ") + (schedMissing.length > 2 ? " +" + (schedMissing.length - 2) + " more" : "") + cycSuffix
+                : (daysToDeadline >= 0 ? daysToDeadline + " day" + (daysToDeadline === 1 ? "" : "s") + " left · " : "") + "Pending: " + schedMissing.slice(0, 2).join(", ") + (schedMissing.length > 2 ? " +" + (schedMissing.length - 2) + " more" : "") + cycSuffix;
           const schedBg = !schedReady ? "#fef3c7" : (schedDone === schedTotal ? "#dcfce7" : (overdue ? "#fee2e2" : "#fef3c7"));
           const schedColor = !schedReady ? "#7c2d12" : (schedDone === schedTotal ? "#166534" : (overdue ? "#7f1d1d" : "#7c2d12"));
           const schedIcon = !schedReady ? "📋" : (schedDone === schedTotal ? "📌" : (overdue ? "🚨" : "📌"));
