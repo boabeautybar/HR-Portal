@@ -5766,7 +5766,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
               const freshaWorkedCell = !!((bFW[s.ec] || {})[dy.d]);
               const freshaCoversThisDay = !!bFThru && dy.ymd <= bFThru;
-              const kioskMarkedAbsent = !!kioskAbs && kioskAbs.status !== "ext" && kioskAbs.status !== "trial" && kioskAbs.status !== "swap_o";
+              const kioskMarkedAbsent = !!kioskAbs && kioskAbs.status !== "ext" && kioskAbs.status !== "trial" && kioskAbs.status !== "swap_o" && !/^(?:left|early)/i.test(kioskAbs.status || "");
               const cellShowsAbsent = kioskMarkedAbsent || (override && !!bareV && !isWorking && !isLate);
               const extDayRecorded  = (override && bareV === "ext") || (!!kioskAbs && kioskAbs.status === "ext");
               const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
@@ -8513,6 +8513,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             swap_o: { lbl:"Owes",            bg:"#cbd5e1", fg:"#dc2626", cat:"swap" },
             swap_i: { lbl:"Owed",            bg:"#86efac", fg:"#14532d", cat:"swap" }
           };
+          // "Left work early" parser. The kiosk can encode the deduction
+          // either in the status code itself (left_30, left:30, left_early_30,
+          // early_30 …) OR — as the actual production kiosk does — as the
+          // bare status "left_early" with the duration in the note field
+          // ("Left 3h early" / "Left 30 min early" / "1h30m" / "30m"). This
+          // helper returns the minutes regardless of which form was used.
+          const parseLeftEarlyMins = (status, note) => {
+            const code = (status || "").toString();
+            const isLeft = /^(?:left(?:[_\-:]?early)?|early)\b/i.test(code);
+            if (!isLeft) return 0;
+            // Try the trailing-number form first.
+            const codeMatch = code.match(/(\d+)$/);
+            if (codeMatch) return parseInt(codeMatch[1], 10) || 0;
+            // Fall back to the note. Sum any "Nh" + "Nm/Nmin" found.
+            const n = (note || "").toString();
+            let mins = 0;
+            const h = /(\d+(?:\.\d+)?)\s*h/i.exec(n);
+            const m = /(\d+)\s*(?:m|min)\b/i.exec(n);
+            if (h) mins += Math.round(parseFloat(h[1]) * 60);
+            if (m) mins += parseInt(m[1], 10);
+            return mins;
+          };
+
           const resolveStat = (v) => {
             if (!v) return null;
             const bare = v.indexOf("~") === 0 ? v.slice(1) : v;
@@ -9480,11 +9503,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 t.unpaidHours += h;
               }
               else if (v) {
-                // Kiosk "Left work early" tag (any of: left_30 / left:30 /
-                // left_early_30 / early_30 / …) rolls minutes into the
-                // unpaid-hours total exactly like deduct:Nh does.
+                // Kiosk "Left work early" tag where the duration is in the
+                // status code itself (any of: left_30 / left:30 /
+                // left_early_30 / early_30 / …).
                 const lm = v.match(/^(?:left(?:[_\-:]?early)?|early)[_\-:]?(\d+)$/i);
                 if (lm) t.unpaidHours += (parseInt(lm[1], 10) || 0) / 60;
+              }
+              // Independent left-early lookup. The production kiosk records
+              // the cell as "On Time" (the tech actually came in) AND adds an
+              // audit-log entry with status "left_early" + note "Left 3h
+              // early". Walk the audit log so we pick up the deduction even
+              // when the cell value isn't itself an early-leave code.
+              const earlyAbs = ((kioskAbsentByBranch[attBranch] || {})[ec] || {})[dy.ymd];
+              if (earlyAbs && /^(?:left|early)/i.test(earlyAbs.status || "")) {
+                const codeMins = (function () {
+                  const m = (earlyAbs.status || "").match(/(\d+)$/);
+                  return m ? parseInt(m[1], 10) || 0 : 0;
+                })();
+                if (codeMins > 0) {
+                  t.unpaidHours += codeMins / 60;
+                } else {
+                  // Pull from the note: "Left 3h early" / "30 min" / "1h30m".
+                  const n = (earlyAbs.note || "").toString();
+                  let mins = 0;
+                  const hH = /(\d+(?:\.\d+)?)\s*h/i.exec(n);
+                  const mM = /(\d+)\s*(?:m|min)\b/i.exec(n);
+                  if (hH) mins += Math.round(parseFloat(hH[1]) * 60);
+                  if (mM) mins += parseInt(mM[1], 10);
+                  if (mins > 0) t.unpaidHours += mins / 60;
+                }
               }
             }
             t.unpaidFromHours = t.unpaidHours / 9;
@@ -9549,7 +9596,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const freshaWorkedCell = !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
                 const freshaCoversThisDay = !!effectiveFreshaThrough && dy.ymd <= effectiveFreshaThrough;
                 const override = hasOverride(s.ec, dy.d);
-                const kioskMarkedAbsent = !!kioskAbs && kioskAbs.status !== "ext" && kioskAbs.status !== "trial" && kioskAbs.status !== "swap_o";
+                const kioskMarkedAbsent = !!kioskAbs && kioskAbs.status !== "ext" && kioskAbs.status !== "trial" && kioskAbs.status !== "swap_o" && !/^(?:left|early)/i.test(kioskAbs.status || "");
                 const cellShowsAbsent = kioskMarkedAbsent || (override && !!bareV && !isWorking && !isLate);
                 const extDayRecorded = (override && bareV === "ext") || (!!kioskAbs && kioskAbs.status === "ext");
                 const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
@@ -9851,7 +9898,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const freshaWorkedCell    = !mirrorSuppressed && !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
                             const missingCheckin  = !checkinHasIn && freshaWorkedCell && isPastOrToday; // Fresha confirmed work but no check-in
                             const scheduleSaysWork    = hint === "on" || hint === "ext";
-                            const kioskAbsentScheduled = !!kioskAbs && scheduleSaysWork;
+                            const kioskAbsentScheduled = !!kioskAbs && scheduleSaysWork && !/^(?:left|early)/i.test(kioskAbs.status || "");
                             // Map the kiosk audit-log status to a STAT entry. The recordAbsence
                             // wrapper writes status="absent" with the reason in the note —
                             // surface that as a generic absent code so the cell still shows
@@ -9898,7 +9945,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             //  • presentNoApptWarn — kiosk says the tech checked in AND schedule
                             //    said work, but Fresha has no appointments. They were in the
                             //    store for nothing — manager should investigate.
-                            const kioskMarkedAbsent = !!kioskAbs && kioskAbs.status !== "ext" && kioskAbs.status !== "trial" && kioskAbs.status !== "swap_o";        // kiosk audit log entry, only true non-presence statuses
+                            const kioskMarkedAbsent = !!kioskAbs && kioskAbs.status !== "ext" && kioskAbs.status !== "trial" && kioskAbs.status !== "swap_o" && !/^(?:left|early)/i.test(kioskAbs.status || "");        // kiosk audit log entry, only true non-presence statuses
                             // The cell visually says "absent" — either the kiosk audit log
                             // recorded an absence, or the grid value itself is a non-presence
                             // status (manual edit or a kiosk write that didn't hit the audit log).
@@ -10056,6 +10103,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       );
                                     }
                                     return null;
+                                  })()}
+                                  {(() => {
+                                    // Left-early indicator. Always show whenever the kiosk has
+                                    // logged a left_early entry for this day, regardless of what
+                                    // the cell value itself is — the tech checked in (cell = "on")
+                                    // AND left X minutes early. Shows as a small orange "←Xh" /
+                                    // "←Xm" badge in the bottom-left corner.
+                                    if (!kioskAbs || !/^(?:left|early)/i.test(kioskAbs.status || "")) return null;
+                                    const mins = parseLeftEarlyMins(kioskAbs.status, kioskAbs.note);
+                                    const lbl = mins === 0 ? "←early"
+                                              : mins < 60 ? "←" + mins + "m"
+                                              : mins % 60 === 0 ? "←" + (mins/60) + "h"
+                                              : "←" + Math.floor(mins/60) + "h" + (mins % 60) + "m";
+                                    return (
+                                      <span title={"Left work early — " + lbl.slice(1) + (kioskAbs.note ? " · " + kioskAbs.note : "") + (kioskAbs.markedBy ? " · recorded by " + kioskAbs.markedBy : "")}
+                                            style={{ position:"absolute", bottom:7, left:2, fontSize:8, lineHeight:1, color:"#7c2d12", background:"#fed7aa", padding:"1px 4px", borderRadius:4, fontWeight:800, pointerEvents:"none", border:"1px solid #fdba74" }}>{lbl}</span>
+                                    );
                                   })()}
                                   {v && (
                                     <div style={{ position:"absolute", top:6, bottom: s.role === "NT" ? 6 : 0, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle: (override && !isFutureSwap) ? "normal" : "italic", fontWeight: (override && !isFutureSwap) ? 700 : 400, color: isFutureSwap ? "#9ca3af" : (override ? st.fg : (hintFg + "70")), pointerEvents:"none", letterSpacing:"0.02em" }}>{st.lbl || hintLbl || ""}</div>
