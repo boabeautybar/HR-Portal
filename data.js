@@ -179,6 +179,14 @@
   function schedHistKey(branch, ym, isManager) {
     return (isManager ? "boa_mgrschedhist_" : "boa_schedhist_") + branch + "_" + ym;
   }
+  // Approved-version key — list of {id, name, grid, madeBy, approvedBy,
+  // savedAt, savedBy}, newest first. Separate row from the rolling
+  // history so users can name and keep specific "final" versions without
+  // them being overwritten by the 5-snapshot history cap.
+  function schedApprovedKey(branch, ym, isManager) {
+    return (isManager ? "boa_mgrschedapproved_" : "boa_schedapproved_") + branch + "_" + ym;
+  }
+  var SCHED_APPROVED_LIMIT = 25;
   var SCHED_HISTORY_LIMIT = 5;
   async function loadSchedule(branch, ym, isManager) {
     var res = await sb.from("app_state").select("value").eq("key", schedKey(branch, ym, isManager)).maybeSingle();
@@ -190,6 +198,41 @@
     if (res.error) { console.error("loadScheduleHistory:", res.error); return []; }
     var v = res.data && res.data.value;
     return Array.isArray(v) ? v : (v && v.versions) || [];
+  }
+  // Approved-version helpers — explicit named "final" snapshots the user
+  // saves on top of the schedule. Each entry: { id, name, grid, madeBy,
+  // approvedBy, note, savedAt, savedBy }. Order: newest first, capped at
+  // SCHED_APPROVED_LIMIT so they don't grow unbounded.
+  async function loadApprovedSchedules(branch, ym, isManager) {
+    var res = await sb.from("app_state").select("value").eq("key", schedApprovedKey(branch, ym, isManager)).maybeSingle();
+    if (res.error) { console.error("loadApprovedSchedules:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveApprovedSchedule(branch, ym, isManager, entry) {
+    if (!entry || !entry.grid) return null;
+    var existing = await loadApprovedSchedules(branch, ym, isManager);
+    var rec = {
+      id:         "ap_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7),
+      name:       (entry.name || "Untitled").toString().slice(0, 80),
+      grid:       entry.grid,
+      madeBy:     (entry.madeBy || "").toString().slice(0, 80),
+      approvedBy: (entry.approvedBy || "").toString().slice(0, 80),
+      note:       (entry.note || "").toString().slice(0, 500),
+      savedAt:    new Date().toISOString(),
+      savedBy:    (entry.savedBy || "").toString().slice(0, 80)
+    };
+    var next = [rec].concat(existing).slice(0, SCHED_APPROVED_LIMIT);
+    var res = await sb.from("app_state").upsert({ key: schedApprovedKey(branch, ym, isManager), value: next });
+    if (res.error) { console.error("saveApprovedSchedule:", res.error); throw res.error; }
+    return rec;
+  }
+  async function deleteApprovedSchedule(branch, ym, isManager, id) {
+    var existing = await loadApprovedSchedules(branch, ym, isManager);
+    var next = existing.filter(function (x) { return x && x.id !== id; });
+    var res = await sb.from("app_state").upsert({ key: schedApprovedKey(branch, ym, isManager), value: next });
+    if (res.error) { console.error("deleteApprovedSchedule:", res.error); throw res.error; }
+    return next;
   }
   async function saveSchedule(branch, ym, grid, isManager) {
     // Snapshot existing schedule into history BEFORE overwriting. We only
@@ -891,6 +934,9 @@
     loadSchedule:           loadSchedule,
     saveSchedule:           saveSchedule,
     loadScheduleHistory:    loadScheduleHistory,
+    loadApprovedSchedules:  loadApprovedSchedules,
+    saveApprovedSchedule:   saveApprovedSchedule,
+    deleteApprovedSchedule: deleteApprovedSchedule,
     deleteSchedule:         deleteSchedule,
     listDeletedSchedules:   listDeletedSchedules,
     restoreSchedule:        restoreSchedule,

@@ -2088,6 +2088,10 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(false);
+  // Saved "final versions" list for this (branch, ym). Loaded on mount + on
+  // branch/ym change so the count badge on 📋 Versions is accurate.
+  const [versions, setVersions]   = useState([]);
+  const [versionsOpen, setVersionsOpen] = useState(false);
   const [techReqModal, setTechReqModal] = useState(null); // {ec, date, note} draft
   // Drag-and-drop state — { ec, day, value, weekIdx } when a cell is being dragged
   const [dragSource, setDragSource] = useState(null);
@@ -3606,6 +3610,131 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
     finally { setSaving(false); }
   }
 
+  // Save a named "final version" snapshot of the current grid alongside
+  // who made it + who approved it. Stored in app_state under
+  // boa_schedapproved_<branch>_<ym> via window.BOA_DB.saveApprovedSchedule.
+  // Refresh the saved-versions list whenever the (branch, ym) the user
+  // is looking at changes.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!window.BOA_DB || !window.BOA_DB.loadApprovedSchedules) { setVersions([]); return; }
+      try {
+        const list = await window.BOA_DB.loadApprovedSchedules(branch, ym, false);
+        if (!cancelled) setVersions(list || []);
+      } catch (_) { if (!cancelled) setVersions([]); }
+    })();
+    return () => { cancelled = true; };
+  }, [branch, ym]);
+
+  // Restore a saved version's grid into the current draft. The user still
+  // has to click Save to persist it as the live schedule — restoring just
+  // pulls the snapshot into the editable grid.
+  function restoreVersion(v) {
+    if (!v || !v.grid) return;
+    if (dirty && !window.confirm("You have unsaved changes in the current grid. Restore version \"" + v.name + "\" and discard those edits?")) return;
+    if (!dirty && !window.confirm("Restore version \"" + v.name + "\" into the editor? (Click Save afterwards to make it the live schedule.)")) return;
+    setGrid(JSON.parse(JSON.stringify(v.grid)));
+    setDirty(true);
+    setVersionsOpen(false);
+    if (window.BOA_LOG_ACTIVITY) {
+      window.BOA_LOG_ACTIVITY("Restored final tech schedule version", branch + " · " + ym + " · " + v.name,
+        "Loaded snapshot saved " + new Date(v.savedAt).toLocaleString("en-ZA"), "Schedule");
+    }
+  }
+
+  async function deleteVersion(v) {
+    if (!v) return;
+    if (!window.confirm("Delete saved version \"" + v.name + "\"?\n\nThis cannot be undone.")) return;
+    try {
+      const next = await window.BOA_DB.deleteApprovedSchedule(branch, ym, false, v.id);
+      setVersions(next || []);
+      if (window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY("Deleted final tech schedule version", branch + " · " + ym + " · " + v.name,
+          "Made by " + (v.madeBy || "—") + " · approved by " + (v.approvedBy || "—"), "Schedule");
+      }
+    } catch (e) { alert("Could not delete: " + (e.message || e)); }
+  }
+
+  async function saveFinalVersion() {
+    // Visible-without-DevTools diagnostic. Reports exactly which check
+    // fails (API missing / empty grid / cancel / save error / persisted-
+    // but-not-found) via an alert chain so we don't have to chase a
+    // silent failure in the browser console.
+    if (!window.BOA_DB) {
+      alert("DIAG: window.BOA_DB is missing — data layer hasn't loaded. Hard-refresh the page (Cmd-Shift-R / Ctrl-Shift-F5).");
+      return;
+    }
+    if (!window.BOA_DB.saveApprovedSchedule) {
+      alert("DIAG: window.BOA_DB exists but .saveApprovedSchedule is missing — this deploy hasn't got the new code yet. Has PR #55 actually been merged into main and Netlify redeployed?");
+      return;
+    }
+    if (!grid || Object.keys(grid).length === 0) {
+      alert("Nothing to save — the schedule is empty for this period.");
+      return;
+    }
+    const name = window.prompt("Name this version (e.g. \"Final v1\", \"After Theresa review\"):", "");
+    if (name === null) return;
+    if (!name.trim()) { alert("Cancelled — a name is required."); return; }
+    const madeBy = window.prompt("Who made this schedule? (manager / scheduler name)", "");
+    if (madeBy === null) return;
+    const approvedBy = window.prompt("Who approved it?", "");
+    if (approvedBy === null) return;
+    const note = window.prompt("Optional note (anything else worth recording):", "");
+    if (note === null) return;
+    setSaving(true);
+    const ecCount = Object.keys(grid).length;
+    console.log("[saveFinal] tech — saving", { branch, ym, ecCount, name: name.trim(), madeBy: madeBy.trim(), approvedBy: approvedBy.trim() });
+    try {
+      const u = window.BOA_CURRENT_USER || {};
+      const saved = await window.BOA_DB.saveApprovedSchedule(branch, ym, false, {
+        name:       name.trim(),
+        grid:       JSON.parse(JSON.stringify(grid)),
+        madeBy:     madeBy.trim(),
+        approvedBy: approvedBy.trim(),
+        note:       note.trim(),
+        savedBy:    u.name || ""
+      });
+      console.log("[saveFinal] tech — saveApprovedSchedule returned", saved);
+      // Verify by listing — if the save silently failed (RLS, network) the
+      // returned record won't be in the persisted list.
+      const after = window.BOA_DB.loadApprovedSchedules
+        ? await window.BOA_DB.loadApprovedSchedules(branch, ym, false)
+        : [];
+      console.log("[saveFinal] tech — list after save (" + after.length + " versions)", after);
+      const persisted = saved && after.some(x => x && x.id === saved.id);
+      if (!persisted) {
+        alert("⚠ Save returned but the version wasn't found in storage after re-reading.\n\n" +
+              "This usually means Supabase Row-Level-Security blocked the write to app_state.\n\n" +
+              "Open DevTools → Console for the [saveFinal] log lines and paste them back.");
+        return;
+      }
+      setVersions(after);
+      // Save Final supersedes Save — also publish the snapshot as the live
+      // schedule so the rest of the system (attendance, leave, kiosk, etc.)
+      // immediately sees the approved version. Failure here is logged and
+      // shown, but the archive entry already persisted.
+      let publishedLive = false;
+      try {
+        const live = await window.BOA_DB.saveSchedule(branch, ym, grid, false);
+        setSavedAt(live.savedAt); setDirty(false);
+        publishedLive = true;
+      } catch (publishErr) {
+        console.error("[saveFinal] tech — archive saved but publish-to-live failed:", publishErr);
+      }
+      if (window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY("Approved tech schedule", branch + " · " + ym + " · " + (saved && saved.name || name),
+          "Made by " + (madeBy || "—") + " · approved by " + (approvedBy || "—") + (publishedLive ? "" : " · ⚠ archive saved but live-schedule publish failed"), "Schedule");
+      }
+      alert("✓ Approved + published: " + (saved.name || name) + "\n\n" +
+            after.length + " final version" + (after.length === 1 ? "" : "s") + " on file for " + branch + " · " + ym +
+            (publishedLive ? "" : "\n\n⚠ NOTE: the snapshot was archived but writing it to the live schedule failed. Try the regular Save button to publish."));
+    } catch (e) {
+      console.error("[saveFinal] tech — failed", e);
+      alert("Could not save final version: " + (e.message || e) + "\n\nSee DevTools → Console for details.");
+    } finally { setSaving(false); }
+  }
+
   const monthAbbr = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   const dowAbbr = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 
@@ -4128,8 +4257,57 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
           );
         })()}
         <button onClick={clearAll} style={{ padding:"8px 14px", borderRadius:9, border:"1px solid #FBCFE8", background:"#FFFFFF", color:"#BE185D", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:600 }}>Clear period</button>
-        <button onClick={save} disabled={saving || !dirty} style={{ padding:"8px 18px", borderRadius:9, border:"none", background:dirty?"#BE185D":"#FBCFE8", color:dirty?"#fff":"#9F1A4F", cursor:dirty?"pointer":"not-allowed", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>{saving ? "Saving…" : "Save"}</button>
+        <button onClick={save} disabled={saving || !dirty} title="Save current edits as the live schedule. Use this for work-in-progress; the prior version is backed up to history."
+                style={{ padding:"8px 18px", borderRadius:9, border:"none", background:dirty?"#BE185D":"#FBCFE8", color:dirty?"#fff":"#9F1A4F", cursor:dirty?"pointer":"not-allowed", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>{saving ? "Saving…" : "Save Draft"}</button>
+        <button onClick={saveFinalVersion} disabled={saving}
+                title="Publish the current grid as the approved schedule for this cycle. Writes it as the live schedule AND archives a named snapshot with who made + approved it. Use this on the 15th of each month for the next month's schedule."
+                style={{ padding:"8px 14px", borderRadius:9, border:"1px solid #15803d", background:"#dcfce7", color:"#14532d", cursor:saving?"not-allowed":"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>
+          📌 Approve &amp; Publish
+        </button>
+        <button onClick={() => setVersionsOpen(o => !o)} title="View, restore or delete previously saved final versions for this branch + cycle."
+                style={{ padding:"8px 14px", borderRadius:9, border:"1px solid #15803d", background:versionsOpen ? "#86efac" : "#FFFFFF", color:"#14532d", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>
+          📋 Versions ({versions.length}) {versionsOpen ? "▾" : "▸"}
+        </button>
       </div>
+      {versionsOpen && (
+        <div style={{ marginTop:10, padding:"12px 16px", background:"#FFFFFF", border:"1px solid #15803d", borderRadius:10 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:"#14532d", marginBottom:10 }}>Final versions for {branch} · {ym}</div>
+          {versions.length === 0 && (
+            <div style={{ fontSize:12, color:"#6b7280", fontStyle:"italic" }}>No versions saved yet. Click 📌 Save Final to snapshot the current grid.</div>
+          )}
+          {versions.length > 0 && (
+            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+              <thead>
+                <tr style={{ background:"#dcfce7", color:"#14532d" }}>
+                  <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #86efac" }}>Name</th>
+                  <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #86efac" }}>Made by</th>
+                  <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #86efac" }}>Approved by</th>
+                  <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #86efac" }}>Saved at</th>
+                  <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #86efac" }}>Note</th>
+                  <th style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, borderBottom:"1px solid #86efac" }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {versions.map(v => (
+                  <tr key={v.id} style={{ borderTop:"1px solid #f0fdf4" }}>
+                    <td style={{ padding:"6px 10px", color:"#14532d", fontWeight:600 }}>{v.name}</td>
+                    <td style={{ padding:"6px 10px", color:"#14532d" }}>{v.madeBy || "—"}</td>
+                    <td style={{ padding:"6px 10px", color:"#14532d" }}>{v.approvedBy || "—"}</td>
+                    <td style={{ padding:"6px 10px", color:"#374151", fontSize:11, whiteSpace:"nowrap" }}>{v.savedAt ? new Date(v.savedAt).toLocaleString("en-ZA", { day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit" }) : "—"}</td>
+                    <td style={{ padding:"6px 10px", color:"#374151", fontSize:11, fontStyle:v.note ? "normal" : "italic" }}>{v.note || "—"}</td>
+                    <td style={{ padding:"6px 10px", textAlign:"right", whiteSpace:"nowrap" }}>
+                      <button onClick={() => restoreVersion(v)} title="Load this version into the editor (you still need to click Save to make it the live schedule)"
+                              style={{ background:"#dcfce7", color:"#14532d", border:"1px solid #86efac", borderRadius:6, padding:"3px 9px", cursor:"pointer", fontSize:11, fontWeight:700, marginRight:4 }}>↺ Restore</button>
+                      <button onClick={() => deleteVersion(v)} title="Permanently delete this saved version"
+                              style={{ background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fca5a5", borderRadius:6, padding:"3px 9px", cursor:"pointer", fontSize:11, fontWeight:700 }}>🗑</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
 
       {/* ── Off-day requests for nail techs ── mirrors the manager planner panel.
           Linked to the same `boa_tech_requests_v1` row the check-in app's manager
@@ -5518,6 +5696,61 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     loadStoreOpenings(storeOpenYmd);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, storeOpenYmd]);
+
+  // Schedule-finalisation tracker for the dashboard widget. Business rule:
+  // every cycle starts on the 25th, so the cycle we currently need to
+  // finalise is the one starting on the NEXT 25th. Deadline = 15th of the
+  // month that 25th falls in.
+  //   • Today < 25th of current month → finalise cycle starting 25th this month
+  //   • Today ≥ 25th of current month → finalise cycle starting 25th next month
+  // Tech schedule ym uses END-month convention; manager schedule + attendance
+  // use START-month. We probe boa_(mgr)schedapproved_<branch>_<ym> per branch.
+  // To avoid the off-by-one frustration of saving under the current cycle
+  // when the dashboard is checking the next, also probe the CURRENT cycle
+  // and merge — if a branch has finalised either, count it as done.
+  const [schedFinalStatus, setSchedFinalStatus] = useState(null);
+  const loadSchedFinalStatus = async () => {
+    if (!window.BOA_DB || !window.BOA_DB.loadApprovedSchedules) return;
+    const today = new Date();
+    const y = today.getFullYear(), m = today.getMonth(), d = today.getDate();
+    // Cycle start (a Date) = next 25th from today
+    const cycStart = d < 25 ? new Date(y, m, 25) : new Date(y, m + 1, 25);
+    const cycEnd   = new Date(cycStart.getFullYear(), cycStart.getMonth() + 1, 24);
+    const ymMgr    = cycStart.getFullYear() + "-" + String(cycStart.getMonth() + 1).padStart(2, "0");
+    const ymTech   = cycEnd.getFullYear()   + "-" + String(cycEnd.getMonth() + 1).padStart(2, "0");
+    // Also the cycle currently RUNNING (the one before cycStart), to tolerate
+    // saves under the current cycle's ym.
+    const prevStart = new Date(cycStart.getFullYear(), cycStart.getMonth() - 1, 25);
+    const prevEnd   = new Date(cycStart.getFullYear(), cycStart.getMonth(), 24);
+    const ymMgrPrev  = prevStart.getFullYear() + "-" + String(prevStart.getMonth() + 1).padStart(2, "0");
+    const ymTechPrev = prevEnd.getFullYear()   + "-" + String(prevEnd.getMonth() + 1).padStart(2, "0");
+    const deadline = new Date(cycStart.getFullYear(), cycStart.getMonth(), 15); // 15th of month the cycle starts in
+    const cycLabel = cycStart.toLocaleDateString("en-ZA", { day:"2-digit", month:"short" }) + " → " + cycEnd.toLocaleDateString("en-ZA", { day:"2-digit", month:"short" });
+    try {
+      const results = {};
+      await Promise.all(SALONS.map(async (sl) => {
+        const branch = sl.name;
+        try {
+          const [t, mg, tPrev, mgPrev] = await Promise.all([
+            window.BOA_DB.loadApprovedSchedules(branch, ymTech,     false),
+            window.BOA_DB.loadApprovedSchedules(branch, ymMgr,      true),
+            window.BOA_DB.loadApprovedSchedules(branch, ymTechPrev, false),
+            window.BOA_DB.loadApprovedSchedules(branch, ymMgrPrev,  true)
+          ]);
+          const techDone = (Array.isArray(t) && t.length > 0) || (Array.isArray(tPrev) && tPrev.length > 0);
+          const mgrDone  = (Array.isArray(mg) && mg.length > 0) || (Array.isArray(mgPrev) && mgPrev.length > 0);
+          results[branch] = { tech: techDone, mgr: mgrDone };
+        } catch (e) { results[branch] = { tech: false, mgr: false }; }
+      }));
+      setSchedFinalStatus({ ymTech, ymMgr, deadline: deadline.toISOString(), cycLabel, byBranch: results });
+    } catch (e) { console.error("loadSchedFinalStatus:", e); }
+  };
+  useEffect(() => {
+    if (tab !== "dashboard") return;
+    loadSchedFinalStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
   const [activityTick, setActivityTick]   = useState(0);
   useEffect(() => {
     if (tab !== "activity") return;
@@ -5987,6 +6220,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [mgrSchedSavedAt, setMgrSchedSavedAt] = useState(null);    // ISO timestamp from DB
   const [mgrSchedSaving, setMgrSchedSaving]   = useState(false);
   const [mgrSchedLoaded, setMgrSchedLoaded]   = useState(false);
+  const [mgrSchedVersions, setMgrSchedVersions]     = useState([]);
+  const [mgrSchedVersionsOpen, setMgrSchedVersionsOpen] = useState(false);
   useEffect(() => {
     if (!(tab === "scheduling" && schedSubTab === "managers")) return;
     if (!mgrSchedCycle) return;
@@ -6005,6 +6240,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         setMgrSchedLoaded(true);
       })
       .catch((e) => { console.error("loadMgrSched:", e); if (!cancelled) setMgrSchedLoaded(true); });
+    return () => { cancelled = true; };
+  }, [tab, schedSubTab, mgrSchedBranch, mgrSchedCycle, mgrSchedTick]);
+
+  // Saved "final versions" list for the manager schedule.
+  useEffect(() => {
+    if (!(tab === "scheduling" && schedSubTab === "managers")) return;
+    if (!mgrSchedCycle) return;
+    if (!window.BOA_DB || !window.BOA_DB.loadApprovedSchedules) { setMgrSchedVersions([]); return; }
+    let cancelled = false;
+    const ymKey = mgrSchedCycle.slice(0, 7);
+    window.BOA_DB.loadApprovedSchedules(mgrSchedBranch, ymKey, true)
+      .then(list => { if (!cancelled) setMgrSchedVersions(list || []); })
+      .catch(() => { if (!cancelled) setMgrSchedVersions([]); });
     return () => { cancelled = true; };
   }, [tab, schedSubTab, mgrSchedBranch, mgrSchedCycle, mgrSchedTick]);
 
@@ -6919,6 +7167,47 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               ? "✓ every branch open"
               : "Closed: " + stillClosedBranches.slice(0, 3).join(", ") + (stillClosedBranches.length > 3 ? " +" + (stillClosedBranches.length - 3) + " more" : "");
 
+          // Schedule-finalisation status for next month's cycle, split into
+          // two independent cards: one for nail-tech schedules and one for
+          // manager schedules. Each card counts X / 17 (= SALONS.length).
+          // Green when complete, amber while pending, red once past the
+          // 15th-of-cycle-start-month deadline.
+          const schedReady = !!(schedFinalStatus && schedFinalStatus.byBranch);
+          const schedTotal = SALONS.length;
+          const _todayMid = new Date();
+          const _today0   = new Date(_todayMid.getFullYear(), _todayMid.getMonth(), _todayMid.getDate());
+          const deadline15 = schedReady && schedFinalStatus.deadline ? new Date(schedFinalStatus.deadline) : new Date(_today0.getFullYear(), _today0.getMonth(), 15);
+          const daysToDeadline = Math.ceil((deadline15 - _today0) / 86400000);
+          const cycSuffix = schedReady && schedFinalStatus.cycLabel ? " · " + schedFinalStatus.cycLabel : "";
+          const _buildSchedCard = (kind /* "tech" | "mgr" */) => {
+            const done = schedReady
+              ? SALONS.reduce((n, sl) => {
+                  const r = schedFinalStatus.byBranch[sl.name] || { tech:false, mgr:false };
+                  return n + (r[kind] ? 1 : 0);
+                }, 0)
+              : 0;
+            const missing = schedReady
+              ? SALONS.map(s => s.name).filter(n => {
+                  const r = schedFinalStatus.byBranch[n] || { tech:false, mgr:false };
+                  return !r[kind];
+                })
+              : [];
+            const overdue = schedReady && done < schedTotal && daysToDeadline < 0;
+            const sub = !schedReady
+              ? "loading…"
+              : done === schedTotal
+                ? "✓ all branches finalised" + cycSuffix
+                : overdue
+                  ? "⚠ overdue " + Math.abs(daysToDeadline) + " day" + (Math.abs(daysToDeadline) === 1 ? "" : "s") + " · " + missing.slice(0, 2).join(", ") + (missing.length > 2 ? " +" + (missing.length - 2) + " more" : "") + cycSuffix
+                  : (daysToDeadline >= 0 ? daysToDeadline + " day" + (daysToDeadline === 1 ? "" : "s") + " left · " : "") + "Pending: " + missing.slice(0, 2).join(", ") + (missing.length > 2 ? " +" + (missing.length - 2) + " more" : "") + cycSuffix;
+            const bg    = !schedReady ? "#fef3c7" : (done === schedTotal ? "#dcfce7" : (overdue ? "#fee2e2" : "#fef3c7"));
+            const color = !schedReady ? "#7c2d12" : (done === schedTotal ? "#166534" : (overdue ? "#7f1d1d" : "#7c2d12"));
+            const icon  = !schedReady ? "📋" : (done === schedTotal ? "📌" : (overdue ? "🚨" : "📌"));
+            return { done, missing, sub, bg, color, icon };
+          };
+          const techCard = _buildSchedCard("tech");
+          const mgrCard  = _buildSchedCard("mgr");
+
           // Shared style tokens (kept inline so we don't disturb the rest of the file)
           const PINK = { ink:"#831843", accent:"#BE185D", soft:"#FBCFE8", softer:"#FCE7F3", softest:"#FDEEF5", deep:"#9F1A4F" };
           const sectionTitle = { fontFamily:"'Outfit',system-ui,sans-serif", fontSize:11, fontWeight:700, color:PINK.ink, letterSpacing:"0.22em", textTransform:"uppercase", display:"flex", alignItems:"center", gap:10, marginBottom:12 };
@@ -6960,14 +7249,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
               <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:11, marginBottom:24 }}>
                 {[
-                  // Today's store-opening status — bright green when all open,
-                  // amber otherwise with the first few still-closed branches listed.
+                  // Today's store-opening status — bright green when every
+                  // branch is open, red the moment ANY branch is still closed
+                  // (no amber middle state) so it pops on the dashboard until
+                  // resolved. While loading, fall back to the neutral amber.
                   { l:"Stores open today",
                     v: showStoreCard ? (storeOpenedCount + " / " + SALONS.length) : "…",
                     sub: storeOpenSub,
-                    i: stillClosedBranches.length === 0 ? "🔓" : "⚠",
-                    c: showStoreCard && stillClosedBranches.length === 0 ? "#166534" : "#7c2d12",
-                    bg: showStoreCard && stillClosedBranches.length === 0 ? "#dcfce7" : "#fef3c7",
+                    i: !showStoreCard ? "⚠" : (stillClosedBranches.length === 0 ? "🔓" : "🚨"),
+                    c: !showStoreCard ? "#7c2d12" : (stillClosedBranches.length === 0 ? "#166534" : "#7f1d1d"),
+                    bg: !showStoreCard ? "#fef3c7" : (stillClosedBranches.length === 0 ? "#dcfce7" : "#fee2e2"),
                     click:()=>tryChangeTab("storeOpenings") },
                   { l:"Scheduled today",   v: dashScheduledToday == null ? "…" : dashScheduledToday, sub:"across all branches",       i:"📅", c:"#1e3a8a", bg:"#dbeafe" },
                   { l:"Active staff",       v: stats.active,                                          sub:"incl. " + stats.pregnant + " pregnant", i:"👥", c:"#14532d", bg:"#dcfce7" },
@@ -6982,6 +7273,60 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </div>
                 ))}
               </div>
+
+              {/* ── SECTION: SCHEDULE PROGRESS ── one unified panel with two
+                  inner cards (nail tech + manager). Counts both schedule
+                  types for the next 25th-to-24th cycle, with a shared
+                  deadline (15th of the cycle's start month). */}
+              {(() => {
+                const _allDone = schedReady && techCard.done === schedTotal && mgrCard.done === schedTotal;
+                const _anyOverdue = schedReady && !_allDone && daysToDeadline < 0;
+                const _headerStatus = !schedReady
+                  ? { txt: "Loading…", color: "#7c2d12", bg: "#fef3c7" }
+                  : _allDone
+                    ? { txt: "All finalised", color: "#166534", bg: "#dcfce7" }
+                    : _anyOverdue
+                      ? { txt: "Overdue " + Math.abs(daysToDeadline) + " day" + (Math.abs(daysToDeadline) === 1 ? "" : "s"), color: "#7f1d1d", bg: "#fee2e2" }
+                      : { txt: (daysToDeadline >= 0 ? daysToDeadline + " day" + (daysToDeadline === 1 ? "" : "s") + " left" : "Due today"), color: "#7c2d12", bg: "#fef3c7" };
+                const _inner = (title, emoji, c /* card descriptor */) => {
+                  const pct = schedReady ? Math.round((c.done / schedTotal) * 100) : 0;
+                  return (
+                    <div onClick={() => tryChangeTab("scheduling")} style={{ background: c.bg, borderRadius: 14, padding: "16px 18px", cursor: "pointer", border: "1px solid rgba(255,255,255,0.6)", flex: 1, minWidth: 220 }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: c.color, letterSpacing: "0.12em", textTransform: "uppercase" }}>{emoji} {title}</div>
+                        <div style={{ fontSize: 20 }}>{c.icon}</div>
+                      </div>
+                      <div style={{ fontSize: 30, fontWeight: 800, color: c.color, lineHeight: 1.05, marginTop: 8 }}>
+                        {schedReady ? c.done : "…"}<span style={{ fontSize: 16, fontWeight: 600, opacity: 0.7 }}> / {schedTotal}</span>
+                      </div>
+                      <div style={{ height: 6, borderRadius: 999, background: "rgba(0,0,0,0.06)", marginTop: 10, overflow: "hidden" }}>
+                        <div style={{ height: "100%", width: pct + "%", background: c.color, opacity: 0.85, transition: "width .3s ease" }} />
+                      </div>
+                      <div style={{ fontSize: 11, color: c.color, opacity: 0.8, marginTop: 8, lineHeight: 1.35 }}>{c.sub}</div>
+                    </div>
+                  );
+                };
+                return (
+                  <div style={{ ...card, padding: "20px 22px", marginBottom: 24 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
+                      <div>
+                        <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 11, fontWeight: 700, color: PINK.accent, letterSpacing: "0.22em", textTransform: "uppercase" }}>📌 Schedule progress</div>
+                        <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 20, fontWeight: 700, color: PINK.ink, marginTop: 4, letterSpacing: "-0.005em" }}>
+                          Next cycle{schedReady && schedFinalStatus.cycLabel ? " · " + schedFinalStatus.cycLabel : ""}
+                        </div>
+                        <div style={{ fontSize: 11, color: PINK.deep, opacity: 0.7, marginTop: 4 }}>Finalise by the 15th — both nail tech and manager schedules.</div>
+                      </div>
+                      <div style={{ background: _headerStatus.bg, color: _headerStatus.color, fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", padding: "8px 12px", borderRadius: 999 }}>
+                        {_headerStatus.txt}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                      {_inner("Nail tech schedules", "💅", techCard)}
+                      {_inner("Manager schedules",   "👔", mgrCard)}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* ── SECTION: OPERATIONS ── */}
               <div style={sectionTitle}>
@@ -11088,6 +11433,91 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             setMgrSchedDirty(false);
             setMgrSchedHist(h => { const n = { ...h }; delete n[editKey]; return n; });
           };
+          const saveMgrFinalVersion = async () => {
+            if (!window.BOA_DB || !window.BOA_DB.saveApprovedSchedule) {
+              alert("This deploy doesn't yet have the saved-versions API. Please redeploy.");
+              return;
+            }
+            const draft = mgrSchedDraft || mgrSchedSaved;
+            if (!draft || Object.keys(draft).length === 0) {
+              alert("Nothing to save — the manager schedule is empty for this cycle.");
+              return;
+            }
+            const name = window.prompt("Name this version (e.g. \"Final v1\", \"After Theresa review\"):", "");
+            if (name === null) return;
+            if (!name.trim()) { alert("Cancelled — a name is required."); return; }
+            const madeBy = window.prompt("Who made this schedule?", "");
+            if (madeBy === null) return;
+            const approvedBy = window.prompt("Who approved it?", "");
+            if (approvedBy === null) return;
+            const note = window.prompt("Optional note:", "");
+            if (note === null) return;
+            setMgrSchedSaving(true);
+            console.log("[saveFinal] manager — saving", { branch, ymKey, ecCount: Object.keys(draft).length, name: name.trim(), madeBy: madeBy.trim(), approvedBy: approvedBy.trim() });
+            try {
+              const u = window.BOA_CURRENT_USER || currentUser || {};
+              const saved = await window.BOA_DB.saveApprovedSchedule(branch, ymKey, true, {
+                name:       name.trim(),
+                grid:       JSON.parse(JSON.stringify(draft)),
+                madeBy:     madeBy.trim(),
+                approvedBy: approvedBy.trim(),
+                note:       note.trim(),
+                savedBy:    u.name || ""
+              });
+              console.log("[saveFinal] manager — saveApprovedSchedule returned", saved);
+              const after = window.BOA_DB.loadApprovedSchedules
+                ? await window.BOA_DB.loadApprovedSchedules(branch, ymKey, true)
+                : [];
+              console.log("[saveFinal] manager — list after save (" + after.length + " versions)", after);
+              const persisted = saved && after.some(x => x && x.id === saved.id);
+              if (!persisted) {
+                alert("⚠ Save returned but the version wasn't found in storage after re-reading.\n\n" +
+                      "This usually means Supabase Row-Level-Security blocked the write to app_state.\n\n" +
+                      "Open DevTools → Console for the [saveFinal] log lines and paste them back.");
+                return;
+              }
+              setMgrSchedVersions(after);
+              let publishedLive = false;
+              try {
+                const liveDraft = JSON.parse(JSON.stringify(draft));
+                const live = await window.BOA_DB.saveSchedule(branch, ymKey, liveDraft, true);
+                setMgrSchedSaved(liveDraft);
+                setMgrSchedSavedAt((live && live.savedAt) || new Date().toISOString());
+                setMgrSchedDirty(false);
+                publishedLive = true;
+              } catch (publishErr) {
+                console.error("[saveFinal] manager — archive saved but publish-to-live failed:", publishErr);
+              }
+              logActivity("Approved manager schedule", branch + " · " + ymKey + " · " + (saved.name || name),
+                "Made by " + (madeBy || "—") + " · approved by " + (approvedBy || "—") + (publishedLive ? "" : " · ⚠ archive saved but live-schedule publish failed"), "Schedule");
+              alert("✓ Approved + published: " + (saved.name || name) + "\n\n" +
+                    after.length + " final version" + (after.length === 1 ? "" : "s") + " on file for " + branch + " · " + ymKey +
+                    (publishedLive ? "" : "\n\n⚠ NOTE: the snapshot was archived but writing it to the live schedule failed. Try the regular Save button to publish."));
+            } catch (e) {
+              console.error("[saveFinal] manager — failed", e);
+              alert("Could not save final version: " + (e.message || e) + "\n\nSee DevTools → Console for details.");
+            } finally { setMgrSchedSaving(false); }
+          };
+          const restoreMgrVersion = (v) => {
+            if (!v || !v.grid) return;
+            if (mgrSchedDirty && !window.confirm("Unsaved changes in the editor will be discarded. Restore version \"" + v.name + "\"?")) return;
+            if (!mgrSchedDirty && !window.confirm("Restore version \"" + v.name + "\" into the editor? (Click Save afterwards to make it the live schedule.)")) return;
+            setMgrSchedDraft(JSON.parse(JSON.stringify(v.grid)));
+            setMgrSchedDirty(true);
+            setMgrSchedVersionsOpen(false);
+            logActivity("Restored final manager schedule version", branch + " · " + ymKey + " · " + v.name,
+              "Loaded snapshot saved " + new Date(v.savedAt).toLocaleString("en-ZA"), "Schedule");
+          };
+          const deleteMgrVersion = async (v) => {
+            if (!v) return;
+            if (!window.confirm("Delete saved version \"" + v.name + "\"?\n\nThis cannot be undone.")) return;
+            try {
+              const next = await window.BOA_DB.deleteApprovedSchedule(branch, ymKey, true, v.id);
+              setMgrSchedVersions(next || []);
+              logActivity("Deleted final manager schedule version", branch + " · " + ymKey + " · " + v.name,
+                "Made by " + (v.madeBy || "—") + " · approved by " + (v.approvedBy || "—"), "Schedule");
+            } catch (e) { alert("Could not delete: " + (e.message || e)); }
+          };
 
           // Guarded versions of branch/cycle change — warn if unsaved.
           const tryChangeBranch = (b) => {
@@ -11141,8 +11571,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   ✨ {mgrSchedDraft ? "Re-generate" : "Generate Schedule"}
                 </button>
                 <button onClick={saveDraft} disabled={mgrSchedSaving || !mgrSchedDirty}
+                        title="Save current edits as the live schedule. Use for work-in-progress; the prior version is backed up to history."
                         style={{ padding:"7px 16px", background: mgrSchedDirty ? "#BE185D" : "#FBCFE8", color: mgrSchedDirty ? "#fff" : "#9F1A4F", border:"none", borderRadius:8, cursor: mgrSchedDirty ? "pointer" : "not-allowed", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
-                  {mgrSchedSaving ? "Saving…" : "💾 Save"}
+                  {mgrSchedSaving ? "Saving…" : "💾 Save Draft"}
+                </button>
+                <button onClick={saveMgrFinalVersion} disabled={mgrSchedSaving}
+                        title="Publish as the approved schedule for this cycle — writes to the live schedule AND archives a named snapshot with who made + approved it."
+                        style={{ padding:"7px 14px", background:"#dcfce7", color:"#14532d", border:"1px solid #15803d", borderRadius:8, cursor: mgrSchedSaving ? "not-allowed" : "pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
+                  📌 Approve &amp; Publish
+                </button>
+                <button onClick={() => setMgrSchedVersionsOpen(o => !o)}
+                        title="View, restore or delete previously saved final versions for this branch + cycle."
+                        style={{ padding:"7px 14px", background: mgrSchedVersionsOpen ? "#86efac" : "#FFFFFF", color:"#14532d", border:"1px solid #15803d", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
+                  📋 Versions ({mgrSchedVersions.length}) {mgrSchedVersionsOpen ? "▾" : "▸"}
                 </button>
                 {(() => {
                   const canDownload = !!mgrSchedSaved && !mgrSchedDirty;
@@ -11216,6 +11657,46 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   ].map(c => <span key={c.l} style={{ display:"inline-flex", alignItems:"center", gap:4 }}><span style={{ display:"inline-block", width:10, height:10, background:c.bg, borderRadius:2 }} /> {c.l}</span>)}
                 </div>
               </div>
+
+              {mgrSchedVersionsOpen && (
+                <div style={{ marginBottom:14, padding:"12px 16px", background:"#FFFFFF", border:"1px solid #15803d", borderRadius:10 }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:"#14532d", marginBottom:10 }}>Final versions for {branch} · {ymKey}</div>
+                  {mgrSchedVersions.length === 0 && (
+                    <div style={{ fontSize:12, color:"#6b7280", fontStyle:"italic" }}>No versions saved yet. Click 📌 Save Final to snapshot the current schedule.</div>
+                  )}
+                  {mgrSchedVersions.length > 0 && (
+                    <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                      <thead>
+                        <tr style={{ background:"#dcfce7", color:"#14532d" }}>
+                          <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #86efac" }}>Name</th>
+                          <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #86efac" }}>Made by</th>
+                          <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #86efac" }}>Approved by</th>
+                          <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #86efac" }}>Saved at</th>
+                          <th style={{ padding:"6px 10px", textAlign:"left", fontWeight:700, borderBottom:"1px solid #86efac" }}>Note</th>
+                          <th style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, borderBottom:"1px solid #86efac" }}></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {mgrSchedVersions.map(v => (
+                          <tr key={v.id} style={{ borderTop:"1px solid #f0fdf4" }}>
+                            <td style={{ padding:"6px 10px", color:"#14532d", fontWeight:600 }}>{v.name}</td>
+                            <td style={{ padding:"6px 10px", color:"#14532d" }}>{v.madeBy || "—"}</td>
+                            <td style={{ padding:"6px 10px", color:"#14532d" }}>{v.approvedBy || "—"}</td>
+                            <td style={{ padding:"6px 10px", color:"#374151", fontSize:11, whiteSpace:"nowrap" }}>{v.savedAt ? new Date(v.savedAt).toLocaleString("en-ZA", { day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit" }) : "—"}</td>
+                            <td style={{ padding:"6px 10px", color:"#374151", fontSize:11, fontStyle:v.note ? "normal" : "italic" }}>{v.note || "—"}</td>
+                            <td style={{ padding:"6px 10px", textAlign:"right", whiteSpace:"nowrap" }}>
+                              <button onClick={() => restoreMgrVersion(v)} title="Load this version into the editor (you still need to click Save to make it the live schedule)"
+                                      style={{ background:"#dcfce7", color:"#14532d", border:"1px solid #86efac", borderRadius:6, padding:"3px 9px", cursor:"pointer", fontSize:11, fontWeight:700, marginRight:4 }}>↺ Restore</button>
+                              <button onClick={() => deleteMgrVersion(v)} title="Permanently delete this saved version"
+                                      style={{ background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fca5a5", borderRadius:6, padding:"3px 9px", cursor:"pointer", fontSize:11, fontWeight:700 }}>🗑</button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
 
               {/* Conflicts panel */}
               {result.conflicts && result.conflicts.length > 0 && (
