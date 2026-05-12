@@ -5543,7 +5543,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     scheduling:"Operations", locations:"Operations", mgrclockins:"Operations", leave:"Operations", checkins:"Operations", storeOpenings:"Operations",
     attendance:"Payroll", payrollProgress:"Payroll",
     alerts:"Insights", activity:"Insights",
-    settings:"Admin"
+    settings:"Admin", hrLibrary:"Master"
   };
   useEffect(() => {
     // Manager Planner is a virtual tab that lives at recruitment+mgrRecruit+planner
@@ -6698,6 +6698,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t:"alerts",      l:"🔔 Alerts"         },
                   { t:"activity",    l:"📜 Activity Log"   }
                 ] },
+              ...(currentUser?.role === "Master Admin" || currentUser?.isOwner ? [{
+                key:"Master", icon:"🔒", title:"Master",
+                color:{ bg:"#F3F4F6", bgActive:"#E5E7EB", ink:"#1F2937" },
+                items: [
+                  { t:"hrLibrary", l:"🗄️ HR Library" }
+                ]
+              }] : []),
               ...(currentUser?.isOwner ? [{
                 key:"Admin", icon:"🛡️", title:"Admin",
                 color:{ bg:"#FEF3C7", bgActive:"#FDE68A", ink:"#92400e" },
@@ -12023,6 +12030,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           onUsersUpdate={onUsersUpdate}
           currentUser={currentUser}
         />
+      )}
+
+      {tab === "hrLibrary" && (currentUser?.role === "Master Admin" || currentUser?.isOwner) && (
+        window.EmployeeDataLibrary ? React.createElement(window.EmployeeDataLibrary, { staff: staff, currentUser: currentUser, managers: managers }) : <div style={{padding:24}}>Loading HR Library...</div>
       )}
 
       {/* Proof image modal — shared between Daily Check-ins and Attendance.
