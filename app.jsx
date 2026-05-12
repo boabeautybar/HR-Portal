@@ -5661,6 +5661,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   useEffect(() => { setAttCheckinSnapshot(null); }, [attBranch, attYM]);
   const [attSched,  setAttSched]  = useState({});      // schedule grid for the same period (for mirror hints)
   const [attMeta,   setAttMeta]   = useState({});      // sidecar metadata e.g. { freshaCoverage:{through:"YYYY-MM-DD"} }
+  // Kiosk's "Left work early" sidecar (boa_early_<branch>_<ym>) — separate
+  // from the attendance grid because the tech still checked in, only their
+  // shift ended early. Shape: { [dayKey]: { [ec]: { hours, recordedAt, recordedBy } } }
+  const [attEarly,  setAttEarly]  = useState({});
   // Per-edit undo stack for the attendance grid — pushed before every manual
   // setCell / markCellReviewed / autoRecordReview, capped at 10 entries.
   // Cleared whenever the branch or cycle changes so we never restore into
@@ -5829,13 +5833,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     Promise.all([
       safe(window.BOA_DB.loadAttendance(attBranch, attYM)),
       safe(window.BOA_DB.loadSchedule(attBranch, techYm, false)),
-      safe(window.BOA_DB.loadSchedule(attBranch, attYM, true))
-    ]).then(([att, sch, mgrSch]) => {
+      safe(window.BOA_DB.loadSchedule(attBranch, attYM, true)),
+      window.BOA_DB.loadEarlyLeaves ? safe(window.BOA_DB.loadEarlyLeaves(attBranch, attYM)) : Promise.resolve({})
+    ]).then(([att, sch, mgrSch, early]) => {
       setAttGrid((att && att.grid) || {});
       setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null, freshaWorked: att.freshaWorked || {}, reviewedWarnings: att.reviewedWarnings || {}, mirrorSuppressed: !!att.mirrorSuppressed } : { freshaWorked: {}, reviewedWarnings: {}, mirrorSuppressed: false });
       const techGrid = (sch    && sch.grid)    || {};
       const mgrGrid  = ymdReKey((mgrSch && mgrSch.grid) || {});
       setAttSched({ ...techGrid, ...mgrGrid });
+      setAttEarly(early || {});
     }).catch(e => console.error("Attendance load:", e))
       .finally(() => setAttLoading(false));
   }, [tab, attBranch, attYM]);
@@ -8513,32 +8519,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             swap_o: { lbl:"Owes",            bg:"#cbd5e1", fg:"#dc2626", cat:"swap" },
             swap_i: { lbl:"Owed",            bg:"#86efac", fg:"#14532d", cat:"swap" }
           };
-          // "Left work early" detection + parser. The kiosk can encode the
-          // tag in many ways — the production kiosk writes it as the bare
-          // status "left_early" (sometimes wrapped in parens like
-          // "(left_early)" depending on the source) with the duration in
-          // the note field ("Left 3h early" / "30 min" / "1h30m"); other
-          // variants embed the minutes in the code itself (left_30, left:30,
-          // left_early_30, early_30, …). Strip the status of any non-
-          // alphanumerics first so parens / punctuation never trip detection.
-          const stripStatus = (status) => (status || "").toString().toLowerCase().replace(/[^a-z0-9]/g, "");
-          const isLeftEarlyStatus = (status) => /^(?:left|early)/.test(stripStatus(status));
-          const parseLeftEarlyMins = (status, note) => {
-            if (!isLeftEarlyStatus(status)) return 0;
-            // Try the trailing-number form on the cleaned status code first.
-            const cleaned = stripStatus(status);
-            const codeMatch = cleaned.match(/(\d+)$/);
-            if (codeMatch) return parseInt(codeMatch[1], 10) || 0;
-            // Fall back to the note. Sum any "Nh" + "Nm/Nmin" found.
-            const n = (note || "").toString();
-            let mins = 0;
-            const h = /(\d+(?:\.\d+)?)\s*h/i.exec(n);
-            const m = /(\d+)\s*(?:m|min)\b/i.exec(n);
-            if (h) mins += Math.round(parseFloat(h[1]) * 60);
-            if (m) mins += parseInt(m[1], 10);
-            return mins;
-          };
-
           const resolveStat = (v) => {
             if (!v) return null;
             const bare = v.indexOf("~") === 0 ? v.slice(1) : v;
@@ -9505,36 +9485,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 let h = 0; if (v.indexOf(":") > 0) h = parseFloat(v.split(":")[1]) || 0;
                 t.unpaidHours += h;
               }
-              else if (v) {
-                // Kiosk "Left work early" tag where the duration is in the
-                // status code itself (any of: left_30 / left:30 /
-                // left_early_30 / early_30 / …).
-                const lm = v.match(/^(?:left(?:[_\-:]?early)?|early)[_\-:]?(\d+)$/i);
-                if (lm) t.unpaidHours += (parseInt(lm[1], 10) || 0) / 60;
-              }
-              // Independent left-early lookup. The production kiosk records
-              // the cell as "On Time" (the tech actually came in) AND adds an
-              // audit-log entry with status "left_early" + note "Left 3h
-              // early". Walk the audit log so we pick up the deduction even
-              // when the cell value isn't itself an early-leave code.
-              const earlyAbs = ((kioskAbsentByBranch[attBranch] || {})[ec] || {})[dy.ymd];
-              if (earlyAbs && /^[^a-z]*(?:left|early)/i.test(earlyAbs.status || "")) {
-                const codeMins = (function () {
-                  const m = (earlyAbs.status || "").match(/(\d+)$/);
-                  return m ? parseInt(m[1], 10) || 0 : 0;
-                })();
-                if (codeMins > 0) {
-                  t.unpaidHours += codeMins / 60;
-                } else {
-                  // Pull from the note: "Left 3h early" / "30 min" / "1h30m".
-                  const n = (earlyAbs.note || "").toString();
-                  let mins = 0;
-                  const hH = /(\d+(?:\.\d+)?)\s*h/i.exec(n);
-                  const mM = /(\d+)\s*(?:m|min)\b/i.exec(n);
-                  if (hH) mins += Math.round(parseFloat(hH[1]) * 60);
-                  if (mM) mins += parseInt(mM[1], 10);
-                  if (mins > 0) t.unpaidHours += mins / 60;
-                }
+              // Kiosk "Left work early" sidecar — boa_early_<branch>_<ym>:
+              //   value[dayKey][ec] = { hours, recordedAt, recordedBy }
+              // Roll the recorded hours straight into unpaidHours so the NET
+              // UNPAID column on the right of the grid picks them up.
+              const earlyForDay = attEarly && attEarly[dy.d];
+              const earlyRec    = earlyForDay && earlyForDay[ec];
+              if (earlyRec && typeof earlyRec.hours === "number" && earlyRec.hours > 0) {
+                t.unpaidHours += earlyRec.hours;
               }
             }
             t.unpaidFromHours = t.unpaidHours / 9;
@@ -10108,20 +10066,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                     return null;
                                   })()}
                                   {(() => {
-                                    // Left-early indicator. Always show whenever the kiosk has
-                                    // logged a left_early entry for this day, regardless of what
-                                    // the cell value itself is — the tech checked in (cell = "on")
-                                    // AND left X minutes early. Shows as a small orange "←Xh" /
-                                    // "←Xm" badge in the bottom-left corner.
-                                    if (!kioskAbs || !/^[^a-z]*(?:left|early)/i.test(kioskAbs.status || "")) return null;
-                                    const mins = parseLeftEarlyMins(kioskAbs.status, kioskAbs.note);
-                                    const lbl = mins === 0 ? "←early"
-                                              : mins < 60 ? "←" + mins + "m"
-                                              : mins % 60 === 0 ? "←" + (mins/60) + "h"
-                                              : "←" + Math.floor(mins/60) + "h" + (mins % 60) + "m";
+                                    // Left-early indicator. Read from the kiosk's
+                                    // boa_early_<branch>_<ym> sidecar (loaded into attEarly):
+                                    //   value[dayKey][ec] = { hours, recordedAt, recordedBy }
+                                    // Shows as a small orange "←Xh" / "←Xm" badge in the
+                                    // bottom-left corner of the cell. The cell body itself
+                                    // continues to show whatever it was (usually "On Time" —
+                                    // the tech actually checked in, just left early).
+                                    const earlyForDay = attEarly && attEarly[dy.d];
+                                    const earlyRec    = earlyForDay && earlyForDay[s.ec];
+                                    if (!earlyRec || !(earlyRec.hours > 0)) return null;
+                                    const h    = earlyRec.hours;
+                                    const mins = Math.round(h * 60);
+                                    const lbl  = mins < 60          ? "←" + mins + "m"
+                                              : mins % 60 === 0     ? "←" + (mins/60) + "h"
+                                                                    : "←" + Math.floor(mins/60) + "h" + (mins % 60) + "m";
                                     return (
-                                      <span title={"Left work early — " + lbl.slice(1) + (kioskAbs.note ? " · " + kioskAbs.note : "") + (kioskAbs.markedBy ? " · recorded by " + kioskAbs.markedBy : "")}
-                                            style={{ position:"absolute", bottom:7, left:2, fontSize:8, lineHeight:1, color:"#7c2d12", background:"#fed7aa", padding:"1px 4px", borderRadius:4, fontWeight:800, pointerEvents:"none", border:"1px solid #fdba74" }}>{lbl}</span>
+                                      <span title={"Left work early — " + lbl.slice(1) + (earlyRec.recordedBy ? " · recorded by " + earlyRec.recordedBy : "") + (earlyRec.recordedAt ? " · " + new Date(earlyRec.recordedAt).toLocaleString("en-ZA", { day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" }) : "")}
+                                            style={{ position:"absolute", bottom:7, left:2, fontSize:8, lineHeight:1, color:"#7c2d12", background:"#fed7aa", padding:"1px 4px", borderRadius:4, fontWeight:800, pointerEvents:"none", border:"1px solid #fdba74", zIndex:3 }}>{lbl}</span>
                                     );
                                   })()}
                                   {v && (
