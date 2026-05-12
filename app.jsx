@@ -7167,22 +7167,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               ? "✓ every branch open"
               : "Closed: " + stillClosedBranches.slice(0, 3).join(", ") + (stillClosedBranches.length > 3 ? " +" + (stillClosedBranches.length - 3) + " more" : "");
 
-          // Schedule-finalisation status for next month's cycle. Both tech AND
-          // manager schedules must have an approved snapshot. Card colour is
-          // green when every branch is done, amber when pending, red after the
-          // 15th-of-month deadline if still pending.
+          // Schedule-finalisation status for next month's cycle. Each branch
+          // contributes TWO items (tech + manager), counted independently so a
+          // single Approve & Publish click bumps the dashboard by 1. Total
+          // therefore = SALONS.length × 2. Card colour is green when every
+          // item is done, amber when pending, red after the 15th-of-month
+          // deadline if still pending.
           const schedReady = !!(schedFinalStatus && schedFinalStatus.byBranch);
           const schedDone = schedReady
             ? SALONS.reduce((n, sl) => {
                 const r = schedFinalStatus.byBranch[sl.name] || { tech:false, mgr:false };
-                return n + ((r.tech && r.mgr) ? 1 : 0);
+                return n + (r.tech ? 1 : 0) + (r.mgr ? 1 : 0);
               }, 0)
             : 0;
-          const schedTotal = SALONS.length;
+          const schedTotal = SALONS.length * 2;
           const schedMissing = schedReady
-            ? SALONS.map(s => s.name).filter(n => {
-                const r = schedFinalStatus.byBranch[n] || { tech:false, mgr:false };
-                return !(r.tech && r.mgr);
+            ? SALONS.flatMap(s => {
+                const r = schedFinalStatus.byBranch[s.name] || { tech:false, mgr:false };
+                const out = [];
+                if (!r.tech) out.push(s.name + " (tech)");
+                if (!r.mgr)  out.push(s.name + " (mgr)");
+                return out;
               })
             : [];
           const _todayMid = new Date();
