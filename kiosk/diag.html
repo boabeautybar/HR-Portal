@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>BOA Check-in — Supabase Diagnostic</title>
+<style>
+  body{margin:0;padding:24px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+       background:#fdf2f8;color:#1f2937;max-width:1100px;margin:0 auto}
+  h1{font-size:24px;margin:0 0 4px;color:#831843}
+  h2{font-size:16px;margin:24px 0 8px;color:#831843;border-bottom:2px solid #fbcfe8;padding-bottom:4px}
+  .section{background:#fff;border-radius:10px;padding:14px 18px;margin:10px 0;
+           box-shadow:0 2px 6px rgba(0,0,0,0.04)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;font-weight:700;background:#fce7f3;padding:6px 10px;border-bottom:1px solid #fbcfe8}
+  td{padding:6px 10px;border-bottom:1px solid #f3f4f6;vertical-align:top}
+  tr:hover td{background:#fdf2f8}
+  code{background:#f3f4f6;padding:1px 6px;border-radius:4px;font-size:12px}
+  pre{background:#f9fafb;padding:10px;border-radius:6px;font-size:11px;overflow:auto;max-height:300px}
+  details{margin-top:6px}
+  summary{cursor:pointer;color:#be185d;font-weight:600;font-size:13px}
+  .bad{color:#b91c1c;font-weight:700}
+  .good{color:#059669;font-weight:700}
+  .meta{color:#6b7280;font-size:12px}
+  .branch-picker{margin:8px 0 16px}
+  .branch-picker select{padding:6px 10px;border:1px solid #fbcfe8;border-radius:6px;font-size:14px}
+</style>
+</head>
+<body>
+<h1>BOA Check-in — Supabase diagnostic</h1>
+<p class="meta">Read-only. Uses the public anon key. Pick a branch, this page runs a handful of
+queries and reports what's actually in your database — so you can see whether tech check-ins
+are landing where the HR portal expects them.</p>
+
+<div class="branch-picker">
+  Branch:
+  <select id="branch-select"></select>
+  <span class="meta">(or pass <code>?branch=Bree</code> in the URL)</span>
+</div>
+
+<div id="report"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script>
+// Same values as js/config.js — already public in your deployed bundle.
+const SUPA_URL = "https://kcinqpwkwpzbosxtkwyl.supabase.co";
+const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtjaW5xcHdrd3B6Ym9zeHRrd3lsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc3MjIwMTYsImV4cCI6MjA5MzI5ODAxNn0.AGL2hXQ5N3uQikqSbWFsZ1uxBlWZUm9o1ipMFlAFjBg";
+
+// Branch list mirrors config.js so we can compare across branches without
+// depending on the rest of the app's bootstrapping.
+const BRANCHES = [
+  "Sea Point","Bree","Kloof","Claremont","Rondebosch","Durbanville","Table Bay",
+  "Somerset West","Riverlands","Kuils River","Westlake","Green Point","Plumstead",
+  "Sandown","Cape Gate","Winelands","Betty"
+];
+
+const sb = window.supabase.createClient(SUPA_URL, SUPA_KEY, { auth: { persistSession: false } });
+
+// Match data.js: today's schedule period ends on the 24th of the YM month;
+// attendance rows are keyed by the START month (one less).
+function currentSchedYm(d) {
+  d = d || new Date();
+  let y = d.getFullYear(), m = d.getMonth() + 1;
+  if (d.getDate() > 24) { m += 1; if (m > 12) { m = 1; y += 1; } }
+  return `${y}-${String(m).padStart(2,'0')}`;
+}
+function attStartMonth(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  let am = m - 1, ay = y;
+  if (am < 1) { am = 12; ay = y - 1; }
+  return `${ay}-${String(am).padStart(2,'0')}`;
+}
+
+const root  = document.getElementById('report');
+const sel   = document.getElementById('branch-select');
+BRANCHES.forEach(b => {
+  const o = document.createElement('option');
+  o.value = b; o.textContent = b;
+  sel.appendChild(o);
+});
+const requested = (new URLSearchParams(location.search).get('branch') || '').trim();
+sel.value = BRANCHES.find(b => b.toLowerCase().replace(/\s+/g,'') === requested.toLowerCase().replace(/\s+/g,'')) || 'Bree';
+sel.onchange = () => { location.search = '?branch=' + encodeURIComponent(sel.value); };
+
+const BRANCH = sel.value;
+document.title = `BOA Diagnostic — ${BRANCH}`;
+
+function section(title, content) {
+  const div = document.createElement('div');
+  div.className = 'section';
+  div.innerHTML = `<h2>${title}</h2>`;
+  if (typeof content === 'string') div.innerHTML += content;
+  else div.appendChild(content);
+  root.appendChild(div);
+  return div;
+}
+function tableEl(rows, cols, opts) {
+  const t = document.createElement('table');
+  const head = '<thead><tr>' + cols.map(c => `<th>${c}</th>`).join('') + '</tr></thead>';
+  const body = '<tbody>' + rows.map(r => '<tr>' + cols.map(c => {
+    const v = r[c];
+    return `<td>${v === undefined || v === null ? '' : v}</td>`;
+  }).join('') + '</tr>').join('') + '</tbody>';
+  t.innerHTML = head + body;
+  if (opts && opts.empty && rows.length === 0) {
+    const e = document.createElement('p');
+    e.className = 'bad';
+    e.textContent = opts.empty;
+    return e;
+  }
+  return t;
+}
+function err(msg) {
+  const p = document.createElement('p');
+  p.className = 'bad';
+  p.textContent = 'ERROR: ' + msg;
+  return p;
+}
+
+(async function run() {
+  // ── 1) Distinct branch names actually present in the staff table ──
+  try {
+    const { data, error } = await sb.from('staff').select('branch,active');
+    if (error) throw error;
+    const counts = {};
+    data.forEach(r => {
+      const k = r.branch || '(null)';
+      if (!counts[k]) counts[k] = { total: 0, active: 0 };
+      counts[k].total++;
+      if (r.active) counts[k].active++;
+    });
+    const rows = Object.keys(counts).sort().map(k => ({
+      branch: `<code>${k}</code>`,
+      total:  counts[k].total,
+      active: counts[k].active,
+      match:  k === BRANCH ? '<span class="good">← selected</span>' : ''
+    }));
+    const div = section('1. Distinct branch values in <code>staff</code> table',
+      `<p class="meta">If the selected branch <code>${BRANCH}</code> doesn't appear here exactly,
+        that's the bug — your tech rows are stored under a different string and the daily check-in
+        will silently see "no scheduled staff" because the <code>eq("branch", ...)</code> filter
+        won't match.</p>`);
+    div.appendChild(tableEl(rows, ['branch','total','active','match']));
+  } catch (e) { section('1. Distinct branch values in staff table', err(e.message)); }
+
+  // ── 2) Staff records for the selected branch ──
+  try {
+    const { data, error } = await sb.from('staff')
+      .select('id,name,employee_code,active,role_type')
+      .eq('branch', BRANCH)
+      .order('name');
+    if (error) throw error;
+    const noEc     = data.filter(r => !r.employee_code).length;
+    const activeEc = data.filter(r => r.active && r.employee_code).length;
+    const summary  = `<p>Total: <strong>${data.length}</strong> · Active: <strong>${data.filter(r=>r.active).length}</strong>
+      · Active with employee_code: <strong>${activeEc}</strong> · Missing employee_code: <strong class="${noEc?'bad':''}">${noEc}</strong></p>
+      <p class="meta">Daily check-in roster is built from staff with <code>employee_code</code> AND a schedule
+      cell of W/WL/E for today. If <code>employee_code</code> is missing, the row is silently skipped.</p>`;
+    const rows = data.map(r => ({
+      name: r.name,
+      employee_code: r.employee_code || '<span class="bad">(none)</span>',
+      active: r.active ? '✓' : '✗',
+      role_type: r.role_type || ''
+    }));
+    const div = section(`2. Staff in <code>${BRANCH}</code>`, summary);
+    div.appendChild(tableEl(rows, ['name','employee_code','active','role_type'],
+      { empty: `No staff rows for branch="${BRANCH}". This is the most likely cause.` }));
+  } catch (e) { section('2. Staff in branch', err(e.message)); }
+
+  // ── 3) All boa_att_* keys in app_state — which branches have attendance saved ──
+  try {
+    const { data, error } = await sb.from('app_state')
+      .select('key,updated_at')
+      .like('key', 'boa_att_%')
+      .order('key');
+    if (error) throw error;
+    const byBranch = {};
+    data.forEach(r => {
+      // boa_att_<branch>_<YYYY-MM>
+      const m = /^boa_att_(.+)_(\d{4}-\d{2})$/.exec(r.key);
+      if (!m) return;
+      const b = m[1];
+      if (!byBranch[b]) byBranch[b] = [];
+      byBranch[b].push({ ym: m[2], updated_at: r.updated_at });
+    });
+    const summary = Object.keys(byBranch).sort().map(b => ({
+      branch:    `<code>${b}</code>`,
+      cycles:    byBranch[b].length,
+      latest_ym: byBranch[b].slice().sort((a,b)=>a.ym.localeCompare(b.ym)).pop().ym,
+      latest_at: byBranch[b].slice().sort((a,b)=>(a.updated_at||'').localeCompare(b.updated_at||'')).pop().updated_at,
+      match:     b === BRANCH ? '<span class="good">← selected</span>' : ''
+    }));
+    const div = section(`3. <code>boa_att_*</code> rows in <code>app_state</code> (${data.length} total)`,
+      `<p class="meta">If the selected branch is missing from this list, no attendance has ever been saved
+       for it — meaning either no manager ever marked anyone, or the writes are silently failing.</p>`);
+    div.appendChild(tableEl(summary, ['branch','cycles','latest_ym','latest_at','match'],
+      { empty: 'No attendance rows in app_state at all.' }));
+  } catch (e) { section('3. boa_att_* keys', err(e.message)); }
+
+  // ── 4) Current-cycle attendance row for the selected branch ──
+  try {
+    const ym       = currentSchedYm();
+    const startYm  = attStartMonth(ym);
+    const attKey   = `boa_att_${BRANCH}_${startYm}`;
+    const { data, error } = await sb.from('app_state').select('*').eq('key', attKey).maybeSingle();
+    if (error) throw error;
+    let body = `<p>Schedule period: <code>${ym}</code> (cycle ends ${ym}-24).</p>
+      <p>Attendance row key (start-month): <code>${attKey}</code></p>`;
+    if (!data) {
+      body += `<p class="bad">No row found at this key. If you've marked anyone today and don't see it here,
+        the write is failing or going somewhere else.</p>`;
+    } else {
+      const grid = (data.value && data.value.grid) || {};
+      const ecs  = Object.keys(grid);
+      let cells  = 0;
+      ecs.forEach(e => { cells += Object.keys(grid[e] || {}).length; });
+      body += `<p class="good">Row exists. ${ecs.length} employees marked, ${cells} status cells total.
+        Last saved: ${data.value && data.value.savedAt}.</p>`;
+      body += `<details><summary>Show grid (raw)</summary><pre>${JSON.stringify(grid, null, 2)}</pre></details>`;
+    }
+    section(`4. Current-cycle attendance row for <code>${BRANCH}</code>`, body);
+  } catch (e) { section('4. Current cycle attendance', err(e.message)); }
+
+  // ── 5) Schedule rows for the selected branch (current cycle) ──
+  try {
+    const ym       = currentSchedYm();
+    const techKey  = `boa_sched_${BRANCH}_${ym}`;
+    const mgrKey   = `boa_mgrsched_${BRANCH}_${ym}`;
+    const { data, error } = await sb.from('app_state')
+      .select('*').in('key', [techKey, mgrKey]);
+    if (error) throw error;
+    let body = `<p>Tech key: <code>${techKey}</code></p><p>Manager key: <code>${mgrKey}</code></p>`;
+    if (data.length === 0) {
+      body += `<p class="bad">No schedule found for this branch in the current cycle. Without a schedule,
+        the daily check-in shows no roster and no attendance can be marked. Most likely cause if Bree's
+        check-ins aren't writing: the HR portal hasn't published a Bree schedule for this period.</p>`;
+    } else {
+      data.forEach(r => {
+        const grid = (r.value && r.value.grid) || {};
+        body += `<p><code>${r.key}</code> — ${Object.keys(grid).length} employee codes, updated ${r.updated_at}</p>`;
+      });
+    }
+    section('5. Schedule rows (current cycle)', body);
+  } catch (e) { section('5. Schedule rows', err(e.message)); }
+
+  // ── 6) Recent clockins for the selected branch ──
+  try {
+    const since = new Date(); since.setDate(since.getDate() - 7);
+    const { data, error } = await sb.from('clockins')
+      .select('ts,type,branch,staff:staff_id(name,employee_code,role_type)')
+      .eq('branch', BRANCH)
+      .gte('ts', since.toISOString())
+      .order('ts', { ascending: false });
+    if (error) throw error;
+    const rows = data.map(r => ({
+      ts:    new Date(r.ts).toLocaleString(),
+      type:  r.type,
+      name:  r.staff && r.staff.name,
+      ec:    r.staff && r.staff.employee_code,
+      role:  r.staff && r.staff.role_type
+    }));
+    const div = section(`6. Clockins (last 7 days) for <code>${BRANCH}</code> — ${rows.length}`,
+      '<p class="meta">Manager clock-in/-out events. Independent of attendance; useful for ruling out general write failure.</p>');
+    div.appendChild(tableEl(rows, ['ts','type','name','ec','role'],
+      { empty: 'No clock-ins for this branch in last 7 days.' }));
+  } catch (e) { section('6. Clockins last 7 days', err(e.message)); }
+
+  // ── 7) Side-by-side comparison: Bree vs Sea Point reference numbers ──
+  try {
+    async function quickCount(table, filterCol, filterVal, extraCol) {
+      let q = sb.from(table).select(extraCol || filterCol, { count: 'exact', head: true });
+      if (filterCol) q = q.eq(filterCol, filterVal);
+      const { count, error } = await q;
+      if (error) throw error;
+      return count;
+    }
+    const targets = ['Sea Point', 'Bree'];
+    const rows = [];
+    for (const b of targets) {
+      const staff   = await quickCount('staff', 'branch', b);
+      const active  = await sb.from('staff').select('id', { count:'exact', head:true }).eq('branch', b).eq('active', true);
+      const clocks  = await sb.from('clockins').select('id', { count:'exact', head:true }).eq('branch', b);
+      const cashups = await sb.from('cashups').select('id', { count:'exact', head:true }).eq('branch', b);
+      rows.push({
+        branch:        `<code>${b}</code>`,
+        staff_total:   staff,
+        staff_active:  active.count,
+        clockins_all:  clocks.count,
+        cashups_all:   cashups.count
+      });
+    }
+    const div = section('7. Bree vs Sea Point reference counts', '<p class="meta">A healthy branch should have non-zero values in every column.</p>');
+    div.appendChild(tableEl(rows, ['branch','staff_total','staff_active','clockins_all','cashups_all']));
+  } catch (e) { section('7. Bree vs Sea Point reference counts', err(e.message)); }
+})().catch(e => {
+  const p = document.createElement('p');
+  p.className = 'bad';
+  p.textContent = 'FATAL: ' + e.message;
+  root.appendChild(p);
+});
+</script>
+</body>
+</html>
