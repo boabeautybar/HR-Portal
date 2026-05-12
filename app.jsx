@@ -3628,6 +3628,8 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
     const note = window.prompt("Optional note (anything else worth recording):", "");
     if (note === null) return;
     setSaving(true);
+    const ecCount = Object.keys(grid).length;
+    console.log("[saveFinal] tech — saving", { branch, ym, ecCount, name: name.trim(), madeBy: madeBy.trim(), approvedBy: approvedBy.trim() });
     try {
       const u = window.BOA_CURRENT_USER || {};
       const saved = await window.BOA_DB.saveApprovedSchedule(branch, ym, false, {
@@ -3638,13 +3640,28 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
         note:       note.trim(),
         savedBy:    u.name || ""
       });
+      console.log("[saveFinal] tech — saveApprovedSchedule returned", saved);
+      // Verify by listing — if the save silently failed (RLS, network) the
+      // returned record won't be in the persisted list.
+      const after = window.BOA_DB.loadApprovedSchedules
+        ? await window.BOA_DB.loadApprovedSchedules(branch, ym, false)
+        : [];
+      console.log("[saveFinal] tech — list after save (" + after.length + " versions)", after);
+      const persisted = saved && after.some(x => x && x.id === saved.id);
+      if (!persisted) {
+        alert("⚠ Save returned but the version wasn't found in storage after re-reading.\n\n" +
+              "This usually means Supabase Row-Level-Security blocked the write to app_state.\n\n" +
+              "Open DevTools → Console for the [saveFinal] log lines and paste them back.");
+        return;
+      }
       if (window.BOA_LOG_ACTIVITY) {
         window.BOA_LOG_ACTIVITY("Saved final tech schedule version", branch + " · " + ym + " · " + (saved && saved.name || name),
           "Made by " + (madeBy || "—") + " · approved by " + (approvedBy || "—"), "Schedule");
       }
-      alert("✓ Saved final version: " + (saved && saved.name || name));
+      alert("✓ Saved final version: " + (saved.name || name) + "\n\n" + after.length + " version" + (after.length === 1 ? "" : "s") + " on file for " + branch + " · " + ym);
     } catch (e) {
-      alert("Could not save final version: " + (e.message || e));
+      console.error("[saveFinal] tech — failed", e);
+      alert("Could not save final version: " + (e.message || e) + "\n\nSee DevTools → Console for details.");
     } finally { setSaving(false); }
   }
 
@@ -11154,6 +11171,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const note = window.prompt("Optional note:", "");
             if (note === null) return;
             setMgrSchedSaving(true);
+            console.log("[saveFinal] manager — saving", { branch, ymKey, ecCount: Object.keys(draft).length, name: name.trim(), madeBy: madeBy.trim(), approvedBy: approvedBy.trim() });
             try {
               const u = window.BOA_CURRENT_USER || currentUser || {};
               const saved = await window.BOA_DB.saveApprovedSchedule(branch, ymKey, true, {
@@ -11164,11 +11182,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 note:       note.trim(),
                 savedBy:    u.name || ""
               });
-              logActivity("Saved final manager schedule version", branch + " · " + ymKey + " · " + (saved && saved.name || name),
+              console.log("[saveFinal] manager — saveApprovedSchedule returned", saved);
+              const after = window.BOA_DB.loadApprovedSchedules
+                ? await window.BOA_DB.loadApprovedSchedules(branch, ymKey, true)
+                : [];
+              console.log("[saveFinal] manager — list after save (" + after.length + " versions)", after);
+              const persisted = saved && after.some(x => x && x.id === saved.id);
+              if (!persisted) {
+                alert("⚠ Save returned but the version wasn't found in storage after re-reading.\n\n" +
+                      "This usually means Supabase Row-Level-Security blocked the write to app_state.\n\n" +
+                      "Open DevTools → Console for the [saveFinal] log lines and paste them back.");
+                return;
+              }
+              logActivity("Saved final manager schedule version", branch + " · " + ymKey + " · " + (saved.name || name),
                 "Made by " + (madeBy || "—") + " · approved by " + (approvedBy || "—"), "Schedule");
-              alert("✓ Saved final version: " + (saved && saved.name || name));
+              alert("✓ Saved final version: " + (saved.name || name) + "\n\n" + after.length + " version" + (after.length === 1 ? "" : "s") + " on file for " + branch + " · " + ymKey);
             } catch (e) {
-              alert("Could not save final version: " + (e.message || e));
+              console.error("[saveFinal] manager — failed", e);
+              alert("Could not save final version: " + (e.message || e) + "\n\nSee DevTools → Console for details.");
             } finally { setMgrSchedSaving(false); }
           };
 
