@@ -8521,12 +8521,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const hLbl = h === Math.floor(h) ? h + "h" : Math.floor(h) + "h" + Math.round((h - Math.floor(h))*60);
               return { lbl: hLbl + " Unpaid", bg:"#fed7aa", fg:"#7f1d1d", cat:"unpaid_h", hours:h };
             }
-            // "Left early" tag from the kiosk — encoded as "left_<minutes>" (30 / 60 / 90 / …).
-            // Converts minutes to hours so the existing unpaid-hours totals can pick it up
-            // without a separate code path. Label reads "Left Xm" for <60 min, "Left Xh"
-            // otherwise, with the m suffix on partial hours.
-            if (bare.indexOf("left_") === 0) {
-              const mins = parseInt(bare.slice(5), 10) || 0;
+            // "Left early" tag from the kiosk. The kiosk's exact encoding may
+            // vary, so accept any of:
+            //   left_30 / left:30 / left-30
+            //   left_early_30 / left_early:30 / leftearly30
+            //   early_30 / early:30
+            // → mins = the trailing number. hours = mins / 60.
+            const leftMatch = bare.match(/^(?:left(?:[_\-:]?early)?|early)[_\-:]?(\d+)$/i);
+            if (leftMatch) {
+              const mins = parseInt(leftMatch[1], 10) || 0;
               const h = mins / 60;
               const lbl = mins === 0 ? "Left Early"
                         : mins < 60 ? "Left " + mins + "m"
@@ -8534,7 +8537,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         : "Left " + Math.floor(mins/60) + "h" + (mins % 60) + "m";
               return { lbl, bg:"#fed7aa", fg:"#7f1d1d", cat:"unpaid_h", hours:h };
             }
-            return STAT[bare] || null;
+            const known = STAT[bare];
+            if (known) return known;
+            // Unrecognised status code (e.g. a new kiosk tag we don't have a
+            // mapping for yet). Surface the raw code in light grey so the
+            // admin sees SOMETHING in the cell instead of a silent blank —
+            // and we can identify the exact format the kiosk is writing.
+            return { lbl: bare.toString().toUpperCase().slice(0, 8), bg:"#f3f4f6", fg:"#374151", cat:"unknown" };
           };
 
           // Build the cycle (25th-24th) day list
@@ -8632,8 +8641,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const h = bare.indexOf(":") > 0 ? parseFloat(bare.split(":")[1]) || 0 : 0;
               return "Hours Deduction (" + h + "h)";
             }
-            if (bare.indexOf("left_") === 0) {
-              const mins = parseInt(bare.slice(5), 10) || 0;
+            const lm = bare.match(/^(?:left(?:[_\-:]?early)?|early)[_\-:]?(\d+)$/i);
+            if (lm) {
+              const mins = parseInt(lm[1], 10) || 0;
               if (mins === 0) return "Left Early";
               if (mins < 60) return "Left " + mins + "m";
               if (mins % 60 === 0) return "Left " + (mins/60) + "h";
@@ -9468,10 +9478,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 let h = 0; if (v.indexOf(":") > 0) h = parseFloat(v.split(":")[1]) || 0;
                 t.unpaidHours += h;
               }
-              else if (v && v.indexOf("left_") === 0) {
-                // Kiosk "Left early" tag — minutes embedded in the code, roll into unpaidHours.
-                const mins = parseInt(v.slice(5), 10) || 0;
-                t.unpaidHours += mins / 60;
+              else if (v) {
+                // Kiosk "Left early" tag — match the flexible regex from
+                // resolveStat so any of the likely encodings rolls into the
+                // unpaidHours total.
+                const lm = v.match(/^(?:left(?:[_\-:]?early)?|early)[_\-:]?(\d+)$/i);
+                if (lm) t.unpaidHours += (parseInt(lm[1], 10) || 0) / 60;
               }
             }
             t.unpaidFromHours = t.unpaidHours / 9;
