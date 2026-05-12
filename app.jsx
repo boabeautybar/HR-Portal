@@ -8521,6 +8521,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const hLbl = h === Math.floor(h) ? h + "h" : Math.floor(h) + "h" + Math.round((h - Math.floor(h))*60);
               return { lbl: hLbl + " Unpaid", bg:"#fed7aa", fg:"#7f1d1d", cat:"unpaid_h", hours:h };
             }
+            // "Left early" tag from the kiosk — encoded as "left_<minutes>" (30 / 60 / 90 / …).
+            // Converts minutes to hours so the existing unpaid-hours totals can pick it up
+            // without a separate code path. Label reads "Left Xm" for <60 min, "Left Xh"
+            // otherwise, with the m suffix on partial hours.
+            if (bare.indexOf("left_") === 0) {
+              const mins = parseInt(bare.slice(5), 10) || 0;
+              const h = mins / 60;
+              const lbl = mins === 0 ? "Left Early"
+                        : mins < 60 ? "Left " + mins + "m"
+                        : mins % 60 === 0 ? "Left " + (mins/60) + "h"
+                        : "Left " + Math.floor(mins/60) + "h" + (mins % 60) + "m";
+              return { lbl, bg:"#fed7aa", fg:"#7f1d1d", cat:"unpaid_h", hours:h };
+            }
             return STAT[bare] || null;
           };
 
@@ -8618,6 +8631,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             if (bare.indexOf("deduct") === 0) {
               const h = bare.indexOf(":") > 0 ? parseFloat(bare.split(":")[1]) || 0 : 0;
               return "Hours Deduction (" + h + "h)";
+            }
+            if (bare.indexOf("left_") === 0) {
+              const mins = parseInt(bare.slice(5), 10) || 0;
+              if (mins === 0) return "Left Early";
+              if (mins < 60) return "Left " + mins + "m";
+              if (mins % 60 === 0) return "Left " + (mins/60) + "h";
+              return "Left " + Math.floor(mins/60) + "h" + (mins % 60) + "m";
             }
             return (STAT[bare] && STAT[bare].lbl) || bare;
           };
@@ -9447,6 +9467,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               else if (v && v.indexOf("deduct") === 0) {
                 let h = 0; if (v.indexOf(":") > 0) h = parseFloat(v.split(":")[1]) || 0;
                 t.unpaidHours += h;
+              }
+              else if (v && v.indexOf("left_") === 0) {
+                // Kiosk "Left early" tag — minutes embedded in the code, roll into unpaidHours.
+                const mins = parseInt(v.slice(5), 10) || 0;
+                t.unpaidHours += mins / 60;
               }
             }
             t.unpaidFromHours = t.unpaidHours / 9;
