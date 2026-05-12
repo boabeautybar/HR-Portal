@@ -1814,7 +1814,7 @@
   function configMissingHtml() {
     return '<div class="warn">' +
              '<strong>Supabase isn\'t connected yet.</strong><br>' +
-             'Open <code>js/config.js</code> and fill in the URL and anon key, then reload.' +
+             'Open <code>config.js</code> and fill in the URL and anon key, then reload.' +
            '</div>';
   }
 
