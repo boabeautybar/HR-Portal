@@ -7167,45 +7167,46 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               ? "✓ every branch open"
               : "Closed: " + stillClosedBranches.slice(0, 3).join(", ") + (stillClosedBranches.length > 3 ? " +" + (stillClosedBranches.length - 3) + " more" : "");
 
-          // Schedule-finalisation status for next month's cycle. Each branch
-          // contributes TWO items (tech + manager), counted independently so a
-          // single Approve & Publish click bumps the dashboard by 1. Total
-          // therefore = SALONS.length × 2. Card colour is green when every
-          // item is done, amber when pending, red after the 15th-of-month
-          // deadline if still pending.
+          // Schedule-finalisation status for next month's cycle, split into
+          // two independent cards: one for nail-tech schedules and one for
+          // manager schedules. Each card counts X / 17 (= SALONS.length).
+          // Green when complete, amber while pending, red once past the
+          // 15th-of-cycle-start-month deadline.
           const schedReady = !!(schedFinalStatus && schedFinalStatus.byBranch);
-          const schedDone = schedReady
-            ? SALONS.reduce((n, sl) => {
-                const r = schedFinalStatus.byBranch[sl.name] || { tech:false, mgr:false };
-                return n + (r.tech ? 1 : 0) + (r.mgr ? 1 : 0);
-              }, 0)
-            : 0;
-          const schedTotal = SALONS.length * 2;
-          const schedMissing = schedReady
-            ? SALONS.flatMap(s => {
-                const r = schedFinalStatus.byBranch[s.name] || { tech:false, mgr:false };
-                const out = [];
-                if (!r.tech) out.push(s.name + " (tech)");
-                if (!r.mgr)  out.push(s.name + " (mgr)");
-                return out;
-              })
-            : [];
+          const schedTotal = SALONS.length;
           const _todayMid = new Date();
           const _today0   = new Date(_todayMid.getFullYear(), _todayMid.getMonth(), _todayMid.getDate());
           const deadline15 = schedReady && schedFinalStatus.deadline ? new Date(schedFinalStatus.deadline) : new Date(_today0.getFullYear(), _today0.getMonth(), 15);
           const daysToDeadline = Math.ceil((deadline15 - _today0) / 86400000);
-          const overdue = schedReady && schedDone < schedTotal && daysToDeadline < 0;
           const cycSuffix = schedReady && schedFinalStatus.cycLabel ? " · " + schedFinalStatus.cycLabel : "";
-          const schedSub = !schedReady
-            ? "loading…"
-            : schedDone === schedTotal
-              ? "✓ all branches finalised" + cycSuffix
-              : overdue
-                ? "⚠ overdue " + Math.abs(daysToDeadline) + " day" + (Math.abs(daysToDeadline) === 1 ? "" : "s") + " · " + schedMissing.slice(0, 2).join(", ") + (schedMissing.length > 2 ? " +" + (schedMissing.length - 2) + " more" : "") + cycSuffix
-                : (daysToDeadline >= 0 ? daysToDeadline + " day" + (daysToDeadline === 1 ? "" : "s") + " left · " : "") + "Pending: " + schedMissing.slice(0, 2).join(", ") + (schedMissing.length > 2 ? " +" + (schedMissing.length - 2) + " more" : "") + cycSuffix;
-          const schedBg = !schedReady ? "#fef3c7" : (schedDone === schedTotal ? "#dcfce7" : (overdue ? "#fee2e2" : "#fef3c7"));
-          const schedColor = !schedReady ? "#7c2d12" : (schedDone === schedTotal ? "#166534" : (overdue ? "#7f1d1d" : "#7c2d12"));
-          const schedIcon = !schedReady ? "📋" : (schedDone === schedTotal ? "📌" : (overdue ? "🚨" : "📌"));
+          const _buildSchedCard = (kind /* "tech" | "mgr" */) => {
+            const done = schedReady
+              ? SALONS.reduce((n, sl) => {
+                  const r = schedFinalStatus.byBranch[sl.name] || { tech:false, mgr:false };
+                  return n + (r[kind] ? 1 : 0);
+                }, 0)
+              : 0;
+            const missing = schedReady
+              ? SALONS.map(s => s.name).filter(n => {
+                  const r = schedFinalStatus.byBranch[n] || { tech:false, mgr:false };
+                  return !r[kind];
+                })
+              : [];
+            const overdue = schedReady && done < schedTotal && daysToDeadline < 0;
+            const sub = !schedReady
+              ? "loading…"
+              : done === schedTotal
+                ? "✓ all branches finalised" + cycSuffix
+                : overdue
+                  ? "⚠ overdue " + Math.abs(daysToDeadline) + " day" + (Math.abs(daysToDeadline) === 1 ? "" : "s") + " · " + missing.slice(0, 2).join(", ") + (missing.length > 2 ? " +" + (missing.length - 2) + " more" : "") + cycSuffix
+                  : (daysToDeadline >= 0 ? daysToDeadline + " day" + (daysToDeadline === 1 ? "" : "s") + " left · " : "") + "Pending: " + missing.slice(0, 2).join(", ") + (missing.length > 2 ? " +" + (missing.length - 2) + " more" : "") + cycSuffix;
+            const bg    = !schedReady ? "#fef3c7" : (done === schedTotal ? "#dcfce7" : (overdue ? "#fee2e2" : "#fef3c7"));
+            const color = !schedReady ? "#7c2d12" : (done === schedTotal ? "#166534" : (overdue ? "#7f1d1d" : "#7c2d12"));
+            const icon  = !schedReady ? "📋" : (done === schedTotal ? "📌" : (overdue ? "🚨" : "📌"));
+            return { done, missing, sub, bg, color, icon };
+          };
+          const techCard = _buildSchedCard("tech");
+          const mgrCard  = _buildSchedCard("mgr");
 
           // Shared style tokens (kept inline so we don't disturb the rest of the file)
           const PINK = { ink:"#831843", accent:"#BE185D", soft:"#FBCFE8", softer:"#FCE7F3", softest:"#FDEEF5", deep:"#9F1A4F" };
@@ -7257,12 +7258,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     c: showStoreCard && stillClosedBranches.length === 0 ? "#166534" : "#7c2d12",
                     bg: showStoreCard && stillClosedBranches.length === 0 ? "#dcfce7" : "#fef3c7",
                     click:()=>tryChangeTab("storeOpenings") },
-                  { l:"Schedules finalised",
-                    v: schedReady ? (schedDone + " / " + schedTotal) : "…",
-                    sub: schedSub,
-                    i: schedIcon,
-                    c: schedColor,
-                    bg: schedBg,
+                  { l:"Tech schedules finalised",
+                    v: schedReady ? (techCard.done + " / " + schedTotal) : "…",
+                    sub: techCard.sub,
+                    i: techCard.icon,
+                    c: techCard.color,
+                    bg: techCard.bg,
+                    click:()=>tryChangeTab("scheduling") },
+                  { l:"Manager schedules finalised",
+                    v: schedReady ? (mgrCard.done + " / " + schedTotal) : "…",
+                    sub: mgrCard.sub,
+                    i: mgrCard.icon,
+                    c: mgrCard.color,
+                    bg: mgrCard.bg,
                     click:()=>tryChangeTab("scheduling") },
                   { l:"Scheduled today",   v: dashScheduledToday == null ? "…" : dashScheduledToday, sub:"across all branches",       i:"📅", c:"#1e3a8a", bg:"#dbeafe" },
                   { l:"Active staff",       v: stats.active,                                          sub:"incl. " + stats.pregnant + " pregnant", i:"👥", c:"#14532d", bg:"#dcfce7" },
