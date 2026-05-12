@@ -7258,20 +7258,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     c: showStoreCard && stillClosedBranches.length === 0 ? "#166534" : "#7c2d12",
                     bg: showStoreCard && stillClosedBranches.length === 0 ? "#dcfce7" : "#fef3c7",
                     click:()=>tryChangeTab("storeOpenings") },
-                  { l:"Tech schedules finalised",
-                    v: schedReady ? (techCard.done + " / " + schedTotal) : "…",
-                    sub: techCard.sub,
-                    i: techCard.icon,
-                    c: techCard.color,
-                    bg: techCard.bg,
-                    click:()=>tryChangeTab("scheduling") },
-                  { l:"Manager schedules finalised",
-                    v: schedReady ? (mgrCard.done + " / " + schedTotal) : "…",
-                    sub: mgrCard.sub,
-                    i: mgrCard.icon,
-                    c: mgrCard.color,
-                    bg: mgrCard.bg,
-                    click:()=>tryChangeTab("scheduling") },
                   { l:"Scheduled today",   v: dashScheduledToday == null ? "…" : dashScheduledToday, sub:"across all branches",       i:"📅", c:"#1e3a8a", bg:"#dbeafe" },
                   { l:"Active staff",       v: stats.active,                                          sub:"incl. " + stats.pregnant + " pregnant", i:"👥", c:"#14532d", bg:"#dcfce7" },
                   { l:"On maternity",       v: stats.onMat,                                           sub: stats.returning60 + " returning ≤60d",  i:"🤱", c:"#7A4258", bg:"#fce7f3" },
@@ -7285,6 +7271,60 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </div>
                 ))}
               </div>
+
+              {/* ── SECTION: SCHEDULE PROGRESS ── one unified panel with two
+                  inner cards (nail tech + manager). Counts both schedule
+                  types for the next 25th-to-24th cycle, with a shared
+                  deadline (15th of the cycle's start month). */}
+              {(() => {
+                const _allDone = schedReady && techCard.done === schedTotal && mgrCard.done === schedTotal;
+                const _anyOverdue = schedReady && !_allDone && daysToDeadline < 0;
+                const _headerStatus = !schedReady
+                  ? { txt: "Loading…", color: "#7c2d12", bg: "#fef3c7" }
+                  : _allDone
+                    ? { txt: "All finalised", color: "#166534", bg: "#dcfce7" }
+                    : _anyOverdue
+                      ? { txt: "Overdue " + Math.abs(daysToDeadline) + " day" + (Math.abs(daysToDeadline) === 1 ? "" : "s"), color: "#7f1d1d", bg: "#fee2e2" }
+                      : { txt: (daysToDeadline >= 0 ? daysToDeadline + " day" + (daysToDeadline === 1 ? "" : "s") + " left" : "Due today"), color: "#7c2d12", bg: "#fef3c7" };
+                const _inner = (title, emoji, c /* card descriptor */) => {
+                  const pct = schedReady ? Math.round((c.done / schedTotal) * 100) : 0;
+                  return (
+                    <div onClick={() => tryChangeTab("scheduling")} style={{ background: c.bg, borderRadius: 14, padding: "16px 18px", cursor: "pointer", border: "1px solid rgba(255,255,255,0.6)", flex: 1, minWidth: 220 }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: c.color, letterSpacing: "0.12em", textTransform: "uppercase" }}>{emoji} {title}</div>
+                        <div style={{ fontSize: 20 }}>{c.icon}</div>
+                      </div>
+                      <div style={{ fontSize: 30, fontWeight: 800, color: c.color, lineHeight: 1.05, marginTop: 8 }}>
+                        {schedReady ? c.done : "…"}<span style={{ fontSize: 16, fontWeight: 600, opacity: 0.7 }}> / {schedTotal}</span>
+                      </div>
+                      <div style={{ height: 6, borderRadius: 999, background: "rgba(0,0,0,0.06)", marginTop: 10, overflow: "hidden" }}>
+                        <div style={{ height: "100%", width: pct + "%", background: c.color, opacity: 0.85, transition: "width .3s ease" }} />
+                      </div>
+                      <div style={{ fontSize: 11, color: c.color, opacity: 0.8, marginTop: 8, lineHeight: 1.35 }}>{c.sub}</div>
+                    </div>
+                  );
+                };
+                return (
+                  <div style={{ ...card, padding: "20px 22px", marginBottom: 24 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
+                      <div>
+                        <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 11, fontWeight: 700, color: PINK.accent, letterSpacing: "0.22em", textTransform: "uppercase" }}>📌 Schedule progress</div>
+                        <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 20, fontWeight: 700, color: PINK.ink, marginTop: 4, letterSpacing: "-0.005em" }}>
+                          Next cycle{schedReady && schedFinalStatus.cycLabel ? " · " + schedFinalStatus.cycLabel : ""}
+                        </div>
+                        <div style={{ fontSize: 11, color: PINK.deep, opacity: 0.7, marginTop: 4 }}>Finalise by the 15th — both nail tech and manager schedules.</div>
+                      </div>
+                      <div style={{ background: _headerStatus.bg, color: _headerStatus.color, fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", padding: "8px 12px", borderRadius: 999 }}>
+                        {_headerStatus.txt}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                      {_inner("Nail tech schedules", "💅", techCard)}
+                      {_inner("Manager schedules",   "👔", mgrCard)}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* ── SECTION: OPERATIONS ── */}
               <div style={sectionTitle}>
