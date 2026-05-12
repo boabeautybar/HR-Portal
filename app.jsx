@@ -5514,7 +5514,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     } finally { setStoreOpenLoading(false); }
   };
   useEffect(() => {
-    if (tab !== "storeOpenings") return;
+    if (tab !== "storeOpenings" && tab !== "dashboard") return;
     loadStoreOpenings(storeOpenYmd);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, storeOpenYmd]);
@@ -6897,6 +6897,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             .filter(s => s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft >= 0 && s.offDaysSinceLeft <= 7)
             .sort((a, b) => (a.offDaysSinceLeft ?? 0) - (b.offDaysSinceLeft ?? 0));
 
+          // Today's store-openings snapshot (loaded by the useEffect above).
+          // null while the first load is in flight; show "…" until data lands.
+          const todayY = new Date();
+          const todayYmd = todayY.getFullYear() + "-" + String(todayY.getMonth()+1).padStart(2,"0") + "-" + String(todayY.getDate()).padStart(2,"0");
+          const showStoreCard = storeOpenYmd === todayYmd && storeOpenRows !== null;
+          const openedBranchSet = new Set(showStoreCard ? (storeOpenRows || []).map(r => r.branch) : []);
+          const stillClosedBranches = showStoreCard
+            ? SALONS.map(s => s.name).filter(n => !openedBranchSet.has(n))
+            : [];
+          const storeOpenedCount = SALONS.length - stillClosedBranches.length;
+          const storeOpenSub = !showStoreCard
+            ? "loading…"
+            : stillClosedBranches.length === 0
+              ? "✓ every branch open"
+              : "Closed: " + stillClosedBranches.slice(0, 3).join(", ") + (stillClosedBranches.length > 3 ? " +" + (stillClosedBranches.length - 3) + " more" : "");
+
           // Shared style tokens (kept inline so we don't disturb the rest of the file)
           const PINK = { ink:"#831843", accent:"#BE185D", soft:"#FBCFE8", softer:"#FCE7F3", softest:"#FDEEF5", deep:"#9F1A4F" };
           const sectionTitle = { fontFamily:"'Outfit',system-ui,sans-serif", fontSize:11, fontWeight:700, color:PINK.ink, letterSpacing:"0.22em", textTransform:"uppercase", display:"flex", alignItems:"center", gap:10, marginBottom:12 };
@@ -6938,6 +6954,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
               <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:11, marginBottom:24 }}>
                 {[
+                  // Today's store-opening status — bright green when all open,
+                  // amber otherwise with the first few still-closed branches listed.
+                  { l:"Stores open today",
+                    v: showStoreCard ? (storeOpenedCount + " / " + SALONS.length) : "…",
+                    sub: storeOpenSub,
+                    i: stillClosedBranches.length === 0 ? "🔓" : "⚠",
+                    c: showStoreCard && stillClosedBranches.length === 0 ? "#166534" : "#7c2d12",
+                    bg: showStoreCard && stillClosedBranches.length === 0 ? "#dcfce7" : "#fef3c7",
+                    click:()=>tryChangeTab("storeOpenings") },
                   { l:"Scheduled today",   v: dashScheduledToday == null ? "…" : dashScheduledToday, sub:"across all branches",       i:"📅", c:"#1e3a8a", bg:"#dbeafe" },
                   { l:"Active staff",       v: stats.active,                                          sub:"incl. " + stats.pregnant + " pregnant", i:"👥", c:"#14532d", bg:"#dcfce7" },
                   { l:"On maternity",       v: stats.onMat,                                           sub: stats.returning60 + " returning ≤60d",  i:"🤱", c:"#7A4258", bg:"#fce7f3" },
