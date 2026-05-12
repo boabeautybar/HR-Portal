@@ -3610,8 +3610,16 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
   // who made it + who approved it. Stored in app_state under
   // boa_schedapproved_<branch>_<ym> via window.BOA_DB.saveApprovedSchedule.
   async function saveFinalVersion() {
-    if (!window.BOA_DB || !window.BOA_DB.saveApprovedSchedule) {
-      alert("This deploy doesn't yet have the saved-versions API. Please redeploy.");
+    // Visible-without-DevTools diagnostic. Reports exactly which check
+    // fails (API missing / empty grid / cancel / save error / persisted-
+    // but-not-found) via an alert chain so we don't have to chase a
+    // silent failure in the browser console.
+    if (!window.BOA_DB) {
+      alert("DIAG: window.BOA_DB is missing — data layer hasn't loaded. Hard-refresh the page (Cmd-Shift-R / Ctrl-Shift-F5).");
+      return;
+    }
+    if (!window.BOA_DB.saveApprovedSchedule) {
+      alert("DIAG: window.BOA_DB exists but .saveApprovedSchedule is missing — this deploy hasn't got the new code yet. Has PR #55 actually been merged into main and Netlify redeployed?");
       return;
     }
     if (!grid || Object.keys(grid).length === 0) {
