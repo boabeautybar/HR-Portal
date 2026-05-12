@@ -5546,8 +5546,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [techClockinDays, setTechClockinDays] = useState(60);          // load window
   const [checkinFilterBranch, setCheckinFilterBranch] = useState("All");
   const [checkinDayRange,     setCheckinDayRange]     = useState(7);    // viewer range
-  const [checkinProbeResult,  setCheckinProbeResult]  = useState(null); // raw probe panel (Daily Check-ins)
-  const [attGridProbeResult,  setAttGridProbeResult]  = useState(null); // attendance-grid probe (Daily Check-ins)
   const [proofModal,          setProofModal]          = useState(null); // { loading, dataUrl, name, ymd, status }
 
   // ── Onboarding / Off-boarding state ────────────────────────────────
@@ -5638,6 +5636,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   useEffect(() => { setAttCheckinSnapshot(null); }, [attBranch, attYM]);
   const [attSched,  setAttSched]  = useState({});      // schedule grid for the same period (for mirror hints)
   const [attMeta,   setAttMeta]   = useState({});      // sidecar metadata e.g. { freshaCoverage:{through:"YYYY-MM-DD"} }
+  // Per-edit undo stack for the attendance grid — pushed before every manual
+  // setCell / markCellReviewed / autoRecordReview, capped at 10 entries.
+  // Cleared whenever the branch or cycle changes so we never restore into
+  // the wrong context.
+  const [attEditStack, setAttEditStack] = useState([]);
+  useEffect(() => { setAttEditStack([]); }, [attBranch, attYM]);
   const [attLoading,setAttLoading]= useState(false);
   // Cross-branch payroll overview — lazy-loaded counts of cells needing
   // admin review per branch for the active cycle. Lives at component scope
@@ -5743,8 +5747,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
               const presentNoApptWarn = checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
               const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
+              const missingCheckin    = !checkinHasIn && freshaWorkedCell;
               const proofPending      = (bareV === "sick_n" || bareV === "frl");
-              if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending) {
+              const trustedAbsence    = (bareV === "sick" || bareV === "no") && scheduleSaysWork && kioskMarkedAbsent && !freshaWorkedCell;
+              const absentNeedsReview = ((bareV === "sick" || bareV === "no") && !trustedAbsence) || bareV === "absent";
+              if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending || missingCheckin || absentNeedsReview) {
                 total++;
                 const rev = (bReview[s.ec] || {})[dy.d];
                 if (rev && rev.valueAtReview === (rawV || "")) reviewed++;
@@ -5800,7 +5807,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       safe(window.BOA_DB.loadSchedule(attBranch, attYM, true))
     ]).then(([att, sch, mgrSch]) => {
       setAttGrid((att && att.grid) || {});
-      setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null, freshaWorked: att.freshaWorked || {}, reviewedWarnings: att.reviewedWarnings || {} } : { freshaWorked: {}, reviewedWarnings: {} });
+      setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null, freshaWorked: att.freshaWorked || {}, reviewedWarnings: att.reviewedWarnings || {}, mirrorSuppressed: !!att.mirrorSuppressed } : { freshaWorked: {}, reviewedWarnings: {}, mirrorSuppressed: false });
       const techGrid = (sch    && sch.grid)    || {};
       const mgrGrid  = ymdReKey((mgrSch && mgrSch.grid) || {});
       setAttSched({ ...techGrid, ...mgrGrid });
@@ -6252,7 +6259,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const prior = out[br][ec][ymd];
       const dt = new Date(r.ts);
       if (!prior || (prior.ts && dt > prior.ts) || !prior.ts) {
-        out[br][ec][ymd] = { status: r.status, note: r.note || null, ts: dt, hasProof: !!r.hasProof, proofKey: r.proofKey || null };
+        out[br][ec][ymd] = { status: r.status, note: r.note || null, ts: dt, hasProof: !!r.hasProof, proofKey: r.proofKey || null, markedBy: r.markedBy || null };
       }
     }
     return out;
@@ -8511,6 +8518,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           };
 
           // Helpers
+          const mirrorSuppressed = !!(attMeta && attMeta.mirrorSuppressed);
           const getStatus = (ec, d) => {
             // Cross-tab rule: anyone on the off-board list shows TERMINATED
             // automatically from the day AFTER their leftDate, regardless of
@@ -8520,6 +8528,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
             const v = attGrid[ec] && attGrid[ec][d];
             if (v) return v.indexOf("~") === 0 ? v.slice(1) : v;
+            // After a Total Reset the schedule mirror is suppressed so the
+            // grid reads as truly empty until the admin runs Auto-fill.
+            if (mirrorSuppressed) return "";
             // Fall back to schedule hint
             const sv = attSched[ec] && attSched[ec][d];
             if (sv === "O" || sv === "R") return "off";
@@ -8538,6 +8549,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             return !!v && v.indexOf("~") !== 0;
           };
           const schedHint = (ec, d) => {
+            if (mirrorSuppressed) return null;        // hide schedule signal after a Total Reset
             const sv = attSched[ec] && attSched[ec][d];
             if (!sv) return null;
             if (sv === "W" || sv === "WL") return "on";
@@ -8548,8 +8560,50 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             return null;
           };
 
+          // Status code → human label (handles "deduct:h" hour codes too).
+          const statLabel = (code) => {
+            if (!code) return "(cleared)";
+            const bare = code.charAt(0) === "~" ? code.slice(1) : code;
+            if (bare.indexOf("deduct") === 0) {
+              const h = bare.indexOf(":") > 0 ? parseFloat(bare.split(":")[1]) || 0 : 0;
+              return "Hours Deduction (" + h + "h)";
+            }
+            return (STAT[bare] && STAT[bare].lbl) || bare;
+          };
+          // Snapshot the current grid + sidecar metadata so the next manual
+          // edit / review / reset can be undone. Cleaned up automatically when
+          // the user switches branch or cycle (see useEffect above).
+          const pushUndo = (label) => {
+            const snap = {
+              grid: JSON.parse(JSON.stringify(attGrid || {})),
+              meta: JSON.parse(JSON.stringify(attMeta || {})),
+              label: label || "edit",
+              ts:    new Date().toISOString()
+            };
+            setAttEditStack(prev => [snap, ...(prev || [])].slice(0, 10));
+          };
+          const undoLastEdit = async () => {
+            if (!attEditStack || attEditStack.length === 0) return;
+            const [last, ...rest] = attEditStack;
+            const restoredGrid = last.grid || {};
+            const restoredMeta = last.meta || {};
+            setAttGrid(restoredGrid);
+            setAttMeta(restoredMeta);
+            setAttEditStack(rest);
+            try {
+              await window.BOA_DB.saveAttendance(attBranch, attYM, restoredGrid, {
+                freshaWorked:      restoredMeta.freshaWorked      || {},
+                freshaCoverage:    restoredMeta.freshaCoverage    || null,
+                reviewedWarnings:  restoredMeta.reviewedWarnings  || {},
+                mirrorSuppressed:  !!restoredMeta.mirrorSuppressed
+              });
+            } catch (e) { alert("Could not undo: " + (e.message || e)); return; }
+            logActivity("Undid " + (last.label || "edit"), attBranch + " · " + cycLabel, "Restored to " + new Date(last.ts).toLocaleString("en-ZA"), "Attendance");
+          };
+
           // Persist a single cell change (and update local React state)
           const setCell = async (ec, d, v) => {
+            pushUndo("cell edit");
             const prev = attGrid[ec] && attGrid[ec][d];
             const next = { ...attGrid, [ec]: { ...(attGrid[ec] || {}) } };
             if (v === "" || v == null) delete next[ec][d];
@@ -8558,8 +8612,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
             catch (e) { alert("Could not save: " + (e.message || e)); }
             const staffName = (attStaff.find(s => s.ec === ec) || {}).name || ec;
-            logActivity("Edited attendance cell", staffName + " · day " + d + " · " + cycLabel,
-              "Branch " + attBranch + " · " + (prev ? prev + " → " : "") + (v || "(cleared)"), "Attendance");
+            const dayObj = days.find(x => x.d === d);
+            const dayDesc = dayObj ? new Date(dayObj.ymd + "T00:00:00").toLocaleDateString("en-ZA", { day:"2-digit", month:"short" }) : ("day " + d);
+            const action = !prev ? "Marked " + statLabel(v)
+                          : !v   ? "Cleared " + statLabel(prev)
+                                 : "Changed " + statLabel(prev) + " → " + statLabel(v);
+            logActivity(action, staffName + " · " + dayDesc + " · " + attBranch, cycLabel, "Attendance");
           };
 
           // Auto-record a review when the admin changes a warning cell via the
@@ -8567,6 +8625,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // the ⚠ separately. Stored alongside the explicit-review records
           // in attMeta.reviewedWarnings so the ✓ shows uniformly.
           const autoRecordReview = async (ec, d, finalValue, gridAtSave) => {
+            pushUndo("review");
             const reviewer = (currentUser && (currentUser.name || currentUser.email)) || "admin";
             const record = { reviewer, ts: new Date().toISOString(), note: null, valueAtReview: finalValue || "" };
             const existing = ((attMeta && attMeta.reviewedWarnings) || {})[ec] || {};
@@ -8577,8 +8636,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             try { await window.BOA_DB.saveAttendance(attBranch, attYM, gridAtSave || attGrid, { reviewedWarnings: nextRW }); }
             catch (e) { alert("Could not save review: " + (e.message || e)); }
             const staffName = (attStaff.find(s => s.ec === ec) || {}).name || ec;
-            logActivity("Reviewed attendance cell", staffName + " · day " + d + " · " + cycLabel,
-              "Confirmed value " + (finalValue || "(cleared)") + " in " + attBranch, "Review");
+            const dayObj = days.find(x => x.d === d);
+            const dayDesc = dayObj ? new Date(dayObj.ymd + "T00:00:00").toLocaleDateString("en-ZA", { day:"2-digit", month:"short" }) : ("day " + d);
+            logActivity("Confirmed " + statLabel(finalValue), staffName + " · " + dayDesc + " · " + attBranch, cycLabel, "Review");
           };
           // Resolve a warning cell via explicit click. The admin's pick is the
           // FINAL status for that day — the cell value is set (override=true)
@@ -8588,6 +8648,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // render time by comparing to valueAtReview).
           const VALID_STAT_CODES = ["on","late","off","sick","sick_n","frl","no","absent","al","ph","mat","ext","trial","swap_o","swap_i","unpaid","term"];
           const markCellReviewed = async (ec, d, currentValue) => {
+            pushUndo("warning resolution");
             const existing = ((attMeta && attMeta.reviewedWarnings) || {})[ec] || {};
             const already  = existing[d];
             const reviewer = (currentUser && (currentUser.name || currentUser.email)) || "admin";
@@ -8632,8 +8693,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             try { await window.BOA_DB.saveAttendance(attBranch, attYM, nextGrid, { reviewedWarnings: nextRW }); }
             catch (e) { alert("Could not save: " + (e.message || e)); }
             const staffName = (attStaff.find(s => s.ec === ec) || {}).name || ec;
-            logActivity("Reviewed warning cell", staffName + " · day " + d + " · " + cycLabel,
-              "Final status " + (cleaned || "(cleared)") + " · " + attBranch + ((note || "").trim() ? " · note: " + note.trim() : ""), "Review");
+            const dayObj2 = days.find(x => x.d === d);
+            const dayDesc2 = dayObj2 ? new Date(dayObj2.ymd + "T00:00:00").toLocaleDateString("en-ZA", { day:"2-digit", month:"short" }) : ("day " + d);
+            const reviewNote = (note || "").trim();
+            logActivity("Resolved warning → " + statLabel(cleaned), staffName + " · " + dayDesc2 + " · " + attBranch,
+              cycLabel + (reviewNote ? " · note: " + reviewNote : ""), "Review");
           };
 
           // ── Import check-ins from the kiosk audit log ── every kiosk submission
@@ -8719,7 +8783,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // Snapshot the pre-import grid for Undo.
             setAttCheckinSnapshot(attGrid);
             setAttGrid(next);
-            try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
+            setAttMeta({ ...(attMeta || {}), mirrorSuppressed: false });        // re-enable display after Total Reset
+            try { await window.BOA_DB.saveAttendance(attBranch, attYM, next, { mirrorSuppressed: false }); }
             catch (e) { alert("Could not save: " + (e.message || e)); return; }
             logActivity("Imported check-ins", attBranch + " · " + cycLabel,
               "Stamped " + stamped + " day" + (stamped === 1 ? "" : "s") + " · " + skippedConfirmed + " confirmed kept · " + skippedPostLeft + " post-leave skipped", "Bulk");
@@ -8992,7 +9057,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 if (!grid[ec]) grid[ec] = {};
                 const cur = grid[ec][dayNum];
                 if (cur && cur.charAt(0) !== "~") { alreadyConfirmed++; continue; }
-                grid[ec][dayNum] = "on";
+                // Fresha is data, not authority — write the mirror form so the
+                // cell shows faded "On Time" until the kiosk also confirms (or
+                // the admin manually overrides). This keeps allMatchWork +
+                // kioskSaysPresent from short-circuiting via override=true on
+                // cells where no kiosk check-in actually exists, so the
+                // missingCheckin ⚠ fires correctly.
+                grid[ec][dayNum] = "~on";
                 marked++;
                 markedByBranch[techBranch] = (markedByBranch[techBranch] || 0) + 1;
               }
@@ -9041,10 +9112,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const importedAt = new Date().toISOString();
               try {
                 await Promise.all(branchesToSave.map(b => {
-                  const extras = {};
+                  const extras = { mirrorSuppressed: false };        // re-enable schedule/kiosk/Fresha display after Total Reset
                   if (freshaThroughByBranch[b]) extras.freshaCoverage = { through: freshaThroughByBranch[b], importedAt };
                   if (branchFreshaWorked[b] && Object.keys(branchFreshaWorked[b]).length) extras.freshaWorked = branchFreshaWorked[b];
-                  return window.BOA_DB.saveAttendance(b, attYM, branchGrids[b], Object.keys(extras).length ? extras : null);
+                  return window.BOA_DB.saveAttendance(b, attYM, branchGrids[b], extras);
                 }));
               } catch (err) { alert("Could not save: " + (err.message || err)); return; }
               // Refresh the local grid + meta for the branch the user is viewing.
@@ -9054,7 +9125,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 setAttMeta({
                   freshaCoverage: freshaThroughByBranch[attBranch] ? { through: freshaThroughByBranch[attBranch], importedAt } : (attMeta && attMeta.freshaCoverage) || null,
                   freshaWorked: branchFreshaWorked[attBranch] || {},
-                  reviewedWarnings: (attMeta && attMeta.reviewedWarnings) || {}
+                  reviewedWarnings: (attMeta && attMeta.reviewedWarnings) || {},
+                  mirrorSuppressed: false
                 });
               }
               logActivity("Imported Fresha CSV", cycLabel,
@@ -9079,14 +9151,48 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const resetCycle = async () => {
             const msg = "⚠ Reset attendance for " + attBranch + " — " + cycLabel + "?\n\n"
               + "This will undo ALL changes you've made for this cycle. Schedule-derived hints will reappear faded once you re-open the tab.\n\n"
-              + "This cannot be undone. Continue?";
+              + "Continue? (You can still ↶ Undo the reset itself.)";
             if (!confirm(msg)) return;
+            pushUndo("Reset Cycle");
             const next = {};
             setAttGrid(next);
             try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
             catch (e) { alert("Could not reset: " + (e.message || e)); return; }
             logActivity("Reset attendance cycle", attBranch + " · " + cycLabel, "All cells cleared", "Bulk");
             alert("✓ Attendance reset for " + attBranch + " — " + cycLabel);
+          };
+
+          // Total reset — clears the attendance grid + every sidecar tied to
+          // it (reviewedWarnings, freshaCoverage, freshaWorked) AND hides the
+          // schedule mirror so the grid renders truly blank. Kiosk data
+          // (audit log, uploaded proofs, absence reasons, extra-day
+          // approvers) is preserved so the admin can re-import it anytime.
+          // The schedule itself stays untouched.
+          const totalResetCycle = async () => {
+            const step1 = "⚠ TOTAL reset for " + attBranch + " — " + cycLabel + "?\n\n"
+              + "Clears the attendance grid + reviewed marks + Fresha sidecar AND hides the schedule mirror — the grid reads as blank.\n\n"
+              + "Kept: kiosk check-ins, uploaded proofs, schedule. Re-import the kiosk anytime to repopulate.\n\n"
+              + "Continue?";
+            if (!confirm(step1)) return;
+            const step2 = window.prompt("Enter the Total Reset PIN to confirm.");
+            if (step2 === null) return;
+            if ((step2 || "").trim() !== "2002") { alert("Cancelled — incorrect PIN."); return; }
+            pushUndo("Total Reset");
+            const nextGrid = {};
+            const nextMeta = { freshaWorked: {}, reviewedWarnings: {}, freshaCoverage: null, mirrorSuppressed: true };
+            setAttGrid(nextGrid);
+            setAttMeta(nextMeta);
+            setAttCheckinSnapshot(null);
+            try {
+              await window.BOA_DB.saveAttendance(attBranch, attYM, nextGrid, {
+                freshaWorked: {},
+                reviewedWarnings: {},
+                freshaCoverage: null,
+                mirrorSuppressed: true
+              });
+            } catch (e) { alert("Could not total-reset: " + (e.message || e)); return; }
+            logActivity("Total reset (cycle display)", attBranch + " · " + cycLabel, "Grid + sidecars cleared, schedule mirror suppressed, kiosk data preserved", "Bulk");
+            alert("✓ Total reset done for " + attBranch + " — " + cycLabel + ". Run Auto-fill or Import Check-ins to repopulate.");
           };
 
           // Auto-fill empty cells from the schedule (writes "~hint" — italic, unconfirmed)
@@ -9097,6 +9203,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const next = { ...attGrid };
             let filled = 0, refreshed = 0;
             const noScheduleStaff = [];
+            // After a Total Reset the schedule mirror was hidden — autoFill
+            // is the explicit "rebuild from schedule" action so we read the
+            // schedule directly here, bypassing the suppressed schedHint.
+            const rawHintFor = (ec, d) => {
+              const sv = attSched[ec] && attSched[ec][d];
+              if (!sv) return null;
+              if (sv === "W" || sv === "WL") return "on";
+              if (sv === "O" || sv === "R")  return "off";
+              if (sv === "L") return "al";
+              if (sv === "X") return "term";
+              if (sv === "E") return "ext";
+              return null;
+            };
             for (const s of attStaff) {
               next[s.ec] = { ...(next[s.ec] || {}) };
               const schedRow = attSched[s.ec] || {};
@@ -9106,7 +9225,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               }
               for (const dy of days) {
                 const cur = next[s.ec][dy.d];
-                const hint = schedHint(s.ec, dy.d);
+                const hint = rawHintFor(s.ec, dy.d);
                 if (!hint) continue;
                 const target = "~" + hint;
                 if (!cur) {
@@ -9169,7 +9288,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               return;
             }
             setAttGrid(next);
-            try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
+            // Auto-fill is the explicit "show the schedule again" action, so
+            // also clear the mirrorSuppressed flag from any prior Total Reset.
+            const nextMeta = { ...(attMeta || {}), mirrorSuppressed: false };
+            setAttMeta(nextMeta);
+            try { await window.BOA_DB.saveAttendance(attBranch, attYM, next, { mirrorSuppressed: false }); }
             catch (e) { alert("Could not save: " + (e.message || e)); return; }
             // Per-role count of staff that ended up with at least one filled cell.
             const filledByRole = { SM:0, AM:0, NT:0 };
@@ -9229,21 +9352,45 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Per-staff totals
           const totalsFor = (ec) => {
             const t = { al:0, sick:0, sickNote:0, frl:0, ph:0, mat:0, unpaid:0, ext:0, late:0, td:0, worked:0, off:0, term:0, unpaidHours:0 };
+            const reviewedMapL = (attMeta && attMeta.reviewedWarnings) || {};
+            // PH credit only when payroll can trust the day:
+            //  (a) Schedule × Kiosk × Fresha all agree the tech worked, or
+            //  (b) the admin reviewed the cell and confirmed the current value.
+            const phEligible = (dy, rawV, bareV) => {
+              // a) admin-confirmed
+              const rec = (reviewedMapL[ec] || {})[dy.d];
+              if (rec && rec.valueAtReview === (rawV || "")) return true;
+              // b) all-3-agree (mirrors the allMatchWork logic on the cell)
+              const hint = schedHint(ec, dy.d);
+              const scheduleSaysWork = hint === "on" || hint === "ext";
+              const freshaWorkedCell = !!((((attMeta || {}).freshaWorked || {})[ec] || {})[dy.d]);
+              const checkin = ((checkInsByBranch[attBranch] || {})[ec] || {})[dy.ymd] || null;
+              const kioskAbs = ((kioskAbsentByBranch[attBranch] || {})[ec] || {})[dy.ymd] || null;
+              const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
+              const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
+              const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i" || bareV === "late";
+              const kioskSaysPresent = checkinHasIn || isWorking;
+              return scheduleSaysWork && freshaWorkedCell && kioskSaysPresent;
+            };
             for (const dy of days) {
               const v = getStatus(ec, dy.d);
+              const rawV = (attGrid[ec] && attGrid[ec][dy.d]) || "";
+              const bareV = v ? (v.charAt(0) === "~" ? v.slice(1) : v) : "";
+              const isHol = !!(holidayLookup && holidayLookup[dy.ymd]);
+              const phOk = isHol && phEligible(dy, rawV, bareV);
               if      (v === "al")     t.al++;
               else if (v === "sick")   { t.sick++; t.unpaid++; }
               else if (v === "sick_n") t.sickNote++;
               else if (v === "frl")    t.frl++;
-              else if (v === "ph")     t.ph++;
+              else if (v === "ph")     t.ph++;        // explicit PH always counts
               else if (v === "mat")    t.mat++;
               else if (v === "no" || v === "unpaid" || v === "absent") t.unpaid++;
-              else if (v === "ext")    t.ext++;
-              else if (v === "late")   t.late++;
+              else if (v === "ext")    { t.ext++; if (phOk) t.ph++; }
+              else if (v === "late")   { t.late++; if (phOk) t.ph++; }
               else if (v === "trial")  t.td++;
-              else if (v === "on")     t.worked++;
+              else if (v === "on")     { t.worked++; if (phOk) t.ph++; }
               else if (v === "off")    t.off++;
-              else if (v === "swap_i") t.worked++;
+              else if (v === "swap_i") { t.worked++; if (phOk) t.ph++; }
               else if (v === "swap_o") t.off++;
               else if (v === "term")   { t.term++; t.unpaid++; }
               else if (v && v.indexOf("deduct") === 0) {
@@ -9319,8 +9466,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
                 const presentNoApptWarn = checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
                 const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
+                const missingCheckin    = !checkinHasIn && freshaWorkedCell;
                 const proofPending      = (bareV === "sick_n" || bareV === "frl");
-                if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending) {
+                // Sick NO note / NO SHOW only need review when something disagrees —
+                // if the schedule said work + kiosk recorded the absence + Fresha
+                // shows no appointment, all three sources line up and the manager
+                // has nothing left to verify. Absent always needs review.
+                const trustedAbsence    = (bareV === "sick" || bareV === "no") && scheduleSaysWork && kioskMarkedAbsent && !freshaWorkedCell;
+                const absentNeedsReview = ((bareV === "sick" || bareV === "no") && !trustedAbsence) || bareV === "absent";
+                if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending || missingCheckin || absentNeedsReview) {
                   total++;
                   const review = (reviewedMap[s.ec] || {})[dy.d];
                   if (review && review.valueAtReview === (v || "")) reviewed++;
@@ -9452,53 +9606,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
                 <div style={{ flex:1 }} />
                 {attLoading && <span style={{ fontSize:11, color:"#9ca3af", fontStyle:"italic" }}>Loading…</span>}
-                {!attLoading && effectiveFreshaThrough && (
-                  <span title={
-                    (effectiveFreshaInferred
-                      ? "Inferred from existing 'On Time' cells (older imports didn't record this). "
-                      : "From the latest Fresha CSV import. ") +
-                    "Orange off-day banners only fire for days up to here. " +
-                    (attMeta && attMeta.freshaCoverage && attMeta.freshaCoverage.importedAt
-                      ? "Last import: " + new Date(attMeta.freshaCoverage.importedAt).toLocaleString("en-ZA")
-                      : "")
-                  }
-                    style={{ fontSize:10, fontWeight:700, color:"#9a3412", background:"#ffedd5", border:"1px solid #fde68a", borderRadius:6, padding:"3px 8px", letterSpacing:"0.04em" }}>
-                    📤 Fresha through {new Date(effectiveFreshaThrough + "T00:00:00").toLocaleDateString("en-ZA", { day:"2-digit", month:"short" })}{effectiveFreshaInferred ? " (inferred)" : ""}
-                  </span>
-                )}
                 <button onClick={autoFill} style={{ padding:"7px 14px", background:"#fef3c7", color:"#78350f", border:"1px solid #fbbf24", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Fill empty cells from schedule (faded, still unconfirmed)">✓ Auto-fill from Schedule</button>
                 <button onClick={importFresha} style={{ padding:"7px 14px", background:"#dbeafe", color:"#1e3a8a", border:"1px solid #93c5fd", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Upload a Fresha appointments CSV — every nail tech with a completed appointment that day is marked On Time">📤 Import Fresha CSV</button>
                 <button onClick={importCheckins} style={{ padding:"7px 14px", background:"#dcfce7", color:"#14532d", border:"1px solid #86efac", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Pull every clock-in from the staff check-in app and stamp those days as On Time (or Extra Day if scheduled off). Confirmed cells are preserved. Use ↩ Undo to roll the import back.">✓ Import Check-ins</button>
-                {(() => {
-                  // Visible badge showing how many check-in DAYS landed in
-                  // checkInsByBranch for the current branch + look-back. If 0
-                  // the import button has nothing to do — surface the reason
-                  // (no clock-ins fetched) rather than letting it fail
-                  // silently. Counts unique (ec, ymd) pairs with a real
-                  // clock-IN event.
-                  const branchData = checkInsByBranch[attBranch] || {};
-                  let n = 0;
-                  for (const ec in branchData) {
-                    const byDay = branchData[ec];
-                    for (const ymd in byDay) if (byDay[ymd] && byDay[ymd].hasIn) n++;
-                  }
-                  const total = (techClockinRows || []).length;
-                  const tip = n === 0
-                    ? "Nothing to import — no clock-ins were fetched for " + attBranch + " in the last " + techClockinDays + " days. " +
-                      "Total clock-in rows fetched (all branches, last " + techClockinDays + " days): " + total + ". " +
-                      "Increase the look-back window on the Check-ins tab if the cycle you're viewing is older."
-                    : n + " check-in day" + (n === 1 ? "" : "s") + " loaded for " + attBranch + " in the last " + techClockinDays + " days (across all techs at this branch). " +
-                      "These are the days the Import Check-ins button can stamp.";
-                  return (
-                    <span title={tip} style={{ fontSize:10, fontWeight:700, color: n === 0 ? "#9a3412" : "#14532d", background: n === 0 ? "#ffedd5" : "#dcfce7", border: "1px solid " + (n === 0 ? "#fde68a" : "#86efac"), borderRadius:6, padding:"3px 8px", letterSpacing:"0.04em" }}>
-                      ✓ {n} check-in day{n === 1 ? "" : "s"}{n === 0 ? " (none loaded)" : ""}
-                    </span>
-                  );
-                })()}
                 {attCheckinSnapshot && (
                   <button onClick={undoCheckinsImport} style={{ padding:"7px 14px", background:"#fef3c7", color:"#78350f", border:"1px solid #fbbf24", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Restore the attendance grid to its state right before the last check-in import">↩ Undo Check-in Import</button>
                 )}
+                {attEditStack.length > 0 && (
+                  <button onClick={undoLastEdit}
+                          title={"Undo the last manual action: " + attEditStack[0].label + " (" + new Date(attEditStack[0].ts).toLocaleTimeString("en-ZA", { hour:"2-digit", minute:"2-digit" }) + ")\n\n" + attEditStack.length + " action" + (attEditStack.length === 1 ? "" : "s") + " in history"}
+                          style={{ padding:"7px 14px", background:"#fef3c7", color:"#78350f", border:"1px solid #fbbf24", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }}>
+                    ↶ Undo {attEditStack[0].label} ({attEditStack.length})
+                  </button>
+                )}
                 <button onClick={resetCycle} style={{ padding:"7px 14px", background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fca5a5", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:600 }} title="Clear every cell for this branch + cycle (with confirmation)">↺ Reset Cycle</button>
+                <button onClick={totalResetCycle} style={{ padding:"7px 14px", background:"#7f1d1d", color:"#fff", border:"1px solid #7f1d1d", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:700 }} title="Permanently delete the attendance grid, kiosk audit log, proofs and absence sidecars for this branch + cycle">⚠ Total Reset</button>
               </div>
 
               {warningCounts.total > 0 && (
@@ -9588,7 +9710,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const v = getStatus(s.ec, dy.d);
                             const hint = schedHint(s.ec, dy.d);
                             const override = hasOverride(s.ec, dy.d);
-                            const st = resolveStat(v) || { lbl:"", bg:"#FFFFFF", fg:"#9ca3af" };
+                            let st = resolveStat(v) || { lbl:"", bg:"#FFFFFF", fg:"#9ca3af" };
                             const isWk = dy.dow === 0 || dy.dow === 6;
                             const deviation = override && hint && hint !== v;
                             const isHol = !!(holidayLookup && holidayLookup[dy.ymd]);
@@ -9601,7 +9723,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // a check-in badge — managers are out of scope. Future-dated kiosk
                             // entries are advance planning, not actual check-ins, so ignore
                             // them here.
-                            const checkin = (s.role === "NT" && isPastOrToday)
+                            const checkin = (s.role === "NT" && isPastOrToday && !mirrorSuppressed)
                               ? ((checkInsByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null
                               : null;
                             // Discrepancy logic:
@@ -9622,7 +9744,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // entries are advance planning, not actual records — ignore them
                             // so they don't trigger "checked in" / mismatch signals on days
                             // that haven't happened yet.
-                            const kioskAbs = (s.role === "NT" && isPastOrToday)
+                            const kioskAbs = (s.role === "NT" && isPastOrToday && !mirrorSuppressed)
                               ? ((kioskAbsentByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null
                               : null;
                             // swap_o explicitly means "took today off, owes a day back" — the
@@ -9637,7 +9759,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // populated by importFresha — NOT from the cell value, since the
                             // kiosk overwrites the grid (e.g. sick / no-show) and we don't want
                             // that to erase the Fresha appointment signal.
-                            const freshaWorkedCell    = !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
+                            const freshaWorkedCell    = !mirrorSuppressed && !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
                             const missingCheckin  = !checkinHasIn && freshaWorkedCell && isPastOrToday; // Fresha confirmed work but no check-in
                             const scheduleSaysWork    = hint === "on" || hint === "ext";
                             const kioskAbsentScheduled = !!kioskAbs && scheduleSaysWork;
@@ -9657,13 +9779,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // appointment. Drives the solid-colour cell render below.
                             const kioskSaysPresent    = (showKioskReason && (kioskAbs.status === "on" || kioskAbs.status === "late")) || (override && (isWorking || isLate));
                             const allMatchWork        = s.role === "NT" && freshaWorkedCell && scheduleSaysWork && (kioskSaysPresent || checkinHasIn);
+                            // Auto-display worked public holidays as "Public Holiday" once
+                            // payroll can trust the cell (same gate as the PH total: all 3
+                            // sources agree OR admin reviewed). On Time / Late / Ext / Swap-in
+                            // cells on a holiday get promoted to PH styling so the grid reads
+                            // the same way payroll counts.
+                            const cellReviewRec  = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
+                            const cellReviewed   = !!cellReviewRec && cellReviewRec.valueAtReview === (v || "");
+                            const workedOnHol    = isHol && (bareV === "on" || bareV === "late" || bareV === "ext" || bareV === "swap_i");
+                            const phAuto         = workedOnHol && (allMatchWork || cellReviewed);
+                            if (phAuto && STAT.ph) { st = STAT.ph; }
                             // Orange-banner "all-match OFF" — schedule says off, no Fresha
                             // appointment was imported (cell isn't in a working state) and the
                             // tech wasn't checked in. Only fires for days the most recent Fresha
                             // import actually covered: future days (no appts in CSV yet) shouldn't
                             // be misread as confirmed off-days when the user uploads mid-month.
                             const scheduleSaysOff     = hint === "off";
-                            const freshaCoversThisDay = !!effectiveFreshaThrough && dy.ymd <= effectiveFreshaThrough;
+                            const freshaCoversThisDay = !mirrorSuppressed && !!effectiveFreshaThrough && dy.ymd <= effectiveFreshaThrough;
                             const allMatchOff         = s.role === "NT" && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn && freshaCoversThisDay && !freshaWorkedCell;
                             // Cross-source rules across Schedule × Kiosk × Fresha:
                             //  • allAgreeAbsent — scheduled to work, kiosk marked the tech absent
@@ -9711,7 +9843,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               (checkin ? "\nChecked in" + (checkin.firstInTs ? " at " + checkin.firstInTs.toLocaleTimeString("en-ZA", { hour:"2-digit", minute:"2-digit" }) : "") + (checkin.autoOut ? " · auto-out" : "") : "") +
                               (checkinMismatch ? "\n⚠ Discrepancy: tech checked in but day marked " + bareV : "") +
                               (missingCheckin  ? "\n⚠ Missing check-in: Fresha shows worked, no check-in record" : "") +
-                              (kioskAbsentScheduled ? "\n⚠ Schedule mismatch: scheduled to work but kiosk marked " + ((STAT[kioskAbs.status] || {}).lbl || kioskAbs.status) + (kioskAbs.note ? " (" + kioskAbs.note + ")" : "") : "") +
+                              (kioskAbs ? "\n📲 Kiosk: marked " + ((STAT[kioskAbs.status] || {}).lbl || kioskAbs.status) + (kioskAbs.markedBy ? " by " + kioskAbs.markedBy : "") + (kioskAbs.note ? " · " + kioskAbs.note : "") : "") +
+                              (kioskAbsentScheduled ? "\n⚠ Schedule mismatch: scheduled to work but kiosk marked " + ((STAT[kioskAbs.status] || {}).lbl || kioskAbs.status) : "") +
                               (isLate && checkin ? "\n(Late — counts as worked, no discrepancy)" : "");
                             // Simplified presence palette — every source (schedule / kiosk /
                             // Fresha) maps to "work" (green) or "off" (slate) when it represents
@@ -9794,18 +9927,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                         }
                                       };
                                       return (
-                                        <span title={"📎 Review proof and confirm before payroll — click to open the uploaded " + (bareV === "sick_n" ? "sick note" : "FRL proof")}
+                                        <span title={"⚠ Review proof + confirm before payroll — click to open the uploaded " + (bareV === "sick_n" ? "sick note" : "FRL proof")}
                                               onClick={openProofModal}
-                                              style={{ position:"absolute", top:6, right:1, fontSize:11, lineHeight:1, color:"#831843", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:3 }}>📎</span>
+                                              style={{ position:"absolute", top:6, right:1, fontSize:12, lineHeight:1, color:"#dc2626", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:3 }}>⚠</span>
                                       );
                                     }
-                                    const warning  = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn;
+                                    // Sick NO note / NO SHOW only require review when the three
+                                    // sources disagree. When schedule said work, kiosk recorded
+                                    // the absence and Fresha has no appointment, all three line
+                                    // up — no admin verification needed (the cell will already
+                                    // render as one solid absent-colour band via allAgreeAbsent).
+                                    const trustedAbsenceCell = (bareV === "sick" || bareV === "no") && scheduleSaysWork && kioskMarkedAbsent && !freshaWorkedCell;
+                                    const absentNeedsReview = ((bareV === "sick" || bareV === "no") && !trustedAbsenceCell) || bareV === "absent";
+                                    const warning  = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || missingCheckin || absentNeedsReview;
                                     const review   = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
                                     const reviewed = !!review && review.valueAtReview === (v || "");
                                     // Cell with active warning + not yet reviewed → red ⚠
                                     if (warning && !reviewed) {
                                       const warnTitle = apptVsKioskAbsentWarn ? "⚠ Kiosk marked tech absent but Fresha has a completed appointment that day"
                                                       : extDayNoApptWarn      ? "⚠ Extra day recorded but Fresha shows no appointments — did they actually do any service?"
+                                                      : absentNeedsReview      ? ("⚠ Absent day — admin must confirm " + ((STAT[bareV] || {}).lbl || bareV) + " for payroll")
+                                                      : missingCheckin         ? "⚠ Fresha shows appointments + scheduled to work, but no kiosk check-in recorded"
                                                                               : "⚠ Tech checked in and was scheduled to work, but Fresha shows no appointments";
                                       return (
                                         <span title={warnTitle + "\n\n(Click to mark as reviewed for payroll)"}
@@ -11461,35 +11603,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <div style={{ fontWeight:700, color:"#831843" }}>
                     Fetched in the last {techClockinDays} days · {(techClockinRows || []).length} row{(techClockinRows || []).length === 1 ? "" : "s"} total
                   </div>
-                  {/* Bypass the staff join + role_type filter and query clockins directly,
-                      so we can confirm whether rows actually exist in the table. */}
-                  <div style={{ display:"flex", gap:6 }}>
-                    <button
-                      onClick={async () => {
-                        try {
-                          if (!window.BOA_DB || !window.BOA_DB.probeRecentClockinsRaw) { setCheckinProbeResult({ error: "probe not available — redeploy needed" }); return; }
-                          const r = await window.BOA_DB.probeRecentClockinsRaw(techClockinDays);
-                          setCheckinProbeResult(r);
-                        } catch (e) {
-                          setCheckinProbeResult({ error: (e && e.message) || String(e) });
-                        }
-                      }}
-                      style={{ background:"#831843", color:"#fff", border:"none", padding:"6px 12px", borderRadius:6, fontSize:11, cursor:"pointer", fontWeight:600 }}
-                    >Probe raw clockins</button>
-                    <button
-                      onClick={async () => {
-                        try {
-                          if (!window.BOA_DB || !window.BOA_DB.probeAttendanceGrid) { setAttGridProbeResult({ error: "probe not available — redeploy needed" }); return; }
-                          const branch = checkinFilterBranch !== "All" ? checkinFilterBranch : "Bree";
-                          const r = await window.BOA_DB.probeAttendanceGrid(branch);
-                          setAttGridProbeResult({ ...r, branch });
-                        } catch (e) {
-                          setAttGridProbeResult({ error: (e && e.message) || String(e) });
-                        }
-                      }}
-                      style={{ background:"#0e7490", color:"#fff", border:"none", padding:"6px 12px", borderRadius:6, fontSize:11, cursor:"pointer", fontWeight:600 }}
-                    >Probe attendance grid</button>
-                  </div>
                 </div>
                 <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
                   {Object.keys(fetchedByBranch).sort().map(b => (
@@ -11519,91 +11632,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <span style={{ color:"#9ca3af", fontStyle:"italic" }}>No kiosk-log rows yet. Once you redeploy the kiosk app with the audit-log change, every kiosk submission will land here.</span>
                   )}
                 </div>
-                {checkinProbeResult && (() => {
-                  if (checkinProbeResult.error) {
-                    return <div style={{ marginTop:10, background:"#fee2e2", color:"#7f1d1d", padding:"8px 11px", borderRadius:6, fontSize:11.5, fontFamily:"monospace" }}>Probe error: {checkinProbeResult.error}</div>;
-                  }
-                  const rows = checkinProbeResult.rows || [];
-                  const staffById = checkinProbeResult.staffById || {};
-                  // Group raw rows by joined-branch (or unresolved staff_id).
-                  const rawByBranch = {};
-                  let unresolved = 0;
-                  for (const r of rows) {
-                    const s = staffById[r.staff_id];
-                    const key = s ? (s.branch || "(no branch)") : "(unresolved staff_id)";
-                    if (!s) unresolved++;
-                    rawByBranch[key] = (rawByBranch[key] || 0) + 1;
-                  }
-                  return (
-                    <div style={{ marginTop:10, background:"#f9fafb", border:"1px solid #e5e7eb", borderRadius:7, padding:"9px 11px", fontSize:11.5 }}>
-                      <div style={{ fontWeight:700, color:"#374151", marginBottom:6 }}>
-                        Raw probe (no staff join, no role filter): {checkinProbeResult.count} rows since {checkinProbeResult.sinceIso}
-                      </div>
-                      <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:8 }}>
-                        {Object.keys(rawByBranch).sort().map(b => (
-                          <span key={b} style={{ background:"#e5e7eb", color:"#111827", padding:"2px 8px", borderRadius:5 }}>
-                            {b}: <strong>{rawByBranch[b]}</strong>
-                          </span>
-                        ))}
-                      </div>
-                      {unresolved > 0 && (
-                        <div style={{ color:"#7f1d1d", marginBottom:6 }}>
-                          ⚠ {unresolved} row{unresolved === 1 ? "" : "s"} have a staff_id that doesn't resolve in the staff table.
-                        </div>
-                      )}
-                      <details>
-                        <summary style={{ cursor:"pointer", color:"#831843", fontWeight:600 }}>Show first 20 raw rows</summary>
-                        <pre style={{ marginTop:6, background:"#fff", border:"1px solid #e5e7eb", padding:8, borderRadius:5, fontSize:10.5, overflow:"auto", maxHeight:300 }}>
-{JSON.stringify(rows.slice(0, 20).map(r => ({ id: r.id, ts: r.ts, type: r.type, staff_id: r.staff_id, resolved: !!staffById[r.staff_id], branch: staffById[r.staff_id] ? staffById[r.staff_id].branch : null })), null, 2)}
-                        </pre>
-                      </details>
-                    </div>
-                  );
-                })()}
-                {attGridProbeResult && (() => {
-                  if (attGridProbeResult.error) {
-                    return <div style={{ marginTop:10, background:"#fee2e2", color:"#7f1d1d", padding:"8px 11px", borderRadius:6, fontSize:11.5, fontFamily:"monospace" }}>Attendance probe error: {attGridProbeResult.error}</div>;
-                  }
-                  const grids = attGridProbeResult.grids || [];
-                  return (
-                    <div style={{ marginTop:10, background:"#ecfeff", border:"1px solid #a5f3fc", borderRadius:7, padding:"9px 11px", fontSize:11.5 }}>
-                      <div style={{ fontWeight:700, color:"#155e75", marginBottom:6 }}>
-                        Attendance grid for {attGridProbeResult.branch || "Bree"} (boa_att_&lt;branch&gt;_&lt;ym&gt; in app_state)
-                      </div>
-                      {grids.length === 0 && (
-                        <div style={{ color:"#7f1d1d" }}>No attendance grid rows found for keys: {(attGridProbeResult.probedKeys || []).join(", ")}</div>
-                      )}
-                      {grids.map(g => (
-                        <div key={g.key} style={{ background:"#fff", border:"1px solid #a5f3fc", borderRadius:5, padding:"7px 9px", marginBottom:6 }}>
-                          <div style={{ fontWeight:700, color:"#0e7490" }}>{g.key} · ym={g.ym} · {g.ecCount} EC{g.ecCount === 1 ? "" : "s"} · saved {g.savedAt || "(no savedAt)"}</div>
-                          <div style={{ color:"#155e75", marginTop:4 }}>
-                            Days with marks: {Object.keys(g.dayCounts).sort((a,b)=>parseInt(a,10)-parseInt(b,10)).map(d => d + " (" + g.dayCounts[d] + ")").join(", ") || "(none)"}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  );
-                })()}
               </div>
-
-              {/* Discrepancies vs Fresha attendance for the active cycle / branch */}
-              {discrepancies.length > 0 && (
-                <div style={{ background:"#fef3c7", border:"1px solid #fde68a", borderRadius:11, padding:"12px 14px", marginBottom:14 }}>
-                  <div style={{ fontWeight:800, color:"#78350f", marginBottom:6, fontSize:13 }}>
-                    ⚠ {discrepancies.length} discrepanc{discrepancies.length === 1 ? "y" : "ies"} for {attBranch} — {cycLabelLocal}
-                  </div>
-                  <div style={{ fontSize:11, color:"#78350f", marginBottom:10 }}>Tech checked in but attendance shows OFF / Annual / Sick / etc. Late status is never flagged (Fresha can't tell late from on-time).</div>
-                  <div style={{ display:"grid", gap:6 }}>
-                    {discrepancies.slice(0, 30).map((d, i) => (
-                      <div key={i} style={{ background:"#FFFFFF", border:"1px solid #fde68a", borderRadius:8, padding:"7px 11px", display:"flex", justifyContent:"space-between", fontSize:12, color:"#78350f" }}>
-                        <span><strong>{d.name}</strong> ({d.ec}) · {d.ymd}</span>
-                        <span style={{ fontFamily:"monospace", color:"#92400e" }}>checked in · attendance = "{d.attendance || "(blank)"}"</span>
-                      </div>
-                    ))}
-                    {discrepancies.length > 30 && <div style={{ fontSize:11, color:"#92400e" }}>… and {discrepancies.length - 30} more.</div>}
-                  </div>
-                </div>
-              )}
 
               <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:13, overflow:"hidden" }}>
                 <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5 }}>
@@ -11653,6 +11682,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             {isOrphan ? <em>⚠ orphan · staff_id={String(r.staff_id || "(null)")}</em> : (
                               <>
                                 {r.staff.name || "—"}
+                                {r.markedBy && <div style={{ fontWeight:500, fontSize:11, color:"#831843", marginTop:2 }}>👤 Marked by {r.markedBy}</div>}
                                 {r.note && <div style={{ fontWeight:400, fontSize:11, color:"#6b7280", marginTop:2, fontStyle:"italic" }}>📝 {r.note}</div>}
                                 {r.hasProof && r.proofKey && (
                                   <button

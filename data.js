@@ -559,18 +559,19 @@
         var ts = new Date(e.ts);
         if (isNaN(ts) || ts < since) return;
         out.push({
-          id:       "kiosk_" + rowBranch + "_" + e.ts + "_" + (e.ec || ""),
-          ts:       e.ts,
-          dayKey:   e.dayKey,
-          ymd:      e.ymd || null,
-          type:     "att",
-          status:   e.status,
-          note:     e.note || null,
-          hasProof: !!e.hasProof,
-          proofKey: e.proofKey || null,
-          ec:       e.ec,
-          branch:   rowBranch,
-          source:   "kiosk_log"
+          id:        "kiosk_" + rowBranch + "_" + e.ts + "_" + (e.ec || ""),
+          ts:        e.ts,
+          dayKey:    e.dayKey,
+          ymd:       e.ymd || null,
+          type:      "att",
+          status:    e.status,
+          note:      e.note || null,
+          hasProof:  !!e.hasProof,
+          proofKey:  e.proofKey || null,
+          markedBy:  e.markedBy || e.manager || e.by || null,        // which manager submitted this
+          ec:        e.ec,
+          branch:    rowBranch,
+          source:    "kiosk_log"
         });
       });
     });
@@ -871,7 +872,7 @@
 
     // Attendance
     loadAttendance:    loadAttendance,
-    saveAttendance:    saveAttendance,
+    saveAttendance:        saveAttendance,
 
     // Leave Planner
     loadLeaveRecords:  loadLeaveRecords,
