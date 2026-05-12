@@ -1171,6 +1171,90 @@ const SALONS = [
   { name:"Betty",           mani:9,  pedi:7,  capacity:18, targetCapacity:10, lowDemand:true },
 ];
 
+// ── One-shot JHB + Durban starter-data import ────────────────────────────
+// Populated from the operations team's "BOA Current Staff- 2026" sheet.
+// Six new locations (five Johannesburg + one Durban) plus 56 nail-tech rows
+// pulled from the per-branch tabs. Filtering rules applied while reading:
+//   • employee_code must start with "B" (the production EC prefix)
+//   • rows in "Induction" or with a date-style EC (not started yet) skipped
+// Permit values map the sheet's text to the COMPLIANCE keys (sa_citizen,
+// asylum, verified_dha, z_na). Contract is kept as-is, since the schedule
+// + maternity UI both read free-text contract labels (Permanent, 3 Month,
+// Maternity, etc.). The Locations tab exposes a one-click "Import …"
+// button that calls saveCustomSalons + saveStaff in sequence.
+const JHB_IMPORT_BRANCHES = [
+  { name: "Fourways",          mani: 10, pedi: 6, capacity: 16 },
+  { name: "Eastgate",          mani: 9,  pedi: 5, capacity: 14 },
+  { name: "Mall of the South", mani: 10, pedi: 6, capacity: 16 },
+  { name: "Mushroom Farm",     mani: 10, pedi: 6, capacity: 16 },
+  { name: "Verdi",             mani: 10, pedi: 6, capacity: 16 },
+  { name: "Ballito",           mani: 9,  pedi: 7, capacity: 16 }
+];
+const JHB_IMPORT_STAFF = [
+  // Fourways
+  { ec:"B195", name:"Anele Kwatsha",            branch:"Fourways", contract:"Permanent", permit:"sa_citizen", level:"One"   },
+  { ec:"B372", name:"Sheeny Kgola",             branch:"Fourways", contract:"Permanent", permit:"sa_citizen", level:"One"   },
+  { ec:"B455", name:"Elisa Nanai Dum Dum",      branch:"Fourways", contract:"Permanent", permit:"sa_citizen", level:"One"   },
+  { ec:"B457", name:"Tyler Fynn",               branch:"Fourways", contract:"Permanent", permit:"sa_citizen", level:"One"   },
+  { ec:"B514", name:"Imtethal Davids",          branch:"Fourways", contract:"Permanent", permit:"sa_citizen", level:"One"   },
+  { ec:"B571", name:"Tshepiso Marumo",          branch:"Fourways", contract:"Permanent", permit:"sa_citizen", level:"Two"   },
+  { ec:"B628", name:"Siphenati Nyati",          branch:"Fourways", contract:"Permanent", permit:"sa_citizen", level:"One"   },
+  { ec:"B516", name:"Nobuhle Busisiwe Chonco",  branch:"Fourways", contract:"Permanent", permit:"sa_citizen", level:"One"   },
+  { ec:"B142", name:"Zandisiwe",                branch:"Fourways", contract:"Permanent", permit:"sa_citizen", level:"One"   },
+  { ec:"B724", name:"Samantha Njapha",          branch:"Fourways", contract:"Permanent", permit:"sa_citizen", level:"One"   },
+  { ec:"B379", name:"Courtney Gaza",            branch:"Fourways", contract:"Maternity", permit:"",           level:"One"   },
+  // Eastgate
+  { ec:"B758", name:"Boitumelo Nxabazi",        branch:"Eastgate", contract:"Permanent", permit:"sa_citizen", level:"Two"   },
+  { ec:"B728", name:"Zanele Malwane",           branch:"Eastgate", contract:"Permanent", permit:"sa_citizen", level:"Two"   },
+  { ec:"B873", name:"Nomfundo Mahlungu",        branch:"Eastgate", contract:"Permanent", permit:"sa_citizen", level:"Two"   },
+  { ec:"B874", name:"Ayanda Nkomo",             branch:"Eastgate", contract:"Permanent", permit:"sa_citizen", level:"Two"   },
+  { ec:"B871", name:"Nomfundo Msiza",           branch:"Eastgate", contract:"Permanent", permit:"sa_citizen", level:"Two"   },
+  { ec:"B869", name:"Zimvo Flatela",            branch:"Eastgate", contract:"Permanent", permit:"sa_citizen", level:"One"   },
+  { ec:"B867", name:"Abigail Swartz",           branch:"Eastgate", contract:"Permanent", permit:"sa_citizen", level:"Two"   },
+  { ec:"B573", name:"Pretty Ncubu",             branch:"Eastgate", contract:"Maternity", permit:"",           level:"Two"   },
+  // Mall of the South
+  { ec:"B376", name:"Nwabisa April",            branch:"Mall of the South", contract:"Permanent", permit:"sa_citizen", level:"Three" },
+  { ec:"B712", name:"Boitumelo (Lesego) Mahlase", branch:"Mall of the South", contract:"Permanent", permit:"sa_citizen", level:"Two" },
+  { ec:"B668", name:"Michelle Makubela",        branch:"Mall of the South", contract:"Permanent", permit:"sa_citizen", level:"Two"   },
+  { ec:"B659", name:"Vuyokhazi Mjobo",          branch:"Mall of the South", contract:"Permanent", permit:"sa_citizen", level:"Two"   },
+  { ec:"B710", name:"Ayanda Bali",              branch:"Mall of the South", contract:"Permanent", permit:"sa_citizen", level:"One"   },
+  { ec:"B771", name:"Nonhlanhla Mathebula",     branch:"Mall of the South", contract:"Permanent", permit:"sa_citizen", level:"Two"   },
+  { ec:"B776", name:"Thato Rakolojane",         branch:"Mall of the South", contract:"Permanent", permit:"sa_citizen", level:"Two"   },
+  { ec:"B769", name:"Matshepo Maila",           branch:"Mall of the South", contract:"Permanent", permit:"sa_citizen", level:"One"   },
+  { ec:"B845", name:"Lebohang Moloto",          branch:"Mall of the South", contract:"Permanent", permit:"sa_citizen", level:"Two"   },
+  { ec:"B872", name:"Nicola Mlambo",            branch:"Mall of the South", contract:"Permanent", permit:"sa_citizen", level:"One"   },
+  { ec:"B777", name:"Vicky Katey",              branch:"Mall of the South", contract:"Maternity", permit:"",           level:"One"   },
+  // Mushroom Farm
+  { ec:"B754", name:"Ondela Timakwe",           branch:"Mushroom Farm", contract:"Permanent",  permit:"sa_citizen",   level:"Two" },
+  { ec:"B378", name:"Mushaisano Netshimbon",    branch:"Mushroom Farm", contract:"Permanent",  permit:"sa_citizen",   level:"One" },
+  { ec:"B574", name:"Rudzani",                  branch:"Mushroom Farm", contract:"Permanent",  permit:"sa_citizen",   level:"Two" },
+  { ec:"B720", name:"Nothemba",                 branch:"Mushroom Farm", contract:"3 Month",    permit:"sa_citizen",   level:"Two" },
+  { ec:"B756", name:"Matshidiso Tsukudu",       branch:"Mushroom Farm", contract:"3 Month",    permit:"sa_citizen",   level:"Two" },
+  { ec:"B816", name:"Sthe Ndlovu",              branch:"Mushroom Farm", contract:"Permanent",  permit:"sa_citizen",   level:"Two" },
+  { ec:"B841", name:"Helen Mthembu",            branch:"Mushroom Farm", contract:"Permanent",  permit:"sa_citizen",   level:"Two" },
+  { ec:"B875", name:"Mohau Mothepu",            branch:"Mushroom Farm", contract:"Permanent",  permit:"sa_citizen",   level:"One" },
+  { ec:"B685", name:"Zinhle",                   branch:"Mushroom Farm", contract:"3 Month",    permit:"sa_citizen",   level:"Two" },
+  { ec:"B803", name:"Marie-Claie Kwizera",      branch:"Mushroom Farm", contract:"Fixed Term", permit:"verified_dha", level:"Two" },
+  { ec:"B852", name:"Dimakatso Marako",         branch:"Mushroom Farm", contract:"Permanent",  permit:"sa_citizen",   level:""    },
+  { ec:"B485", name:"Shaine Mtazu",             branch:"Mushroom Farm", contract:"Maternity",  permit:"",             level:"One" },
+  // Verdi
+  { ec:"B572", name:"Noluthando Nkosi",         branch:"Verdi", contract:"Permanent", permit:"sa_citizen", level:"Two" },
+  { ec:"B575", name:"Caitlin Mogotsi",          branch:"Verdi", contract:"Permanent", permit:"sa_citizen", level:"One" },
+  { ec:"B804", name:"Mpho Phungo",              branch:"Verdi", contract:"Permanent", permit:"sa_citizen", level:"Two" },
+  { ec:"B840", name:"Penelope Mthezi",          branch:"Verdi", contract:"Permanent", permit:"sa_citizen", level:"Two" },
+  { ec:"B844", name:"Nonhlanhla Maake",         branch:"Verdi", contract:"Permanent", permit:"sa_citizen", level:"One" },
+  { ec:"B853", name:"Karabo Lechalaba",         branch:"Verdi", contract:"Permanent", permit:"",           level:""    },
+  { ec:"B409", name:"Tatenda",                  branch:"Verdi", contract:"Maternity", permit:"",           level:"One" },
+  // Ballito (Durban)
+  { ec:"B614", name:"Phumla Mthembu",           branch:"Ballito", contract:"3 Month",  permit:"sa_citizen", level:"One" },
+  { ec:"B615", name:"Slindile Ngobo",           branch:"Ballito", contract:"3 Month",  permit:"sa_citizen", level:"One" },
+  { ec:"B616", name:"Nozipho Ngabane",          branch:"Ballito", contract:"3 Month",  permit:"sa_citizen", level:"One" },
+  { ec:"B617", name:"Nosipho",                  branch:"Ballito", contract:"3 Month",  permit:"sa_citizen", level:"One" },
+  { ec:"B618", name:"Talent",                   branch:"Ballito", contract:"3 Month",  permit:"sa_citizen", level:"Two" },
+  { ec:"B687", name:"Londi Somi",               branch:"Ballito", contract:"Pregnant", permit:"sa_citizen", level:"Two" },
+  { ec:"B711", name:"Beverly",                  branch:"Ballito", contract:"Maternity", permit:"",          level:"Two" }
+];
+
 const COMPLIANCE = {
   sa_citizen:   { label:"SA Citizen",            icon:"🇿🇦", color:"#14532d", bg:"#dcfce7", border:"#86efac" },
   work_permit:  { label:"Valid Work Permit",      icon:"✅",  color:"#8E5570", bg:"#dbeafe", border:"#93c5fd" },
@@ -5696,6 +5780,75 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     }
   };
 
+  // ── JHB + Durban starter-data import ────────────────────────────────────
+  // One-shot importer that seeds the six new branches and their 56 nail
+  // techs into Supabase. The banner only appears while at least one of the
+  // target branch names is missing from SALONS (i.e. the import hasn't
+  // completed yet). Progress is rendered in-modal; on each saveStaff we
+  // also stamp the new row into local `staff` state so the rest of the
+  // app sees it without a full reload.
+  const [jhbImportModal, setJhbImportModal] = useState(null); // null | { stage:"confirm"|"running"|"done", progress:{branches,staffDone,staffTotal,errors[]} }
+  const jhbImportNeeded = JHB_IMPORT_BRANCHES.some(b => !SALONS.some(s => s.name === b.name));
+  const runJhbImport = async () => {
+    if (!window.BOA_DB) { alert("Data layer not loaded yet — refresh and try again."); return; }
+    const progress = { branches: 0, staffDone: 0, staffTotal: JHB_IMPORT_STAFF.length, errors: [] };
+    setJhbImportModal({ stage: "running", progress: { ...progress } });
+    try {
+      // 1) Locations: merge into the boa_custom_salons app_state row, then
+      //    push new entries into the live SALONS array so other screens
+      //    see them on next render.
+      const existingExtras = (await window.BOA_DB.loadCustomSalons()) || [];
+      const seenNames = new Set([...SALONS.map(s => s.name), ...existingExtras.map(e => e && e.name).filter(Boolean)]);
+      const newExtras = [...existingExtras];
+      for (const b of JHB_IMPORT_BRANCHES) {
+        if (seenNames.has(b.name)) continue;
+        newExtras.push({ name: b.name, mani: b.mani, pedi: b.pedi, capacity: b.capacity });
+        seenNames.add(b.name);
+      }
+      await window.BOA_DB.saveCustomSalons(newExtras);
+      for (const b of JHB_IMPORT_BRANCHES) {
+        if (SALONS.some(s => s.name === b.name)) continue;
+        SALONS.push({ name: b.name, mani: b.mani, pedi: b.pedi, capacity: b.capacity, _custom: true });
+      }
+      progress.branches = JHB_IMPORT_BRANCHES.length;
+      setJhbImportModal({ stage: "running", progress: { ...progress } });
+      _setCustomSalonsTick(t => t + 1);
+
+      // 2) Staff: skip any EC that already exists in `staff` (idempotent so a
+      //    re-run after a partial failure doesn't double-insert anyone).
+      const existingEcs = new Set((staff || []).map(s => s && s.ec).filter(Boolean));
+      const newRows = [];
+      for (const row of JHB_IMPORT_STAFF) {
+        if (existingEcs.has(row.ec)) { progress.staffDone += 1; setJhbImportModal({ stage: "running", progress: { ...progress } }); continue; }
+        try {
+          const saved = await window.BOA_DB.saveStaff({
+            ec: row.ec, name: row.name, branch: row.branch,
+            contract: row.contract || null, permit: row.permit || null,
+            level: row.level || null
+          });
+          if (saved) { newRows.push(saved); existingEcs.add(row.ec); }
+        } catch (e) {
+          progress.errors.push({ ec: row.ec, name: row.name, msg: (e && e.message) || String(e) });
+        }
+        progress.staffDone += 1;
+        setJhbImportModal({ stage: "running", progress: { ...progress } });
+      }
+      if (newRows.length > 0) setStaff(prev => prev.concat(newRows));
+      if (window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY(
+          "Imported JHB + Durban starter data",
+          JHB_IMPORT_BRANCHES.map(b => b.name).join(", "),
+          `${progress.branches} branches · ${progress.staffDone - progress.errors.length} staff saved · ${progress.errors.length} errors`,
+          "Settings"
+        );
+      }
+      setJhbImportModal({ stage: "done", progress: { ...progress } });
+    } catch (e) {
+      progress.errors.push({ ec: "—", name: "(import)", msg: (e && e.message) || String(e) });
+      setJhbImportModal({ stage: "done", progress: { ...progress } });
+    }
+  };
+
   // Whether the active tab is read-only for the signed-in user. Surfaced
   // via a banner at the top of the page and used to flip the BOA_DB
   // persistence guard so any save / delete call is short-circuited with
@@ -7675,6 +7828,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 style={{ background:accent, color:"#fff", border:"none", borderRadius:8, padding:"9px 16px", cursor:"pointer", fontSize:12, fontWeight:700, letterSpacing:"0.04em" }}
               >+ Add new location</button>
             </div>
+
+            {/* One-shot starter-data import banner. Hidden once all six target
+                branches are present in SALONS, so it disappears after a
+                successful import (or for users on other devices once the
+                custom-salons row syncs). */}
+            {jhbImportNeeded && (
+              <div style={{ background:"#FFFBEB", border:"1px solid #FCD34D", borderRadius:12, padding:"14px 18px", marginBottom:16, display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap" }}>
+                <div style={{ minWidth:240, flex:1 }}>
+                  <div style={{ fontSize:12, fontWeight:800, color:"#92400e", letterSpacing:"0.08em", textTransform:"uppercase" }}>🚀 JHB + Durban starter data</div>
+                  <div style={{ fontSize:13, color:"#78350f", marginTop:4 }}>Imports 6 new branches (Fourways, Eastgate, Mall of the South, Mushroom Farm, Verdi, Ballito) and their 56 nail techs from the operations sheet. Runs once.</div>
+                </div>
+                <button onClick={()=>setJhbImportModal({ stage:"confirm", progress:{ branches:0, staffDone:0, staffTotal:JHB_IMPORT_STAFF.length, errors:[] } })}
+                  style={{ background:"#92400e", color:"#fff", border:"none", borderRadius:8, padding:"10px 16px", cursor:"pointer", fontSize:12, fontWeight:700, whiteSpace:"nowrap" }}
+                >Import starter data</button>
+              </div>
+            )}
+
             <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))", gap:10, marginBottom:20 }}>
               {[
                 { l:"At Capacity",  v:salonData.filter(s=>s.urgency==="full").length,  c:"#15803d", bg:"#dcfce7" },
@@ -7955,6 +8125,86 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       style={{ background:accent, color:"#fff", border:"none", borderRadius:8, padding:"9px 18px", cursor:"pointer", fontSize:12, fontWeight:700, opacity:addLocationModal.saving?0.6:1 }}
                     >{addLocationModal.saving ? "Saving…" : "Add location"}</button>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── JHB + DURBAN IMPORT MODAL ── confirm → running → done */}
+            {jhbImportModal && (
+              <div
+                onClick={()=>{ if (jhbImportModal.stage !== "running") setJhbImportModal(null); }}
+                style={{ position:"fixed", inset:0, background:"rgba(17,24,39,0.55)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:120 }}
+              >
+                <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:16, padding:"24px 26px", width:"min(520px, 92vw)", boxShadow:"0 10px 40px rgba(0,0,0,0.25)" }}>
+                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:"#831843", marginBottom:6 }}>🚀 Import JHB + Durban data</div>
+
+                  {jhbImportModal.stage === "confirm" && (
+                    <>
+                      <div style={{ fontSize:13, color:"#374151", marginBottom:12, lineHeight:1.5 }}>
+                        About to write to Supabase:
+                      </div>
+                      <ul style={{ fontSize:13, color:"#374151", marginBottom:18, paddingLeft:20, lineHeight:1.6 }}>
+                        <li><b>{JHB_IMPORT_BRANCHES.length} new locations</b>: {JHB_IMPORT_BRANCHES.map(b=>b.name).join(", ")}</li>
+                        <li><b>{JHB_IMPORT_STAFF.length} new nail techs</b> assigned to those branches</li>
+                        <li>Anyone whose EC already exists is <b>skipped</b> (safe to re-run)</li>
+                      </ul>
+                      <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
+                        <button onClick={()=>setJhbImportModal(null)}
+                          style={{ background:"#f3f4f6", color:"#374151", border:"none", borderRadius:8, padding:"9px 16px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                        >Cancel</button>
+                        <button onClick={runJhbImport}
+                          style={{ background:"#92400e", color:"#fff", border:"none", borderRadius:8, padding:"9px 18px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                        >Start import</button>
+                      </div>
+                    </>
+                  )}
+
+                  {jhbImportModal.stage === "running" && (() => {
+                    const p = jhbImportModal.progress;
+                    const pct = p.staffTotal > 0 ? Math.round((p.staffDone / p.staffTotal) * 100) : 0;
+                    return (
+                      <>
+                        <div style={{ fontSize:13, color:"#374151", marginBottom:14 }}>Don't close this tab — writes are happening live.</div>
+                        <div style={{ fontSize:12, color:"#6b7280", marginBottom:6 }}>Locations: <b style={{ color:"#111827" }}>{p.branches} / {JHB_IMPORT_BRANCHES.length}</b></div>
+                        <div style={{ fontSize:12, color:"#6b7280", marginBottom:6 }}>Staff: <b style={{ color:"#111827" }}>{p.staffDone} / {p.staffTotal}</b></div>
+                        <div style={{ height:8, borderRadius:999, background:"#fde68a", overflow:"hidden", marginTop:8 }}>
+                          <div style={{ height:"100%", width:pct+"%", background:"#92400e", transition:"width .2s ease" }} />
+                        </div>
+                        {p.errors.length > 0 && (
+                          <div style={{ fontSize:11, color:"#7f1d1d", marginTop:10 }}>{p.errors.length} error{p.errors.length===1?"":"s"} so far — full report at the end.</div>
+                        )}
+                      </>
+                    );
+                  })()}
+
+                  {jhbImportModal.stage === "done" && (() => {
+                    const p = jhbImportModal.progress;
+                    const ok = p.staffDone - p.errors.length;
+                    return (
+                      <>
+                        <div style={{ fontSize:14, color:"#166534", fontWeight:700, marginBottom:8 }}>✓ Import complete</div>
+                        <ul style={{ fontSize:13, color:"#374151", marginBottom:14, paddingLeft:20, lineHeight:1.6 }}>
+                          <li><b>{p.branches}</b> locations added</li>
+                          <li><b>{ok}</b> nail techs saved</li>
+                          {p.errors.length > 0 && <li style={{ color:"#7f1d1d" }}><b>{p.errors.length}</b> errors</li>}
+                        </ul>
+                        {p.errors.length > 0 && (
+                          <div style={{ background:"#fef2f2", border:"1px solid #fecaca", borderRadius:8, padding:"10px 12px", maxHeight:160, overflow:"auto", marginBottom:12 }}>
+                            {p.errors.map((e, i) => (
+                              <div key={i} style={{ fontSize:11, color:"#7f1d1d", marginBottom:4 }}>
+                                <b>{e.ec}</b> {e.name}: {e.msg}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <div style={{ display:"flex", justifyContent:"flex-end" }}>
+                          <button onClick={()=>setJhbImportModal(null)}
+                            style={{ background:accent, color:"#fff", border:"none", borderRadius:8, padding:"9px 18px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                          >Close</button>
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
             )}
