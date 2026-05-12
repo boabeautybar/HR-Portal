@@ -1151,24 +1151,35 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
 
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────────
+// Each salon carries a `region` key — used by the Locations tab filter and
+// any future regional reporting. Values: "wc" (Western Cape), "gauteng",
+// "kzn". Custom branches added at runtime default to "wc" if they were
+// saved before this field existed.
 const SALONS = [
-  { name:"Sea Point",       mani:16, pedi:6,  capacity:24 },
-  { name:"Bree",            mani:9,  pedi:5,  capacity:15 },
-  { name:"Kloof",           mani:11, pedi:4,  capacity:17 },
-  { name:"Claremont",       mani:12, pedi:7,  capacity:21 },
-  { name:"Rondebosch",      mani:12, pedi:4,  capacity:18 },
-  { name:"Durbanville",     mani:11, pedi:8,  capacity:21 },
-  { name:"Table Bay",       mani:14, pedi:4,  capacity:20 },
-  { name:"Somerset West",   mani:14, pedi:4,  capacity:20 },
-  { name:"Riverlands",  mani:11, pedi:6,  capacity:19 },
-  { name:"Kuils River", mani:13, pedi:8,  capacity:23 },
-  { name:"Westlake",        mani:9,  pedi:7,  capacity:18 },
-  { name:"Green Point",     mani:8,  pedi:7,  capacity:17 },
-  { name:"Plumstead",       mani:9,  pedi:7,  capacity:18 },
-  { name:"Sandown",         mani:9,  pedi:7,  capacity:18 },
-  { name:"Cape Gate",       mani:9,  pedi:7,  capacity:18 },
-  { name:"Winelands",       mani:9,  pedi:7,  capacity:18 },
-  { name:"Betty",           mani:9,  pedi:7,  capacity:18, targetCapacity:10, lowDemand:true },
+  { name:"Sea Point",       mani:16, pedi:6,  capacity:24, region:"wc" },
+  { name:"Bree",            mani:9,  pedi:5,  capacity:15, region:"wc" },
+  { name:"Kloof",           mani:11, pedi:4,  capacity:17, region:"wc" },
+  { name:"Claremont",       mani:12, pedi:7,  capacity:21, region:"wc" },
+  { name:"Rondebosch",      mani:12, pedi:4,  capacity:18, region:"wc" },
+  { name:"Durbanville",     mani:11, pedi:8,  capacity:21, region:"wc" },
+  { name:"Table Bay",       mani:14, pedi:4,  capacity:20, region:"wc" },
+  { name:"Somerset West",   mani:14, pedi:4,  capacity:20, region:"wc" },
+  { name:"Riverlands",  mani:11, pedi:6,  capacity:19, region:"wc" },
+  { name:"Kuils River", mani:13, pedi:8,  capacity:23, region:"wc" },
+  { name:"Westlake",        mani:9,  pedi:7,  capacity:18, region:"wc" },
+  { name:"Green Point",     mani:8,  pedi:7,  capacity:17, region:"wc" },
+  { name:"Plumstead",       mani:9,  pedi:7,  capacity:18, region:"wc" },
+  { name:"Sandown",         mani:9,  pedi:7,  capacity:18, region:"wc" },
+  { name:"Cape Gate",       mani:9,  pedi:7,  capacity:18, region:"wc" },
+  { name:"Winelands",       mani:9,  pedi:7,  capacity:18, region:"wc" },
+  { name:"Betty",           mani:9,  pedi:7,  capacity:18, targetCapacity:10, lowDemand:true, region:"wc" },
+];
+
+// Shared region metadata for the Locations filter and the Add Location form.
+const REGIONS = [
+  { key:"wc",      label:"Western Cape", short:"WC",      color:"#0e7490", bg:"#cffafe" },
+  { key:"gauteng", label:"Gauteng",      short:"Gauteng", color:"#7c3aed", bg:"#ede9fe" },
+  { key:"kzn",     label:"KZN",          short:"KZN",     color:"#15803d", bg:"#dcfce7" }
 ];
 
 // ── One-shot JHB + Durban starter-data import ────────────────────────────
@@ -1183,12 +1194,12 @@ const SALONS = [
 // Maternity, etc.). The Locations tab exposes a one-click "Import …"
 // button that calls saveCustomSalons + saveStaff in sequence.
 const JHB_IMPORT_BRANCHES = [
-  { name: "Fourways",          mani: 10, pedi: 6, capacity: 16 },
-  { name: "Eastgate",          mani: 9,  pedi: 5, capacity: 14 },
-  { name: "Mall of the South", mani: 10, pedi: 6, capacity: 16 },
-  { name: "Mushroom Farm",     mani: 10, pedi: 6, capacity: 16 },
-  { name: "Verdi",             mani: 10, pedi: 6, capacity: 16 },
-  { name: "Ballito",           mani: 9,  pedi: 7, capacity: 16 }
+  { name: "Fourways",          mani: 10, pedi: 6, capacity: 16, region:"gauteng" },
+  { name: "Eastgate",          mani: 9,  pedi: 5, capacity: 14, region:"gauteng" },
+  { name: "Mall of the South", mani: 10, pedi: 6, capacity: 16, region:"gauteng" },
+  { name: "Mushroom Farm",     mani: 10, pedi: 6, capacity: 16, region:"gauteng" },
+  { name: "Verdi",             mani: 10, pedi: 6, capacity: 16, region:"gauteng" },
+  { name: "Ballito",           mani: 9,  pedi: 7, capacity: 16, region:"kzn"     }
 ];
 const JHB_IMPORT_STAFF = [
   // Fourways
@@ -5726,15 +5737,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       try {
         const extras = await window.BOA_DB.loadCustomSalons();
         if (cancelled || !Array.isArray(extras) || extras.length === 0) return;
+        // Migration: rows saved before the region field existed are missing
+        // it. If the branch name matches a known JHB/KZN import, tag it from
+        // the import list; otherwise default to "wc". Persist any patched
+        // rows back so the migration only runs once per device.
+        const jhbByName = new Map(JHB_IMPORT_BRANCHES.map(b => [b.name, b.region]));
+        let migrated = false;
+        const patched = extras.map(x => {
+          if (!x || !x.name) return x;
+          if (REGIONS.some(r => r.key === x.region)) return x;
+          const inferred = jhbByName.get(x.name) || "wc";
+          migrated = true;
+          return { ...x, region: inferred };
+        });
+        if (migrated) {
+          try { await window.BOA_DB.saveCustomSalons(patched); } catch (e) { console.error("region migration:", e); }
+        }
         const seen = new Set(SALONS.map(s => s.name));
         let added = 0;
-        for (const x of extras) {
+        for (const x of patched) {
           if (!x || !x.name || seen.has(x.name)) continue;
           SALONS.push({
             name: x.name,
             mani: Number(x.mani) || 0,
             pedi: Number(x.pedi) || 0,
             capacity: Number(x.capacity) || ((Number(x.mani) || 0) + (Number(x.pedi) || 0)),
+            region: REGIONS.some(r => r.key === x.region) ? x.region : "wc",
             ...(x.lowDemand ? { lowDemand: true, targetCapacity: Number(x.targetCapacity) || 0 } : {}),
             _custom: true
           });
@@ -5748,7 +5776,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }, []);
 
   // Modal state for the "+ Add location" form on the Locations tab.
-  const [addLocationModal, setAddLocationModal] = useState(null); // null | { name, mani, pedi, capacity, lowDemand, targetCapacity, saving }
+  // Region filter for the Locations tab — "all" or one of the REGIONS keys.
+  const [locFilterRegion, setLocFilterRegion] = useState("all");
+  const [addLocationModal, setAddLocationModal] = useState(null); // null | { name, mani, pedi, capacity, lowDemand, targetCapacity, region, saving }
   const submitNewLocation = async () => {
     const m = addLocationModal;
     if (!m) return;
@@ -5761,7 +5791,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const mani = Math.max(0, Number(m.mani) || 0);
     const pedi = Math.max(0, Number(m.pedi) || 0);
     const capacity = Math.max(1, Number(m.capacity) || (mani + pedi));
-    const entry = { name: nm, mani, pedi, capacity };
+    const region = REGIONS.some(r => r.key === m.region) ? m.region : "wc";
+    const entry = { name: nm, mani, pedi, capacity, region };
     if (m.lowDemand) {
       entry.lowDemand = true;
       entry.targetCapacity = Math.max(1, Number(m.targetCapacity) || capacity);
@@ -5805,13 +5836,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const newExtras = [...existingExtras];
       for (const b of JHB_IMPORT_BRANCHES) {
         if (seenNames.has(b.name)) continue;
-        newExtras.push({ name: b.name, mani: b.mani, pedi: b.pedi, capacity: b.capacity });
+        newExtras.push({ name: b.name, mani: b.mani, pedi: b.pedi, capacity: b.capacity, region: b.region });
         seenNames.add(b.name);
       }
       await window.BOA_DB.saveCustomSalons(newExtras);
       for (const b of JHB_IMPORT_BRANCHES) {
         if (SALONS.some(s => s.name === b.name)) continue;
-        SALONS.push({ name: b.name, mani: b.mani, pedi: b.pedi, capacity: b.capacity, _custom: true });
+        SALONS.push({ name: b.name, mani: b.mani, pedi: b.pedi, capacity: b.capacity, region: b.region, _custom: true });
       }
       progress.branches = JHB_IMPORT_BRANCHES.length;
       setJhbImportModal({ stage: "running", progress: { ...progress } });
@@ -7822,14 +7853,48 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         )}
 
         {/* ── LOCATIONS TAB ── */}
-        {tab==="locations" && (
+        {tab==="locations" && (() => {
+          // Region filter: applied to the salonData feed and the stat tiles
+          // so the whole tab reflects the selected region. Counts shown in
+          // each pill are computed from the unfiltered salonData so the
+          // pills always read like a stable map of where branches live.
+          const regionCounts = REGIONS.reduce((acc, r) => {
+            acc[r.key] = salonData.filter(s => s.region === r.key).length;
+            return acc;
+          }, {});
+          const filteredSalonData = locFilterRegion === "all"
+            ? salonData
+            : salonData.filter(s => s.region === locFilterRegion);
+          const filteredActive    = filteredSalonData.reduce((a, s) => a + s.active.length,    0);
+          const filteredOnMat     = filteredSalonData.reduce((a, s) => a + s.onMat.length,     0);
+          const filteredSeats     = filteredSalonData.reduce((a, s) => a + s.capacity,          0);
+          const filteredVacancies = filteredSalonData.reduce((a, s) =>
+            a + Math.max(0, (s.targetCapacity || s.capacity) - s.active.length), 0);
+          return (
           <>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
               <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:"#831843" }}>📍 Locations</div>
               <button
-                onClick={()=>setAddLocationModal({ name:"", mani:"", pedi:"", capacity:"", lowDemand:false, targetCapacity:"", saving:false })}
+                onClick={()=>setAddLocationModal({ name:"", mani:"", pedi:"", capacity:"", lowDemand:false, targetCapacity:"", region:"wc", saving:false })}
                 style={{ background:accent, color:"#fff", border:"none", borderRadius:8, padding:"9px 16px", cursor:"pointer", fontSize:12, fontWeight:700, letterSpacing:"0.04em" }}
               >+ Add new location</button>
+            </div>
+
+            {/* Region filter pills. "All" shows everything; each region pill
+                lists its count so an empty region (e.g. KZN before Ballito
+                imports) is still visible but greyed via the count. */}
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:14 }}>
+              {[{ key:"all", label:"All regions", short:"All", color:"#831843", bg:"#fce7f3" }, ...REGIONS].map(r => {
+                const isActive = locFilterRegion === r.key;
+                const count = r.key === "all" ? salonData.length : (regionCounts[r.key] || 0);
+                return (
+                  <button key={r.key} onClick={()=>setLocFilterRegion(r.key)}
+                    style={{ background: isActive ? r.color : r.bg, color: isActive ? "#fff" : r.color, border:`1px solid ${r.color}`, borderRadius:999, padding:"7px 14px", cursor:"pointer", fontSize:12, fontWeight:700, letterSpacing:"0.04em", display:"flex", alignItems:"center", gap:6 }}>
+                    {r.label}
+                    <span style={{ background: isActive ? "rgba(255,255,255,0.25)" : "rgba(0,0,0,0.06)", padding:"1px 7px", borderRadius:999, fontSize:11, fontWeight:700 }}>{count}</span>
+                  </button>
+                );
+              })}
             </div>
 
             {/* One-shot starter-data import banner. Hidden once all six target
@@ -7850,13 +7915,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
             <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))", gap:10, marginBottom:20 }}>
               {[
-                { l:"At Capacity",  v:salonData.filter(s=>s.urgency==="full").length,  c:"#15803d", bg:"#dcfce7" },
-                { l:"Needs Staff",  v:salonData.filter(s=>s.urgency==="low").length,   c:"#b45309", bg:"#fef9c3" },
-                { l:"Understaffed", v:salonData.filter(s=>s.urgency==="high").length,  c:"#c2410c", bg:"#ffedd5" },
-                { l:"Active (incl. pregnant)", v:stats.active, c:"#1e3a8a", bg:"#dbeafe" },
-                { l:"On Mat. Leave",v:stats.onMat,    c:"#7A4258", bg:"#fce7f3" },
-                { l:"Total Seats",  v:SALONS.reduce((a,s)=>a+s.capacity,0), c:"#111827", bg:"#f3f4f6" },
-                { l:"Vacancies",    v:stats.vacancies, c:"#9a3412", bg:"#ffedd5" },
+                { l:"At Capacity",  v:filteredSalonData.filter(s=>s.urgency==="full").length,  c:"#15803d", bg:"#dcfce7" },
+                { l:"Needs Staff",  v:filteredSalonData.filter(s=>s.urgency==="low").length,   c:"#b45309", bg:"#fef9c3" },
+                { l:"Understaffed", v:filteredSalonData.filter(s=>s.urgency==="high").length,  c:"#c2410c", bg:"#ffedd5" },
+                { l:"Active (incl. pregnant)", v:filteredActive, c:"#1e3a8a", bg:"#dbeafe" },
+                { l:"On Mat. Leave",v:filteredOnMat,    c:"#7A4258", bg:"#fce7f3" },
+                { l:"Total Seats",  v:filteredSeats, c:"#111827", bg:"#f3f4f6" },
+                { l:"Vacancies",    v:filteredVacancies, c:"#9a3412", bg:"#ffedd5" },
               ].map(c=>(
                 <div key={c.l} style={{ background:c.bg, borderRadius:12, padding:"13px 14px" }}>
                   <div style={{ fontSize:26, fontWeight:800, color:c.c, lineHeight:1 }}>{c.v}</div>
@@ -7864,13 +7929,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               ))}
             </div>
+            {filteredSalonData.length === 0 ? (
+              <div style={{ background:"#FFFFFF", border:"1px dashed #FBCFE8", borderRadius:14, padding:"30px 20px", textAlign:"center", color:"#9F1A4F", fontSize:13 }}>
+                No branches in this region yet. Add one with "+ Add new location" above.
+              </div>
+            ) : (
             <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(295px,1fr))", gap:13 }}>
-              {salonData.map(salon=>(
+              {filteredSalonData.map(salon=>(
                 <div key={salon.name} style={{ background:"#FFFFFF", borderRadius:16, border:`2px solid ${salon.urgency==="full"?"#86efac":"#e5e7eb"}`, padding:"17px 19px", position:"relative", overflow:"hidden" }}>
                   <div style={{ position:"absolute", top:0, left:0, right:0, height:4, background:uColor[salon.urgency] }} />
                   <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10 }}>
                     <div>
-                      <div style={{ fontFamily:"'Playfair Display',serif", fontSize:18, fontWeight:700, color:"#111827" }}>📍 {salon.name}</div>
+                      <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+                        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:18, fontWeight:700, color:"#111827" }}>📍 {salon.name}</div>
+                        {(() => {
+                          const r = REGIONS.find(x => x.key === salon.region);
+                          if (!r) return null;
+                          return <span style={{ background:r.bg, color:r.color, fontSize:9, fontWeight:800, padding:"2px 7px", borderRadius:999, letterSpacing:"0.06em" }}>{r.short.toUpperCase()}</span>;
+                        })()}
+                      </div>
                       <div style={{ fontSize:9, fontWeight:800, color:uColor[salon.urgency], letterSpacing:"0.07em", marginTop:1 }}>{uLabel[salon.urgency]}</div>
                       <div style={{ fontSize:10, color:"#9ca3af", marginTop:2 }}>Mani {salon.mani} · Pedi {salon.pedi} · Max {salon.capacity}{salon.lowDemand && <span style={{ marginLeft:6, background:"#FFFFFF", color:"#BE185D", border:"1px solid #86efac", borderRadius:20, padding:"1px 7px", fontWeight:700, fontSize:9 }}>✦ LOW DEMAND · TARGET {salon.targetCapacity}</span>}</div>
                     </div>
@@ -8058,6 +8135,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               ))}
             </div>
+            )}
 
             {/* ── ADD-LOCATION MODAL ── */}
             {addLocationModal && (
@@ -8102,6 +8180,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit" }}
                       />
                     </div>
+                  </div>
+
+                  <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Region</label>
+                  <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:14 }}>
+                    {REGIONS.map(r => {
+                      const active = (addLocationModal.region || "wc") === r.key;
+                      return (
+                        <button key={r.key} type="button"
+                          onClick={()=>setAddLocationModal({ ...addLocationModal, region:r.key })}
+                          style={{ background: active ? r.color : r.bg, color: active ? "#fff" : r.color, border:`1px solid ${r.color}`, borderRadius:8, padding:"7px 12px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                        >{r.label}</button>
+                      );
+                    })}
                   </div>
 
                   <label style={{ display:"flex", alignItems:"center", gap:8, fontSize:12, color:"#374151", marginBottom:6, cursor:"pointer" }}>
@@ -8212,7 +8303,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
             )}
           </>
-        )}
+          );
+        })()}
 
         {/* ── MATERNITY TAB ── */}
         {tab==="maternity" && (
