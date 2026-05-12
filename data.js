@@ -990,7 +990,11 @@
 
     // Custom locations (branches added after launch)
     loadCustomSalons:  loadCustomSalons,
-    saveCustomSalons:  saveCustomSalons
+    saveCustomSalons:  saveCustomSalons,
+
+    // Kiosk PINs (manager-dashboard 4-digit PINs, keyed by branch name)
+    loadKioskPins:     loadKioskPins,
+    saveKioskPins:     saveKioskPins
   };
 
   // ── Custom locations ─────────────────────────────────────────────────
@@ -1008,5 +1012,22 @@
     var res = await sb.from("app_state").upsert({ key: "boa_custom_salons", value: list });
     if (res.error) { console.error("saveCustomSalons:", res.error); throw res.error; }
     return list;
+  }
+
+  // ── Kiosk manager PINs ───────────────────────────────────────────────
+  // Map of { branchName: "4-digit" }. The kiosk's config.js fetches this
+  // row on boot and uses it to override the hard-coded fallback PIN for
+  // the resolved branch. HR portal admins reset PINs via the Kiosk PINs
+  // tab — saves write the full updated map back atomically.
+  async function loadKioskPins() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_kiosk_pins_v1").maybeSingle();
+    if (res.error) { console.error("loadKioskPins:", res.error); return {}; }
+    var v = res.data && res.data.value;
+    return (v && typeof v === "object" && !Array.isArray(v)) ? v : {};
+  }
+  async function saveKioskPins(map) {
+    var res = await sb.from("app_state").upsert({ key: "boa_kiosk_pins_v1", value: map || {} });
+    if (res.error) { console.error("saveKioskPins:", res.error); throw res.error; }
+    return map;
   }
 })();

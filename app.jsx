@@ -5304,9 +5304,10 @@ const SETTINGS_TABS = [
   { t: "attendance",     l: "Attendance / Payroll", cat: "Payroll", icon: "📕" },
   { t: "payrollProgress",l: "Payroll Progress",     cat: "Payroll", icon: "📊" },
   { t: "alerts",     l: "Alerts",            cat: "Insights",   icon: "🔔" },
-  { t: "activity",   l: "Activity Log",      cat: "Insights",   icon: "📜" }
+  { t: "activity",   l: "Activity Log",      cat: "Insights",   icon: "📜" },
+  { t: "kioskPins",  l: "Kiosk PINs",        cat: "Admin",      icon: "🔑" }
 ];
-const SETTINGS_CATS = ["People", "Operations", "Payroll", "Insights"];
+const SETTINGS_CATS = ["People", "Operations", "Payroll", "Insights", "Admin"];
 
 // Convert a stored user record (hideCategories + hideTabs + readOnlyTabs)
 // into a per-tab matrix the editor can flip checkboxes against.
@@ -5779,6 +5780,50 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Region filter for the Locations tab — "all" or one of the REGIONS keys.
   const [locFilterRegion, setLocFilterRegion] = useState("all");
   const [addLocationModal, setAddLocationModal] = useState(null); // null | { name, mani, pedi, capacity, lowDemand, targetCapacity, region, saving }
+
+  // Kiosk PINs admin tab. Map { branchName: "4-digit-pin" }. Branches with
+  // no entry are using the kiosk's hard-coded fallback. Loaded once on
+  // mount; re-fetched whenever the user opens the tab so concurrent edits
+  // from another browser are picked up.
+  const [kioskPins, setKioskPins] = useState({});
+  const [kioskPinsLoaded, setKioskPinsLoaded] = useState(false);
+  const [kioskPinReveal, setKioskPinReveal] = useState({}); // branchName -> bool
+  const [kioskPinSaving, setKioskPinSaving] = useState(null); // branchName currently being saved
+  useEffect(() => {
+    if (!window.BOA_DB || !window.BOA_DB.loadKioskPins) return;
+    if (tab !== "kioskPins" && kioskPinsLoaded) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const map = await window.BOA_DB.loadKioskPins();
+        if (!cancelled) { setKioskPins(map || {}); setKioskPinsLoaded(true); }
+      } catch (e) { console.error("loadKioskPins:", e); }
+    })();
+    return () => { cancelled = true; };
+  }, [tab]);
+  const resetKioskPin = async (branchName) => {
+    const proposed = window.prompt(`New 4-digit PIN for ${branchName}:\n(Type a fresh number — staff use this to enter the manager dashboard on the kiosk.)`, "");
+    if (proposed === null) return;
+    const trimmed = proposed.trim();
+    if (!/^[0-9]{4}$/.test(trimmed)) { alert("PIN must be exactly 4 digits."); return; }
+    if (Object.entries(kioskPins).some(([b, p]) => b !== branchName && p === trimmed)) {
+      if (!window.confirm("That PIN is already used by another branch. Use it anyway?")) return;
+    }
+    try {
+      setKioskPinSaving(branchName);
+      const next = { ...kioskPins, [branchName]: trimmed };
+      await window.BOA_DB.saveKioskPins(next);
+      setKioskPins(next);
+      setKioskPinReveal(r => ({ ...r, [branchName]: true }));
+      if (window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY("Reset kiosk PIN", branchName, "Manager dashboard PIN updated", "Admin");
+      }
+    } catch (e) {
+      alert("Could not save PIN: " + (e.message || e));
+    } finally {
+      setKioskPinSaving(null);
+    }
+  };
   const submitNewLocation = async () => {
     const m = addLocationModal;
     if (!m) return;
@@ -12654,6 +12699,83 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 )}
               </div>
             </div>
+          );
+        })()}
+
+        {/* ── KIOSK PINS (ADMIN) ── manager-dashboard 4-digit PINs that gate
+            entry on the check-in tablet. Saves to app_state["boa_kiosk_pins_v1"];
+            the kiosk's config.js fetches that row on boot to override the
+            hard-coded fallback per branch. */}
+        {tab==="kioskPins" && (() => {
+          const PINK = { ink:"#831843", accent:"#BE185D", soft:"#FBCFE8", softer:"#FCE7F3" };
+          return (
+            <>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
+                <div>
+                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:PINK.ink }}>🔑 Kiosk PINs</div>
+                  <div style={{ fontSize:12, color:"#6b7280", marginTop:2 }}>4-digit PINs that unlock the manager dashboard on the check-in tablet. Staff PIN is shared and managed separately.</div>
+                </div>
+                <div style={{ fontSize:11, color:"#9ca3af" }}>{kioskPinsLoaded ? Object.keys(kioskPins).length + " custom · " + SALONS.length + " branches total" : "Loading…"}</div>
+              </div>
+
+              <div style={{ background:"#fef9c3", border:"1px solid #fde68a", borderRadius:10, padding:"10px 14px", fontSize:12, color:"#78350f", marginBottom:14 }}>
+                <b>How resets work:</b> save here → kiosk picks up the new PIN on the next page reload. Branches without a custom PIN still use the hard-coded fallback from the kiosk's config (0001 → Sea Point, 0002 → Bree, …).
+              </div>
+
+              <div style={{ background:"#fff", border:`1px solid ${PINK.soft}`, borderRadius:14, overflow:"hidden" }}>
+                <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+                  <thead>
+                    <tr style={{ background:PINK.softer, color:PINK.ink, fontWeight:700, fontSize:11, letterSpacing:"0.06em", textTransform:"uppercase" }}>
+                      <th style={{ textAlign:"left", padding:"10px 14px" }}>Branch</th>
+                      <th style={{ textAlign:"left", padding:"10px 14px" }}>Region</th>
+                      <th style={{ textAlign:"left", padding:"10px 14px" }}>PIN</th>
+                      <th style={{ textAlign:"left", padding:"10px 14px" }}>Status</th>
+                      <th style={{ textAlign:"right", padding:"10px 14px" }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {SALONS.map((s) => {
+                      const pin     = kioskPins[s.name] || "";
+                      const hasPin  = !!pin;
+                      const reveal  = !!kioskPinReveal[s.name];
+                      const saving  = kioskPinSaving === s.name;
+                      const r       = REGIONS.find(x => x.key === s.region);
+                      return (
+                        <tr key={s.name} style={{ borderTop:`1px solid ${PINK.soft}` }}>
+                          <td style={{ padding:"10px 14px", fontWeight:600, color:"#111827" }}>{s.name}</td>
+                          <td style={{ padding:"10px 14px" }}>
+                            {r && <span style={{ background:r.bg, color:r.color, fontSize:10, fontWeight:800, padding:"2px 8px", borderRadius:999, letterSpacing:"0.06em" }}>{r.short.toUpperCase()}</span>}
+                          </td>
+                          <td style={{ padding:"10px 14px", fontFamily:"'Outfit',monospace", fontSize:16, fontWeight:700, color:hasPin ? "#111827" : "#9ca3af", letterSpacing:"0.18em" }}>
+                            {hasPin ? (reveal ? pin : "••••") : <span style={{ fontSize:11, fontStyle:"italic", color:"#9ca3af" }}>using fallback</span>}
+                          </td>
+                          <td style={{ padding:"10px 14px" }}>
+                            {hasPin
+                              ? <span style={{ background:"#dcfce7", color:"#166534", fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:999, letterSpacing:"0.04em" }}>Custom PIN active</span>
+                              : <span style={{ background:"#fef3c7", color:"#7c2d12", fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:999, letterSpacing:"0.04em" }}>Fallback PIN</span>}
+                          </td>
+                          <td style={{ padding:"10px 14px", textAlign:"right", whiteSpace:"nowrap" }}>
+                            {hasPin && (
+                              <button onClick={()=>setKioskPinReveal(prev => ({ ...prev, [s.name]: !prev[s.name] }))}
+                                style={{ background:"#f3f4f6", color:"#374151", border:"none", borderRadius:7, padding:"6px 11px", cursor:"pointer", fontSize:11, fontWeight:700, marginRight:6 }}
+                              >{reveal ? "Hide" : "Reveal"}</button>
+                            )}
+                            {hasPin && reveal && (
+                              <button onClick={()=>{ try { navigator.clipboard.writeText(pin); } catch (_e) {} }}
+                                style={{ background:"#f3f4f6", color:"#374151", border:"none", borderRadius:7, padding:"6px 11px", cursor:"pointer", fontSize:11, fontWeight:700, marginRight:6 }}
+                              >Copy</button>
+                            )}
+                            <button onClick={()=>resetKioskPin(s.name)} disabled={saving}
+                              style={{ background:PINK.accent, color:"#fff", border:"none", borderRadius:7, padding:"6px 12px", cursor:"pointer", fontSize:11, fontWeight:700, opacity:saving?0.6:1 }}
+                            >{saving ? "Saving…" : (hasPin ? "Reset" : "Set PIN")}</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
           );
         })()}
 
