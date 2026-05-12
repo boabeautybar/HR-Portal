@@ -1252,6 +1252,9 @@ const JHB_IMPORT_STAFF = [
   { ec:"B617", name:"Nosipho",                  branch:"Ballito", contract:"3 Month",  permit:"sa_citizen", level:"One" },
   { ec:"B618", name:"Talent",                   branch:"Ballito", contract:"3 Month",  permit:"sa_citizen", level:"Two" },
   { ec:"B687", name:"Londi Somi",               branch:"Ballito", contract:"Pregnant", permit:"sa_citizen", level:"Two" },
+  { ec:"B684", name:"Nokululunga Shing",        branch:"Ballito", contract:"3 Month",  permit:"sa_citizen", level:"Two" },
+  { ec:"B686", name:"Nolwazi Mthembu",          branch:"Ballito", contract:"3 Month",  permit:"sa_citizen", level:"Two" },
+  { ec:"B688", name:"Amahle Nsele",             branch:"Ballito", contract:"3 Month",  permit:"sa_citizen", level:"Two" },
   { ec:"B711", name:"Beverly",                  branch:"Ballito", contract:"Maternity", permit:"",          level:"Two" }
 ];
 
@@ -7837,7 +7840,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ background:"#FFFBEB", border:"1px solid #FCD34D", borderRadius:12, padding:"14px 18px", marginBottom:16, display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap" }}>
                 <div style={{ minWidth:240, flex:1 }}>
                   <div style={{ fontSize:12, fontWeight:800, color:"#92400e", letterSpacing:"0.08em", textTransform:"uppercase" }}>🚀 JHB + Durban starter data</div>
-                  <div style={{ fontSize:13, color:"#78350f", marginTop:4 }}>Imports 6 new branches (Fourways, Eastgate, Mall of the South, Mushroom Farm, Verdi, Ballito) and their 56 nail techs from the operations sheet. Runs once.</div>
+                  <div style={{ fontSize:13, color:"#78350f", marginTop:4 }}>Imports 6 new branches (Fourways, Eastgate, Mall of the South, Mushroom Farm, Verdi, Ballito) and their {JHB_IMPORT_STAFF.length} nail techs from the operations sheet. Runs once.</div>
                 </div>
                 <button onClick={()=>setJhbImportModal({ stage:"confirm", progress:{ branches:0, staffDone:0, staffTotal:JHB_IMPORT_STAFF.length, errors:[] } })}
                   style={{ background:"#92400e", color:"#fff", border:"none", borderRadius:8, padding:"10px 16px", cursor:"pointer", fontSize:12, fontWeight:700, whiteSpace:"nowrap" }}
