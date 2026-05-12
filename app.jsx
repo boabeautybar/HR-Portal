@@ -5661,6 +5661,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   useEffect(() => { setAttCheckinSnapshot(null); }, [attBranch, attYM]);
   const [attSched,  setAttSched]  = useState({});      // schedule grid for the same period (for mirror hints)
   const [attMeta,   setAttMeta]   = useState({});      // sidecar metadata e.g. { freshaCoverage:{through:"YYYY-MM-DD"} }
+  // Kiosk's "Left work early" sidecar (boa_early_<branch>_<ym>) — separate
+  // from the attendance grid because the tech still checked in, only their
+  // shift ended early. Shape: { [dayKey]: { [ec]: { hours, recordedAt, recordedBy } } }
+  const [attEarly,  setAttEarly]  = useState({});
   // Per-edit undo stack for the attendance grid — pushed before every manual
   // setCell / markCellReviewed / autoRecordReview, capped at 10 entries.
   // Cleared whenever the branch or cycle changes so we never restore into
@@ -5766,7 +5770,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
               const freshaWorkedCell = !!((bFW[s.ec] || {})[dy.d]);
               const freshaCoversThisDay = !!bFThru && dy.ymd <= bFThru;
-              const kioskMarkedAbsent = !!kioskAbs && kioskAbs.status !== "ext" && kioskAbs.status !== "trial" && kioskAbs.status !== "swap_o";
+              const kioskMarkedAbsent = !!kioskAbs && kioskAbs.status !== "ext" && kioskAbs.status !== "trial" && kioskAbs.status !== "swap_o" && !/^[^a-z]*(?:left|early)/i.test(kioskAbs.status || "");
               const cellShowsAbsent = kioskMarkedAbsent || (override && !!bareV && !isWorking && !isLate);
               const extDayRecorded  = (override && bareV === "ext") || (!!kioskAbs && kioskAbs.status === "ext");
               const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
@@ -5829,13 +5833,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     Promise.all([
       safe(window.BOA_DB.loadAttendance(attBranch, attYM)),
       safe(window.BOA_DB.loadSchedule(attBranch, techYm, false)),
-      safe(window.BOA_DB.loadSchedule(attBranch, attYM, true))
-    ]).then(([att, sch, mgrSch]) => {
+      safe(window.BOA_DB.loadSchedule(attBranch, attYM, true)),
+      window.BOA_DB.loadEarlyLeaves ? safe(window.BOA_DB.loadEarlyLeaves(attBranch, attYM)) : Promise.resolve({})
+    ]).then(([att, sch, mgrSch, early]) => {
       setAttGrid((att && att.grid) || {});
       setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null, freshaWorked: att.freshaWorked || {}, reviewedWarnings: att.reviewedWarnings || {}, mirrorSuppressed: !!att.mirrorSuppressed } : { freshaWorked: {}, reviewedWarnings: {}, mirrorSuppressed: false });
       const techGrid = (sch    && sch.grid)    || {};
       const mgrGrid  = ymdReKey((mgrSch && mgrSch.grid) || {});
       setAttSched({ ...techGrid, ...mgrGrid });
+      setAttEarly(early || {});
     }).catch(e => console.error("Attendance load:", e))
       .finally(() => setAttLoading(false));
   }, [tab, attBranch, attYM]);
@@ -8521,7 +8527,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const hLbl = h === Math.floor(h) ? h + "h" : Math.floor(h) + "h" + Math.round((h - Math.floor(h))*60);
               return { lbl: hLbl + " Unpaid", bg:"#fed7aa", fg:"#7f1d1d", cat:"unpaid_h", hours:h };
             }
-            return STAT[bare] || null;
+            // "Left work early" tag from the kiosk. Accepts every plausible
+            // encoding the kiosk might use:
+            //   left_30 / left:30 / left-30
+            //   left_early_30 / left_early:30 / leftearly30
+            //   early_30 / early:30 / early-30
+            // → mins = the trailing number, hours = mins / 60. Same orange
+            // unpaid-hours palette as the existing deduct:Nh codes so it
+            // rolls into the NET UNPAID column on the right of the grid.
+            const leftMatch = bare.match(/^(?:left(?:[_\-:]?early)?|early)[_\-:]?(\d+)$/i);
+            if (leftMatch) {
+              const mins = parseInt(leftMatch[1], 10) || 0;
+              const h = mins / 60;
+              const lbl = mins === 0 ? "Left Early"
+                        : mins < 60 ? "Left " + mins + "m"
+                        : mins % 60 === 0 ? "Left " + (mins/60) + "h"
+                        : "Left " + Math.floor(mins/60) + "h" + (mins % 60) + "m";
+              return { lbl, bg:"#fed7aa", fg:"#7f1d1d", cat:"unpaid_h", hours:h };
+            }
+            const known = STAT[bare];
+            if (known) return known;
+            // Unrecognised status — surface the raw code in light grey (up
+            // to 8 chars) so a new kiosk tag never silently renders blank;
+            // we can identify the format and add it to the parser.
+            return { lbl: bare.toString().toUpperCase().slice(0, 8), bg:"#f3f4f6", fg:"#374151", cat:"unknown" };
           };
 
           // Build the cycle (25th-24th) day list
@@ -8618,6 +8647,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             if (bare.indexOf("deduct") === 0) {
               const h = bare.indexOf(":") > 0 ? parseFloat(bare.split(":")[1]) || 0 : 0;
               return "Hours Deduction (" + h + "h)";
+            }
+            const lm = bare.match(/^(?:left(?:[_\-:]?early)?|early)[_\-:]?(\d+)$/i);
+            if (lm) {
+              const mins = parseInt(lm[1], 10) || 0;
+              if (mins === 0) return "Left Early";
+              if (mins < 60) return "Left " + mins + "m";
+              if (mins % 60 === 0) return "Left " + (mins/60) + "h";
+              return "Left " + Math.floor(mins/60) + "h" + (mins % 60) + "m";
             }
             return (STAT[bare] && STAT[bare].lbl) || bare;
           };
@@ -9402,7 +9439,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
           // Per-staff totals
           const totalsFor = (ec) => {
-            const t = { al:0, sick:0, sickNote:0, frl:0, ph:0, mat:0, unpaid:0, ext:0, late:0, td:0, worked:0, off:0, term:0, unpaidHours:0 };
+            const t = { al:0, sick:0, sickNote:0, frl:0, ph:0, mat:0, unpaid:0, ext:0, late:0, td:0, worked:0, off:0, term:0, unpaidHours:0, earlyHours:0 };
             const reviewedMapL = (attMeta && attMeta.reviewedWarnings) || {};
             // PH credit only when payroll can trust the day:
             //  (a) Schedule × Kiosk × Fresha all agree the tech worked, or
@@ -9448,8 +9485,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 let h = 0; if (v.indexOf(":") > 0) h = parseFloat(v.split(":")[1]) || 0;
                 t.unpaidHours += h;
               }
+              // Kiosk "Left work early" sidecar — boa_early_<branch>_<ym>:
+              //   value[dayKey][ec] = { hours, recordedAt, recordedBy }
+              // Tracked separately so the SHORT HRS column can show only
+              // these hours; also rolled into the existing unpaidHours so
+              // NET UNPAID picks them up too.
+              const earlyForDay = attEarly && attEarly[dy.d];
+              const earlyRec    = earlyForDay && earlyForDay[ec];
+              if (earlyRec && typeof earlyRec.hours === "number" && earlyRec.hours > 0) {
+                t.earlyHours += earlyRec.hours;
+                t.unpaidHours += earlyRec.hours;
+              }
             }
-            t.unpaidFromHours = t.unpaidHours / 9;
+            // Convert deductions to days. Short hours from the kiosk's
+            // "Left work early" use 8h/day per business rule (4h = 0.5 day);
+            // any other deduct:Nh cells use the existing 9h/day work-shift
+            // conversion. earlyHours is already included in unpaidHours
+            // (so it'd otherwise be double-counted), so subtract it from
+            // the 9h-rate portion before recombining.
+            const deductHoursOnly = Math.max(0, t.unpaidHours - t.earlyHours);
+            t.earlyDays       = t.earlyHours / 8;
+            t.unpaidFromHours = deductHoursOnly / 9 + t.earlyDays;
             t.totalUnpaid = t.unpaid + t.unpaidFromHours;
             t.exdOffsetUnpaid = Math.min(t.ext, t.totalUnpaid);
             t.unpaidAfterExd = t.totalUnpaid - t.exdOffsetUnpaid;
@@ -9511,7 +9567,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const freshaWorkedCell = !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
                 const freshaCoversThisDay = !!effectiveFreshaThrough && dy.ymd <= effectiveFreshaThrough;
                 const override = hasOverride(s.ec, dy.d);
-                const kioskMarkedAbsent = !!kioskAbs && kioskAbs.status !== "ext" && kioskAbs.status !== "trial" && kioskAbs.status !== "swap_o";
+                const kioskMarkedAbsent = !!kioskAbs && kioskAbs.status !== "ext" && kioskAbs.status !== "trial" && kioskAbs.status !== "swap_o" && !/^[^a-z]*(?:left|early)/i.test(kioskAbs.status || "");
                 const cellShowsAbsent = kioskMarkedAbsent || (override && !!bareV && !isWorking && !isLate);
                 const extDayRecorded = (override && bareV === "ext") || (!!kioskAbs && kioskAbs.status === "ext");
                 const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
@@ -9727,10 +9783,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         { l:"MAT",       bg:"#fef3c7", c:"#7c2d12", t:"Maternity" },
                         { l:"LATE",      bg:"#fef3c7", c:"#92400e", t:"Late" },
                         { l:"EXD",       bg:"#d1fae5", c:"#064e3b", t:"Extra Days Worked" },
+                        { l:"SHORT",     bg:"#fef3c7", c:"#7c2d12", t:"Short hours from Left-Early — 8h = 1 day. Counts toward unpaid days." },
                         { l:"UNPAID",    bg:"#fee2e2", c:"#7f1d1d", t:"Unpaid" },
                         { l:"NET UNPAID",bg:"#f3f4f6", c:"#374151", t:"Unpaid - Extra credit" }
                       ].map((c, i) => (
-                        <th key={c.l} title={c.t} style={{ padding:"6px 8px", fontSize:9, fontWeight:800, color:c.c, textAlign:"center", borderBottom:"2px solid #FBCFE8", borderLeft: i===0 || i===8 ? "3px solid #FBCFE8" : "1px solid #FCE7F3", background:c.bg, minWidth:42 }}>{c.l}</th>
+                        <th key={c.l} title={c.t} style={{ padding:"6px 8px", fontSize:9, fontWeight:800, color:c.c, textAlign:"center", borderBottom:"2px solid #FBCFE8", borderLeft: i===0 || i===9 ? "3px solid #FBCFE8" : "1px solid #FCE7F3", background:c.bg, minWidth:42 }}>{c.l}</th>
                       ))}
                     </tr>
                   </thead>
@@ -9813,7 +9870,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const freshaWorkedCell    = !mirrorSuppressed && !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
                             const missingCheckin  = !checkinHasIn && freshaWorkedCell && isPastOrToday; // Fresha confirmed work but no check-in
                             const scheduleSaysWork    = hint === "on" || hint === "ext";
-                            const kioskAbsentScheduled = !!kioskAbs && scheduleSaysWork;
+                            const kioskAbsentScheduled = !!kioskAbs && scheduleSaysWork && !/^[^a-z]*(?:left|early)/i.test(kioskAbs.status || "");
                             // Map the kiosk audit-log status to a STAT entry. The recordAbsence
                             // wrapper writes status="absent" with the reason in the note —
                             // surface that as a generic absent code so the cell still shows
@@ -9840,6 +9897,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const workedOnHol    = isHol && (bareV === "on" || bareV === "late" || bareV === "ext" || bareV === "swap_i");
                             const phAuto         = workedOnHol && (allMatchWork || cellReviewed);
                             if (phAuto && STAT.ph) { st = STAT.ph; }
+                            // Left-early override: when the kiosk's boa_early
+                            // sidecar has a record for this (ec, day), paint
+                            // the cell orange and replace the body label with
+                            // "-Xh" so the admin sees the deduction at a glance
+                            // instead of just "On Time" with a small corner chip.
+                            const earlyForCell = attEarly && attEarly[dy.d] && attEarly[dy.d][s.ec];
+                            const earlyHours   = earlyForCell && typeof earlyForCell.hours === "number" ? earlyForCell.hours : 0;
+                            if (earlyHours > 0) {
+                              const mins = Math.round(earlyHours * 60);
+                              const lbl  = mins < 60          ? "-" + mins + "m"
+                                        : mins % 60 === 0     ? "-" + (mins/60) + "h"
+                                                              : "-" + Math.floor(mins/60) + "h" + (mins % 60) + "m";
+                              st = { lbl, bg:"#fed7aa", fg:"#7c2d12", cat:"unpaid_h", hours: earlyHours };
+                            }
                             // Orange-banner "all-match OFF" — schedule says off, no Fresha
                             // appointment was imported (cell isn't in a working state) and the
                             // tech wasn't checked in. Only fires for days the most recent Fresha
@@ -9860,7 +9931,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             //  • presentNoApptWarn — kiosk says the tech checked in AND schedule
                             //    said work, but Fresha has no appointments. They were in the
                             //    store for nothing — manager should investigate.
-                            const kioskMarkedAbsent = !!kioskAbs && kioskAbs.status !== "ext" && kioskAbs.status !== "trial" && kioskAbs.status !== "swap_o";        // kiosk audit log entry, only true non-presence statuses
+                            const kioskMarkedAbsent = !!kioskAbs && kioskAbs.status !== "ext" && kioskAbs.status !== "trial" && kioskAbs.status !== "swap_o" && !/^[^a-z]*(?:left|early)/i.test(kioskAbs.status || "");        // kiosk audit log entry, only true non-presence statuses
                             // The cell visually says "absent" — either the kiosk audit log
                             // recorded an absence, or the grid value itself is a non-presence
                             // status (manual edit or a kiosk write that didn't hit the audit log).
@@ -9896,6 +9967,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               (missingCheckin  ? "\n⚠ Missing check-in: Fresha shows worked, no check-in record" : "") +
                               (kioskAbs ? "\n📲 Kiosk: marked " + ((STAT[kioskAbs.status] || {}).lbl || kioskAbs.status) + (kioskAbs.markedBy ? " by " + kioskAbs.markedBy : "") + (kioskAbs.note ? " · " + kioskAbs.note : "") : "") +
                               (kioskAbsentScheduled ? "\n⚠ Schedule mismatch: scheduled to work but kiosk marked " + ((STAT[kioskAbs.status] || {}).lbl || kioskAbs.status) : "") +
+                              (() => {
+                                const er = attEarly && attEarly[dy.d] && attEarly[dy.d][s.ec];
+                                if (!er || !(er.hours > 0)) return "";
+                                return "\n🏃 Left work early — " + er.hours + "h (counts as " + (er.hours / 8).toFixed(2) + " unpaid day" + (er.hours/8 === 1 ? "" : "s") + ")"
+                                     + (er.recordedBy ? " · recorded by " + er.recordedBy : "");
+                              })() +
                               (isLate && checkin ? "\n(Late — counts as worked, no discrepancy)" : "");
                             // Simplified presence palette — every source (schedule / kiosk /
                             // Fresha) maps to "work" (green) or "off" (slate) when it represents
@@ -9907,7 +9984,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                                        : (k === "off" || k === "swap_o") ? C_OFF
                                                        : null;
                             // Future swap renders as italic grey placeholder (defined above).
-                            const baseBgRaw = isFutureSwap ? "#f9fafb"
+                            const baseBgRaw = earlyHours > 0 ? "#fed7aa"        // Left-early takes priority — paint the cell orange
+                                              : isFutureSwap ? "#f9fafb"
                                               : override ? (presenceBgFor(bareV) || st.bg)
                                               : showKioskReason ? (presenceBgFor(kioskAbs.status) || kStat.bg)
                                               : (isHol ? "#fecaca40" : (isWk ? "#fdf4f8" : "#FFFFFF"));
@@ -10043,6 +10121,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <td style={{ padding:"6px 8px", fontSize:11, fontWeight:800, color:"#7c2d12", textAlign:"center", borderBottom:"1px solid #FCE7F3", borderLeft:"1px solid #FCE7F3", background:"#fef3c7" }}>{t.mat}</td>
                           <td style={{ padding:"6px 8px", fontSize:11, fontWeight:800, color:"#92400e", textAlign:"center", borderBottom:"1px solid #FCE7F3", borderLeft:"1px solid #FCE7F3", background:"#fef3c7" }}>{t.late}</td>
                           <td style={{ padding:"6px 8px", fontSize:11, fontWeight:800, color:"#064e3b", textAlign:"center", borderBottom:"1px solid #FCE7F3", borderLeft:"1px solid #FCE7F3", background:"#d1fae5" }}>{t.ext}</td>
+                          <td style={{ padding:"6px 8px", fontSize:11, fontWeight:800, color: t.earlyHours > 0 ? "#7c2d12" : "#9ca3af", textAlign:"center", borderBottom:"1px solid #FCE7F3", borderLeft:"1px solid #FCE7F3", background: t.earlyHours > 0 ? "#fef3c7" : "#fffbeb" }}
+                              title={t.earlyHours > 0 ? t.earlyHours + "h short — " + t.earlyDays.toFixed(2) + " unpaid day" + (t.earlyDays === 1 ? "" : "s") + " (8h = 1 day)" : "No short hours"}>
+                            {t.earlyHours > 0 ? (t.earlyHours === Math.floor(t.earlyHours) ? t.earlyHours + "h" : t.earlyHours.toFixed(1) + "h") : "0"}
+                          </td>
                           <td style={{ padding:"6px 8px", fontSize:11, fontWeight:800, color: t.totalUnpaid > 0 ? "#7f1d1d" : "#9ca3af", textAlign:"center", borderBottom:"1px solid #FCE7F3", borderLeft:"1px solid #FCE7F3", background: t.totalUnpaid > 0 ? "#fee2e2" : "#fef2f2" }} title={t.unpaidHours > 0 ? t.unpaid + " full + " + t.unpaidHours + "h = " + t.totalUnpaid.toFixed(2) + " days" : undefined}>{t.totalUnpaid === Math.floor(t.totalUnpaid) ? t.totalUnpaid : t.totalUnpaid.toFixed(2)}</td>
                           <td style={{ padding:"6px 8px", fontSize:12, fontWeight:800, color: t.unpaidAfterExd > 0 ? "#7f1d1d" : "#16a34a", textAlign:"center", borderBottom:"1px solid #FCE7F3", borderLeft:"3px solid #FBCFE8", background: t.unpaidAfterExd > 0 ? "#fee2e2" : "#f0fdf4" }} title={t.totalUnpaid.toFixed(2) + " unpaid − " + t.exdOffsetUnpaid + " extras = " + t.unpaidAfterExd.toFixed(2) + " net unpaid" + (t.exdAfterUnpaid > 0 ? " (+" + t.exdAfterUnpaid + " extras after)" : "")}>
                             {t.unpaidAfterExd === Math.floor(t.unpaidAfterExd) ? t.unpaidAfterExd : t.unpaidAfterExd.toFixed(2)}

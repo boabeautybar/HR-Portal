@@ -579,6 +579,19 @@
     return out;
   }
 
+  // ---------- Early-leave sidecar (kiosk) ----------
+  // The check-in app's "Left work early" button writes to a separate row
+  // per (branch, startYm) under boa_early_<branch>_<startYm>. The value is
+  // a nested map { [dayKey]: { [ec]: { hours, recordedAt, recordedBy } } }
+  // — startYm uses the same start-month convention as attendance
+  // (e.g. "2026-04" for the April 25 → May 24 cycle).
+  async function loadEarlyLeaves(branch, ym) {
+    var key = "boa_early_" + branch + "_" + ym;
+    var res = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
+    if (res.error) { console.error("loadEarlyLeaves:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+
   // ---------- Store-opening status ----------
   // The kiosk's "open the store" button writes one row per (branch, ymd) to
   // app_state under boa_store_open_<branch>_<YYYY-MM-DD> with value
@@ -919,6 +932,7 @@
     listRecentAttendanceCheckins: listRecentAttendanceCheckins,
     listRecentKioskCheckins:      listRecentKioskCheckins,
     listStoreOpenings:            listStoreOpenings,
+    loadEarlyLeaves:              loadEarlyLeaves,
     loadKioskProof:               loadKioskProof,
     probeRecentClockinsRaw:    probeRecentClockinsRaw,
     probeAttendanceGrid:       probeAttendanceGrid,
