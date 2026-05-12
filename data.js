@@ -986,6 +986,27 @@
 
     // Activity log
     loadActivity:    loadActivity,
-    appendActivity:  appendActivity
+    appendActivity:  appendActivity,
+
+    // Custom locations (branches added after launch)
+    loadCustomSalons:  loadCustomSalons,
+    saveCustomSalons:  saveCustomSalons
   };
+
+  // ── Custom locations ─────────────────────────────────────────────────
+  // Persists branches added via the Locations tab. Stored as a single
+  // app_state row under "boa_custom_salons" holding the whole list
+  // (newest last). The app merges this list into the built-in SALONS
+  // array on boot so every screen that iterates SALONS picks them up.
+  async function loadCustomSalons() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_custom_salons").maybeSingle();
+    if (res.error) { console.error("loadCustomSalons:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveCustomSalons(list) {
+    var res = await sb.from("app_state").upsert({ key: "boa_custom_salons", value: list });
+    if (res.error) { console.error("saveCustomSalons:", res.error); throw res.error; }
+    return list;
+  }
 })();

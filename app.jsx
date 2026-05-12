@@ -5627,6 +5627,75 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [matRecs, setMatRecs] = useState([]);
   const [tab, setTab] = useState("dashboard");
 
+  // Custom-locations bootstrap. SALONS is a top-level const array which we
+  // mutate in place — adding entries via .push() so every component reading
+  // SALONS picks them up. _customSalonsTick is bumped after each load/add so
+  // React re-renders; it isn't read for its value, only its identity.
+  const [_customSalonsTick, _setCustomSalonsTick] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!window.BOA_DB || !window.BOA_DB.loadCustomSalons) return;
+      try {
+        const extras = await window.BOA_DB.loadCustomSalons();
+        if (cancelled || !Array.isArray(extras) || extras.length === 0) return;
+        const seen = new Set(SALONS.map(s => s.name));
+        let added = 0;
+        for (const x of extras) {
+          if (!x || !x.name || seen.has(x.name)) continue;
+          SALONS.push({
+            name: x.name,
+            mani: Number(x.mani) || 0,
+            pedi: Number(x.pedi) || 0,
+            capacity: Number(x.capacity) || ((Number(x.mani) || 0) + (Number(x.pedi) || 0)),
+            ...(x.lowDemand ? { lowDemand: true, targetCapacity: Number(x.targetCapacity) || 0 } : {}),
+            _custom: true
+          });
+          seen.add(x.name);
+          added++;
+        }
+        if (added > 0) _setCustomSalonsTick(t => t + 1);
+      } catch (e) { console.error("loadCustomSalons:", e); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Modal state for the "+ Add location" form on the Locations tab.
+  const [addLocationModal, setAddLocationModal] = useState(null); // null | { name, mani, pedi, capacity, lowDemand, targetCapacity, saving }
+  const submitNewLocation = async () => {
+    const m = addLocationModal;
+    if (!m) return;
+    const nm = (m.name || "").trim();
+    if (!nm) { alert("Branch name is required."); return; }
+    if (SALONS.some(s => s.name.toLowerCase() === nm.toLowerCase())) {
+      alert("A branch with that name already exists.");
+      return;
+    }
+    const mani = Math.max(0, Number(m.mani) || 0);
+    const pedi = Math.max(0, Number(m.pedi) || 0);
+    const capacity = Math.max(1, Number(m.capacity) || (mani + pedi));
+    const entry = { name: nm, mani, pedi, capacity };
+    if (m.lowDemand) {
+      entry.lowDemand = true;
+      entry.targetCapacity = Math.max(1, Number(m.targetCapacity) || capacity);
+    }
+    try {
+      setAddLocationModal({ ...m, saving: true });
+      const existing = await window.BOA_DB.loadCustomSalons();
+      const next = (Array.isArray(existing) ? existing : []).concat([entry]);
+      await window.BOA_DB.saveCustomSalons(next);
+      SALONS.push({ ...entry, _custom: true });
+      _setCustomSalonsTick(t => t + 1);
+      setAddLocationModal(null);
+      if (window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY("Added new location", nm, `Mani ${mani} · Pedi ${pedi} · Capacity ${capacity}`, "Settings");
+      }
+    } catch (e) {
+      setAddLocationModal({ ...m, saving: false });
+      alert("Could not save: " + (e.message || e));
+    }
+  };
+
   // Whether the active tab is read-only for the signed-in user. Surfaced
   // via a banner at the top of the page and used to flip the BOA_DB
   // persistence guard so any save / delete call is short-circuited with
@@ -7599,6 +7668,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         {/* ── LOCATIONS TAB ── */}
         {tab==="locations" && (
           <>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
+              <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:"#831843" }}>📍 Locations</div>
+              <button
+                onClick={()=>setAddLocationModal({ name:"", mani:"", pedi:"", capacity:"", lowDemand:false, targetCapacity:"", saving:false })}
+                style={{ background:accent, color:"#fff", border:"none", borderRadius:8, padding:"9px 16px", cursor:"pointer", fontSize:12, fontWeight:700, letterSpacing:"0.04em" }}
+              >+ Add new location</button>
+            </div>
             <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))", gap:10, marginBottom:20 }}>
               {[
                 { l:"At Capacity",  v:salonData.filter(s=>s.urgency==="full").length,  c:"#15803d", bg:"#dcfce7" },
@@ -7809,6 +7885,79 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               ))}
             </div>
+
+            {/* ── ADD-LOCATION MODAL ── */}
+            {addLocationModal && (
+              <div
+                onClick={()=>{ if(!addLocationModal.saving) setAddLocationModal(null); }}
+                style={{ position:"fixed", inset:0, background:"rgba(17,24,39,0.55)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:120 }}
+              >
+                <div
+                  onClick={e=>e.stopPropagation()}
+                  style={{ background:"#fff", borderRadius:16, padding:"22px 24px", width:"min(420px, 92vw)", boxShadow:"0 10px 40px rgba(0,0,0,0.25)" }}
+                >
+                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:20, fontWeight:700, color:"#831843", marginBottom:6 }}>📍 Add new location</div>
+                  <div style={{ fontSize:11, color:"#6b7280", marginBottom:16 }}>Adds a branch to all schedules, attendance, and reports.</div>
+
+                  <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Branch name *</label>
+                  <input type="text" autoFocus value={addLocationModal.name}
+                    onChange={e=>setAddLocationModal({ ...addLocationModal, name:e.target.value })}
+                    placeholder="e.g. Stellenbosch"
+                    style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, marginBottom:14, fontFamily:"inherit" }}
+                  />
+
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:14 }}>
+                    <div>
+                      <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Mani</label>
+                      <input type="number" min="0" value={addLocationModal.mani}
+                        onChange={e=>setAddLocationModal({ ...addLocationModal, mani:e.target.value })}
+                        style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit" }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Pedi</label>
+                      <input type="number" min="0" value={addLocationModal.pedi}
+                        onChange={e=>setAddLocationModal({ ...addLocationModal, pedi:e.target.value })}
+                        style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit" }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Capacity</label>
+                      <input type="number" min="1" value={addLocationModal.capacity}
+                        onChange={e=>setAddLocationModal({ ...addLocationModal, capacity:e.target.value })}
+                        placeholder={String((Number(addLocationModal.mani)||0)+(Number(addLocationModal.pedi)||0) || "")}
+                        style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit" }}
+                      />
+                    </div>
+                  </div>
+
+                  <label style={{ display:"flex", alignItems:"center", gap:8, fontSize:12, color:"#374151", marginBottom:6, cursor:"pointer" }}>
+                    <input type="checkbox" checked={!!addLocationModal.lowDemand}
+                      onChange={e=>setAddLocationModal({ ...addLocationModal, lowDemand:e.target.checked })}
+                    />
+                    Low-demand branch (set a softer target capacity)
+                  </label>
+                  {addLocationModal.lowDemand && (
+                    <div style={{ marginBottom:14 }}>
+                      <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Target capacity</label>
+                      <input type="number" min="1" value={addLocationModal.targetCapacity}
+                        onChange={e=>setAddLocationModal({ ...addLocationModal, targetCapacity:e.target.value })}
+                        style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit" }}
+                      />
+                    </div>
+                  )}
+
+                  <div style={{ display:"flex", justifyContent:"flex-end", gap:8, marginTop:8 }}>
+                    <button onClick={()=>setAddLocationModal(null)} disabled={addLocationModal.saving}
+                      style={{ background:"#f3f4f6", color:"#374151", border:"none", borderRadius:8, padding:"9px 16px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                    >Cancel</button>
+                    <button onClick={submitNewLocation} disabled={addLocationModal.saving}
+                      style={{ background:accent, color:"#fff", border:"none", borderRadius:8, padding:"9px 18px", cursor:"pointer", fontSize:12, fontWeight:700, opacity:addLocationModal.saving?0.6:1 }}
+                    >{addLocationModal.saving ? "Saving…" : "Add location"}</button>
+                  </div>
+                </div>
+              </div>
+            )}
           </>
         )}
 
