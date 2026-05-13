@@ -12229,21 +12229,43 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     {" · " + dateLabel}
                   </div>
                 </div>
-                <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+                <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap" }}>
+                  {/* Prev / next day arrows for quick navigation, plus a
+                      'Today' chip that's always visible and highlights when
+                      the picker IS on today. The native date input still
+                      handles arbitrary date jumps. */}
+                  <button
+                    onClick={()=>{
+                      const d = new Date(date + "T00:00:00");
+                      d.setDate(d.getDate() - 1);
+                      setMovementsDate(d.toISOString().slice(0, 10));
+                    }}
+                    title="Previous day"
+                    style={{ background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, padding:"7px 11px", cursor:"pointer", fontSize:14, fontWeight:700, lineHeight:1 }}
+                  >‹</button>
                   <input
                     type="date"
                     value={date}
                     onChange={e=>setMovementsDate(e.target.value)}
                     style={{ padding:"7px 10px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:13, fontFamily:"inherit" }}
                   />
-                  {!isToday && (
-                    <button onClick={()=>setMovementsDate(new Date().toISOString().slice(0, 10))}
-                      style={{ background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, padding:"7px 12px", cursor:"pointer", fontSize:12, fontWeight:700 }}>
-                      Today
-                    </button>
-                  )}
+                  <button
+                    onClick={()=>{
+                      const d = new Date(date + "T00:00:00");
+                      d.setDate(d.getDate() + 1);
+                      setMovementsDate(d.toISOString().slice(0, 10));
+                    }}
+                    title="Next day"
+                    style={{ background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, padding:"7px 11px", cursor:"pointer", fontSize:14, fontWeight:700, lineHeight:1 }}
+                  >›</button>
+                  <button
+                    onClick={()=>setMovementsDate(new Date().toISOString().slice(0, 10))}
+                    disabled={isToday}
+                    title={isToday ? "Already viewing today" : "Jump back to today"}
+                    style={{ background: isToday ? "#FCE7F3" : "#fff", color:"#831843", border:"1px solid " + (isToday ? "#FBCFE8" : "#FBCFE8"), borderRadius:8, padding:"7px 12px", cursor: isToday ? "default" : "pointer", fontSize:12, fontWeight:700, opacity: isToday ? 0.6 : 1, marginLeft:4 }}
+                  >Today</button>
                   <button onClick={()=>setLoanModal({ _id: null, ec: "", name: "", fromBranch: "", toBranch: "", date: isToday ? date : new Date().toISOString().slice(0, 10), note: "" })}
-                    style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:8, padding:"9px 16px", cursor:"pointer", fontSize:12, fontWeight:700, letterSpacing:"0.04em" }}>
+                    style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:8, padding:"9px 16px", cursor:"pointer", fontSize:12, fontWeight:700, letterSpacing:"0.04em", marginLeft:4 }}>
                     + Log a borrow
                   </button>
                 </div>
