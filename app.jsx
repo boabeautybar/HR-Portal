@@ -11586,13 +11586,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             for (let d = 25; d <= lastPrev; d++) {
               const dt = new Date(prevY, prevM-1, d);
               const iso = prevY + "-" + String(prevM).padStart(2,"0") + "-" + String(d).padStart(2,"0");
-              allDays.push({ d, m: prevM, y: prevY, iso, dow: dt.getDay(), peak: (prevM >= 10 || prevM <= 4) });
+              allDays.push({ d, m: prevM, y: prevY, iso, dow: dt.getDay(), peak: (prevM >= 10 || prevM <= 3) });
             }
             // Second half of cycle: 1st → 24th of named month.
             for (let d = 1; d <= 24; d++) {
               const dt = new Date(y, m-1, d);
               const iso = y + "-" + String(m).padStart(2,"0") + "-" + String(d).padStart(2,"0");
-              allDays.push({ d, m, y, iso, dow: dt.getDay(), peak: (m >= 10 || m <= 4) });
+              allDays.push({ d, m, y, iso, dow: dt.getDay(), peak: (m >= 10 || m <= 3) });
             }
             // Cycle header: peak flag based on the cycle's named month (it
             // owns more days — 24 vs 6/7 — so it's the dominant influence).
@@ -11600,7 +11600,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               m, y,
               start,
               len: allDays.length - start,
-              peak: (m >= 10 || m <= 4),
+              peak: (m >= 10 || m <= 3),
               label: MN[prevM-1] + " 25 – " + MN[m-1] + " 24, " + y
             });
           }
@@ -11634,15 +11634,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const stBr = stf.branch;
             const stPeople = (isTechMode ? enriched : managers).filter(p => p.branch === stBr && !p.onMat && ROLE_GUARD(p));
             const stMx = Math.max(1, Math.floor(stPeople.length * 0.2));
-            // Peak season check (Oct-Apr)
+            // Peak season check (1 Oct – 31 Mar). Annual leave is allowed
+            // 1 Apr → 30 Sep; blocked the rest of the year except for
+            // emergency leave with proof.
             const sd = new Date(f.startDate), ed = new Date(f.endDate);
             let peakDays = 0;
             for (let d = new Date(sd); d <= ed; d.setDate(d.getDate()+1)) {
               const mo = d.getMonth() + 1;
-              if (mo >= 10 || mo <= 4) peakDays++;
+              if (mo >= 10 || mo <= 3) peakDays++;
             }
             if (peakDays > 0 && !f.emergency) {
-              alert("Cannot add: " + peakDays + " day(s) fall in peak season (October–April). Annual leave is blocked during peak season except for emergency leave with proof. Tick \"Emergency leave\" and add a reason.");
+              alert("Cannot add: " + peakDays + " day(s) fall in peak season (1 October – 31 March). Annual leave is blocked during peak season except for emergency leave with proof. Tick \"Emergency leave\" and add a reason.");
               return;
             }
             if (f.emergency && !f.emergencyNote.trim()) {
@@ -11736,7 +11738,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             <div>
               <div style={{ marginBottom:14 }}>
                 <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>🌴 Leave Planner</div>
-                <div style={{ fontSize:12, color:"#F472B6" }}>Plan annual leave per store. 20% per-day cap enforced. Peak season (Oct–Apr) blocked except for emergency leave with proof.</div>
+                <div style={{ fontSize:12, color:"#F472B6" }}>Plan annual leave per store. 20% per-day cap enforced. Peak season (1 Oct – 31 Mar) blocked except for emergency leave with proof.</div>
               </div>
 
               {/* Sub-tab pill bar */}
@@ -11775,7 +11777,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ background:"#fef3c7", border:"1px solid #fcd34d", borderRadius:11, padding:"10px 14px", marginBottom:14, fontSize:12, color:"#78350f", display:"flex", gap:10, alignItems:"flex-start" }}>
                 <span style={{ fontSize:16 }}>⚠️</span>
                 <div>
-                  <strong>Peak Season Block: October – April</strong>. No annual leave permitted during these months — it's the salon's busiest period. Only emergency leave with proof is allowed during peak season — tick the Emergency box and add a reason / proof description.
+                  <strong>Peak Season Block: 1 October – 31 March</strong>. No annual leave permitted during these months — it's the salon's busiest period. Annual leave is open from 1 April → 30 September. Only emergency leave with proof is allowed during peak season — tick the Emergency box and add a reason / proof description.
                 </div>
               </div>
 
