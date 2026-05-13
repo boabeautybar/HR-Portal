@@ -8723,11 +8723,72 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         {unpaidLegalModal && (() => {
           const m = unpaidLegalModal;
           const set = (k, v) => setUnpaidLegalModal({ ...m, [k]: v });
+          const isEdit = !!m._id;
+          // Staff picker — only meaningful when adding a new record. Excludes
+          // off-boarded staff and anyone already on legal-leave. Matched on
+          // name OR EC; up to 8 hits to keep the dropdown short.
+          const ecsOnLegalLeave = new Set((unpaidLegalRecs || []).filter(r => r && r.status === "on_leave" && r.ec).map(r => r.ec.trim()));
+          const staffPool = (enriched || [])
+            .filter(s => s && s.ec && !s.offboarded && !ecsOnLegalLeave.has(s.ec.trim()))
+            .sort(ecSort);
+          const searchTerm = (m._search || "").toLowerCase().trim();
+          const matches = !searchTerm ? [] : staffPool
+            .filter(s =>
+              (s.name || "").toLowerCase().includes(searchTerm) ||
+              (s.ec   || "").toLowerCase().includes(searchTerm)
+            )
+            .slice(0, 8);
           return (
             <div onClick={()=>setUnpaidLegalModal(null)} style={{ position:"fixed", inset:0, background:"rgba(17,24,39,0.55)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:120 }}>
               <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:16, padding:"22px 26px", width:"min(520px, 92vw)", maxHeight:"90vh", overflowY:"auto", boxShadow:"0 10px 40px rgba(0,0,0,0.25)" }}>
                 <div style={{ fontFamily:"'Playfair Display',serif", fontSize:20, fontWeight:700, color:"#92400e", marginBottom:6 }}>⏸️ Unpaid leave (legal status)</div>
                 <div style={{ fontSize:11, color:"#6b7280", marginBottom:14 }}>Use this for staff who can't work because their permit / asylum / passport has expired or never been provided.</div>
+
+                {/* Staff picker — pick from the existing roster so EC, name
+                    and branch auto-fill. Anyone already on legal leave is
+                    excluded from the dropdown. Hidden when editing an
+                    existing record. */}
+                {!isEdit && (
+                  <div style={{ marginBottom:14, background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:10, padding:"10px 12px" }}>
+                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#78350F", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:6 }}>Pick from staff list</label>
+                    <input
+                      type="text"
+                      value={m._search || ""}
+                      onChange={e=>set("_search", e.target.value)}
+                      placeholder={`Search ${staffPool.length} staff by name or EC…`}
+                      autoFocus
+                      style={{ width:"100%", padding:"9px 11px", border:"1px solid #FDE68A", borderRadius:8, fontSize:14, fontFamily:"inherit" }}
+                    />
+                    {searchTerm && (
+                      <div style={{ marginTop:8, maxHeight:220, overflowY:"auto", border:"1px solid #FDE68A", borderRadius:8, background:"#fff" }}>
+                        {matches.length === 0 ? (
+                          <div style={{ padding:"10px 12px", fontSize:12, color:"#9ca3af", fontStyle:"italic" }}>No matches in active staff.</div>
+                        ) : matches.map(s => (
+                          <div key={s._id || s.ec}
+                            onClick={()=>setUnpaidLegalModal({ ...m, ec: s.ec, name: s.name, branch: s.branch || m.branch, _search: "" })}
+                            style={{ padding:"8px 12px", borderBottom:"1px solid #FEF3C7", cursor:"pointer", display:"flex", alignItems:"center", gap:10 }}
+                            onMouseEnter={e=>e.currentTarget.style.background="#FEF3C7"}
+                            onMouseLeave={e=>e.currentTarget.style.background="#fff"}
+                          >
+                            <span style={{ fontSize:11, fontFamily:"monospace", color:"#92400e", fontWeight:700, minWidth:42 }}>{s.ec}</span>
+                            <span style={{ flex:1, fontSize:13, color:"#111827", fontWeight:600 }}>{s.name}</span>
+                            <span style={{ fontSize:11, color:"#6b7280" }}>📍 {s.branch || "—"}</span>
+                            {s.onMat && <span style={{ fontSize:9, background:"#FBCFE8", color:"#831843", padding:"1px 6px", borderRadius:99, fontWeight:700 }}>🤱 ON MAT</span>}
+                            {s.pregnant && <span style={{ fontSize:9, background:"#FEF3C7", color:"#7c2d12", padding:"1px 6px", borderRadius:99, fontWeight:700 }}>🤰</span>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {m.ec && !searchTerm && (
+                      <div style={{ marginTop:8, padding:"8px 12px", background:"#FEF3C7", borderRadius:8, fontSize:12, color:"#78350F" }}>
+                        Selected: <b style={{ fontFamily:"monospace" }}>{m.ec}</b> · {m.name} · 📍 {m.branch}
+                        <button type="button" onClick={()=>setUnpaidLegalModal({ ...m, ec:"", name:"", _search:"" })}
+                          style={{ marginLeft:10, background:"transparent", border:"none", color:"#92400e", cursor:"pointer", fontWeight:700, fontSize:11, textDecoration:"underline" }}
+                        >clear</button>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:10 }}>
                   <div>
@@ -8794,7 +8855,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <button onClick={()=>{
                       if (!m.ec || !m.ec.trim()) { alert("EC is required."); return; }
                       if (!m.name || !m.name.trim()) { alert("Name is required."); return; }
-                      saveUnpaidLegal({ ...m, ec: m.ec.trim(), name: m.name.trim() });
+                      const { _search, ...clean } = m;
+                      saveUnpaidLegal({ ...clean, ec: m.ec.trim(), name: m.name.trim() });
                     }}
                       style={{ background:"#92400e", color:"#fff", border:"none", borderRadius:8, padding:"9px 18px", cursor:"pointer", fontSize:12, fontWeight:700 }}
                     >{m._id ? "Save changes" : "Add record"}</button>
