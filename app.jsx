@@ -11530,6 +11530,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               (hint ? " — schedule: " + ((STAT[hint] || {}).lbl || "—") : "") +
                               (deviation ? " (deviation)" : "") +
                               (!override ? " (mirrored from schedule)" : "") +
+                              ((outgoingLoanMap[s.ec] && outgoingLoanMap[s.ec][dy.d])
+                                ? "\n🔀 Loaned out — working at " + outgoingLoanMap[s.ec][dy.d] + " today" + (v === "loan_out" ? " (receiving branch hasn't recorded a status yet)" : " · status recorded by " + outgoingLoanMap[s.ec][dy.d] + "'s kiosk")
+                                : "") +
                               (bareV === "swap_o" ? "\n💡 Owes — tech took today off because she worked on her off day on a previous date for a colleague. Counts as off." : "") +
                               (bareV === "swap_i" ? "\n💡 Owed — tech came in today because she took off on a previous day when a colleague filled in for her." : "") +
                               (isFutureSwap ? "\n(Future swap — placeholder only; fill in the actual status on the day.)" : "") +
@@ -11669,7 +11672,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                     return null;
                                   })()}
                                   {v && (
-                                    <div style={{ position:"absolute", top:6, bottom: s.role === "NT" ? 6 : 0, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle: (override && !isFutureSwap) ? "normal" : "italic", fontWeight: (override && !isFutureSwap) ? 700 : 400, color: isFutureSwap ? "#9ca3af" : (override ? st.fg : (hintFg + "70")), pointerEvents:"none", letterSpacing:"0.02em" }}>{st.lbl || hintLbl || ""}</div>
+                                    <div style={{ position:"absolute", top:6, bottom: s.role === "NT" ? 6 : 0, left:0, right:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:1, fontSize:9, fontStyle: (override && !isFutureSwap) ? "normal" : "italic", fontWeight: (override && !isFutureSwap) ? 700 : 400, color: isFutureSwap ? "#9ca3af" : (override ? st.fg : (hintFg + "70")), pointerEvents:"none", letterSpacing:"0.02em" }}>
+                                      <span>{st.lbl || hintLbl || ""}</span>
+                                      {/* Loan-day badge — only renders when a real status was
+                                          mirrored from the receiving branch (i.e. v !== loan_out,
+                                          which already shows '→ Bree' as the main label). */}
+                                      {(outgoingLoanMap[s.ec] && outgoingLoanMap[s.ec][dy.d] && v !== "loan_out") && (
+                                        <span style={{ fontSize:7, fontWeight:700, color:"#1e40af", letterSpacing:"0.06em", opacity:0.85 }}>→ {outgoingLoanMap[s.ec][dy.d]}</span>
+                                      )}
+                                    </div>
                                   )}
                                   {!v && showKioskReason && (
                                     <div style={{ position:"absolute", top:6, bottom: s.role === "NT" ? 6 : 0, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle:"italic", fontWeight:600, color: kStat.fg || "#9ca3af", pointerEvents:"none", letterSpacing:"0.02em" }}>{kStat.lbl}</div>
