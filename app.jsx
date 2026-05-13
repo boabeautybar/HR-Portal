@@ -5295,6 +5295,7 @@ const SETTINGS_TABS = [
   { t: "offboard",   l: "Off-boarding",      cat: "People",     icon: "👋" },
   { t: "recruitment",l: "Recruitment",       cat: "People",     icon: "🎯" },
   { t: "maternity",  l: "Maternity",         cat: "People",     icon: "🤱" },
+  { t: "unpaidLegal",l: "Unpaid Leave (Legal)",cat: "People",   icon: "⏸️" },
   { t: "scheduling", l: "Scheduling",        cat: "Operations", icon: "📅" },
   { t: "locations",  l: "Locations",         cat: "Operations", icon: "📍" },
   { t: "checkins",   l: "Daily Check-ins",   cat: "Operations", icon: "📲" },
@@ -5725,6 +5726,59 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   const [staff, setStaff] = useState([]);
   const [matRecs, setMatRecs] = useState([]);
+  // Unpaid legal-status leave records — same shape as matRecs but stored in
+  // app_state["boa_unpaid_legal_v1"] rather than the maternity table. People
+  // with status:"on_leave" get the `onUnpaidLegal` flag in `enriched`, which
+  // greys them out everywhere, pins them to the bottom of branch lists, and
+  // excludes them from active staff counts.
+  const [unpaidLegalRecs, setUnpaidLegalRecs] = useState([]);
+  const [unpaidLegalModal, setUnpaidLegalModal] = useState(null);
+  useEffect(() => {
+    if (!window.BOA_DB || !window.BOA_DB.loadUnpaidLegalRecords) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const recs = await window.BOA_DB.loadUnpaidLegalRecords();
+        if (!cancelled) setUnpaidLegalRecs(Array.isArray(recs) ? recs : []);
+      } catch (e) { console.error("loadUnpaidLegalRecords:", e); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  const saveUnpaidLegal = async (record) => {
+    const list = unpaidLegalRecs || [];
+    const isEdit = !!record._id;
+    const stamped = isEdit
+      ? { ...record }
+      : { ...record, _id: "ul_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7) };
+    const next = isEdit
+      ? list.map(r => r._id === stamped._id ? stamped : r)
+      : [...list, stamped];
+    try {
+      await window.BOA_DB.saveUnpaidLegalRecords(next);
+      setUnpaidLegalRecs(next);
+      setUnpaidLegalModal(null);
+      if (window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY(
+          isEdit ? "Updated unpaid-legal-leave record" : "Added unpaid-legal-leave record",
+          (stamped.name || "") + " · " + (stamped.ec || ""),
+          (stamped.branch || "") + " · " + (stamped.status || ""),
+          "Legal"
+        );
+      }
+    } catch (e) { alert("Could not save: " + (e.message || e)); }
+  };
+  const deleteUnpaidLegal = async (id) => {
+    const list = unpaidLegalRecs || [];
+    const rec = list.find(r => r._id === id);
+    const next = list.filter(r => r._id !== id);
+    try {
+      await window.BOA_DB.saveUnpaidLegalRecords(next);
+      setUnpaidLegalRecs(next);
+      if (rec && window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY("Deleted unpaid-legal-leave record", (rec.name || "") + " · " + (rec.ec || ""), rec.branch || "", "Legal");
+      }
+    } catch (e) { alert("Could not delete: " + (e.message || e)); }
+  };
   const [tab, setTab] = useState("dashboard");
 
   // Custom-locations bootstrap. SALONS is a top-level const array which we
@@ -6930,6 +6984,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     new Set(matRecs.filter(r=>r.matStatus==="pregnant").map(r=>r.ec.trim()))
   , [matRecs]);
 
+  // ECs currently on unpaid leave due to legal status → excluded from count,
+  // greyed out, pinned to the bottom of branch lists.
+  const onUnpaidLegalEcs = useMemo(() =>
+    new Set((unpaidLegalRecs || []).filter(r => r && r.status === "on_leave" && r.ec).map(r => r.ec.trim()))
+  , [unpaidLegalRecs]);
+
   // ECs that are off-boarded (any record in offList — current or future leftDate)
   const offboardedMap = useMemo(() => {
     const m = {};
@@ -6956,8 +7016,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       }
       return {
         ...s,
-        onMat:      onMatEcs.has(s.ec.trim()),     // excluded from count
-        pregnant:   pregnantEcs.has(s.ec.trim()),  // still in store
+        onMat:          onMatEcs.has(s.ec.trim()),          // excluded from count
+        pregnant:       pregnantEcs.has(s.ec.trim()),       // still in store
+        onUnpaidLegal:  onUnpaidLegalEcs.has(s.ec.trim()),  // excluded from count (legal-status leave)
+        unpaidLegalRec: (unpaidLegalRecs || []).find(r => r && r.ec && r.ec.trim() === s.ec.trim() && r.status === "on_leave") || null,
         offboarded: !!off,                         // on the off-boarding list — vacancy now open
         offRec:     off || null,
         // Off-boarding records live in `offList`, not on the staff
@@ -6972,7 +7034,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         matRec:     matRecs.find(r=>r.ec.trim()===s.ec.trim()),
       };
     });
-  }, [staff, onMatEcs, pregnantEcs, offboardedMap, matRecs]);
+  }, [staff, onMatEcs, pregnantEcs, onUnpaidLegalEcs, unpaidLegalRecs, offboardedMap, matRecs]);
 
   // Filtered & sorted staff list — always sort by EC (B-number then T-number).
   // Departed staff (leftDate has passed) are pinned to the bottom for the 31-day
@@ -6998,38 +7060,41 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }, [enriched, fShow, fBranch, fPermit, fContract, search]);
 
   const stats = useMemo(() => {
-    // "active" excludes maternity AND off-boarded — both reduce the active headcount.
-    const active = enriched.filter(s=>!s.onMat && !s.offboarded);
+    // "active" excludes maternity, unpaid-legal leave AND off-boarded — all
+    // three reduce the active headcount.
+    const active = enriched.filter(s=>!s.onMat && !s.onUnpaidLegal && !s.offboarded);
     const totalSeats = SALONS.reduce((a,s)=>a+s.capacity,0);
     const returning60 = matRecs.filter(r=>r.matStatus==="on_mat"&&r.returnDate&&daysDiff(r.returnDate)!==null&&daysDiff(r.returnDate)>=0&&daysDiff(r.returnDate)<=60).length;
     return {
       total:staff.length, active:active.length, onMat:onMatEcs.size,
       pregnant:pregnantEcs.size,
+      onUnpaidLegal:onUnpaidLegalEcs.size,
       zna:active.filter(s=>s.permit==="z_na").length,
       noContract:active.filter(s=>s.contract==="NO CONTRACT").length,
-      // Vacancies and understaffed both treat off-boarded staff as gone, so leavers
-      // immediately surface as open positions in the Recruitment tab.
-      vacancies:SALONS.reduce((a,sl)=>{ const g=sl.targetCapacity||sl.capacity; const act=enriched.filter(s=>s.branch===sl.name&&!s.onMat&&!s.offboarded).length; return a+Math.max(0,g-act); },0),
-      understaffed:SALONS.filter(sl=>enriched.filter(s=>s.branch===sl.name&&!s.onMat&&!s.offboarded).length<sl.capacity).length,
+      // Vacancies and understaffed treat off-boarded AND unpaid-legal staff as gone,
+      // so they immediately surface as open positions in the Recruitment tab.
+      vacancies:SALONS.reduce((a,sl)=>{ const g=sl.targetCapacity||sl.capacity; const act=enriched.filter(s=>s.branch===sl.name&&!s.onMat&&!s.onUnpaidLegal&&!s.offboarded).length; return a+Math.max(0,g-act); },0),
+      understaffed:SALONS.filter(sl=>enriched.filter(s=>s.branch===sl.name&&!s.onMat&&!s.onUnpaidLegal&&!s.offboarded).length<sl.capacity).length,
       returning60,
     };
-  }, [enriched, matRecs, onMatEcs, pregnantEcs, staff]);
+  }, [enriched, matRecs, onMatEcs, pregnantEcs, onUnpaidLegalEcs, staff]);
 
   // Locations
   const salonData = useMemo(() => SALONS.map(salon => {
     // .offHidden hides leavers older than 31 days post-leftDate from the cards.
     const all      = enriched.filter(s=>s.branch===salon.name && !s.offHidden).sort(ecSort);
-    // Off-boarded staff are visually present (greyed) but excluded from the
-    // active count and from urgency/fillRate — their seat is OPEN.
-    const active   = all.filter(s=>!s.onMat && !s.isShadow && !s.offboarded);
+    // Off-boarded + maternity + unpaid-legal staff are visually present (greyed) but
+    // excluded from the active count and from urgency/fillRate — their seat is OPEN.
+    const active   = all.filter(s=>!s.onMat && !s.onUnpaidLegal && !s.isShadow && !s.offboarded);
     const onMat    = all.filter(s=>s.onMat);
+    const onUnpaidLegal = all.filter(s=>s.onUnpaidLegal);    // greyed at the bottom
     const offboarded = all.filter(s=>s.offboarded);          // greyed in UI, only those within the 31-day window
     const arriving = all.filter(s=>s.isShadow);              // pending incoming transfers — shown but not counted
     // Use targetCapacity for low-demand stores (e.g. Betty), full capacity otherwise
     const goal = salon.targetCapacity || salon.capacity;
     const fillRate = active.length/goal;
     const urgency = active.length===0?"critical":fillRate<0.5?"high":fillRate<1?"low":"full";
-    return { ...salon, all, active, onMat, offboarded, arriving, urgency, goal };
+    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, urgency, goal };
   }), [enriched]);
 
   const uColor = { critical:"#dc2626", high:"#f97316", low:"#eab308", full:"#16a34a" };
@@ -7264,7 +7329,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t:"offboard",    l: offboardLbl },
                   { t:"staff",       l:"👥 Staff List"    },
                   { t:"recruitment", l:"🎯 Recruitment"   },
-                  { t:"maternity",   l: matLbl }
+                  { t:"maternity",   l: matLbl },
+                  { t:"unpaidLegal", l:"⏸️ Unpaid Leave (Legal)" }
                 ] },
               { key:"Operations", icon:"⚙️", title:"Operations",
                 color:{ bg:"#E0F2FE", bgActive:"#BAE6FD", ink:"#075985" },
@@ -8072,12 +8138,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         </div>
                       )}
                       <div style={{ display:"flex", flexDirection:"column", gap:5, maxHeight:220, overflowY:"auto" }}>
-                        {/* Active + maternity — editable */}
-                        {[...salon.active, ...salon.onMat].sort(ecSort).map(m=>(
-                          <div key={m._id} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 10px", borderRadius:8, background:"#FFFFFF", border:"1px solid #FBCFE8" }}>
+                        {/* Active + maternity + legal-leave — editable */}
+                        {[...salon.active, ...salon.onMat, ...salon.onUnpaidLegal].sort(ecSort).map(m=>(
+                          <div key={m._id} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 10px", borderRadius:8, background:"#FFFFFF", border:"1px solid #FBCFE8", opacity: m.onUnpaidLegal ? 0.75 : 1 }}>
                             <span style={{ fontSize:9, color:"#9ca3af", fontFamily:"monospace", minWidth:36 }}>{m.ec}</span>
-                            <span style={{ flex:1, fontSize:12, fontWeight:600, color:m.onMat?"#7A4258":m.transferring?"#1d4ed8":"#111827" }}>
-                              {m.onMat?"🤱 ":m.pregnant?"🤰 ":m.transferring?"🔄 ":""}{m.name}
+                            <span style={{ flex:1, fontSize:12, fontWeight:600, color: m.onUnpaidLegal ? "#6b7280" : m.onMat?"#7A4258":m.transferring?"#1d4ed8":"#111827" }}>
+                              {m.onUnpaidLegal?"⏸ ":m.onMat?"🤱 ":m.pregnant?"🤰 ":m.transferring?"🔄 ":""}{m.name}
                               {m.transferring&&<span style={{ fontSize:9, marginLeft:4, color:"#BE185D", fontWeight:400 }}>→ {m.transferTo}</span>}
                             </span>
                             <button onClick={()=>{ setStaffModal(m); setManagePanel(null); }}
@@ -8186,6 +8252,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <span style={{ fontSize:9, color:"#d1d5db", fontFamily:"monospace", minWidth:34 }}>{m.ec}</span>
                           <span style={{ flex:1, fontSize:11, fontStyle:"italic", color:"#8E5570", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>🤱 {m.name}</span>
                           {dBack!==null && <span style={{ fontSize:10, color:"#8E5570", fontWeight:700, whiteSpace:"nowrap" }}>↩{dBack>0?`${dBack}d`:"today"}</span>}
+                        </div>
+                      );
+                    })}
+                    {/* Unpaid leave (legal status) — greyed out at the bottom of
+                        the active list, above off-boarded. Seat counted as
+                        vacancy. Warning chip appears when leave end is within
+                        7 days (or overdue): HR must check work documents on
+                        the last day. */}
+                    {salon.onUnpaidLegal.map(m=>{
+                      const ulr = m.unpaidLegalRec;
+                      const dEnd = ulr && ulr.endDate ? daysDiff(ulr.endDate) : null;
+                      const warn = dEnd !== null && dEnd <= 7;
+                      const endStr = ulr && ulr.endDate
+                        ? new Date(ulr.endDate + "T00:00:00").toLocaleDateString("en-ZA",{day:"2-digit",month:"short"})
+                        : "";
+                      const title = "Unpaid leave (legal status). "
+                        + (ulr && ulr.endDate ? "Leave ends " + endStr + ". " : "")
+                        + "HR: check work documents on the last day. If not received → hearing → terminate."
+                        + (ulr && ulr.notes ? "\n\n" + ulr.notes : "");
+                      return (
+                        <div key={m._id} title={title} style={{ display:"flex", alignItems:"center", gap:6, padding:"5px 7px", borderRadius:7, background: warn ? "#FEF3C7" : "#F3F4F6", border: warn ? "1px solid #fde68a" : "1px dashed #d1d5db", opacity:0.7 }}>
+                          <span style={{ fontSize:9, color:"#9ca3af", fontFamily:"monospace", minWidth:34 }}>{m.ec}</span>
+                          <span style={{ flex:1, fontSize:11, fontStyle:"italic", color:"#6b7280", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>⏸ {m.name}</span>
+                          <span style={{ fontSize:9, fontWeight:800, padding:"1px 6px", borderRadius:99, background: warn ? "#FDE68A" : "#E5E7EB", color: warn ? "#78350F" : "#374151", whiteSpace:"nowrap", letterSpacing:"0.04em" }}>LEGAL</span>
+                          {dEnd !== null && (
+                            <span style={{ fontSize:9, color: warn ? "#78350F" : "#6b7280", fontWeight:700, whiteSpace:"nowrap" }}>
+                              {dEnd > 0 ? "end " + endStr : dEnd === 0 ? "⚠ ends TODAY" : Math.abs(dEnd) + "d overdue"}
+                            </span>
+                          )}
                         </div>
                       );
                     })}
@@ -8488,6 +8583,227 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             })}
           </>
         )}
+
+        {/* ── UNPAID LEAVE (LEGAL STATUS) TAB ── parallel to Maternity but
+            for staff away due to expired / missing work documents. Rows
+            with status:"on_leave" excluded from active count, greyed out
+            under Locations. Banner flags people whose endDate is in ≤7
+            days: HR must verify docs on the last day, otherwise schedule
+            a hearing and terminate. */}
+        {tab==="unpaidLegal" && (() => {
+          const STATUS_META = {
+            on_leave:   { label:"On Unpaid Leave",   icon:"⏸️", color:"#92400e", bg:"#fef3c7", border:"#fde68a" },
+            returned:   { label:"Documents Received — Back at Work", icon:"✅", color:"#166534", bg:"#dcfce7", border:"#86efac" },
+            terminated: { label:"Hearing Held — Contract Terminated", icon:"🛑", color:"#7f1d1d", bg:"#fee2e2", border:"#fecaca" }
+          };
+          const records = (unpaidLegalRecs || []);
+          const blankRec = { _id:null, ec:"", name:"", branch: (SALONS[0]?.name || "Sea Point"), status:"on_leave", startDate:"", endDate:"", hearingDate:"", terminated:false, notes:"" };
+          // Approaching-deadline banner (on_leave with endDate within 7 days
+          // or already past — covers both "check docs on last day" and
+          // "overdue — schedule hearing").
+          const flagged = records
+            .filter(r => r.status === "on_leave" && r.endDate)
+            .map(r => ({ ...r, _dEnd: daysDiff(r.endDate) }))
+            .filter(r => r._dEnd !== null && r._dEnd <= 7)
+            .sort((a, b) => a._dEnd - b._dEnd);
+
+          return (
+            <>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
+                <div>
+                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:"#92400e" }}>⏸️ Unpaid Leave (Legal Status) · {records.length} records</div>
+                  <div style={{ fontSize:12, color:"#78350f", marginTop:2 }}>Staff away because work documents have expired or are missing. Excluded from store counts. HR must verify docs on the last day or initiate a hearing.</div>
+                </div>
+                <button onClick={()=>setUnpaidLegalModal({ ...blankRec })}
+                  style={{ background:"#92400e", color:"#fff", border:"none", borderRadius:9, padding:"9px 18px", cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:13 }}
+                >+ Add Record</button>
+              </div>
+
+              {/* HR action banner */}
+              {flagged.length > 0 && (
+                <div style={{ background:"#FEF3C7", border:"1.5px solid #F59E0B", borderRadius:12, padding:"14px 18px", marginBottom:18 }}>
+                  <div style={{ fontSize:12, fontWeight:800, color:"#78350F", letterSpacing:"0.08em", textTransform:"uppercase", marginBottom:6 }}>⚠ HR action needed</div>
+                  <div style={{ fontSize:13, color:"#78350F", marginBottom:10, lineHeight:1.5 }}>
+                    Check work documents on the last day of leave. <b>If documents are not received, schedule a hearing and terminate the contract.</b>
+                  </div>
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
+                    {flagged.map(r => (
+                      <button key={r._id} onClick={()=>setUnpaidLegalModal({ ...r })}
+                        style={{ background:"#fff", border:"1px solid #FCD34D", borderRadius:10, padding:"8px 12px", display:"flex", gap:10, alignItems:"center", cursor:"pointer", fontFamily:"inherit" }}
+                        title="Open record">
+                        <span style={{ fontWeight:700, fontSize:13, color:"#111827" }}>{r.name || "(no name)"}</span>
+                        <span style={{ fontSize:11, color:"#92400e" }}>📍 {r.branch}</span>
+                        <span style={{ fontSize:12, fontWeight:800, color:"#7F1D1D" }}>
+                          {r._dEnd > 0 ? "ends " + fmt(r.endDate) + " · " + r._dEnd + "d" :
+                           r._dEnd === 0 ? "⚠ ENDS TODAY" :
+                           Math.abs(r._dEnd) + "d overdue"}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Grouped by status */}
+              {["on_leave","returned","terminated"].map(status => {
+                const recs = records.filter(r => r.status === status).sort(ecSort);
+                if (!recs.length) return null;
+                const meta = STATUS_META[status];
+                const isExcluded = status === "on_leave";
+                const isTerminated = status === "terminated";
+                return (
+                  <div key={status} style={{ marginBottom:26 }}>
+                    <div style={{ fontSize:11, fontWeight:800, color:meta.color, letterSpacing:"0.08em", marginBottom:10, textTransform:"uppercase", display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                      {meta.icon} {meta.label} — {recs.length} {recs.length===1?"person":"people"}
+                      {isExcluded && <span style={{ background:meta.bg, color:meta.color, borderRadius:20, padding:"2px 10px", fontSize:10, fontWeight:700 }}>EXCLUDED FROM STORE COUNT</span>}
+                      {isTerminated && <span style={{ background:meta.bg, color:meta.color, borderRadius:20, padding:"2px 10px", fontSize:10, fontWeight:700 }}>HISTORICAL · NO LONGER STAFF</span>}
+                    </div>
+                    <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(360px,1fr))", gap:10 }}>
+                      {recs.map(r => {
+                        const dEnd = r.endDate ? daysDiff(r.endDate) : null;
+                        const urgent = status === "on_leave" && dEnd !== null && dEnd <= 7;
+                        return (
+                          <div key={r._id} style={{ background:"#FFFFFF", borderRadius:14, border:`1.5px solid ${meta.border}`, padding:"16px 18px" }}>
+                            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10 }}>
+                              <div>
+                                <div style={{ fontWeight:700, fontSize:14, color:"#111827" }}>{r.name || <span style={{ color:"#9ca3af", fontStyle:"italic" }}>(no name)</span>}</div>
+                                <div style={{ fontSize:11, color:"#92400e", marginTop:2 }}>
+                                  <span style={{ fontFamily:"monospace", fontWeight:700 }}>{r.ec}</span> · 📍 {r.branch}
+                                </div>
+                              </div>
+                              <button onClick={()=>setUnpaidLegalModal({ ...r })} style={{ background:"#f3f4f6", border:"none", borderRadius:7, padding:"5px 11px", cursor:"pointer", fontSize:11, fontFamily:"inherit", fontWeight:700 }}>Edit</button>
+                            </div>
+                            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}>
+                              <div style={{ background:"#fafafa", borderRadius:8, padding:"8px 10px" }}>
+                                <div style={{ fontSize:9, fontWeight:700, color:"#92400e", letterSpacing:"0.07em", marginBottom:3 }}>LEAVE STARTED</div>
+                                <div style={{ fontSize:12, fontWeight:700, color:"#111827" }}>{fmt(r.startDate) || "—"}</div>
+                              </div>
+                              <div style={{ background: urgent ? "#FEF3C7" : "#fafafa", borderRadius:8, padding:"8px 10px" }}>
+                                <div style={{ fontSize:9, fontWeight:700, color:"#92400e", letterSpacing:"0.07em", marginBottom:3 }}>LEAVE ENDS</div>
+                                <div style={{ fontSize:13, fontWeight:800, color: urgent ? "#7F1D1D" : "#111827", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                                  <span>{fmt(r.endDate) || "—"}</span>
+                                  {dEnd !== null && (
+                                    <span style={{ fontSize:11, padding:"2px 8px", borderRadius:20, background: urgent ? "#FDE68A" : "#f3f4f6", color: urgent ? "#7F1D1D" : "#6b7280", fontWeight:700 }}>
+                                      {dEnd > 0 ? "in " + dEnd + "d" : dEnd === 0 ? "TODAY" : Math.abs(dEnd) + "d overdue"}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              {r.hearingDate && (
+                                <div style={{ background:"#FEE2E2", borderRadius:8, padding:"8px 10px", gridColumn:"1/-1" }}>
+                                  <div style={{ fontSize:9, fontWeight:700, color:"#7F1D1D", letterSpacing:"0.07em", marginBottom:3 }}>HEARING DATE</div>
+                                  <div style={{ fontSize:12, fontWeight:700, color:"#7F1D1D" }}>{fmt(r.hearingDate)}</div>
+                                </div>
+                              )}
+                            </div>
+                            {urgent && status === "on_leave" && (
+                              <div style={{ fontSize:11, color:"#7F1D1D", background:"#FEF3C7", borderRadius:7, padding:"7px 10px", lineHeight:1.5, marginBottom:8, fontWeight:600 }}>
+                                ⚠ HR: check work documents on the last day. If not received → schedule a hearing → terminate.
+                              </div>
+                            )}
+                            {r.notes && <div style={{ fontSize:11, color:"#92400e", background:"#fef9c3", borderRadius:7, padding:"6px 9px", lineHeight:1.5 }}>{r.notes}</div>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {records.length === 0 && (
+                <div style={{ background:"#fff", border:"1px dashed #fde68a", borderRadius:14, padding:"40px 20px", textAlign:"center", color:"#92400e", fontSize:13 }}>
+                  No unpaid-legal-leave records yet. Click <b>+ Add Record</b> to log one.
+                </div>
+              )}
+            </>
+          );
+        })()}
+
+        {/* ── UNPAID-LEGAL MODAL ── */}
+        {unpaidLegalModal && (() => {
+          const m = unpaidLegalModal;
+          const set = (k, v) => setUnpaidLegalModal({ ...m, [k]: v });
+          return (
+            <div onClick={()=>setUnpaidLegalModal(null)} style={{ position:"fixed", inset:0, background:"rgba(17,24,39,0.55)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:120 }}>
+              <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:16, padding:"22px 26px", width:"min(520px, 92vw)", maxHeight:"90vh", overflowY:"auto", boxShadow:"0 10px 40px rgba(0,0,0,0.25)" }}>
+                <div style={{ fontFamily:"'Playfair Display',serif", fontSize:20, fontWeight:700, color:"#92400e", marginBottom:6 }}>⏸️ Unpaid leave (legal status)</div>
+                <div style={{ fontSize:11, color:"#6b7280", marginBottom:14 }}>Use this for staff who can't work because their permit / asylum / passport has expired or never been provided.</div>
+
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:10 }}>
+                  <div>
+                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>EC *</label>
+                    <input value={m.ec} onChange={e=>set("ec", e.target.value)} placeholder="e.g. B442" style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit" }} />
+                  </div>
+                  <div>
+                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Name *</label>
+                    <input value={m.name} onChange={e=>set("name", e.target.value)} placeholder="Full name" style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit" }} />
+                  </div>
+                </div>
+
+                <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Branch</label>
+                <select value={m.branch} onChange={e=>set("branch", e.target.value)} style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit", marginBottom:10 }}>
+                  {SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                </select>
+
+                <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:6 }}>Status</label>
+                <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:14 }}>
+                  {["on_leave","returned","terminated"].map(s => {
+                    const active = m.status === s;
+                    const label = s === "on_leave" ? "⏸️ On leave" : s === "returned" ? "✅ Returned" : "🛑 Terminated";
+                    const color = s === "on_leave" ? "#92400e" : s === "returned" ? "#166534" : "#7f1d1d";
+                    const bg    = s === "on_leave" ? "#fef3c7" : s === "returned" ? "#dcfce7" : "#fee2e2";
+                    return (
+                      <button key={s} type="button" onClick={()=>set("status", s)}
+                        style={{ background: active ? color : bg, color: active ? "#fff" : color, border:`1px solid ${color}`, borderRadius:8, padding:"7px 12px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                      >{label}</button>
+                    );
+                  })}
+                </div>
+
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:10 }}>
+                  <div>
+                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Leave started</label>
+                    <input type="date" value={m.startDate || ""} onChange={e=>set("startDate", e.target.value)} style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit" }} />
+                  </div>
+                  <div>
+                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Leave ends</label>
+                    <input type="date" value={m.endDate || ""} onChange={e=>set("endDate", e.target.value)} style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit" }} />
+                  </div>
+                </div>
+
+                {(m.status === "terminated" || m.status === "on_leave") && (
+                  <div style={{ marginBottom:10 }}>
+                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Hearing date (if needed)</label>
+                    <input type="date" value={m.hearingDate || ""} onChange={e=>set("hearingDate", e.target.value)} style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit" }} />
+                  </div>
+                )}
+
+                <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Notes</label>
+                <textarea rows={3} value={m.notes || ""} onChange={e=>set("notes", e.target.value)} placeholder="Document type, dates, hearing outcome…" style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:13, fontFamily:"inherit", marginBottom:14, resize:"vertical" }} />
+
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8 }}>
+                  {m._id ? (
+                    <button onClick={()=>{ if (window.confirm("Delete this record? This can't be undone.")) deleteUnpaidLegal(m._id); }}
+                      style={{ background:"#fff", color:"#b91c1c", border:"1px solid #fecaca", borderRadius:8, padding:"9px 14px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                    >Delete</button>
+                  ) : <span />}
+                  <div style={{ display:"flex", gap:8 }}>
+                    <button onClick={()=>setUnpaidLegalModal(null)}
+                      style={{ background:"#f3f4f6", color:"#374151", border:"none", borderRadius:8, padding:"9px 16px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                    >Cancel</button>
+                    <button onClick={()=>{
+                      if (!m.ec || !m.ec.trim()) { alert("EC is required."); return; }
+                      if (!m.name || !m.name.trim()) { alert("Name is required."); return; }
+                      saveUnpaidLegal({ ...m, ec: m.ec.trim(), name: m.name.trim() });
+                    }}
+                      style={{ background:"#92400e", color:"#fff", border:"none", borderRadius:8, padding:"9px 18px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                    >{m._id ? "Save changes" : "Add record"}</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* ── ALERTS TAB ── */}
         {tab==="alerts" && (()=>{
