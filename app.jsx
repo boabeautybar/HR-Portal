@@ -8488,20 +8488,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         })()}
 
         {/* ── MATERNITY TAB ── */}
-        {tab==="maternity" && (
+        {tab==="maternity" && (() => {
+          // Filter out off-boarded staff (leftDate today or earlier) so
+          // their maternity record disappears from this tracker the moment
+          // their last day passes. Records persist in Supabase for audit
+          // history - they're just hidden from the live tracker.
+          const _todayYmd = new Date().toISOString().slice(0, 10);
+          const _offByEc = new Map((offList || []).filter(o => o && o.ec).map(o => [o.ec, o]));
+          const _hasLeft = (ec) => {
+            const o = _offByEc.get(ec);
+            return !!(o && o.leftDate && o.leftDate <= _todayYmd);
+          };
+          const visibleMatRecs = matRecs.filter(r => r && r.ec && !_hasLeft(r.ec));
+          return (
           <>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
-              <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, color:"#8E5570" }}>Maternity Tracker · {matRecs.length} records</div>
+              <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, color:"#8E5570" }}>Maternity Tracker · {visibleMatRecs.length} records</div>
               <button onClick={()=>setMatModal({ ec:"", name:"", branch:"Sea Point", matStatus:"on_mat", matStart:"", matEnd:"", returnDate:"", notes:"" })}
                 style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:9, padding:"9px 18px", cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:13 }}>+ Add Record</button>
             </div>
 
             {/* Returning soon banner */}
-            {matRecs.filter(r=>r.matStatus==="on_mat"&&r.returnDate&&daysDiff(r.returnDate)!==null&&daysDiff(r.returnDate)>=0&&daysDiff(r.returnDate)<=60).length>0 && (
+            {visibleMatRecs.filter(r=>r.matStatus==="on_mat"&&r.returnDate&&daysDiff(r.returnDate)!==null&&daysDiff(r.returnDate)>=0&&daysDiff(r.returnDate)<=60).length>0 && (
               <div style={{ background:"#FBCFE8", border:"1px solid #6ee7b7", borderRadius:12, padding:"12px 18px", marginBottom:16 }}>
                 <div style={{ fontSize:11, fontWeight:800, color:"#8E5570", marginBottom:8, letterSpacing:"0.07em" }}>🔜 RETURNING WITHIN 60 DAYS — plan ahead</div>
                 <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
-                  {matRecs.filter(r=>r.matStatus==="on_mat"&&r.returnDate&&daysDiff(r.returnDate)>=0&&daysDiff(r.returnDate)<=60)
+                  {visibleMatRecs.filter(r=>r.matStatus==="on_mat"&&r.returnDate&&daysDiff(r.returnDate)>=0&&daysDiff(r.returnDate)<=60)
                     .sort((a,b)=>new Date(a.returnDate)-new Date(b.returnDate))
                     .map(r=>(
                       <div key={r._id} style={{ background:"#FFFFFF", borderRadius:10, padding:"8px 14px", border:"1px solid #6ee7b7", display:"flex", gap:10, alignItems:"center" }}>
@@ -8516,7 +8528,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
             {/* Group by status */}
             {["on_mat","pregnant","returned","sick_leave"].map(status=>{
-              const recs = matRecs.filter(r=>r.matStatus===status).sort(ecSort);
+              const recs = visibleMatRecs.filter(r=>r.matStatus===status).sort(ecSort);
               if (!recs.length) return null;
               const s = MAT_STATUS[status];
               const isExcluded = status==="on_mat";
@@ -8582,7 +8594,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               );
             })}
           </>
-        )}
+          );
+        })()}
 
         {/* ── UNPAID LEAVE (LEGAL STATUS) TAB ── parallel to Maternity but
             for staff away due to expired / missing work documents. Rows
@@ -11529,9 +11542,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const isTechMode = leaveSubTab === "techs";
           const peopleType = isTechMode ? "nail tech" : "manager";
           const peopleTypePlural = isTechMode ? "nail techs" : "managers";
+          // Off-boarded people (leftDate in the past) should not appear in
+          // the leave planner. Techs come from `enriched` which already
+          // tracks `offDaysSinceLeft`; managers come from `managers` so
+          // cross-reference with offList directly.
+          const _todayYmd = new Date().toISOString().slice(0, 10);
+          const offByEc = new Map((offList || []).filter(o => o && o.ec).map(o => [o.ec, o]));
+          const _hasLeft = (ec) => {
+            const o = offByEc.get(ec);
+            return !!(o && o.leftDate && o.leftDate <= _todayYmd);
+          };
           const ROLE_GUARD = isTechMode
-            ? (s) => /^[BT]/.test(s.ec) && !s.offHidden
-            : (m) => m.role === "SM" || m.role === "AM";
+            ? (s) => /^[BT]/.test(s.ec) && !s.offHidden && !(s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft > 0)
+            : (m) => (m.role === "SM" || m.role === "AM") && !_hasLeft(m.ec);
           // Active people of the chosen type at this branch — exclude maternity / off-boarded / wrong role
           const sourceArr = isTechMode ? enriched : managers;
           const peopleAtBranch = (sourceArr || [])
