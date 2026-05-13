@@ -43,11 +43,30 @@
   }
 
   // ---------- Staff ----------
+  // First-of-month ISO date (YYYY-MM-01) for the supplied reference date.
+  // Used by listStaff(includeRecentLeavers) to keep mid-month leavers visible
+  // until the calendar rolls into the next month.
+  function _firstOfMonthIso(d) {
+    d = d || new Date();
+    return isoDate(new Date(d.getFullYear(), d.getMonth(), 1));
+  }
+
   async function listStaff(opts) {
     opts = opts || {};
     var c = client(); if (!c) return [];
     var q = c.from("staff").select("*").eq("branch", branch());
-    if (opts.activeOnly !== false) q = q.eq("active", true);
+    if (opts.activeOnly !== false) {
+      if (opts.includeRecentLeavers) {
+        // Active staff + recent leavers (active=false but left_date is in
+        // the current calendar month, or set to a future date). Past-month
+        // leavers are excluded so the kiosk drops them automatically on
+        // month rollover.
+        var monthStart = _firstOfMonthIso(opts.refDate || new Date());
+        q = q.or("active.eq.true,and(active.eq.false,left_date.gte." + monthStart + ")");
+      } else {
+        q = q.eq("active", true);
+      }
+    }
     q = q.order("name", { ascending: true });
     var res = await q;
     if (res.error) { console.error("listStaff:", res.error); return []; }
@@ -126,13 +145,48 @@
   async function categorizeStaff(refDate, opts) {
     var refIso = isoDate(refDate || new Date());
     var thisBranch = branch();
+    // Always ask listStaff for current-month leavers so the manager kiosk
+    // can show them greyed at the bottom (see "leftCompany" bucket below).
+    // Callers can opt out with includeRecentLeavers:false if they need the
+    // strict active-only roster (e.g. tech off-day requests).
+    var listOpts = Object.assign({ activeOnly: true }, opts || {});
+    if (listOpts.activeOnly !== false && listOpts.includeRecentLeavers !== false) {
+      listOpts.includeRecentLeavers = true;
+      listOpts.refDate = refDate || new Date();
+    }
     var results = await Promise.all([
-      listStaff(opts || { activeOnly: true }),
+      listStaff(listOpts),
       listMaternity(),
       listLeaveRecords(),
       listTechLoans(refIso)
     ]);
     var staff = results[0], matRecs = results[1], leaveRecs = results[2], loansToday = results[3];
+
+    // Pull current-month leavers out into their own bucket. Anyone whose
+    // left_date has already passed (refIso strictly greater) is considered
+    // gone — the manager kiosk renders them greyed at the bottom of the
+    // daily roster and they're not eligible for check-in tagging anywhere
+    // else. Staff with a future left_date stay in the active flow so they
+    // can be checked in normally until their last day.
+    var leftCompany = [];
+    staff = staff.filter(function (s) {
+      if (!s) return false;
+      var hasLeft = s.active === false && s.left_date && refIso > s.left_date;
+      if (hasLeft) {
+        s._leftCompany = true;
+        s._leftDate = s.left_date;
+        leftCompany.push(s);
+        return false;
+      }
+      return true;
+    });
+    leftCompany.sort(function (a, b) {
+      // Most recent leaver at the top of the (already-bottom) group so the
+      // manager can see who just walked out first.
+      var ad = a.left_date || "", bd = b.left_date || "";
+      if (ad !== bd) return bd.localeCompare(ad);
+      return (a.name || "").localeCompare(b.name || "");
+    });
 
     // Loans: ECs leaving us today (loaned out) stay on the home roster so
     // the manager knows where they are - tagged with _loanedOut / _awayAt
@@ -184,7 +238,7 @@
       else if (ec && leaveByEc[ec])  onLeave.push({ staff: s, record: leaveByEc[ec] });
       else                           active.push(s);
     });
-    return { active: active, onMat: onMat, onLeave: onLeave, loansToday: loansToday };
+    return { active: active, onMat: onMat, onLeave: onLeave, loansToday: loansToday, leftCompany: leftCompany };
   }
 
   async function addStaff(name, employeeCode) {

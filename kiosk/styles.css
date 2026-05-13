@@ -491,6 +491,13 @@ textarea.input { resize: vertical; min-height: 64px; }
 .dly-no-action { font-size: 12px; color: var(--gray-500); font-style: italic; }
 .dly-list-off .dly-swap { color: var(--gray-700); }
 
+/* Mid-month leavers: kept on the roster, but visually faded and crossed
+   out so it's obvious they've left and aren't to be checked in. */
+.dly-section-head-left { margin-top: 24px; }
+.dly-list-left .dly-row-left { opacity: 0.6; }
+.dly-list-left .dly-row-left .dly-name { text-decoration: line-through; color: var(--gray-500); }
+.dly-list-left .dly-row-left .dly-code { color: var(--gray-500); }
+
 /* roster tags showing why a person is in the list (WL / E / swap) */
 .row-tag { padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; margin-left: 4px; }
 .row-tag-warn { background: var(--amber-100); color: var(--amber-700); }
