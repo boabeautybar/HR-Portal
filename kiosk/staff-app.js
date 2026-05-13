@@ -883,7 +883,9 @@
         '<div class="dly-row-info">' +
           '<div class="dly-checkmark">' + (hasStatus ? '✓' : '') + '</div>' +
           '<div class="dly-row-text">' +
-            '<div class="dly-name">' + esc(s.name) + '</div>' +
+            '<div class="dly-name">' + esc(s.name) +
+              (s._guest ? ' <span class="dly-guest-chip" title="Loaned in from ' + esc(s._homeBranch || "") + '">← ' + esc(s._homeBranch || "") + '</span>' : '') +
+            '</div>' +
             '<div class="dly-code">' + esc(s.employee_code) + (rosterTag ? ' · ' + rosterTag : '') + '</div>' +
             (noteLine ? '<div class="dly-note">' + noteLine + '</div>' : '') +
           '</div>' +

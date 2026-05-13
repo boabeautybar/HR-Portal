@@ -69,14 +69,65 @@
     return Array.isArray(v) ? v : [];
   }
 
+  // ── Tech day-loans ──────────────────────────────────────────────────
+  // HR portal (and the manager kiosk widget) write to app_state under
+  // boa_tech_loans_v1: { _id, ec, name, date, fromBranch, toBranch, note,
+  // ... }. listTechLoans(dateIso) returns just the rows for that date.
+  // categorizeStaff applies them: drop staff loaned OUT of this kiosk for
+  // the day, and add any guests loaned IN as honorary roster entries tagged
+  // with _guest = true / _homeBranch = fromBranch so the UI can chip them.
+  async function listTechLoans(dateIso) {
+    var c = client(); if (!c) return [];
+    var res = await c.from("app_state").select("value").eq("key", "boa_tech_loans_v1").maybeSingle();
+    if (res.error) { console.error("listTechLoans:", res.error); return []; }
+    var v = res.data && res.data.value;
+    var arr = Array.isArray(v) ? v : [];
+    if (!dateIso) return arr;
+    return arr.filter(function (l) { return l && l.date === dateIso; });
+  }
+  async function _fetchStaffByEcs(ecs) {
+    if (!ecs || !ecs.length) return [];
+    var c = client(); if (!c) return [];
+    var res = await c.from("staff").select("*").in("employee_code", ecs);
+    if (res.error) { console.error("fetchStaffByEcs:", res.error); return []; }
+    return res.data || [];
+  }
+
   async function categorizeStaff(refDate, opts) {
+    var refIso = isoDate(refDate || new Date());
+    var thisBranch = branch();
     var results = await Promise.all([
       listStaff(opts || { activeOnly: true }),
       listMaternity(),
-      listLeaveRecords()
+      listLeaveRecords(),
+      listTechLoans(refIso)
     ]);
-    var staff = results[0], matRecs = results[1], leaveRecs = results[2];
-    var refIso = isoDate(refDate || new Date());
+    var staff = results[0], matRecs = results[1], leaveRecs = results[2], loansToday = results[3];
+
+    // Loans: ECs leaving us today (loaned out) get filtered out of the home
+    // list. ECs arriving from another branch get fetched, tagged and merged
+    // in - so the daily roster reflects who's actually on-site today.
+    var loanedOutEcs = {};   // ec -> loan record (this branch is `fromBranch`)
+    var incomingByEc = {};   // ec -> loan record (this branch is `toBranch`)
+    loansToday.forEach(function (l) {
+      if (!l || !l.ec) return;
+      if (l.fromBranch === thisBranch && l.toBranch && l.toBranch !== thisBranch) loanedOutEcs[l.ec] = l;
+      if (l.toBranch === thisBranch && l.fromBranch && l.fromBranch !== thisBranch) incomingByEc[l.ec] = l;
+    });
+    staff = staff.filter(function (s) { return !s.employee_code || !loanedOutEcs[s.employee_code]; });
+    var incomingEcs = Object.keys(incomingByEc);
+    if (incomingEcs.length > 0) {
+      var guests = await _fetchStaffByEcs(incomingEcs);
+      guests.forEach(function (g) {
+        var ln = incomingByEc[g.employee_code];
+        if (!ln) return;
+        g._guest = true;
+        g._homeBranch = ln.fromBranch || g.branch;
+        g._loanNote = ln.note || "";
+        staff.push(g);
+      });
+    }
+
     var matByEc = {};
     matRecs.forEach(function (m) {
       if (m.mat_status === "on_mat" && m.employee_code) matByEc[m.employee_code] = m;
@@ -95,7 +146,7 @@
       else if (ec && leaveByEc[ec])  onLeave.push({ staff: s, record: leaveByEc[ec] });
       else                           active.push(s);
     });
-    return { active: active, onMat: onMat, onLeave: onLeave };
+    return { active: active, onMat: onMat, onLeave: onLeave, loansToday: loansToday };
   }
 
   async function addStaff(name, employeeCode) {
@@ -872,6 +923,7 @@
     isConfigured: isConfigured,
     branch: branch, branchDisplay: branchDisplay, todayStr: todayStr,
     listStaff: listStaff, listMaternity: listMaternity, listLeaveRecords: listLeaveRecords,
+    listTechLoans: listTechLoans,
     categorizeStaff: categorizeStaff, addStaff: addStaff, updateStaff: updateStaff,
     deactivateStaff: deactivateStaff,
     lastClockinToday: lastClockinToday, addClockin: addClockin, listTodayClockins: listTodayClockins,

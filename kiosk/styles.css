@@ -394,6 +394,20 @@ textarea.input { resize: vertical; min-height: 64px; }
 .dly-name { font-weight: 700; color: var(--pink-900); font-size: 14px; line-height: 1.2; }
 .dly-code { font-size: 11px; color: var(--gray-500); margin-top: 2px; letter-spacing: 0.04em; }
 .dly-note { font-size: 11px; color: var(--pink-700); margin-top: 4px; line-height: 1.3; font-style: italic; }
+.dly-guest-chip {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: 99px;
+  background: #FEF3C7;
+  color: #78350F;
+  border: 1px solid #FDE68A;
+  vertical-align: middle;
+}
 .dly-note strong { font-style: normal; color: var(--pink-900); }
 
 .dly-actions { display: flex; gap: 6px; flex-wrap: wrap; }
