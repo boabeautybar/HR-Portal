@@ -9991,7 +9991,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             trial:  { lbl:"Trial Day",       bg:"#fde047", fg:"#713f12", cat:"work" },
             term:   { lbl:"TERMINATED",      bg:"#dc2626", fg:"#FFFFFF", cat:"none" },
             swap_o: { lbl:"Owes",            bg:"#cbd5e1", fg:"#dc2626", cat:"swap" },
-            swap_i: { lbl:"Owed",            bg:"#86efac", fg:"#14532d", cat:"swap" }
+            swap_i: { lbl:"Owed",            bg:"#86efac", fg:"#14532d", cat:"swap" },
+            // Tech-loan integration codes (derived, never persisted):
+            //   loan_out — this branch's staff working at another branch today.
+            //              Counts as a worked day for home-branch payroll.
+            //   n_a      — a guest loaned-in row on a day they're not at this
+            //              branch. Excluded from all totals.
+            loan_out: { lbl:"→ Loan",       bg:"#dbeafe", fg:"#1e40af", cat:"loan" },
+            n_a:    { lbl:"—",              bg:"#f9fafb", fg:"#9ca3af", cat:"none" }
           };
           const resolveStat = (v) => {
             if (!v) return null;
@@ -10054,16 +10061,55 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // remain auditable for payroll. People who left before this cycle
           // are excluded entirely.
           const cycStartYmd = cycStart.getFullYear() + "-" + p2(cycStart.getMonth()+1) + "-" + p2(cycStart.getDate());
+          const cycEndYmd   = cycEnd.getFullYear()   + "-" + p2(cycEnd.getMonth()+1)   + "-" + p2(cycEnd.getDate());
           const stillInCycle = (ec) => {
             const ld = offByEc[ec];
             return !ld || ld >= cycStartYmd;
           };
+
+          // Tech-loan integration for this cycle. outgoingLoanMap is keyed by
+          // home-branch ec → { dayOfMonth → toBranch } (cells render as
+          // '→ Loan' instead of the schedule-derived status). incomingLoanMap
+          // is keyed by guest ec → { day → fromBranch }; guests are added as
+          // honorary rows below attStaff. Their attendance for the loan day
+          // was written by the receiving kiosk and lives in this branch's
+          // attGrid already.
+          const _loansInCycle = (techLoans || []).filter(l => l && l.date && l.date >= cycStartYmd && l.date <= cycEndYmd);
+          const outgoingLoanMap = {};
+          const incomingLoanMap = {};
+          _loansInCycle.forEach(l => {
+            if (!l.ec) return;
+            const dy = days.find(x => x.ymd === l.date);
+            if (!dy) return;
+            if (l.fromBranch === attBranch && l.toBranch && l.toBranch !== attBranch) {
+              (outgoingLoanMap[l.ec] = outgoingLoanMap[l.ec] || {})[dy.d] = l.toBranch;
+            }
+            if (l.toBranch === attBranch && l.fromBranch && l.fromBranch !== attBranch) {
+              (incomingLoanMap[l.ec] = incomingLoanMap[l.ec] || {})[dy.d] = l.fromBranch;
+            }
+          });
+
           const attStaff = [
             ...enriched.filter(s => s.branch === attBranch && stillInCycle(s.ec)).map(s => ({ ec:s.ec, name:s.name, role:"NT" })),
             ...managers.filter(m => m.branch === attBranch && stillInCycle(m.ec)).map(m => ({ ec:m.ec, name:m.name, role:m.role || "AM" }))
           ].sort((a, b) => {
             const order = { SM:0, AM:1, NT:2 };
             return (order[a.role] ?? 9) - (order[b.role] ?? 9) || a.name.localeCompare(b.name);
+          });
+
+          // Append guest rows for techs loaned IN this cycle (only those who
+          // aren't already on this branch's roster).
+          const _attStaffEcs = new Set(attStaff.map(s => s.ec));
+          Object.keys(incomingLoanMap).forEach(ec => {
+            if (_attStaffEcs.has(ec)) return;
+            const sRec = enriched.find(s => s.ec === ec) || managers.find(m => m.ec === ec);
+            attStaff.push({
+              ec,
+              name: (sRec && sRec.name) || ec,
+              role: "GUEST",
+              _guest: true,
+              _homeBranch: (sRec && sRec.branch) || ""
+            });
           });
           // For a given (ec, ymd), is this day strictly AFTER their last day?
           const isPostLeftDate = (ec, ymd) => {
@@ -10074,6 +10120,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Helpers
           const mirrorSuppressed = !!(attMeta && attMeta.mirrorSuppressed);
           const getStatus = (ec, d) => {
+            // Tech-loan overrides take precedence so the loan record is the
+            // truth of where the tech was that day (regardless of any stale
+            // schedule hint or attGrid value).
+            if (outgoingLoanMap[ec] && outgoingLoanMap[ec][d]) return "loan_out";
+            if (incomingLoanMap[ec] && !incomingLoanMap[ec][d]) return "n_a";
+
             // Cross-tab rule: anyone on the off-board list shows TERMINATED
             // automatically from the day AFTER their leftDate, regardless of
             // what's in the attendance or schedule grid.
@@ -10955,6 +11007,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               else if (v === "swap_i") { t.worked++; if (phOk) t.ph++; }
               else if (v === "swap_o") t.off++;
               else if (v === "term")   { t.term++; t.unpaid++; }
+              // Tech-loan codes (derived from techLoans, never persisted):
+              // loan_out counts as worked for home-branch payroll;
+              // n_a is a guest's non-loan day and contributes nothing.
+              else if (v === "loan_out") { t.worked++; }
+              else if (v === "n_a")      { /* skip totals */ }
               else if (v && v.indexOf("deduct") === 0) {
                 let h = 0; if (v.indexOf(":") > 0) h = parseFloat(v.split(":")[1]) || 0;
                 t.unpaidHours += h;
@@ -11283,9 +11340,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         </tr>
                       ) : null;
                       const dataRow = (
-                        <tr key={s.ec} style={isMgr ? { background:"#fffaf0" } : undefined}>
-                          <td style={{ position:"sticky", left:0, background: isMgr ? "#fffaf0" : "#FFFFFF", padding:"6px 10px", borderBottom:"1px solid #FCE7F3", borderRight:"2px solid #FBCFE8", zIndex:2, minWidth:170 }}>
-                            <div style={{ fontSize:11, fontWeight:700, color:"#831843" }}>{isMgr ? (s.role === "SM" ? "👑 " : "⭐ ") : ""}{s.name}</div>
+                        <tr key={s.ec} style={isMgr ? { background:"#fffaf0" } : (s._guest ? { background:"#FFFBEB" } : undefined)}>
+                          <td style={{ position:"sticky", left:0, background: isMgr ? "#fffaf0" : (s._guest ? "#FFFBEB" : "#FFFFFF"), padding:"6px 10px", borderBottom:"1px solid #FCE7F3", borderRight:"2px solid #FBCFE8", zIndex:2, minWidth:170 }}>
+                            <div style={{ fontSize:11, fontWeight:700, color:"#831843", display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+                              <span>{isMgr ? (s.role === "SM" ? "👑 " : "⭐ ") : ""}{s.name}</span>
+                              {s._guest && <span title={"Loaned in from " + (s._homeBranch || "")} style={{ background:"#FEF3C7", color:"#78350F", border:"1px solid #FDE68A", borderRadius:99, padding:"1px 7px", fontSize:9, fontWeight:800, letterSpacing:"0.06em" }}>← {s._homeBranch || "GUEST"}</span>}
+                            </div>
                             <div style={{ fontSize:9, color:"#9ca3af" }}>{s.ec} · {s.role}</div>
                           </td>
                           {days.map(dy => {
@@ -11293,6 +11353,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const hint = schedHint(s.ec, dy.d);
                             const override = hasOverride(s.ec, dy.d);
                             let st = resolveStat(v) || { lbl:"", bg:"#FFFFFF", fg:"#9ca3af" };
+                            // Dynamic loan_out label - show the actual destination branch
+                            // ('→ Bree') instead of the static '→ Loan' so the manager
+                            // can see at a glance where the tech went without hovering.
+                            if (v === "loan_out" && outgoingLoanMap[s.ec] && outgoingLoanMap[s.ec][dy.d]) {
+                              st = { ...st, lbl: "→ " + outgoingLoanMap[s.ec][dy.d] };
+                            }
                             const isWk = dy.dow === 0 || dy.dow === 6;
                             const deviation = override && hint && hint !== v;
                             const isHol = !!(holidayLookup && holidayLookup[dy.ymd]);
