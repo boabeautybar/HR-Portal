@@ -311,18 +311,22 @@
     );
     document.getElementById("back-home").onclick = renderManagerLanding;
 
-    var staff = await window.APP_DATA.listStaff({ activeOnly: false });
+    // Active staff + anyone who left in the current calendar month. Past
+    // leavers (left_date before this month, or active=false with no date)
+    // are excluded so the list reflects who's currently on the roster +
+    // who walked out this month. The kiosk drops them on month rollover.
+    var staff = await window.APP_DATA.listStaff({ activeOnly: true, includeRecentLeavers: true });
     var listEl = document.getElementById("staff-list");
     if (staff.length === 0) {
       listEl.innerHTML = '<div class="empty">No staff in this branch yet. Add them in the HR portal.</div>';
       return;
     }
 
-    // Split current staff from those who've left. Leavers go in their own
-    // greyed section at the bottom, sorted by most-recent leave date so
-    // the manager can see who walked out last. Staff with active=false but
-    // no left_date (legacy / manually deactivated) still surface there so
-    // they don't silently vanish from the kiosk's view of the branch.
+    // Split current staff from those who've left this month. Leavers go
+    // in their own greyed section at the bottom, sorted by most-recent
+    // leave date so the manager can see who walked out last. The query
+    // above already excludes pre-this-month leavers, so they disappear
+    // automatically when the calendar rolls over.
     var activeStaff = [];
     var leftStaff   = [];
     staff.forEach(function (s) {
@@ -357,7 +361,7 @@
       html += activeStaff.map(function (s) { return renderRow(s, false); }).join("");
     }
     if (leftStaff.length > 0) {
-      html += '<div class="staff-section-head staff-section-head-left">👋 Left the company · ' + leftStaff.length + '</div>';
+      html += '<div class="staff-section-head staff-section-head-left">👋 Left this month · ' + leftStaff.length + '</div>';
       html += leftStaff.map(function (s) { return renderRow(s, true); }).join("");
     }
     listEl.innerHTML = html;
