@@ -697,6 +697,7 @@
     var staff        = cats.active;
     var staffOnMat   = cats.onMat;
     var staffOnLeave = cats.onLeave;
+    var staffLeft    = cats.leftCompany || [];
     var sched        = loaded[1];
     var attendance   = loaded[2];
     var dailyRec     = loaded[3];
@@ -1473,6 +1474,33 @@
                   '<div class="dly-name">' + esc(s.name) + '</div>' +
                   '<div class="dly-code">' + esc(s.employee_code || "") +
                     ' · <span class="row-tag row-tag-off">🌴 Annual leave</span>' + range +
+                  '</div>' +
+                '</div>' +
+              '</div>' +
+              '<div class="dly-actions"><span class="dly-no-action">No action</span></div>' +
+              '<span></span>' +
+            '</div>';
+          }).join("") +
+        '</div>';
+    }
+    // Staff who left mid-month: kept on the manager kiosk roster (greyed,
+    // at the very bottom) until the calendar rolls into the next month so
+    // the manager can still see who used to be there. No action buttons —
+    // their check-in days ended on left_date. The data layer drops them
+    // automatically once a new month starts.
+    if (staffLeft.length > 0) {
+      awayHtml +=
+        '<div class="dly-section-head dly-section-head-off dly-section-head-left">👋 Left the company · ' + staffLeft.length + '</div>' +
+        '<div class="dly-list dly-list-off dly-list-left">' +
+          staffLeft.map(function (s) {
+            var leftTxt = s._leftDate ? ' · left ' + esc(formatChipDate(s._leftDate)) : '';
+            return '<div class="dly-row dly-row-off dly-row-left">' +
+              '<div class="dly-row-info">' +
+                '<div class="dly-checkmark dly-checkmark-off">·</div>' +
+                '<div class="dly-row-text">' +
+                  '<div class="dly-name">' + esc(s.name) + '</div>' +
+                  '<div class="dly-code">' + esc(s.employee_code || "") +
+                    ' · <span class="row-tag row-tag-off">👋 Left company</span>' + leftTxt +
                   '</div>' +
                 '</div>' +
               '</div>' +

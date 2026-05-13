@@ -293,6 +293,16 @@ textarea.input { resize: vertical; min-height: 64px; }
 .staff-row-main { display: flex; flex-direction: column; gap: 2px; }
 .staff-name { font-weight: 600; color: var(--pink-900); font-size: 14px; }
 .staff-code { font-size: 11px; color: var(--gray-500); }
+
+/* Staff list section headers + left-company row treatment */
+.staff-section-head {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--pink-900); margin: 14px 0 4px;
+}
+.staff-section-head-left { color: var(--gray-700); margin-top: 22px; }
+.staff-row.staff-row-left { opacity: 0.6; }
+.staff-row.staff-row-left .staff-name { text-decoration: line-through; color: var(--gray-600); }
+.staff-row.staff-row-left .staff-code { color: var(--gray-500); }
 .link-warn { background: var(--red-100) !important; color: var(--red-700) !important; border-color: var(--red-100) !important; }
 .link-ok   { background: var(--green-100) !important; color: var(--green-700) !important; border-color: var(--green-100) !important; }
 
@@ -490,6 +500,13 @@ textarea.input { resize: vertical; min-height: 64px; }
 .row-tag-off { background: var(--gray-200); color: var(--gray-700); }
 .dly-no-action { font-size: 12px; color: var(--gray-500); font-style: italic; }
 .dly-list-off .dly-swap { color: var(--gray-700); }
+
+/* Mid-month leavers: kept on the roster, but visually faded and crossed
+   out so it's obvious they've left and aren't to be checked in. */
+.dly-section-head-left { margin-top: 24px; }
+.dly-list-left .dly-row-left { opacity: 0.6; }
+.dly-list-left .dly-row-left .dly-name { text-decoration: line-through; color: var(--gray-500); }
+.dly-list-left .dly-row-left .dly-code { color: var(--gray-500); }
 
 /* roster tags showing why a person is in the list (WL / E / swap) */
 .row-tag { padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; margin-left: 4px; }
