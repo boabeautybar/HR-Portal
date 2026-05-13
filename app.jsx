@@ -7257,7 +7257,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 key:"Admin", icon:"🛡️", title:"Admin",
                 color:{ bg:"#FEF3C7", bgActive:"#FDE68A", ink:"#92400e" },
                 items: [
-                  { t:"settings", l:"⚙️ Settings" }
+                  { t:"kioskPins", l:"🔑 Kiosk PINs" },
+                  { t:"settings",  l:"⚙️ Settings"   }
                 ]
               }] : [])
             ];
