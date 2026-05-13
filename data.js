@@ -867,6 +867,25 @@
     return records;
   }
 
+  // ---------- Tech day-loans (boa_tech_loans_v1) ----------
+  // One-day cross-branch borrowing of a nail tech. Stored as a JSON array on
+  // app_state so we don't need a schema migration. Each record is:
+  //   { _id, ec, name, date, fromBranch, toBranch, note, createdBy, createdAt }
+  // Uniqueness on (ec, date) is enforced by the caller (save replaces the
+  // existing row for that pair). Read by both the HR portal "Today's
+  // Movements" tab and the check-in kiosk to adapt its check-in gate.
+  async function loadTechLoans() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_tech_loans_v1").maybeSingle();
+    if (res.error) { console.error("loadTechLoans:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveTechLoans(records) {
+    var res = await sb.from("app_state").upsert({ key: "boa_tech_loans_v1", value: records || [] });
+    if (res.error) { console.error("saveTechLoans:", res.error); throw res.error; }
+    return records;
+  }
+
   // ---------- Attendance grid (boa_att_<branch>_<ym>) ----------
   // Same key the check-in kiosk app writes to. Status codes include:
   //   on, late, off, ext, sick_n, sick, frl, al, ph, mat, no, unpaid,
@@ -1017,6 +1036,8 @@
     saveKioskPins:     saveKioskPins,
 
     // Unpaid legal-status leave
+    loadTechLoans:          loadTechLoans,
+    saveTechLoans:          saveTechLoans,
     loadUnpaidLegalRecords: loadUnpaidLegalRecords,
     saveUnpaidLegalRecords: saveUnpaidLegalRecords
   };

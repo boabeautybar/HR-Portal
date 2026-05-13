@@ -5381,6 +5381,7 @@ const SETTINGS_TABS = [
   { t: "mgrclockins",l: "Mgr Clock-ins",     cat: "Operations", icon: "🕐" },
   { t: "leave",      l: "Leave Planner",     cat: "Operations", icon: "🌴" },
   { t: "storeOpenings", l: "Store Openings",  cat: "Operations", icon: "🔓" },
+  { t: "movements",  l: "Today's Movements", cat: "Operations", icon: "🔀" },
   { t: "attendance",     l: "Attendance / Payroll", cat: "Payroll", icon: "📕" },
   { t: "payrollProgress",l: "Payroll Progress",     cat: "Payroll", icon: "📊" },
   { t: "alerts",     l: "Alerts",            cat: "Insights",   icon: "🔔" },
@@ -5858,6 +5859,76 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       }
     } catch (e) { alert("Could not delete: " + (e.message || e)); }
   };
+  // Tech day-loans — one-day cross-branch borrowing. Stored in
+  // app_state['boa_tech_loans_v1'] as an array. Both this portal and the
+  // kiosk read from there. Records: { _id, ec, name, date, fromBranch,
+  // toBranch, note, createdBy, createdAt }. Uniqueness on (ec, date) is
+  // enforced at save time by replacing any prior row for that pair.
+  const [techLoans, setTechLoans] = useState([]);
+  const [loanModal, setLoanModal] = useState(null); // null | { _id?, ec, fromBranch, toBranch, date, note }
+  const [movementsDate, setMovementsDate] = useState(() => new Date().toISOString().slice(0, 10));
+  useEffect(() => {
+    if (!window.BOA_DB || !window.BOA_DB.loadTechLoans) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const recs = await window.BOA_DB.loadTechLoans();
+        if (!cancelled) setTechLoans(Array.isArray(recs) ? recs : []);
+      } catch (e) { console.error("loadTechLoans:", e); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  const saveLoan = async (record) => {
+    if (!record || !record.ec || !record.date || !record.fromBranch || !record.toBranch) {
+      alert("Need tech, date, and a target branch."); return;
+    }
+    if (record.fromBranch === record.toBranch) {
+      alert("Pick a branch different from the tech's home branch."); return;
+    }
+    // Replace any existing loan for the same (ec, date)
+    const list = techLoans || [];
+    const filtered = list.filter(r => !(r && r.ec === record.ec && r.date === record.date));
+    const stamped = {
+      _id: record._id || ("ln_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7)),
+      ec: record.ec,
+      name: record.name || "",
+      date: record.date,
+      fromBranch: record.fromBranch,
+      toBranch: record.toBranch,
+      note: (record.note || "").toString().slice(0, 200),
+      createdBy: record.createdBy || (currentUser && currentUser.name) || "",
+      createdAt: record.createdAt || new Date().toISOString()
+    };
+    const next = [...filtered, stamped];
+    try {
+      await window.BOA_DB.saveTechLoans(next);
+      setTechLoans(next);
+      setLoanModal(null);
+      if (window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY(
+          "Logged tech day-loan",
+          (stamped.name || "") + " · " + stamped.ec,
+          stamped.fromBranch + " → " + stamped.toBranch + " · " + stamped.date,
+          "Movement"
+        );
+      }
+    } catch (e) { alert("Could not save: " + (e.message || e)); }
+  };
+  const cancelLoan = async (id) => {
+    const list = techLoans || [];
+    const rec = list.find(r => r._id === id);
+    if (!rec) return;
+    if (!window.confirm("Cancel " + (rec.name || rec.ec) + "'s loan from " + rec.fromBranch + " → " + rec.toBranch + "?")) return;
+    const next = list.filter(r => r._id !== id);
+    try {
+      await window.BOA_DB.saveTechLoans(next);
+      setTechLoans(next);
+      if (window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY("Cancelled tech day-loan", (rec.name || "") + " · " + rec.ec, rec.fromBranch + " → " + rec.toBranch + " · " + rec.date, "Movement");
+      }
+    } catch (e) { alert("Could not cancel: " + (e.message || e)); }
+  };
+
   const [tab, setTab] = useState("dashboard");
 
   // Custom-locations bootstrap. SALONS is a top-level const array which we
@@ -7424,6 +7495,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t:"mgrclockins", l:"🕐 Mgr Clock-ins"  },
                   { t:"leave",       l:"🌴 Leave Planner"  },
                   { t:"storeOpenings", l:"🔓 Store Openings" },
+                  { t:"movements",     l:"🔀 Today's Movements" },
                   { t:"mgrPlanner",  l:"🧩 Manager Planner",
                     isActive: tab==="recruitment" && recruitSubTab==="mgrRecruit" && mgrSubTab==="planner",
                     onClick: () => { setRecruitSubTab("mgrRecruit"); setMgrSubTab("planner"); tryChangeTab("recruitment"); }
@@ -12112,6 +12184,259 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
               <div style={{ marginTop:14, fontSize:11, color:"#831843", opacity:0.7 }}>
                 Reads <code>boa_store_open_&lt;branch&gt;_&lt;YYYY-MM-DD&gt;</code> rows from <code>app_state</code> — the kiosk writes one of these every time a manager taps "open the store". Date picker defaults to today; switch to view past days.
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ── TODAY'S MOVEMENTS TAB ── one-day cross-branch loans, sourced
+            from app_state['boa_tech_loans_v1']. Date picker lets HR scroll
+            past days too. Read by the kiosk so a loaned tech can clock in
+            at the receiving branch and is blocked at the home branch. */}
+        {tab==="movements" && (() => {
+          const date = movementsDate;
+          const loansToday = (techLoans || [])
+            .filter(l => l && l.date === date)
+            .sort((a, b) => (a.fromBranch || "").localeCompare(b.fromBranch || "") || (a.name || "").localeCompare(b.name || ""));
+          const branchesInvolved = new Set();
+          loansToday.forEach(l => { branchesInvolved.add(l.fromBranch); branchesInvolved.add(l.toBranch); });
+
+          const incoming = SALONS
+            .map(s => ({ branch: s.name, region: s.region, loans: loansToday.filter(l => l.toBranch === s.name) }))
+            .filter(g => g.loans.length > 0);
+
+          const isToday = date === new Date().toISOString().slice(0, 10);
+          const dateLabel = (() => {
+            try {
+              const d = new Date(date + "T00:00:00");
+              return d.toLocaleDateString("en-ZA", { weekday: "long", day: "2-digit", month: "long", year: "numeric" });
+            } catch (_) { return date; }
+          })();
+          const fmtTime = (iso) => {
+            if (!iso) return "";
+            try { return new Date(iso).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; }
+          };
+
+          return (
+            <>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
+                <div>
+                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:"#831843" }}>🔀 Today's Movements</div>
+                  <div style={{ fontSize:12, color:"#6b7280", marginTop:2 }}>
+                    {loansToday.length === 0
+                      ? "No staff moved on this date."
+                      : loansToday.length + " tech" + (loansToday.length === 1 ? "" : "s") + " moved across " + branchesInvolved.size + " branch" + (branchesInvolved.size === 1 ? "" : "es")}
+                    {" · " + dateLabel}
+                  </div>
+                </div>
+                <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap" }}>
+                  {/* Prev / next day arrows for quick navigation, plus a
+                      'Today' chip that's always visible and highlights when
+                      the picker IS on today. The native date input still
+                      handles arbitrary date jumps. Date math uses Date.UTC
+                      so SA's UTC+2 offset doesn't make the arrows skip days
+                      (the old `new Date('YYYY-MM-DD' + 'T00:00:00')` parsed
+                      as local time then toISOString shifted it backwards). */}
+                  <button
+                    onClick={()=>{
+                      const [yy, mm, dd] = date.split("-").map(Number);
+                      const dt = new Date(Date.UTC(yy, mm - 1, dd));
+                      dt.setUTCDate(dt.getUTCDate() - 1);
+                      const p = n => String(n).padStart(2, "0");
+                      setMovementsDate(dt.getUTCFullYear() + "-" + p(dt.getUTCMonth() + 1) + "-" + p(dt.getUTCDate()));
+                    }}
+                    title="Previous day"
+                    style={{ background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, padding:"7px 11px", cursor:"pointer", fontSize:14, fontWeight:700, lineHeight:1 }}
+                  >‹</button>
+                  <input
+                    type="date"
+                    value={date}
+                    onChange={e=>setMovementsDate(e.target.value)}
+                    style={{ padding:"7px 10px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:13, fontFamily:"inherit" }}
+                  />
+                  <button
+                    onClick={()=>{
+                      const [yy, mm, dd] = date.split("-").map(Number);
+                      const dt = new Date(Date.UTC(yy, mm - 1, dd));
+                      dt.setUTCDate(dt.getUTCDate() + 1);
+                      const p = n => String(n).padStart(2, "0");
+                      setMovementsDate(dt.getUTCFullYear() + "-" + p(dt.getUTCMonth() + 1) + "-" + p(dt.getUTCDate()));
+                    }}
+                    title="Next day"
+                    style={{ background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, padding:"7px 11px", cursor:"pointer", fontSize:14, fontWeight:700, lineHeight:1 }}
+                  >›</button>
+                  <button
+                    onClick={()=>setMovementsDate(new Date().toISOString().slice(0, 10))}
+                    disabled={isToday}
+                    title={isToday ? "Already viewing today" : "Jump back to today"}
+                    style={{ background: isToday ? "#FCE7F3" : "#fff", color:"#831843", border:"1px solid " + (isToday ? "#FBCFE8" : "#FBCFE8"), borderRadius:8, padding:"7px 12px", cursor: isToday ? "default" : "pointer", fontSize:12, fontWeight:700, opacity: isToday ? 0.6 : 1, marginLeft:4 }}
+                  >Today</button>
+                  <button onClick={()=>setLoanModal({ _id: null, ec: "", name: "", fromBranch: "", toBranch: "", date: isToday ? date : new Date().toISOString().slice(0, 10), note: "" })}
+                    style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:8, padding:"9px 16px", cursor:"pointer", fontSize:12, fontWeight:700, letterSpacing:"0.04em", marginLeft:4 }}>
+                    + Log a borrow
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ background:"#FCE7F3", border:"1px solid #FBCFE8", borderRadius:10, padding:"10px 14px", fontSize:12, color:"#831843", marginBottom:14, lineHeight:1.5 }}>
+                <b>How loans work:</b> Pick a tech, the branch they're working at today, and an optional note.
+                The kiosk at the receiving branch lets them clock in for the day; their home kiosk blocks them.
+                Hours stay attributed to their home branch. Cancel a loan if it didn't happen.
+              </div>
+
+              {loansToday.length === 0 ? (
+                <div style={{ background:"#fff", border:"1px dashed #FBCFE8", borderRadius:14, padding:"40px 20px", textAlign:"center", color:"#831843", fontSize:13 }}>
+                  No staff moved on this date.
+                  {isToday && <div style={{ fontSize:12, color:"#9ca3af", marginTop:6 }}>Click <b>+ Log a borrow</b> when someone is working at a different branch today.</div>}
+                </div>
+              ) : (
+                <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                  {incoming.map(g => {
+                    const r = REGIONS.find(x => x.key === g.region);
+                    return (
+                      <div key={g.branch} style={{ background:"#fff", border:"1px solid #FBCFE8", borderRadius:14, overflow:"hidden" }}>
+                        <div style={{ background:"#FCE7F3", padding:"10px 16px", display:"flex", alignItems:"center", gap:8, fontFamily:"'Playfair Display',serif", fontSize:16, fontWeight:700, color:"#831843" }}>
+                          ← Working at <span style={{ color:"#BE185D" }}>{g.branch}</span>
+                          {r && <span style={{ background:r.bg, color:r.color, fontSize:10, fontWeight:800, padding:"2px 8px", borderRadius:999, letterSpacing:"0.06em" }}>{r.short.toUpperCase()}</span>}
+                          <span style={{ marginLeft:"auto", fontSize:11, fontWeight:600, color:"#BE185D" }}>{g.loans.length} {g.loans.length === 1 ? "guest" : "guests"}</span>
+                        </div>
+                        <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+                          <thead>
+                            <tr style={{ background:"#fff", color:"#831843", fontWeight:700, fontSize:11, letterSpacing:"0.06em", textTransform:"uppercase" }}>
+                              <th style={{ textAlign:"left", padding:"8px 14px", borderTop:"1px solid #FBCFE8" }}>Tech</th>
+                              <th style={{ textAlign:"left", padding:"8px 14px", borderTop:"1px solid #FBCFE8" }}>From</th>
+                              <th style={{ textAlign:"left", padding:"8px 14px", borderTop:"1px solid #FBCFE8" }}>Logged by</th>
+                              <th style={{ textAlign:"left", padding:"8px 14px", borderTop:"1px solid #FBCFE8" }}>Note</th>
+                              <th style={{ textAlign:"right", padding:"8px 14px", borderTop:"1px solid #FBCFE8" }}>Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {g.loans.map(l => (
+                              <tr key={l._id} style={{ borderTop:"1px solid #FCE7F3" }}>
+                                <td style={{ padding:"9px 14px" }}>
+                                  <span style={{ fontFamily:"monospace", color:"#9ca3af", fontSize:11, marginRight:8 }}>{l.ec}</span>
+                                  <span style={{ fontWeight:600, color:"#111827" }}>{l.name || "(no name)"}</span>
+                                </td>
+                                <td style={{ padding:"9px 14px", color:"#374151" }}>📍 {l.fromBranch}</td>
+                                <td style={{ padding:"9px 14px", color:"#6b7280", fontSize:12 }}>
+                                  {l.createdBy || "—"}{l.createdAt ? <span style={{ marginLeft:6, color:"#9ca3af" }}>{fmtTime(l.createdAt)}</span> : null}
+                                </td>
+                                <td style={{ padding:"9px 14px", color:"#6b7280", fontSize:12, maxWidth:240, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={l.note || ""}>{l.note || "—"}</td>
+                                <td style={{ padding:"9px 14px", textAlign:"right", whiteSpace:"nowrap" }}>
+                                  <button onClick={()=>setLoanModal({ ...l })}
+                                    style={{ background:"#f3f4f6", color:"#374151", border:"none", borderRadius:7, padding:"6px 11px", cursor:"pointer", fontSize:11, fontWeight:700, marginRight:6 }}
+                                  >Edit</button>
+                                  <button onClick={()=>cancelLoan(l._id)}
+                                    style={{ background:"#fff", color:"#b91c1c", border:"1px solid #fecaca", borderRadius:7, padding:"6px 11px", cursor:"pointer", fontSize:11, fontWeight:700 }}
+                                  >Cancel loan</button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          );
+        })()}
+
+        {/* ── LOAN MODAL ── pick tech + receiving branch + optional note */}
+        {loanModal && (() => {
+          const m = loanModal;
+          const set = (k, v) => setLoanModal({ ...m, [k]: v });
+          // Eligible pool: active, on-site staff. Exclude maternity,
+          // unpaid-legal, and anyone already off-boarded with a past leftDate.
+          const todayPool = (enriched || []).filter(s =>
+            s && s.ec && /^[BT]/.test(s.ec) &&
+            !s.onMat && !s.onUnpaidLegal &&
+            !(s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft > 0)
+          );
+          const selected = m.ec ? todayPool.find(p => p.ec === m.ec) : null;
+          // When a tech is picked, fromBranch is locked to their home.
+          const fromBranch = selected ? (selected.branch || "") : (m.fromBranch || "");
+          // toBranch options: every other branch.
+          const toOptions = SALONS.filter(s => s.name !== fromBranch);
+          // Already-on-leave check for the chosen date.
+          const onLeaveBlocker = (() => {
+            if (!m.ec || !m.date) return null;
+            const lv = (leaveRecs || []).find(L => L && L.ec === m.ec && m.date >= L.startDate && m.date <= L.endDate);
+            return lv || null;
+          })();
+          const existingForDay = m.ec && m.date
+            ? (techLoans || []).find(l => l && l.ec === m.ec && l.date === m.date && l._id !== m._id)
+            : null;
+          return (
+            <div onClick={()=>setLoanModal(null)} style={{ position:"fixed", inset:0, background:"rgba(17,24,39,0.55)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:120 }}>
+              <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:16, padding:"22px 26px", width:"min(540px, 92vw)", maxHeight:"90vh", overflowY:"auto", boxShadow:"0 10px 40px rgba(0,0,0,0.25)" }}>
+                <div style={{ fontFamily:"'Playfair Display',serif", fontSize:20, fontWeight:700, color:"#831843", marginBottom:6 }}>🔀 Loan a tech for the day</div>
+                <div style={{ fontSize:11, color:"#6b7280", marginBottom:14 }}>Records a one-day move. Receiving branch's kiosk will let them clock in; home kiosk will block them.</div>
+
+                <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Nail tech *</label>
+                <div style={{ marginBottom:12 }}>
+                  <StaffPicker
+                    people={todayPool}
+                    valueEc={m.ec}
+                    onChange={(ec) => {
+                      const p = todayPool.find(x => x.ec === ec);
+                      setLoanModal({ ...m, ec, name: (p && p.name) || "", fromBranch: (p && p.branch) || "" });
+                    }}
+                    placeholder="Search by name or EC…"
+                  />
+                </div>
+
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:12 }}>
+                  <div>
+                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>From (home)</label>
+                    <input type="text" readOnly value={fromBranch || "—"} style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit", background:"#f9fafb", color:"#374151" }} />
+                  </div>
+                  <div>
+                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Working at *</label>
+                    <select value={m.toBranch || ""} onChange={e=>set("toBranch", e.target.value)} disabled={!m.ec}
+                      style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit", background: m.ec ? "#fff" : "#f3f4f6" }}>
+                      <option value="">— pick branch —</option>
+                      {toOptions.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Date</label>
+                <input type="date" value={m.date || ""} onChange={e=>set("date", e.target.value)} style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit", marginBottom:12 }} />
+
+                <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Note (optional)</label>
+                <textarea rows={2} value={m.note || ""} onChange={e=>set("note", e.target.value)} placeholder='e.g. "Cover for Brita who is sick"' style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:13, fontFamily:"inherit", marginBottom:12, resize:"vertical" }} />
+
+                {/* Inline warnings */}
+                {onLeaveBlocker && (
+                  <div style={{ background:"#fef2f2", border:"1px solid #fecaca", borderRadius:8, padding:"9px 12px", fontSize:12, color:"#7f1d1d", marginBottom:10 }}>
+                    ⚠ This tech is on leave on {m.date} ({onLeaveBlocker.startDate} → {onLeaveBlocker.endDate}). Cancel their leave first or pick another day.
+                  </div>
+                )}
+                {existingForDay && (
+                  <div style={{ background:"#fef3c7", border:"1px solid #fde68a", borderRadius:8, padding:"9px 12px", fontSize:12, color:"#78350f", marginBottom:10 }}>
+                    Heads-up: there's already a loan for {selected ? selected.name : m.ec} on this date ({existingForDay.fromBranch} → {existingForDay.toBranch}). Saving will replace it.
+                  </div>
+                )}
+
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8 }}>
+                  {m._id ? (
+                    <button onClick={()=>{ if (window.confirm("Cancel this loan?")) { cancelLoan(m._id); setLoanModal(null); } }}
+                      style={{ background:"#fff", color:"#b91c1c", border:"1px solid #fecaca", borderRadius:8, padding:"9px 14px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                    >Cancel loan</button>
+                  ) : <span />}
+                  <div style={{ display:"flex", gap:8 }}>
+                    <button onClick={()=>setLoanModal(null)}
+                      style={{ background:"#f3f4f6", color:"#374151", border:"none", borderRadius:8, padding:"9px 16px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                    >Close</button>
+                    <button
+                      disabled={!m.ec || !m.toBranch || !m.date || !!onLeaveBlocker || fromBranch === m.toBranch}
+                      onClick={()=>saveLoan({ ...m, fromBranch })}
+                      style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:8, padding:"9px 18px", cursor:"pointer", fontSize:12, fontWeight:700, opacity: (!m.ec || !m.toBranch || !m.date || !!onLeaveBlocker || fromBranch === m.toBranch) ? 0.5 : 1 }}
+                    >{m._id ? "Save changes" : "Log borrow"}</button>
+                  </div>
+                </div>
               </div>
             </div>
           );
