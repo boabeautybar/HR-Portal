@@ -382,15 +382,27 @@
              '</div>';
     }
 
+    // Split active and leavers further by role (managers vs nail techs)
+    // so each list is grouped in the kiosk view. role_type === "manager"
+    // is the canonical flag; everything else is treated as a nail tech.
+    function isManager(s) { return s && s.role_type === "manager"; }
+    var techsActive    = activeStaff.filter(function (s) { return !isManager(s); });
+    var managersActive = activeStaff.filter(isManager);
+    var techsLeft      = leftStaff.filter(function (s) { return !isManager(s); });
+    var managersLeft   = leftStaff.filter(isManager);
+
+    function section(title, rows, leftMode) {
+      if (rows.length === 0) return "";
+      var cls = leftMode ? "staff-section-head staff-section-head-left" : "staff-section-head";
+      return '<div class="' + cls + '">' + title + ' · ' + rows.length + '</div>' +
+             rows.map(function (s) { return renderRow(s, leftMode); }).join("");
+    }
+
     var html = "";
-    if (activeStaff.length > 0) {
-      html += '<div class="staff-section-head">Current staff · ' + activeStaff.length + '</div>';
-      html += activeStaff.map(function (s) { return renderRow(s, false); }).join("");
-    }
-    if (leftStaff.length > 0) {
-      html += '<div class="staff-section-head staff-section-head-left">👋 Left this month · ' + leftStaff.length + '</div>';
-      html += leftStaff.map(function (s) { return renderRow(s, true); }).join("");
-    }
+    html += section("💅 Nail techs", techsActive, false);
+    html += section("👔 Managers",   managersActive, false);
+    html += section("👋 Nail techs · left this month", techsLeft,    true);
+    html += section("👋 Managers · left this month",   managersLeft, true);
     listEl.innerHTML = html;
   }
 
