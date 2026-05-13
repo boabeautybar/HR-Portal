@@ -317,14 +317,50 @@
       listEl.innerHTML = '<div class="empty">No staff in this branch yet. Add them in the HR portal.</div>';
       return;
     }
-    listEl.innerHTML = staff.map(function (s) {
-      return '<div class="staff-row' + (s.active ? "" : " staff-inactive") + '" data-id="' + s.id + '">' +
+
+    // Split current staff from those who've left. Leavers go in their own
+    // greyed section at the bottom, sorted by most-recent leave date so
+    // the manager can see who walked out last. Staff with active=false but
+    // no left_date (legacy / manually deactivated) still surface there so
+    // they don't silently vanish from the kiosk's view of the branch.
+    var activeStaff = [];
+    var leftStaff   = [];
+    staff.forEach(function (s) {
+      if (s.active) activeStaff.push(s);
+      else          leftStaff.push(s);
+    });
+    leftStaff.sort(function (a, b) {
+      var ad = a.left_date || "", bd = b.left_date || "";
+      if (ad !== bd) return bd.localeCompare(ad);
+      return (a.name || "").localeCompare(b.name || "");
+    });
+
+    function renderRow(s, leftMode) {
+      var classes = "staff-row" + (s.active ? "" : " staff-inactive") + (leftMode ? " staff-row-left" : "");
+      var trailing = "";
+      if (leftMode) {
+        trailing = s.left_date
+          ? ' <span class="pill pill-mute">👋 Left ' + esc(fmtDate(s.left_date)) + '</span>'
+          : ' <span class="pill pill-mute">👋 Left company</span>';
+      }
+      return '<div class="' + classes + '" data-id="' + s.id + '">' +
                '<div class="staff-row-main">' +
-                 '<div class="staff-name">' + esc(s.name) + (s.active ? "" : ' <span class="pill pill-mute">inactive</span>') + '</div>' +
+                 '<div class="staff-name">' + esc(s.name) + trailing + '</div>' +
                  '<div class="staff-code">' + (s.employee_code ? esc(s.employee_code) : "—") + '</div>' +
                '</div>' +
              '</div>';
-    }).join("");
+    }
+
+    var html = "";
+    if (activeStaff.length > 0) {
+      html += '<div class="staff-section-head">Current staff · ' + activeStaff.length + '</div>';
+      html += activeStaff.map(function (s) { return renderRow(s, false); }).join("");
+    }
+    if (leftStaff.length > 0) {
+      html += '<div class="staff-section-head staff-section-head-left">👋 Left the company · ' + leftStaff.length + '</div>';
+      html += leftStaff.map(function (s) { return renderRow(s, true); }).join("");
+    }
+    listEl.innerHTML = html;
   }
 
   // ---------------- Today's Check-ins ----------------
