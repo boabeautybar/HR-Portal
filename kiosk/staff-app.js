@@ -424,6 +424,166 @@
   // through its sync shim, so totals on the HR Attendance tab update.
   var _dlyCurrentDate = null;
 
+  // ── Borrow Tech (walk-in flow) ─────────────────────────────────────────
+  // Opened from the Daily Check-in toolbar. Loads every active tech across
+  // branches PLUS today's tech-loans + today's schedule grids per branch,
+  // then filters the candidate pool to techs who are:
+  //   - based at a different branch than this kiosk
+  //   - scheduled to WORK today at their home branch (W / WL / E)
+  //   - not already loaned in to this branch today
+  // Picking a row writes a one-day loan record and returns to the check-in
+  // page, where the guest now appears in the roster (PR #70 logic).
+  async function renderBorrowTech() {
+    setSublabel("Borrow Tech");
+    var today = new Date();
+    var todayIso  = window.APP_DATA ? window.APP_DATA.isoDate(today)
+                                     : (today.getFullYear() + "-" + String(today.getMonth()+1).padStart(2,"0") + "-" + String(today.getDate()).padStart(2,"0"));
+    var todayLbl  = today.toLocaleDateString("en-ZA", { weekday: "long", day: "2-digit", month: "long" });
+    var thisBranch = (window.APP_CONFIG && window.APP_CONFIG.branchName) || "";
+
+    setMain(
+      '<div class="panel">' +
+        '<div class="panel-head">' +
+          '<h2>🔀 Borrow a Tech for Today</h2>' +
+          '<button class="link-btn link-btn-dark" id="bt-back">← Back to check-in</button>' +
+        '</div>' +
+        '<div class="dly-sub">' + esc(todayLbl) + ' · ' + esc((window.APP_CONFIG && window.APP_CONFIG.branchDisplayName) || thisBranch) + '</div>' +
+        '<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:12px;padding:12px 14px;margin:12px 0;font-size:12px;color:#78350F;line-height:1.5">' +
+          'A tech from another store working here today? Only staff who are <b>scheduled to work today</b> at their home branch can be borrowed. ' +
+          'Hours stay with their home branch for payroll; this kiosk records their attendance.' +
+        '</div>' +
+        '<div id="bt-today-strip" style="font-size:12px;color:var(--gray-600);margin-bottom:10px"></div>' +
+        '<input id="bt-search" type="search" autocomplete="off" placeholder="Search by name or EC…" ' +
+          'class="input" style="padding:11px 14px;font-size:15px;border:2px solid var(--pink-200);border-radius:12px;margin-bottom:10px">' +
+        '<div id="bt-results" style="display:flex;flex-direction:column;gap:8px">Loading staff list…</div>' +
+      '</div>'
+    );
+    document.getElementById("bt-back").onclick = function () { renderCheckin(); };
+
+    if (!window.APP_DATA || !window.APP_DATA.isConfigured()) {
+      document.getElementById("bt-results").innerHTML = configMissingHtml();
+      return;
+    }
+
+    // The tech-schedule cycle for today (END-month convention; matches the
+    // boa_sched_<branch>_<ym> key format).
+    var schedYm = window.APP_DATA.ymForDate(today);
+    var dayKey  = String(today.getDate());
+
+    var allStaff = [];
+    var loansToday = [];
+    var schedByBranch = {};
+    try {
+      var loaded = await Promise.all([
+        window.APP_DATA.listStaffAllBranches(),
+        window.APP_DATA.listTechLoans(todayIso)
+      ]);
+      allStaff = loaded[0] || [];
+      loansToday = loaded[1] || [];
+      var branchesToCheck = {};
+      allStaff.forEach(function (s) { if (s && s.branch && s.branch !== thisBranch) branchesToCheck[s.branch] = true; });
+      schedByBranch = await window.APP_DATA.getSchedulesForBranches(Object.keys(branchesToCheck), schedYm);
+    } catch (e) {
+      document.getElementById("bt-results").innerHTML =
+        '<div style="color:#7f1d1d;padding:14px">Could not load: ' + esc(String((e && e.message) || e)) + '</div>';
+      return;
+    }
+
+    // 'Already here today' strip
+    var incomingToday = loansToday.filter(function (l) { return l && l.toBranch === thisBranch && l.fromBranch !== thisBranch; });
+    var stripEl = document.getElementById("bt-today-strip");
+    if (incomingToday.length > 0) {
+      stripEl.innerHTML =
+        '<b>Already here today (' + incomingToday.length + '):</b> ' +
+        incomingToday.map(function (l) {
+          return '<span style="display:inline-block;background:#FEF3C7;color:#78350F;border:1px solid #FDE68A;border-radius:99px;padding:2px 9px;margin:2px 4px 2px 0;font-weight:700;font-size:11px">' +
+            esc(l.name || l.ec) + ' ← ' + esc(l.fromBranch || "") + '</span>';
+        }).join("");
+    } else {
+      stripEl.innerHTML = '<span style="font-style:italic;color:var(--gray-500)">No one borrowed in yet today.</span>';
+    }
+
+    // Eligibility: another branch + scheduled to WORK today at home + not already loaned in here.
+    var alreadyIncomingEcs = {};
+    incomingToday.forEach(function (l) { alreadyIncomingEcs[l.ec] = true; });
+    var eligible = allStaff.filter(function (s) {
+      if (!s || !s.employee_code || !s.branch) return false;
+      if (s.branch === thisBranch) return false;
+      if (alreadyIncomingEcs[s.employee_code]) return false;
+      var grid = schedByBranch[s.branch];
+      if (!grid) return false;
+      var v = grid[s.employee_code] && grid[s.employee_code][dayKey];
+      // W = working, WL = working late, E = extra day
+      return v === "W" || v === "WL" || v === "E";
+    });
+
+    var inp = document.getElementById("bt-search");
+    var resultsEl = document.getElementById("bt-results");
+
+    function renderResults() {
+      var q = (inp.value || "").trim().toLowerCase();
+      var matches = (q === "") ? eligible : eligible.filter(function (s) {
+        return (s.name || "").toLowerCase().indexOf(q) !== -1 ||
+               (s.employee_code || "").toLowerCase().indexOf(q) !== -1;
+      });
+      matches = matches.slice(0, 50);
+      if (matches.length === 0) {
+        resultsEl.innerHTML = '<div style="color:var(--gray-500);font-style:italic;padding:14px;text-align:center">' +
+          (q === "" ? "No staff are scheduled to work elsewhere today, so nobody is eligible to borrow." : "No matches for &quot;" + esc(q) + "&quot; among scheduled techs.") +
+          '</div>';
+        return;
+      }
+      resultsEl.innerHTML = matches.map(function (s) {
+        return (
+          '<div class="bt-row" data-ec="' + esc(s.employee_code) + '" data-name="' + esc(s.name || "") + '" data-branch="' + esc(s.branch || "") + '" ' +
+              'style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:#fff;border:1px solid var(--pink-100);border-radius:12px">' +
+            '<div style="flex:1;min-width:0">' +
+              '<div style="font-weight:700;color:var(--pink-900);font-size:14px">' + esc(s.name || "(no name)") + '</div>' +
+              '<div style="font-size:11px;color:var(--gray-500);margin-top:2px">' +
+                '<span style="font-family:monospace">' + esc(s.employee_code || "—") + '</span> · 📍 ' + esc(s.branch || "—") +
+              '</div>' +
+            '</div>' +
+            '<button type="button" class="bt-btn" style="background:var(--pink-700);color:#fff;border:none;border-radius:8px;padding:9px 16px;font-weight:700;font-size:13px;cursor:pointer">Borrow</button>' +
+          '</div>'
+        );
+      }).join("");
+    }
+    renderResults();
+    inp.addEventListener("input", renderResults);
+
+    resultsEl.addEventListener("click", async function (e) {
+      var btn = e.target.closest && e.target.closest(".bt-btn");
+      if (!btn) return;
+      var row = btn.closest(".bt-row"); if (!row) return;
+      var ec = row.dataset.ec || "";
+      var name = row.dataset.name || "";
+      var branch = row.dataset.branch || "";
+      if (!ec) return;
+      var ok = window.confirm("Borrow " + (name || ec) + " from " + branch + " for today?\n\nShe'll appear on today's roster here; her hours stay attributed to " + branch + ".");
+      if (!ok) return;
+      btn.disabled = true; btn.textContent = "Saving…";
+      var loan = {
+        _id: "ln_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7),
+        ec: ec, name: name, date: todayIso,
+        fromBranch: branch, toBranch: thisBranch,
+        note: "Walk-in via " + ((window.APP_CONFIG && window.APP_CONFIG.branchDisplayName) || thisBranch) + " kiosk",
+        createdBy: "kiosk:" + thisBranch,
+        createdAt: new Date().toISOString()
+      };
+      try {
+        await window.APP_DATA.saveTechLoan(loan);
+        // Bounce back to the daily check-in - the guest now lands in the
+        // roster via the PR #70 categorizeStaff hook.
+        renderCheckin();
+      } catch (err) {
+        btn.disabled = false; btn.textContent = "Borrow";
+        alert("Could not save loan: " + ((err && err.message) || err));
+      }
+    });
+
+    setTimeout(function () { try { inp.focus(); } catch (_) {} }, 50);
+  }
+
   async function renderCheckin() {
     setSublabel("Daily Check-in");
     setMain(
@@ -441,6 +601,9 @@
             '<button class="dly-nav-btn" data-act="next" type="button">›</button>' +
           '</div>' +
           '<div class="dly-status-badge" id="dly-status-badge"></div>' +
+          '<button id="dly-borrow-btn" type="button" title="Borrow a tech from another branch for today" ' +
+            'style="margin-left:auto;background:#fff;color:var(--pink-700);border:2px solid var(--pink-200);border-radius:10px;padding:8px 14px;font-weight:700;font-size:13px;cursor:pointer">' +
+            '🔀 Borrow Tech</button>' +
         '</div>' +
 
         '<div class="dly-progress" id="dly-progress"></div>' +
@@ -451,6 +614,7 @@
       '</div>'
     );
     document.getElementById("back-home").onclick = function () { _backHandler(); };
+    document.getElementById("dly-borrow-btn").onclick = function () { renderBorrowTech(); };
 
     if (!window.APP_DATA || !window.APP_DATA.isConfigured()) {
       document.getElementById("dly-list").innerHTML = configMissingHtml();

@@ -733,6 +733,33 @@
     });
     return { grid: combined, ym: ym };
   }
+  // Batched cross-branch schedule load: { branchName -> merged grid }.
+  // Used by the manager "Borrow Tech" picker to filter the candidate pool
+  // to only techs who are scheduled to work TODAY at their home branch.
+  async function getSchedulesForBranches(branches, ym) {
+    if (!branches || !branches.length) return {};
+    var c = client(); if (!c) return {};
+    var keys = [];
+    branches.forEach(function (br) {
+      keys.push("boa_sched_"    + br + "_" + ym);
+      keys.push("boa_mgrsched_" + br + "_" + ym);
+    });
+    var res = await c.from("app_state").select("key,value").in("key", keys);
+    if (res.error) { console.error("getSchedulesForBranches:", res.error); return {}; }
+    var byBranch = {};
+    (res.data || []).forEach(function (row) {
+      var k = row.key || "";
+      var m = k.match(/^(boa_(?:mgr)?sched)_(.+?)_(\d{4}-\d{2})$/);
+      if (!m) return;
+      var br = m[2];
+      var grid = (row.value && row.value.grid) || {};
+      byBranch[br] = byBranch[br] || {};
+      Object.keys(grid).forEach(function (ec) {
+        byBranch[br][ec] = grid[ec];
+      });
+    });
+    return byBranch;
+  }
 
   // ---------- News ----------
   async function listNews() {
@@ -966,7 +993,7 @@
     deactivateStaff: deactivateStaff,
     lastClockinToday: lastClockinToday, addClockin: addClockin, listTodayClockins: listTodayClockins,
     todaysCashup: todaysCashup, addCashup: addCashup, listRecentCashups: listRecentCashups,
-    currentSchedYm: currentSchedYm, periodLabel: periodLabel, periodDays: periodDays, getSchedule: getSchedule,
+    currentSchedYm: currentSchedYm, periodLabel: periodLabel, periodDays: periodDays, getSchedule: getSchedule, getSchedulesForBranches: getSchedulesForBranches,
     ymForDate: ymForDate, endOfSchedulePeriod: endOfSchedulePeriod,
     getAttendance: getAttendance, setAttendanceStatus: setAttendanceStatus,
     getSwaps: getSwaps, recordSwap: recordSwap, undoSwap: undoSwap,
