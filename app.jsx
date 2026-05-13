@@ -12233,12 +12233,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   {/* Prev / next day arrows for quick navigation, plus a
                       'Today' chip that's always visible and highlights when
                       the picker IS on today. The native date input still
-                      handles arbitrary date jumps. */}
+                      handles arbitrary date jumps. Date math uses Date.UTC
+                      so SA's UTC+2 offset doesn't make the arrows skip days
+                      (the old `new Date('YYYY-MM-DD' + 'T00:00:00')` parsed
+                      as local time then toISOString shifted it backwards). */}
                   <button
                     onClick={()=>{
-                      const d = new Date(date + "T00:00:00");
-                      d.setDate(d.getDate() - 1);
-                      setMovementsDate(d.toISOString().slice(0, 10));
+                      const [yy, mm, dd] = date.split("-").map(Number);
+                      const dt = new Date(Date.UTC(yy, mm - 1, dd));
+                      dt.setUTCDate(dt.getUTCDate() - 1);
+                      const p = n => String(n).padStart(2, "0");
+                      setMovementsDate(dt.getUTCFullYear() + "-" + p(dt.getUTCMonth() + 1) + "-" + p(dt.getUTCDate()));
                     }}
                     title="Previous day"
                     style={{ background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, padding:"7px 11px", cursor:"pointer", fontSize:14, fontWeight:700, lineHeight:1 }}
@@ -12251,9 +12256,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   />
                   <button
                     onClick={()=>{
-                      const d = new Date(date + "T00:00:00");
-                      d.setDate(d.getDate() + 1);
-                      setMovementsDate(d.toISOString().slice(0, 10));
+                      const [yy, mm, dd] = date.split("-").map(Number);
+                      const dt = new Date(Date.UTC(yy, mm - 1, dd));
+                      dt.setUTCDate(dt.getUTCDate() + 1);
+                      const p = n => String(n).padStart(2, "0");
+                      setMovementsDate(dt.getUTCFullYear() + "-" + p(dt.getUTCMonth() + 1) + "-" + p(dt.getUTCDate()));
                     }}
                     title="Next day"
                     style={{ background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, padding:"7px 11px", cursor:"pointer", fontSize:14, fontWeight:700, lineHeight:1 }}
