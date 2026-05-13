@@ -633,7 +633,13 @@
       var attSt = attGrid[s.employee_code] && attGrid[s.employee_code][dayKey];
       var isScheduled      = (schSt === "W" || schSt === "WL" || schSt === "E");
       var isSameDayCoverer = (attSt === "swap_i" || hasExtraDayFor(s.employee_code));
-      if (isScheduled || isSameDayCoverer) {
+      // Guests loaned in from another branch are unconditionally in today's
+      // roster. Their schedule entry lives in their home branch's grid so
+      // the isScheduled test wouldn't catch them here. Loaned-out staff
+      // also stay on their home roster (locked) so the manager can see
+      // where they are even if the schedule didn't put them at work today.
+      var isLoanInvolved   = !!(s._guest || s._loanedOut);
+      if (isScheduled || isSameDayCoverer || isLoanInvolved) {
         rosterMap[s.id] = { staff: s, schedStatus: schSt || null, current: attSt || null };
       }
     });
@@ -879,17 +885,32 @@
           '</select>';
       }
 
-      return '<div class="dly-row' + (hasStatus ? ' dly-confirmed' : '') + (isLocked ? ' dly-locked' : '') + '" data-ec="' + esc(s.employee_code) + '" data-id="' + s.id + '" data-name="' + esc(s.name) + '">' +
+      // Loaned-out staff stay on the home roster so the manager can see at
+      // a glance where they are - but they don't need a status; clockin is
+      // recorded by the receiving branch's kiosk. Lock the row, replace the
+      // status actions with a friendly note, and chip the destination.
+      var loanedOut = !!s._loanedOut;
+      var loanedOutChip = loanedOut
+        ? ' <span class="dly-loaned-chip" title="Working at ' + esc(s._awayAt || "") + ' today">→ ' + esc(s._awayAt || "") + '</span>'
+        : '';
+      var rowActionsHtml = loanedOut
+        ? '<div class="dly-loaned-note">Working at ' + esc(s._awayAt || "") + ' today · no action needed</div>'
+        : actionsHtml;
+      var rowSwapHtml = loanedOut ? '' : swapAreaHtml;
+      return '<div class="dly-row' + (hasStatus ? ' dly-confirmed' : '') + ((isLocked || loanedOut) ? ' dly-locked' : '') + (loanedOut ? ' dly-row-loaned' : '') + '" data-ec="' + esc(s.employee_code) + '" data-id="' + s.id + '" data-name="' + esc(s.name) + '">' +
         '<div class="dly-row-info">' +
-          '<div class="dly-checkmark">' + (hasStatus ? '✓' : '') + '</div>' +
+          '<div class="dly-checkmark">' + (loanedOut ? '→' : (hasStatus ? '✓' : '')) + '</div>' +
           '<div class="dly-row-text">' +
-            '<div class="dly-name">' + esc(s.name) + '</div>' +
+            '<div class="dly-name">' + esc(s.name) +
+              (s._guest ? ' <span class="dly-guest-chip" title="Loaned in from ' + esc(s._homeBranch || "") + '">← ' + esc(s._homeBranch || "") + '</span>' : '') +
+              loanedOutChip +
+            '</div>' +
             '<div class="dly-code">' + esc(s.employee_code) + (rosterTag ? ' · ' + rosterTag : '') + '</div>' +
             (noteLine ? '<div class="dly-note">' + noteLine + '</div>' : '') +
           '</div>' +
         '</div>' +
-        '<div class="dly-actions">' + actionsHtml + '</div>' +
-        swapAreaHtml +
+        '<div class="dly-actions">' + rowActionsHtml + '</div>' +
+        rowSwapHtml +
       '</div>';
     }).join("");
 
