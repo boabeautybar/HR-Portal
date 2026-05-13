@@ -104,9 +104,10 @@
     ]);
     var staff = results[0], matRecs = results[1], leaveRecs = results[2], loansToday = results[3];
 
-    // Loans: ECs leaving us today (loaned out) get filtered out of the home
-    // list. ECs arriving from another branch get fetched, tagged and merged
-    // in - so the daily roster reflects who's actually on-site today.
+    // Loans: ECs leaving us today (loaned out) stay on the home roster so
+    // the manager knows where they are - tagged with _loanedOut / _awayAt
+    // and rendered with a chip + locked actions. ECs arriving from another
+    // branch get fetched, tagged with _guest / _homeBranch, and merged in.
     var loanedOutEcs = {};   // ec -> loan record (this branch is `fromBranch`)
     var incomingByEc = {};   // ec -> loan record (this branch is `toBranch`)
     loansToday.forEach(function (l) {
@@ -114,7 +115,14 @@
       if (l.fromBranch === thisBranch && l.toBranch && l.toBranch !== thisBranch) loanedOutEcs[l.ec] = l;
       if (l.toBranch === thisBranch && l.fromBranch && l.fromBranch !== thisBranch) incomingByEc[l.ec] = l;
     });
-    staff = staff.filter(function (s) { return !s.employee_code || !loanedOutEcs[s.employee_code]; });
+    staff.forEach(function (s) {
+      var ln = s.employee_code && loanedOutEcs[s.employee_code];
+      if (ln) {
+        s._loanedOut = true;
+        s._awayAt    = ln.toBranch || "";
+        s._loanNote  = ln.note     || "";
+      }
+    });
     var incomingEcs = Object.keys(incomingByEc);
     if (incomingEcs.length > 0) {
       var guests = await _fetchStaffByEcs(incomingEcs);

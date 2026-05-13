@@ -879,19 +879,32 @@
           '</select>';
       }
 
-      return '<div class="dly-row' + (hasStatus ? ' dly-confirmed' : '') + (isLocked ? ' dly-locked' : '') + '" data-ec="' + esc(s.employee_code) + '" data-id="' + s.id + '" data-name="' + esc(s.name) + '">' +
+      // Loaned-out staff stay on the home roster so the manager can see at
+      // a glance where they are - but they don't need a status; clockin is
+      // recorded by the receiving branch's kiosk. Lock the row, replace the
+      // status actions with a friendly note, and chip the destination.
+      var loanedOut = !!s._loanedOut;
+      var loanedOutChip = loanedOut
+        ? ' <span class="dly-loaned-chip" title="Working at ' + esc(s._awayAt || "") + ' today">→ ' + esc(s._awayAt || "") + '</span>'
+        : '';
+      var rowActionsHtml = loanedOut
+        ? '<div class="dly-loaned-note">Working at ' + esc(s._awayAt || "") + ' today · no action needed</div>'
+        : actionsHtml;
+      var rowSwapHtml = loanedOut ? '' : swapAreaHtml;
+      return '<div class="dly-row' + (hasStatus ? ' dly-confirmed' : '') + ((isLocked || loanedOut) ? ' dly-locked' : '') + (loanedOut ? ' dly-row-loaned' : '') + '" data-ec="' + esc(s.employee_code) + '" data-id="' + s.id + '" data-name="' + esc(s.name) + '">' +
         '<div class="dly-row-info">' +
-          '<div class="dly-checkmark">' + (hasStatus ? '✓' : '') + '</div>' +
+          '<div class="dly-checkmark">' + (loanedOut ? '→' : (hasStatus ? '✓' : '')) + '</div>' +
           '<div class="dly-row-text">' +
             '<div class="dly-name">' + esc(s.name) +
               (s._guest ? ' <span class="dly-guest-chip" title="Loaned in from ' + esc(s._homeBranch || "") + '">← ' + esc(s._homeBranch || "") + '</span>' : '') +
+              loanedOutChip +
             '</div>' +
             '<div class="dly-code">' + esc(s.employee_code) + (rosterTag ? ' · ' + rosterTag : '') + '</div>' +
             (noteLine ? '<div class="dly-note">' + noteLine + '</div>' : '') +
           '</div>' +
         '</div>' +
-        '<div class="dly-actions">' + actionsHtml + '</div>' +
-        swapAreaHtml +
+        '<div class="dly-actions">' + rowActionsHtml + '</div>' +
+        rowSwapHtml +
       '</div>';
     }).join("");
 
