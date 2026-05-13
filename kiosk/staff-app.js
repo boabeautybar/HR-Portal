@@ -633,7 +633,13 @@
       var attSt = attGrid[s.employee_code] && attGrid[s.employee_code][dayKey];
       var isScheduled      = (schSt === "W" || schSt === "WL" || schSt === "E");
       var isSameDayCoverer = (attSt === "swap_i" || hasExtraDayFor(s.employee_code));
-      if (isScheduled || isSameDayCoverer) {
+      // Guests loaned in from another branch are unconditionally in today's
+      // roster. Their schedule entry lives in their home branch's grid so
+      // the isScheduled test wouldn't catch them here. Loaned-out staff
+      // also stay on their home roster (locked) so the manager can see
+      // where they are even if the schedule didn't put them at work today.
+      var isLoanInvolved   = !!(s._guest || s._loanedOut);
+      if (isScheduled || isSameDayCoverer || isLoanInvolved) {
         rosterMap[s.id] = { staff: s, schedStatus: schSt || null, current: attSt || null };
       }
     });
