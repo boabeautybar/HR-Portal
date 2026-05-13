@@ -5305,7 +5305,8 @@ const SETTINGS_TABS = [
   { t: "payrollProgress",l: "Payroll Progress",     cat: "Payroll", icon: "📊" },
   { t: "alerts",     l: "Alerts",            cat: "Insights",   icon: "🔔" },
   { t: "activity",   l: "Activity Log",      cat: "Insights",   icon: "📜" },
-  { t: "kioskPins",  l: "Kiosk PINs",        cat: "Admin",      icon: "🔑" }
+  { t: "kioskPins",   l: "Kiosk PINs",       cat: "Admin",      icon: "🔑" },
+  { t: "managerPins", l: "Manager PINs",     cat: "Admin",      icon: "🆔" }
 ];
 const SETTINGS_CATS = ["People", "Operations", "Payroll", "Insights", "Admin"];
 
@@ -5789,6 +5790,44 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [kioskPinsLoaded, setKioskPinsLoaded] = useState(false);
   const [kioskPinReveal, setKioskPinReveal] = useState({}); // branchName -> bool
   const [kioskPinSaving, setKioskPinSaving] = useState(null); // branchName currently being saved
+
+  // Manager personal clock-in PINs (6-digit). State lives in mgrPins already
+  // (loaded as part of loadAll); these are just UI-side toggles for the
+  // admin tab.
+  const [mgrPinReveal, setMgrPinReveal] = useState({}); // ec -> bool
+  const [mgrPinSaving, setMgrPinSaving] = useState(null); // ec currently being saved
+  const [mgrPinFilterBranch, setMgrPinFilterBranch] = useState("all");
+  const resetMgrPin = async (manager) => {
+    if (!manager || !manager.ec) { alert("This manager has no EC — set one in their record first."); return; }
+    const proposed = window.prompt(`New 6-digit clock-in PIN for ${manager.name || manager.ec}:\n(Used in the check-in app to confirm their own attendance. Leave blank to clear.)`, mgrPins[manager.ec] || "");
+    if (proposed === null) return;
+    const trimmed = proposed.trim();
+    if (trimmed !== "" && !/^[0-9]{6}$/.test(trimmed)) { alert("PIN must be exactly 6 digits (or empty to clear)."); return; }
+    if (trimmed !== "" && Object.entries(mgrPins).some(([ec, p]) => ec !== manager.ec && p === trimmed)) {
+      if (!window.confirm("That PIN is already used by another manager. Use it anyway?")) return;
+    }
+    try {
+      setMgrPinSaving(manager.ec);
+      const next = { ...mgrPins };
+      if (trimmed === "") delete next[manager.ec];
+      else                next[manager.ec] = trimmed;
+      await window.BOA_DB.saveManagerPins(next);
+      setMgrPins(next);
+      setMgrPinReveal(r => ({ ...r, [manager.ec]: trimmed !== "" }));
+      if (window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY(
+          trimmed === "" ? "Cleared manager clock-in PIN" : "Reset manager clock-in PIN",
+          (manager.name || "") + " · " + manager.ec,
+          manager.branch || "",
+          "Admin"
+        );
+      }
+    } catch (e) {
+      alert("Could not save PIN: " + (e.message || e));
+    } finally {
+      setMgrPinSaving(null);
+    }
+  };
   useEffect(() => {
     if (!window.BOA_DB || !window.BOA_DB.loadKioskPins) return;
     if (tab !== "kioskPins" && kioskPinsLoaded) return;
@@ -7257,7 +7296,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 key:"Admin", icon:"🛡️", title:"Admin",
                 color:{ bg:"#FEF3C7", bgActive:"#FDE68A", ink:"#92400e" },
                 items: [
-                  { t:"settings", l:"⚙️ Settings" }
+                  { t:"kioskPins",   l:"🔑 Kiosk PINs"   },
+                  { t:"managerPins", l:"🆔 Manager PINs" },
+                  { t:"settings",    l:"⚙️ Settings"     }
                 ]
               }] : [])
             ];
@@ -12775,6 +12816,129 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </tbody>
                 </table>
               </div>
+            </>
+          );
+        })()}
+
+        {/* ── MANAGER PINS (ADMIN) ── 6-digit clock-in PINs each manager
+            types into the check-in app to confirm their own attendance.
+            Stored in app_state["boa_mgr_pins_v1"]; this view lets admins
+            see who has a PIN set and reset / clear it without diving into
+            the per-branch Manage panel on the Locations tab. */}
+        {tab==="managerPins" && (() => {
+          const PINK = { ink:"#831843", accent:"#BE185D", soft:"#FBCFE8", softer:"#FCE7F3" };
+          const activeMgrs = (managers || []).filter(m => !m.transferring || m.transferring); // include everyone with a record
+          const filtered = mgrPinFilterBranch === "all"
+            ? activeMgrs
+            : activeMgrs.filter(m => (m.branch || "") === mgrPinFilterBranch);
+          // Group by branch so the table reads naturally.
+          const byBranch = SALONS.map(s => ({
+            branch: s.name,
+            region: s.region,
+            mgrs: filtered.filter(m => m.branch === s.name)
+          })).filter(g => g.mgrs.length > 0);
+          const unassigned = filtered.filter(m => !SALONS.some(s => s.name === m.branch));
+          if (unassigned.length > 0) byBranch.push({ branch: "Unassigned", region: null, mgrs: unassigned });
+          const withPin = activeMgrs.filter(m => mgrPins[m.ec]).length;
+          return (
+            <>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
+                <div>
+                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:PINK.ink }}>🆔 Manager PINs</div>
+                  <div style={{ fontSize:12, color:"#6b7280", marginTop:2 }}>6-digit clock-in PINs each manager uses in the check-in app to confirm their own attendance.</div>
+                </div>
+                <div style={{ fontSize:11, color:"#9ca3af" }}>{withPin} / {activeMgrs.length} have a PIN set</div>
+              </div>
+
+              <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:14 }}>
+                <button onClick={()=>setMgrPinFilterBranch("all")}
+                  style={{ background: mgrPinFilterBranch==="all" ? PINK.accent : PINK.softer, color: mgrPinFilterBranch==="all" ? "#fff" : PINK.ink, border:`1px solid ${PINK.soft}`, borderRadius:999, padding:"6px 14px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                >All branches ({activeMgrs.length})</button>
+                {SALONS.filter(s => activeMgrs.some(m => m.branch === s.name)).map(s => {
+                  const c = activeMgrs.filter(m => m.branch === s.name).length;
+                  const active = mgrPinFilterBranch === s.name;
+                  return (
+                    <button key={s.name} onClick={()=>setMgrPinFilterBranch(s.name)}
+                      style={{ background: active ? PINK.accent : "#fff", color: active ? "#fff" : PINK.ink, border:`1px solid ${PINK.soft}`, borderRadius:999, padding:"6px 14px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                    >{s.name} ({c})</button>
+                  );
+                })}
+              </div>
+
+              <div style={{ background:"#fef9c3", border:"1px solid #fde68a", borderRadius:10, padding:"10px 14px", fontSize:12, color:"#78350f", marginBottom:14 }}>
+                <b>Where this PIN is used:</b> Manager opens the kiosk → Clock-in tab → types this 6-digit code to confirm arrival/departure. Different from the 4-digit Kiosk PIN that unlocks the manager dashboard itself.
+              </div>
+
+              {byBranch.length === 0 ? (
+                <div style={{ background:"#FFFFFF", border:`1px dashed ${PINK.soft}`, borderRadius:14, padding:"30px 20px", textAlign:"center", color:"#9F1A4F", fontSize:13 }}>
+                  No managers match this filter.
+                </div>
+              ) : (
+                <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                  {byBranch.map(g => {
+                    const r = g.region && REGIONS ? REGIONS.find(x => x.key === g.region) : null;
+                    return (
+                      <div key={g.branch} style={{ background:"#fff", border:`1px solid ${PINK.soft}`, borderRadius:14, overflow:"hidden" }}>
+                        <div style={{ background:PINK.softer, padding:"10px 16px", display:"flex", alignItems:"center", gap:8, fontFamily:"'Playfair Display',serif", fontSize:16, fontWeight:700, color:PINK.ink }}>
+                          📍 {g.branch}
+                          {r && <span style={{ background:r.bg, color:r.color, fontSize:10, fontWeight:800, padding:"2px 8px", borderRadius:999, letterSpacing:"0.06em" }}>{r.short.toUpperCase()}</span>}
+                          <span style={{ marginLeft:"auto", fontSize:11, fontWeight:600, color:PINK.accent }}>{g.mgrs.length} manager{g.mgrs.length===1?"":"s"}</span>
+                        </div>
+                        <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+                          <thead>
+                            <tr style={{ background:"#fff", color:PINK.ink, fontWeight:700, fontSize:11, letterSpacing:"0.06em", textTransform:"uppercase" }}>
+                              <th style={{ textAlign:"left", padding:"8px 14px", borderTop:`1px solid ${PINK.soft}` }}>Manager</th>
+                              <th style={{ textAlign:"left", padding:"8px 14px", borderTop:`1px solid ${PINK.soft}` }}>EC</th>
+                              <th style={{ textAlign:"left", padding:"8px 14px", borderTop:`1px solid ${PINK.soft}` }}>Role</th>
+                              <th style={{ textAlign:"left", padding:"8px 14px", borderTop:`1px solid ${PINK.soft}` }}>PIN</th>
+                              <th style={{ textAlign:"left", padding:"8px 14px", borderTop:`1px solid ${PINK.soft}` }}>Status</th>
+                              <th style={{ textAlign:"right", padding:"8px 14px", borderTop:`1px solid ${PINK.soft}` }}>Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {g.mgrs.map(m => {
+                              const pin    = mgrPins[m.ec] || "";
+                              const hasPin = !!pin;
+                              const reveal = !!mgrPinReveal[m.ec];
+                              const saving = mgrPinSaving === m.ec;
+                              return (
+                                <tr key={m._id || m.ec} style={{ borderTop:`1px solid ${PINK.soft}` }}>
+                                  <td style={{ padding:"9px 14px", fontWeight:600, color:"#111827" }}>{m.name || <span style={{ color:"#9ca3af", fontStyle:"italic" }}>(no name)</span>}</td>
+                                  <td style={{ padding:"9px 14px", color:"#374151", fontFamily:"'Outfit',monospace", fontSize:12 }}>{m.ec || "—"}</td>
+                                  <td style={{ padding:"9px 14px", color:"#6b7280", fontSize:12 }}>{m.role || "Manager"}</td>
+                                  <td style={{ padding:"9px 14px", fontFamily:"'Outfit',monospace", fontSize:15, fontWeight:700, color:hasPin ? "#111827" : "#9ca3af", letterSpacing:"0.18em" }}>
+                                    {hasPin ? (reveal ? pin : "••••••") : <span style={{ fontSize:11, fontStyle:"italic", color:"#9ca3af", letterSpacing:0 }}>not set</span>}
+                                  </td>
+                                  <td style={{ padding:"9px 14px" }}>
+                                    {hasPin
+                                      ? <span style={{ background:"#dcfce7", color:"#166534", fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:999 }}>PIN set</span>
+                                      : <span style={{ background:"#fef3c7", color:"#7c2d12", fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:999 }}>No PIN</span>}
+                                  </td>
+                                  <td style={{ padding:"9px 14px", textAlign:"right", whiteSpace:"nowrap" }}>
+                                    {hasPin && (
+                                      <button onClick={()=>setMgrPinReveal(prev => ({ ...prev, [m.ec]: !prev[m.ec] }))}
+                                        style={{ background:"#f3f4f6", color:"#374151", border:"none", borderRadius:7, padding:"6px 11px", cursor:"pointer", fontSize:11, fontWeight:700, marginRight:6 }}
+                                      >{reveal ? "Hide" : "Reveal"}</button>
+                                    )}
+                                    {hasPin && reveal && (
+                                      <button onClick={()=>{ try { navigator.clipboard.writeText(pin); } catch (_e) {} }}
+                                        style={{ background:"#f3f4f6", color:"#374151", border:"none", borderRadius:7, padding:"6px 11px", cursor:"pointer", fontSize:11, fontWeight:700, marginRight:6 }}
+                                      >Copy</button>
+                                    )}
+                                    <button onClick={()=>resetMgrPin(m)} disabled={saving || !m.ec}
+                                      style={{ background:PINK.accent, color:"#fff", border:"none", borderRadius:7, padding:"6px 12px", cursor:"pointer", fontSize:11, fontWeight:700, opacity:(saving || !m.ec)?0.6:1 }}
+                                    >{saving ? "Saving…" : (hasPin ? "Reset" : "Set PIN")}</button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </>
           );
         })()}
