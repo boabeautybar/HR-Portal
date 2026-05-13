@@ -10178,6 +10178,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // displays in bold red rather than faded/italic.
             const dayObj = days.find(x => x.d === d);
             if (dayObj && isPostLeftDate(ec, dayObj.ymd)) return true;
+            // Loaned-out days are derived from the loan record (and possibly
+            // mirrored from the receiving branch) - render as a solid override
+            // so the cell isn't italicised like a schedule hint.
+            if (outgoingLoanMap[ec] && outgoingLoanMap[ec][d]) return true;
             const v = attGrid[ec] && attGrid[ec][d];
             return !!v && v.indexOf("~") !== 0;
           };
