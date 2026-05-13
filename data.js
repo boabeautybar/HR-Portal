@@ -847,6 +847,26 @@
     return records;
   }
 
+  // ---------- Unpaid legal-status leave records (boa_unpaid_legal_v1) ----------
+  // Stored as a JSON array on app_state so we don't need a schema migration.
+  // Each record: { _id, ec, name, branch, status, startDate, endDate,
+  //                hearingDate, terminated, notes }
+  // status: "on_leave"   = currently off due to expired/missing documents
+  //         "returned"   = documents received, back at work
+  //         "terminated" = hearing held + contract terminated
+  // Used by the HR portal's "Unpaid Leave (Legal)" admin tab.
+  async function loadUnpaidLegalRecords() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_unpaid_legal_v1").maybeSingle();
+    if (res.error) { console.error("loadUnpaidLegalRecords:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveUnpaidLegalRecords(records) {
+    var res = await sb.from("app_state").upsert({ key: "boa_unpaid_legal_v1", value: records || [] });
+    if (res.error) { console.error("saveUnpaidLegalRecords:", res.error); throw res.error; }
+    return records;
+  }
+
   // ---------- Attendance grid (boa_att_<branch>_<ym>) ----------
   // Same key the check-in kiosk app writes to. Status codes include:
   //   on, late, off, ext, sick_n, sick, frl, al, ph, mat, no, unpaid,
@@ -994,7 +1014,11 @@
 
     // Kiosk PINs (manager-dashboard 4-digit PINs, keyed by branch name)
     loadKioskPins:     loadKioskPins,
-    saveKioskPins:     saveKioskPins
+    saveKioskPins:     saveKioskPins,
+
+    // Unpaid legal-status leave
+    loadUnpaidLegalRecords: loadUnpaidLegalRecords,
+    saveUnpaidLegalRecords: saveUnpaidLegalRecords
   };
 
   // ── Custom locations ─────────────────────────────────────────────────
