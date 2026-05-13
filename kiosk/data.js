@@ -85,6 +85,36 @@
     if (!dateIso) return arr;
     return arr.filter(function (l) { return l && l.date === dateIso; });
   }
+
+  // Save a single tech-loan record. Replaces any existing loan for the same
+  // (ec, date) pair so a tech can't be in two places on the same day. Used by
+  // the manager kiosk "Borrow tech today" flow.
+  async function saveTechLoan(loan) {
+    var c = client(); if (!c) throw new Error("Supabase not configured");
+    if (!loan || !loan.ec || !loan.date || !loan.fromBranch || !loan.toBranch) {
+      throw new Error("Loan needs ec, date, fromBranch and toBranch.");
+    }
+    var read = await c.from("app_state").select("value").eq("key", "boa_tech_loans_v1").maybeSingle();
+    if (read.error) { console.error("saveTechLoan read:", read.error); throw read.error; }
+    var v = read.data && read.data.value;
+    var arr = Array.isArray(v) ? v : [];
+    arr = arr.filter(function (l) { return !(l && l.ec === loan.ec && l.date === loan.date); });
+    arr.push(loan);
+    var wr = await c.from("app_state").upsert({ key: "boa_tech_loans_v1", value: arr });
+    if (wr.error) { console.error("saveTechLoan write:", wr.error); throw wr.error; }
+    return loan;
+  }
+
+  // Active staff across ALL branches (managers excluded). Used by the
+  // "Borrow tech today" picker on the manager kiosk so a visiting tech can
+  // be added regardless of which store she's normally based at.
+  async function listStaffAllBranches() {
+    var c = client(); if (!c) return [];
+    var res = await c.from("staff").select("*").eq("active", true)
+      .order("branch", { ascending: true }).order("name", { ascending: true });
+    if (res.error) { console.error("listStaffAllBranches:", res.error); return []; }
+    return (res.data || []).filter(function (s) { return s.role_type !== "manager"; });
+  }
   async function _fetchStaffByEcs(ecs) {
     if (!ecs || !ecs.length) return [];
     var c = client(); if (!c) return [];
@@ -703,6 +733,33 @@
     });
     return { grid: combined, ym: ym };
   }
+  // Batched cross-branch schedule load: { branchName -> merged grid }.
+  // Used by the manager "Borrow Tech" picker to filter the candidate pool
+  // to only techs who are scheduled to work TODAY at their home branch.
+  async function getSchedulesForBranches(branches, ym) {
+    if (!branches || !branches.length) return {};
+    var c = client(); if (!c) return {};
+    var keys = [];
+    branches.forEach(function (br) {
+      keys.push("boa_sched_"    + br + "_" + ym);
+      keys.push("boa_mgrsched_" + br + "_" + ym);
+    });
+    var res = await c.from("app_state").select("key,value").in("key", keys);
+    if (res.error) { console.error("getSchedulesForBranches:", res.error); return {}; }
+    var byBranch = {};
+    (res.data || []).forEach(function (row) {
+      var k = row.key || "";
+      var m = k.match(/^(boa_(?:mgr)?sched)_(.+?)_(\d{4}-\d{2})$/);
+      if (!m) return;
+      var br = m[2];
+      var grid = (row.value && row.value.grid) || {};
+      byBranch[br] = byBranch[br] || {};
+      Object.keys(grid).forEach(function (ec) {
+        byBranch[br][ec] = grid[ec];
+      });
+    });
+    return byBranch;
+  }
 
   // ---------- News ----------
   async function listNews() {
@@ -931,12 +988,12 @@
     isConfigured: isConfigured,
     branch: branch, branchDisplay: branchDisplay, todayStr: todayStr,
     listStaff: listStaff, listMaternity: listMaternity, listLeaveRecords: listLeaveRecords,
-    listTechLoans: listTechLoans,
+    listTechLoans: listTechLoans, saveTechLoan: saveTechLoan, listStaffAllBranches: listStaffAllBranches,
     categorizeStaff: categorizeStaff, addStaff: addStaff, updateStaff: updateStaff,
     deactivateStaff: deactivateStaff,
     lastClockinToday: lastClockinToday, addClockin: addClockin, listTodayClockins: listTodayClockins,
     todaysCashup: todaysCashup, addCashup: addCashup, listRecentCashups: listRecentCashups,
-    currentSchedYm: currentSchedYm, periodLabel: periodLabel, periodDays: periodDays, getSchedule: getSchedule,
+    currentSchedYm: currentSchedYm, periodLabel: periodLabel, periodDays: periodDays, getSchedule: getSchedule, getSchedulesForBranches: getSchedulesForBranches,
     ymForDate: ymForDate, endOfSchedulePeriod: endOfSchedulePeriod,
     getAttendance: getAttendance, setAttendanceStatus: setAttendanceStatus,
     getSwaps: getSwaps, recordSwap: recordSwap, undoSwap: undoSwap,
