@@ -1,4 +1,4 @@
-const { useState, useMemo, useEffect } = React;
+const { useState, useMemo, useEffect, useRef } = React;
 
 // ─── STAFF PIN LOGIN ────────────────────────────────────────────────────────────
 // 4-digit PINs. Lookup is by exact PIN string. Each user is recorded against
@@ -1155,6 +1155,85 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
 // any future regional reporting. Values: "wc" (Western Cape), "gauteng",
 // "kzn". Custom branches added at runtime default to "wc" if they were
 // saved before this field existed.
+
+// ── Reusable searchable staff/manager picker ──────────────────────────────
+// Drop-in replacement for the plain <select> dropdowns we use to pick a
+// staff member. Filters as you type by name OR EC, shows up to 30 hits,
+// closes on outside-click or selection. `formatOption` lets each call site
+// control the label (default: "EC · Name").
+function StaffPicker({ people, valueEc, onChange, placeholder, formatOption, style, disabled }) {
+  const [open, setOpen]   = useState(false);
+  const [query, setQuery] = useState("");
+  const containerRef = useRef(null);
+  const inputRef     = useRef(null);
+  useEffect(() => {
+    const onDoc = (e) => {
+      if (containerRef.current && !containerRef.current.contains(e.target)) {
+        setOpen(false);
+        setQuery("");
+      }
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+  const list = Array.isArray(people) ? people : [];
+  const selected = valueEc ? list.find(p => p && p.ec === valueEc) : null;
+  const fmt = formatOption || ((p) => (p.ec || "—") + " · " + (p.name || ""));
+  const q = (query || "").trim().toLowerCase();
+  const matches = q === ""
+    ? list.slice(0, 30)
+    : list.filter(p =>
+        ((p.name || "").toLowerCase().includes(q)) ||
+        ((p.ec   || "").toLowerCase().includes(q))
+      ).slice(0, 30);
+  const inputStyle = {
+    width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #FBCFE8",
+    fontSize:13, fontFamily:"inherit", background: disabled ? "#f3f4f6" : "#fff",
+    boxSizing:"border-box", ...(style || {})
+  };
+  return (
+    <div ref={containerRef} style={{ position:"relative" }}>
+      <input
+        ref={inputRef}
+        type="text"
+        disabled={disabled}
+        value={open ? query : (selected ? fmt(selected) : "")}
+        onFocus={()=>{ setQuery(""); setOpen(true); }}
+        onChange={(e)=>{ setQuery(e.target.value); setOpen(true); }}
+        placeholder={placeholder || ("Search " + list.length + " staff by name or EC…")}
+        style={inputStyle}
+        autoComplete="off"
+      />
+      {selected && !open && (
+        <button type="button" onMouseDown={(e)=>{ e.preventDefault(); onChange && onChange(""); setQuery(""); }}
+          style={{ position:"absolute", right:8, top:"50%", transform:"translateY(-50%)", background:"transparent", border:"none", color:"#9ca3af", cursor:"pointer", fontSize:14, padding:"0 4px" }}
+          title="Clear"
+        >×</button>
+      )}
+      {open && (
+        <div style={{ position:"absolute", top:"calc(100% + 4px)", left:0, right:0, background:"#fff", border:"1px solid #FBCFE8", borderRadius:8, maxHeight:260, overflowY:"auto", zIndex:200, boxShadow:"0 8px 20px rgba(0,0,0,0.12)" }}>
+          {matches.length === 0 ? (
+            <div style={{ padding:"9px 12px", fontSize:12, color:"#9ca3af", fontStyle:"italic" }}>No matches</div>
+          ) : matches.map((p, i) => (
+            <div key={(p.ec || "") + "_" + i}
+              onMouseDown={(e)=>{ e.preventDefault(); onChange && onChange(p.ec); setOpen(false); setQuery(""); }}
+              style={{ padding:"8px 12px", cursor:"pointer", fontSize:13, borderBottom: i < matches.length - 1 ? "1px solid #FCE7F3" : "none", display:"flex", alignItems:"center", gap:8 }}
+              onMouseEnter={(e)=>{ e.currentTarget.style.background = "#FCE7F3"; }}
+              onMouseLeave={(e)=>{ e.currentTarget.style.background = "#fff"; }}
+            >
+              <span style={{ fontFamily:"monospace", color:"#9ca3af", fontSize:11, minWidth:40 }}>{p.ec || "—"}</span>
+              <span style={{ flex:1, color:"#111827", fontWeight:600 }}>{p.name || "(no name)"}</span>
+              {p.branch && <span style={{ fontSize:11, color:"#6b7280" }}>📍 {p.branch}</span>}
+              {p.role && <span style={{ fontSize:9, fontWeight:700, padding:"1px 6px", borderRadius:99, background:"#FCE7F3", color:"#831843" }}>{p.role}</span>}
+              {p.onMat && <span style={{ fontSize:9, fontWeight:700, padding:"1px 6px", borderRadius:99, background:"#FBCFE8", color:"#831843" }}>🤱</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const SALONS = [
   { name:"Sea Point",       mani:16, pedi:6,  capacity:24, region:"wc" },
   { name:"Bree",            mani:9,  pedi:5,  capacity:15, region:"wc" },
@@ -4552,13 +4631,13 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
             <div style={{ display:"grid", gap:10, fontSize:13 }}>
               <label style={{ display:"flex", flexDirection:"column", gap:4 }}>
                 <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>NAIL TECH</span>
-                <select value={techReqModal.ec}
-                  onChange={(e) => setTechReqModal({ ...techReqModal, ec: e.target.value })}
-                  style={{ padding:"7px 10px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13 }}>
-                  {techs.filter(t => !t.onMat).map(t => (
-                    <option key={t.ec} value={t.ec}>{t.name} ({t.ec})</option>
-                  ))}
-                </select>
+                <StaffPicker
+                  people={techs.filter(t => !t.onMat)}
+                  valueEc={techReqModal.ec}
+                  onChange={(ec) => setTechReqModal({ ...techReqModal, ec })}
+                  placeholder="Search nail techs…"
+                  formatOption={(t) => t.name + " (" + t.ec + ")"}
+                />
               </label>
               <label style={{ display:"flex", flexDirection:"column", gap:4 }}>
                 <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>DATE</span>
@@ -6203,6 +6282,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // ── Onboarding / Off-boarding state ────────────────────────────────
   const [obList, setObList] = useState([]);           // joiner records
   const [offList, setOffList] = useState([]);         // leaver records
+  // Controlled value for the "Mark a staff member as off-boarded" StaffPicker;
+  // submitOff() now reads this state instead of an uncontrolled <select> DOM
+  // node so the searchable picker can drive it cleanly.
+  const [offEcInput, setOffEcInput] = useState("");
   const [obForm, setObForm] = useState({              // onboarding inline form
     name:"", ec:"", branch: SALONS[0].name, position:"Nail Tech",
     positionOther:"", startDate:"", notes:"", _editId: null
@@ -9602,7 +9685,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             catch (e) { alert("Could not save off-boarding: " + (e.message || e)); }
           };
           const submitOff = () => {
-            const ec = document.getElementById("_offEc").value;
+            const ec = offEcInput;
             const date = document.getElementById("_offDate").value;
             const reason = document.getElementById("_offReason").value;
             const notes = document.getElementById("_offNotes").value;
@@ -9617,7 +9700,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               (sRec.name || "") + " (" + sRec.ec + ")",
               "Last day " + date + (reason ? " · " + reason : "") + (sRec.branch ? " · " + sRec.branch : "")
             );
-            document.getElementById("_offEc").value = "";
+            setOffEcInput("");
             document.getElementById("_offDate").value = todayStr;
             document.getElementById("_offNotes").value = "";
           };
@@ -9703,11 +9786,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div style={{ fontSize:13, fontWeight:700, color:"#831843", marginBottom:10 }}>Mark a staff member as off-boarded</div>
                 <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))", gap:10, marginBottom:10 }}>
                   <div>
-                    <label style={{ fontSize:11, fontWeight:700, color:"#831843", letterSpacing:"0.05em" }}>STAFF MEMBER</label>
-                    <select id="_offEc" defaultValue="" style={{ width:"100%", marginTop:4, padding:"8px 10px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:13, fontFamily:"inherit", background:"#fff" }}>
-                      <option value="">— select —</option>
-                      {activeStaffOpts.map(s => <option key={s.ec} value={s.ec}>{s.name} ({s.ec}) · {s.branch || "—"}</option>)}
-                    </select>
+                    <label style={{ fontSize:11, fontWeight:700, color:"#831843", letterSpacing:"0.05em", display:"block", marginBottom:4 }}>STAFF MEMBER</label>
+                    <StaffPicker
+                      people={activeStaffOpts}
+                      valueEc={offEcInput}
+                      onChange={(ec) => setOffEcInput(ec)}
+                      placeholder="Search staff to off-board…"
+                      formatOption={(s) => s.name + " (" + s.ec + ") · " + (s.branch || "—")}
+                    />
                   </div>
                   <div>
                     <label style={{ fontSize:11, fontWeight:700, color:"#831843", letterSpacing:"0.05em" }}>LAST DAY WORKED</label>
@@ -11786,10 +11872,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div style={{ display:"grid", gridTemplateColumns:"1.5fr 1fr 1fr auto", gap:8, marginBottom:10, alignItems:"flex-end" }}>
                   <div>
                     <label style={{ fontSize:10, color:"#F472B6", fontWeight:700 }}>{isTechMode ? "NAIL TECH" : "MANAGER"}</label>
-                    <select value={f.ec} onChange={e=>setLeaveForm({...f, ec:e.target.value})} style={{ width:"100%", padding:"6px 9px", borderRadius:6, border:"1px solid " + Y, fontFamily:"inherit", fontSize:12, background:aA }}>
-                      <option value="">— select —</option>
-                      {peopleAllBranches.map(z => <option key={z.ec} value={z.ec}>{z.ec} · {z.name} ({z.branch}{z.role && !isTechMode ? " · " + z.role : ""})</option>)}
-                    </select>
+                    <StaffPicker
+                      people={peopleAllBranches}
+                      valueEc={f.ec}
+                      onChange={(ec) => setLeaveForm({ ...f, ec })}
+                      placeholder={"Search " + (isTechMode ? "nail techs" : "managers") + " by name or EC…"}
+                      formatOption={(z) => z.ec + " · " + z.name + " (" + z.branch + (z.role && !isTechMode ? " · " + z.role : "") + ")"}
+                    />
                   </div>
                   <div>
                     <label style={{ fontSize:10, color:"#F472B6", fontWeight:700 }}>FROM</label>
@@ -12898,11 +12987,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <div style={{ fontSize:11, color:"#9ca3af", marginBottom:14 }}>For {branch} · {cycleLabel}</div>
 
                     <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#831843", letterSpacing:"0.04em", marginBottom:4 }}>MANAGER</label>
-                    <select value={mgrReqModal.ec}
-                            onChange={(e) => setMgrReqModal({ ...mgrReqModal, ec: e.target.value })}
-                            style={{ width:"100%", padding:"9px 11px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, background:"#fff", marginBottom:12 }}>
-                      {sortedMgrs.map(m => <option key={m.ec} value={m.ec}>{m.name} ({m.role})</option>)}
-                    </select>
+                    <div style={{ marginBottom:12 }}>
+                      <StaffPicker
+                        people={sortedMgrs}
+                        valueEc={mgrReqModal.ec}
+                        onChange={(ec) => setMgrReqModal({ ...mgrReqModal, ec })}
+                        placeholder="Search managers…"
+                        formatOption={(m) => m.name + " (" + m.role + ")"}
+                      />
+                    </div>
 
                     <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#831843", letterSpacing:"0.04em", marginBottom:4 }}>DATE</label>
                     <input type="date" value={mgrReqModal.date}
