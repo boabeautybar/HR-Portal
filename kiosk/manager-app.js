@@ -312,39 +312,66 @@
     document.getElementById("back-home").onclick = renderManagerLanding;
 
     // Active staff + anyone who left in the current calendar month. Past
-    // leavers (left_date before this month, or active=false with no date)
-    // are excluded so the list reflects who's currently on the roster +
-    // who walked out this month. The kiosk drops them on month rollover.
-    var staff = await window.APP_DATA.listStaff({ activeOnly: true, includeRecentLeavers: true });
+    // leavers (left_date before this month) are excluded so the list
+    // reflects who's currently on the roster + who walked out this month.
+    // The kiosk drops them on month rollover.
+    //
+    // We MUST consult boa_offboard_v1 in addition to the staff.left_date
+    // column: HR portal's dedicated Off-boarding tab writes leftDate
+    // there only — the staff row keeps active=true with no left_date.
+    // Without this merge, anyone off-boarded via that tab would still
+    // appear under "Current staff".
+    var loaded = await Promise.all([
+      window.APP_DATA.listStaff({ activeOnly: true, includeRecentLeavers: true }),
+      window.APP_DATA.loadOffboarding ? window.APP_DATA.loadOffboarding() : Promise.resolve([])
+    ]);
+    var staff   = loaded[0];
+    var offList = loaded[1] || [];
     var listEl = document.getElementById("staff-list");
     if (staff.length === 0) {
       listEl.innerHTML = '<div class="empty">No staff in this branch yet. Add them in the HR portal.</div>';
       return;
     }
 
+    var offByEc = {};
+    offList.forEach(function (o) {
+      if (!o || !o.ec) return;
+      offByEc[String(o.ec).trim()] = o;
+    });
+    var todayIso = window.APP_DATA.todayStr();
+    var monthStart = todayIso.slice(0, 8) + "01";
+
     // Split current staff from those who've left this month. Leavers go
     // in their own greyed section at the bottom, sorted by most-recent
-    // leave date so the manager can see who walked out last. The query
-    // above already excludes pre-this-month leavers, so they disappear
-    // automatically when the calendar rolls over.
+    // leave date so the manager can see who walked out last. Historical
+    // leavers (off-boarding leftDate before this month) are dropped.
+    // Future leavers (leftDate still ahead) stay in "Current staff" so
+    // they can still be checked in until their last day.
     var activeStaff = [];
     var leftStaff   = [];
     staff.forEach(function (s) {
-      if (s.active) activeStaff.push(s);
-      else          leftStaff.push(s);
+      var ec = s && s.employee_code && String(s.employee_code).trim();
+      var off = ec ? offByEc[ec] : null;
+      var eff = (off && off.leftDate) || s.left_date || null;
+      if (!eff) { activeStaff.push(s); return; }
+      if (eff < monthStart) return;          // historical, drop
+      if (eff > todayIso) { activeStaff.push(s); return; } // future leaver
+      s._leftDate  = eff;
+      s._offReason = (off && off.reason) || null;
+      leftStaff.push(s);
     });
     leftStaff.sort(function (a, b) {
-      var ad = a.left_date || "", bd = b.left_date || "";
+      var ad = a._leftDate || "", bd = b._leftDate || "";
       if (ad !== bd) return bd.localeCompare(ad);
       return (a.name || "").localeCompare(b.name || "");
     });
 
     function renderRow(s, leftMode) {
-      var classes = "staff-row" + (s.active ? "" : " staff-inactive") + (leftMode ? " staff-row-left" : "");
+      var classes = "staff-row" + (leftMode ? " staff-inactive staff-row-left" : "");
       var trailing = "";
       if (leftMode) {
-        trailing = s.left_date
-          ? ' <span class="pill pill-mute">👋 Left ' + esc(fmtDate(s.left_date)) + '</span>'
+        trailing = s._leftDate
+          ? ' <span class="pill pill-mute">👋 Left ' + esc(fmtDate(s._leftDate)) + '</span>'
           : ' <span class="pill pill-mute">👋 Left company</span>';
       }
       return '<div class="' + classes + '" data-id="' + s.id + '">' +
