@@ -2468,8 +2468,8 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
 }
 
 // ─── SCHEDULE EDITOR (Phase 2a — manual editing, save to Supabase) ──────────────
-function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obList, techLoans, onTechLoansChange }) {
-  const [branch, setBranch] = useState(SALONS[0].name);
+function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obList, techLoans, onTechLoansChange, initialBranch }) {
+  const [branch, setBranch] = useState(initialBranch || SALONS[0].name);
   const [ym, setYm] = useState(window.BOA_DB ? window.BOA_DB.currentSchedYm() : "2026-05");
   const [grid, setGrid] = useState({});
   const [savedAt, setSavedAt] = useState(null);
@@ -5520,7 +5520,7 @@ function PinLogin(props) {
       setPin("");
       return;
     }
-    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, isOwner: !!u.isOwner, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], readOnlyTabs: u.readOnlyTabs || [], signedInAt: new Date().toISOString() };
+    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, isOwner: !!u.isOwner, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], readOnlyTabs: u.readOnlyTabs || [], stores: Array.isArray(u.stores) ? u.stores.slice() : [], signedInAt: new Date().toISOString() };
     try { sessionStorage.setItem(PIN_SESSION_KEY, JSON.stringify(session)); } catch (_) {}
     window.BOA_CURRENT_USER = session;
     onUnlock(session);
@@ -5614,7 +5614,8 @@ function AppGate() {
               demo: !!u.demo, isOwner: !!u.isOwner,
               hideCategories: u.hideCategories || [],
               hideTabs: u.hideTabs || [],
-              readOnlyTabs: u.readOnlyTabs || []
+              readOnlyTabs: u.readOnlyTabs || [],
+              stores: Array.isArray(u.stores) ? u.stores.slice() : []
             };
             window.BOA_CURRENT_USER = merged;
             setCurrentUser(merged);
@@ -5639,13 +5640,17 @@ function AppGate() {
     const cleaned = { ...next };
     Object.keys(cleaned).forEach(pin => {
       const u = cleaned[pin];
-      cleaned[pin] = {
+      const rec = {
         name: u.name, role: u.role,
         demo: !!u.demo, isOwner: !!u.isOwner,
         hideCategories: u.hideCategories || [],
         hideTabs: u.hideTabs || [],
         readOnlyTabs: u.readOnlyTabs || []
       };
+      // ROM store allocation — only stamp the field when actually set, so
+      // the user record stays tidy for non-ROM roles.
+      if (Array.isArray(u.stores) && u.stores.length > 0) rec.stores = u.stores.slice();
+      cleaned[pin] = rec;
     });
     await saveAppUsersToDb(cleaned);
     window.__BOA_APP_USERS = cleaned;
@@ -5663,7 +5668,8 @@ function AppGate() {
         demo: !!u.demo, isOwner: !!u.isOwner,
         hideCategories: u.hideCategories || [],
         hideTabs: u.hideTabs || [],
-        readOnlyTabs: u.readOnlyTabs || []
+        readOnlyTabs: u.readOnlyTabs || [],
+        stores: Array.isArray(u.stores) ? u.stores.slice() : []
       };
       window.BOA_CURRENT_USER = merged;
       setCurrentUser(merged);
@@ -5713,7 +5719,8 @@ const SETTINGS_TABS = [
   { t: "alerts",     l: "Alerts",            cat: "Insights",   icon: "🔔" },
   { t: "activity",   l: "Activity Log",      cat: "Insights",   icon: "📜" },
   { t: "kioskPins",   l: "Kiosk PINs",       cat: "Admin",      icon: "🔑" },
-  { t: "managerPins", l: "Manager PINs",     cat: "Admin",      icon: "🆔" }
+  { t: "managerPins", l: "Manager PINs",     cat: "Admin",      icon: "🆔" },
+  { t: "storeAllocation", l: "Store Allocation", cat: "Admin",  icon: "🏬" }
 ];
 const SETTINGS_CATS = ["People", "Operations", "Payroll", "Insights", "Admin"];
 
@@ -5735,7 +5742,7 @@ function userToPerms(u) {
 // reconstruct hideCategories on save — packing per-tab is simpler and the
 // nav renderer treats "every tab in a category hidden" the same as the
 // category itself being hidden.
-function permsToUser(base, perms) {
+function permsToUser(base, perms, stores) {
   const hideTabs = [];
   const readOnlyTabs = [];
   SETTINGS_TABS.forEach(({ t }) => {
@@ -5743,7 +5750,7 @@ function permsToUser(base, perms) {
     if (!p.visible) { hideTabs.push(t); return; }
     if (!p.editable) readOnlyTabs.push(t);
   });
-  return {
+  const out = {
     name: base.name || "",
     role: base.role || "",
     demo: !!base.demo,
@@ -5752,6 +5759,20 @@ function permsToUser(base, perms) {
     hideTabs,
     readOnlyTabs
   };
+  // ROM store allocation. Only persisted when the user actually has stores
+  // assigned — keeps the user record tidy for non-ROM roles.
+  if (Array.isArray(stores) && stores.length > 0) {
+    out.stores = stores.slice();
+  }
+  return out;
+}
+
+// True when the user's role is "Regional Ops Manager" (the canonical label —
+// abbreviations like "ROM" or longer "Regional Operations Manager" also match
+// so a typo or legacy seed doesn't accidentally drop the scope toggle).
+function isRomRole(role) {
+  const r = (role || "").toLowerCase().trim();
+  return r === "regional ops manager" || r === "regional operations manager" || r === "rom";
 }
 
 function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
@@ -5776,7 +5797,8 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
       role: "",
       demo: false,
       isOwner: false,
-      perms: blankPerms
+      perms: blankPerms,
+      stores: []
     });
   };
   const beginEdit = (pin) => {
@@ -5790,7 +5812,8 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
       role: u.role || "",
       demo: !!u.demo,
       isOwner: !!u.isOwner,
-      perms: userToPerms(u)
+      perms: userToPerms(u),
+      stores: Array.isArray(u.stores) ? u.stores.slice() : []
     });
   };
   const cancelEdit = () => setEditing(null);
@@ -5819,7 +5842,7 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
       role: editing.role.trim() || (editing.isOwner ? "Owner" : "Staff"),
       demo: editing.demo,
       isOwner: editing.isOwner
-    }, editing.perms);
+    }, editing.perms, editing.stores);
     const next = { ...users };
     if (!editing.isNew && editing.originalPin && editing.originalPin !== pin) {
       delete next[editing.originalPin];
@@ -5909,6 +5932,7 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
               <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, letterSpacing:"0.04em" }}>FLAGS</th>
               <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, letterSpacing:"0.04em" }}>VISIBLE TABS</th>
               <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, letterSpacing:"0.04em" }}>VIEW-ONLY TABS</th>
+              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, letterSpacing:"0.04em" }}>STORES</th>
               <th style={{ textAlign:"right", padding:"10px 12px", fontSize:11, letterSpacing:"0.04em" }}>ACTIONS</th>
             </tr>
           </thead>
@@ -5940,6 +5964,16 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
                   </td>
                   <td style={{ padding:"10px 12px", color:"#374151", fontSize:11 }}>
                     {roList.length === 0 ? <span style={{ color:"#9CA3AF" }}>—</span> : roList.join(", ")}
+                  </td>
+                  <td style={{ padding:"10px 12px", color:"#374151", fontSize:11 }}>
+                    {(() => {
+                      const sts = Array.isArray(u.stores) ? u.stores : [];
+                      if (sts.length === 0) return <span style={{ color:"#9CA3AF" }}>—</span>;
+                      if (sts.length === SALONS.length) return <span style={{ color:"#15803d", fontWeight:700 }}>All ({sts.length})</span>;
+                      const show = sts.slice(0, 2).join(", ");
+                      const more = sts.length > 2 ? " +" + (sts.length - 2) : "";
+                      return <span title={sts.join(", ")} style={{ color:"#BE185D", fontWeight:600 }}>{sts.length} · {show}{more}</span>;
+                    })()}
                   </td>
                   <td style={{ padding:"10px 12px", textAlign:"right", whiteSpace:"nowrap" }}>
                     <button onClick={() => beginEdit(pin)} disabled={busy}
@@ -6062,6 +6096,10 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
               </table>
             </div>
 
+            <div style={{ background:"#FDF2F8", border:"1px solid #FBCFE8", borderRadius:9, padding:"9px 13px", fontSize:11, color:"#9F1A4F", marginBottom:14 }}>
+              🏬 <strong>Store allocation</strong> is now managed on the dedicated <strong>Store Allocation</strong> tab (under Admin), so a National Ops Manager can be granted edit rights to it without full Settings access.
+            </div>
+
             <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
               <button onClick={cancelEdit} disabled={busy}
                 style={{ padding:"9px 16px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:9, cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:600 }}>Cancel</button>
@@ -6071,6 +6109,170 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
               </button>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── STORE ALLOCATION ADMIN ──────────────────────────────────────────────
+// Dedicated tab for assigning which salons each user (typically a Regional
+// Ops Manager) "owns". Read-only when readOnly is true — gives the Owner /
+// National Ops Manager a single place to edit, and lets it be granted to
+// other roles via the standard tab permission grid without exposing the
+// full Settings panel.
+function StoreAllocationAdmin({ appUsers, onUsersUpdate, currentUser, readOnly }) {
+  const users = appUsers || {};
+  const [busy, setBusy]   = useState(false);
+  const [filter, setFilter] = useState("rom"); // "rom" | "all"
+  const [draft, setDraft]   = useState({});    // pin → string[] of stores (uncommitted edits)
+  const [savedFor, setSavedFor] = useState(""); // pin of last-saved user, for the brief ✓ chip
+
+  const pins = Object.keys(users).sort((a, b) => {
+    const ua = users[a], ub = users[b];
+    if (!!ub.isOwner !== !!ua.isOwner) return ub.isOwner ? 1 : -1;
+    return (ua.name || "").localeCompare(ub.name || "");
+  });
+  const visiblePins = filter === "rom" ? pins.filter(p => isRomRole(users[p] && users[p].role)) : pins;
+
+  const storesFor = (pin) => {
+    if (draft[pin] !== undefined) return draft[pin];
+    const s = users[pin] && users[pin].stores;
+    return Array.isArray(s) ? s : [];
+  };
+  const isDirty = (pin) => {
+    const saved = (users[pin] && users[pin].stores) || [];
+    const cur = storesFor(pin);
+    if (saved.length !== cur.length) return true;
+    const a = saved.slice().sort();
+    const b = cur.slice().sort();
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return true;
+    return false;
+  };
+  const toggle = (pin, name) => {
+    if (readOnly) return;
+    setDraft(prev => {
+      const cur = prev[pin] !== undefined ? prev[pin] : ((users[pin] && users[pin].stores) || []);
+      const has = cur.includes(name);
+      return { ...prev, [pin]: has ? cur.filter(x => x !== name) : [...cur, name] };
+    });
+  };
+  const setAllFor = (pin, on) => {
+    if (readOnly) return;
+    setDraft(prev => ({ ...prev, [pin]: on ? SALONS.map(s => s.name) : [] }));
+  };
+  const saveFor = async (pin) => {
+    if (readOnly) return;
+    setBusy(true);
+    try {
+      const next = { ...users };
+      const cur = storesFor(pin);
+      next[pin] = { ...(users[pin] || {}) };
+      if (cur.length > 0) next[pin].stores = cur.slice();
+      else delete next[pin].stores;
+      await onUsersUpdate(next);
+      setDraft(prev => { const n = { ...prev }; delete n[pin]; return n; });
+      setSavedFor(pin);
+      window.setTimeout(() => setSavedFor(s => s === pin ? "" : s), 1800);
+    } catch (e) {
+      alert("Could not save: " + ((e && e.message) || e));
+    } finally { setBusy(false); }
+  };
+  const resetFor = (pin) => {
+    setDraft(prev => { const n = { ...prev }; delete n[pin]; return n; });
+  };
+
+  const romCount = pins.filter(p => isRomRole(users[p] && users[p].role)).length;
+
+  return (
+    <div>
+      <div style={{ marginBottom:14 }}>
+        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>🏬 Store Allocation</div>
+        <div style={{ fontSize:12, color:"#F472B6" }}>
+          {readOnly
+            ? "View-only. Each Regional Ops Manager's allocated stores drive their 'My stores' dashboard filter."
+            : "Assign the stores each Regional Ops Manager owns. The dashboard 'My stores / Other stores / All' toggle uses this list. Granting edit rights to this tab is enough — no Settings access needed."}
+        </div>
+      </div>
+
+      <div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap", alignItems:"center" }}>
+        <div style={{ fontSize:11, fontWeight:800, color:"#831843", letterSpacing:"0.06em", textTransform:"uppercase" }}>Show</div>
+        {[
+          { v: "rom", l: "Regional Ops Managers", sub: romCount + " user" + (romCount === 1 ? "" : "s") },
+          { v: "all", l: "All users",             sub: pins.length + " user" + (pins.length === 1 ? "" : "s") }
+        ].map(o => {
+          const on = filter === o.v;
+          return (
+            <button key={o.v} onClick={() => setFilter(o.v)}
+              style={{ padding:"7px 13px", borderRadius:9, border: on ? "1px solid #BE185D" : "1px solid #FBCFE8", background: on ? "#BE185D" : "#fff", color: on ? "#fff" : "#831843", cursor:"pointer", fontSize:12, fontWeight:700, fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"flex-start", lineHeight:1.15 }}>
+              <span>{o.l}</span>
+              <span style={{ fontSize:10, fontWeight:600, opacity: on ? 0.85 : 0.6 }}>{o.sub}</span>
+            </button>
+          );
+        })}
+        {busy && <span style={{ alignSelf:"center", fontSize:11, color:"#9F1A4F", fontStyle:"italic" }}>Saving…</span>}
+      </div>
+
+      {visiblePins.length === 0 ? (
+        <div style={{ background:"#FDF2F8", border:"1px dashed #FBCFE8", borderRadius:12, padding:"30px 18px", textAlign:"center", color:"#9F1A4F", fontSize:13 }}>
+          {filter === "rom"
+            ? "No Regional Ops Managers yet. Create one in Settings (role = \"Regional Ops Manager\")."
+            : "No users."}
+        </div>
+      ) : (
+        <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+          {visiblePins.map(pin => {
+            const u = users[pin] || {};
+            const cur = storesFor(pin);
+            const dirty = isDirty(pin);
+            const rom = isRomRole(u.role);
+            return (
+              <div key={pin} style={{ background:"#fff", border:"1px solid #FBCFE8", borderRadius:14, padding:"16px 18px" }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:10, marginBottom:10 }}>
+                  <div>
+                    <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                      <span style={{ fontSize:16, fontWeight:800, color:"#831843" }}>{u.name || "(unnamed)"}</span>
+                      <span style={{ fontFamily:"monospace", fontSize:11, color:"#9CA3AF" }}>PIN {pin}</span>
+                      {rom && <span style={{ background:"#FCE7F3", color:"#BE185D", border:"1px solid #FBCFE8", padding:"1px 7px", borderRadius:6, fontSize:10, fontWeight:700, letterSpacing:"0.06em" }}>ROM</span>}
+                      {u.isOwner && <span style={{ background:"#FEF3C7", color:"#92400e", border:"1px solid #FDE68A", padding:"1px 7px", borderRadius:6, fontSize:10, fontWeight:700 }}>OWNER</span>}
+                      {savedFor === pin && <span style={{ background:"#dcfce7", color:"#166534", border:"1px solid #86efac", padding:"1px 7px", borderRadius:6, fontSize:10, fontWeight:700 }}>✓ Saved</span>}
+                    </div>
+                    <div style={{ fontSize:11, color:"#9F1A4F", marginTop:2 }}>{u.role || "—"}</div>
+                  </div>
+                  <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                    {!readOnly && (
+                      <>
+                        <button onClick={() => setAllFor(pin, true)}  disabled={busy} style={{ padding:"5px 10px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:7, cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit" }}>Select all</button>
+                        <button onClick={() => setAllFor(pin, false)} disabled={busy} style={{ padding:"5px 10px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:7, cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit" }}>Clear</button>
+                      </>
+                    )}
+                    {!readOnly && dirty && (
+                      <>
+                        <button onClick={() => resetFor(pin)} disabled={busy} style={{ padding:"5px 11px", background:"#fff", color:"#7f1d1d", border:"1px solid #fecaca", borderRadius:7, cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit" }}>Cancel</button>
+                        <button onClick={() => saveFor(pin)}  disabled={busy} style={{ padding:"5px 13px", background:"#BE185D", color:"#fff", border:"none", borderRadius:7, cursor:"pointer", fontSize:11, fontWeight:800, fontFamily:"inherit" }}>{busy ? "Saving…" : "Save"}</button>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))", gap:6 }}>
+                  {SALONS.map(sl => {
+                    const on = cur.includes(sl.name);
+                    return (
+                      <label key={sl.name} style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 9px", background: on ? "#FCE7F3" : "#fff", border:"1px solid " + (on ? "#FBCFE8" : "#F3D4DE"), borderRadius:7, cursor: readOnly ? "default" : "pointer", fontSize:12, color:"#831843", fontWeight: on ? 700 : 500, opacity: readOnly ? 0.85 : 1 }}>
+                        <input type="checkbox" checked={on} disabled={readOnly || busy} onChange={() => toggle(pin, sl.name)} style={{ accentColor:"#BE185D" }} />
+                        <span style={{ flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{sl.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize:10, color:"#9F1A4F", marginTop:8, fontWeight:600 }}>
+                  {cur.length} of {SALONS.length} stores selected
+                  {rom && cur.length === 0 && <span style={{ color:"#b91c1c", marginLeft:8 }}>⚠ A ROM with no stores will fall back to viewing all branches.</span>}
+                  {dirty && <span style={{ color:"#b45309", marginLeft:8 }}>● unsaved</span>}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -6366,6 +6568,53 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     })();
     return () => { cancelled = true; };
   }, []);
+
+  // ── ROM dashboard scope ────────────────────────────────────────────────
+  // "mine" = only stores allocated to the signed-in ROM; "other" = the rest
+  // (so they can pick up cover when a peer is on leave); "all" = no filter.
+  // Defaults to "mine" if the user has stores assigned, otherwise "all" so
+  // non-ROMs / unallocated ROMs see everything.
+  const _myStores = Array.isArray(currentUser && currentUser.stores) ? currentUser.stores : [];
+  const _hasStoreScope = isRomRole(currentUser && currentUser.role) && _myStores.length > 0;
+  const [dashScope, setDashScope] = useState(_hasStoreScope ? "mine" : "all");
+  const scopedSalonNames = useMemo(() => {
+    if (!_hasStoreScope || dashScope === "all") return new Set(SALONS.map(s => s.name));
+    if (dashScope === "other") {
+      const mine = new Set(_myStores);
+      return new Set(SALONS.map(s => s.name).filter(n => !mine.has(n)));
+    }
+    return new Set(_myStores);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dashScope, _hasStoreScope, _customSalonsTick, _myStores.join("|")]);
+  const inScope = (name) => scopedSalonNames.has(name);
+
+  // Compact scope toggle reused on the Dashboard, both Check-ins tabs and
+  // Store Openings. Renders nothing if the user has no store scope, so the
+  // call site can just drop it in unconditionally.
+  const renderScopeBar = (style) => {
+    if (!_hasStoreScope) return null;
+    const otherCount = SALONS.length - _myStores.length;
+    const opts = [
+      { v: "mine",  l: "🏬 My stores",    sub: _myStores.length + " store" + (_myStores.length === 1 ? "" : "s") },
+      { v: "other", l: "🤝 Other stores", sub: otherCount + " peer store" + (otherCount === 1 ? "" : "s") },
+      { v: "all",   l: "🌐 All",          sub: SALONS.length + " stores" }
+    ];
+    return (
+      <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:14, padding:"10px 14px", display:"flex", alignItems:"center", flexWrap:"wrap", gap:8, ...(style || {}) }}>
+        <div style={{ fontSize:11, fontWeight:800, color:"#831843", letterSpacing:"0.08em", textTransform:"uppercase", marginRight:4 }}>Viewing</div>
+        {opts.map(o => {
+          const on = dashScope === o.v;
+          return (
+            <button key={o.v} onClick={() => setDashScope(o.v)}
+              style={{ padding:"6px 11px", borderRadius:9, border: on ? "1px solid #BE185D" : "1px solid #FBCFE8", background: on ? "#BE185D" : "#fff", color: on ? "#fff" : "#831843", cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"flex-start", lineHeight:1.15 }}>
+              <span>{o.l}</span>
+              <span style={{ fontSize:9, fontWeight:600, opacity: on ? 0.85 : 0.6 }}>{o.sub}</span>
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
 
   // Modal state for the "+ Add location" form on the Locations tab.
   // Region filter for the Locations tab — "all" or one of the REGIONS keys.
@@ -6689,7 +6938,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }, [tab, activityTick]);
 
   // ── Manager Schedule state ─────────────────────────────────────────
-  const [mgrSchedBranch, setMgrSchedBranch] = useState(SALONS[0].name);
+  const [mgrSchedBranch, setMgrSchedBranch] = useState(_myStores[0] || SALONS[0].name);
   const [mgrSchedCycle, setMgrSchedCycle] = useState(""); // YYYY-MM-25 cycle start
   const [navCategory, setNavCategory] = useState("People"); // open nav category
   // Whether the user has explicitly picked a category tile while on the dashboard.
@@ -6762,7 +7011,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // ── Leave Planner state ────────────────────────────────────────────
   const [leaveRecs, setLeaveRecs] = useState([]);
-  const [leaveBranch, setLeaveBranch] = useState(SALONS[0].name);
+  const [leaveBranch, setLeaveBranch] = useState(_myStores[0] || SALONS[0].name);
   const [leaveYM, setLeaveYM] = useState(window.BOA_DB ? window.BOA_DB.currentSchedYm() : "2026-05");
   const [leaveForm, setLeaveForm] = useState({ ec:"", startDate:"", endDate:"", emergency:false, emergencyNote:"" });
   // Schedule cache for theoretical-off-day calculation: keyed by `<branch>|<ym>`,
@@ -6823,7 +7072,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }, [tab, leaveBranch, leaveYM, leaveRecs, staff, managers]);
 
   // ── Attendance tab state ───────────────────────────────────────────
-  const [attBranch, setAttBranch] = useState(SALONS[0].name);
+  const [attBranch, setAttBranch] = useState(_myStores[0] || SALONS[0].name);
   // Attendance grid keys rows by START-month of the 25-to-24 cycle (April 25 →
   // May 24, 2026 lives at "2026-04"). The kiosk check-in app writes to the same
   // start-month key. Using currentSchedYm() here would load the FUTURE cycle's
@@ -7067,6 +7316,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // ── Dashboard: count staff scheduled to work today across all branches ──
   const [dashScheduledToday, setDashScheduledToday] = useState(null); // null = loading
   const [dashByBranch, setDashByBranch] = useState({});
+  // Today's per-branch list of manager EC codes scheduled to work. The
+  // dashboard "managers not checked in" tile cross-references this against
+  // today's manager clockin rows.
+  const [dashSchedMgrsByBranch, setDashSchedMgrsByBranch] = useState({});
+  const [dashTodayMgrClockinEcs, setDashTodayMgrClockinEcs] = useState(null); // null = loading, Set<ec> once loaded
   useEffect(() => {
     if (tab !== "dashboard") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
@@ -7093,6 +7347,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const mgrGrid  = (mgr  && mgr.grid)  || {};
       const isWorking = (v) => v === "W" || v === "WL" || v === "E";
       let count = 0;
+      const mgrsScheduled = [];
       for (const ec in techGrid) {
         const v = techGrid[ec][todayDay];
         if (isWorking(v)) count++;
@@ -7100,17 +7355,40 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       for (const ec in mgrGrid) {
         // manager grid is keyed by YMD strings (mgrSched line 141)
         const v = mgrGrid[ec][ymd] || mgrGrid[ec][todayDay];
-        if (isWorking(v)) count++;
+        if (isWorking(v)) { count++; mgrsScheduled.push(ec); }
       }
-      return [sl.name, count];
-    })).then(pairs => {
+      return [sl.name, count, mgrsScheduled];
+    })).then(triples => {
       if (cancelled) return;
       const map = {};
+      const mgrMap = {};
       let total = 0;
-      for (const [name, c] of pairs) { map[name] = c; total += c; }
+      for (const [name, c, mgrs] of triples) { map[name] = c; mgrMap[name] = mgrs; total += c; }
       setDashByBranch(map);
+      setDashSchedMgrsByBranch(mgrMap);
       setDashScheduledToday(total);
     });
+    // Today's manager clockins — used by the "managers not checked in" tile.
+    // Stored as a Set of EC codes that have at least one IN event today.
+    setDashTodayMgrClockinEcs(null);
+    if (window.BOA_DB.listRecentManagerClockins) {
+      window.BOA_DB.listRecentManagerClockins(1).then(rows => {
+        if (cancelled) return;
+        const set = new Set();
+        const todayY = today.getFullYear(), todayM = today.getMonth(), todayD = today.getDate();
+        (rows || []).forEach(r => {
+          if (!r || !r.ts) return;
+          const t = new Date(r.ts);
+          if (t.getFullYear() === todayY && t.getMonth() === todayM && t.getDate() === todayD) {
+            const ec = (r.staff && r.staff.employee_code) || r.ec;
+            if (ec) set.add(ec);
+          }
+        });
+        setDashTodayMgrClockinEcs(set);
+      }).catch(() => { if (!cancelled) setDashTodayMgrClockinEcs(new Set()); });
+    } else {
+      setDashTodayMgrClockinEcs(new Set());
+    }
     return () => { cancelled = true; };
   }, [tab, staff, managers]);
 
@@ -8064,15 +8342,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t:"alerts",      l:"🔔 Alerts"         },
                   { t:"activity",    l:"📜 Activity Log"   }
                 ] },
-              ...(currentUser?.isOwner ? [{
-                key:"Admin", icon:"🛡️", title:"Admin",
-                color:{ bg:"#FEF3C7", bgActive:"#FDE68A", ink:"#92400e" },
-                items: [
-                  { t:"kioskPins",   l:"🔑 Kiosk PINs"   },
-                  { t:"managerPins", l:"🆔 Manager PINs" },
-                  { t:"settings",    l:"⚙️ Settings"     }
-                ]
-              }] : [])
+              // Admin group. Kiosk PINs / Manager PINs / Settings are
+              // owner-only. Store Allocation is shown to the Owner and to
+              // anyone whose role looks like a National Ops Manager; the
+              // standard hideTabs / readOnlyTabs grid still applies on top,
+              // so the Owner can fine-tune visibility for any specific user.
+              ...(() => {
+                const role = (currentUser?.role || "").toLowerCase();
+                const isNationalOps = role.includes("national ops") || role.includes("national operations");
+                const adminItems = [];
+                if (currentUser?.isOwner) {
+                  adminItems.push({ t:"kioskPins",   l:"🔑 Kiosk PINs"   });
+                  adminItems.push({ t:"managerPins", l:"🆔 Manager PINs" });
+                  adminItems.push({ t:"settings",    l:"⚙️ Settings"     });
+                }
+                if (currentUser?.isOwner || isNationalOps) {
+                  adminItems.push({ t:"storeAllocation", l:"🏬 Store Allocation" });
+                }
+                return adminItems.length > 0 ? [{
+                  key:"Admin", icon:"🛡️", title:"Admin",
+                  color:{ bg:"#FEF3C7", bgActive:"#FDE68A", ink:"#92400e" },
+                  items: adminItems
+                }] : [];
+              })()
             ];
             // Category that owns the currently-active tab.
             // Permission filter: hide entire categories AND/OR individual tabs.
@@ -8253,7 +8545,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const partOfDay = hr < 12 ? "morning" : hr < 17 ? "afternoon" : "evening";
           const dateLbl = now.toLocaleDateString("en-ZA", { weekday:"long", day:"2-digit", month:"long", year:"numeric" });
           const timeLbl = now.toLocaleTimeString("en-ZA", { hour:"2-digit", minute:"2-digit" });
-          const understaffedBranches = SALONS
+          // Dashboard salon scope: drives every branch-aware card below.
+          // When a ROM has a "My / Other / All" scope active, scopedSalons is
+          // the filtered list; otherwise it's just SALONS unchanged.
+          const scopedSalons = SALONS.filter(sl => inScope(sl.name));
+          const scopedBranchSet = scopedSalonNames;
+          // Branch-scoped versions of the headline stats so the four stat
+          // cards reflect "my stores" / "other stores" without re-fetching.
+          const _scopedActive = enriched.filter(s => scopedBranchSet.has(s.branch) && !s.onMat && !s.onUnpaidLegal && !s.offboarded);
+          const _scopedMat    = enriched.filter(s => scopedBranchSet.has(s.branch) && s.onMat);
+          const _scopedPreg   = enriched.filter(s => scopedBranchSet.has(s.branch) && s.pregnant && !s.onMat);
+          const _scopedReturning60 = matRecs.filter(r => r.matStatus === "on_mat" && r.returnDate && daysDiff(r.returnDate) !== null && daysDiff(r.returnDate) >= 0 && daysDiff(r.returnDate) <= 60 && scopedBranchSet.has(((enriched.find(e => e.ec && r.ec && e.ec.trim() === r.ec.trim()) || {}).branch || ""))).length;
+          const _scopedVacancies = scopedSalons.reduce((a, sl) => { const g = sl.targetCapacity || sl.capacity; const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length; return a + Math.max(0, g - act); }, 0);
+          const _scopedUnderstaffed = scopedSalons.filter(sl => enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length < sl.capacity).length;
+          const scopedStats = {
+            active: _scopedActive.length,
+            onMat: _scopedMat.length,
+            pregnant: _scopedPreg.length,
+            returning60: _scopedReturning60,
+            vacancies: _scopedVacancies,
+            understaffed: _scopedUnderstaffed
+          };
+          const scopedAttn = {
+            zna: enriched.filter(s => !s.onMat && !s.onUnpaidLegal && !s.offboarded && s.permit === "z_na" && scopedBranchSet.has(s.branch)).length,
+            noContract: enriched.filter(s => !s.onMat && !s.onUnpaidLegal && !s.offboarded && s.contract === "NO CONTRACT" && scopedBranchSet.has(s.branch)).length
+          };
+          const understaffedBranches = scopedSalons
             .map(sl => {
               const goal = sl.targetCapacity || sl.capacity;
               const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.offboarded).length;
@@ -8262,19 +8579,39 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             .filter(x => x.gap > 0)
             .sort((a, b) => b.gap - a.gap);
           const recentDepartures = enriched
-            .filter(s => s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft >= 0 && s.offDaysSinceLeft <= 7)
+            .filter(s => s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft >= 0 && s.offDaysSinceLeft <= 7 && scopedBranchSet.has(s.branch))
             .sort((a, b) => (a.offDaysSinceLeft ?? 0) - (b.offDaysSinceLeft ?? 0));
+
+          // Managers scheduled today vs managers who actually clocked in. The
+          // gap surfaces who hasn't hit the check-in app yet — useful for the
+          // dashboard at-a-glance and especially for ROMs covering branches.
+          let mgrSchedToday = 0;
+          let mgrMissing = [];
+          if (dashTodayMgrClockinEcs) {
+            for (const branchName in dashSchedMgrsByBranch) {
+              if (_hasStoreScope && !scopedBranchSet.has(branchName)) continue;
+              const ecs = dashSchedMgrsByBranch[branchName] || [];
+              for (const ec of ecs) {
+                mgrSchedToday++;
+                if (!dashTodayMgrClockinEcs.has(ec)) {
+                  const m = (managers || []).find(x => x.ec === ec);
+                  mgrMissing.push({ ec, name: (m && m.name) || ec, branch: branchName });
+                }
+              }
+            }
+          }
+          const mgrCheckinLoading = dashTodayMgrClockinEcs == null || dashScheduledToday == null;
 
           // Today's store-openings snapshot (loaded by the useEffect above).
           // null while the first load is in flight; show "…" until data lands.
           const todayY = new Date();
           const todayYmd = todayY.getFullYear() + "-" + String(todayY.getMonth()+1).padStart(2,"0") + "-" + String(todayY.getDate()).padStart(2,"0");
           const showStoreCard = storeOpenYmd === todayYmd && storeOpenRows !== null;
-          const openedBranchSet = new Set(showStoreCard ? (storeOpenRows || []).map(r => r.branch) : []);
+          const openedBranchSet = new Set(showStoreCard ? (storeOpenRows || []).filter(r => scopedBranchSet.has(r.branch)).map(r => r.branch) : []);
           const stillClosedBranches = showStoreCard
-            ? SALONS.map(s => s.name).filter(n => !openedBranchSet.has(n))
+            ? scopedSalons.map(s => s.name).filter(n => !openedBranchSet.has(n))
             : [];
-          const storeOpenedCount = SALONS.length - stillClosedBranches.length;
+          const storeOpenedCount = scopedSalons.length - stillClosedBranches.length;
           const storeOpenSub = !showStoreCard
             ? "loading…"
             : stillClosedBranches.length === 0
@@ -8287,7 +8624,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Green when complete, amber while pending, red once past the
           // 15th-of-cycle-start-month deadline.
           const schedReady = !!(schedFinalStatus && schedFinalStatus.byBranch);
-          const schedTotal = SALONS.length;
+          const schedTotal = scopedSalons.length;
           const _todayMid = new Date();
           const _today0   = new Date(_todayMid.getFullYear(), _todayMid.getMonth(), _todayMid.getDate());
           const deadline15 = schedReady && schedFinalStatus.deadline ? new Date(schedFinalStatus.deadline) : new Date(_today0.getFullYear(), _today0.getMonth(), 15);
@@ -8295,14 +8632,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const cycSuffix = schedReady && schedFinalStatus.cycLabel ? " · " + schedFinalStatus.cycLabel : "";
           const _buildSchedCard = (kind /* "tech" | "mgr" */) => {
             const doneBranches = schedReady
-              ? SALONS.map(s => s.name).filter(n => {
+              ? scopedSalons.map(s => s.name).filter(n => {
                   const r = schedFinalStatus.byBranch[n] || { tech:false, mgr:false };
                   return r[kind];
                 })
               : [];
             const done = doneBranches.length;
             const missing = schedReady
-              ? SALONS.map(s => s.name).filter(n => {
+              ? scopedSalons.map(s => s.name).filter(n => {
                   const r = schedFinalStatus.byBranch[n] || { tech:false, mgr:false };
                   return !r[kind];
                 })
@@ -8348,7 +8685,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ background:`linear-gradient(135deg,${PINK.softer} 0%,#FFFFFF 65%)`, border:`1px solid ${PINK.soft}`, borderRadius:20, padding:"26px 30px", marginBottom:20, boxShadow:"0 4px 18px rgba(190,24,93,0.07)", display:"flex", justifyContent:"space-between", alignItems:"flex-end", flexWrap:"wrap", gap:18, fontFamily:"'Outfit',system-ui,sans-serif" }}>
                 <div>
                   <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:11, fontWeight:700, color:PINK.accent, letterSpacing:"0.22em", textTransform:"uppercase" }}>BOA HR · Dashboard</div>
-                  <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:34, color:PINK.ink, fontWeight:700, lineHeight:1.1, marginTop:6, letterSpacing:"-0.01em" }}>Good {partOfDay}, {currentUser.name}</div>
+                  <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:34, color:PINK.ink, fontWeight:700, lineHeight:1.1, marginTop:6, letterSpacing:"-0.01em" }}>Good {partOfDay}, {(currentUser.name || "").trim().split(/\s+/)[0]}</div>
                   <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:12.5, color:PINK.accent, marginTop:8, fontWeight:500, letterSpacing:"0.02em" }}>{dateLbl}</div>
                 </div>
                 <div style={{ textAlign:"right" }}>
@@ -8356,6 +8693,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:11, color:PINK.deep, marginTop:6, fontWeight:500, letterSpacing:"0.04em" }}>Signed in as <span style={{ color:PINK.accent, fontWeight:700 }}>{currentUser.role}</span></div>
                 </div>
               </div>
+
+              {/* Shared scope toggle (My / Other / All). Renders nothing
+                  when the user has no store scope. Same control is wired
+                  to the Check-ins tabs and Store Openings — flipping it
+                  here also affects those views. */}
+              {renderScopeBar({ marginBottom: 18 })}
 
               {/* ── SECTION: TODAY ── */}
               <div style={sectionTitle}>
@@ -8369,16 +8712,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   // (no amber middle state) so it pops on the dashboard until
                   // resolved. While loading, fall back to the neutral amber.
                   { l:"Stores open today",
-                    v: showStoreCard ? (storeOpenedCount + " / " + SALONS.length) : "…",
+                    v: showStoreCard ? (storeOpenedCount + " / " + scopedSalons.length) : "…",
                     sub: storeOpenSub,
                     i: !showStoreCard ? "⚠" : (stillClosedBranches.length === 0 ? "🔓" : "🚨"),
                     c: !showStoreCard ? "#7c2d12" : (stillClosedBranches.length === 0 ? "#166534" : "#7f1d1d"),
                     bg: !showStoreCard ? "#fef3c7" : (stillClosedBranches.length === 0 ? "#dcfce7" : "#fee2e2"),
                     click:()=>tryChangeTab("storeOpenings") },
-                  { l:"Scheduled today",   v: dashScheduledToday == null ? "…" : dashScheduledToday, sub:"across all branches",       i:"📅", c:"#1e3a8a", bg:"#dbeafe" },
-                  { l:"Active staff",       v: stats.active,                                          sub:"incl. " + stats.pregnant + " pregnant", i:"👥", c:"#14532d", bg:"#dcfce7" },
-                  { l:"On maternity",       v: stats.onMat,                                           sub: stats.returning60 + " returning ≤60d",  i:"🤱", c:"#7A4258", bg:"#fce7f3" },
-                  { l:"Positions to hire",  v: stats.vacancies,                                       sub:"across " + stats.understaffed + " branch" + (stats.understaffed !== 1 ? "es" : ""), i:"🎯", c:"#7c3aed", bg:"#ede9fe", click:()=>tryChangeTab("recruitment") }
+                  { l:"Scheduled today",   v: dashScheduledToday == null ? "…" : (_hasStoreScope ? Object.keys(dashByBranch).filter(b => scopedBranchSet.has(b)).reduce((a, b) => a + (dashByBranch[b] || 0), 0) : dashScheduledToday), sub: _hasStoreScope ? ("scope: " + (dashScope === "mine" ? "my stores" : dashScope === "other" ? "peer stores" : "all branches")) : "across all branches",       i:"📅", c:"#1e3a8a", bg:"#dbeafe" },
+                  { l:"Active staff",       v: scopedStats.active,                                    sub:"incl. " + scopedStats.pregnant + " pregnant", i:"👥", c:"#14532d", bg:"#dcfce7" },
+                  { l:"On maternity",       v: scopedStats.onMat,                                     sub: scopedStats.returning60 + " returning ≤60d",  i:"🤱", c:"#7A4258", bg:"#fce7f3" },
+                  { l:"Positions to hire",  v: scopedStats.vacancies,                                 sub:"across " + scopedStats.understaffed + " branch" + (scopedStats.understaffed !== 1 ? "es" : ""), i:"🎯", c:"#7c3aed", bg:"#ede9fe", click:()=>tryChangeTab("recruitment") },
+                  // Manager check-in gap. Highlights how many of today's
+                  // scheduled managers haven't clocked in yet. Green when
+                  // everyone is in; red the moment anyone's missing.
+                  { l:"Mgrs not checked in",
+                    v: mgrCheckinLoading ? "…" : (mgrSchedToday === 0 ? "—" : mgrMissing.length + " / " + mgrSchedToday),
+                    sub: mgrCheckinLoading
+                          ? "loading…"
+                          : (mgrSchedToday === 0
+                              ? "no managers scheduled"
+                              : (mgrMissing.length === 0
+                                  ? "✓ all managers checked in"
+                                  : mgrMissing.slice(0, 2).map(m => m.name + " · " + m.branch).join(", ") + (mgrMissing.length > 2 ? " +" + (mgrMissing.length - 2) + " more" : ""))),
+                    i: mgrCheckinLoading ? "⌛" : (mgrSchedToday === 0 ? "🕐" : (mgrMissing.length === 0 ? "✓" : "🚨")),
+                    c: mgrCheckinLoading ? "#7c2d12" : (mgrMissing.length === 0 ? "#166534" : "#7f1d1d"),
+                    bg: mgrCheckinLoading ? "#fef3c7" : (mgrMissing.length === 0 ? "#dcfce7" : "#fee2e2"),
+                    click: ()=>tryChangeTab("mgrclockins") }
                 ].map(c => (
                   <div key={c.l} onClick={c.click} style={{ background:c.bg, borderRadius:16, padding:"16px 18px", cursor:c.click ? "pointer" : "default", border:"1px solid rgba(255,255,255,0.6)" }}>
                     <div style={{ fontSize:24 }}>{c.i}</div>
@@ -8560,7 +8919,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <div style={{ fontSize:12, color:"#9ca3af", fontStyle:"italic" }}>Loading schedules…</div>
                   ) : (
                     <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))", gap:8 }}>
-                      {SALONS.map(sl => {
+                      {scopedSalons.map(sl => {
                         const c = dashByBranch[sl.name] || 0;
                         return (
                           <div key={sl.name} style={{ background:PINK.softest, border:`1px solid ${PINK.soft}`, borderRadius:11, padding:"10px 12px" }}>
@@ -8582,12 +8941,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <span>🎯 Recruitment needs</span>
                     <button onClick={()=>tryChangeTab("recruitment")} style={{ background:PINK.accent, color:"#fff", border:"none", borderRadius:8, padding:"5px 12px", cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit" }}>Open →</button>
                   </div>
-                  {stats.vacancies === 0 ? (
+                  {scopedStats.vacancies === 0 ? (
                     <div style={{ fontSize:13, color:"#16a34a", fontWeight:700, padding:"8px 0" }}>✅ All branches fully staffed.</div>
                   ) : (
                     <>
                       <div style={{ fontSize:12, color:PINK.ink, marginBottom:10 }}>
-                        <strong>{stats.vacancies}</strong> position{stats.vacancies !== 1 ? "s" : ""} to fill across <strong>{stats.understaffed}</strong> branch{stats.understaffed !== 1 ? "es" : ""}.
+                        <strong>{scopedStats.vacancies}</strong> position{scopedStats.vacancies !== 1 ? "s" : ""} to fill across <strong>{scopedStats.understaffed}</strong> branch{scopedStats.understaffed !== 1 ? "es" : ""}.
                       </div>
                       <div style={{ display:"grid", gap:6 }}>
                         {understaffedBranches.slice(0, 6).map(b => (
@@ -8602,7 +8961,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               </div>
 
-              {/* ── SECTION: ATTENTION ── */}
+              {/* ── SECTION: ATTENTION ── hidden for ROM users; the Z/NA,
+                  no-contract and recent-departure alerts are HR-level
+                  concerns that ROMs can't action on this dashboard. */}
+              {!_hasStoreScope && (<>
               <div style={sectionTitle}>
                 <span>⚠ Needs attention</span>
                 <span style={sectionRule} />
@@ -8639,8 +9001,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   }
                   return [
                     schedAlert,
-                    stats.zna           > 0 && { i:"🚨", l: stats.zna + " staff with Z/NA risk", sub:"compliance issue", c:"#7f1d1d", bg:"#fee2e2", to:"staff" },
-                    stats.noContract    > 0 && { i:"📄", l: stats.noContract + " staff with no contract", sub:"upload contracts", c:"#7f1d1d", bg:"#fee2e2", to:"staff" },
+                    scopedAttn.zna           > 0 && { i:"🚨", l: scopedAttn.zna + " staff with Z/NA risk", sub:"compliance issue", c:"#7f1d1d", bg:"#fee2e2", to:"staff" },
+                    scopedAttn.noContract    > 0 && { i:"📄", l: scopedAttn.noContract + " staff with no contract", sub:"upload contracts", c:"#7f1d1d", bg:"#fee2e2", to:"staff" },
                     recentDepartures.length > 0 && { i:"👋", l: recentDepartures.length + " departure" + (recentDepartures.length !== 1 ? "s" : "") + " this week", sub:"in last 7 days", c:"#374151", bg:"#f3f4f6", to:"offboard" }
                   ];
                 })().filter(Boolean).map(b => (
@@ -8650,13 +9012,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <div style={{ fontSize:10, fontWeight:600, color:b.c, opacity:0.7, marginTop:2 }}>{b.sub}</div>
                   </div>
                 ))}
-                {stats.zna === 0 && stats.noContract === 0 && recentDepartures.length === 0 &&
+                {scopedAttn.zna === 0 && scopedAttn.noContract === 0 && recentDepartures.length === 0 &&
                  (!SCHED_ALERT_PINS.has(currentUser.pin) || (upcomingChecked && upcomingMissing.length === 0)) && (
                   <div style={{ background:"#dcfce7", border:"1px solid #86efac", borderRadius:14, padding:"14px 16px", color:"#14532d", fontWeight:700, fontSize:13 }}>
                     ✅ Nothing urgent — everything in good shape.
                   </div>
                 )}
               </div>
+              </>)}
 
               {/* ── SECTION: ALL TOOLS ── grouped quick links ── */}
               <div style={sectionTitle}>
@@ -8860,6 +9223,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               try { await window.BOA_DB.saveTechLoans(next); setTechLoans(next); }
               catch (e) { console.error("saveTechLoans (auto):", e); }
             }}
+            initialBranch={_myStores[0] || SALONS[0].name}
           />
         )}
 
@@ -8869,13 +9233,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // so the whole tab reflects the selected region. Counts shown in
           // each pill are computed from the unfiltered salonData so the
           // pills always read like a stable map of where branches live.
+          // ROM scope filter applied to the salonData feed before the region
+          // pills run. Region counts also respect the scope so the pills
+          // show how many in-scope branches each region has.
+          const scopedSalonData = _hasStoreScope
+            ? salonData.filter(s => scopedSalonNames.has(s.name))
+            : salonData;
           const regionCounts = REGIONS.reduce((acc, r) => {
-            acc[r.key] = salonData.filter(s => s.region === r.key).length;
+            acc[r.key] = scopedSalonData.filter(s => s.region === r.key).length;
             return acc;
           }, {});
           const filteredSalonData = locFilterRegion === "all"
-            ? salonData
-            : salonData.filter(s => s.region === locFilterRegion);
+            ? scopedSalonData
+            : scopedSalonData.filter(s => s.region === locFilterRegion);
           const filteredActive    = filteredSalonData.reduce((a, s) => a + s.active.length,    0);
           const filteredOnMat     = filteredSalonData.reduce((a, s) => a + s.onMat.length,     0);
           const filteredSeats     = filteredSalonData.reduce((a, s) => a + s.capacity,          0);
@@ -8891,13 +9261,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               >+ Add new location</button>
             </div>
 
+            {renderScopeBar({ marginBottom: 12 })}
+
             {/* Region filter pills. "All" shows everything; each region pill
                 lists its count so an empty region (e.g. KZN before Ballito
                 imports) is still visible but greyed via the count. */}
             <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:14 }}>
               {[{ key:"all", label:"All regions", short:"All", color:"#831843", bg:"#fce7f3" }, ...REGIONS].map(r => {
                 const isActive = locFilterRegion === r.key;
-                const count = r.key === "all" ? salonData.length : (regionCounts[r.key] || 0);
+                const count = r.key === "all" ? scopedSalonData.length : (regionCounts[r.key] || 0);
                 return (
                   <button key={r.key} onClick={()=>setLocFilterRegion(r.key)}
                     style={{ background: isActive ? r.color : r.bg, color: isActive ? "#fff" : r.color, border:`1px solid ${r.color}`, borderRadius:999, padding:"7px 14px", cursor:"pointer", fontSize:12, fontWeight:700, letterSpacing:"0.04em", display:"flex", alignItems:"center", gap:6 }}>
@@ -14042,7 +14414,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           rows.forEach(r => { if (r && r.branch) byBranch[r.branch] = r; });
           // Sort: still-closed first (so the ops manager sees who needs chasing),
           // then opened (sorted by openedAt). Stable on branch name.
-          const sorted = SALONS.slice().map(sl => {
+          const sorted = SALONS.slice()
+            .filter(sl => !_hasStoreScope || scopedSalonNames.has(sl.name))
+            .map(sl => {
             const rec = byBranch[sl.name];
             return { branch: sl.name, opened: !!rec, openedAt: rec ? rec.openedAt : null, openedBy: rec ? rec.openedBy : null };
           }).sort((a, b) => {
@@ -14070,6 +14444,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </button>
                 </div>
               </div>
+
+              {renderScopeBar({ marginBottom: 12 })}
 
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12, padding:"10px 14px", background: closedCount > 0 ? "#fef2f2" : "#f0fdf4", border: closedCount > 0 ? "1px solid #fecaca" : "1px solid #bbf7d0", borderRadius:8 }}>
                 <div style={{ fontSize:13, fontWeight:700, color: closedCount > 0 ? "#7f1d1d" : "#166534" }}>
@@ -15899,6 +16275,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const clockinFiltered = (techClockinRows || []).filter(r => {
             const branch = (r.staff && r.staff.branch) || "";
             if (checkinFilterBranch !== "All" && r.staff && branch !== checkinFilterBranch) return false;
+            // ROM scope: hide rows whose home branch isn't in scope. Orphan
+            // rows (no staff record) always pass through so they remain
+            // visible as diagnostics regardless of scope.
+            if (_hasStoreScope && r.staff && !scopedSalonNames.has(branch)) return false;
             return new Date(r.ts) >= since;
           });
           // Look up staff names for attendance-grid rows (which only carry ec).
@@ -15909,6 +16289,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // the existing table renderer can display them next to clockins rows.
           const attShaped = (attCheckinRows || []).filter(r => {
             if (checkinFilterBranch !== "All" && r.branch !== checkinFilterBranch) return false;
+            if (_hasStoreScope && r.branch && !scopedSalonNames.has(r.branch)) return false;
             return new Date(r.ts) >= since;
           }).map(r => {
             const sRec = staffByEc[r.ec] || null;
@@ -15993,12 +16374,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div style={{ fontSize:12, color:"#F472B6" }}>Nail-tech check-ins from the manager check-in app. Used to confirm attendance alongside the Fresha import.</div>
               </div>
 
+              {renderScopeBar({ marginBottom: 12 })}
+
               <div style={{ background:"#FFFFFF", borderRadius:13, padding:"12px 14px", border:"1px solid #FBCFE8", marginBottom:14, display:"flex", gap:14, alignItems:"center", flexWrap:"wrap" }}>
                 <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
                   <label style={{ fontSize:10, fontWeight:700, color:"#F472B6", letterSpacing:"0.06em" }}>BRANCH</label>
                   <select value={checkinFilterBranch} onChange={e=>setCheckinFilterBranch(e.target.value)} style={{ padding:"7px 11px", borderRadius:7, border:"1px solid #FBCFE8", fontSize:13, background:"#fff", minWidth:160 }}>
-                    <option value="All">All branches</option>
-                    {SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                    <option value="All">{_hasStoreScope ? (dashScope === "mine" ? "All my stores" : dashScope === "other" ? "All peer stores" : "All branches") : "All branches"}</option>
+                    {SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name)).map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
                   </select>
                 </div>
                 <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
@@ -16140,9 +16523,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         } })()}
 
         {tab==="mgrclockins" && (() => {
-          const filtered = mgrClockinRows.filter(r =>
-            mgrClockinFilterBranch === "All" || (r.staff && r.staff.branch === mgrClockinFilterBranch)
-          );
+          const filtered = mgrClockinRows.filter(r => {
+            if (mgrClockinFilterBranch !== "All" && (!r.staff || r.staff.branch !== mgrClockinFilterBranch)) return false;
+            if (_hasStoreScope && r.staff && !scopedSalonNames.has(r.staff.branch)) return false;
+            return true;
+          });
           // Group by manager-day for compact display
           const fmtDate = (iso) => new Date(iso).toLocaleString("en-ZA", { day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" });
           const typeLabel = (t) => {
@@ -16160,12 +16545,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div style={{ fontSize:12, color:"#F472B6" }}>Spot-check manager attendance. Each row shows the selfie, GPS distance from store, and timestamp. Auto-out (red) means they forgot to clock out — talk to them.</div>
               </div>
 
+              {renderScopeBar({ marginBottom: 12 })}
+
               <div style={{ background:"#FFFFFF", borderRadius:13, padding:"12px 14px", border:"1px solid #FBCFE8", marginBottom:14, display:"flex", gap:14, alignItems:"center", flexWrap:"wrap" }}>
                 <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
                   <label style={{ fontSize:10, fontWeight:700, color:"#F472B6", letterSpacing:"0.06em" }}>BRANCH</label>
                   <select value={mgrClockinFilterBranch} onChange={e=>setMgrClockinFilterBranch(e.target.value)} style={{ padding:"7px 11px", borderRadius:7, border:"1px solid #FBCFE8", fontSize:13, background:"#fff", minWidth:160 }}>
-                    <option value="All">All branches</option>
-                    {SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                    <option value="All">{_hasStoreScope ? (dashScope === "mine" ? "All my stores" : dashScope === "other" ? "All peer stores" : "All branches") : "All branches"}</option>
+                    {SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name)).map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
                   </select>
                 </div>
                 <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
@@ -16310,6 +16697,28 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           currentUser={currentUser}
         />
       )}
+
+      {tab === "storeAllocation" && (() => {
+        const role = (currentUser?.role || "").toLowerCase();
+        const isNationalOps = role.includes("national ops") || role.includes("national operations");
+        const allowed = !!currentUser?.isOwner || isNationalOps;
+        if (!allowed) {
+          return (
+            <div style={{ background:"#fef2f2", border:"1px solid #fca5a5", borderRadius:11, padding:"20px 22px", color:"#7f1d1d", fontFamily:"'Outfit',system-ui,sans-serif" }}>
+              <div style={{ fontWeight:800, marginBottom:6 }}>🔒 You don't have access to Store Allocation.</div>
+              <div style={{ fontSize:12 }}>Ask the Owner to grant access, or to assign you the National Ops Manager role.</div>
+            </div>
+          );
+        }
+        return (
+          <StoreAllocationAdmin
+            appUsers={appUsers}
+            onUsersUpdate={onUsersUpdate}
+            currentUser={currentUser}
+            readOnly={currentTabIsReadOnly}
+          />
+        );
+      })()}
 
       {tab === "hrLibrary" && (currentUser?.role === "Master Admin" || currentUser?.isOwner) && (
         window.EmployeeDataLibrary ? React.createElement(window.EmployeeDataLibrary, { staff: staff, currentUser: currentUser, managers: managers, obList: obList, offList: offList }) : <div style={{padding:24}}>Loading Employee Files...</div>
