@@ -502,14 +502,27 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
 
   // Filter managers for this branch + cycle (skip future-onboarding, skip
   // anyone who left before the cycle started).
-  const f = allManagers.filter(h => {
+  const fAll = allManagers.filter(h => {
     if (h.branch !== branchName) return false;
     if (h._onboarding && h._startDate && h._startDate > cycleEnd) return false;
     if (h.leftDate && h.leftDate < cycleStartYmd) return false;
     return true;
   });
-  if (f.length === 0) {
+  // Scheduling pool excludes anyone currently on maternity. The grid still
+  // renders a row for them (with every cell as 'ML') so the manager team
+  // sees who's away, but every shift-assignment / coverage loop below uses
+  // `f` and pretends maternity people don't exist.
+  const f = fAll.filter(h => !h._onMat);
+  if (fAll.length === 0) {
     return { managers: [], dates, grid: {}, conflicts: [{ type:"no_managers", msg:"No managers at " + branchName, severity:"high" }],
+      dayTotals: {}, branch: branchName, cycleStart: cycleStartYmd, cycleEnd, weekOrder: [], weeksMap: {} };
+  }
+  if (f.length === 0) {
+    // Every manager at this branch is on maternity - render an ML-only grid
+    // and surface a conflict so the user knows nobody can be scheduled.
+    const matGrid = {};
+    for (const h of fAll) { matGrid[h.ec] = {}; for (const x of dates) matGrid[h.ec][x.d] = "ML"; }
+    return { managers: fAll, dates, grid: matGrid, conflicts: [{ type:"no_active_managers", msg:"All managers at " + branchName + " are on maternity leave.", severity:"high" }],
       dayTotals: {}, branch: branchName, cycleStart: cycleStartYmd, cycleEnd, weekOrder: [], weeksMap: {} };
   }
   const m = f.length;
@@ -13632,14 +13645,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }
             for (const ec of Object.keys(newGrid)) if (!result.managers.find(m => m.ec === ec)) delete newGrid[ec];
             result = { ...result, grid: newGrid, _loadedFromSaved: true };
-            // Recompute dayTotals + conflicts from merged grid
+            // Recompute dayTotals + conflicts from merged grid. On-mat
+            // managers are skipped entirely - they never count as working,
+            // off, or on-leave for coverage purposes.
             const newDT = {};
             for (const x of result.dates) newDT[x.d] = { dow: x.dow, working: 0, off: 0, leave: 0 };
-            for (const m of result.managers) for (const x of result.dates) {
-              const v = newGrid[m.ec] && newGrid[m.ec][x.d];
-              if (v === "W" || v === "E") newDT[x.d].working++;
-              else if (v === "O" || v === "R") newDT[x.d].off++;
-              else if (v === "L") newDT[x.d].leave++;
+            for (const m of result.managers) {
+              if (m._onMat) continue;
+              for (const x of result.dates) {
+                const v = newGrid[m.ec] && newGrid[m.ec][x.d];
+                if (v === "W" || v === "E") newDT[x.d].working++;
+                else if (v === "O" || v === "R") newDT[x.d].off++;
+                else if (v === "L") newDT[x.d].leave++;
+              }
             }
             result.dayTotals = newDT;
             const newConflicts = [];
@@ -13649,6 +13667,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               if (w < 2) newConflicts.push({ type:"understaffed", msg: x.d + " " + dows[x.dow] + ": " + w + " manager" + (w===1?"":"s") + " working, need at least 2", severity:"high" });
             }
             for (const m of result.managers) {
+              if (m._onMat) continue;     // skip maternity from consecutive-days check
               let run = 0, rs = -1;
               for (let i = 0; i < result.dates.length; i++) {
                 const v = newGrid[m.ec] && newGrid[m.ec][result.dates[i].d];
