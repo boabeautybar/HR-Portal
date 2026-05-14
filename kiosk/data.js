@@ -120,6 +120,37 @@
     return arr.filter(function (l) { return l && l.date === dateIso; });
   }
 
+  // Kiosk reminders. The HR portal writes daily tasks to
+  // boa_daily_tasks_v1. Records with target === "kiosk" are branch-
+  // wide broadcasts (no per-person done tracking). For everything else
+  // we ignore — those are portal-user to-dos. Returns only reminders
+  // that are active today (one-off date matches OR weekly repeatDow
+  // includes today's weekday) and whose branches list includes this
+  // kiosk's branch (or is empty, meaning all branches).
+  async function listKioskReminders() {
+    var c = client(); if (!c) return [];
+    var res = await c.from("app_state").select("value").eq("key", "boa_daily_tasks_v1").maybeSingle();
+    if (res.error) { console.error("listKioskReminders:", res.error); return []; }
+    var v = res.data && res.data.value;
+    var all = Array.isArray(v) ? v : [];
+    var now = new Date();
+    var ymd = now.getFullYear() + "-" + String(now.getMonth()+1).padStart(2,"0") + "-" + String(now.getDate()).padStart(2,"0");
+    var dow = now.getDay();
+    var thisBranch = branch();
+    return all.filter(function (t) {
+      if (!t || t.target !== "kiosk") return false;
+      // Branch scope: empty list = every branch.
+      if (Array.isArray(t.branches) && t.branches.length > 0 && t.branches.indexOf(thisBranch) === -1) return false;
+      // Active-today check.
+      if (t.kind === "weekly") {
+        if (!Array.isArray(t.repeatDow) || t.repeatDow.indexOf(dow) === -1) return false;
+        if (t.startDate && ymd < t.startDate) return false;
+        return true;
+      }
+      return t.date === ymd;
+    });
+  }
+
   // Save a single tech-loan record. Replaces any existing loan for the same
   // (ec, date) pair so a tech can't be in two places on the same day. Used by
   // the manager kiosk "Borrow tech today" flow.
@@ -1078,6 +1109,7 @@
     branch: branch, branchDisplay: branchDisplay, todayStr: todayStr,
     listStaff: listStaff, listMaternity: listMaternity, listLeaveRecords: listLeaveRecords, loadOffboarding: loadOffboarding,
     listTechLoans: listTechLoans, saveTechLoan: saveTechLoan, listStaffAllBranches: listStaffAllBranches,
+    listKioskReminders: listKioskReminders,
     categorizeStaff: categorizeStaff, addStaff: addStaff, updateStaff: updateStaff,
     deactivateStaff: deactivateStaff,
     lastClockinToday: lastClockinToday, addClockin: addClockin, listTodayClockins: listTodayClockins,

@@ -246,6 +246,65 @@
     var e = document.getElementById("gp-sublabel"); if (e) e.textContent = t;
   }
 
+  // Reminders panel — read-only "Today's reminders" cards shown above
+  // the tile grid on the manager landing. Broadcast-only: the HR portal
+  // writes records to boa_daily_tasks_v1 with target:"kiosk" and an
+  // optional branches list; the kiosk fetches its slice on demand.
+  // The panel is hidden until at least one matching reminder is found.
+  function renderKioskRemindersHtml(items) {
+    var DOW_LONG = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+    var today = new Date();
+    var dowLong = DOW_LONG[today.getDay()];
+    var cards = items.map(function (t) {
+      var weekly = t.kind === "weekly";
+      return (
+        '<div style="background:#fff;border:1px solid #FBCFE8;border-left:6px solid #BE185D;border-radius:12px;padding:14px 16px;display:flex;align-items:center;gap:12px;box-shadow:0 1px 4px rgba(190,24,93,0.08)">' +
+          '<div style="font-size:22px;line-height:1">📌</div>' +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:3px">' +
+              '<span style="font-family:\'Outfit\',system-ui,sans-serif;font-size:16px;font-weight:800;color:#831843">' + esc(t.title || "") + '</span>' +
+              (weekly
+                ? '<span style="background:#ede9fe;color:#5b21b6;border:1px solid #ddd6fe;padding:1px 7px;border-radius:6px;font-size:9px;font-weight:800;letter-spacing:0.06em">WEEKLY</span>'
+                : '') +
+            '</div>' +
+            (t.description
+              ? '<div style="font-size:12px;color:#4b5563;white-space:pre-wrap;line-height:1.35">' + esc(t.description) + '</div>'
+              : '') +
+          '</div>' +
+        '</div>'
+      );
+    }).join("");
+    return (
+      '<div style="background:linear-gradient(135deg,#FCE7F3 0%,#FFFFFF 60%);border:2px solid #F472B6;border-radius:18px;padding:16px 20px;margin-bottom:18px;box-shadow:0 4px 18px rgba(244,114,182,0.18)">' +
+        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">' +
+          '<div style="font-size:24px">📋</div>' +
+          '<div>' +
+            '<div style="font-family:\'Outfit\',system-ui,sans-serif;font-size:10px;font-weight:800;color:#BE185D;letter-spacing:0.18em;text-transform:uppercase">Today\'s Reminders</div>' +
+            '<div style="font-family:\'Outfit\',system-ui,sans-serif;font-size:18px;font-weight:800;color:#831843;line-height:1.15;margin-top:1px">' +
+              esc(dowLong) + ' · ' + items.length + ' reminder' + (items.length === 1 ? "" : "s") +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div style="display:flex;flex-direction:column;gap:8px">' + cards + '</div>' +
+      '</div>'
+    );
+  }
+  function loadKioskRemindersIntoPanel() {
+    var panel = document.getElementById("kiosk-reminders");
+    if (!panel) return;
+    if (!window.APP_DATA || !window.APP_DATA.listKioskReminders) return;
+    window.APP_DATA.listKioskReminders().then(function (items) {
+      // Re-fetch the panel in case the user navigated away.
+      var p = document.getElementById("kiosk-reminders");
+      if (!p) return;
+      if (!items || items.length === 0) { p.style.display = "none"; return; }
+      p.innerHTML = renderKioskRemindersHtml(items);
+      p.style.display = "block";
+    }).catch(function (e) {
+      console.warn("loadKioskReminders failed:", e);
+    });
+  }
+
   // ---------------- Tile landing ----------------
   function renderManagerLanding() {
     setSublabel("HOME");
@@ -255,6 +314,10 @@
         '<div class="hero-brand">' + esc(cfg.branchDisplayName || cfg.branchName || "BOA Check-in") + ' · Manager</div>' +
         '<div class="hero-title">What would you like to do?</div>' +
       '</div>' +
+      // Reminders panel — populated async right after this innerHTML write.
+      // Hidden by default; only flips visible when there's at least one
+      // reminder firing today for this branch.
+      '<div id="kiosk-reminders" style="display:none"></div>' +
       '<div class="tile-grid tile-grid-4">' +
         '<button class="tile tile-big" id="tile-nailtech" type="button">' +
           '<div class="tile-icon">✍️</div>' +
@@ -278,6 +341,7 @@
         '</button>' +
       '</div>'
     );
+    loadKioskRemindersIntoPanel();
     document.getElementById("tile-nailtech").onclick = function () {
       if (window.BOA_FLOWS) window.BOA_FLOWS.renderCheckin();
     };
