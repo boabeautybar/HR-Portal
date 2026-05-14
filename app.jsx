@@ -565,6 +565,25 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
     }
   }
 
+  // ── Store-closed days ─────────────────────────────────────────────
+  // Some branches are closed on fixed weekdays (e.g. Betty is closed Sun+Mon).
+  // Every manager at those branches is off on those days, always. We seed
+  // those cells as "O" before the rest of the solver runs so they consume
+  // the per-week off budget and block any working-day placement.
+  const _salonCfg = (typeof SALONS !== "undefined") ? SALONS.find(s => s && s.name === branchName) : null;
+  const closedDow = (_salonCfg && Array.isArray(_salonCfg.closedDow)) ? _salonCfg.closedDow : [];
+  if (closedDow.length) {
+    const closedSet = new Set(closedDow.map(Number));
+    for (const x of dates) {
+      if (!closedSet.has(x.dow)) continue;
+      for (const h of f) {
+        if (grid[h.ec][x.d] == null) {
+          grid[h.ec][x.d] = "O"; W[x.d].off++;
+        }
+      }
+    }
+  }
+
   // ── Weekend pairing pass ──────────────────────────────────────────
   const offWk = {};
   for (const h of f) { offWk[h.ec] = {}; for (const w of wkOrder) offWk[h.ec][w] = 0; }
@@ -633,7 +652,12 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
     if (dates[i].dow === 6 && dates[i+1].dow === 0) allWePairs.push([dates[i], dates[i+1]]);
   }
   const _isStoreTier = (r) => r === "SM" || r === "SSM";
-  const ordered = [...f].sort((a,b) => (_isStoreTier(a.role)?0:1) - (_isStoreTier(b.role)?0:1));
+  // Branches with fixed closed days (e.g. Betty: Sun+Mon) already give every
+  // manager a guaranteed multi-day off-block every week. Skip the Sat+Sun
+  // pairing pass entirely — trying to add a Sat+Sun pair would blow the 2-off
+  // weekly cap (closed days already consume it).
+  const _skipWePair = closedDow.length > 0;
+  const ordered = _skipWePair ? [] : [...f].sort((a,b) => (_isStoreTier(a.role)?0:1) - (_isStoreTier(b.role)?0:1));
   for (const h of ordered) {
     const need = _isStoreTier(h.role) ? 2 : 1;
     let have = wePairs(h);
@@ -1113,7 +1137,10 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
   for (const h of f) {
     const need = (h.role === "SM" || h.role === "SSM") ? 2 : 1;
     const have = wePairs(h);
-    if (have < need && !hasReq.has(h.ec)) conflicts.push({ type:"short_weekend", msg: h.name + " has " + have + " weekend(s) off (target " + need + ")", severity:"medium", ec: h.ec });
+    // Skip the Sat+Sun pair conflict on branches with fixed closed days —
+    // every manager already has a guaranteed weekly off-block from the
+    // store-closed seed (e.g. Betty: Sun+Mon).
+    if (!_skipWePair && have < need && !hasReq.has(h.ec)) conflicts.push({ type:"short_weekend", msg: h.name + " has " + have + " weekend(s) off (target " + need + ")", severity:"medium", ec: h.ec });
     for (const w of wkOrder) {
       if (wkMap[w].length < 7) continue;
       if (offWk[h.ec][w] < 2) conflicts.push({ type:"short_off_week", msg: h.name + " has " + offWk[h.ec][w] + " off in " + w + " (target 2)", severity:"medium", ec: h.ec, week: w });
@@ -1275,7 +1302,7 @@ const SALONS = [
   { name:"Sandown",         mani:9,  pedi:7,  capacity:18, region:"wc" },
   { name:"Cape Gate",       mani:9,  pedi:7,  capacity:18, region:"wc" },
   { name:"Winelands",       mani:9,  pedi:7,  capacity:18, region:"wc" },
-  { name:"Betty",           mani:9,  pedi:7,  capacity:18, targetCapacity:10, lowDemand:true, region:"wc" },
+  { name:"Betty",           mani:9,  pedi:7,  capacity:18, targetCapacity:10, lowDemand:true, region:"wc", closedDow:[0,1] },
 ];
 
 // Shared region metadata for the Locations filter and the Add Location form.
