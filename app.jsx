@@ -9171,41 +9171,101 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               {/* ── SECTION: TODAY'S TO-DOS ── personal task list. Renders
                   only when the signed-in user has at least one task for
                   today (one-off dated today OR a weekly task whose
-                  repeatDow includes today). Click '✓ Done' to close it
-                  out; weekly tasks reopen automatically next week. */}
-              {myTodayTasks.length > 0 && (
-                <>
-                  <div style={sectionTitle}>
-                    <span>📋 Today's To-Dos</span>
-                    <span style={sectionRule} />
+                  repeatDow includes today). Wrapped in a loud pink panel
+                  so it pops near the top of the dashboard; each card has
+                  a coloured side-bar that flips green on Done. */}
+              {myTodayTasks.length > 0 && (() => {
+                const openCount = myTodayTasks.filter(t => !isTaskDoneOn(t, todayYmdStr)).length;
+                const allDone = openCount === 0;
+                return (
+                <div style={{
+                  background: allDone ? "linear-gradient(135deg,#dcfce7 0%,#FFFFFF 70%)" : "linear-gradient(135deg,#FCE7F3 0%,#FFFFFF 65%)",
+                  border: "2px solid " + (allDone ? "#86efac" : "#F472B6"),
+                  borderRadius: 18,
+                  padding: "18px 22px",
+                  marginBottom: 22,
+                  boxShadow: allDone ? "0 4px 18px rgba(34,197,94,0.10)" : "0 4px 22px rgba(244,114,182,0.22)"
+                }}>
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:10, marginBottom: 14 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                      <span style={{ fontSize: 28 }}>📋</span>
+                      <div>
+                        <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize: 11, fontWeight: 800, color: allDone ? "#15803d" : "#BE185D", letterSpacing: "0.18em", textTransform: "uppercase" }}>
+                          Today's To-Dos
+                        </div>
+                        <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize: 22, fontWeight: 800, color: "#831843", lineHeight: 1.1, marginTop: 2 }}>
+                          {allDone
+                            ? "All done — nice one!"
+                            : openCount + " task" + (openCount === 1 ? "" : "s") + " to tick off today"}
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{
+                      background: allDone ? "#16a34a" : "#BE185D",
+                      color: "#fff",
+                      padding: "6px 14px",
+                      borderRadius: 999,
+                      fontSize: 13,
+                      fontWeight: 800,
+                      letterSpacing: "0.04em",
+                      boxShadow: allDone ? "0 0 0 3px rgba(22,163,74,0.18)" : "0 0 0 3px rgba(190,24,93,0.18)"
+                    }}>
+                      {myTodayTasks.length - openCount} / {myTodayTasks.length} done
+                    </div>
                   </div>
-                  <div style={{ marginBottom: 24, display:"flex", flexDirection:"column", gap:8 }}>
+                  <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
                     {myTodayTasks.map(t => {
                       const done = isTaskDoneOn(t, todayYmdStr);
                       const weekly = t.kind === "weekly";
+                      const bar = done ? "#16a34a" : "#BE185D";
                       return (
-                        <div key={t._id} style={{ background: done ? "#f9fafb" : "#fff", border:"1px solid " + (done ? "#e5e7eb" : "#FBCFE8"), borderRadius:14, padding:"14px 18px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, opacity: done ? 0.7 : 1 }}>
+                        <div key={t._id} style={{
+                          background: "#fff",
+                          border: "1px solid " + (done ? "#bbf7d0" : "#FBCFE8"),
+                          borderLeft: "6px solid " + bar,
+                          borderRadius: 12,
+                          padding: "14px 18px",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          gap: 12,
+                          opacity: done ? 0.78 : 1,
+                          boxShadow: done ? "none" : "0 1px 4px rgba(190,24,93,0.08)"
+                        }}>
                           <div style={{ minWidth:0, flex:1 }}>
-                            <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:3 }}>
-                              <span style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:15, fontWeight:800, color:"#831843", textDecoration: done ? "line-through" : "none" }}>{t.title}</span>
-                              {weekly && <span style={{ background:"#ede9fe", color:"#5b21b6", border:"1px solid #ddd6fe", padding:"1px 7px", borderRadius:6, fontSize:9, fontWeight:800, letterSpacing:"0.06em" }}>WEEKLY · {DOW_LABEL[todayDowNum].toUpperCase()}</span>}
+                            <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:4 }}>
+                              <span style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize: 17, fontWeight: 800, color:"#831843", textDecoration: done ? "line-through" : "none" }}>{t.title}</span>
+                              {weekly && (
+                                <span style={{ background:"#ede9fe", color:"#5b21b6", border:"1px solid #ddd6fe", padding:"2px 8px", borderRadius:6, fontSize:10, fontWeight:800, letterSpacing:"0.06em" }}>
+                                  WEEKLY · {DOW_LABEL[todayDowNum].toUpperCase()}
+                                </span>
+                              )}
                             </div>
-                            {t.description && <div style={{ fontSize:12, color:"#6b7280", whiteSpace:"pre-wrap" }}>{t.description}</div>}
-                            {done && <div style={{ fontSize:10, color:"#15803d", fontWeight:700, marginTop:3 }}>✓ Done · {weekly ? (t.doneByDate[todayYmdStr] && t.doneByDate[todayYmdStr].by ? "by " + t.doneByDate[todayYmdStr].by : "") : (t.doneBy ? "by " + t.doneBy : "")}</div>}
+                            {t.description && <div style={{ fontSize:13, color:"#4b5563", whiteSpace:"pre-wrap", lineHeight: 1.4 }}>{t.description}</div>}
+                            {done && (
+                              <div style={{ fontSize:11, color:"#15803d", fontWeight:700, marginTop:5 }}>
+                                ✓ Done {weekly
+                                  ? (t.doneByDate[todayYmdStr] && t.doneByDate[todayYmdStr].by ? "· by " + t.doneByDate[todayYmdStr].by : "")
+                                  : (t.doneBy ? "· by " + t.doneBy : "")}
+                              </div>
+                            )}
                           </div>
                           {done ? (
                             <button onClick={() => markTaskUndone(t._id)}
-                              style={{ background:"#fff", color:"#374151", border:"1px solid #d1d5db", borderRadius:8, padding:"7px 12px", cursor:"pointer", fontSize:12, fontWeight:700, fontFamily:"inherit", whiteSpace:"nowrap" }}>Undo</button>
+                              style={{ background:"#fff", color:"#374151", border:"1px solid #d1d5db", borderRadius:8, padding:"8px 14px", cursor:"pointer", fontSize:12, fontWeight:700, fontFamily:"inherit", whiteSpace:"nowrap" }}>Undo</button>
                           ) : (
                             <button onClick={() => markTaskDone(t._id)}
-                              style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:8, padding:"9px 16px", cursor:"pointer", fontSize:13, fontWeight:800, fontFamily:"inherit", whiteSpace:"nowrap" }}>✓ Done</button>
+                              style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:10, padding:"12px 22px", cursor:"pointer", fontSize:14, fontWeight:800, fontFamily:"inherit", whiteSpace:"nowrap", boxShadow:"0 2px 6px rgba(190,24,93,0.35)" }}>
+                              ✓ Mark done
+                            </button>
                           )}
                         </div>
                       );
                     })}
                   </div>
-                </>
-              )}
+                </div>
+                );
+              })()}
 
               {/* ── SECTION: TODAY ── */}
               <div style={sectionTitle}>
@@ -9255,10 +9315,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 ))}
               </div>
 
-              {/* ── SECTION: HR TASKS (Mocked Phase 3) ── */}
-              {(() => {
-                const pendingTasks = obList.filter(o => 
-                  o.status === "Pending Trainer Review" || 
+              {/* ── SECTION: HR TASKS (Mocked Phase 3) ── hidden for ROM
+                  users — onboarding trial-review actions are HR's job,
+                  not something a Regional Ops Manager would action. */}
+              {!_hasStoreScope && (() => {
+                const pendingTasks = obList.filter(o =>
+                  o.status === "Pending Trainer Review" ||
                   o.status === "Pending Trial 1 Review" ||
                   o.status === "Pending Trial 2 Review"
                 ).map(o => {
