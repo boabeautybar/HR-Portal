@@ -5719,7 +5719,8 @@ const SETTINGS_TABS = [
   { t: "alerts",     l: "Alerts",            cat: "Insights",   icon: "🔔" },
   { t: "activity",   l: "Activity Log",      cat: "Insights",   icon: "📜" },
   { t: "kioskPins",   l: "Kiosk PINs",       cat: "Admin",      icon: "🔑" },
-  { t: "managerPins", l: "Manager PINs",     cat: "Admin",      icon: "🆔" }
+  { t: "managerPins", l: "Manager PINs",     cat: "Admin",      icon: "🆔" },
+  { t: "storeAllocation", l: "Store Allocation", cat: "Admin",  icon: "🏬" }
 ];
 const SETTINGS_CATS = ["People", "Operations", "Payroll", "Insights", "Admin"];
 
@@ -6095,58 +6096,9 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
               </table>
             </div>
 
-            {/* ── Store allocation ── shown for every user; only Regional Ops
-                Managers actually use the field, but exposing it for any role
-                means an admin can drop a store-scope on a generic Ops Admin
-                if needed. Empty list = no scope = sees everything. */}
-            {(() => {
-              const isRom = isRomRole(editing.role);
-              const stores = Array.isArray(editing.stores) ? editing.stores : [];
-              const toggleStore = (name) => {
-                setEditing(prev => {
-                  const cur = Array.isArray(prev.stores) ? prev.stores : [];
-                  const has = cur.includes(name);
-                  return { ...prev, stores: has ? cur.filter(x => x !== name) : [...cur, name] };
-                });
-              };
-              const setAllStores = (on) => setEditing(prev => ({ ...prev, stores: on ? SALONS.map(s => s.name) : [] }));
-              return (
-                <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:11, padding:"14px 16px", marginBottom:18 }}>
-                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:8, marginBottom:8 }}>
-                    <div>
-                      <div style={{ fontSize:12, fontWeight:800, color:"#831843", letterSpacing:"0.04em", textTransform:"uppercase" }}>
-                        🏬 Store allocation
-                        {isRom && <span style={{ marginLeft:8, background:"#FCE7F3", color:"#BE185D", border:"1px solid #FBCFE8", padding:"1px 6px", borderRadius:6, fontSize:10, fontWeight:700, letterSpacing:"0.06em" }}>ROM</span>}
-                      </div>
-                      <div style={{ fontSize:11, color:"#9F1A4F", marginTop:3 }}>
-                        {isRom
-                          ? "Stores this ROM owns. The dashboard defaults to 'My Stores' (the ones ticked here); they can still flip to 'Other Stores' to cover for peers."
-                          : "Optional. Tick stores to scope this user's dashboard to a subset of branches. Leave empty for no scope."}
-                      </div>
-                    </div>
-                    <div style={{ display:"flex", gap:6 }}>
-                      <button onClick={() => setAllStores(true)} style={{ padding:"4px 9px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:6, cursor:"pointer", fontSize:10, fontWeight:700, fontFamily:"inherit" }}>Select all</button>
-                      <button onClick={() => setAllStores(false)} style={{ padding:"4px 9px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:6, cursor:"pointer", fontSize:10, fontWeight:700, fontFamily:"inherit" }}>Clear</button>
-                    </div>
-                  </div>
-                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))", gap:6 }}>
-                    {SALONS.map(sl => {
-                      const on = stores.includes(sl.name);
-                      return (
-                        <label key={sl.name} style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 9px", background: on ? "#FCE7F3" : "#fff", border:"1px solid " + (on ? "#FBCFE8" : "#F3D4DE"), borderRadius:7, cursor:"pointer", fontSize:12, color:"#831843", fontWeight: on ? 700 : 500 }}>
-                          <input type="checkbox" checked={on} onChange={() => toggleStore(sl.name)} style={{ accentColor:"#BE185D" }} />
-                          <span style={{ flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{sl.name}</span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                  <div style={{ fontSize:10, color:"#9F1A4F", marginTop:8, fontWeight:600 }}>
-                    {stores.length} of {SALONS.length} stores selected
-                    {isRom && stores.length === 0 && <span style={{ color:"#b91c1c", marginLeft:8 }}>⚠ A ROM with no stores will fall back to viewing all branches.</span>}
-                  </div>
-                </div>
-              );
-            })()}
+            <div style={{ background:"#FDF2F8", border:"1px solid #FBCFE8", borderRadius:9, padding:"9px 13px", fontSize:11, color:"#9F1A4F", marginBottom:14 }}>
+              🏬 <strong>Store allocation</strong> is now managed on the dedicated <strong>Store Allocation</strong> tab (under Admin), so a National Ops Manager can be granted edit rights to it without full Settings access.
+            </div>
 
             <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
               <button onClick={cancelEdit} disabled={busy}
@@ -6157,6 +6109,170 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
               </button>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── STORE ALLOCATION ADMIN ──────────────────────────────────────────────
+// Dedicated tab for assigning which salons each user (typically a Regional
+// Ops Manager) "owns". Read-only when readOnly is true — gives the Owner /
+// National Ops Manager a single place to edit, and lets it be granted to
+// other roles via the standard tab permission grid without exposing the
+// full Settings panel.
+function StoreAllocationAdmin({ appUsers, onUsersUpdate, currentUser, readOnly }) {
+  const users = appUsers || {};
+  const [busy, setBusy]   = useState(false);
+  const [filter, setFilter] = useState("rom"); // "rom" | "all"
+  const [draft, setDraft]   = useState({});    // pin → string[] of stores (uncommitted edits)
+  const [savedFor, setSavedFor] = useState(""); // pin of last-saved user, for the brief ✓ chip
+
+  const pins = Object.keys(users).sort((a, b) => {
+    const ua = users[a], ub = users[b];
+    if (!!ub.isOwner !== !!ua.isOwner) return ub.isOwner ? 1 : -1;
+    return (ua.name || "").localeCompare(ub.name || "");
+  });
+  const visiblePins = filter === "rom" ? pins.filter(p => isRomRole(users[p] && users[p].role)) : pins;
+
+  const storesFor = (pin) => {
+    if (draft[pin] !== undefined) return draft[pin];
+    const s = users[pin] && users[pin].stores;
+    return Array.isArray(s) ? s : [];
+  };
+  const isDirty = (pin) => {
+    const saved = (users[pin] && users[pin].stores) || [];
+    const cur = storesFor(pin);
+    if (saved.length !== cur.length) return true;
+    const a = saved.slice().sort();
+    const b = cur.slice().sort();
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return true;
+    return false;
+  };
+  const toggle = (pin, name) => {
+    if (readOnly) return;
+    setDraft(prev => {
+      const cur = prev[pin] !== undefined ? prev[pin] : ((users[pin] && users[pin].stores) || []);
+      const has = cur.includes(name);
+      return { ...prev, [pin]: has ? cur.filter(x => x !== name) : [...cur, name] };
+    });
+  };
+  const setAllFor = (pin, on) => {
+    if (readOnly) return;
+    setDraft(prev => ({ ...prev, [pin]: on ? SALONS.map(s => s.name) : [] }));
+  };
+  const saveFor = async (pin) => {
+    if (readOnly) return;
+    setBusy(true);
+    try {
+      const next = { ...users };
+      const cur = storesFor(pin);
+      next[pin] = { ...(users[pin] || {}) };
+      if (cur.length > 0) next[pin].stores = cur.slice();
+      else delete next[pin].stores;
+      await onUsersUpdate(next);
+      setDraft(prev => { const n = { ...prev }; delete n[pin]; return n; });
+      setSavedFor(pin);
+      window.setTimeout(() => setSavedFor(s => s === pin ? "" : s), 1800);
+    } catch (e) {
+      alert("Could not save: " + ((e && e.message) || e));
+    } finally { setBusy(false); }
+  };
+  const resetFor = (pin) => {
+    setDraft(prev => { const n = { ...prev }; delete n[pin]; return n; });
+  };
+
+  const romCount = pins.filter(p => isRomRole(users[p] && users[p].role)).length;
+
+  return (
+    <div>
+      <div style={{ marginBottom:14 }}>
+        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>🏬 Store Allocation</div>
+        <div style={{ fontSize:12, color:"#F472B6" }}>
+          {readOnly
+            ? "View-only. Each Regional Ops Manager's allocated stores drive their 'My stores' dashboard filter."
+            : "Assign the stores each Regional Ops Manager owns. The dashboard 'My stores / Other stores / All' toggle uses this list. Granting edit rights to this tab is enough — no Settings access needed."}
+        </div>
+      </div>
+
+      <div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap", alignItems:"center" }}>
+        <div style={{ fontSize:11, fontWeight:800, color:"#831843", letterSpacing:"0.06em", textTransform:"uppercase" }}>Show</div>
+        {[
+          { v: "rom", l: "Regional Ops Managers", sub: romCount + " user" + (romCount === 1 ? "" : "s") },
+          { v: "all", l: "All users",             sub: pins.length + " user" + (pins.length === 1 ? "" : "s") }
+        ].map(o => {
+          const on = filter === o.v;
+          return (
+            <button key={o.v} onClick={() => setFilter(o.v)}
+              style={{ padding:"7px 13px", borderRadius:9, border: on ? "1px solid #BE185D" : "1px solid #FBCFE8", background: on ? "#BE185D" : "#fff", color: on ? "#fff" : "#831843", cursor:"pointer", fontSize:12, fontWeight:700, fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"flex-start", lineHeight:1.15 }}>
+              <span>{o.l}</span>
+              <span style={{ fontSize:10, fontWeight:600, opacity: on ? 0.85 : 0.6 }}>{o.sub}</span>
+            </button>
+          );
+        })}
+        {busy && <span style={{ alignSelf:"center", fontSize:11, color:"#9F1A4F", fontStyle:"italic" }}>Saving…</span>}
+      </div>
+
+      {visiblePins.length === 0 ? (
+        <div style={{ background:"#FDF2F8", border:"1px dashed #FBCFE8", borderRadius:12, padding:"30px 18px", textAlign:"center", color:"#9F1A4F", fontSize:13 }}>
+          {filter === "rom"
+            ? "No Regional Ops Managers yet. Create one in Settings (role = \"Regional Ops Manager\")."
+            : "No users."}
+        </div>
+      ) : (
+        <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+          {visiblePins.map(pin => {
+            const u = users[pin] || {};
+            const cur = storesFor(pin);
+            const dirty = isDirty(pin);
+            const rom = isRomRole(u.role);
+            return (
+              <div key={pin} style={{ background:"#fff", border:"1px solid #FBCFE8", borderRadius:14, padding:"16px 18px" }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:10, marginBottom:10 }}>
+                  <div>
+                    <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                      <span style={{ fontSize:16, fontWeight:800, color:"#831843" }}>{u.name || "(unnamed)"}</span>
+                      <span style={{ fontFamily:"monospace", fontSize:11, color:"#9CA3AF" }}>PIN {pin}</span>
+                      {rom && <span style={{ background:"#FCE7F3", color:"#BE185D", border:"1px solid #FBCFE8", padding:"1px 7px", borderRadius:6, fontSize:10, fontWeight:700, letterSpacing:"0.06em" }}>ROM</span>}
+                      {u.isOwner && <span style={{ background:"#FEF3C7", color:"#92400e", border:"1px solid #FDE68A", padding:"1px 7px", borderRadius:6, fontSize:10, fontWeight:700 }}>OWNER</span>}
+                      {savedFor === pin && <span style={{ background:"#dcfce7", color:"#166534", border:"1px solid #86efac", padding:"1px 7px", borderRadius:6, fontSize:10, fontWeight:700 }}>✓ Saved</span>}
+                    </div>
+                    <div style={{ fontSize:11, color:"#9F1A4F", marginTop:2 }}>{u.role || "—"}</div>
+                  </div>
+                  <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                    {!readOnly && (
+                      <>
+                        <button onClick={() => setAllFor(pin, true)}  disabled={busy} style={{ padding:"5px 10px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:7, cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit" }}>Select all</button>
+                        <button onClick={() => setAllFor(pin, false)} disabled={busy} style={{ padding:"5px 10px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:7, cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit" }}>Clear</button>
+                      </>
+                    )}
+                    {!readOnly && dirty && (
+                      <>
+                        <button onClick={() => resetFor(pin)} disabled={busy} style={{ padding:"5px 11px", background:"#fff", color:"#7f1d1d", border:"1px solid #fecaca", borderRadius:7, cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit" }}>Cancel</button>
+                        <button onClick={() => saveFor(pin)}  disabled={busy} style={{ padding:"5px 13px", background:"#BE185D", color:"#fff", border:"none", borderRadius:7, cursor:"pointer", fontSize:11, fontWeight:800, fontFamily:"inherit" }}>{busy ? "Saving…" : "Save"}</button>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))", gap:6 }}>
+                  {SALONS.map(sl => {
+                    const on = cur.includes(sl.name);
+                    return (
+                      <label key={sl.name} style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 9px", background: on ? "#FCE7F3" : "#fff", border:"1px solid " + (on ? "#FBCFE8" : "#F3D4DE"), borderRadius:7, cursor: readOnly ? "default" : "pointer", fontSize:12, color:"#831843", fontWeight: on ? 700 : 500, opacity: readOnly ? 0.85 : 1 }}>
+                        <input type="checkbox" checked={on} disabled={readOnly || busy} onChange={() => toggle(pin, sl.name)} style={{ accentColor:"#BE185D" }} />
+                        <span style={{ flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{sl.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize:10, color:"#9F1A4F", marginTop:8, fontWeight:600 }}>
+                  {cur.length} of {SALONS.length} stores selected
+                  {rom && cur.length === 0 && <span style={{ color:"#b91c1c", marginLeft:8 }}>⚠ A ROM with no stores will fall back to viewing all branches.</span>}
+                  {dirty && <span style={{ color:"#b45309", marginLeft:8 }}>● unsaved</span>}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -8169,15 +8285,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t:"alerts",      l:"🔔 Alerts"         },
                   { t:"activity",    l:"📜 Activity Log"   }
                 ] },
-              ...(currentUser?.isOwner ? [{
-                key:"Admin", icon:"🛡️", title:"Admin",
-                color:{ bg:"#FEF3C7", bgActive:"#FDE68A", ink:"#92400e" },
-                items: [
-                  { t:"kioskPins",   l:"🔑 Kiosk PINs"   },
-                  { t:"managerPins", l:"🆔 Manager PINs" },
-                  { t:"settings",    l:"⚙️ Settings"     }
-                ]
-              }] : [])
+              // Admin group. Kiosk PINs / Manager PINs / Settings are
+              // owner-only. Store Allocation is shown to the Owner and to
+              // anyone whose role looks like a National Ops Manager; the
+              // standard hideTabs / readOnlyTabs grid still applies on top,
+              // so the Owner can fine-tune visibility for any specific user.
+              ...(() => {
+                const role = (currentUser?.role || "").toLowerCase();
+                const isNationalOps = role.includes("national ops") || role.includes("national operations");
+                const adminItems = [];
+                if (currentUser?.isOwner) {
+                  adminItems.push({ t:"kioskPins",   l:"🔑 Kiosk PINs"   });
+                  adminItems.push({ t:"managerPins", l:"🆔 Manager PINs" });
+                  adminItems.push({ t:"settings",    l:"⚙️ Settings"     });
+                }
+                if (currentUser?.isOwner || isNationalOps) {
+                  adminItems.push({ t:"storeAllocation", l:"🏬 Store Allocation" });
+                }
+                return adminItems.length > 0 ? [{
+                  key:"Admin", icon:"🛡️", title:"Admin",
+                  color:{ bg:"#FEF3C7", bgActive:"#FDE68A", ink:"#92400e" },
+                  items: adminItems
+                }] : [];
+              })()
             ];
             // Category that owns the currently-active tab.
             // Permission filter: hide entire categories AND/OR individual tabs.
@@ -16473,6 +16603,28 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           currentUser={currentUser}
         />
       )}
+
+      {tab === "storeAllocation" && (() => {
+        const role = (currentUser?.role || "").toLowerCase();
+        const isNationalOps = role.includes("national ops") || role.includes("national operations");
+        const allowed = !!currentUser?.isOwner || isNationalOps;
+        if (!allowed) {
+          return (
+            <div style={{ background:"#fef2f2", border:"1px solid #fca5a5", borderRadius:11, padding:"20px 22px", color:"#7f1d1d", fontFamily:"'Outfit',system-ui,sans-serif" }}>
+              <div style={{ fontWeight:800, marginBottom:6 }}>🔒 You don't have access to Store Allocation.</div>
+              <div style={{ fontSize:12 }}>Ask the Owner to grant access, or to assign you the National Ops Manager role.</div>
+            </div>
+          );
+        }
+        return (
+          <StoreAllocationAdmin
+            appUsers={appUsers}
+            onUsersUpdate={onUsersUpdate}
+            currentUser={currentUser}
+            readOnly={currentTabIsReadOnly}
+          />
+        );
+      })()}
 
       {tab === "hrLibrary" && (currentUser?.role === "Master Admin" || currentUser?.isOwner) && (
         window.EmployeeDataLibrary ? React.createElement(window.EmployeeDataLibrary, { staff: staff, currentUser: currentUser, managers: managers, obList: obList, offList: offList }) : <div style={{padding:24}}>Loading Employee Files...</div>
