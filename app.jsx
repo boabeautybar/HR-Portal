@@ -5714,6 +5714,7 @@ const SETTINGS_TABS = [
   { t: "leave",      l: "Leave Planner",     cat: "Operations", icon: "🌴" },
   { t: "storeOpenings", l: "Store Openings",  cat: "Operations", icon: "🔓" },
   { t: "movements",  l: "Today's Movements", cat: "Operations", icon: "🔀" },
+  { t: "dailyTasks", l: "Daily Tasks",       cat: "Operations", icon: "📋" },
   { t: "attendance",     l: "Attendance / Payroll", cat: "Payroll", icon: "📕" },
   { t: "payrollProgress",l: "Payroll Progress",     cat: "Payroll", icon: "📊" },
   { t: "alerts",     l: "Alerts",            cat: "Insights",   icon: "🔔" },
@@ -6279,6 +6280,401 @@ function StoreAllocationAdmin({ appUsers, onUsersUpdate, currentUser, readOnly }
   );
 }
 
+// ─── DAILY TASKS ADMIN ───────────────────────────────────────────────────
+// Admin UI for assigning per-user to-do items. Each task has a single
+// assignee (by PIN), a title + optional description, and a recurrence:
+//   - kind: "once"   → fixed `date` (YYYY-MM-DD)
+//   - kind: "weekly" → `repeatDow: [0..6]`, where 0 = Sunday. The task
+//                      auto-appears every matching weekday from
+//                      `startDate` onwards.
+// Done-tracking:
+//   - once:   doneAt / doneBy (one-shot)
+//   - weekly: doneByDate { "YYYY-MM-DD": { at, by } } per-occurrence
+// Tasks for today appear on the assignee's dashboard; future / non-
+// matching days stay hidden.
+const DOW_LABEL = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const DOW_LONG  = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+function isTaskActiveToday(task, ymdStr, dow) {
+  if (!task) return false;
+  if (task.kind === "weekly") {
+    if (!Array.isArray(task.repeatDow) || !task.repeatDow.includes(dow)) return false;
+    if (task.startDate && ymdStr < task.startDate) return false;
+    return true;
+  }
+  // Default ("once") — show only on the exact date.
+  return task.date === ymdStr;
+}
+function isTaskDoneOn(task, ymdStr) {
+  if (!task) return false;
+  if (task.kind === "weekly") return !!(task.doneByDate && task.doneByDate[ymdStr]);
+  return !!task.doneAt;
+}
+function describeRepeat(task) {
+  if (!task) return "";
+  if (task.kind === "weekly") {
+    const dows = Array.isArray(task.repeatDow) ? task.repeatDow.slice().sort() : [];
+    if (dows.length === 0) return "Weekly (no day picked)";
+    if (dows.length === 7) return "Every day";
+    return "Every " + dows.map(d => DOW_LABEL[d]).join(" · ");
+  }
+  return task.date || "—";
+}
+function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
+  const todayYmd = new Date().toISOString().slice(0, 10);
+  const [editing, setEditing] = useState(null); // null | { _id, isNew, title, description, assigneePin, date }
+  const [filter, setFilter]   = useState("today"); // "today" | "upcoming" | "past" | "all"
+  const [busy, setBusy]       = useState(false);
+
+  const users = appUsers || {};
+  const sortedUserPins = Object.keys(users).sort((a, b) =>
+    (users[a].name || "").localeCompare(users[b].name || "")
+  );
+
+  const beginAdd = () => setEditing({
+    _id: null, isNew: true, title: "", description: "",
+    assigneePin: "", date: todayYmd,
+    kind: "once", repeatDow: [], startDate: todayYmd
+  });
+  const beginEdit = (t) => setEditing({
+    _id: t._id, isNew: false,
+    title: t.title || "", description: t.description || "",
+    assigneePin: t.assigneePin || "",
+    date: t.date || todayYmd,
+    kind: t.kind === "weekly" ? "weekly" : "once",
+    repeatDow: Array.isArray(t.repeatDow) ? t.repeatDow.slice() : [],
+    startDate: t.startDate || todayYmd
+  });
+  const cancelEdit = () => setEditing(null);
+
+  const todayDow = new Date().getDay();
+  const visible = (tasks || []).filter(t => {
+    if (!t) return false;
+    if (filter === "today")    return isTaskActiveToday(t, todayYmd, todayDow);
+    if (filter === "upcoming") return t.kind === "weekly" || (t.date && t.date > todayYmd);
+    if (filter === "past")     return t.kind !== "weekly" && t.date && t.date < todayYmd;
+    return true;
+  }).sort((a, b) => {
+    // Weekly tasks sort to the top of "all" / "upcoming"; among them, by
+    // created-at. One-off tasks sort by their date.
+    if ((a.kind === "weekly") !== (b.kind === "weekly")) return a.kind === "weekly" ? -1 : 1;
+    return (a.date || "").localeCompare(b.date || "") || (a.createdAt || "").localeCompare(b.createdAt || "");
+  });
+
+  const saveEdit = async () => {
+    if (!editing) return;
+    if (!editing.title.trim())       { alert("Task title is required."); return; }
+    if (!editing.assigneePin)        { alert("Pick someone to assign this to."); return; }
+    if (editing.kind === "weekly") {
+      if (!Array.isArray(editing.repeatDow) || editing.repeatDow.length === 0) {
+        alert("Pick at least one day of the week for the reminder to repeat on.");
+        return;
+      }
+    } else if (!editing.date) {
+      alert("Pick a date."); return;
+    }
+    setBusy(true);
+    try {
+      const prior = (tasks || []).find(t => t && t._id === editing._id) || {};
+      const isWeekly = editing.kind === "weekly";
+      const rec = {
+        _id: editing._id || ("tk_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7)),
+        title: editing.title.trim(),
+        description: (editing.description || "").trim().slice(0, 500),
+        assigneePin: editing.assigneePin,
+        kind: isWeekly ? "weekly" : "once",
+        createdBy: editing.isNew ? ((currentUser && currentUser.name) || "") : (prior.createdBy || ""),
+        createdAt: editing.isNew ? new Date().toISOString() : (prior.createdAt || new Date().toISOString())
+      };
+      if (isWeekly) {
+        rec.repeatDow = editing.repeatDow.slice().sort();
+        rec.startDate = editing.startDate || todayYmd;
+        rec.doneByDate = prior.doneByDate || {};
+      } else {
+        rec.date = editing.date;
+        rec.doneAt = prior.doneAt || null;
+        rec.doneBy = prior.doneBy || null;
+      }
+      const others = (tasks || []).filter(t => !t || t._id !== rec._id);
+      await onSave([...others, rec]);
+      if (window.BOA_LOG_ACTIVITY) {
+        const who = (users[rec.assigneePin] && users[rec.assigneePin].name) || rec.assigneePin;
+        window.BOA_LOG_ACTIVITY(
+          editing.isNew ? "Created daily task" : "Edited daily task",
+          rec.title,
+          who + " · " + describeRepeat(rec),
+          "Task"
+        );
+      }
+      setEditing(null);
+    } catch (_) { /* onSave already alerted */ }
+    finally { setBusy(false); }
+  };
+
+  const removeTask = async (t) => {
+    if (!t) return;
+    const who = (users[t.assigneePin] && users[t.assigneePin].name) || t.assigneePin;
+    if (!window.confirm("Delete this task for " + who + " (" + describeRepeat(t) + ")?")) return;
+    setBusy(true);
+    try {
+      await onSave((tasks || []).filter(x => x && x._id !== t._id));
+      if (window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY("Deleted daily task", t.title || "", who + " · " + describeRepeat(t), "Task");
+      }
+    } catch (_) {} finally { setBusy(false); }
+  };
+
+  // Re-open a task. For one-off tasks this clears doneAt; for weekly
+  // tasks we clear only today's done-stamp so the row reopens for today
+  // without erasing historical completions.
+  const reopenTask = async (t) => {
+    setBusy(true);
+    try {
+      const next = (tasks || []).map(x => {
+        if (!x || x._id !== t._id) return x;
+        if (x.kind === "weekly") {
+          const dbd = { ...(x.doneByDate || {}) };
+          delete dbd[todayYmd];
+          return { ...x, doneByDate: dbd };
+        }
+        return { ...x, doneAt: null, doneBy: null };
+      });
+      await onSave(next);
+    } catch (_) {} finally { setBusy(false); }
+  };
+
+  const fmtDate = (ymd) => {
+    if (!ymd) return "—";
+    if (ymd === todayYmd) return "Today";
+    const d = new Date(ymd + "T00:00:00");
+    return d.toLocaleDateString("en-ZA", { weekday:"short", day:"2-digit", month:"short" });
+  };
+
+  const counts = {
+    today:    (tasks || []).filter(t => t && t.date === todayYmd).length,
+    upcoming: (tasks || []).filter(t => t && t.date > todayYmd).length,
+    past:     (tasks || []).filter(t => t && t.date < todayYmd).length,
+    all:      (tasks || []).length
+  };
+
+  return (
+    <div>
+      <div style={{ marginBottom:14 }}>
+        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>📋 Daily Tasks</div>
+        <div style={{ fontSize:12, color:"#F472B6" }}>
+          {readOnly
+            ? "View-only. Tasks appear on each assignee's dashboard on the matching date."
+            : "Assign a one-day to-do to any portal user. They'll see it on their dashboard on the date you pick and tick 'Done' when finished. Future dates are hidden from the assignee until that day."}
+        </div>
+      </div>
+
+      <div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap", alignItems:"center" }}>
+        {[
+          { v:"today",    l:"Today",    n:counts.today },
+          { v:"upcoming", l:"Upcoming", n:counts.upcoming },
+          { v:"past",     l:"Past",     n:counts.past },
+          { v:"all",      l:"All",      n:counts.all }
+        ].map(o => {
+          const on = filter === o.v;
+          return (
+            <button key={o.v} onClick={() => setFilter(o.v)}
+              style={{ padding:"7px 13px", borderRadius:9, border: on ? "1px solid #BE185D" : "1px solid #FBCFE8", background: on ? "#BE185D" : "#fff", color: on ? "#fff" : "#831843", cursor:"pointer", fontSize:12, fontWeight:700, fontFamily:"inherit", display:"flex", alignItems:"center", gap:6 }}>
+              {o.l}
+              <span style={{ background: on ? "rgba(255,255,255,0.22)" : "#FCE7F3", color: on ? "#fff" : "#BE185D", padding:"1px 7px", borderRadius:999, fontSize:11, fontWeight:700 }}>{o.n}</span>
+            </button>
+          );
+        })}
+        <div style={{ flex:1 }} />
+        {!readOnly && (
+          <button onClick={beginAdd} disabled={busy}
+            style={{ padding:"9px 16px", background:"#BE185D", color:"#fff", border:"none", borderRadius:9, cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>
+            + New task
+          </button>
+        )}
+      </div>
+
+      {visible.length === 0 ? (
+        <div style={{ background:"#FDF2F8", border:"1px dashed #FBCFE8", borderRadius:12, padding:"30px 18px", textAlign:"center", color:"#9F1A4F", fontSize:13 }}>
+          {filter === "today"    && "No tasks scheduled for today."}
+          {filter === "upcoming" && "No upcoming tasks yet."}
+          {filter === "past"     && "No past tasks."}
+          {filter === "all"      && "No tasks yet. Click + New task to create one."}
+        </div>
+      ) : (
+        <div style={{ background:"#fff", border:"1px solid #FBCFE8", borderRadius:12, overflow:"hidden" }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+            <thead>
+              <tr style={{ background:"#FCE7F3", color:"#831843", fontSize:11, letterSpacing:"0.04em" }}>
+                <th style={{ textAlign:"left", padding:"9px 12px" }}>DATE</th>
+                <th style={{ textAlign:"left", padding:"9px 12px" }}>TASK</th>
+                <th style={{ textAlign:"left", padding:"9px 12px" }}>ASSIGNED TO</th>
+                <th style={{ textAlign:"left", padding:"9px 12px" }}>STATUS</th>
+                <th style={{ textAlign:"right", padding:"9px 12px" }}>ACTIONS</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map(t => {
+                const u = users[t.assigneePin] || {};
+                const isWeekly = t.kind === "weekly";
+                const doneTodayOnly = isTaskDoneOn(t, todayYmd);
+                const overdue = !isWeekly && !t.doneAt && t.date && t.date < todayYmd;
+                const dateLbl = isWeekly ? describeRepeat(t) : fmtDate(t.date);
+                return (
+                  <tr key={t._id} style={{ borderTop:"1px solid #FCE7F3" }}>
+                    <td style={{ padding:"10px 12px", color: overdue ? "#7f1d1d" : "#831843", fontWeight:600 }}>
+                      {isWeekly && <span style={{ display:"inline-block", marginRight:5, background:"#ede9fe", color:"#5b21b6", border:"1px solid #ddd6fe", padding:"1px 6px", borderRadius:5, fontSize:9, fontWeight:800, letterSpacing:"0.06em" }}>WEEKLY</span>}
+                      {dateLbl}
+                      {overdue && <div style={{ fontSize:9, color:"#7f1d1d", fontWeight:800, letterSpacing:"0.06em", marginTop:1 }}>OVERDUE</div>}
+                    </td>
+                    <td style={{ padding:"10px 12px", color:"#111827" }}>
+                      <div style={{ fontWeight:700, textDecoration: (!isWeekly && t.doneAt) ? "line-through" : "none", opacity: (!isWeekly && t.doneAt) ? 0.6 : 1 }}>{t.title}</div>
+                      {t.description && <div style={{ fontSize:11, color:"#6b7280", marginTop:2, whiteSpace:"pre-wrap" }}>{t.description}</div>}
+                    </td>
+                    <td style={{ padding:"10px 12px", color:"#374151" }}>
+                      {u.name || "(unknown)"}
+                      <div style={{ fontFamily:"monospace", fontSize:10, color:"#9CA3AF" }}>PIN {t.assigneePin}</div>
+                    </td>
+                    <td style={{ padding:"10px 12px" }}>
+                      {isWeekly ? (
+                        doneTodayOnly ? (
+                          <span style={{ background:"#dcfce7", color:"#166534", border:"1px solid #86efac", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }}>✓ Done today</span>
+                        ) : isTaskActiveToday(t, todayYmd, todayDow) ? (
+                          <span style={{ background:"#fef3c7", color:"#78350f", border:"1px solid #fde68a", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }}>● Open today</span>
+                        ) : (
+                          <span style={{ background:"#f3f4f6", color:"#374151", border:"1px solid #e5e7eb", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }}>Scheduled</span>
+                        )
+                      ) : t.doneAt ? (
+                        <span style={{ background:"#dcfce7", color:"#166534", border:"1px solid #86efac", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }}>
+                          ✓ {t.doneBy ? "Done · " + t.doneBy : "Done"}
+                        </span>
+                      ) : overdue ? (
+                        <span style={{ background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fca5a5", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }}>● Open</span>
+                      ) : (
+                        <span style={{ background:"#fef3c7", color:"#78350f", border:"1px solid #fde68a", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }}>● Open</span>
+                      )}
+                    </td>
+                    <td style={{ padding:"10px 12px", textAlign:"right", whiteSpace:"nowrap" }}>
+                      {!readOnly && (isWeekly ? doneTodayOnly : !!t.doneAt) && (
+                        <button onClick={() => reopenTask(t)} disabled={busy}
+                          style={{ padding:"5px 10px", marginRight:5, background:"#fff", color:"#374151", border:"1px solid #d1d5db", borderRadius:6, cursor:"pointer", fontSize:11, fontWeight:600 }}>Re-open{isWeekly ? " today" : ""}</button>
+                      )}
+                      {!readOnly && (
+                        <>
+                          <button onClick={() => beginEdit(t)} disabled={busy}
+                            style={{ padding:"5px 10px", marginRight:5, background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:6, cursor:"pointer", fontSize:11, fontWeight:600 }}>Edit</button>
+                          <button onClick={() => removeTask(t)} disabled={busy}
+                            style={{ padding:"5px 10px", background:"#fff", color:"#b91c1c", border:"1px solid #fecaca", borderRadius:6, cursor:"pointer", fontSize:11, fontWeight:600 }}>Delete</button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {editing && (
+        <div onClick={cancelEdit} style={{ position:"fixed", inset:0, background:"rgba(131,24,67,0.4)", zIndex:9000, display:"flex", alignItems:"center", justifyContent:"center", padding:"30px 20px", overflow:"auto" }}>
+          <div onClick={e => e.stopPropagation()} style={{ background:"#fff", borderRadius:14, padding:"24px 28px", width:"min(520px, 100%)", maxHeight:"90vh", overflow:"auto", border:"1px solid #FBCFE8", boxShadow:"0 20px 50px rgba(131,24,67,0.25)" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:14 }}>
+              <div style={{ fontFamily:"'Playfair Display',serif", fontSize:20, color:"#831843", fontWeight:700 }}>
+                {editing.isNew ? "New task" : "Edit task"}
+              </div>
+              <button onClick={cancelEdit} style={{ background:"transparent", border:"none", color:"#9F1A4F", cursor:"pointer", fontSize:22, lineHeight:1 }}>×</button>
+            </div>
+
+            <label style={{ display:"flex", flexDirection:"column", gap:4, marginBottom:12 }}>
+              <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>TITLE *</span>
+              <input value={editing.title}
+                onChange={e => setEditing({ ...editing, title: e.target.value })}
+                placeholder="e.g. Submit weekly stock count"
+                style={{ padding:"9px 12px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, fontFamily:"inherit" }} />
+            </label>
+
+            <label style={{ display:"flex", flexDirection:"column", gap:4, marginBottom:12 }}>
+              <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>DESCRIPTION</span>
+              <textarea value={editing.description} rows={3}
+                onChange={e => setEditing({ ...editing, description: e.target.value })}
+                placeholder="Optional. Anything the assignee should know."
+                style={{ padding:"9px 12px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, fontFamily:"inherit", resize:"vertical" }} />
+            </label>
+
+            <label style={{ display:"flex", flexDirection:"column", gap:4, marginBottom:12 }}>
+              <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>ASSIGN TO *</span>
+              <select value={editing.assigneePin}
+                onChange={e => setEditing({ ...editing, assigneePin: e.target.value })}
+                style={{ padding:"9px 12px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, fontFamily:"inherit", background:"#fff" }}>
+                <option value="">— pick a user —</option>
+                {sortedUserPins.map(pin => {
+                  const u = users[pin];
+                  return <option key={pin} value={pin}>{u.name || "(unnamed)"} · {u.role || ""}</option>;
+                })}
+              </select>
+            </label>
+
+            <div style={{ marginBottom:12 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em", marginBottom:6 }}>REPEATS</div>
+              <div style={{ display:"flex", gap:6, marginBottom:8 }}>
+                {[
+                  { v:"once",   l:"One-off date" },
+                  { v:"weekly", l:"Every week" }
+                ].map(o => {
+                  const on = editing.kind === o.v;
+                  return (
+                    <button key={o.v} onClick={() => setEditing({ ...editing, kind: o.v })}
+                      style={{ padding:"7px 13px", borderRadius:9, border: on ? "1px solid #BE185D" : "1px solid #FBCFE8", background: on ? "#BE185D" : "#fff", color: on ? "#fff" : "#831843", cursor:"pointer", fontSize:12, fontWeight:700, fontFamily:"inherit" }}>{o.l}</button>
+                  );
+                })}
+              </div>
+              {editing.kind === "weekly" ? (
+                <div>
+                  <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:8 }}>
+                    {[1,2,3,4,5,6,0].map(d => {
+                      const on = (editing.repeatDow || []).includes(d);
+                      return (
+                        <button key={d}
+                          onClick={() => {
+                            const cur = Array.isArray(editing.repeatDow) ? editing.repeatDow : [];
+                            const has = cur.includes(d);
+                            setEditing({ ...editing, repeatDow: has ? cur.filter(x => x !== d) : [...cur, d] });
+                          }}
+                          style={{ width:50, padding:"7px 0", borderRadius:8, border: on ? "1px solid #BE185D" : "1px solid #FBCFE8", background: on ? "#BE185D" : "#fff", color: on ? "#fff" : "#831843", cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit", textAlign:"center" }}>{DOW_LABEL[d]}</button>
+                      );
+                    })}
+                  </div>
+                  <label style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                    <span style={{ fontSize:10, fontWeight:700, color:"#9F1A4F", letterSpacing:"0.04em" }}>STARTS FROM</span>
+                    <input type="date" value={editing.startDate} min={todayYmd}
+                      onChange={e => setEditing({ ...editing, startDate: e.target.value })}
+                      style={{ padding:"7px 10px", borderRadius:7, border:"1px solid #FBCFE8", fontSize:12, fontFamily:"inherit", width:200 }} />
+                  </label>
+                </div>
+              ) : (
+                <label style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                  <span style={{ fontSize:10, fontWeight:700, color:"#9F1A4F", letterSpacing:"0.04em" }}>DATE *</span>
+                  <input type="date" value={editing.date} min={todayYmd}
+                    onChange={e => setEditing({ ...editing, date: e.target.value })}
+                    style={{ padding:"7px 10px", borderRadius:7, border:"1px solid #FBCFE8", fontSize:12, fontFamily:"inherit", width:200 }} />
+                </label>
+              )}
+            </div>
+
+            <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
+              <button onClick={cancelEdit} disabled={busy}
+                style={{ padding:"9px 16px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:9, cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:600 }}>Cancel</button>
+              <button onClick={saveEdit} disabled={busy}
+                style={{ padding:"9px 18px", background:"#BE185D", color:"#fff", border:"none", borderRadius:9, cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>
+                {busy ? "Saving…" : (editing.isNew ? "Create task" : "Save changes")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────────
 let seed = 5000;
 function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
@@ -6449,6 +6845,77 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     })();
     return () => { cancelled = true; };
   }, []);
+
+  // ── Daily tasks — admin assigns per-user to-dos, dashboard renders
+  // today's open items for the signed-in user. Stored as a flat array
+  // in app_state['boa_daily_tasks_v1'].
+  const [dailyTasks, setDailyTasks] = useState([]);
+  useEffect(() => {
+    if (!window.BOA_DB || !window.BOA_DB.loadDailyTasks) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const recs = await window.BOA_DB.loadDailyTasks();
+        if (!cancelled) setDailyTasks(Array.isArray(recs) ? recs : []);
+      } catch (e) { console.error("loadDailyTasks:", e); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  const persistDailyTasks = async (next) => {
+    try {
+      await window.BOA_DB.saveDailyTasks(next);
+      setDailyTasks(next);
+    } catch (e) {
+      alert("Could not save tasks: " + ((e && e.message) || e));
+      throw e;
+    }
+  };
+  // Today's open tasks for the signed-in user — drives the dashboard
+  // "Today's To-Dos" section. Both one-off tasks dated today and weekly
+  // tasks whose repeatDow includes today's weekday are included; the
+  // "done" check uses doneAt (once) or doneByDate[today] (weekly).
+  const todayYmdStr = new Date().toISOString().slice(0, 10);
+  const todayDowNum = new Date().getDay();
+  const myTodayTasks = (dailyTasks || []).filter(t =>
+    t && t.assigneePin === (currentUser && currentUser.pin) && isTaskActiveToday(t, todayYmdStr, todayDowNum)
+  ).sort((a, b) => {
+    const ad = isTaskDoneOn(a, todayYmdStr) ? 1 : 0;
+    const bd = isTaskDoneOn(b, todayYmdStr) ? 1 : 0;
+    return ad - bd || (a.createdAt || "").localeCompare(b.createdAt || "");
+  });
+  const markTaskDone = async (id) => {
+    const list = dailyTasks || [];
+    const stamp = new Date().toISOString();
+    const by = (currentUser && currentUser.name) || "";
+    const next = list.map(t => {
+      if (!t || t._id !== id) return t;
+      if (t.kind === "weekly") {
+        const dbd = { ...(t.doneByDate || {}) };
+        dbd[todayYmdStr] = { at: dbd[todayYmdStr] ? dbd[todayYmdStr].at : stamp, by: dbd[todayYmdStr] ? dbd[todayYmdStr].by : by };
+        return { ...t, doneByDate: dbd };
+      }
+      return { ...t, doneAt: t.doneAt || stamp, doneBy: t.doneBy || by };
+    });
+    await persistDailyTasks(next);
+    if (window.BOA_LOG_ACTIVITY) {
+      const r = list.find(t => t && t._id === id);
+      if (r) window.BOA_LOG_ACTIVITY("Completed daily task", r.title || "", todayYmdStr, "Task");
+    }
+  };
+  const markTaskUndone = async (id) => {
+    const list = dailyTasks || [];
+    const next = list.map(t => {
+      if (!t || t._id !== id) return t;
+      if (t.kind === "weekly") {
+        const dbd = { ...(t.doneByDate || {}) };
+        delete dbd[todayYmdStr];
+        return { ...t, doneByDate: dbd };
+      }
+      return { ...t, doneAt: null, doneBy: null };
+    });
+    await persistDailyTasks(next);
+  };
+
   const saveLoan = async (record) => {
     const showErr = (msg) => {
       console.error("saveLoan:", msg, record);
@@ -8325,6 +8792,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t:"leave",       l:"🌴 Leave Planner"  },
                   { t:"storeOpenings", l:"🔓 Store Openings" },
                   { t:"movements",     l:"🔀 Today's Movements" },
+                  { t:"dailyTasks",    l:"📋 Daily Tasks" },
                   { t:"mgrPlanner",  l:"🧩 Manager Planner",
                     isActive: tab==="recruitment" && recruitSubTab==="mgrRecruit" && mgrSubTab==="planner",
                     onClick: () => { setRecruitSubTab("mgrRecruit"); setMgrSubTab("planner"); tryChangeTab("recruitment"); }
@@ -8699,6 +9167,45 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   to the Check-ins tabs and Store Openings — flipping it
                   here also affects those views. */}
               {renderScopeBar({ marginBottom: 18 })}
+
+              {/* ── SECTION: TODAY'S TO-DOS ── personal task list. Renders
+                  only when the signed-in user has at least one task for
+                  today (one-off dated today OR a weekly task whose
+                  repeatDow includes today). Click '✓ Done' to close it
+                  out; weekly tasks reopen automatically next week. */}
+              {myTodayTasks.length > 0 && (
+                <>
+                  <div style={sectionTitle}>
+                    <span>📋 Today's To-Dos</span>
+                    <span style={sectionRule} />
+                  </div>
+                  <div style={{ marginBottom: 24, display:"flex", flexDirection:"column", gap:8 }}>
+                    {myTodayTasks.map(t => {
+                      const done = isTaskDoneOn(t, todayYmdStr);
+                      const weekly = t.kind === "weekly";
+                      return (
+                        <div key={t._id} style={{ background: done ? "#f9fafb" : "#fff", border:"1px solid " + (done ? "#e5e7eb" : "#FBCFE8"), borderRadius:14, padding:"14px 18px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, opacity: done ? 0.7 : 1 }}>
+                          <div style={{ minWidth:0, flex:1 }}>
+                            <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:3 }}>
+                              <span style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:15, fontWeight:800, color:"#831843", textDecoration: done ? "line-through" : "none" }}>{t.title}</span>
+                              {weekly && <span style={{ background:"#ede9fe", color:"#5b21b6", border:"1px solid #ddd6fe", padding:"1px 7px", borderRadius:6, fontSize:9, fontWeight:800, letterSpacing:"0.06em" }}>WEEKLY · {DOW_LABEL[todayDowNum].toUpperCase()}</span>}
+                            </div>
+                            {t.description && <div style={{ fontSize:12, color:"#6b7280", whiteSpace:"pre-wrap" }}>{t.description}</div>}
+                            {done && <div style={{ fontSize:10, color:"#15803d", fontWeight:700, marginTop:3 }}>✓ Done · {weekly ? (t.doneByDate[todayYmdStr] && t.doneByDate[todayYmdStr].by ? "by " + t.doneByDate[todayYmdStr].by : "") : (t.doneBy ? "by " + t.doneBy : "")}</div>}
+                          </div>
+                          {done ? (
+                            <button onClick={() => markTaskUndone(t._id)}
+                              style={{ background:"#fff", color:"#374151", border:"1px solid #d1d5db", borderRadius:8, padding:"7px 12px", cursor:"pointer", fontSize:12, fontWeight:700, fontFamily:"inherit", whiteSpace:"nowrap" }}>Undo</button>
+                          ) : (
+                            <button onClick={() => markTaskDone(t._id)}
+                              style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:8, padding:"9px 16px", cursor:"pointer", fontSize:13, fontWeight:800, fontFamily:"inherit", whiteSpace:"nowrap" }}>✓ Done</button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
 
               {/* ── SECTION: TODAY ── */}
               <div style={sectionTitle}>
@@ -16719,6 +17226,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           />
         );
       })()}
+
+      {tab === "dailyTasks" && (
+        <DailyTasksAdmin
+          tasks={dailyTasks}
+          onSave={persistDailyTasks}
+          appUsers={appUsers}
+          currentUser={currentUser}
+          readOnly={currentTabIsReadOnly}
+        />
+      )}
 
       {tab === "hrLibrary" && (currentUser?.role === "Master Admin" || currentUser?.isOwner) && (
         window.EmployeeDataLibrary ? React.createElement(window.EmployeeDataLibrary, { staff: staff, currentUser: currentUser, managers: managers, obList: obList, offList: offList }) : <div style={{padding:24}}>Loading Employee Files...</div>

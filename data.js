@@ -952,6 +952,24 @@
     return records;
   }
 
+  // ---------- Daily tasks (boa_daily_tasks_v1) ----------
+  // Per-user to-do items assigned by an admin. Records:
+  //   { _id, title, description, assigneePin, date (YYYY-MM-DD),
+  //     createdBy, createdAt, doneAt?, doneBy? }
+  // The HR portal dashboard reads only TODAY's tasks for the signed-in
+  // user; the admin "Daily Tasks" tab edits the whole list.
+  async function loadDailyTasks() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_daily_tasks_v1").maybeSingle();
+    if (res.error) { console.error("loadDailyTasks:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveDailyTasks(records) {
+    var res = await sb.from("app_state").upsert({ key: "boa_daily_tasks_v1", value: records || [] });
+    if (res.error) { console.error("saveDailyTasks:", res.error); throw res.error; }
+    return records;
+  }
+
   // ---------- Attendance grid (boa_att_<branch>_<ym>) ----------
   // Same key the check-in kiosk app writes to. Status codes include:
   //   on, late, off, ext, sick_n, sick, frl, al, ph, mat, no, unpaid,
@@ -1110,6 +1128,8 @@
     // Unpaid legal-status leave
     loadTechLoans:          loadTechLoans,
     saveTechLoans:          saveTechLoans,
+    loadDailyTasks:         loadDailyTasks,
+    saveDailyTasks:         saveDailyTasks,
     loadComplianceActions:  loadComplianceActions,
     saveComplianceActions:  saveComplianceActions,
     loadUnpaidLegalRecords: loadUnpaidLegalRecords,
