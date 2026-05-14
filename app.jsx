@@ -14310,9 +14310,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             result.dayTotals = newDT;
             const newConflicts = [];
             const dows = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+            // Match mgrSched's per-day coverage rule: 3+ mgrs available that
+            // day → require >=2 working; 2 or fewer available (true 2-mgr
+            // store, or 3-mgr store with one on leave that day) → 1 mgr ok.
+            const _activeMgrsMerged = (result.managers || []).filter(mm => !mm._onMat).length;
             for (const x of result.dates) {
               const w = newDT[x.d].working;
-              if (w < 2) newConflicts.push({ type:"understaffed", msg: x.d + " " + dows[x.dow] + ": " + w + " manager" + (w===1?"":"s") + " working, need at least 2", severity:"high" });
+              const activeToday = _activeMgrsMerged - (newDT[x.d].leave || 0);
+              const minCov = activeToday >= 3 ? 2 : 1;
+              if (w < minCov) newConflicts.push({ type:"understaffed", msg: x.d + " " + dows[x.dow] + ": " + w + " manager" + (w===1?"":"s") + " working, need at least " + minCov, severity:"high" });
             }
             for (const m of result.managers) {
               if (m._onMat) continue;     // skip maternity from consecutive-days check
