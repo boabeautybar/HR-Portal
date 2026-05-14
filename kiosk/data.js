@@ -43,11 +43,30 @@
   }
 
   // ---------- Staff ----------
+  // First-of-month ISO date (YYYY-MM-01) for the supplied reference date.
+  // Used by listStaff(includeRecentLeavers) to keep mid-month leavers visible
+  // until the calendar rolls into the next month.
+  function _firstOfMonthIso(d) {
+    d = d || new Date();
+    return isoDate(new Date(d.getFullYear(), d.getMonth(), 1));
+  }
+
   async function listStaff(opts) {
     opts = opts || {};
     var c = client(); if (!c) return [];
     var q = c.from("staff").select("*").eq("branch", branch());
-    if (opts.activeOnly !== false) q = q.eq("active", true);
+    if (opts.activeOnly !== false) {
+      if (opts.includeRecentLeavers) {
+        // Active staff + recent leavers (active=false but left_date is in
+        // the current calendar month, or set to a future date). Past-month
+        // leavers are excluded so the kiosk drops them automatically on
+        // month rollover.
+        var monthStart = _firstOfMonthIso(opts.refDate || new Date());
+        q = q.or("active.eq.true,and(active.eq.false,left_date.gte." + monthStart + ")");
+      } else {
+        q = q.eq("active", true);
+      }
+    }
     q = q.order("name", { ascending: true });
     var res = await q;
     if (res.error) { console.error("listStaff:", res.error); return []; }
@@ -69,14 +88,171 @@
     return Array.isArray(v) ? v : [];
   }
 
+  // ── Off-boarding records ───────────────────────────────────────────
+  // HR portal's off-boarding tab writes to app_state under
+  // boa_offboard_v1: [{ ec, name, branch, leftDate, reason, notes,
+  // addedAt }, ...]. It does NOT flip the staff row's active column or
+  // set left_date — that only happens via the staff-edit modal — so the
+  // kiosk MUST consult this list to know who's actually left. Otherwise
+  // staff off-boarded via the dedicated tab still look active here.
+  async function loadOffboarding() {
+    var c = client(); if (!c) return [];
+    var res = await c.from("app_state").select("value").eq("key", "boa_offboard_v1").maybeSingle();
+    if (res.error) { console.error("loadOffboarding:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+
+  // ── Tech day-loans ──────────────────────────────────────────────────
+  // HR portal (and the manager kiosk widget) write to app_state under
+  // boa_tech_loans_v1: { _id, ec, name, date, fromBranch, toBranch, note,
+  // ... }. listTechLoans(dateIso) returns just the rows for that date.
+  // categorizeStaff applies them: drop staff loaned OUT of this kiosk for
+  // the day, and add any guests loaned IN as honorary roster entries tagged
+  // with _guest = true / _homeBranch = fromBranch so the UI can chip them.
+  async function listTechLoans(dateIso) {
+    var c = client(); if (!c) return [];
+    var res = await c.from("app_state").select("value").eq("key", "boa_tech_loans_v1").maybeSingle();
+    if (res.error) { console.error("listTechLoans:", res.error); return []; }
+    var v = res.data && res.data.value;
+    var arr = Array.isArray(v) ? v : [];
+    if (!dateIso) return arr;
+    return arr.filter(function (l) { return l && l.date === dateIso; });
+  }
+
+  // Save a single tech-loan record. Replaces any existing loan for the same
+  // (ec, date) pair so a tech can't be in two places on the same day. Used by
+  // the manager kiosk "Borrow tech today" flow.
+  async function saveTechLoan(loan) {
+    var c = client(); if (!c) throw new Error("Supabase not configured");
+    if (!loan || !loan.ec || !loan.date || !loan.fromBranch || !loan.toBranch) {
+      throw new Error("Loan needs ec, date, fromBranch and toBranch.");
+    }
+    var read = await c.from("app_state").select("value").eq("key", "boa_tech_loans_v1").maybeSingle();
+    if (read.error) { console.error("saveTechLoan read:", read.error); throw read.error; }
+    var v = read.data && read.data.value;
+    var arr = Array.isArray(v) ? v : [];
+    arr = arr.filter(function (l) { return !(l && l.ec === loan.ec && l.date === loan.date); });
+    arr.push(loan);
+    var wr = await c.from("app_state").upsert({ key: "boa_tech_loans_v1", value: arr });
+    if (wr.error) { console.error("saveTechLoan write:", wr.error); throw wr.error; }
+    return loan;
+  }
+
+  // Active staff across ALL branches (managers excluded). Used by the
+  // "Borrow tech today" picker on the manager kiosk so a visiting tech can
+  // be added regardless of which store she's normally based at.
+  async function listStaffAllBranches() {
+    var c = client(); if (!c) return [];
+    var res = await c.from("staff").select("*").eq("active", true)
+      .order("branch", { ascending: true }).order("name", { ascending: true });
+    if (res.error) { console.error("listStaffAllBranches:", res.error); return []; }
+    return (res.data || []).filter(function (s) { return s.role_type !== "manager"; });
+  }
+  async function _fetchStaffByEcs(ecs) {
+    if (!ecs || !ecs.length) return [];
+    var c = client(); if (!c) return [];
+    var res = await c.from("staff").select("*").in("employee_code", ecs);
+    if (res.error) { console.error("fetchStaffByEcs:", res.error); return []; }
+    return res.data || [];
+  }
+
   async function categorizeStaff(refDate, opts) {
-    var results = await Promise.all([
-      listStaff(opts || { activeOnly: true }),
-      listMaternity(),
-      listLeaveRecords()
-    ]);
-    var staff = results[0], matRecs = results[1], leaveRecs = results[2];
     var refIso = isoDate(refDate || new Date());
+    var monthStart = _firstOfMonthIso(refDate || new Date());
+    var thisBranch = branch();
+    // Always ask listStaff for current-month leavers so the manager kiosk
+    // can show them greyed at the bottom (see "leftCompany" bucket below).
+    // Callers can opt out with includeRecentLeavers:false if they need the
+    // strict active-only roster (e.g. tech off-day requests).
+    var listOpts = Object.assign({ activeOnly: true }, opts || {});
+    if (listOpts.activeOnly !== false && listOpts.includeRecentLeavers !== false) {
+      listOpts.includeRecentLeavers = true;
+      listOpts.refDate = refDate || new Date();
+    }
+    var results = await Promise.all([
+      listStaff(listOpts),
+      listMaternity(),
+      listLeaveRecords(),
+      listTechLoans(refIso),
+      loadOffboarding()
+    ]);
+    var staff = results[0], matRecs = results[1], leaveRecs = results[2], loansToday = results[3], offList = results[4];
+
+    // Off-boarding lookup: HR portal's dedicated tab writes leftDate into
+    // boa_offboard_v1 (NOT the staff row's left_date column), so we have
+    // to merge both. EC is unique across branches.
+    var offByEc = {};
+    (offList || []).forEach(function (o) {
+      if (!o || !o.ec) return;
+      offByEc[String(o.ec).trim()] = o;
+    });
+    function effectiveLeftDate(s) {
+      var ec = s && s.employee_code && String(s.employee_code).trim();
+      var off = ec ? offByEc[ec] : null;
+      return (off && off.leftDate) || s.left_date || null;
+    }
+
+    // Pull current-month leavers out into their own bucket. Historical
+    // leavers (left_date before the first of this month) are dropped
+    // entirely — the kiosk shouldn't list techs who left last month or
+    // earlier. Staff with a future left_date stay in the active flow so
+    // they can still be checked in until their last day.
+    var leftCompany = [];
+    staff = staff.filter(function (s) {
+      if (!s) return false;
+      var eff = effectiveLeftDate(s);
+      if (!eff) return true;                       // no leaving date
+      if (eff < monthStart) return false;          // historical leaver
+      if (eff > refIso) return true;               // future leaver, still active
+      var ec = s.employee_code && String(s.employee_code).trim();
+      var off = ec ? offByEc[ec] : null;
+      s._leftCompany = true;
+      s._leftDate = eff;
+      s._offReason = (off && off.reason) || null;
+      leftCompany.push(s);
+      return false;
+    });
+    leftCompany.sort(function (a, b) {
+      // Most recent leaver at the top of the (already-bottom) group so the
+      // manager can see who just walked out first.
+      var ad = a._leftDate || "", bd = b._leftDate || "";
+      if (ad !== bd) return bd.localeCompare(ad);
+      return (a.name || "").localeCompare(b.name || "");
+    });
+
+    // Loans: ECs leaving us today (loaned out) stay on the home roster so
+    // the manager knows where they are - tagged with _loanedOut / _awayAt
+    // and rendered with a chip + locked actions. ECs arriving from another
+    // branch get fetched, tagged with _guest / _homeBranch, and merged in.
+    var loanedOutEcs = {};   // ec -> loan record (this branch is `fromBranch`)
+    var incomingByEc = {};   // ec -> loan record (this branch is `toBranch`)
+    loansToday.forEach(function (l) {
+      if (!l || !l.ec) return;
+      if (l.fromBranch === thisBranch && l.toBranch && l.toBranch !== thisBranch) loanedOutEcs[l.ec] = l;
+      if (l.toBranch === thisBranch && l.fromBranch && l.fromBranch !== thisBranch) incomingByEc[l.ec] = l;
+    });
+    staff.forEach(function (s) {
+      var ln = s.employee_code && loanedOutEcs[s.employee_code];
+      if (ln) {
+        s._loanedOut = true;
+        s._awayAt    = ln.toBranch || "";
+        s._loanNote  = ln.note     || "";
+      }
+    });
+    var incomingEcs = Object.keys(incomingByEc);
+    if (incomingEcs.length > 0) {
+      var guests = await _fetchStaffByEcs(incomingEcs);
+      guests.forEach(function (g) {
+        var ln = incomingByEc[g.employee_code];
+        if (!ln) return;
+        g._guest = true;
+        g._homeBranch = ln.fromBranch || g.branch;
+        g._loanNote = ln.note || "";
+        staff.push(g);
+      });
+    }
+
     var matByEc = {};
     matRecs.forEach(function (m) {
       if (m.mat_status === "on_mat" && m.employee_code) matByEc[m.employee_code] = m;
@@ -95,7 +271,7 @@
       else if (ec && leaveByEc[ec])  onLeave.push({ staff: s, record: leaveByEc[ec] });
       else                           active.push(s);
     });
-    return { active: active, onMat: onMat, onLeave: onLeave };
+    return { active: active, onMat: onMat, onLeave: onLeave, loansToday: loansToday, leftCompany: leftCompany };
   }
 
   async function addStaff(name, employeeCode) {
@@ -644,6 +820,33 @@
     });
     return { grid: combined, ym: ym };
   }
+  // Batched cross-branch schedule load: { branchName -> merged grid }.
+  // Used by the manager "Borrow Tech" picker to filter the candidate pool
+  // to only techs who are scheduled to work TODAY at their home branch.
+  async function getSchedulesForBranches(branches, ym) {
+    if (!branches || !branches.length) return {};
+    var c = client(); if (!c) return {};
+    var keys = [];
+    branches.forEach(function (br) {
+      keys.push("boa_sched_"    + br + "_" + ym);
+      keys.push("boa_mgrsched_" + br + "_" + ym);
+    });
+    var res = await c.from("app_state").select("key,value").in("key", keys);
+    if (res.error) { console.error("getSchedulesForBranches:", res.error); return {}; }
+    var byBranch = {};
+    (res.data || []).forEach(function (row) {
+      var k = row.key || "";
+      var m = k.match(/^(boa_(?:mgr)?sched)_(.+?)_(\d{4}-\d{2})$/);
+      if (!m) return;
+      var br = m[2];
+      var grid = (row.value && row.value.grid) || {};
+      byBranch[br] = byBranch[br] || {};
+      Object.keys(grid).forEach(function (ec) {
+        byBranch[br][ec] = grid[ec];
+      });
+    });
+    return byBranch;
+  }
 
   // ---------- News ----------
   async function listNews() {
@@ -871,12 +1074,13 @@
   window.APP_DATA = {
     isConfigured: isConfigured,
     branch: branch, branchDisplay: branchDisplay, todayStr: todayStr,
-    listStaff: listStaff, listMaternity: listMaternity, listLeaveRecords: listLeaveRecords,
+    listStaff: listStaff, listMaternity: listMaternity, listLeaveRecords: listLeaveRecords, loadOffboarding: loadOffboarding,
+    listTechLoans: listTechLoans, saveTechLoan: saveTechLoan, listStaffAllBranches: listStaffAllBranches,
     categorizeStaff: categorizeStaff, addStaff: addStaff, updateStaff: updateStaff,
     deactivateStaff: deactivateStaff,
     lastClockinToday: lastClockinToday, addClockin: addClockin, listTodayClockins: listTodayClockins,
     todaysCashup: todaysCashup, addCashup: addCashup, listRecentCashups: listRecentCashups,
-    currentSchedYm: currentSchedYm, periodLabel: periodLabel, periodDays: periodDays, getSchedule: getSchedule,
+    currentSchedYm: currentSchedYm, periodLabel: periodLabel, periodDays: periodDays, getSchedule: getSchedule, getSchedulesForBranches: getSchedulesForBranches,
     ymForDate: ymForDate, endOfSchedulePeriod: endOfSchedulePeriod,
     getAttendance: getAttendance, setAttendanceStatus: setAttendanceStatus,
     getSwaps: getSwaps, recordSwap: recordSwap, undoSwap: undoSwap,

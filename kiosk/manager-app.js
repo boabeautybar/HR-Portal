@@ -311,20 +311,99 @@
     );
     document.getElementById("back-home").onclick = renderManagerLanding;
 
-    var staff = await window.APP_DATA.listStaff({ activeOnly: false });
+    // Active staff + anyone who left in the current calendar month. Past
+    // leavers (left_date before this month) are excluded so the list
+    // reflects who's currently on the roster + who walked out this month.
+    // The kiosk drops them on month rollover.
+    //
+    // We MUST consult boa_offboard_v1 in addition to the staff.left_date
+    // column: HR portal's dedicated Off-boarding tab writes leftDate
+    // there only — the staff row keeps active=true with no left_date.
+    // Without this merge, anyone off-boarded via that tab would still
+    // appear under "Current staff".
+    var loaded = await Promise.all([
+      window.APP_DATA.listStaff({ activeOnly: true, includeRecentLeavers: true }),
+      window.APP_DATA.loadOffboarding ? window.APP_DATA.loadOffboarding() : Promise.resolve([])
+    ]);
+    var staff   = loaded[0];
+    var offList = loaded[1] || [];
     var listEl = document.getElementById("staff-list");
     if (staff.length === 0) {
       listEl.innerHTML = '<div class="empty">No staff in this branch yet. Add them in the HR portal.</div>';
       return;
     }
-    listEl.innerHTML = staff.map(function (s) {
-      return '<div class="staff-row' + (s.active ? "" : " staff-inactive") + '" data-id="' + s.id + '">' +
+
+    var offByEc = {};
+    offList.forEach(function (o) {
+      if (!o || !o.ec) return;
+      offByEc[String(o.ec).trim()] = o;
+    });
+    var todayIso = window.APP_DATA.todayStr();
+    var monthStart = todayIso.slice(0, 8) + "01";
+
+    // Split current staff from those who've left this month. Leavers go
+    // in their own greyed section at the bottom, sorted by most-recent
+    // leave date so the manager can see who walked out last. Historical
+    // leavers (off-boarding leftDate before this month) are dropped.
+    // Future leavers (leftDate still ahead) stay in "Current staff" so
+    // they can still be checked in until their last day.
+    var activeStaff = [];
+    var leftStaff   = [];
+    staff.forEach(function (s) {
+      var ec = s && s.employee_code && String(s.employee_code).trim();
+      var off = ec ? offByEc[ec] : null;
+      var eff = (off && off.leftDate) || s.left_date || null;
+      if (!eff) { activeStaff.push(s); return; }
+      if (eff < monthStart) return;          // historical, drop
+      if (eff > todayIso) { activeStaff.push(s); return; } // future leaver
+      s._leftDate  = eff;
+      s._offReason = (off && off.reason) || null;
+      leftStaff.push(s);
+    });
+    leftStaff.sort(function (a, b) {
+      var ad = a._leftDate || "", bd = b._leftDate || "";
+      if (ad !== bd) return bd.localeCompare(ad);
+      return (a.name || "").localeCompare(b.name || "");
+    });
+
+    function renderRow(s, leftMode) {
+      var classes = "staff-row" + (leftMode ? " staff-inactive staff-row-left" : "");
+      var trailing = "";
+      if (leftMode) {
+        trailing = s._leftDate
+          ? ' <span class="pill pill-mute">👋 Left ' + esc(fmtDate(s._leftDate)) + '</span>'
+          : ' <span class="pill pill-mute">👋 Left company</span>';
+      }
+      return '<div class="' + classes + '" data-id="' + s.id + '">' +
                '<div class="staff-row-main">' +
-                 '<div class="staff-name">' + esc(s.name) + (s.active ? "" : ' <span class="pill pill-mute">inactive</span>') + '</div>' +
+                 '<div class="staff-name">' + esc(s.name) + trailing + '</div>' +
                  '<div class="staff-code">' + (s.employee_code ? esc(s.employee_code) : "—") + '</div>' +
                '</div>' +
              '</div>';
-    }).join("");
+    }
+
+    // Split active and leavers further by role (managers vs nail techs)
+    // so each list is grouped in the kiosk view. role_type === "manager"
+    // is the canonical flag; everything else is treated as a nail tech.
+    function isManager(s) { return s && s.role_type === "manager"; }
+    var techsActive    = activeStaff.filter(function (s) { return !isManager(s); });
+    var managersActive = activeStaff.filter(isManager);
+    var techsLeft      = leftStaff.filter(function (s) { return !isManager(s); });
+    var managersLeft   = leftStaff.filter(isManager);
+
+    function section(title, rows, leftMode) {
+      if (rows.length === 0) return "";
+      var cls = leftMode ? "staff-section-head staff-section-head-left" : "staff-section-head";
+      return '<div class="' + cls + '">' + title + ' · ' + rows.length + '</div>' +
+             rows.map(function (s) { return renderRow(s, leftMode); }).join("");
+    }
+
+    var html = "";
+    html += section("💅 Nail techs", techsActive, false);
+    html += section("👔 Managers",   managersActive, false);
+    html += section("👋 Nail techs · left this month", techsLeft,    true);
+    html += section("👋 Managers · left this month",   managersLeft, true);
+    listEl.innerHTML = html;
   }
 
   // ---------------- Today's Check-ins ----------------
