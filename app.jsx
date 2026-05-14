@@ -8806,11 +8806,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       Senior Store Manager (💎) → Store Manager (👑) →
                       Assistant Manager (⭐). */}
                   {(() => {
-                    const mgrs = enrichedManagers.filter(m=>m.branch===salon.name);
+                    const allMgrs = enrichedManagers.filter(m=>m.branch===salon.name);
+                    // Split active vs on-mat - active mgrs grouped by tier
+                    // first (SSM > SM > AM), maternity mgrs pinned at the
+                    // bottom so the working roster is what you see first.
+                    const mgrs    = allMgrs.filter(m => !m.onMat);
+                    const onMatBl = allMgrs.filter(m =>  m.onMat);
                     const ssm  = mgrs.filter(m=>m.role==="SSM");
                     const sm   = mgrs.filter(m=>m.role==="SM");
                     const am   = mgrs.filter(m=>m.role==="AM");
-                    if (mgrs.length===0) return null;
+                    if (allMgrs.length===0) return null;
                     return (
                       <div style={{ background:"#FCE7F3", border:"1px solid #FBCFE8", borderRadius:10, padding:"9px 12px", marginBottom:10 }}>
                         <div style={{ fontSize:9, fontWeight:800, color:"#BE185D", letterSpacing:"0.1em", marginBottom:7 }}>MANAGEMENT TEAM</div>
@@ -8836,15 +8841,33 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             </div>
                           ))}
                           {am.map(m=>(
-                            <div key={m._id} style={{ display:"flex", alignItems:"center", gap:6, opacity:m.onMat?0.5:1 }}>
-                              <span style={{ fontSize:13 }}>{m.onMat?"🤱":"⭐"}</span>
-                              <span style={{ fontSize:11, fontWeight:500, color:m.onMat?"#7A4258":"#475569", fontStyle:m.onMat?"italic":"normal", flex:1 }}>{m.name}</span>
-                              {m.onMat && <span style={{ fontSize:9, color:"#8E5570", background:"#FBCFE8", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>on leave{m.matReturn?` · ↩${new Date(m.matReturn).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"})}`:""}</span>}
-                              {m.pregnant && !m.onMat && <span style={{ fontSize:9, color:"#8E5570", background:"#FCE7F3", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>🤰 pregnant{m.matStart?` · leaves ${new Date(m.matStart).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"})}`:""}</span>}
-                              {!m.onMat && !m.pregnant && m.notes && <span style={{ fontSize:9, color:"#BE185D", fontStyle:"italic", maxWidth:110, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={m.notes}>⚑</span>}
+                            <div key={m._id} style={{ display:"flex", alignItems:"center", gap:6, opacity:1 }}>
+                              <span style={{ fontSize:13 }}>⭐</span>
+                              <span style={{ fontSize:11, fontWeight:500, color:"#475569", flex:1 }}>{m.name}</span>
+                              {m.pregnant && <span style={{ fontSize:9, color:"#8E5570", background:"#FCE7F3", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>🤰 pregnant{m.matStart?` · leaves ${new Date(m.matStart).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"})}`:""}</span>}
+                              {!m.pregnant && m.notes && <span style={{ fontSize:9, color:"#BE185D", fontStyle:"italic", maxWidth:110, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={m.notes}>⚑</span>}
                               <span style={{ fontSize:9, background:"#FBCFE8", color:"#BE185D", border:"1px solid #bae6fd", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>AM</span>
                             </div>
                           ))}
+                          {/* On-maternity block sits at the bottom and is
+                              tagged with the role badge + return date if known. */}
+                          {onMatBl.length > 0 && (
+                            <div style={{ marginTop:6, paddingTop:6, borderTop:"1px dashed #FBCFE8" }}>
+                              <div style={{ fontSize:9, fontWeight:800, color:"#7A4258", letterSpacing:"0.08em", marginBottom:4 }}>🤱 ON MATERNITY · {onMatBl.length}</div>
+                              {onMatBl.map(m => {
+                                const matRec = (matRecs || []).find(r => r && r.ec && m.ec && r.ec.trim() === m.ec.trim());
+                                const ret = (matRec && matRec.returnDate) || m.matReturn;
+                                return (
+                                  <div key={m._id} style={{ display:"flex", alignItems:"center", gap:6, opacity:0.55 }}>
+                                    <span style={{ fontSize:13 }}>🤱</span>
+                                    <span style={{ fontSize:11, fontWeight:600, color:"#7A4258", fontStyle:"italic", flex:1 }}>{m.name}</span>
+                                    {ret && <span style={{ fontSize:9, color:"#8E5570", background:"#FBCFE8", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>↩ {new Date(ret + "T00:00:00").toLocaleDateString("en-ZA",{day:"2-digit",month:"short"})}</span>}
+                                    <span style={{ fontSize:9, background:m.role==="SSM"?"#FEF3C7":m.role==="SM"?"#FBCFE8":"#FBCFE8", color:m.role==="SSM"?"#92400e":"#BE185D", border:`1px solid ${m.role==="SSM"?"#FDE68A":"#E8C9D2"}`, borderRadius:4, padding:"1px 6px", fontWeight:700 }}>{m.role || "—"}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
                       </div>
                     );
@@ -15951,8 +15974,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         </div>
       )}
 
-      {staffModal && <StaffModal s={staffModal} onClose={()=>setStaffModal(null)} onSave={saveStaff} onTransfer={(s)=>setTransferModal(s)} allStaff={staff} isOwner={!!currentUser?.isOwner} onHardDelete={hardDeleteStaff} />}
-      {mgrModal && <ManagerModal m={mgrModal} pin={mgrPins[mgrModal.ec] || ""} onClose={()=>setMgrModal(null)} onSave={saveMgr} onDelete={delMgr} />}
+      {staffModal && <StaffModal s={(() => { const mr = (matRecs || []).find(r => r && r.ec && staffModal.ec && r.ec.trim() === staffModal.ec.trim()); return mr ? { ...staffModal, matStatus: staffModal.matStatus || mr.matStatus, matStart: staffModal.matStart || mr.matStart, matEnd: staffModal.matEnd || mr.matEnd, matReturn: staffModal.matReturn || mr.returnDate, matNotes: staffModal.matNotes || mr.notes } : staffModal; })()} onClose={()=>setStaffModal(null)} onSave={saveStaff} onTransfer={(s)=>setTransferModal(s)} allStaff={staff} isOwner={!!currentUser?.isOwner} onHardDelete={hardDeleteStaff} />}
+      {mgrModal && <ManagerModal m={(() => { const mr = (matRecs || []).find(r => r && r.ec && mgrModal.ec && r.ec.trim() === mgrModal.ec.trim()); return mr ? { ...mgrModal, matStatus: mgrModal.matStatus || mr.matStatus, matStart: mgrModal.matStart || mr.matStart, matEnd: mgrModal.matEnd || mr.matEnd, matReturn: mgrModal.matReturn || mr.returnDate, matNotes: mgrModal.matNotes || mr.notes } : mgrModal; })()} pin={mgrPins[mgrModal.ec] || ""} onClose={()=>setMgrModal(null)} onSave={saveMgr} onDelete={delMgr} />}
       {transferModal && <TransferModal s={transferModal} onClose={()=>setTransferModal(null)} onConfirm={handleTransfer} onCancelTransfer={cancelTransfer} />}
       {matModal && <MatModal rec={matModal} onClose={()=>setMatModal(null)} onSave={saveMat} onDelete={delMat} people={matPickerPool} />}
     </div>
