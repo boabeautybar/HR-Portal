@@ -663,10 +663,14 @@
       var d = new Date(); return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
     })();
     var byEc = {};
+    var hasInToday = {};       // ec -> first clock-IN record of today
     recent.forEach(function (r) {
       var ec = r.staff && r.staff.employee_code; if (!ec) return;
       if (dateKeyOf(r.ts) !== todayK) return;
       if (!byEc[ec] || r.ts > byEc[ec].ts) byEc[ec] = r;
+      if (r.type === "in") {
+        if (!hasInToday[ec] || r.ts < hasInToday[ec].ts) hasInToday[ec] = r;
+      }
     });
 
     // Yesterday-auto-out summary banner
@@ -694,6 +698,13 @@
           else lastLabel = '<span class="pill pill-warn">OUT ' + fmtTime(last.ts) + '</span>';
           var autoBadge = autoYesterday[ec] ? ' <span class="pill" style="background:#fee2e2;color:#7f1d1d">⚠ auto-out yesterday</span>' : "";
           var rowCls = m.branch === thisBranch ? "" : " staff-inactive";
+          // Already clocked in today (whether currently IN or already OUT
+          // again) → no second clock-in allowed. Manager has to wait until
+          // tomorrow. Clock-out stays available so a still-IN manager can
+          // close out their day, or a forgotten clock-out can be fixed.
+          var inDoneToday = !!hasInToday[ec];
+          var inDisabled  = !has || inDoneToday;
+          var inHint = inDoneToday ? ' title="Already clocked in today at ' + fmtTime(hasInToday[ec].ts) + '"' : "";
           return '<div class="staff-row' + rowCls + '" data-id="' + m.id + '" data-ec="' + esc(ec) + '" data-name="' + esc(m.name) + '">' +
                    '<div class="staff-row-main">' +
                      '<div class="staff-name">' + esc(m.name) +
@@ -704,8 +715,8 @@
                      '<div class="staff-code" style="margin-top:3px">' + lastLabel + '</div>' +
                    '</div>' +
                    '<div class="staff-row-actions">' +
-                     '<button class="btn btn-primary" data-act="clockin"  ' + (has ? "" : 'disabled') + '>Clock In</button>' +
-                     '<button class="link-btn"       data-act="clockout" ' + (has ? "" : 'disabled') + '>Clock Out</button>' +
+                     '<button class="btn btn-primary" data-act="clockin"  ' + (inDisabled ? "disabled" : "") + inHint + '>Clock In</button>' +
+                     '<button class="link-btn"       data-act="clockout" ' + (has ? "" : "disabled") + '>Clock Out</button>' +
                    '</div>' +
                  '</div>';
         }).join("") +
@@ -728,6 +739,12 @@
             alert("Earliest clock-in is " + String(earliest).padStart(2,"0") + ":00.\n\nIt's only " + new Date().toLocaleTimeString() + " — wait until " + String(earliest).padStart(2,"0") + ":00 then try again.");
             return;
           }
+          // Hard block: one clock-IN per manager per day. Even if they
+          // clocked out earlier, they can't re-clock-in until tomorrow.
+          if (hasInToday[ec]) {
+            alert(name + " has already clocked in today at " + fmtTime(hasInToday[ec].ts) + ".\n\nOnly one clock-in per day is allowed.");
+            return;
+          }
         }
         // 2. PIN
         var entered = prompt("Enter " + name + "'s 6-digit personal PIN:");
@@ -735,11 +752,11 @@
         entered = entered.trim();
         if (!/^\d{6}$/.test(entered)) { alert("PIN must be exactly 6 digits."); return; }
         if (entered !== pins[ec])     { alert("Wrong PIN."); return; }
-        // 3. Block double clock of same type today
+        // 3. Block double clock-OUT of the day (soft — manager may need to
+        // amend). Clock-IN double is hard-blocked above before the PIN gate.
         var last = byEc[ec];
-        if (last && last.type === type) {
-          var lbl = type === "in" ? "in" : "out";
-          if (!confirm(name + " is already clocked " + lbl + " today (" + fmtTime(last.ts) + "). Record another clock-" + lbl + " anyway?")) return;
+        if (type === "out" && last && last.type === "out") {
+          if (!confirm(name + " is already clocked out today (" + fmtTime(last.ts) + "). Record another clock-out anyway?")) return;
         }
         // 4. Get GPS (best-effort — graceful if denied/unavailable)
         var gps = await getGPS();
