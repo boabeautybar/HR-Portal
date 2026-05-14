@@ -6332,13 +6332,19 @@ function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
 
   const beginAdd = () => setEditing({
     _id: null, isNew: true, title: "", description: "",
-    assigneePin: "", date: todayYmd,
+    // New tasks support multi-assign: one record is created per pin
+    // so each assignee gets their own independent done-tracking.
+    assigneePins: [],
+    date: todayYmd,
     kind: "once", repeatDow: [], startDate: todayYmd
   });
   const beginEdit = (t) => setEditing({
     _id: t._id, isNew: false,
     title: t.title || "", description: t.description || "",
-    assigneePin: t.assigneePin || "",
+    // Editing an existing record is single-assignee. Re-pointing it to
+    // another person is just changing the one record; bulk fan-out
+    // only happens at create time.
+    assigneePins: t.assigneePin ? [t.assigneePin] : [],
     date: t.date || todayYmd,
     kind: t.kind === "weekly" ? "weekly" : "once",
     repeatDow: Array.isArray(t.repeatDow) ? t.repeatDow.slice() : [],
@@ -6362,8 +6368,9 @@ function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
 
   const saveEdit = async () => {
     if (!editing) return;
-    if (!editing.title.trim())       { alert("Task title is required."); return; }
-    if (!editing.assigneePin)        { alert("Pick someone to assign this to."); return; }
+    if (!editing.title.trim())                                  { alert("Task title is required."); return; }
+    const pins = Array.isArray(editing.assigneePins) ? editing.assigneePins.filter(Boolean) : [];
+    if (pins.length === 0)                                       { alert("Pick at least one person to assign this to."); return; }
     if (editing.kind === "weekly") {
       if (!Array.isArray(editing.repeatDow) || editing.repeatDow.length === 0) {
         alert("Pick at least one day of the week for the reminder to repeat on.");
@@ -6376,32 +6383,48 @@ function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
     try {
       const prior = (tasks || []).find(t => t && t._id === editing._id) || {};
       const isWeekly = editing.kind === "weekly";
-      const rec = {
-        _id: editing._id || ("tk_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7)),
-        title: editing.title.trim(),
-        description: (editing.description || "").trim().slice(0, 500),
-        assigneePin: editing.assigneePin,
-        kind: isWeekly ? "weekly" : "once",
-        createdBy: editing.isNew ? ((currentUser && currentUser.name) || "") : (prior.createdBy || ""),
-        createdAt: editing.isNew ? new Date().toISOString() : (prior.createdAt || new Date().toISOString())
+      const stampNow = new Date().toISOString();
+      const buildRec = (pin, recId) => {
+        const r = {
+          _id: recId,
+          title: editing.title.trim(),
+          description: (editing.description || "").trim().slice(0, 500),
+          assigneePin: pin,
+          kind: isWeekly ? "weekly" : "once",
+          createdBy: editing.isNew ? ((currentUser && currentUser.name) || "") : (prior.createdBy || ""),
+          createdAt: editing.isNew ? stampNow : (prior.createdAt || stampNow)
+        };
+        if (isWeekly) {
+          r.repeatDow = editing.repeatDow.slice().sort();
+          r.startDate = editing.startDate || todayYmd;
+          r.doneByDate = (recId === prior._id) ? (prior.doneByDate || {}) : {};
+        } else {
+          r.date = editing.date;
+          r.doneAt = (recId === prior._id) ? (prior.doneAt || null) : null;
+          r.doneBy = (recId === prior._id) ? (prior.doneBy || null) : null;
+        }
+        return r;
       };
-      if (isWeekly) {
-        rec.repeatDow = editing.repeatDow.slice().sort();
-        rec.startDate = editing.startDate || todayYmd;
-        rec.doneByDate = prior.doneByDate || {};
+      const mkId = () => "tk_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7);
+      let newList;
+      if (!editing.isNew) {
+        // Edit mode: this represents a single record. Re-point its
+        // assignee to the (single) selected pin; ignore any extras.
+        const rec = buildRec(pins[0], editing._id);
+        newList = (tasks || []).filter(t => !t || t._id !== rec._id).concat([rec]);
       } else {
-        rec.date = editing.date;
-        rec.doneAt = prior.doneAt || null;
-        rec.doneBy = prior.doneBy || null;
+        // Create mode: fan out to one record per selected pin so each
+        // assignee has independent done-tracking.
+        const newRecs = pins.map(p => buildRec(p, mkId()));
+        newList = (tasks || []).concat(newRecs);
       }
-      const others = (tasks || []).filter(t => !t || t._id !== rec._id);
-      await onSave([...others, rec]);
+      await onSave(newList);
       if (window.BOA_LOG_ACTIVITY) {
-        const who = (users[rec.assigneePin] && users[rec.assigneePin].name) || rec.assigneePin;
+        const names = pins.map(p => (users[p] && users[p].name) || p).join(", ");
         window.BOA_LOG_ACTIVITY(
           editing.isNew ? "Created daily task" : "Edited daily task",
-          rec.title,
-          who + " · " + describeRepeat(rec),
+          editing.title.trim(),
+          names + " · " + describeRepeat(isWeekly ? { kind:"weekly", repeatDow: editing.repeatDow } : { kind:"once", date: editing.date }),
           "Task"
         );
       }
@@ -6600,18 +6623,60 @@ function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
                 style={{ padding:"9px 12px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, fontFamily:"inherit", resize:"vertical" }} />
             </label>
 
-            <label style={{ display:"flex", flexDirection:"column", gap:4, marginBottom:12 }}>
-              <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>ASSIGN TO *</span>
-              <select value={editing.assigneePin}
-                onChange={e => setEditing({ ...editing, assigneePin: e.target.value })}
-                style={{ padding:"9px 12px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, fontFamily:"inherit", background:"#fff" }}>
-                <option value="">— pick a user —</option>
-                {sortedUserPins.map(pin => {
-                  const u = users[pin];
-                  return <option key={pin} value={pin}>{u.name || "(unnamed)"} · {u.role || ""}</option>;
-                })}
-              </select>
-            </label>
+            <div style={{ display:"flex", flexDirection:"column", gap:4, marginBottom:12 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>
+                  ASSIGN TO * {editing.isNew && <span style={{ color:"#9F1A4F", fontWeight:600 }}>(pick one or more)</span>}
+                </span>
+                {editing.isNew && (
+                  <div style={{ display:"flex", gap:6 }}>
+                    <button type="button" onClick={() => setEditing({ ...editing, assigneePins: sortedUserPins.slice() })}
+                      style={{ background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:6, padding:"3px 9px", cursor:"pointer", fontSize:10, fontWeight:700, fontFamily:"inherit" }}>Select all</button>
+                    <button type="button" onClick={() => setEditing({ ...editing, assigneePins: [] })}
+                      style={{ background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:6, padding:"3px 9px", cursor:"pointer", fontSize:10, fontWeight:700, fontFamily:"inherit" }}>Clear</button>
+                  </div>
+                )}
+              </div>
+              {editing.isNew ? (
+                <div style={{ border:"1px solid #FBCFE8", borderRadius:8, padding:"8px 10px", background:"#fff", maxHeight:170, overflowY:"auto", display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(170px,1fr))", gap:4 }}>
+                  {sortedUserPins.length === 0 && <div style={{ fontSize:12, color:"#9CA3AF", fontStyle:"italic" }}>No portal users yet.</div>}
+                  {sortedUserPins.map(pin => {
+                    const u = users[pin];
+                    const on = (editing.assigneePins || []).includes(pin);
+                    return (
+                      <label key={pin} style={{ display:"flex", alignItems:"center", gap:6, padding:"5px 8px", background: on ? "#FCE7F3" : "transparent", border:"1px solid " + (on ? "#FBCFE8" : "transparent"), borderRadius:6, cursor:"pointer", fontSize:12, color:"#831843", fontWeight: on ? 700 : 500 }}>
+                        <input type="checkbox" checked={on}
+                          onChange={() => {
+                            const cur = Array.isArray(editing.assigneePins) ? editing.assigneePins : [];
+                            const has = cur.includes(pin);
+                            setEditing({ ...editing, assigneePins: has ? cur.filter(x => x !== pin) : [...cur, pin] });
+                          }}
+                          style={{ accentColor:"#BE185D" }} />
+                        <span style={{ flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                          {u.name || "(unnamed)"}
+                          {u.role && <span style={{ color:"#9F1A4F", fontWeight:500 }}> · {u.role}</span>}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              ) : (
+                <select value={(editing.assigneePins && editing.assigneePins[0]) || ""}
+                  onChange={e => setEditing({ ...editing, assigneePins: e.target.value ? [e.target.value] : [] })}
+                  style={{ padding:"9px 12px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, fontFamily:"inherit", background:"#fff" }}>
+                  <option value="">— pick a user —</option>
+                  {sortedUserPins.map(pin => {
+                    const u = users[pin];
+                    return <option key={pin} value={pin}>{u.name || "(unnamed)"} · {u.role || ""}</option>;
+                  })}
+                </select>
+              )}
+              {editing.isNew && (
+                <div style={{ fontSize:10, color:"#9F1A4F", fontWeight:600 }}>
+                  {(editing.assigneePins || []).length} selected · one task is created per person, each tracked independently
+                </div>
+              )}
+            </div>
 
             <div style={{ marginBottom:12 }}>
               <div style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em", marginBottom:6 }}>REPEATS</div>
