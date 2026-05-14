@@ -1869,7 +1869,7 @@ function MatModal({ rec, onClose, onSave, onDelete }) {
 }
 
 // ─── STAFF MODAL ──────────────────────────────────────────────────────────────────
-function StaffModal({ s, onClose, onSave, onTransfer, allStaff }) {
+function StaffModal({ s, onClose, onSave, onTransfer, allStaff, isOwner, onHardDelete }) {
   // Split existing "name" into firstName / surname for the form. New records
   // start blank. Combined back into `name` on save.
   const splitName = (full) => {
@@ -1975,12 +1975,21 @@ function StaffModal({ s, onClose, onSave, onTransfer, allStaff }) {
             </div>
           </div>
         </div>
-        <div style={{ display:"flex", gap:10, marginTop:22, justifyContent:"space-between", alignItems:"center" }}>
+        <div style={{ display:"flex", gap:10, marginTop:22, justifyContent:"space-between", alignItems:"center", flexWrap:"wrap" }}>
           {s._id !== undefined && (
-            <button onClick={()=>{ onClose(); onTransfer(s); }}
-              style={{ padding:"9px 16px", borderRadius:9, border:"none", background:"#BE185D", color:"#fff", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
-              🔄 Transfer Branch
-            </button>
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+              <button onClick={()=>{ onClose(); onTransfer(s); }}
+                style={{ padding:"9px 16px", borderRadius:9, border:"none", background:"#BE185D", color:"#fff", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
+                🔄 Transfer Branch
+              </button>
+              {isOwner && onHardDelete && (
+                <button onClick={()=>onHardDelete(s)}
+                  title="Hard delete — owner only. Removes the record entirely; bypasses off-boarding."
+                  style={{ padding:"9px 16px", borderRadius:9, border:"1px solid #fecaca", background:"#fff", color:"#7f1d1d", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
+                  🗑 Delete (owner)
+                </button>
+              )}
+            </div>
           )}
           <div style={{ display:"flex", gap:10, marginLeft:"auto" }}>
             <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:9, border:"1px solid #FBCFE8", background:"#FFFFFF", cursor:"pointer", fontFamily:"inherit", fontSize:13 }}>Cancel</button>
@@ -7367,6 +7376,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       );
     } catch (e) { alert("Could not save staff: " + (e.message || e)); }
   }
+  // Owner-only hard delete - bypasses off-boarding entirely. Removes the
+  // staff row from Supabase AND scrubs any existing off-boarding entry for
+  // that EC so the deleted person doesn't linger in the Off-boarding tab.
+  // Activity-logged so the action is auditable.
+  async function hardDeleteStaff(rec) {
+    if (!currentUser?.isOwner) { alert("Only the owner can hard-delete staff."); return; }
+    if (!rec || !rec._id) return;
+    const label = (rec.name || "") + (rec.ec ? " (" + rec.ec + ")" : "");
+    if (!window.confirm("PERMANENTLY DELETE " + label + "?\n\nThis removes the staff record from the database and any off-boarding entry. The person will vanish from every view, including the Off-boarding tab. This can't be undone.\n\nFor normal departures use Off-board instead.")) return;
+    try {
+      await window.BOA_DB.deleteStaff(rec._id);
+      setStaff(p => p.filter(x => x._id !== rec._id));
+      // Scrub any off-boarding record for this EC so they don't reappear
+      // in the Off-boarding tab.
+      const nextOff = (offList || []).filter(o => o && o.ec !== rec.ec);
+      if (nextOff.length !== (offList || []).length) {
+        try {
+          await window.BOA_DB.saveOffboarding(nextOff);
+          setOffList(nextOff);
+        } catch (oe) { console.warn("offboard scrub failed (record still deleted):", oe); }
+      }
+      setStaffModal(null);
+      logActivity(
+        "🗑 Hard-deleted staff",
+        label,
+        "Owner override · Branch: " + (rec.branch || "—") + " · also removed from off-boarding list"
+      );
+    } catch (e) { alert("Could not delete staff: " + (e.message || e)); }
+  }
 
   function handleTransfer({ staff, toBranch, transferDate, note, isPending }) {
     setStaff(p => {
@@ -7466,6 +7504,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     try {
       await window.BOA_DB.deleteManager(id);
       setManagers(p => p.filter(x => x._id !== id));
+      // Scrub any off-boarding record so the deleted manager doesn't
+      // linger in the Off-boarding tab.
+      if (target && target.ec) {
+        const nextOff = (offList || []).filter(o => o && o.ec !== target.ec);
+        if (nextOff.length !== (offList || []).length) {
+          try {
+            await window.BOA_DB.saveOffboarding(nextOff);
+            setOffList(nextOff);
+          } catch (oe) { console.warn("offboard scrub failed (record still deleted):", oe); }
+        }
+      }
       setMgrModal(null);
       if (target) logActivity("Deleted manager", target.name + (target.ec ? " (" + target.ec + ")" : ""), target.branch || "");
     }
@@ -8559,9 +8608,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </div>
                   )}
 
-                  {/* ── MANAGERS SECTION ── */}
+                  {/* ── MANAGERS SECTION ── shown on the card by default
+                      (independent of the Manage panel). Three tiers stacked
+                      worst-to-best so a missing SM stands out:
+                      Senior Store Manager (💎) → Store Manager (👑) →
+                      Assistant Manager (⭐). */}
                   {(() => {
                     const mgrs = managers.filter(m=>m.branch===salon.name);
+                    const ssm  = mgrs.filter(m=>m.role==="SSM");
                     const sm   = mgrs.filter(m=>m.role==="SM");
                     const am   = mgrs.filter(m=>m.role==="AM");
                     if (mgrs.length===0) return null;
@@ -8569,6 +8623,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <div style={{ background:"#FCE7F3", border:"1px solid #FBCFE8", borderRadius:10, padding:"9px 12px", marginBottom:10 }}>
                         <div style={{ fontSize:9, fontWeight:800, color:"#BE185D", letterSpacing:"0.1em", marginBottom:7 }}>MANAGEMENT TEAM</div>
                         <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                          {ssm.map(m=>(
+                            <div key={m._id} style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap", opacity:m.onMat?0.5:1 }}>
+                              <span style={{ fontSize:13 }}>{m.onMat?"🤱":"💎"}</span>
+                              <span style={{ fontSize:11, fontWeight:700, color:m.onMat?"#7A4258":"#92400e", fontStyle:m.onMat?"italic":"normal", flex:1 }}>{m.name}</span>
+                              {m.onMat && <span style={{ fontSize:9, color:"#8E5570", background:"#FBCFE8", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>on leave{m.matReturn?` · ↩${new Date(m.matReturn).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"})}`:""}</span>}
+                              {m.pregnant && !m.onMat && <span style={{ fontSize:9, color:"#8E5570", background:"#FCE7F3", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>🤰 pregnant{m.matStart?` · leaves ${new Date(m.matStart).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"})}`:""}</span>}
+                              {!m.onMat && !m.pregnant && m.notes && <span style={{ fontSize:9, color:"#8E5570", fontStyle:"italic", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={m.notes}>⚑ {m.notes}</span>}
+                              <span style={{ fontSize:9, background:"#FEF3C7", color:"#92400e", border:"1px solid #FDE68A", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>SSM</span>
+                            </div>
+                          ))}
                           {sm.map(m=>(
                             <div key={m._id} style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap", opacity:m.onMat?0.5:1 }}>
                               <span style={{ fontSize:13 }}>{m.onMat?"🤱":"👑"}</span>
@@ -9573,7 +9637,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const MIN_SM = 1, MIN_AM = 2;
           const branchStats = SALONS.map(salon => { // Regional managers excluded from store coverage
             const mgrs = managers.filter(m => m.branch === salon.name);
-            const sms  = mgrs.filter(m => m.role === "SM" && !m.onMat);
+            const sms  = mgrs.filter(m => (m.role === "SM" || m.role === "SSM") && !m.onMat);
             const ams  = mgrs.filter(m => m.role === "AM" && !m.onMat);
             const onMatMgrs = mgrs.filter(m => m.onMat);
             const missSM = Math.max(0, MIN_SM - sms.length);
@@ -15112,7 +15176,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         </div>
       )}
 
-      {staffModal && <StaffModal s={staffModal} onClose={()=>setStaffModal(null)} onSave={saveStaff} onTransfer={(s)=>setTransferModal(s)} allStaff={staff} />}
+      {staffModal && <StaffModal s={staffModal} onClose={()=>setStaffModal(null)} onSave={saveStaff} onTransfer={(s)=>setTransferModal(s)} allStaff={staff} isOwner={!!currentUser?.isOwner} onHardDelete={hardDeleteStaff} />}
       {mgrModal && <ManagerModal m={mgrModal} pin={mgrPins[mgrModal.ec] || ""} onClose={()=>setMgrModal(null)} onSave={saveMgr} onDelete={delMgr} />}
       {transferModal && <TransferModal s={transferModal} onClose={()=>setTransferModal(null)} onConfirm={handleTransfer} onCancelTransfer={cancelTransfer} />}
       {matModal && <MatModal rec={matModal} onClose={()=>setMatModal(null)} onSave={saveMat} onDelete={delMat} />}
