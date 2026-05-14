@@ -5520,7 +5520,7 @@ function PinLogin(props) {
       setPin("");
       return;
     }
-    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, isOwner: !!u.isOwner, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], readOnlyTabs: u.readOnlyTabs || [], signedInAt: new Date().toISOString() };
+    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, isOwner: !!u.isOwner, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], readOnlyTabs: u.readOnlyTabs || [], stores: Array.isArray(u.stores) ? u.stores.slice() : [], signedInAt: new Date().toISOString() };
     try { sessionStorage.setItem(PIN_SESSION_KEY, JSON.stringify(session)); } catch (_) {}
     window.BOA_CURRENT_USER = session;
     onUnlock(session);
@@ -5614,7 +5614,8 @@ function AppGate() {
               demo: !!u.demo, isOwner: !!u.isOwner,
               hideCategories: u.hideCategories || [],
               hideTabs: u.hideTabs || [],
-              readOnlyTabs: u.readOnlyTabs || []
+              readOnlyTabs: u.readOnlyTabs || [],
+              stores: Array.isArray(u.stores) ? u.stores.slice() : []
             };
             window.BOA_CURRENT_USER = merged;
             setCurrentUser(merged);
@@ -5639,13 +5640,17 @@ function AppGate() {
     const cleaned = { ...next };
     Object.keys(cleaned).forEach(pin => {
       const u = cleaned[pin];
-      cleaned[pin] = {
+      const rec = {
         name: u.name, role: u.role,
         demo: !!u.demo, isOwner: !!u.isOwner,
         hideCategories: u.hideCategories || [],
         hideTabs: u.hideTabs || [],
         readOnlyTabs: u.readOnlyTabs || []
       };
+      // ROM store allocation — only stamp the field when actually set, so
+      // the user record stays tidy for non-ROM roles.
+      if (Array.isArray(u.stores) && u.stores.length > 0) rec.stores = u.stores.slice();
+      cleaned[pin] = rec;
     });
     await saveAppUsersToDb(cleaned);
     window.__BOA_APP_USERS = cleaned;
@@ -5663,7 +5668,8 @@ function AppGate() {
         demo: !!u.demo, isOwner: !!u.isOwner,
         hideCategories: u.hideCategories || [],
         hideTabs: u.hideTabs || [],
-        readOnlyTabs: u.readOnlyTabs || []
+        readOnlyTabs: u.readOnlyTabs || [],
+        stores: Array.isArray(u.stores) ? u.stores.slice() : []
       };
       window.BOA_CURRENT_USER = merged;
       setCurrentUser(merged);
