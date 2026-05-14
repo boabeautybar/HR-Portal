@@ -5703,8 +5703,8 @@ const SETTINGS_TABS = [
   { t: "compliance", l: "Compliance",        cat: "People",     icon: "📋" },
   { t: "scheduling", l: "Scheduling",        cat: "Operations", icon: "📅" },
   { t: "locations",  l: "Locations",         cat: "Operations", icon: "📍" },
-  { t: "checkins",   l: "Daily Check-ins",   cat: "Operations", icon: "📲" },
-  { t: "mgrclockins",l: "Mgr Clock-ins",     cat: "Operations", icon: "🕐" },
+  { t: "checkins",   l: "Nail Tech Check-ins", cat: "Operations", icon: "📲" },
+  { t: "mgrclockins",l: "Manager Check-ins",   cat: "Operations", icon: "🕐" },
   { t: "leave",      l: "Leave Planner",     cat: "Operations", icon: "🌴" },
   { t: "storeOpenings", l: "Store Openings",  cat: "Operations", icon: "🔓" },
   { t: "movements",  l: "Today's Movements", cat: "Operations", icon: "🔀" },
@@ -8042,8 +8042,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 items: [
                   { t:"scheduling",  l:"📅 Scheduling"     },
                   { t:"locations",   l:"📍 Locations"      },
-                  { t:"checkins",    l:"📲 Daily Check-ins" },
-                  { t:"mgrclockins", l:"🕐 Mgr Clock-ins"  },
+                  { t:"checkins",    l:"📲 Nail Tech Check-ins" },
+                  { t:"mgrclockins", l:"🕐 Manager Check-ins"  },
                   { t:"leave",       l:"🌴 Leave Planner"  },
                   { t:"storeOpenings", l:"🔓 Store Openings" },
                   { t:"movements",     l:"🔀 Today's Movements" },
@@ -8337,7 +8337,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             { lbl:"Locations",    icon:"📍", to:"locations" }
           ];
           const oversightActions = [
-            { lbl:"Mgr Clock-ins", icon:"🕐", to:"mgrclockins" },
+            { lbl:"Manager Check-ins", icon:"🕐", to:"mgrclockins" },
             { lbl:"Activity Log",  icon:"📜", to:"activity"    },
             { lbl:"Alerts",        icon:"🔔", to:"alerts"      }
           ];
@@ -12251,7 +12251,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             logActivity("Imported check-ins", attBranch + " · " + cycLabel,
               "Stamped " + stamped + " day" + (stamped === 1 ? "" : "s") + " · " + skippedConfirmed + " confirmed kept · " + skippedPostLeft + " post-leave skipped", "Bulk");
             alert(
-              "✓ Marked " + stamped + " day" + (stamped === 1 ? "" : "s") + " from Daily Check-ins (" + attBranch + ")." +
+              "✓ Marked " + stamped + " day" + (stamped === 1 ? "" : "s") + " from Nail Tech Check-ins (" + attBranch + ")." +
               (skippedConfirmed > 0 ? "\n\n• " + skippedConfirmed + " confirmed cell" + (skippedConfirmed === 1 ? "" : "s") + " preserved." : "") +
               (skippedPostLeft > 0  ? "\n• " + skippedPostLeft  + " post-departure day"  + (skippedPostLeft === 1  ? "" : "s") + " skipped."   : "") +
               "\n\nUse the ↩ Undo button to roll this back."
@@ -15989,7 +15989,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           return (
             <div>
               <div style={{ marginBottom:14 }}>
-                <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>📲 Daily Check-ins</div>
+                <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>📲 Nail Tech Check-ins</div>
                 <div style={{ fontSize:12, color:"#F472B6" }}>Nail-tech check-ins from the manager check-in app. Used to confirm attendance alongside the Fresha import.</div>
               </div>
 
@@ -16132,7 +16132,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           console.error("Daily Check-ins render failed:", err);
           return (
             <div style={{ background:"#fee2e2", border:"1px solid #fca5a5", borderRadius:11, padding:"16px 18px", color:"#7f1d1d", fontFamily:"'Outfit',system-ui,sans-serif" }}>
-              <div style={{ fontWeight:800, marginBottom:6 }}>Daily Check-ins failed to render.</div>
+              <div style={{ fontWeight:800, marginBottom:6 }}>Nail Tech Check-ins failed to render.</div>
               <div style={{ fontSize:12 }}>{(err && err.message) || String(err)}</div>
               <div style={{ fontSize:11, marginTop:8, opacity:0.7 }}>See the browser console for details.</div>
             </div>
@@ -16156,7 +16156,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           return (
             <div>
               <div style={{ marginBottom:14 }}>
-                <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>🕐 Manager Clock-ins</div>
+                <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>🕐 Manager Check-ins</div>
                 <div style={{ fontSize:12, color:"#F472B6" }}>Spot-check manager attendance. Each row shows the selfie, GPS distance from store, and timestamp. Auto-out (red) means they forgot to clock out — talk to them.</div>
               </div>
 
