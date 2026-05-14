@@ -896,7 +896,15 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
           // OLD restricts targets to the SAME ISO WEEK as the source-O.
           if (wkOfDay[dates[ix].d] !== srcWk) continue;
           const wb = m - W[dates[ix].d].off - W[dates[ix].d].leave;
-          if (wb - 1 < 2) continue;                         // target's coverage
+          // Small-team rule: a 1-mgr day is acceptable when fewer than 3
+          // managers are available that day. This applies to true 2-mgr
+          // stores AND to 3-mgr stores where one is on leave/maternity.
+          // The 6-consecutive-day cap is a hard rule everywhere, so we
+          // need to permit the swap that takes a 7th-day worker off,
+          // even if it leaves a single mgr that day.
+          const activeIx = m - (W[dates[ix].d].leave || 0);
+          const minWorking = activeIx >= 3 ? 2 : 1;
+          if (wb - 1 < minWorking) continue;                  // target's coverage
           // Try the swap, measure new max run, revert
           const oldSrc = grid[h.ec][dates[src].d];
           const oldTgt = grid[h.ec][dates[ix].d];
@@ -1042,7 +1050,9 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
             }
           }
           const wb = m - W[dates[ix].d].off - W[dates[ix].d].leave;
-          if (wb - 1 < 2) continue;
+          // Small-team rule: 1-mgr day OK if <3 mgrs are available today.
+          const activeIx = m - (W[dates[ix].d].leave || 0);
+          if (wb - 1 < (activeIx >= 3 ? 2 : 1)) continue;
           const oS = grid[h.ec][dates[src].d];
           const oT = grid[h.ec][dates[ix].d];
           grid[h.ec][dates[src].d] = "W";
@@ -1077,7 +1087,9 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
         const carryT = partialCarry(h.ec, tgtWk);
         if (offWk[h.ec][tgtWk] + carryT >= 2) continue;
         const wb = m - W[dates[ix].d].off - W[dates[ix].d].leave;
-        if (wb - 1 < 2) continue;
+        // Small-team rule: 1-mgr day OK if <3 mgrs are available today.
+        const _activeIx = m - (W[dates[ix].d].leave || 0);
+        if (wb - 1 < (_activeIx >= 3 ? 2 : 1)) continue;
         grid[h.ec][dates[ix].d] = "O";
         W[dates[ix].d].working--; W[dates[ix].d].off++; offWk[h.ec][wkOfDay[dates[ix].d]]++;
         inserted = true;
@@ -1103,7 +1115,12 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
   const conflicts = [];
   for (const x of dates) {
     const w = dayTotals[x.d].working;
-    if (w < 2) conflicts.push({ type:"solo_or_empty", msg: x.d + ": only " + w + " manager(s) working", severity:"high", date: x.d });
+    // Small-team rule: in a 2-mgr store (or a 3-mgr store with one on
+    // leave/maternity) some days must run with a single mgr — don't
+    // flag those as 'solo' conflicts. The 6-consec cap is enforced elsewhere.
+    const activeToday = m - (W[x.d].leave || 0);
+    const minRequired = activeToday >= 3 ? 2 : 1;
+    if (w < minRequired) conflicts.push({ type:"solo_or_empty", msg: x.d + ": only " + w + " manager(s) working", severity:"high", date: x.d });
   }
   // Map of managers who submitted off-day requests this cycle. A request
   // can overrule the guaranteed weekend pair (the request takes priority,
