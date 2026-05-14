@@ -9233,13 +9233,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // so the whole tab reflects the selected region. Counts shown in
           // each pill are computed from the unfiltered salonData so the
           // pills always read like a stable map of where branches live.
+          // ROM scope filter applied to the salonData feed before the region
+          // pills run. Region counts also respect the scope so the pills
+          // show how many in-scope branches each region has.
+          const scopedSalonData = _hasStoreScope
+            ? salonData.filter(s => scopedSalonNames.has(s.name))
+            : salonData;
           const regionCounts = REGIONS.reduce((acc, r) => {
-            acc[r.key] = salonData.filter(s => s.region === r.key).length;
+            acc[r.key] = scopedSalonData.filter(s => s.region === r.key).length;
             return acc;
           }, {});
           const filteredSalonData = locFilterRegion === "all"
-            ? salonData
-            : salonData.filter(s => s.region === locFilterRegion);
+            ? scopedSalonData
+            : scopedSalonData.filter(s => s.region === locFilterRegion);
           const filteredActive    = filteredSalonData.reduce((a, s) => a + s.active.length,    0);
           const filteredOnMat     = filteredSalonData.reduce((a, s) => a + s.onMat.length,     0);
           const filteredSeats     = filteredSalonData.reduce((a, s) => a + s.capacity,          0);
@@ -9255,13 +9261,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               >+ Add new location</button>
             </div>
 
+            {renderScopeBar({ marginBottom: 12 })}
+
             {/* Region filter pills. "All" shows everything; each region pill
                 lists its count so an empty region (e.g. KZN before Ballito
                 imports) is still visible but greyed via the count. */}
             <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:14 }}>
               {[{ key:"all", label:"All regions", short:"All", color:"#831843", bg:"#fce7f3" }, ...REGIONS].map(r => {
                 const isActive = locFilterRegion === r.key;
-                const count = r.key === "all" ? salonData.length : (regionCounts[r.key] || 0);
+                const count = r.key === "all" ? scopedSalonData.length : (regionCounts[r.key] || 0);
                 return (
                   <button key={r.key} onClick={()=>setLocFilterRegion(r.key)}
                     style={{ background: isActive ? r.color : r.bg, color: isActive ? "#fff" : r.color, border:`1px solid ${r.color}`, borderRadius:999, padding:"7px 14px", cursor:"pointer", fontSize:12, fontWeight:700, letterSpacing:"0.04em", display:"flex", alignItems:"center", gap:6 }}>
