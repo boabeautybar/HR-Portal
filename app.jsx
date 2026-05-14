@@ -2047,6 +2047,18 @@ function StaffModal({ s, onClose, onSave, onTransfer, allStaff, isOwner, onHardD
                 </label>
               ))}
             </div>
+            {/* Expiry date - only relevant for asylum / work permit. Lets HR
+                surface anyone whose doc is about to lapse via the Compliance
+                'Expiring soon' panel. */}
+            {(f.permit === "asylum" || f.permit === "work_permit") && (
+              <div style={{ marginTop:10 }}>
+                <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>
+                  {f.permit === "asylum" ? "Asylum document expiry" : "Work permit expiry"}
+                </label>
+                <input type="date" value={f.permitExpiry || ""} onChange={e=>set("permitExpiry", e.target.value || null)}
+                  style={{ width:"100%", padding:"8px 11px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:13, fontFamily:"inherit", background:"#FCE7F3" }} />
+              </div>
+            )}
           </div>
         </div>
         <div style={{ display:"flex", gap:10, marginTop:22, justifyContent:"space-between", alignItems:"center", flexWrap:"wrap" }}>
@@ -2260,6 +2272,14 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
                 </label>
               ))}
             </div>
+            {/* Expiry date - only relevant for asylum / work permit. Feeds
+                the Compliance tab's 'Expiring soon' panel. */}
+            {(f.permit === "asylum" || f.permit === "work_permit") && (
+              <div style={{ marginTop:10 }}>
+                <label style={lbl}>{f.permit === "asylum" ? "Asylum document expiry" : "Work permit expiry"}</label>
+                <input type="date" value={f.permitExpiry || ""} onChange={e=>set("permitExpiry", e.target.value || null)} style={inp} />
+              </div>
+            )}
           </div>
 
           <div>
@@ -9732,6 +9752,117 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </div>
                 ))}
               </div>
+
+              {/* ── EXPIRING SOON ── asylum / work-permit holders whose
+                  document expiry date is within the next 90 days (or
+                  already past). Grouped by store and split into mgrs /
+                  techs, same look as the non-compliant follow-up below. */}
+              {(() => {
+                const today0 = new Date();
+                today0.setHours(0,0,0,0);
+                const _expDaysOut = (iso) => {
+                  if (!iso) return null;
+                  const d = new Date(iso + "T00:00:00");
+                  return Math.ceil((d - today0) / 86400000);
+                };
+                const expPool = [
+                  ...(enriched || [])
+                    .filter(s => s && s.ec && (!s.offboarded || (s.offDaysSinceLeft != null && s.offDaysSinceLeft < 0)))
+                    .filter(s => (s.permit === "asylum" || s.permit === "work_permit") && s.permitExpiry)
+                    .map(s => ({ _id: s._id, ec: s.ec, name: s.name, branch: s.branch, permit: s.permit, permitExpiry: s.permitExpiry, role: "NT", onMat: s.onMat })),
+                  ...(managers || [])
+                    .filter(m => m && m.ec)
+                    .filter(m => (m.permit === "asylum" || m.permit === "work_permit") && m.permitExpiry)
+                    .map(m => ({ _id: m._id, ec: m.ec, name: m.name, branch: m.branch, permit: m.permit, permitExpiry: m.permitExpiry, role: m.role || "AM", onMat: !!m.onMat }))
+                ];
+                // Within next 90 days OR already expired.
+                const flagged = expPool
+                  .map(p => ({ ...p, _dOut: _expDaysOut(p.permitExpiry) }))
+                  .filter(p => p._dOut !== null && p._dOut <= 90)
+                  .sort((a, b) => a._dOut - b._dOut);
+                if (flagged.length === 0) return null;
+
+                const expiredCount = flagged.filter(p => p._dOut < 0).length;
+                const branchesPresent = SALONS.map(s => s.name).filter(name => flagged.some(p => p.branch === name));
+                const orphanBranches = [...new Set(flagged.map(p => p.branch).filter(b => b && !SALONS.some(s => s.name === b)))];
+                const allBranches = [...branchesPresent, ...orphanBranches];
+
+                const fmtExp = (iso) => { try { return new Date(iso + "T00:00:00").toLocaleDateString("en-ZA", { day:"2-digit", month:"short", year:"numeric" }); } catch (_) { return iso; } };
+                const expRow = (p) => {
+                  const d = p._dOut;
+                  const overdue = d < 0;
+                  const veryClose = d >= 0 && d <= 30;
+                  const close = d > 30 && d <= 90;
+                  const pillBg = overdue ? "#fee2e2" : veryClose ? "#fef3c7" : "#f1f5f9";
+                  const pillFg = overdue ? "#7f1d1d" : veryClose ? "#92400e" : "#1e40af";
+                  const pillTxt = overdue ? Math.abs(d) + "d overdue" : d === 0 ? "EXPIRES TODAY" : "in " + d + "d";
+                  const roleIcon = p.role === "SSM" ? "💎" : p.role === "SM" ? "👑" : p.role === "AM" ? "⭐" : "💅";
+                  const permitChip = p.permit === "asylum"
+                    ? { lbl: "📋 Asylum", bg: "#ede9fe", fg: "#4c1d95" }
+                    : { lbl: "✅ Work permit", bg: "#dbeafe", fg: "#1e40af" };
+                  return (
+                    <tr key={"exp-" + p._id} style={{ borderTop:"1px solid #FEF3C7" }}>
+                      <td style={{ padding:"8px 14px", fontFamily:"monospace", fontSize:11, color:"#9ca3af", width:60 }}>{p.ec}</td>
+                      <td style={{ padding:"8px 14px", fontWeight:600, color:"#111827" }}>{roleIcon} {p.name || "(no name)"}{p.onMat && <span style={{ marginLeft:6, fontSize:10, background:"#FBCFE8", color:"#8E5570", padding:"1px 6px", borderRadius:99, fontWeight:700 }}>🤱 mat.</span>}</td>
+                      <td style={{ padding:"8px 14px" }}><span style={{ fontSize:10, fontWeight:800, padding:"3px 9px", borderRadius:99, background:permitChip.bg, color:permitChip.fg, letterSpacing:"0.04em" }}>{permitChip.lbl}</span></td>
+                      <td style={{ padding:"8px 14px", fontSize:12, color:"#374151" }}><b>{fmtExp(p.permitExpiry)}</b></td>
+                      <td style={{ padding:"8px 14px" }}><span style={{ fontSize:10, fontWeight:800, padding:"3px 9px", borderRadius:99, background:pillBg, color:pillFg, letterSpacing:"0.04em" }}>{pillTxt}</span></td>
+                      <td style={{ padding:"8px 14px", textAlign:"right" }}>
+                        <button onClick={() => p.role === "NT"
+                          ? setStaffModal((staff || []).find(s => s._id === p._id) || null)
+                          : setMgrModal((managers || []).find(m => m._id === p._id) || null)}
+                          style={{ background:"#f3f4f6", color:"#374151", border:"none", borderRadius:7, padding:"6px 11px", cursor:"pointer", fontSize:11, fontWeight:700 }}
+                        >Edit profile</button>
+                      </td>
+                    </tr>
+                  );
+                };
+                return (
+                  <div style={{ marginBottom:22 }}>
+                    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12, flexWrap:"wrap", gap:10 }}>
+                      <div>
+                        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:20, fontWeight:700, color:"#92400e" }}>⏰ Expiring in the next 3 months</div>
+                        <div style={{ fontSize:12, color:"#6b7280", marginTop:2 }}>
+                          Asylum + work-permit holders whose document expires soon (or already has). {expiredCount > 0 && <b style={{ color:"#7f1d1d" }}>{expiredCount} already overdue.</b>}
+                        </div>
+                      </div>
+                      <div style={{ fontSize:11, color:"#9ca3af" }}>{flagged.length} flagged</div>
+                    </div>
+                    <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                      {allBranches.map(brName => {
+                        const inBr = flagged.filter(p => p.branch === brName);
+                        if (inBr.length === 0) return null;
+                        const mgrsIn  = inBr.filter(p => p.role !== "NT");
+                        const techsIn = inBr.filter(p => p.role === "NT");
+                        return (
+                          <div key={"exp-br-" + brName} style={{ background:"#fff", border:"1px solid #FDE68A", borderRadius:14, overflow:"hidden" }}>
+                            <div style={{ background:"#FEF3C7", padding:"10px 16px", display:"flex", alignItems:"center", gap:10, fontFamily:"'Playfair Display',serif", fontSize:16, fontWeight:700, color:"#7c2d12" }}>
+                              📍 {brName}
+                              <span style={{ marginLeft:"auto", fontSize:11, fontWeight:600, color:"#92400e" }}>{inBr.length} expiring</span>
+                            </div>
+                            {mgrsIn.length > 0 && (
+                              <div style={{ borderTop:"1px solid #FEF3C7" }}>
+                                <div style={{ background:"#F5F3FF", padding:"7px 16px", fontSize:11, fontWeight:800, color:"#5b21b6", letterSpacing:"0.06em", textTransform:"uppercase" }}>👑 Managers · {mgrsIn.length}</div>
+                                <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+                                  <tbody>{mgrsIn.map(expRow)}</tbody>
+                                </table>
+                              </div>
+                            )}
+                            {techsIn.length > 0 && (
+                              <div style={{ borderTop:"1px solid #FEF3C7" }}>
+                                <div style={{ background:"#FDEEF5", padding:"7px 16px", fontSize:11, fontWeight:800, color:"#831843", letterSpacing:"0.06em", textTransform:"uppercase" }}>💅 Nail Techs · {techsIn.length}</div>
+                                <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+                                  <tbody>{techsIn.map(expRow)}</tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* ── COMPLIANCE FOLLOW-UP ── ONLY non-compliant people
                   (Z/NA or no permit set) grouped by store + role. Each row
