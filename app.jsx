@@ -9242,8 +9242,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               {myTodayTasks.length > 0 && (() => {
                 const openCount = myTodayTasks.filter(t => !isTaskDoneOn(t, todayYmdStr)).length;
                 const allDone = openCount === 0;
+                // ROM dashboards lean on Stores Open / Mgr Check-ins
+                // first; tone the to-dos panel down so it doesn't draw
+                // the eye away from those headline tiles.
+                const muted = _hasStoreScope;
                 return (
-                <div style={{
+                <div style={muted ? {
+                  background: "#fff",
+                  border: "1px solid " + (allDone ? "#bbf7d0" : "#FBCFE8"),
+                  borderRadius: 14,
+                  padding: "12px 16px",
+                  marginBottom: 18,
+                  boxShadow: "0 1px 4px rgba(190,24,93,0.06)"
+                } : {
                   background: allDone ? "linear-gradient(135deg,#dcfce7 0%,#FFFFFF 70%)" : "linear-gradient(135deg,#FCE7F3 0%,#FFFFFF 65%)",
                   border: "2px solid " + (allDone ? "#86efac" : "#F472B6"),
                   borderRadius: 18,
@@ -9251,14 +9262,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   marginBottom: 22,
                   boxShadow: allDone ? "0 4px 18px rgba(34,197,94,0.10)" : "0 4px 22px rgba(244,114,182,0.22)"
                 }}>
-                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:10, marginBottom: 14 }}>
-                    <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-                      <span style={{ fontSize: 28 }}>📋</span>
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:10, marginBottom: muted ? 10 : 14 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap: muted ? 8 : 10 }}>
+                      <span style={{ fontSize: muted ? 18 : 28 }}>📋</span>
                       <div>
-                        <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize: 11, fontWeight: 800, color: allDone ? "#15803d" : "#BE185D", letterSpacing: "0.18em", textTransform: "uppercase" }}>
+                        <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize: muted ? 10 : 11, fontWeight: 800, color: allDone ? "#15803d" : "#BE185D", letterSpacing: "0.18em", textTransform: "uppercase" }}>
                           Today's To-Dos
                         </div>
-                        <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize: 22, fontWeight: 800, color: "#831843", lineHeight: 1.1, marginTop: 2 }}>
+                        <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize: muted ? 14 : 22, fontWeight: muted ? 700 : 800, color: "#831843", lineHeight: 1.15, marginTop: 2 }}>
                           {allDone
                             ? "All done — nice one!"
                             : openCount + " task" + (openCount === 1 ? "" : "s") + " to tick off today"}
@@ -9268,12 +9279,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <div style={{
                       background: allDone ? "#16a34a" : "#BE185D",
                       color: "#fff",
-                      padding: "6px 14px",
+                      padding: muted ? "3px 10px" : "6px 14px",
                       borderRadius: 999,
-                      fontSize: 13,
+                      fontSize: muted ? 11 : 13,
                       fontWeight: 800,
                       letterSpacing: "0.04em",
-                      boxShadow: allDone ? "0 0 0 3px rgba(22,163,74,0.18)" : "0 0 0 3px rgba(190,24,93,0.18)"
+                      boxShadow: muted ? "none" : (allDone ? "0 0 0 3px rgba(22,163,74,0.18)" : "0 0 0 3px rgba(190,24,93,0.18)")
                     }}>
                       {myTodayTasks.length - openCount} / {myTodayTasks.length} done
                     </div>
@@ -9338,39 +9349,43 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <span style={sectionRule} />
               </div>
               <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:11, marginBottom:24 }}>
-                {[
-                  // Today's store-opening status — bright green when every
-                  // branch is open, red the moment ANY branch is still closed
-                  // (no amber middle state) so it pops on the dashboard until
-                  // resolved. While loading, fall back to the neutral amber.
-                  { l:"Stores open today",
-                    v: showStoreCard ? (storeOpenedCount + " / " + scopedSalons.length) : "…",
-                    sub: storeOpenSub,
-                    i: !showStoreCard ? "⚠" : (stillClosedBranches.length === 0 ? "🔓" : "🚨"),
-                    c: !showStoreCard ? "#7c2d12" : (stillClosedBranches.length === 0 ? "#166534" : "#7f1d1d"),
-                    bg: !showStoreCard ? "#fef3c7" : (stillClosedBranches.length === 0 ? "#dcfce7" : "#fee2e2"),
-                    click:()=>tryChangeTab("storeOpenings") },
-                  { l:"Scheduled today",   v: dashScheduledToday == null ? "…" : (_hasStoreScope ? Object.keys(dashByBranch).filter(b => scopedBranchSet.has(b)).reduce((a, b) => a + (dashByBranch[b] || 0), 0) : dashScheduledToday), sub: _hasStoreScope ? ("scope: " + (dashScope === "mine" ? "my stores" : dashScope === "other" ? "peer stores" : "all branches")) : "across all branches",       i:"📅", c:"#1e3a8a", bg:"#dbeafe" },
-                  { l:"Active staff",       v: scopedStats.active,                                    sub:"incl. " + scopedStats.pregnant + " pregnant", i:"👥", c:"#14532d", bg:"#dcfce7" },
-                  { l:"On maternity",       v: scopedStats.onMat,                                     sub: scopedStats.returning60 + " returning ≤60d",  i:"🤱", c:"#7A4258", bg:"#fce7f3" },
-                  { l:"Positions to hire",  v: scopedStats.vacancies,                                 sub:"across " + scopedStats.understaffed + " branch" + (scopedStats.understaffed !== 1 ? "es" : ""), i:"🎯", c:"#7c3aed", bg:"#ede9fe", click:()=>tryChangeTab("recruitment") },
-                  // Manager check-in gap. Highlights how many of today's
-                  // scheduled managers haven't clocked in yet. Green when
-                  // everyone is in; red the moment anyone's missing.
-                  { l:"Mgrs not checked in",
-                    v: mgrCheckinLoading ? "…" : (mgrSchedToday === 0 ? "—" : mgrMissing.length + " / " + mgrSchedToday),
-                    sub: mgrCheckinLoading
-                          ? "loading…"
-                          : (mgrSchedToday === 0
-                              ? "no managers scheduled"
-                              : (mgrMissing.length === 0
-                                  ? "✓ all managers checked in"
-                                  : mgrMissing.slice(0, 2).map(m => m.name + " · " + m.branch).join(", ") + (mgrMissing.length > 2 ? " +" + (mgrMissing.length - 2) + " more" : ""))),
-                    i: mgrCheckinLoading ? "⌛" : (mgrSchedToday === 0 ? "🕐" : (mgrMissing.length === 0 ? "✓" : "🚨")),
-                    c: mgrCheckinLoading ? "#7c2d12" : (mgrMissing.length === 0 ? "#166534" : "#7f1d1d"),
-                    bg: mgrCheckinLoading ? "#fef3c7" : (mgrMissing.length === 0 ? "#dcfce7" : "#fee2e2"),
-                    click: ()=>tryChangeTab("mgrclockins") }
-                ].map(c => (
+                {(() => {
+                  // Stat tile catalog. Order is reshuffled for ROM users:
+                  // 'Stores open today' and 'Mgrs not checked in' lead the
+                  // row because they're the headline operational signals
+                  // a Regional Ops Manager checks first. For everyone else
+                  // the original ordering stays.
+                  const tiles = {
+                    storesOpen: { l:"Stores open today",
+                      v: showStoreCard ? (storeOpenedCount + " / " + scopedSalons.length) : "…",
+                      sub: storeOpenSub,
+                      i: !showStoreCard ? "⚠" : (stillClosedBranches.length === 0 ? "🔓" : "🚨"),
+                      c: !showStoreCard ? "#7c2d12" : (stillClosedBranches.length === 0 ? "#166534" : "#7f1d1d"),
+                      bg: !showStoreCard ? "#fef3c7" : (stillClosedBranches.length === 0 ? "#dcfce7" : "#fee2e2"),
+                      click:()=>tryChangeTab("storeOpenings") },
+                    mgrCheckin: { l:"Mgrs not checked in",
+                      v: mgrCheckinLoading ? "…" : (mgrSchedToday === 0 ? "—" : mgrMissing.length + " / " + mgrSchedToday),
+                      sub: mgrCheckinLoading
+                            ? "loading…"
+                            : (mgrSchedToday === 0
+                                ? "no managers scheduled"
+                                : (mgrMissing.length === 0
+                                    ? "✓ all managers checked in"
+                                    : mgrMissing.slice(0, 2).map(m => m.name + " · " + m.branch).join(", ") + (mgrMissing.length > 2 ? " +" + (mgrMissing.length - 2) + " more" : ""))),
+                      i: mgrCheckinLoading ? "⌛" : (mgrSchedToday === 0 ? "🕐" : (mgrMissing.length === 0 ? "✓" : "🚨")),
+                      c: mgrCheckinLoading ? "#7c2d12" : (mgrMissing.length === 0 ? "#166534" : "#7f1d1d"),
+                      bg: mgrCheckinLoading ? "#fef3c7" : (mgrMissing.length === 0 ? "#dcfce7" : "#fee2e2"),
+                      click: ()=>tryChangeTab("mgrclockins") },
+                    scheduledToday: { l:"Scheduled today", v: dashScheduledToday == null ? "…" : (_hasStoreScope ? Object.keys(dashByBranch).filter(b => scopedBranchSet.has(b)).reduce((a, b) => a + (dashByBranch[b] || 0), 0) : dashScheduledToday), sub: _hasStoreScope ? ("scope: " + (dashScope === "mine" ? "my stores" : dashScope === "other" ? "peer stores" : "all branches")) : "across all branches", i:"📅", c:"#1e3a8a", bg:"#dbeafe" },
+                    activeStaff: { l:"Active staff", v: scopedStats.active, sub:"incl. " + scopedStats.pregnant + " pregnant", i:"👥", c:"#14532d", bg:"#dcfce7" },
+                    onMaternity: { l:"On maternity", v: scopedStats.onMat, sub: scopedStats.returning60 + " returning ≤60d", i:"🤱", c:"#7A4258", bg:"#fce7f3" },
+                    vacancies:   { l:"Positions to hire", v: scopedStats.vacancies, sub:"across " + scopedStats.understaffed + " branch" + (scopedStats.understaffed !== 1 ? "es" : ""), i:"🎯", c:"#7c3aed", bg:"#ede9fe", click:()=>tryChangeTab("recruitment") }
+                  };
+                  const order = _hasStoreScope
+                    ? ["storesOpen", "mgrCheckin", "scheduledToday", "activeStaff", "vacancies", "onMaternity"]
+                    : ["storesOpen", "scheduledToday", "activeStaff", "onMaternity", "vacancies", "mgrCheckin"];
+                  return order.map(k => tiles[k]);
+                })().map(c => (
                   <div key={c.l} onClick={c.click} style={{ background:c.bg, borderRadius:16, padding:"16px 18px", cursor:c.click ? "pointer" : "default", border:"1px solid rgba(255,255,255,0.6)" }}>
                     <div style={{ fontSize:24 }}>{c.i}</div>
                     <div style={{ fontSize:32, fontWeight:800, color:c.c, lineHeight:1.05, marginTop:4 }}>{c.v}</div>
