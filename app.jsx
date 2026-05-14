@@ -2754,7 +2754,9 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     // the busy ones hit the 35% per-week cap. This is what allows "some
     // people to work their 6-day week later in the month, not just during
     // busy period." Branches that opt out entirely: Table Bay, Sandown.
-    const NO_SIX_DAY_BRANCHES = new Set(["Table Bay", "Sandown"]);
+    // Branches that opt out of the 6-day busy-week designation. Betty is
+    // closed Sun+Mon (5 working days/week max), so no tech ever works 6.
+    const NO_SIX_DAY_BRANCHES = new Set(["Table Bay", "Sandown", "Betty"]);
     const designatedBusyWeek = {};
     if (!NO_SIX_DAY_BRANCHES.has(branch)) {
       const allFullWeeks = weeks.map((w, i) => ({ w, i })).filter(x => x.w.length >= 7).map(x => x.i);
@@ -2820,6 +2822,24 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
 
     const newGrid = {};
     sortedTechs.forEach(s => { newGrid[s.ec] = {}; });
+
+    // ── Store-closed days (e.g. Betty closes Sun+Mon) ───────────────────
+    // Pre-seed every closed-DOW cell as 'O' for every active tech. The
+    // FIRST closed Sunday in the cycle stays as a normal work day — Betty
+    // techs work in another store that day (half at Bree, half at Green
+    // Point); the banner above the schedule shows the split.
+    const _closedDow = Array.isArray(salon.closedDow) ? salon.closedDow.map(Number) : [];
+    if (_closedDow.length) {
+      const _closedSet = new Set(_closedDow);
+      const _firstSunday = _closedSet.has(0) ? days.find(d => d.dow === 0) : null;
+      for (const d of days) {
+        if (!_closedSet.has(d.dow)) continue;
+        if (_firstSunday && d.year === _firstSunday.year && d.monthIdx === _firstSunday.monthIdx && d.d === _firstSunday.d) continue;
+        for (const s of sortedTechs) {
+          if (newGrid[s.ec][d.d] == null) newGrid[s.ec][d.d] = "O";
+        }
+      }
+    }
 
     // ── Cross-month carry-over for the leading partial week ─────────────
     // A schedule period (25th–24th) can begin mid-week. The Mon-Sun labour
@@ -5055,6 +5075,47 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
           </ul>
         </div>
       )}
+
+      {/* Betty: store closed Sun + Mon. On the first Sunday of the cycle
+          all techs work in another store — half at Bree, half at Green
+          Point. Split is deterministic by EC (alphabetical first half
+          → Bree, second half → Green Point). */}
+      {Array.isArray(salonForBranch.closedDow) && salonForBranch.closedDow.includes(0) && (() => {
+        const firstSun = days.find(d => d.dow === 0);
+        if (!firstSun) return null;
+        const active = techs.filter(t => !t.onMat).sort((a,b) => (a.ec || "").localeCompare(b.ec || ""));
+        if (active.length === 0) return null;
+        const half = Math.ceil(active.length / 2);
+        const breeTechs = active.slice(0, half);
+        const gpTechs   = active.slice(half);
+        const dayLabel = firstSun.d + " " + (["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][firstSun.monthIdx]);
+        return (
+          <div style={{ background:"#fef3c7", border:"1px solid #fde68a", borderRadius:10, padding:"12px 16px", marginBottom:12 }}>
+            <div style={{ fontSize:13, fontWeight:800, color:"#7c2d12", marginBottom:6 }}>
+              📍 Betty rule — first Sunday of cycle ({dayLabel})
+            </div>
+            <div style={{ fontSize:11, color:"#7c2d12", marginBottom:8, lineHeight:1.4 }}>
+              Betty closes every Sun + Mon. On the first Sunday of the cycle all techs work at another store. Half go to <strong>Bree</strong>, half go to <strong>Green Point</strong>.
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+              <div>
+                <div style={{ fontSize:10, fontWeight:800, color:"#7c2d12", letterSpacing:"0.06em", marginBottom:4 }}>→ BREE ({breeTechs.length})</div>
+                {breeTechs.length === 0 ? <div style={{ fontSize:11, color:"#9ca3af", fontStyle:"italic" }}>—</div> :
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:4 }}>
+                    {breeTechs.map(t => <span key={t.ec} style={{ background:"#FFFFFF", border:"1px solid #fde68a", borderRadius:6, padding:"2px 8px", fontSize:11, fontWeight:700, color:"#7c2d12" }}>{t.name}</span>)}
+                  </div>}
+              </div>
+              <div>
+                <div style={{ fontSize:10, fontWeight:800, color:"#7c2d12", letterSpacing:"0.06em", marginBottom:4 }}>→ GREEN POINT ({gpTechs.length})</div>
+                {gpTechs.length === 0 ? <div style={{ fontSize:11, color:"#9ca3af", fontStyle:"italic" }}>—</div> :
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:4 }}>
+                    {gpTechs.map(t => <span key={t.ec} style={{ background:"#FFFFFF", border:"1px solid #fde68a", borderRadius:6, padding:"2px 8px", fontSize:11, fontWeight:700, color:"#7c2d12" }}>{t.name}</span>)}
+                  </div>}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {techs.length === 0 ? (
         <div style={{ padding:24, background:"#FCE7F3", borderRadius:10, color:"#831843" }}>No staff at <strong>{branch}</strong>.</div>
