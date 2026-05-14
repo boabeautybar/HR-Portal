@@ -13863,9 +13863,86 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             });
           };
 
-          // Generate fresh schedule into the draft (does not save).
+          // Roster-change detection. Compares the ECs in the live mgr
+          // schedule (saved or draft, whichever is rendered) with the
+          // current roster at this branch. `added` = mgrs now here who
+          // aren't on the schedule yet (new hire, transferred in).
+          // `removed` = ECs sitting in the saved grid but no longer in the
+          // current roster (left, moved away). Used to surface a sync
+          // banner and to drive the smart-regenerate behaviour below.
+          const _liveEcs = new Set(allMgrs.map(m => m.ec));
+          const _sourceGridForDiff = (mgrSchedDraft && Object.keys(mgrSchedDraft).length > 0)
+            ? mgrSchedDraft
+            : (mgrSchedSaved || result.grid || {});
+          const _gridEcs = Object.keys(_sourceGridForDiff || {});
+          const rosterAdded   = allMgrs.filter(m => m._onMat ? false : !_gridEcs.includes(m.ec)).map(m => m.ec);
+          const rosterRemoved = _gridEcs.filter(ec => !_liveEcs.has(ec));
+          // Where did the removed mgrs go? Look up the global managers
+          // list. If they're still in another branch, label as 'moved';
+          // otherwise 'left'.
+          const _whereGone = (ec) => {
+            const live = (managers || []).find(m => m && m.ec === ec);
+            if (!live)             return { kind: "left",  to: null };
+            if (live.branch && live.branch !== branch) return { kind: "moved", to: live.branch };
+            return { kind: "removed", to: null };
+          };
+          const rosterChangeCount = rosterAdded.length + rosterRemoved.length;
+          const hasApprovedFinal  = (mgrSchedVersions || []).length > 0;
+
+          // Sync only roster-affected rows into the draft. Existing
+          // managers' cells stay exactly as they are - the goal post
+          // approval is to not reshuffle people who already signed off
+          // on their cycle. Removed managers' rows are dropped; new
+          // managers' rows are filled from a fresh mgrSched run.
+          const syncRoster = () => {
+            if (rosterChangeCount === 0) { alert("Roster matches the schedule — nothing to sync."); return; }
+            const base = mgrSchedDraft ? JSON.parse(JSON.stringify(mgrSchedDraft)) : JSON.parse(JSON.stringify(_sourceGridForDiff || {}));
+            // Drop departed mgrs
+            rosterRemoved.forEach(ec => { delete base[ec]; });
+            // Bring in fresh cells for new mgrs
+            if (rosterAdded.length > 0) {
+              const fresh = mgrSched(branch, cycleStart, allMgrs, mgrLeavesPlusMat, currentRequests, mgrPriorCtx);
+              rosterAdded.forEach(ec => {
+                if (fresh && fresh.grid && fresh.grid[ec]) {
+                  base[ec] = JSON.parse(JSON.stringify(fresh.grid[ec]));
+                }
+              });
+              // ML rewrite for any added on-mat mgr (defence in depth)
+              allMgrs.filter(m => m._onMat && rosterAdded.includes(m.ec)).forEach(m => {
+                if (base[m.ec]) Object.keys(base[m.ec]).forEach(k => {
+                  if (base[m.ec][k] === "L") base[m.ec][k] = "ML";
+                });
+              });
+            }
+            setMgrSchedDraft(base);
+            setMgrSchedDirty(true);
+            setMgrSchedHist(h => { const n = { ...h }; delete n[editKey]; return n; });
+            const summary = (rosterAdded.length ? rosterAdded.length + " added" : "") +
+                             (rosterAdded.length && rosterRemoved.length ? " · " : "") +
+                             (rosterRemoved.length ? rosterRemoved.length + " removed" : "");
+            if (window.BOA_LOG_ACTIVITY) {
+              window.BOA_LOG_ACTIVITY("Synced mgr roster to schedule", branch + " · " + ymKey, summary, "Schedule");
+            }
+            alert("Roster synced: " + summary + ".\n\nClick Save to persist.");
+          };
+
+          // Generate fresh schedule into the draft (does not save). If an
+          // approved final version exists and the roster has only minor
+          // changes, route to the safer sync flow that keeps everyone
+          // else's cells intact.
           const generate = () => {
-            if (mgrSchedDirty) {
+            if (hasApprovedFinal && rosterChangeCount > 0) {
+              const useSync = window.confirm(
+                "A final approved schedule exists for this cycle.\n\n" +
+                "Roster changed: " + rosterAdded.length + " added · " + rosterRemoved.length + " removed.\n\n" +
+                "OK → Sync only the changed managers (keep everyone else's cells as approved).\n" +
+                "Cancel → Full regenerate (overwrites the approved schedule for every manager)."
+              );
+              if (useSync) { syncRoster(); return; }
+              if (!window.confirm("Confirm full regenerate? This will overwrite the approved schedule for ALL managers.")) return;
+            } else if (hasApprovedFinal) {
+              if (!window.confirm("A final approved schedule exists. Regenerate will overwrite every manager's cells. Continue?")) return;
+            } else if (mgrSchedDirty) {
               if (!window.confirm("This will replace the current draft with a freshly generated schedule. Discard your unsaved edits?")) return;
             }
             const fresh = mgrSched(branch, cycleStart, allMgrs, mgrLeavesPlusMat, currentRequests, mgrPriorCtx);
@@ -14267,6 +14344,39 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       </tbody>
                     </table>
                   )}
+                </div>
+              )}
+
+              {/* Roster-change banner — surfaces when the live managers at
+                  this branch differ from the people sitting on the saved /
+                  draft grid. Lists who's been added or removed and offers a
+                  Sync button that touches ONLY those mgrs (everyone else's
+                  cells are preserved, which is critical after an approved
+                  version exists). */}
+              {rosterChangeCount > 0 && (
+                <div style={{ background:"#FEF9C3", border:"1px solid #FDE68A", borderRadius:11, padding:"12px 14px", marginBottom:14 }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:"#78350F", marginBottom:6, display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                    <span>🔄 Manager roster changed since this schedule was built</span>
+                    {hasApprovedFinal && <span style={{ fontSize:10, fontWeight:800, padding:"2px 8px", borderRadius:99, background:"#92400e", color:"#fff", letterSpacing:"0.06em" }}>FINAL EXISTS</span>}
+                  </div>
+                  <ul style={{ margin:"4px 0 10px", paddingLeft:20, fontSize:12, color:"#78350F", lineHeight:1.6 }}>
+                    {rosterAdded.map(ec => {
+                      const live = allMgrs.find(m => m.ec === ec) || {};
+                      return <li key={"add_"+ec}><b>+ Added:</b> {live.name || ec} ({ec}) · {live.role || "?"}</li>;
+                    })}
+                    {rosterRemoved.map(ec => {
+                      const w = _whereGone(ec);
+                      return <li key={"rem_"+ec}><b>– Removed:</b> {ec} {w.kind === "moved" ? "(moved to " + w.to + ")" : w.kind === "left" ? "(left)" : "(no longer at branch)"}</li>;
+                    })}
+                  </ul>
+                  <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
+                    <button onClick={syncRoster}
+                      title="Add the new manager rows (auto-filled) and drop the removed ones. Existing managers' cells are left untouched."
+                      style={{ padding:"7px 14px", background:"#BE185D", color:"#fff", border:"none", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
+                      🔄 Sync changes only
+                    </button>
+                    <span style={{ fontSize:11, color:"#78350F" }}>Preserves every other manager's cells — safe after final approval.</span>
+                  </div>
                 </div>
               )}
 
