@@ -8355,9 +8355,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
             <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))", gap:10, marginBottom:20 }}>
               {[
-                { l:"At Capacity",  v:filteredSalonData.filter(s=>s.urgency==="full").length,  c:"#15803d", bg:"#dcfce7" },
-                { l:"Needs Staff",  v:filteredSalonData.filter(s=>s.urgency==="low").length,   c:"#b45309", bg:"#fef9c3" },
-                { l:"Understaffed", v:filteredSalonData.filter(s=>s.urgency==="high").length,  c:"#c2410c", bg:"#ffedd5" },
+                // Urgency ladder shown left → right (worst to best). Previously
+                // "critical" (0 active staff) had no tile, so branches with no
+                // staff were invisible in the bucket totals - users saw the
+                // sum of the visible tiles undershoot the branch-pill count.
+                { l:"Unstaffed (0 staff)", v:filteredSalonData.filter(s=>s.urgency==="critical").length, c:"#7f1d1d", bg:"#fee2e2" },
+                { l:"Understaffed",        v:filteredSalonData.filter(s=>s.urgency==="high").length,     c:"#c2410c", bg:"#ffedd5" },
+                { l:"Needs Staff",         v:filteredSalonData.filter(s=>s.urgency==="low").length,      c:"#b45309", bg:"#fef9c3" },
+                { l:"At Capacity",         v:filteredSalonData.filter(s=>s.urgency==="full").length,     c:"#15803d", bg:"#dcfce7" },
                 { l:"Active (incl. pregnant)", v:filteredActive, c:"#1e3a8a", bg:"#dbeafe" },
                 { l:"On Mat. Leave",v:filteredOnMat,    c:"#7A4258", bg:"#fce7f3" },
                 { l:"Total Seats",  v:filteredSeats, c:"#111827", bg:"#f3f4f6" },
