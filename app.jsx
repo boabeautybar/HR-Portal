@@ -2257,7 +2257,7 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
 }
 
 // ─── SCHEDULE EDITOR (Phase 2a — manual editing, save to Supabase) ──────────────
-function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
+function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obList }) {
   const [branch, setBranch] = useState(SALONS[0].name);
   const [ym, setYm] = useState(window.BOA_DB ? window.BOA_DB.currentSchedYm() : "2026-05");
   const [grid, setGrid] = useState({});
@@ -2404,20 +2404,33 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
     const f = days[0];
     return f.year + "-" + String(f.monthIdx + 1).padStart(2, "0") + "-" + String(f.d).padStart(2, "0");
   }, [ym]);
-  const techs = useMemo(() => allStaff
-    .filter(s => s.branch === branch && !s.isShadow)
-    // Off-boarding visibility rule: a tech with a leftDate stays on the
-    // grid for the cycle they leave in (greyed-out row + X cells after
-    // leftDate, handled at render and in PHASE 18). From the next cycle
-    // onward — once their leftDate falls strictly before the period
-    // start — they vanish from the schedule entirely.
-    .filter(s => !s.leftDate || !_periodStartYmdForTechs || s.leftDate >= _periodStartYmdForTechs)
-    .sort((a, b) => {
+  const techs = useMemo(() => {
+    const regularTechs = allStaff
+      .filter(s => s.branch === branch && !s.isShadow)
+      // Off-boarding visibility rule: a tech with a leftDate stays on the
+      // grid for the cycle they leave in (greyed-out row + X cells after
+      // leftDate, handled at render and in PHASE 18). From the next cycle
+      // onward — once their leftDate falls strictly before the period
+      // start — they vanish from the schedule entirely.
+      .filter(s => !s.leftDate || !_periodStartYmdForTechs || s.leftDate >= _periodStartYmdForTechs);
+
+    const provisionalTechs = obList
+      .filter(o => 
+        o.branch === branch && 
+        (o.status === "Trial Week 1" || o.status === "Pending Trial 1 Review" || o.status === "Trial Week 2" || o.status === "Pending Trial 2 Review")
+      )
+      .map(o => ({
+        ...o,
+        isProvisional: true
+      }));
+
+    return [...regularTechs, ...provisionalTechs].sort((a, b) => {
       const am = a.onMat ? 1 : 0;
       const bm = b.onMat ? 1 : 0;
       if (am !== bm) return am - bm;                       // active before on-mat
       return (a.ec || "").localeCompare(b.ec || "");
-    }), [allStaff, branch, _periodStartYmdForTechs]);
+    });
+  }, [allStaff, branch, _periodStartYmdForTechs, obList]);
 
   // Set of "ec|dayOfMonth" combos that have a pending off-day request in the
   // active branch + cycle. Used to render a small dot on the schedule cell so
@@ -2435,7 +2448,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
     return out;
   }, [techRequests, branch, days]);
 
-  const cycle = ["W","WL","O","R","L","E","X",""];
+  const cycle = ["W","WL","O","R","L","E","X","trial",""];
   const cellStyle = (z) => {
     if (z === "W")  return { background:"#dcfce7", color:"#14532d" };
     if (z === "WL") return { background:"#86efac", color:"#14532d" };
@@ -2444,6 +2457,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
     if (z === "L")  return { background:"#cbd5e1", color:"#475569" };
     if (z === "E")  return { background:"#6ee7b7", color:"#064e3b" };
     if (z === "X")  return { background:"#f3f4f6", color:"#9ca3af", fontStyle:"italic", fontWeight:500 };
+    if (z === "trial") return { background:"#fef08a", color:"#854d0e", fontWeight:700 };
     return { background:"#fff", color:"#9ca3af" };
   };
 
@@ -2505,9 +2519,11 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
     // Active techs only (exclude staff currently on maternity leave) — they
     // don't count toward coverage targets and shouldn't get scheduled days.
     // We'll mark their grid rows as Leave separately at the end.
-    const sortedTechs = [...techs]
-      .filter(t => !t.onMat)
+    const allActive = [...techs].filter(t => !t.onMat);
+    const sortedTechs = allActive
+      .filter(t => !t.isProvisional)
       .sort((a,b) => (a.ec || "").localeCompare(b.ec || ""));
+    const provTechs = allActive.filter(t => t.isProvisional);
     const onMatTechs = techs.filter(t => t.onMat);
     const totalStaff = sortedTechs.length;
     const sundayGroup = {};
@@ -2596,11 +2612,21 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
       return Math.min(base, 1.0);
     };
     // Original uses Math.round (not ceil) — matches the working bundle.
-    const minWorkingFor = (d) => totalStaff <= 2 ? 1
-      : Math.min(capacity, Math.max(1, Math.round(dayTargetPct(d.dow, isBusyDay(d)) * totalStaff)));
+    const minWorkingFor = (d) => {
+      const provW = (d.dow !== 0 && d.dow !== 6) ? provTechs.length : 0;
+      const capRem = Math.max(1, capacity - provW);
+      const target = Math.max(1, Math.round(dayTargetPct(d.dow, isBusyDay(d)) * allActive.length) - provW);
+      return totalStaff <= 2 ? 1 : Math.min(capRem, target);
+    };
 
     const newGrid = {};
     sortedTechs.forEach(s => { newGrid[s.ec] = {}; });
+    provTechs.forEach(s => {
+      newGrid[s.ec] = {};
+      days.forEach(d => {
+        newGrid[s.ec][d.d] = (d.dow === 0 || d.dow === 6) ? "O" : "trial";
+      });
+    });
 
     // ── Cross-month carry-over for the leading partial week ─────────────
     // A schedule period (25th–24th) can begin mid-week. The Mon-Sun labour
@@ -4894,6 +4920,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
                     <td style={{ position:"sticky", left:0, background:nameBg, padding:"6px 10px", borderBottom:"1px solid #FCE7F3", color:nameColor, fontWeight:600, fontSize:12 }}>
                       <div style={{ display:"flex", alignItems:"center", gap:6 }}>
                         <span>{s.name}</span>
+                        {s.isProvisional && <span style={{ background:"#fce7f3", color:"#be185d", padding:"1px 6px", borderRadius:4, fontSize:9, fontWeight:800, letterSpacing:"0.04em" }}>🌱 TRAINEE</span>}
                         {onMat && <span style={{ background:"#e5e7eb", color:"#374151", padding:"1px 6px", borderRadius:4, fontSize:9, fontWeight:700, letterSpacing:"0.04em" }}>🤱 ON MAT</span>}
                         {!onMat && isLeaving && <span style={{ background:"#fee2e2", color:"#991b1b", padding:"1px 6px", borderRadius:4, fontSize:9, fontWeight:700, letterSpacing:"0.04em" }}>👋 LEFT {s.leftDate}</span>}
                       </div>
@@ -4912,7 +4939,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
                       // sync pass to stamp X.
                       const dYmd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
                       const isPastLeft = isLeaving && dYmd > s.leftDate;
-                      const cellLocked = onMat || isPastLeft;
+                      const cellLocked = onMat || isPastLeft || s.isProvisional;
                       // Maternity leave cells: distinct lavender tint so
                       // ML reads differently from a regular L (annual
                       // leave) and from a post-departure ghost cell.
@@ -6316,8 +6343,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [navShowCategory, setNavShowCategory] = useState(false);
   // Map of tab → category name. Kept in sync with the groups list below.
   const NAV_TAB_TO_CATEGORY = {
-    onboard:"People", offboard:"People", staff:"People", recruitment:"People", maternity:"People",
-    scheduling:"Operations", locations:"Operations", mgrclockins:"Operations", leave:"Operations", checkins:"Operations", storeOpenings:"Operations",
+    onboard:"People", offboard:"People", staff:"People", recruitment:"People", hrLibrary:"People", maternity:"People", unpaidLegal:"People",
+    scheduling:"Operations", locations:"Operations", mgrclockins:"Operations", leave:"Operations", checkins:"Operations", storeOpenings:"Operations", movements:"Operations",
     attendance:"Payroll", payrollProgress:"Payroll",
     alerts:"Insights", activity:"Insights",
     settings:"Admin"
@@ -6352,6 +6379,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // ── Onboarding / Off-boarding state ────────────────────────────────
   const [obList, setObList] = useState([]);           // joiner records
+  const [hrTasks, setHrTasks] = useState([]);         // HR Tasks (mocked for now)
   const [offList, setOffList] = useState([]);         // leaver records
   // Controlled value for the "Mark a staff member as off-boarded" StaffPicker;
   // submitOff() now reads this state instead of an uncontrolled <select> DOM
@@ -6359,8 +6387,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [offEcInput, setOffEcInput] = useState("");
   const [obForm, setObForm] = useState({              // onboarding inline form
     name:"", ec:"", branch: SALONS[0].name, position:"Nail Tech",
-    positionOther:"", startDate:"", notes:"", _editId: null
+    positionOther:"", startDate:"", notes:"", status:"Trainer Week", _editId: null
   });
+  const [hrTaskModal, setHrTaskModal] = useState(null); // { task: <task object>, scores: { lateness:5, reliability:5 }, docs: [] }
   const [quickPick, setQuickPick] = useState(null);   // pending-term quick-pick modal
   const [pendingTerms, setPendingTerms] = useState([]);  // auto-detected from attendance grid
 
@@ -6773,8 +6802,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadOnboarding(),
       window.BOA_DB.loadOffboarding(),
       window.BOA_DB.loadLeaveRecords(),
-      window.BOA_DB.loadManagerPins()
-    ]).then(([d, ob, off, lv, pins]) => {
+      window.BOA_DB.loadManagerPins(),
+      window.BOA_DB.loadHRTasks()
+    ]).then(([d, ob, off, lv, pins, tasks]) => {
       setStaff(d.staff);
       setManagers(d.managers);
       setMatRecs(d.matRecs);
@@ -6782,6 +6812,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setOffList(Array.isArray(off) ? off : []);
       setLeaveRecs(Array.isArray(lv) ? lv : []);
       setMgrPins(pins && typeof pins === "object" ? pins : {});
+      setHrTasks(Array.isArray(tasks) ? tasks : []);
       setLoading(false);
     }).catch((err) => {
       setLoadError("Could not load data: " + (err.message || err));
@@ -7285,12 +7316,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const onUnpaidLegal = all.filter(s=>s.onUnpaidLegal);    // greyed at the bottom
     const offboarded = all.filter(s=>s.offboarded);          // greyed in UI, only those within the 31-day window
     const arriving = all.filter(s=>s.isShadow);              // pending incoming transfers — shown but not counted
+    // Trainees in Onboarding (not yet in 'staff'). Exclude those with the trainer (not yet at the branch).
+    const provisional = obList.filter(o => 
+      o.branch === salon.name && 
+      !o.status?.includes("Trainer") &&
+      o.status !== "Hired" &&
+      o.status !== "Failed / Terminated"
+    );
     // Use targetCapacity for low-demand stores (e.g. Betty), full capacity otherwise
     const goal = salon.targetCapacity || salon.capacity;
-    const fillRate = active.length/goal;
+    // We add provisional length to fillRate temporarily if we want them to count, or keep them separate.
+    // The requirement says "Show Week 1/Week 2 trainees in vacant branch slots".
+    const fillRate = (active.length + provisional.length) / goal;
     const urgency = active.length===0?"critical":fillRate<0.5?"high":fillRate<1?"low":"full";
-    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, urgency, goal };
-  }), [enriched]);
+    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, provisional, urgency, goal };
+  }), [enriched, obList]);
 
   const uColor = { critical:"#dc2626", high:"#f97316", low:"#eab308", full:"#16a34a" };
   const uLabel = { critical:"UNSTAFFED", high:"UNDERSTAFFED", low:"NEEDS STAFF", full:"AT CAPACITY" };
@@ -7524,6 +7564,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t:"offboard",    l: offboardLbl },
                   { t:"staff",       l:"👥 Staff List"    },
                   { t:"recruitment", l:"🎯 Recruitment"   },
+                  ...(currentUser?.role === "Master Admin" || currentUser?.isOwner ? [
+                    { t:"hrLibrary", l:"📁 Employee Files" }
+                  ] : []),
                   { t:"maternity",   l: matLbl },
                   { t:"unpaidLegal", l:"⏸️ Unpaid Leave (Legal)" }
                 ] },
@@ -7878,6 +7921,66 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 ))}
               </div>
 
+              {/* ── SECTION: HR TASKS (Mocked Phase 3) ── */}
+              {(() => {
+                const pendingTasks = obList.filter(o => 
+                  o.status === "Pending Trainer Review" || 
+                  o.status === "Pending Trial 1 Review" ||
+                  o.status === "Pending Trial 2 Review"
+                ).map(o => {
+                  let title = "";
+                  let type = "";
+                  if (o.status === "Pending Trainer Review") { title = "Review Trainer Week & Sign Trial Contract"; type = "trainer"; }
+                  if (o.status === "Pending Trial 1 Review") { title = "Review Trial Week 1"; type = "trial1"; }
+                  if (o.status === "Pending Trial 2 Review") { title = "Review Trial Week 2 & Sign Permanent Contract"; type = "trial2"; }
+                  return {
+                    id: o._id,
+                    title: title,
+                    type: type,
+                    employeeName: o.name,
+                    employeeEc: o.ec,
+                    dueDate: o.startDate
+                  };
+                });
+                
+                return (
+                  <>
+                    <div style={sectionTitle}>
+                      <span>📝 HR Actions & Tasks</span>
+                      <span style={sectionRule} />
+                    </div>
+                    <div style={{ marginBottom:24 }}>
+                      {pendingTasks.length === 0 ? (
+                        <div style={{ background:"#f9fafb", borderRadius:16, border:"1px dashed #e5e7eb", padding:"24px", textAlign:"center" }}>
+                          <div style={{ fontSize:28, marginBottom:8 }}>☕</div>
+                          <div style={{ fontSize:14, fontWeight:700, color:"#374151" }}>All caught up!</div>
+                          <div style={{ fontSize:12, color:"#6b7280", marginTop:4 }}>No pending HR tasks right now.</div>
+                        </div>
+                      ) : (
+                        <div style={{ display:"grid", gap:10 }}>
+                          {pendingTasks.map(task => (
+                            <div key={task.id} style={{ ...card, display:"flex", justifyContent:"space-between", alignItems:"center", padding:"14px 18px", borderLeft:`4px solid #dc2626`, background:"#fef2f2", animation:"urgentPulse 2s infinite" }}>
+                              <div>
+                                <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:2 }}>
+                                  <span style={{ fontSize:14 }}>🚨</span>
+                                  <div style={{ fontSize:14, fontWeight:800, color:"#991b1b" }}>{task.title}</div>
+                                </div>
+                                <div style={{ fontSize:12, color:"#7f1d1d" }}>
+                                  {task.employeeName} {task.employeeEc && `(${task.employeeEc})`} · Started: {new Date(task.dueDate).toLocaleDateString("en-ZA", {day:"2-digit",month:"short",year:"numeric"})}
+                                </div>
+                              </div>
+                              <button onClick={() => setHrTaskModal({ task, scores: { lateness:5, reliability:5, performance:5 }, docs: [] })} style={{ background:"#dc2626", color:"#fff", border:"none", borderRadius:8, padding:"8px 16px", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700, boxShadow:"0 2px 4px rgba(220,38,38,0.3)" }}>
+                                Action
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                );
+              })()}
+
               {/* ── SECTION: SCHEDULE PROGRESS ── one unified panel with two
                   inner cards (nail tech + manager). Counts both schedule
                   types for the next 25th-to-24th cycle, with a shared
@@ -8197,6 +8300,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             techRequests={techRequests}
             onTechRequestsChange={(next) => { setTechRequests(next); setTechRequestsTick(t => t + 1); }}
             leaveRecs={leaveRecs}
+            obList={obList}
           />
         )}
 
@@ -8501,8 +8605,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         </div>
                       );
                     })}
+                    {/* Provisional (Trainees) */}
+                    {salon.provisional && salon.provisional.map(m=>(
+                      <div key={m._id} style={{ display:"flex", alignItems:"center", gap:6, padding:"5px 7px", borderRadius:7, background:"#fdf2f8", border:"1.5px dashed #fbcfe8", opacity:0.8 }}>
+                        <span style={{ fontSize:9, color:"#f472b6", fontFamily:"monospace", minWidth:34 }}>{m.ec}</span>
+                        <span style={{ flex:1, fontSize:11, fontWeight:600, color:"#be185d", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
+                          🌱 {m.name}
+                        </span>
+                        <span style={{ fontSize:9, background:"#be185d", color:"#fff", borderRadius:4, padding:"1px 6px", fontWeight:700, whiteSpace:"nowrap" }}>
+                          {(m.status || "").includes("Week 1") ? "TRIAL (WK1)" : "TRIAL (WK2)"}
+                        </span>
+                      </div>
+                    ))}
                     {/* Vacant seats — off-boarded rows already visualise their open slot, so subtract them here too */}
-                    {Array.from({ length:Math.max(0, salon.capacity - salon.active.length - salon.offboarded.length) }).map((_,i)=>(
+                    {Array.from({ length:Math.max(0, salon.capacity - salon.active.length - salon.offboarded.length - (salon.provisional ? salon.provisional.length : 0)) }).map((_,i)=>(
                       <div key={i} style={{ padding:"5px 7px", borderRadius:7, border:"1.5px dashed #d1d5db", display:"flex", alignItems:"center", gap:6 }}>
                         <span style={{ fontSize:12, opacity:0.25 }}>👤</span>
                         <span style={{ fontSize:10, color:"#d1d5db", fontStyle:"italic" }}>Vacant seat</span>
@@ -8512,6 +8628,103 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               ))}
             </div>
+            )}
+
+            {/* ── HR TASK MODAL (Mocked Phase 3) ── */}
+            {hrTaskModal && (
+              <div
+                onClick={()=>{ if(!hrTaskModal.saving) setHrTaskModal(null); }}
+                style={{ position:"fixed", inset:0, background:"rgba(17,24,39,0.55)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:120 }}
+              >
+                <div
+                  onClick={e=>e.stopPropagation()}
+                  style={{ background:"#fff", borderRadius:16, padding:"24px 28px", width:"min(540px, 92vw)", boxShadow:"0 10px 40px rgba(0,0,0,0.25)", maxHeight:"90vh", overflowY:"auto" }}
+                >
+                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:PINK.ink, marginBottom:4 }}>{hrTaskModal.task.title}</div>
+                  <div style={{ fontSize:13, color:"#6b7280", marginBottom:20 }}>For {hrTaskModal.task.employeeName} {hrTaskModal.task.employeeEc && `(${hrTaskModal.task.employeeEc})`}</div>
+
+                  {/* 1. Evaluation Form */}
+                  <div style={{ background:PINK.softest, borderRadius:12, padding:"16px", border:`1px solid ${PINK.soft}`, marginBottom:18 }}>
+                    <div style={{ fontSize:12, fontWeight:800, color:PINK.ink, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:12 }}>
+                      1. {hrTaskModal.task.type === "trainer" ? "Trainer Feedback (Skills)" : `Branch Performance (${hrTaskModal.task.type === "trial1" ? "Trial Wk 1" : "Trial Wk 2"})`}
+                    </div>
+                    
+                    {["lateness", "reliability", "performance"].map(metric => (
+                      <div key={metric} style={{ marginBottom:14 }}>
+                        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
+                          <label style={{ fontSize:13, fontWeight:600, color:"#374151", textTransform:"capitalize" }}>{metric}</label>
+                          <span style={{ fontSize:13, fontWeight:800, color:PINK.accent }}>{hrTaskModal.scores[metric]} / 5</span>
+                        </div>
+                        <input type="range" min="1" max="5" step="1" 
+                          value={hrTaskModal.scores[metric]}
+                          onChange={e => setHrTaskModal({...hrTaskModal, scores: {...hrTaskModal.scores, [metric]: parseInt(e.target.value)}})}
+                          style={{ width:"100%", accentColor:PINK.accent, cursor:"pointer" }}
+                        />
+                        <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, color:"#9ca3af", marginTop:2 }}>
+                          <span>Needs Improvement</span>
+                          <span>Excellent</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* 2. Document Uploads (Conditional) */}
+                  {hrTaskModal.task.type !== "trial1" && (
+                    <div style={{ background:"#f9fafb", borderRadius:12, padding:"16px", border:"1px solid #e5e7eb", marginBottom:24 }}>
+                      <div style={{ fontSize:12, fontWeight:800, color:"#4b5563", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:12 }}>2. Supporting Documents</div>
+                      
+                      <div style={{ marginBottom:12 }}>
+                        <label style={{ display:"block", fontSize:12, fontWeight:600, color:"#374151", marginBottom:4 }}>
+                          Signed {hrTaskModal.task.type === "trainer" ? "Trial Contract" : "Permanent Contract"} (PDF)
+                        </label>
+                        <input type="file" accept=".pdf,image/*" style={{ fontSize:13, padding:"8px", border:"1px dashed #d1d5db", borderRadius:8, width:"100%", background:"#fff" }} />
+                      </div>
+                      
+                      {hrTaskModal.task.type === "trial2" && (
+                        <div>
+                          <label style={{ display:"block", fontSize:12, fontWeight:600, color:"#374151", marginBottom:4 }}>ID / Proof of Address (PDF/Image)</label>
+                          <input type="file" accept=".pdf,image/*" multiple style={{ fontSize:13, padding:"8px", border:"1px dashed #d1d5db", borderRadius:8, width:"100%", background:"#fff" }} />
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:8 }}>
+                    <button 
+                      onClick={() => {
+                        if (!confirm("Are you sure you want to terminate this candidate's onboarding?")) return;
+                        const updatedList = obList.map(o => o._id === hrTaskModal.task.id ? {...o, status: "Failed / Terminated", updatedAt: new Date().toISOString()} : o);
+                        setObList(updatedList);
+                        window.BOA_DB.saveOnboarding(updatedList);
+                        setHrTaskModal(null);
+                      }}
+                      disabled={hrTaskModal.saving}
+                      style={{ background:"#fef2f2", color:"#991b1b", border:"1px solid #fecaca", borderRadius:8, padding:"10px 18px", cursor:"pointer", fontSize:13, fontWeight:700 }}
+                    >Terminate Candidate</button>
+                    
+                    <div style={{ display:"flex", gap:10 }}>
+                      <button onClick={()=>setHrTaskModal(null)} disabled={hrTaskModal.saving}
+                        style={{ background:"#f3f4f6", color:"#374151", border:"none", borderRadius:8, padding:"10px 18px", cursor:"pointer", fontSize:13, fontWeight:700 }}
+                      >Cancel</button>
+                      <button 
+                        onClick={() => {
+                          const targetStatus = 
+                            hrTaskModal.task.type === "trainer" ? "Trial Week 1" : 
+                            hrTaskModal.task.type === "trial1" ? "Trial Week 2" : "Hired";
+                          
+                          const updatedList = obList.map(o => o._id === hrTaskModal.task.id ? {...o, status: targetStatus, updatedAt: new Date().toISOString()} : o);
+                          setObList(updatedList);
+                          window.BOA_DB.saveOnboarding(updatedList);
+                          setHrTaskModal(null);
+                          alert(`Task completed! Candidate moved to ${targetStatus}.`);
+                        }}
+                        disabled={hrTaskModal.saving}
+                        style={{ background:PINK.accent, color:"#fff", border:"none", borderRadius:8, padding:"10px 20px", cursor:"pointer", fontSize:13, fontWeight:700 }}
+                      >Approve & Advance</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
             )}
 
             {/* ── ADD-LOCATION MODAL ── */}
@@ -9231,7 +9444,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             {/* Fill meter */}
                             <div style={{ marginBottom:10 }}>
                               <div style={{ display:"flex", justifyContent:"space-between", fontSize:11, fontWeight:700, marginBottom:4, color:need===0?"#15803d":"#9a3412" }}>
-                                <span>{salon.active.length} of {salon.goal} staff {salon.lowDemand?"(target)":"(capacity)"}</span>
+                                <span>
+                                  {salon.active.length} of {salon.goal} staff {salon.lowDemand?"(target)":"(capacity)"} 
+                                  {salon.provisional && salon.provisional.length > 0 && <span style={{ color:"#be185d", marginLeft:4 }}>(+{salon.provisional.length} provisional)</span>}
+                                </span>
                                 <span>{pct}% filled</span>
                               </div>
                               <div style={{ height:8, borderRadius:99, background:"#e5e7eb", overflow:"hidden" }}>
@@ -9658,10 +9874,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const wasEdit = !!obForm._editId;
             if (wasEdit) {
               next = obList.map(r => r._id === obForm._editId
-                ? { ...r, name: obForm.name, ec: obForm.ec, branch: obForm.branch, position: obForm.position, positionOther: obForm.positionOther||"", startDate: obForm.startDate, notes: obForm.notes, updatedAt: new Date().toISOString() }
+                ? { ...r, name: obForm.name, ec: obForm.ec, branch: obForm.branch, position: obForm.position, positionOther: obForm.positionOther||"", startDate: obForm.startDate, notes: obForm.notes, status: obForm.status, updatedAt: new Date().toISOString() }
                 : r);
             } else {
-              const newRec = { _id: Date.now(), name: obForm.name, ec: obForm.ec, branch: obForm.branch, position: obForm.position, positionOther: obForm.positionOther||"", startDate: obForm.startDate, notes: obForm.notes, addedAt: new Date().toISOString() };
+              const newRec = { _id: Date.now(), name: obForm.name, ec: obForm.ec, branch: obForm.branch, position: obForm.position, positionOther: obForm.positionOther||"", startDate: obForm.startDate, notes: obForm.notes, status: obForm.status, addedAt: new Date().toISOString() };
               next = [...obList, newRec];
             }
             persistOb(next);
@@ -9670,13 +9886,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               obForm.name + (obForm.ec ? " (" + obForm.ec + ")" : ""),
               (obForm.position || "") + " · " + (obForm.branch || "") + " · start " + obForm.startDate
             );
-            setObForm({ name:"", ec:"", branch: SALONS[0].name, position:"Nail Tech", positionOther:"", startDate:"", notes:"", _editId: null });
+            setObForm({ name:"", ec:"", branch: SALONS[0].name, position:"Nail Tech", positionOther:"", startDate:"", notes:"", status:"Trainer Week", _editId: null });
           };
           const editOb = (r) => {
-            setObForm({ name:r.name||"", ec:r.ec||"", branch:r.branch||SALONS[0].name, position:r.position||"Nail Tech", positionOther:r.positionOther||"", startDate:r.startDate||"", notes:r.notes||"", _editId:r._id });
+            setObForm({ name:r.name||"", ec:r.ec||"", branch:r.branch||SALONS[0].name, position:r.position||"Nail Tech", positionOther:r.positionOther||"", startDate:r.startDate||"", notes:r.notes||"", status:r.status||"Trainer Week", _editId:r._id });
             try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch(_) {}
           };
-          const cancelEdit = () => setObForm({ name:"", ec:"", branch: SALONS[0].name, position:"Nail Tech", positionOther:"", startDate:"", notes:"", _editId:null });
+          const cancelEdit = () => setObForm({ name:"", ec:"", branch: SALONS[0].name, position:"Nail Tech", positionOther:"", startDate:"", notes:"", status:"Trainer Week", _editId:null });
           const delOb = (id) => {
             if (!confirm("Remove this onboarding record?")) return;
             const tgt = obList.find(r => r._id === id);
@@ -9717,6 +9933,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <option value="SM">Store Manager (SM)</option>
                     <option value="AM">Assistant Manager (AM)</option>
                     <option value="Other">Other (custom…)</option>
+                  </select>
+                  <select value={obForm.status} onChange={e=>setObForm({...obForm, status:e.target.value})} style={{ padding:"8px 10px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:13, fontFamily:"inherit", background:"#fff" }}>
+                    <option value="Trainer Week">Trainer Week</option>
+                    <option value="Pending Trainer Review">Pending Trainer Review</option>
+                    <option value="Trial Week 1">Trial Week 1 (Branch)</option>
+                    <option value="Pending Trial 1 Review">Pending Trial 1 Review</option>
+                    <option value="Trial Week 2">Trial Week 2 (Branch)</option>
+                    <option value="Pending Trial 2 Review">Pending Trial 2 Review</option>
+                    <option value="Hired">Hired / Completed</option>
+                    <option value="Failed / Terminated">Failed / Terminated</option>
                   </select>
                   <input type="date" value={obForm.startDate} onChange={e=>setObForm({...obForm, startDate:e.target.value})} style={{ padding:"8px 10px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:13, fontFamily:"inherit" }} />
                 </div>
@@ -14295,6 +14521,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           onUsersUpdate={onUsersUpdate}
           currentUser={currentUser}
         />
+      )}
+
+      {tab === "hrLibrary" && (currentUser?.role === "Master Admin" || currentUser?.isOwner) && (
+        window.EmployeeDataLibrary ? React.createElement(window.EmployeeDataLibrary, { staff: staff, currentUser: currentUser, managers: managers, obList: obList, offList: offList }) : <div style={{padding:24}}>Loading Employee Files...</div>
       )}
 
       {/* Proof image modal — shared between Daily Check-ins and Attendance.
