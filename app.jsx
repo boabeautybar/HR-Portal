@@ -502,14 +502,27 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
 
   // Filter managers for this branch + cycle (skip future-onboarding, skip
   // anyone who left before the cycle started).
-  const f = allManagers.filter(h => {
+  const fAll = allManagers.filter(h => {
     if (h.branch !== branchName) return false;
     if (h._onboarding && h._startDate && h._startDate > cycleEnd) return false;
     if (h.leftDate && h.leftDate < cycleStartYmd) return false;
     return true;
   });
-  if (f.length === 0) {
+  // Scheduling pool excludes anyone currently on maternity. The grid still
+  // renders a row for them (with every cell as 'ML') so the manager team
+  // sees who's away, but every shift-assignment / coverage loop below uses
+  // `f` and pretends maternity people don't exist.
+  const f = fAll.filter(h => !h._onMat);
+  if (fAll.length === 0) {
     return { managers: [], dates, grid: {}, conflicts: [{ type:"no_managers", msg:"No managers at " + branchName, severity:"high" }],
+      dayTotals: {}, branch: branchName, cycleStart: cycleStartYmd, cycleEnd, weekOrder: [], weeksMap: {} };
+  }
+  if (f.length === 0) {
+    // Every manager at this branch is on maternity - render an ML-only grid
+    // and surface a conflict so the user knows nobody can be scheduled.
+    const matGrid = {};
+    for (const h of fAll) { matGrid[h.ec] = {}; for (const x of dates) matGrid[h.ec][x.d] = "ML"; }
+    return { managers: fAll, dates, grid: matGrid, conflicts: [{ type:"no_active_managers", msg:"All managers at " + branchName + " are on maternity leave.", severity:"high" }],
       dayTotals: {}, branch: branchName, cycleStart: cycleStartYmd, cycleEnd, weekOrder: [], weeksMap: {} };
   }
   const m = f.length;
@@ -9260,19 +9273,46 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     {isExcluded && <span style={{ background:"#FBCFE8", color:"#831843", borderRadius:20, padding:"2px 10px", fontSize:10, fontWeight:700 }}>EXCLUDED FROM STORE COUNT</span>}
                     {status==="pregnant" && <span style={{ background:"#FCE7F3", color:"#831843", borderRadius:20, padding:"2px 10px", fontSize:10, fontWeight:700 }}>COUNTED IN STORE</span>}
                   </div>
+                  {/* Manager subsection — bold full-width purple banner with
+                      white text + large icon. Designed to be unmissable so
+                      the management bloc reads as a different block from the
+                      techs below; cards sit inside a lavender-tinted card
+                      container with a 6px purple left bar. */}
                   {mgrRecs.length > 0 && (
-                    <div style={{ marginBottom:14 }}>
-                      <div style={{ fontSize:10, fontWeight:800, color:"#7c3aed", letterSpacing:"0.08em", marginBottom:6, textTransform:"uppercase" }}>👑 Managers · {mgrRecs.length}</div>
-                      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))", gap:10 }}>
-                        {mgrRecs.map(renderCard)}
+                    <div style={{ marginBottom:22, borderRadius:14, overflow:"hidden", border:"1.5px solid #c4b5fd", boxShadow:"0 4px 14px rgba(124,58,237,0.08)" }}>
+                      <div style={{ background:"linear-gradient(135deg,#7c3aed 0%,#5b21b6 100%)", padding:"14px 22px", display:"flex", alignItems:"center", gap:14, flexWrap:"wrap" }}>
+                        <span style={{ fontSize:32, lineHeight:1 }}>👑</span>
+                        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:26, fontWeight:700, color:"#fff", letterSpacing:"0.005em", flex:1, minWidth:140 }}>
+                          Managers
+                        </div>
+                        <span style={{ background:"#fff", color:"#5b21b6", borderRadius:999, padding:"5px 16px", fontSize:13, fontWeight:800, letterSpacing:"0.04em" }}>
+                          {mgrRecs.length} {mgrRecs.length===1?"person":"people"}
+                        </span>
+                      </div>
+                      <div style={{ background:"#F5F3FF", borderLeft:"6px solid #7c3aed", padding:"16px 18px" }}>
+                        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))", gap:10 }}>
+                          {mgrRecs.map(renderCard)}
+                        </div>
                       </div>
                     </div>
                   )}
+                  {/* Nail-tech subsection — bold full-width BOA-pink banner
+                      to mirror the manager block. */}
                   {techRecs.length > 0 && (
-                    <div>
-                      <div style={{ fontSize:10, fontWeight:800, color:"#BE185D", letterSpacing:"0.08em", marginBottom:6, textTransform:"uppercase" }}>💅 Nail Techs · {techRecs.length}</div>
-                      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))", gap:10 }}>
-                        {techRecs.map(renderCard)}
+                    <div style={{ borderRadius:14, overflow:"hidden", border:"1.5px solid #fbcfe8", boxShadow:"0 4px 14px rgba(190,24,93,0.08)" }}>
+                      <div style={{ background:"linear-gradient(135deg,#BE185D 0%,#831843 100%)", padding:"14px 22px", display:"flex", alignItems:"center", gap:14, flexWrap:"wrap" }}>
+                        <span style={{ fontSize:32, lineHeight:1 }}>💅</span>
+                        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:26, fontWeight:700, color:"#fff", letterSpacing:"0.005em", flex:1, minWidth:140 }}>
+                          Nail Techs
+                        </div>
+                        <span style={{ background:"#fff", color:"#831843", borderRadius:999, padding:"5px 16px", fontSize:13, fontWeight:800, letterSpacing:"0.04em" }}>
+                          {techRecs.length} {techRecs.length===1?"person":"people"}
+                        </span>
+                      </div>
+                      <div style={{ background:"#FDEEF5", borderLeft:"6px solid #BE185D", padding:"16px 18px" }}>
+                        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))", gap:10 }}>
+                          {techRecs.map(renderCard)}
+                        </div>
                       </div>
                     </div>
                   )}
@@ -13615,14 +13655,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }
             for (const ec of Object.keys(newGrid)) if (!result.managers.find(m => m.ec === ec)) delete newGrid[ec];
             result = { ...result, grid: newGrid, _loadedFromSaved: true };
-            // Recompute dayTotals + conflicts from merged grid
+            // Recompute dayTotals + conflicts from merged grid. On-mat
+            // managers are skipped entirely - they never count as working,
+            // off, or on-leave for coverage purposes.
             const newDT = {};
             for (const x of result.dates) newDT[x.d] = { dow: x.dow, working: 0, off: 0, leave: 0 };
-            for (const m of result.managers) for (const x of result.dates) {
-              const v = newGrid[m.ec] && newGrid[m.ec][x.d];
-              if (v === "W" || v === "E") newDT[x.d].working++;
-              else if (v === "O" || v === "R") newDT[x.d].off++;
-              else if (v === "L") newDT[x.d].leave++;
+            for (const m of result.managers) {
+              if (m._onMat) continue;
+              for (const x of result.dates) {
+                const v = newGrid[m.ec] && newGrid[m.ec][x.d];
+                if (v === "W" || v === "E") newDT[x.d].working++;
+                else if (v === "O" || v === "R") newDT[x.d].off++;
+                else if (v === "L") newDT[x.d].leave++;
+              }
             }
             result.dayTotals = newDT;
             const newConflicts = [];
@@ -13632,6 +13677,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               if (w < 2) newConflicts.push({ type:"understaffed", msg: x.d + " " + dows[x.dow] + ": " + w + " manager" + (w===1?"":"s") + " working, need at least 2", severity:"high" });
             }
             for (const m of result.managers) {
+              if (m._onMat) continue;     // skip maternity from consecutive-days check
               let run = 0, rs = -1;
               for (let i = 0; i < result.dates.length; i++) {
                 const v = newGrid[m.ec] && newGrid[m.ec][result.dates[i].d];
@@ -14053,16 +14099,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           };
 
           // Visual constants
-          const cellBg    = { W:"#dcfce7", O:"#FCE7F3", L:"#fde68a", R:"#fbcfe8", X:"#f3f4f6", E:"#6ee7b7" };
-          const cellTxt   = { W:"W",       O:"OFF",     L:"LV",      R:"REQ",     X:"—",       E:"EXT" };
-          const cellColor = { W:"#15803d", O:"#831843", L:"#92400e", R:"#831843", X:"#9ca3af", E:"#064e3b" };
+          const cellBg    = { W:"#dcfce7", O:"#FCE7F3", L:"#fde68a", R:"#fbcfe8", X:"#f3f4f6", E:"#6ee7b7", ML:"#ede9fe" };
+          const cellTxt   = { W:"W",       O:"OFF",     L:"LV",      R:"REQ",     X:"—",       E:"EXT",   ML:"ML"      };
+          const cellColor = { W:"#15803d", O:"#831843", L:"#92400e", R:"#831843", X:"#9ca3af", E:"#064e3b", ML:"#6b21a8" };
           const dowsAbbr  = ["Su","Mo","Tu","We","Th","Fr","Sa"];
           const moNames   = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
           const csObj = new Date(cycleStart + "T00:00:00");
           const ceObj = new Date(result.cycleEnd + "T00:00:00");
           const cycleLabel = csObj.getDate() + " " + moNames[csObj.getMonth()] + " " + csObj.getFullYear() + " → " + ceObj.getDate() + " " + moNames[ceObj.getMonth()] + " " + ceObj.getFullYear();
           // Sort managers SM-first, then by name
-          const sortedMgrs = [...result.managers].sort((a,b) => (a.role==="SM"?0:1)-(b.role==="SM"?0:1) || (a.name||"").localeCompare(b.name||""));
+          // Sort: active managers first (SSM > SM > AM), maternity managers
+          // pinned to the bottom so the people who can actually be assigned
+          // shifts are at the top of the grid.
+          const sortedMgrs = [...result.managers].sort((a,b) => {
+            const am = a._onMat ? 1 : 0, bm = b._onMat ? 1 : 0;
+            if (am !== bm) return am - bm;
+            const rank = (r) => r === "SSM" ? 0 : r === "SM" ? 1 : 2;
+            return rank(a.role) - rank(b.role) || (a.name||"").localeCompare(b.name||"");
+          });
 
           return (
             <div>
@@ -14375,7 +14429,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           }
                         </td>
                         {result.dates.map((dy, di) => {
-                          const v = (result.grid[mg.ec] && result.grid[mg.ec][dy.d]) || "";
+                          // On-mat managers always read 'ML' for every cell -
+                          // belt-and-braces so the row never falls back to
+                          // blank when mgrSched didn't write a value.
+                          const rawV = (result.grid[mg.ec] && result.grid[mg.ec][dy.d]) || "";
+                          const v = mg._onMat ? "ML" : rawV;
                           const bg = cellBg[v] || "#fff";
                           const fg = cellColor[v] || "#9ca3af";
                           const txt = cellTxt[v] || "";
