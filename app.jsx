@@ -9711,9 +9711,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     style={{ padding:"8px 16px", borderRadius:9, border:"1px solid #FBCFE8", background:"#FFFFFF", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700, color:"#831843" }}>
                     ↺ Reset to Live
                   </button>
-                  <button onClick={()=>{ if(window.confirm && !window.confirm("Apply this plan to live data? This will update all manager branch assignments.")) return; setManagers(plannerMgrs.map(m=>({...m}))); setTab("locations"); }}
-                    onClick2={()=>{ setManagers(plannerMgrs.map(m=>({...m}))); alert("Plan applied to live data!"); setTab("locations"); }}
-                    onClick={()=>{ if(totalGaps>0){ if(!window.confirm(`There are still ${totalGaps} coverage gaps. Apply anyway?`)) return; } setManagers(plannerMgrs.map(m=>({...m}))); setTab("locations"); }}
+                  <button onClick={()=>{ 
+                    if(totalGaps > 0) { 
+                      if(!window.confirm(`There are still ${totalGaps} coverage gaps. Apply anyway?`)) return; 
+                    } else {
+                      if(!window.confirm("Apply this plan to live data? This will update all manager branch assignments.")) return;
+                    }
+                    setManagers(plannerMgrs.map(m=>({...m}))); 
+                    alert("Plan applied to live data!"); 
+                    setTab("locations"); 
+                  }}
                     style={{ padding:"8px 16px", borderRadius:9, border:"none", background:"#BE185D", color:"#fff", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
                     ✓ Apply to Live Data
                   </button>
