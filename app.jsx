@@ -14070,16 +14070,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           };
 
           // Visual constants
-          const cellBg    = { W:"#dcfce7", O:"#FCE7F3", L:"#fde68a", R:"#fbcfe8", X:"#f3f4f6", E:"#6ee7b7" };
-          const cellTxt   = { W:"W",       O:"OFF",     L:"LV",      R:"REQ",     X:"—",       E:"EXT" };
-          const cellColor = { W:"#15803d", O:"#831843", L:"#92400e", R:"#831843", X:"#9ca3af", E:"#064e3b" };
+          const cellBg    = { W:"#dcfce7", O:"#FCE7F3", L:"#fde68a", R:"#fbcfe8", X:"#f3f4f6", E:"#6ee7b7", ML:"#ede9fe" };
+          const cellTxt   = { W:"W",       O:"OFF",     L:"LV",      R:"REQ",     X:"—",       E:"EXT",   ML:"ML"      };
+          const cellColor = { W:"#15803d", O:"#831843", L:"#92400e", R:"#831843", X:"#9ca3af", E:"#064e3b", ML:"#6b21a8" };
           const dowsAbbr  = ["Su","Mo","Tu","We","Th","Fr","Sa"];
           const moNames   = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
           const csObj = new Date(cycleStart + "T00:00:00");
           const ceObj = new Date(result.cycleEnd + "T00:00:00");
           const cycleLabel = csObj.getDate() + " " + moNames[csObj.getMonth()] + " " + csObj.getFullYear() + " → " + ceObj.getDate() + " " + moNames[ceObj.getMonth()] + " " + ceObj.getFullYear();
           // Sort managers SM-first, then by name
-          const sortedMgrs = [...result.managers].sort((a,b) => (a.role==="SM"?0:1)-(b.role==="SM"?0:1) || (a.name||"").localeCompare(b.name||""));
+          // Sort: active managers first (SSM > SM > AM), maternity managers
+          // pinned to the bottom so the people who can actually be assigned
+          // shifts are at the top of the grid.
+          const sortedMgrs = [...result.managers].sort((a,b) => {
+            const am = a._onMat ? 1 : 0, bm = b._onMat ? 1 : 0;
+            if (am !== bm) return am - bm;
+            const rank = (r) => r === "SSM" ? 0 : r === "SM" ? 1 : 2;
+            return rank(a.role) - rank(b.role) || (a.name||"").localeCompare(b.name||"");
+          });
 
           return (
             <div>
@@ -14392,7 +14400,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           }
                         </td>
                         {result.dates.map((dy, di) => {
-                          const v = (result.grid[mg.ec] && result.grid[mg.ec][dy.d]) || "";
+                          // On-mat managers always read 'ML' for every cell -
+                          // belt-and-braces so the row never falls back to
+                          // blank when mgrSched didn't write a value.
+                          const rawV = (result.grid[mg.ec] && result.grid[mg.ec][dy.d]) || "";
+                          const v = mg._onMat ? "ML" : rawV;
                           const bg = cellBg[v] || "#fff";
                           const fg = cellColor[v] || "#9ca3af";
                           const txt = cellTxt[v] || "";
