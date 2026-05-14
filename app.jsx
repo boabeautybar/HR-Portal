@@ -9721,89 +9721,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 ))}
               </div>
 
-              {/* Non-compliant follow-up list */}
-              <div style={{ background:"#fff", border:"1px solid #fecaca", borderRadius:14, overflow:"hidden" }}>
-                <div style={{ background:"#fee2e2", padding:"12px 16px", borderBottom:"1px solid #fecaca", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
-                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:16, fontWeight:700, color:"#7f1d1d" }}>⚠ Not compliant · {nonCompliant.length}</div>
-                  <div style={{ fontSize:11, color:"#7f1d1d", opacity:0.8 }}>Log a work-permit request to track follow-up + deadlines.</div>
-                </div>
-                {nonCompliant.length === 0 ? (
-                  <div style={{ padding:"30px 20px", textAlign:"center", color:"#15803d", fontSize:13 }}>✓ Everyone has documents on file. Well done.</div>
-                ) : (
-                  <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
-                    <thead>
-                      <tr style={{ background:"#fff", color:"#7f1d1d", fontWeight:700, fontSize:11, letterSpacing:"0.06em", textTransform:"uppercase" }}>
-                        <th style={{ textAlign:"left", padding:"9px 14px", borderTop:"1px solid #fecaca" }}>Person</th>
-                        <th style={{ textAlign:"left", padding:"9px 14px", borderTop:"1px solid #fecaca" }}>Branch</th>
-                        <th style={{ textAlign:"left", padding:"9px 14px", borderTop:"1px solid #fecaca" }}>Permit Status</th>
-                        <th style={{ textAlign:"left", padding:"9px 14px", borderTop:"1px solid #fecaca" }}>Request Sent</th>
-                        <th style={{ textAlign:"left", padding:"9px 14px", borderTop:"1px solid #fecaca" }}>Deadline</th>
-                        <th style={{ textAlign:"right", padding:"9px 14px", borderTop:"1px solid #fecaca" }}>Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {nonCompliant.map(p => {
-                        const act = complianceActions[p.ec] || {};
-                        const hasRequest = !!act.workPermitRequestedAt;
-                        const dToDeadline = daysToDeadline(act.workPermitDeadline);
-                        const overdue = dToDeadline !== null && dToDeadline < 0;
-                        const dueSoon = dToDeadline !== null && dToDeadline >= 0 && dToDeadline <= 14;
-                        const roleIcon = p.role === "SSM" ? "💎" : p.role === "SM" ? "👑" : p.role === "AM" ? "⭐" : "💅";
-                        return (
-                          <tr key={p.ec} style={{ borderTop:"1px solid #fee2e2" }}>
-                            <td style={{ padding:"9px 14px", fontWeight:600, color:"#111827" }}>
-                              <span style={{ fontFamily:"monospace", fontSize:11, color:"#9ca3af", marginRight:6 }}>{p.ec}</span>
-                              {roleIcon} {p.name || "(no name)"}
-                              {p.onMat && <span style={{ marginLeft:6, fontSize:10, background:"#FBCFE8", color:"#8E5570", padding:"1px 6px", borderRadius:99, fontWeight:700 }}>🤱 mat.</span>}
-                            </td>
-                            <td style={{ padding:"9px 14px", color:"#475569", fontSize:12 }}>📍 {p.branch || "—"}</td>
-                            <td style={{ padding:"9px 14px" }}>
-                              <span style={{ fontSize:10, fontWeight:800, padding:"2px 8px", borderRadius:99, background:!p.permit?"#f3f4f6":"#fecaca", color:!p.permit?"#6b7280":"#7f1d1d" }}>
-                                {p.permit === "z_na" ? "Z/NA" : "Not set"}
-                              </span>
-                            </td>
-                            <td style={{ padding:"9px 14px", fontSize:12, color:"#374151" }}>
-                              {hasRequest ? (
-                                <div>
-                                  <div style={{ fontWeight:700 }}>{fmtDate(act.workPermitRequestedAt)}</div>
-                                  <div style={{ fontSize:10, color:"#6b7280" }}>by {act.workPermitRequestedBy || "—"}</div>
-                                </div>
-                              ) : <span style={{ color:"#9ca3af", fontStyle:"italic" }}>—</span>}
-                            </td>
-                            <td style={{ padding:"9px 14px", fontSize:12 }}>
-                              {act.workPermitDeadline ? (
-                                <div>
-                                  <div style={{ fontWeight:700, color: overdue ? "#7f1d1d" : dueSoon ? "#92400e" : "#111827" }}>{fmtDate(act.workPermitDeadline)}</div>
-                                  <div style={{ fontSize:10, color: overdue ? "#7f1d1d" : dueSoon ? "#92400e" : "#9ca3af", fontWeight:600 }}>
-                                    {overdue ? Math.abs(dToDeadline) + "d overdue" : dToDeadline === 0 ? "TODAY" : "in " + dToDeadline + "d"}
-                                  </div>
-                                </div>
-                              ) : <span style={{ color:"#9ca3af", fontStyle:"italic" }}>—</span>}
-                            </td>
-                            <td style={{ padding:"9px 14px", textAlign:"right", whiteSpace:"nowrap" }}>
-                              {hasRequest ? (
-                                <button onClick={()=>setComplianceModal({ ...p, ...act, _edit:true })}
-                                  style={{ background:"#fff", color:"#7c2d12", border:"1px solid #fed7aa", borderRadius:7, padding:"6px 11px", cursor:"pointer", fontSize:11, fontWeight:700 }}
-                                >Update</button>
-                              ) : (
-                                <button onClick={()=>setComplianceModal({ ec:p.ec, name:p.name, branch:p.branch, role:p.role, workPermitRequestedAt: ymd0, workPermitRequestedBy: (currentUser && currentUser.name) || "", workPermitDeadline: "", workPermitNotes: "" })}
-                                  style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:7, padding:"6px 12px", cursor:"pointer", fontSize:11, fontWeight:700 }}
-                                >Log Request</button>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-
-              {/* ── COMPLIANCE DIRECTORY ── search every active tech +
-                  manager, filter by role / branch, edit the permit inline.
-                  Each row's permit field is a live select bound to
-                  saveStaff / saveMgr so a change persists immediately and
-                  is reflected back in the stat tiles on the next render. */}
+              {/* ── COMPLIANCE FOLLOW-UP ── ONLY non-compliant people
+                  (Z/NA or no permit set) grouped by store + role. Each row
+                  exposes both the inline permit edit AND a 'Log Request'
+                  button so the manager can record the document letter
+                  without leaving the page. */}
               {(() => {
                 const updatePermit = async (person, newPermit) => {
                   try {
@@ -9824,13 +9746,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   } catch (e) { alert("Could not save permit: " + (e.message || e)); }
                 };
                 // Build the directory pool with _id so we can route the
-                // update to saveStaff / saveMgr cleanly.
+                // update to saveStaff / saveMgr cleanly. ONLY include
+                // non-compliant people (Z/NA permit or no permit set) -
+                // compliant rows belong in the stat tiles above.
                 const dirPool = [
                   ...(enriched || [])
                     .filter(s => s && s.ec && (!s.offboarded || (s.offDaysSinceLeft != null && s.offDaysSinceLeft < 0)))
+                    .filter(s => !s.permit || s.permit === "z_na")
                     .map(s => ({ _id: s._id, ec: s.ec, name: s.name, branch: s.branch, permit: s.permit, role: "NT", onMat: s.onMat })),
                   ...(managers || [])
                     .filter(m => m && m.ec)
+                    .filter(m => !m.permit || m.permit === "z_na")
                     .map(m => ({ _id: m._id, ec: m.ec, name: m.name, branch: m.branch, permit: m.permit, role: m.role || "AM", onMat: !!m.onMat }))
                 ];
                 const q = (compSearch || "").trim().toLowerCase();
@@ -9858,8 +9784,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 return (
                   <div style={{ marginTop:22 }}>
                     <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12, flexWrap:"wrap", gap:10 }}>
-                      <div style={{ fontFamily:"'Playfair Display',serif", fontSize:20, fontWeight:700, color:"#831843" }}>📒 Compliance Directory</div>
-                      <div style={{ fontSize:11, color:"#9ca3af" }}>{filtered.length} of {dirPool.length} people · click a permit to change it</div>
+                      <div>
+                        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:20, fontWeight:700, color:"#7f1d1d" }}>⚠ Non-compliant — grouped by store + role</div>
+                        <div style={{ fontSize:12, color:"#6b7280", marginTop:2 }}>Update each person's permit when documents come in, or log the work-permit request letter to track the deadline.</div>
+                      </div>
+                      <div style={{ fontSize:11, color:"#9ca3af" }}>{filtered.length} of {dirPool.length} non-compliant · search filters apply</div>
                     </div>
 
                     {/* Filter toolbar */}
@@ -9885,7 +9814,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         glance. */}
                     {filtered.length === 0 ? (
                       <div style={{ background:"#fff", border:"1px dashed #FBCFE8", borderRadius:14, padding:"30px 20px", textAlign:"center", color:"#9F1A4F", fontSize:13 }}>
-                        No people match the current filters.
+                        {dirPool.length === 0 ? "✓ Everyone has documents on file. Well done." : "No non-compliant people match the current filters."}
                       </div>
                     ) : (
                       <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
@@ -9908,6 +9837,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       {mgrsInBr.map(p => {
                                         const chip = permitChip(p.permit);
                                         const roleIcon = p.role === "SSM" ? "💎" : p.role === "SM" ? "👑" : "⭐";
+                                        const act = complianceActions[p.ec] || {};
+                                        const hasReq = !!act.workPermitRequestedAt;
+                                        const dDead = daysToDeadline(act.workPermitDeadline);
+                                        const overdue = dDead !== null && dDead < 0;
+                                        const dueSoon = dDead !== null && dDead >= 0 && dDead <= 14;
                                         return (
                                           <tr key={"m-" + p._id} style={{ borderTop:"1px solid #FCE7F3" }}>
                                             <td style={{ padding:"8px 14px", fontFamily:"monospace", fontSize:11, color:"#9ca3af", width:60 }}>{p.ec}</td>
@@ -9915,13 +9849,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                             <td style={{ padding:"8px 14px" }}>
                                               <span style={{ display:"inline-block", background:chip.bg, color:chip.fg, border:`1px solid ${chip.border}`, fontSize:10, fontWeight:800, padding:"3px 9px", borderRadius:99, letterSpacing:"0.04em" }}>{chip.lbl}</span>
                                             </td>
-                                            <td style={{ padding:"8px 14px", textAlign:"right" }}>
+                                            <td style={{ padding:"8px 14px", fontSize:11 }}>
+                                              {hasReq ? (
+                                                <div>
+                                                  <div style={{ fontWeight:700, color:"#374151" }}>📨 {fmtDate(act.workPermitRequestedAt)}</div>
+                                                  <div style={{ fontSize:10, color:"#6b7280" }}>by {act.workPermitRequestedBy || "—"}</div>
+                                                  {act.workPermitDeadline && (
+                                                    <div style={{ fontSize:10, fontWeight:700, color: overdue ? "#7f1d1d" : dueSoon ? "#92400e" : "#374151", marginTop:2 }}>
+                                                      Deadline {fmtDate(act.workPermitDeadline)} · {overdue ? Math.abs(dDead)+"d overdue" : dDead===0 ? "TODAY" : "in "+dDead+"d"}
+                                                    </div>
+                                                  )}
+                                                </div>
+                                              ) : <span style={{ color:"#9ca3af", fontStyle:"italic" }}>No request logged</span>}
+                                            </td>
+                                            <td style={{ padding:"8px 14px", textAlign:"right", whiteSpace:"nowrap" }}>
                                               <select value={p.permit || ""} onChange={e=>updatePermit(p, e.target.value || null)}
-                                                style={{ padding:"6px 10px", border:"1px solid #FBCFE8", borderRadius:7, fontFamily:"inherit", fontSize:12, background:"#fff", cursor:"pointer" }}
+                                                style={{ padding:"6px 10px", border:"1px solid #FBCFE8", borderRadius:7, fontFamily:"inherit", fontSize:12, background:"#fff", cursor:"pointer", marginRight:6 }}
                                                 title="Change compliance status">
                                                 <option value="">Not set</option>
                                                 {Object.entries(COMPLIANCE).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
                                               </select>
+                                              {hasReq ? (
+                                                <button onClick={()=>setComplianceModal({ ...p, ...act, _edit:true })}
+                                                  style={{ background:"#fff", color:"#7c2d12", border:"1px solid #fed7aa", borderRadius:7, padding:"6px 11px", cursor:"pointer", fontSize:11, fontWeight:700 }}
+                                                >Update</button>
+                                              ) : (
+                                                <button onClick={()=>setComplianceModal({ ec:p.ec, name:p.name, branch:p.branch, role:p.role, workPermitRequestedAt: ymd0, workPermitRequestedBy: (currentUser && currentUser.name) || "", workPermitDeadline: "", workPermitNotes: "" })}
+                                                  style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:7, padding:"6px 12px", cursor:"pointer", fontSize:11, fontWeight:700 }}
+                                                >📨 Log Request</button>
+                                              )}
                                             </td>
                                           </tr>
                                         );
@@ -9937,6 +9893,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                     <tbody>
                                       {techsInBr.map(p => {
                                         const chip = permitChip(p.permit);
+                                        const act = complianceActions[p.ec] || {};
+                                        const hasReq = !!act.workPermitRequestedAt;
+                                        const dDead = daysToDeadline(act.workPermitDeadline);
+                                        const overdue = dDead !== null && dDead < 0;
+                                        const dueSoon = dDead !== null && dDead >= 0 && dDead <= 14;
                                         return (
                                           <tr key={"t-" + p._id} style={{ borderTop:"1px solid #FCE7F3" }}>
                                             <td style={{ padding:"8px 14px", fontFamily:"monospace", fontSize:11, color:"#9ca3af", width:60 }}>{p.ec}</td>
@@ -9944,13 +9905,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                             <td style={{ padding:"8px 14px" }}>
                                               <span style={{ display:"inline-block", background:chip.bg, color:chip.fg, border:`1px solid ${chip.border}`, fontSize:10, fontWeight:800, padding:"3px 9px", borderRadius:99, letterSpacing:"0.04em" }}>{chip.lbl}</span>
                                             </td>
-                                            <td style={{ padding:"8px 14px", textAlign:"right" }}>
+                                            <td style={{ padding:"8px 14px", fontSize:11 }}>
+                                              {hasReq ? (
+                                                <div>
+                                                  <div style={{ fontWeight:700, color:"#374151" }}>📨 {fmtDate(act.workPermitRequestedAt)}</div>
+                                                  <div style={{ fontSize:10, color:"#6b7280" }}>by {act.workPermitRequestedBy || "—"}</div>
+                                                  {act.workPermitDeadline && (
+                                                    <div style={{ fontSize:10, fontWeight:700, color: overdue ? "#7f1d1d" : dueSoon ? "#92400e" : "#374151", marginTop:2 }}>
+                                                      Deadline {fmtDate(act.workPermitDeadline)} · {overdue ? Math.abs(dDead)+"d overdue" : dDead===0 ? "TODAY" : "in "+dDead+"d"}
+                                                    </div>
+                                                  )}
+                                                </div>
+                                              ) : <span style={{ color:"#9ca3af", fontStyle:"italic" }}>No request logged</span>}
+                                            </td>
+                                            <td style={{ padding:"8px 14px", textAlign:"right", whiteSpace:"nowrap" }}>
                                               <select value={p.permit || ""} onChange={e=>updatePermit(p, e.target.value || null)}
-                                                style={{ padding:"6px 10px", border:"1px solid #FBCFE8", borderRadius:7, fontFamily:"inherit", fontSize:12, background:"#fff", cursor:"pointer" }}
+                                                style={{ padding:"6px 10px", border:"1px solid #FBCFE8", borderRadius:7, fontFamily:"inherit", fontSize:12, background:"#fff", cursor:"pointer", marginRight:6 }}
                                                 title="Change compliance status">
                                                 <option value="">Not set</option>
                                                 {Object.entries(COMPLIANCE).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
                                               </select>
+                                              {hasReq ? (
+                                                <button onClick={()=>setComplianceModal({ ...p, ...act, _edit:true })}
+                                                  style={{ background:"#fff", color:"#7c2d12", border:"1px solid #fed7aa", borderRadius:7, padding:"6px 11px", cursor:"pointer", fontSize:11, fontWeight:700 }}
+                                                >Update</button>
+                                              ) : (
+                                                <button onClick={()=>setComplianceModal({ ec:p.ec, name:p.name, branch:p.branch, role:p.role, workPermitRequestedAt: ymd0, workPermitRequestedBy: (currentUser && currentUser.name) || "", workPermitDeadline: "", workPermitNotes: "" })}
+                                                  style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:7, padding:"6px 12px", cursor:"pointer", fontSize:11, fontWeight:700 }}
+                                                >📨 Log Request</button>
+                                              )}
                                             </td>
                                           </tr>
                                         );
