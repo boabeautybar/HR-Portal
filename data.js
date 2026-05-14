@@ -519,6 +519,34 @@
     return records;
   }
 
+  // ---------- Trial Period (boa_trial_period_v1) ----------
+  // Separate from onboarding — this tracks the 1-week induction + 2-week branch
+  // trial BEFORE the 3-month contract is signed.
+  // Each record: {
+  //   _id, name, phone, email, homeAddress, trainerName,
+  //   inductionPassDate, inductionNotes,
+  //   branch,           -- assigned branch (closest to home)
+  //   status: "induction" | "trial_w1" | "pending_mid_review" | "trial_w2" |
+  //           "pending_final_review" | "passed" | "failed",
+  //   startDate,        -- trial start date (when they enter branch)
+  //   midEval:  { submittedAt, submittedBy, scores, notes },
+  //   finalEval:{ submittedAt, submittedBy, scores, notes, outcome },
+  //   promotedToOnboarding: true|false,
+  //   promotedAt: ISO string,
+  //   addedAt, updatedAt
+  // }
+  async function loadTrialPeriod() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_trial_period_v1").maybeSingle();
+    if (res.error) { console.error("loadTrialPeriod:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveTrialPeriod(records) {
+    var res = await sb.from("app_state").upsert({ key: "boa_trial_period_v1", value: records || [] });
+    if (res.error) throw res.error;
+    return records;
+  }
+
   // ---------- Off-boarding (boa_offboard_v1) ----------
   // Each record: {ec, name, branch, leftDate, reason, notes, addedAt}
   async function loadOffboarding() {
@@ -1010,9 +1038,11 @@
     loadHRTasks:       loadHRTasks,
     saveHRTasks:       saveHRTasks,
 
-    // Onboarding & Off-boarding
+    // Onboarding, Trial Period & Off-boarding
     loadOnboarding:    loadOnboarding,
     saveOnboarding:    saveOnboarding,
+    loadTrialPeriod:   loadTrialPeriod,
+    saveTrialPeriod:   saveTrialPeriod,
     loadOffboarding:   loadOffboarding,
     saveOffboarding:   saveOffboarding,
 
