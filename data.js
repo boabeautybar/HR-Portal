@@ -492,6 +492,19 @@
     return y + "-" + String(m).padStart(2, "0");
   }
 
+  // ---------- HR Tasks (boa_hrtasks_v1) ----------
+  async function loadHRTasks() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_hrtasks_v1").maybeSingle();
+    if (res.error) { console.error("loadHRTasks:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveHRTasks(tasks) {
+    var res = await sb.from("app_state").upsert({ key: "boa_hrtasks_v1", value: tasks });
+    if (res.error) throw res.error;
+    return tasks;
+  }
+
   // ---------- Onboarding (boa_onboard_v1) ----------
   // Each record: {_id, name, ec, branch, position, positionOther, startDate, notes, addedAt, updatedAt}
   async function loadOnboarding() {
@@ -953,6 +966,10 @@
     periodDays:             periodDays,
     periodLabel:            periodLabel,
     shiftYm:                shiftYm,
+
+    // HR Tasks
+    loadHRTasks:       loadHRTasks,
+    saveHRTasks:       saveHRTasks,
 
     // Onboarding & Off-boarding
     loadOnboarding:    loadOnboarding,

@@ -8,7 +8,7 @@ const HR_LIBRARY_COMPLIANCE = {
   z_na:         { label:"Z/NA – No Valid Permit", icon:"🚨",  color:"#831843", bg:"#fee2e2", border:"#fca5a5" },
 };
 
-const EmployeeDataLibrary = ({ staff = [], currentUser, managers = [] }) => {
+const EmployeeDataLibrary = ({ staff = [], currentUser, managers = [], obList = [], offList = [] }) => {
   const { useState, useEffect, useMemo } = React;
 
   // Google API State
@@ -18,6 +18,7 @@ const EmployeeDataLibrary = ({ staff = [], currentUser, managers = [] }) => {
   // Library UI State
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedEmployee, setSelectedEmployee] = useState(null);
+  const [selectedFolder, setSelectedFolder] = useState(null); // null, 'active', 'archive', 'trial'
 
   // Sheet Data State
   const [sheetMetadata, setSheetMetadata] = useState(null);
@@ -30,23 +31,56 @@ const EmployeeDataLibrary = ({ staff = [], currentUser, managers = [] }) => {
   const [topLevelFolders, setTopLevelFolders] = useState(null);
   const [subfolderCache, setSubfolderCache] = useState({});
 
-  // Combine and sort all employees for the roster
-  const allEmployees = useMemo(() => {
-    return [...staff, ...managers].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-  }, [staff, managers]);
+  // 1. Active Staff List (Nail techs and managers who have not offboarded)
+  const activeEmployees = useMemo(() => {
+    const activeStaff = staff.filter(e => !offList.some(o => o.ec && e.ec && o.ec.trim() === e.ec.trim()));
+    const activeMgrs = managers.filter(e => !offList.some(o => o.ec && e.ec && o.ec.trim() === e.ec.trim()));
+    return [...activeStaff, ...activeMgrs].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  }, [staff, managers, offList]);
 
-  // Filter based on search query
+  // 2. Archive Staff List (From offList leavers records)
+  const archiveEmployees = useMemo(() => {
+    return [...offList]
+      .map(o => ({
+        ...o,
+        role: o.reason ? `Archived (${o.reason})` : "Left / Archived",
+        isArchived: true
+      }))
+      .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  }, [offList]);
+
+  // 3. Trial Staff List (From obList onboarding records)
+  const trialEmployees = useMemo(() => {
+    return [...obList]
+      .map(o => ({
+        ...o,
+        role: o.status || "Trial Staff",
+        isTrial: true
+      }))
+      .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  }, [obList]);
+
+  // Determine which list is in the opened folder
+  const currentFolderEmployees = useMemo(() => {
+    if (selectedFolder === "active") return activeEmployees;
+    if (selectedFolder === "archive") return archiveEmployees;
+    if (selectedFolder === "trial") return trialEmployees;
+    return [];
+  }, [selectedFolder, activeEmployees, archiveEmployees, trialEmployees]);
+
+  // Filter based on search query inside the opened folder
   const filteredEmployees = useMemo(() => {
-    if (!searchQuery) return allEmployees;
+    if (!selectedFolder) return [];
+    if (!searchQuery) return currentFolderEmployees;
     const lowerQ = searchQuery.toLowerCase();
-    return allEmployees.filter(e =>
+    return currentFolderEmployees.filter(e =>
       (e.name && e.name.toLowerCase().includes(lowerQ)) ||
       (e.ec && e.ec.toLowerCase().includes(lowerQ)) ||
       (e.branch && e.branch.toLowerCase().includes(lowerQ)) ||
       (e.role && e.role.toLowerCase().includes(lowerQ)) ||
       (e.position && e.position.toLowerCase().includes(lowerQ))
     );
-  }, [allEmployees, searchQuery]);
+  }, [currentFolderEmployees, searchQuery, selectedFolder]);
 
   // Authenticate with Google to obtain an Access Token
   const handleAuthClick = () => {
@@ -417,7 +451,7 @@ const EmployeeDataLibrary = ({ staff = [], currentUser, managers = [] }) => {
             onMouseOver={(e) => e.currentTarget.style.color = "#111827"}
             onMouseOut={(e) => e.currentTarget.style.color = "#6b7280"}
           >
-            ← Back to Library Roster
+            ← Back to {{ active: "Active Staff", archive: "Archive Staff", trial: "Trial Staff" }[selectedFolder] || "Folders"}
           </button>
 
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 32, borderBottom: "1px solid #f3f4f6", paddingBottom: 32 }}>
@@ -590,20 +624,111 @@ const EmployeeDataLibrary = ({ staff = [], currentUser, managers = [] }) => {
     );
   }
 
-  // Master Roster View
+  // Folder Selection Dashboard
+  if (!selectedFolder) {
+    return (
+      <div style={{ padding: "32px 48px", maxWidth: 1400, margin: "0 auto", fontFamily: "'DM Sans', sans-serif" }}>
+        <div style={{ marginBottom: 40 }}>
+          <h2 style={{ fontSize: 36, fontWeight: 800, color: "#831843", marginBottom: 8, fontFamily: "'Outfit', sans-serif", letterSpacing: "-0.02em" }}>Employee Files</h2>
+          <p style={{ color: "#6b7280", fontSize: 16, margin: 0 }}>Consolidated directory of staff files, documents, and compliance records.</p>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 24 }}>
+          {/* Active Staff Folder */}
+          <div
+            onClick={() => { setSelectedFolder("active"); setSearchQuery(""); }}
+            style={{ background: "#fff", borderRadius: 20, padding: "32px 28px", boxShadow: "0 4px 20px rgba(0,0,0,0.03)", border: "1px solid #f3f4f6", cursor: "pointer", transition: "all 0.25s cubic-bezier(0.4, 0, 0.2, 1)", display: "flex", flexDirection: "column", gap: 20 }}
+            onMouseOver={(e) => { e.currentTarget.style.transform = "translateY(-6px)"; e.currentTarget.style.boxShadow = "0 15px 30px rgba(131, 24, 67, 0.05)"; e.currentTarget.style.borderColor = "#FBCFE8"; }}
+            onMouseOut={(e) => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "0 4px 20px rgba(0,0,0,0.03)"; e.currentTarget.style.borderColor = "#f3f4f6"; }}
+          >
+            <div style={{ width: 64, height: 64, borderRadius: 16, background: "#eff6ff", color: "#2563eb", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 32 }}>📁</div>
+            <div>
+              <h3 style={{ fontSize: 22, fontWeight: 800, color: "#111827", margin: "0 0 6px 0", fontFamily: "'Outfit', sans-serif" }}>Active Staff</h3>
+              <p style={{ color: "#6b7280", fontSize: 14, margin: "0 0 16px 0", lineHeight: 1.5 }}>Files, attendance sheets, and compliance documents for currently working nail techs and managers.</p>
+              <div style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#dbeafe", color: "#1e40af", padding: "4px 10px", borderRadius: 12, fontSize: 12, fontWeight: 700 }}>
+                👥 {activeEmployees.length} File(s)
+              </div>
+            </div>
+          </div>
+
+          {/* Archive Staff Folder */}
+          <div
+            onClick={() => { setSelectedFolder("archive"); setSearchQuery(""); }}
+            style={{ background: "#fff", borderRadius: 20, padding: "32px 28px", boxShadow: "0 4px 20px rgba(0,0,0,0.03)", border: "1px solid #f3f4f6", cursor: "pointer", transition: "all 0.25s cubic-bezier(0.4, 0, 0.2, 1)", display: "flex", flexDirection: "column", gap: 20 }}
+            onMouseOver={(e) => { e.currentTarget.style.transform = "translateY(-6px)"; e.currentTarget.style.boxShadow = "0 15px 30px rgba(131, 24, 67, 0.05)"; e.currentTarget.style.borderColor = "#FBCFE8"; }}
+            onMouseOut={(e) => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "0 4px 20px rgba(0,0,0,0.03)"; e.currentTarget.style.borderColor = "#f3f4f6"; }}
+          >
+            <div style={{ width: 64, height: 64, borderRadius: 16, background: "#f1f5f9", color: "#475569", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 32 }}>📁</div>
+            <div>
+              <h3 style={{ fontSize: 22, fontWeight: 800, color: "#111827", margin: "0 0 6px 0", fontFamily: "'Outfit', sans-serif" }}>Archive Staff</h3>
+              <p style={{ color: "#6b7280", fontSize: 14, margin: "0 0 16px 0", lineHeight: 1.5 }}>Historical files, termination letters, and final records of past employees and off-boarded staff.</p>
+              <div style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#e2e8f0", color: "#334155", padding: "4px 10px", borderRadius: 12, fontSize: 12, fontWeight: 700 }}>
+                👋 {archiveEmployees.length} File(s)
+              </div>
+            </div>
+          </div>
+
+          {/* Trial Staff Folder */}
+          <div
+            onClick={() => { setSelectedFolder("trial"); setSearchQuery(""); }}
+            style={{ background: "#fff", borderRadius: 20, padding: "32px 28px", boxShadow: "0 4px 20px rgba(0,0,0,0.03)", border: "1px solid #f3f4f6", cursor: "pointer", transition: "all 0.25s cubic-bezier(0.4, 0, 0.2, 1)", display: "flex", flexDirection: "column", gap: 20 }}
+            onMouseOver={(e) => { e.currentTarget.style.transform = "translateY(-6px)"; e.currentTarget.style.boxShadow = "0 15px 30px rgba(131, 24, 67, 0.05)"; e.currentTarget.style.borderColor = "#FBCFE8"; }}
+            onMouseOut={(e) => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "0 4px 20px rgba(0,0,0,0.03)"; e.currentTarget.style.borderColor = "#f3f4f6"; }}
+          >
+            <div style={{ width: 64, height: 64, borderRadius: 16, background: "#f0fdf4", color: "#16a34a", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 32 }}>📁</div>
+            <div>
+              <h3 style={{ fontSize: 22, fontWeight: 800, color: "#111827", margin: "0 0 6px 0", fontFamily: "'Outfit', sans-serif" }}>Trial Staff</h3>
+              <p style={{ color: "#6b7280", fontSize: 14, margin: "0 0 16px 0", lineHeight: 1.5 }}>Files, review results, and contracts for trainees in onboarding stages or provisional trial weeks.</p>
+              <div style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#dcfce7", color: "#15803d", padding: "4px 10px", borderRadius: 12, fontSize: 12, fontWeight: 700 }}>
+                🌱 {trialEmployees.length} File(s)
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const folderTitle = {
+    active: "Active Staff",
+    archive: "Archive Staff",
+    trial: "Trial Staff"
+  }[selectedFolder];
+
+  const folderColor = {
+    active: "#2563eb",
+    archive: "#475569",
+    trial: "#16a34a"
+  }[selectedFolder];
+
   return (
     <div style={{ padding: "32px 48px", maxWidth: 1400, margin: "0 auto", fontFamily: "'DM Sans', sans-serif" }}>
+      
+      {/* Back to folders navigation / Breadcrumb */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 24 }}>
+        <button
+          onClick={() => setSelectedFolder(null)}
+          style={{ border: "none", background: "transparent", cursor: "pointer", color: "#6b7280", fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 4, transition: "color 0.2s" }}
+          onMouseOver={(e) => e.currentTarget.style.color = "#111827"}
+          onMouseOut={(e) => e.currentTarget.style.color = "#6b7280"}
+        >
+          📁 Employee Files
+        </button>
+        <span style={{ color: "#9ca3af", fontWeight: 600 }}>&gt;</span>
+        <span style={{ color: folderColor, fontWeight: 800, fontSize: 14 }}>{folderTitle}</span>
+      </div>
+
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 32 }}>
         <div>
-          <h2 style={{ fontSize: 36, fontWeight: 800, color: "#831843", marginBottom: 8, fontFamily: "'Outfit', sans-serif", letterSpacing: "-0.02em" }}>Master Employee Library</h2>
-          <p style={{ color: "#6b7280", fontSize: 16, margin: 0 }}>Consolidated portal for employee records, documents, and historical data.</p>
+          <h2 style={{ fontSize: 36, fontWeight: 800, color: "#831843", marginBottom: 8, fontFamily: "'Outfit', sans-serif", letterSpacing: "-0.02em" }}>{folderTitle}</h2>
+          <p style={{ color: "#6b7280", fontSize: 16, margin: 0 }}>Files and documents inside your {folderTitle} database.</p>
         </div>
         <div>
           <div style={{ position: "relative", width: 320 }}>
             <span style={{ position: "absolute", left: 14, top: 12, color: "#9ca3af" }}>🔍</span>
             <input
               type="text"
-              placeholder="Search by name, ID, branch..."
+              placeholder={`Search ${folderTitle.toLowerCase()}...`}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               style={{ width: "100%", boxSizing: "border-box", padding: "12px 16px 12px 40px", borderRadius: 12, border: "1px solid #d1d5db", fontSize: 15, fontFamily: "inherit", outline: "none", boxShadow: "0 2px 4px rgba(0,0,0,0.02)" }}
@@ -618,7 +743,7 @@ const EmployeeDataLibrary = ({ staff = [], currentUser, managers = [] }) => {
             key={emp._id || emp.ec || emp.name}
             onClick={() => setSelectedEmployee(emp)}
             style={{ background: "#fff", borderRadius: 16, padding: 24, boxShadow: "0 4px 12px rgba(0,0,0,0.04)", cursor: "pointer", transition: "all 0.2s cubic-bezier(0.4, 0, 0.2, 1)", border: "1px solid #f3f4f6" }}
-            onMouseOver={(e) => { e.currentTarget.style.transform = "translateY(-4px)"; e.currentTarget.style.boxShadow = "0 12px 24px rgba(190, 24, 93, 0.08)"; e.currentTarget.style.borderColor = "#FBCFE8"; }}
+            onMouseOver={(e) => { e.currentTarget.style.transform = "translateY(-4px)"; e.currentTarget.style.boxShadow = `0 12px 24px rgba(190, 24, 93, 0.08)`; e.currentTarget.style.borderColor = "#FBCFE8"; }}
             onMouseOut={(e) => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.04)"; e.currentTarget.style.borderColor = "#f3f4f6"; }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 16 }}>
@@ -647,8 +772,8 @@ const EmployeeDataLibrary = ({ staff = [], currentUser, managers = [] }) => {
         {filteredEmployees.length === 0 && (
           <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: "64px 0", color: "#6b7280" }}>
             <div style={{ fontSize: 40, marginBottom: 16 }}>🔍</div>
-            <h3 style={{ fontSize: 18, fontWeight: 700, color: "#374151", marginBottom: 8 }}>No employees found</h3>
-            <p>We couldn't find anyone matching "{searchQuery}"</p>
+            <h3 style={{ fontSize: 18, fontWeight: 700, color: "#374151", marginBottom: 8 }}>No files found</h3>
+            <p>We couldn't find anyone matching "{searchQuery}" inside this folder.</p>
           </div>
         )}
       </div>
