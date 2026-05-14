@@ -9273,36 +9273,46 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     {isExcluded && <span style={{ background:"#FBCFE8", color:"#831843", borderRadius:20, padding:"2px 10px", fontSize:10, fontWeight:700 }}>EXCLUDED FROM STORE COUNT</span>}
                     {status==="pregnant" && <span style={{ background:"#FCE7F3", color:"#831843", borderRadius:20, padding:"2px 10px", fontSize:10, fontWeight:700 }}>COUNTED IN STORE</span>}
                   </div>
-                  {/* Manager subsection — purple banner header so the
-                      management bloc is impossible to miss vs the techs
-                      below. Card area gets a thin left border + light
-                      lavender background so the whole group reads as one
-                      visual chunk. */}
+                  {/* Manager subsection — bold full-width purple banner with
+                      white text + large icon. Designed to be unmissable so
+                      the management bloc reads as a different block from the
+                      techs below; cards sit inside a lavender-tinted card
+                      container with a 6px purple left bar. */}
                   {mgrRecs.length > 0 && (
-                    <div style={{ marginBottom:18, background:"#F5F3FF", border:"1px solid #DDD6FE", borderLeft:"5px solid #7c3aed", borderRadius:12, padding:"14px 16px 16px" }}>
-                      <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:12, flexWrap:"wrap" }}>
-                        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:18, fontWeight:700, color:"#5b21b6", letterSpacing:"0.01em" }}>
-                          👑 Managers
+                    <div style={{ marginBottom:22, borderRadius:14, overflow:"hidden", border:"1.5px solid #c4b5fd", boxShadow:"0 4px 14px rgba(124,58,237,0.08)" }}>
+                      <div style={{ background:"linear-gradient(135deg,#7c3aed 0%,#5b21b6 100%)", padding:"14px 22px", display:"flex", alignItems:"center", gap:14, flexWrap:"wrap" }}>
+                        <span style={{ fontSize:32, lineHeight:1 }}>👑</span>
+                        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:26, fontWeight:700, color:"#fff", letterSpacing:"0.005em", flex:1, minWidth:140 }}>
+                          Managers
                         </div>
-                        <span style={{ background:"#7c3aed", color:"#fff", borderRadius:999, padding:"3px 12px", fontSize:11, fontWeight:800, letterSpacing:"0.06em" }}>{mgrRecs.length} {mgrRecs.length===1?"person":"people"}</span>
+                        <span style={{ background:"#fff", color:"#5b21b6", borderRadius:999, padding:"5px 16px", fontSize:13, fontWeight:800, letterSpacing:"0.04em" }}>
+                          {mgrRecs.length} {mgrRecs.length===1?"person":"people"}
+                        </span>
                       </div>
-                      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))", gap:10 }}>
-                        {mgrRecs.map(renderCard)}
+                      <div style={{ background:"#F5F3FF", borderLeft:"6px solid #7c3aed", padding:"16px 18px" }}>
+                        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))", gap:10 }}>
+                          {mgrRecs.map(renderCard)}
+                        </div>
                       </div>
                     </div>
                   )}
-                  {/* Nail-tech subsection — pink banner mirrors the BOA
-                      house style so it's clearly the floor-staff list. */}
+                  {/* Nail-tech subsection — bold full-width BOA-pink banner
+                      to mirror the manager block. */}
                   {techRecs.length > 0 && (
-                    <div style={{ background:"#FDEEF5", border:"1px solid #FBCFE8", borderLeft:"5px solid #BE185D", borderRadius:12, padding:"14px 16px 16px" }}>
-                      <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:12, flexWrap:"wrap" }}>
-                        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:18, fontWeight:700, color:"#831843", letterSpacing:"0.01em" }}>
-                          💅 Nail Techs
+                    <div style={{ borderRadius:14, overflow:"hidden", border:"1.5px solid #fbcfe8", boxShadow:"0 4px 14px rgba(190,24,93,0.08)" }}>
+                      <div style={{ background:"linear-gradient(135deg,#BE185D 0%,#831843 100%)", padding:"14px 22px", display:"flex", alignItems:"center", gap:14, flexWrap:"wrap" }}>
+                        <span style={{ fontSize:32, lineHeight:1 }}>💅</span>
+                        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:26, fontWeight:700, color:"#fff", letterSpacing:"0.005em", flex:1, minWidth:140 }}>
+                          Nail Techs
                         </div>
-                        <span style={{ background:"#BE185D", color:"#fff", borderRadius:999, padding:"3px 12px", fontSize:11, fontWeight:800, letterSpacing:"0.06em" }}>{techRecs.length} {techRecs.length===1?"person":"people"}</span>
+                        <span style={{ background:"#fff", color:"#831843", borderRadius:999, padding:"5px 16px", fontSize:13, fontWeight:800, letterSpacing:"0.04em" }}>
+                          {techRecs.length} {techRecs.length===1?"person":"people"}
+                        </span>
                       </div>
-                      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))", gap:10 }}>
-                        {techRecs.map(renderCard)}
+                      <div style={{ background:"#FDEEF5", borderLeft:"6px solid #BE185D", padding:"16px 18px" }}>
+                        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))", gap:10 }}>
+                          {techRecs.map(renderCard)}
+                        </div>
                       </div>
                     </div>
                   )}
