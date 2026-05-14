@@ -6617,9 +6617,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   //   • Today ≥ 25th of current month → finalise cycle starting 25th next month
   // Tech schedule ym uses END-month convention; manager schedule + attendance
   // use START-month. We probe boa_(mgr)schedapproved_<branch>_<ym> per branch.
-  // To avoid the off-by-one frustration of saving under the current cycle
-  // when the dashboard is checking the next, also probe the CURRENT cycle
-  // and merge — if a branch has finalised either, count it as done.
+  // schedFinalStatus tracks finalised schedules for the upcoming 25th→24th
+  // cycle ONLY. The dashboard's "Schedule progress" widget must reflect
+  // saves for the NEXT cycle (the one HR is currently preparing for the
+  // 15th deadline), not the cycle that's already running.
   const [schedFinalStatus, setSchedFinalStatus] = useState(null);
   // Which schedule-progress card is expanded inline on the dashboard
   // (null | "tech" | "mgr"). Clicking a card toggles its details panel.
@@ -6633,12 +6634,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const cycEnd   = new Date(cycStart.getFullYear(), cycStart.getMonth() + 1, 24);
     const ymMgr    = cycStart.getFullYear() + "-" + String(cycStart.getMonth() + 1).padStart(2, "0");
     const ymTech   = cycEnd.getFullYear()   + "-" + String(cycEnd.getMonth() + 1).padStart(2, "0");
-    // Also the cycle currently RUNNING (the one before cycStart), to tolerate
-    // saves under the current cycle's ym.
-    const prevStart = new Date(cycStart.getFullYear(), cycStart.getMonth() - 1, 25);
-    const prevEnd   = new Date(cycStart.getFullYear(), cycStart.getMonth(), 24);
-    const ymMgrPrev  = prevStart.getFullYear() + "-" + String(prevStart.getMonth() + 1).padStart(2, "0");
-    const ymTechPrev = prevEnd.getFullYear()   + "-" + String(prevEnd.getMonth() + 1).padStart(2, "0");
     const deadline = new Date(cycStart.getFullYear(), cycStart.getMonth(), 15); // 15th of month the cycle starts in
     const cycLabel = cycStart.toLocaleDateString("en-ZA", { day:"2-digit", month:"short" }) + " → " + cycEnd.toLocaleDateString("en-ZA", { day:"2-digit", month:"short" });
     try {
@@ -6646,14 +6641,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       await Promise.all(SALONS.map(async (sl) => {
         const branch = sl.name;
         try {
-          const [t, mg, tPrev, mgPrev] = await Promise.all([
-            window.BOA_DB.loadApprovedSchedules(branch, ymTech,     false),
-            window.BOA_DB.loadApprovedSchedules(branch, ymMgr,      true),
-            window.BOA_DB.loadApprovedSchedules(branch, ymTechPrev, false),
-            window.BOA_DB.loadApprovedSchedules(branch, ymMgrPrev,  true)
+          const [t, mg] = await Promise.all([
+            window.BOA_DB.loadApprovedSchedules(branch, ymTech, false),
+            window.BOA_DB.loadApprovedSchedules(branch, ymMgr,  true)
           ]);
-          const techDone = (Array.isArray(t) && t.length > 0) || (Array.isArray(tPrev) && tPrev.length > 0);
-          const mgrDone  = (Array.isArray(mg) && mg.length > 0) || (Array.isArray(mgPrev) && mgPrev.length > 0);
+          const techDone = Array.isArray(t)  && t.length  > 0;
+          const mgrDone  = Array.isArray(mg) && mg.length > 0;
           results[branch] = { tech: techDone, mgr: mgrDone };
         } catch (e) { results[branch] = { tech: false, mgr: false }; }
       }));
