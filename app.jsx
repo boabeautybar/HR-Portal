@@ -14421,12 +14421,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // `removed` = ECs sitting in the saved grid but no longer in the
           // current roster (left, moved away). Used to surface a sync
           // banner and to drive the smart-regenerate behaviour below.
-          const _liveEcs = new Set(allMgrs.map(m => m.ec));
+          // allMgrs is global (every branch + onboarding). The diff only
+          // makes sense against the managers actually rostered at THIS
+          // branch, so filter both sides to branch === branch before the
+          // compare - otherwise every manager from every other store
+          // shows as '+ Added' here. Onboarding placeholders are also
+          // skipped (they don't have a saved grid entry yet, by design).
+          const _branchMgrs = allMgrs.filter(m => m.branch === branch && !m._onboarding);
+          const _liveEcs = new Set(_branchMgrs.map(m => m.ec));
           const _sourceGridForDiff = (mgrSchedDraft && Object.keys(mgrSchedDraft).length > 0)
             ? mgrSchedDraft
             : (mgrSchedSaved || result.grid || {});
           const _gridEcs = Object.keys(_sourceGridForDiff || {});
-          const rosterAdded   = allMgrs.filter(m => m._onMat ? false : !_gridEcs.includes(m.ec)).map(m => m.ec);
+          const rosterAdded   = _branchMgrs.filter(m => m._onMat ? false : !_gridEcs.includes(m.ec)).map(m => m.ec);
           const rosterRemoved = _gridEcs.filter(ec => !_liveEcs.has(ec));
           // Where did the removed mgrs go? Look up the global managers
           // list. If they're still in another branch, label as 'moved';
