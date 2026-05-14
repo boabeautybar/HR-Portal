@@ -2126,7 +2126,12 @@ function TransferModal({ s, onClose, onConfirm, onCancelTransfer }) {
 // ─── MANAGER MODAL ────────────────────────────────────────────────────────────────
 function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
   const [f, setF] = useState(m);
-  const [pinInput, setPinInput] = useState(pin || "");
+  // Auto-generate a random 6-digit clock-in PIN for brand-new managers so
+  // the owner doesn't have to think one up. Existing managers keep their
+  // saved PIN. The PIN is still editable in the input below either way.
+  const _randomPin = () => String(Math.floor(100000 + Math.random() * 900000));
+  const _initPin = (m && m._id !== undefined) ? (pin || "") : (pin || _randomPin());
+  const [pinInput, setPinInput] = useState(_initPin);
   const set = (k,v) => setF(p=>({...p,[k]:v}));
   const inp = { width:"100%", padding:"8px 11px", borderRadius:8, border:"1px solid #FBCFE8", background:"#FCE7F3", fontFamily:"inherit", fontSize:13, color:"#111827", boxSizing:"border-box" };
   const lbl = { display:"block", fontSize:10, fontWeight:700, color:"#BE185D", letterSpacing:"0.08em", marginBottom:4, textTransform:"uppercase" };
@@ -2162,18 +2167,50 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
           </div>
           <div><label style={lbl}>Notes</label>
             <input style={inp} value={f.notes||""} onChange={e=>set("notes",e.target.value)} placeholder="e.g. Transfer from Sandown, Pregnant..." /></div>
+
+          {/* Compliance / work-permit status. Same options the staff modal
+              uses; persists to the same `permit` column on the staff row. */}
           <div>
-            <label style={lbl}>Personal Clock-in PIN <span style={{ fontWeight:500, color:"#9CA3AF", letterSpacing:0, textTransform:"none", marginLeft:4 }}>(6 digits — used in the check-in app)</span></label>
-            <input
-              style={{ ...inp, fontFamily:"monospace", letterSpacing:"0.2em", fontSize:14 }}
-              value={pinInput}
-              maxLength={6}
-              inputMode="numeric"
-              placeholder="6-digit PIN"
-              onChange={e=>setPinInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
-            />
+            <label style={lbl}>Compliance / Work Permit</label>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))", gap:8 }}>
+              <label style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 10px", borderRadius:8, border:`1.5px solid ${!f.permit?"#F472B6":"#e5e7eb"}`, background:!f.permit?"#fdf2f8":"#f9fafb", cursor:"pointer" }}>
+                <input type="radio" checked={!f.permit} onChange={()=>set("permit", null)} style={{ display:"none" }} />
+                <span style={{ fontSize:16 }}>❔</span>
+                <span style={{ fontSize:11, fontWeight:700, color:!f.permit?"#831843":"#6b7280" }}>Not set</span>
+              </label>
+              {Object.entries(COMPLIANCE).map(([k,c])=>(
+                <label key={k} style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 10px", borderRadius:8, border:`1.5px solid ${f.permit===k?c.border:"#e5e7eb"}`, background:f.permit===k?c.bg:"#f9fafb", cursor:"pointer" }}>
+                  <input type="radio" checked={f.permit===k} onChange={()=>set("permit",k)} style={{ display:"none" }} />
+                  <span style={{ fontSize:16 }}>{c.icon}</span>
+                  <span style={{ fontSize:11, fontWeight:700, color:f.permit===k?c.color:"#831843" }}>{c.label}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label style={lbl}>Personal Clock-in PIN <span style={{ fontWeight:500, color:"#9CA3AF", letterSpacing:0, textTransform:"none", marginLeft:4 }}>(6 digits — used in the check-in app{isNew && pinInput ? " · auto-generated" : ""})</span></label>
+            <div style={{ display:"flex", gap:6 }}>
+              <input
+                style={{ ...inp, fontFamily:"monospace", letterSpacing:"0.2em", fontSize:14, flex:1 }}
+                value={pinInput}
+                maxLength={6}
+                inputMode="numeric"
+                placeholder="6-digit PIN"
+                onChange={e=>setPinInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              />
+              <button type="button" onClick={()=>setPinInput(_randomPin())}
+                title="Generate a fresh random 6-digit PIN"
+                style={{ padding:"0 12px", borderRadius:8, border:"1px solid #FBCFE8", background:"#FFFFFF", color:"#831843", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700, whiteSpace:"nowrap" }}
+              >🎲 Random</button>
+            </div>
             {pinInput && pinInput.length !== 6 && (
               <div style={{ fontSize:11, color:"#dc2626", marginTop:4 }}>PIN must be exactly 6 digits (or empty to clear).</div>
+            )}
+            {isNew && pinInput.length === 6 && (
+              <div style={{ fontSize:11, color:"#92400e", marginTop:6, background:"#fef3c7", border:"1px solid #fde68a", borderRadius:6, padding:"6px 10px" }}>
+                💡 Share this PIN with the manager — they'll type it into the check-in kiosk to confirm their attendance. Resettable later from Admin → Manager PINs.
+              </div>
             )}
           </div>
           <div><label style={lbl}>Start Date {f.startDate && (() => {
