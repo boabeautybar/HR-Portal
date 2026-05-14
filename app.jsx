@@ -6233,7 +6233,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // toBranch, note, createdBy, createdAt }. Uniqueness on (ec, date) is
   // enforced at save time by replacing any prior row for that pair.
   const [techLoans, setTechLoans] = useState([]);
-  const [loanModal, setLoanModal] = useState(null); // null | { _id?, ec, fromBranch, toBranch, date, note }
+  const [loanModal, setLoanModal] = useState(null); // null | { _id?, ec, fromBranch, toBranch, date, note, _err? }
+  const [loanSaving, setLoanSaving] = useState(false);
   const [movementsDate, setMovementsDate] = useState(() => new Date().toISOString().slice(0, 10));
   useEffect(() => {
     if (!window.BOA_DB || !window.BOA_DB.loadTechLoans) return;
@@ -6247,12 +6248,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return () => { cancelled = true; };
   }, []);
   const saveLoan = async (record) => {
-    if (!record || !record.ec || !record.date || !record.fromBranch || !record.toBranch) {
-      alert("Need tech, date, and a target branch."); return;
+    const showErr = (msg) => {
+      console.error("saveLoan:", msg, record);
+      setLoanModal(m => m ? { ...m, _err: msg } : m);
+    };
+    if (!record || !record.ec)   return showErr("Pick a nail tech.");
+    if (!record.date)            return showErr("Pick a date.");
+    if (!record.toBranch)        return showErr("Pick the branch they're working at.");
+    // fromBranch fallback: when the staff record passed in didn't carry a
+    // branch field, look it up from the live staff list before bailing.
+    let fromBranch = record.fromBranch || "";
+    if (!fromBranch) {
+      const live = (staff || []).find(p => p && p.ec === record.ec);
+      fromBranch = (live && live.branch) || "";
     }
-    if (record.fromBranch === record.toBranch) {
-      alert("Pick a branch different from the tech's home branch."); return;
-    }
+    if (!fromBranch)                       return showErr("This tech isn't assigned to a home branch yet — set their branch in Staff first.");
+    if (fromBranch === record.toBranch)    return showErr("Pick a branch different from the tech's home (" + fromBranch + ").");
+    if (!window.BOA_DB || !window.BOA_DB.saveTechLoans) return showErr("Database not ready — refresh and try again.");
+
     // Replace any existing loan for the same (ec, date)
     const list = techLoans || [];
     const filtered = list.filter(r => !(r && r.ec === record.ec && r.date === record.date));
@@ -6261,13 +6274,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       ec: record.ec,
       name: record.name || "",
       date: record.date,
-      fromBranch: record.fromBranch,
+      fromBranch,
       toBranch: record.toBranch,
       note: (record.note || "").toString().slice(0, 200),
       createdBy: record.createdBy || (currentUser && currentUser.name) || "",
       createdAt: record.createdAt || new Date().toISOString()
     };
     const next = [...filtered, stamped];
+    setLoanSaving(true);
     try {
       await window.BOA_DB.saveTechLoans(next);
       setTechLoans(next);
@@ -6280,7 +6294,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           "Movement"
         );
       }
-    } catch (e) { alert("Could not save: " + (e.message || e)); }
+    } catch (e) {
+      showErr("Could not save: " + ((e && e.message) || e));
+    } finally {
+      setLoanSaving(false);
+    }
   };
   const cancelLoan = async (id) => {
     const list = techLoans || [];
@@ -14326,6 +14344,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     Heads-up: there's already a loan for {selected ? selected.name : m.ec} on this date ({existingForDay.fromBranch} → {existingForDay.toBranch}). Saving will replace it.
                   </div>
                 )}
+                {m._err && (
+                  <div style={{ background:"#fef2f2", border:"1px solid #fecaca", borderRadius:8, padding:"9px 12px", fontSize:12, color:"#7f1d1d", marginBottom:10 }}>
+                    ⚠ {m._err}
+                  </div>
+                )}
 
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8 }}>
                   {m._id ? (
@@ -14338,10 +14361,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       style={{ background:"#f3f4f6", color:"#374151", border:"none", borderRadius:8, padding:"9px 16px", cursor:"pointer", fontSize:12, fontWeight:700 }}
                     >Close</button>
                     <button
-                      disabled={!m.ec || !m.toBranch || !m.date || !!onLeaveBlocker || fromBranch === m.toBranch}
+                      disabled={loanSaving || !m.ec || !m.toBranch || !m.date || !!onLeaveBlocker || (fromBranch && fromBranch === m.toBranch)}
                       onClick={()=>saveLoan({ ...m, fromBranch })}
-                      style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:8, padding:"9px 18px", cursor:"pointer", fontSize:12, fontWeight:700, opacity: (!m.ec || !m.toBranch || !m.date || !!onLeaveBlocker || fromBranch === m.toBranch) ? 0.5 : 1 }}
-                    >{m._id ? "Save changes" : "Log borrow"}</button>
+                      style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:8, padding:"9px 18px", cursor: loanSaving ? "wait" : "pointer", fontSize:12, fontWeight:700, opacity: (loanSaving || !m.ec || !m.toBranch || !m.date || !!onLeaveBlocker || (fromBranch && fromBranch === m.toBranch)) ? 0.5 : 1 }}
+                    >{loanSaving ? "Saving…" : (m._id ? "Save changes" : "Log borrow")}</button>
                   </div>
                 </div>
               </div>
