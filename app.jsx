@@ -9260,17 +9260,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     {isExcluded && <span style={{ background:"#FBCFE8", color:"#831843", borderRadius:20, padding:"2px 10px", fontSize:10, fontWeight:700 }}>EXCLUDED FROM STORE COUNT</span>}
                     {status==="pregnant" && <span style={{ background:"#FCE7F3", color:"#831843", borderRadius:20, padding:"2px 10px", fontSize:10, fontWeight:700 }}>COUNTED IN STORE</span>}
                   </div>
+                  {/* Manager subsection — purple banner header so the
+                      management bloc is impossible to miss vs the techs
+                      below. Card area gets a thin left border + light
+                      lavender background so the whole group reads as one
+                      visual chunk. */}
                   {mgrRecs.length > 0 && (
-                    <div style={{ marginBottom:14 }}>
-                      <div style={{ fontSize:10, fontWeight:800, color:"#7c3aed", letterSpacing:"0.08em", marginBottom:6, textTransform:"uppercase" }}>👑 Managers · {mgrRecs.length}</div>
+                    <div style={{ marginBottom:18, background:"#F5F3FF", border:"1px solid #DDD6FE", borderLeft:"5px solid #7c3aed", borderRadius:12, padding:"14px 16px 16px" }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:12, flexWrap:"wrap" }}>
+                        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:18, fontWeight:700, color:"#5b21b6", letterSpacing:"0.01em" }}>
+                          👑 Managers
+                        </div>
+                        <span style={{ background:"#7c3aed", color:"#fff", borderRadius:999, padding:"3px 12px", fontSize:11, fontWeight:800, letterSpacing:"0.06em" }}>{mgrRecs.length} {mgrRecs.length===1?"person":"people"}</span>
+                      </div>
                       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))", gap:10 }}>
                         {mgrRecs.map(renderCard)}
                       </div>
                     </div>
                   )}
+                  {/* Nail-tech subsection — pink banner mirrors the BOA
+                      house style so it's clearly the floor-staff list. */}
                   {techRecs.length > 0 && (
-                    <div>
-                      <div style={{ fontSize:10, fontWeight:800, color:"#BE185D", letterSpacing:"0.08em", marginBottom:6, textTransform:"uppercase" }}>💅 Nail Techs · {techRecs.length}</div>
+                    <div style={{ background:"#FDEEF5", border:"1px solid #FBCFE8", borderLeft:"5px solid #BE185D", borderRadius:12, padding:"14px 16px 16px" }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:12, flexWrap:"wrap" }}>
+                        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:18, fontWeight:700, color:"#831843", letterSpacing:"0.01em" }}>
+                          💅 Nail Techs
+                        </div>
+                        <span style={{ background:"#BE185D", color:"#fff", borderRadius:999, padding:"3px 12px", fontSize:11, fontWeight:800, letterSpacing:"0.06em" }}>{techRecs.length} {techRecs.length===1?"person":"people"}</span>
+                      </div>
                       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))", gap:10 }}>
                         {techRecs.map(renderCard)}
                       </div>
