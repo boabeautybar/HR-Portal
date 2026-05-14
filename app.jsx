@@ -619,9 +619,10 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
   for (let i = 0; i < dates.length-1; i++) {
     if (dates[i].dow === 6 && dates[i+1].dow === 0) allWePairs.push([dates[i], dates[i+1]]);
   }
-  const ordered = [...f].sort((a,b) => (a.role==="SM"?0:1)-(b.role==="SM"?0:1));
+  const _isStoreTier = (r) => r === "SM" || r === "SSM";
+  const ordered = [...f].sort((a,b) => (_isStoreTier(a.role)?0:1) - (_isStoreTier(b.role)?0:1));
   for (const h of ordered) {
-    const need = h.role === "SM" ? 2 : 1;
+    const need = _isStoreTier(h.role) ? 2 : 1;
     let have = wePairs(h);
     if (have >= need) continue;
     let candidates = allWePairs.filter(([fr,sa]) =>
@@ -1097,7 +1098,7 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
   const hasReq = new Set();
   for (const r of (requests || [])) if (r && r.ec) hasReq.add(r.ec);
   for (const h of f) {
-    const need = h.role === "SM" ? 2 : 1;
+    const need = (h.role === "SM" || h.role === "SSM") ? 2 : 1;
     const have = wePairs(h);
     if (have < need && !hasReq.has(h.ec)) conflicts.push({ type:"short_weekend", msg: h.name + " has " + have + " weekend(s) off (target " + need + ")", severity:"medium", ec: h.ec });
     for (const w of wkOrder) {
@@ -2144,6 +2145,7 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
             </div>
             <div><label style={lbl}>Role</label>
               <select style={inp} value={f.role} onChange={e=>set("role",e.target.value)}>
+                <option value="SSM">💎 Senior Store Manager (SSM)</option>
                 <option value="SM">👑 Store Manager (SM)</option>
                 <option value="AM">⭐ Assistant Manager (AM)</option>
               </select>
@@ -7279,6 +7281,38 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     });
   }, [enriched, fShow, fBranch, fPermit, fContract, search]);
 
+  // Managers shown on the Staff List with the same filter set as techs.
+  // Sorted SSM → SM → AM, then by name. Off-mat managers always at the top
+  // so they're easy to find; on-mat below. We don't have a level/compliance
+  // for managers so those columns render empty.
+  const filteredMgrs = useMemo(() => {
+    const q = (search || "").toLowerCase();
+    const list = (managers || []).filter(m => {
+      if (!m) return false;
+      if (fShow==="on_mat" && !m.onMat) return false;
+      if (fShow==="active_only" && m.onMat) return false;
+      if (fBranch!=="All" && m.branch!==fBranch) return false;
+      if (fContract!=="All" && (m.contract||"")!==fContract) return false;
+      // Compliance filter is a permit field; managers may not have one — skip
+      // filtering if user picked a specific permit AND the manager has none,
+      // otherwise compare.
+      if (fPermit!=="All") {
+        if (!m.permit) return false;
+        if (m.permit !== fPermit) return false;
+      }
+      if (q && !(m.name||"").toLowerCase().includes(q) && !(m.ec||"").toLowerCase().includes(q)) return false;
+      return true;
+    });
+    const rank = (r) => r==="SSM"?0 : r==="SM"?1 : r==="AM"?2 : 3;
+    return list.sort((a, b) => {
+      const am = a.onMat ? 1 : 0, bm = b.onMat ? 1 : 0;
+      if (am !== bm) return am - bm;                                 // active mgrs first
+      const rd = rank(a.role) - rank(b.role);
+      if (rd !== 0) return rd;                                       // SSM → SM → AM
+      return (a.name || "").localeCompare(b.name || "");
+    });
+  }, [managers, fShow, fBranch, fPermit, fContract, search]);
+
   const stats = useMemo(() => {
     // "active" excludes maternity, unpaid-legal leave AND off-boarded — all
     // three reduce the active headcount.
@@ -8184,9 +8218,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <select value={fContract} onChange={e=>setFContract(e.target.value)} style={{ padding:"7px 11px", borderRadius:7, border:`1px solid ${bdr}`, fontFamily:"inherit", fontSize:13, background:cream }}>
                 <option value="All">All Contracts</option>{["Permanent","Fixed Term","NO CONTRACT","2 Weeks","Induction"].map(c=><option key={c}>{c}</option>)}
               </select>
-              <span style={{ marginLeft:"auto", fontSize:11, color:"#BE185D", fontWeight:700 }}>{filtered.length} shown (sorted by EC)</span>
+              <span style={{ marginLeft:"auto", fontSize:11, color:"#BE185D", fontWeight:700 }}>{filteredMgrs.length + filtered.length} shown {filteredMgrs.length > 0 ? "(" + filteredMgrs.length + " mgrs · " + filtered.length + " techs)" : "(sorted by EC)"}</span>
               <button onClick={()=>setStaffModal({ ec:"", name:"", branch:"Sea Point", contract:"Permanent", permit:"sa_citizen", level:"" })}
-                style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:8, padding:"7px 14px", cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:12 }}>+ Add Staff</button>
+                style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:8, padding:"7px 14px", cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:12 }}>+ Add Tech</button>
+              <button onClick={()=>setMgrModal({ ec:"", name:"", branch:"Sea Point", role:"AM", contract:"Permanent" })}
+                style={{ background:"#7c3aed", color:"#fff", border:"none", borderRadius:8, padding:"7px 14px", cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:12 }}>+ Add Manager</button>
             </div>
 
             <div style={{ background:"#FFFFFF", borderRadius:15, border:`1px solid ${bdr}`, overflow:"hidden", boxShadow:"0 2px 12px rgba(0,0,0,.05)" }}>
@@ -8200,7 +8236,50 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {filtered.length===0 && <tr><td colSpan={10} style={{ textAlign:"center", padding:40, color:"#9ca3af" }}>No results.</td></tr>}
+                    {filtered.length===0 && filteredMgrs.length===0 && <tr><td colSpan={10} style={{ textAlign:"center", padding:40, color:"#9ca3af" }}>No results.</td></tr>}
+
+                    {/* Managers section header */}
+                    {filteredMgrs.length > 0 && (
+                      <tr><td colSpan={10} style={{ background:"#FDEEF5", padding:"8px 14px", fontSize:11, fontWeight:800, letterSpacing:"0.12em", color:"#831843", textTransform:"uppercase", borderTop:"2px solid #FBCFE8", borderBottom:"1px solid #FBCFE8" }}>
+                        👑 Managers · {filteredMgrs.length}
+                      </td></tr>
+                    )}
+                    {filteredMgrs.map(m => {
+                      const icon = m.role === "SSM" ? "💎" : m.role === "SM" ? "👑" : "⭐";
+                      const roleBg = m.role === "SSM" ? "#92400e" : m.role === "SM" ? "#7c3aed" : "#0369a1";
+                      const rowBg  = m.onMat ? "#fdf4ff" : m.pregnant ? "#fffbeb" : "#fff";
+                      const rowOpacity = m.onMat ? 0.6 : 1;
+                      return (
+                        <tr key={"mgr-" + (m._id || m.ec)} style={{ background:rowBg, borderTop:`1px solid ${bdr}`, opacity:rowOpacity }}>
+                          <td style={{ padding:"10px 12px", fontFamily:"monospace", fontSize:11, color:"#8E5570", fontWeight:700 }}>{m.ec}</td>
+                          <td style={{ padding:"10px 12px", fontWeight:700, color: m.onMat ? "#7A4258" : "#111827", whiteSpace:"nowrap", fontStyle: m.onMat?"italic":"normal" }}>
+                            {m.onMat ? "🤱 " : m.pregnant ? "🤰 " : ""}{icon} {m.name}
+                            {m.transferring && <span style={{ fontSize:10, marginLeft:5, background:"#FBCFE8", color:"#BE185D", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>→ {m.transferTo} on {m.transferDate ? new Date(m.transferDate).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"}) : ""}</span>}
+                          </td>
+                          <td style={{ padding:"10px 12px", color:"#475569", fontSize:12, whiteSpace:"nowrap" }}>📍 {m.branch || "—"}</td>
+                          <td style={{ padding:"10px 12px", color:"#9ca3af" }}>—</td>
+                          <td style={{ padding:"10px 12px", color:"#475569", fontSize:12, whiteSpace:"nowrap" }}>{m.contract || "—"}</td>
+                          <td style={{ padding:"10px 12px" }}>{m.permit ? <Chip {...(COMPLIANCE[m.permit] || { icon:"❔", color:"#6b7280", bg:"#f3f4f6", border:"#d1d5db", label:m.permit })}>{(COMPLIANCE[m.permit] || {}).label || m.permit}</Chip> : <span style={{ color:"#9ca3af" }}>—</span>}</td>
+                          <td style={{ padding:"10px 12px", fontSize:11, color:"#831843", fontWeight:600, whiteSpace:"nowrap" }}>{m.startDate ? new Date(m.startDate + "T00:00:00").toLocaleDateString("en-ZA",{day:"2-digit",month:"short",year:"numeric"}) : <span style={{ color:"#d1d5db" }}>—</span>}</td>
+                          <td style={{ padding:"10px 12px" }}>
+                            <span style={{ fontSize:10, fontWeight:800, background:roleBg, color:"#fff", padding:"3px 8px", borderRadius:6, letterSpacing:"0.04em" }}>{m.role || "—"}</span>
+                            {m.onMat && <span style={{ marginLeft:6, fontSize:10, background:"#FBCFE8", color:"#8E5570", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>🤱 mat.</span>}
+                          </td>
+                          <td style={{ padding:"10px 12px", fontSize:11, color:"#831843" }}>{m.matRec && m.matRec.returnDate ? new Date(m.matRec.returnDate + "T00:00:00").toLocaleDateString("en-ZA",{day:"2-digit",month:"short"}) : <span style={{ color:"#d1d5db" }}>—</span>}</td>
+                          <td style={{ padding:"10px 12px", textAlign:"right" }}>
+                            <button onClick={()=>setMgrModal(m)} style={{ background:"#e2e8f0", border:"none", borderRadius:6, padding:"5px 11px", cursor:"pointer", fontSize:11, fontWeight:700, color:"#831843" }}>✏️ Edit</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+
+                    {/* Nail Techs section header */}
+                    {filteredMgrs.length > 0 && filtered.length > 0 && (
+                      <tr><td colSpan={10} style={{ background:"#FDEEF5", padding:"8px 14px", fontSize:11, fontWeight:800, letterSpacing:"0.12em", color:"#831843", textTransform:"uppercase", borderTop:"2px solid #FBCFE8", borderBottom:"1px solid #FBCFE8" }}>
+                        💅 Nail Techs · {filtered.length}
+                      </td></tr>
+                    )}
+
                     {filtered.map(s => {
                       const dBack = s.matRec?.returnDate ? daysDiff(s.matRec.returnDate) : null;
                       const departed = s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft >= 0;
@@ -8414,17 +8493,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       {managers.filter(m=>m.branch===salon.name).length>0 && (
                         <div style={{ marginBottom:8 }}>
                           <div style={{ fontSize:9, fontWeight:800, color:"#BE185D", letterSpacing:"0.08em", marginBottom:5 }}>MANAGEMENT</div>
-                          {managers.filter(m=>m.branch===salon.name).sort((a,b)=>a.role===b.role?0:a.role==="SM"?-1:1).map(m=>(
+                          {managers.filter(m=>m.branch===salon.name).sort((a,b)=>{
+                            const rank = (r)=> r==="SSM"?0 : r==="SM"?1 : 2;
+                            return rank(a.role) - rank(b.role);
+                          }).map(m=>{
+                            const _icon = m.role==="SSM"?"💎":m.role==="SM"?"👑":"⭐";
+                            const _bg   = m.role==="SSM"?"#92400e":m.role==="SM"?"#7c3aed":"#0369a1";
+                            return (
                             <div key={m._id} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 10px", borderRadius:8, background:"#F9A8D4", border:"1px solid #FBCFE8", marginBottom:4 }}>
-                              <span style={{ fontSize:11 }}>{m.role==="SM"?"👑":"⭐"}</span>
+                              <span style={{ fontSize:11 }}>{_icon}</span>
                               <span style={{ flex:1, fontSize:12, fontWeight:600, color:"#831843" }}>{m.name}</span>
-                              <span style={{ fontSize:9, background:m.role==="SM"?"#7c3aed":"#0369a1", color:"#fff", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>{m.role}</span>
+                              <span style={{ fontSize:9, background:_bg, color:"#fff", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>{m.role}</span>
                               {m.onMat&&<span style={{ fontSize:9, background:"#FBCFE8", color:"#8E5570", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>🤱 mat.</span>}
                               {m.pregnant&&!m.onMat&&<span style={{ fontSize:9, background:"#FCE7F3", color:"#8E5570", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>🤰 pregnant</span>}
                               <button onClick={()=>{ setMgrModal(m); setManagePanel(null); }}
                                 style={{ background:"#e2e8f0", border:"none", borderRadius:6, padding:"4px 10px", cursor:"pointer", fontSize:11, fontWeight:700, color:"#831843" }}>✏️ Edit</button>
                             </div>
-                          ))}
+                            );
+                          })}
                           <button onClick={()=>{ setMgrModal({ec:"",name:"",branch:salon.name,role:"AM",contract:"Permanent"}); setManagePanel(null); }}
                             style={{ width:"100%", background:"#FCE7F3", border:"1px dashed #FBCFE8", borderRadius:7, padding:"5px", cursor:"pointer", fontSize:11, fontWeight:700, color:"#BE185D", marginBottom:6 }}>+ Add Manager</button>
                           <div style={{ height:1, background:"#e5e7eb", marginBottom:8 }} />
@@ -9499,7 +9585,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const totalSMNeeded = branchStats.reduce((a,b) => a + b.missSM, 0);
           const totalAMNeeded = branchStats.reduce((a,b) => a + b.missAM, 0);
           const gapBranches   = branchStats.filter(b => !b.ok).length;
-          const totalActiveSM = managers.filter(m=>m.role==="SM"&&!m.onMat&&m.branch!=="Regional").length;
+          // 'Store Managers' folds SSM + SM together (both are store-tier
+          // managers - SSM is just the senior bracket). AM stays separate.
+          const totalActiveSM = managers.filter(m=>(m.role==="SM"||m.role==="SSM")&&!m.onMat&&m.branch!=="Regional").length;
           const totalActiveAM = managers.filter(m=>m.role==="AM"&&!m.onMat&&m.branch!=="Regional").length;
           const totalPregnant = managers.filter(m=>m.pregnant&&!m.onMat).length;
           const totalOnMat    = managers.filter(m=>m.onMat).length;
@@ -9686,7 +9774,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const MIN_SM = 1, MIN_AM = 2;
 
           const branchMgrs = salon => plannerMgrs.filter(m => m.branch === salon && m.branch !== 'Regional');
-          const smCount  = salon => branchMgrs(salon).filter(m=>m.role==="SM"&&!m.onMat).length;
+          const smCount  = salon => branchMgrs(salon).filter(m=>(m.role==="SM"||m.role==="SSM")&&!m.onMat).length;
           const amCount  = salon => branchMgrs(salon).filter(m=>m.role==="AM"&&!m.onMat).length;
           const gapColor = salon => {
             if (smCount(salon) < MIN_SM) return "#dc2626";
@@ -10318,7 +10406,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           </div>
                           <div><label style={lbl}>Position *</label>
                             <select style={{...inp, width:"100%", boxSizing:"border-box"}} value={obForm.position || ""} onChange={e=>setObForm({...obForm, position:e.target.value})}>
-                              <option value="Nail Tech">Nail Tech</option><option value="SM">Store Manager (SM)</option><option value="AM">Assistant Manager (AM)</option><option value="Other">Other</option>
+                              <option value="Nail Tech">Nail Tech</option><option value="SSM">Senior Store Manager (SSM)</option><option value="SM">Store Manager (SM)</option><option value="AM">Assistant Manager (AM)</option><option value="Other">Other</option>
                             </select>
                           </div>
                         </div>
@@ -10427,7 +10515,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const ds = daysFrom(r.startDate);
                           const statusLabel = ds<0 ? "starts in " + Math.abs(ds) + "d" : ds===0 ? "started today" : ds===1 ? "started yesterday" : ds + " days in";
                           const [bg, color] = ds<0 ? ["#dbeafe","#1e3a8a"] : ds<=7 ? ["#dcfce7","#14532d"] : ["#f3f4f6","#475569"];
-                          const posLabel = r.position==="SM" ? "Store Manager" : r.position==="AM" ? "Assistant Manager" : (r.position==="Other" && r.positionOther) ? r.positionOther : r.position;
+                          const posLabel = r.position==="SSM" ? "Senior Store Manager" : r.position==="SM" ? "Store Manager" : r.position==="AM" ? "Assistant Manager" : (r.position==="Other" && r.positionOther) ? r.positionOther : r.position;
                           return (
                             <div key={r._id} style={{ background:"#FFFFFF", borderRadius:11, border:"1px solid #FBCFE8", padding:"12px 14px", boxShadow:"0 2px 4px rgba(0,0,0,0.02)" }}>
                               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:6, gap:8 }}>
