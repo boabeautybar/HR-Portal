@@ -1,4 +1,4 @@
-const { useState, useMemo, useEffect } = React;
+const { useState, useMemo, useEffect, useRef } = React;
 
 // ─── STAFF PIN LOGIN ────────────────────────────────────────────────────────────
 // 4-digit PINs. Lookup is by exact PIN string. Each user is recorded against
@@ -1155,6 +1155,85 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
 // any future regional reporting. Values: "wc" (Western Cape), "gauteng",
 // "kzn". Custom branches added at runtime default to "wc" if they were
 // saved before this field existed.
+
+// ── Reusable searchable staff/manager picker ──────────────────────────────
+// Drop-in replacement for the plain <select> dropdowns we use to pick a
+// staff member. Filters as you type by name OR EC, shows up to 30 hits,
+// closes on outside-click or selection. `formatOption` lets each call site
+// control the label (default: "EC · Name").
+function StaffPicker({ people, valueEc, onChange, placeholder, formatOption, style, disabled }) {
+  const [open, setOpen]   = useState(false);
+  const [query, setQuery] = useState("");
+  const containerRef = useRef(null);
+  const inputRef     = useRef(null);
+  useEffect(() => {
+    const onDoc = (e) => {
+      if (containerRef.current && !containerRef.current.contains(e.target)) {
+        setOpen(false);
+        setQuery("");
+      }
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+  const list = Array.isArray(people) ? people : [];
+  const selected = valueEc ? list.find(p => p && p.ec === valueEc) : null;
+  const fmt = formatOption || ((p) => (p.ec || "—") + " · " + (p.name || ""));
+  const q = (query || "").trim().toLowerCase();
+  const matches = q === ""
+    ? list.slice(0, 30)
+    : list.filter(p =>
+        ((p.name || "").toLowerCase().includes(q)) ||
+        ((p.ec   || "").toLowerCase().includes(q))
+      ).slice(0, 30);
+  const inputStyle = {
+    width:"100%", padding:"7px 10px", borderRadius:8, border:"1px solid #FBCFE8",
+    fontSize:13, fontFamily:"inherit", background: disabled ? "#f3f4f6" : "#fff",
+    boxSizing:"border-box", ...(style || {})
+  };
+  return (
+    <div ref={containerRef} style={{ position:"relative" }}>
+      <input
+        ref={inputRef}
+        type="text"
+        disabled={disabled}
+        value={open ? query : (selected ? fmt(selected) : "")}
+        onFocus={()=>{ setQuery(""); setOpen(true); }}
+        onChange={(e)=>{ setQuery(e.target.value); setOpen(true); }}
+        placeholder={placeholder || ("Search " + list.length + " staff by name or EC…")}
+        style={inputStyle}
+        autoComplete="off"
+      />
+      {selected && !open && (
+        <button type="button" onMouseDown={(e)=>{ e.preventDefault(); onChange && onChange(""); setQuery(""); }}
+          style={{ position:"absolute", right:8, top:"50%", transform:"translateY(-50%)", background:"transparent", border:"none", color:"#9ca3af", cursor:"pointer", fontSize:14, padding:"0 4px" }}
+          title="Clear"
+        >×</button>
+      )}
+      {open && (
+        <div style={{ position:"absolute", top:"calc(100% + 4px)", left:0, right:0, background:"#fff", border:"1px solid #FBCFE8", borderRadius:8, maxHeight:260, overflowY:"auto", zIndex:200, boxShadow:"0 8px 20px rgba(0,0,0,0.12)" }}>
+          {matches.length === 0 ? (
+            <div style={{ padding:"9px 12px", fontSize:12, color:"#9ca3af", fontStyle:"italic" }}>No matches</div>
+          ) : matches.map((p, i) => (
+            <div key={(p.ec || "") + "_" + i}
+              onMouseDown={(e)=>{ e.preventDefault(); onChange && onChange(p.ec); setOpen(false); setQuery(""); }}
+              style={{ padding:"8px 12px", cursor:"pointer", fontSize:13, borderBottom: i < matches.length - 1 ? "1px solid #FCE7F3" : "none", display:"flex", alignItems:"center", gap:8 }}
+              onMouseEnter={(e)=>{ e.currentTarget.style.background = "#FCE7F3"; }}
+              onMouseLeave={(e)=>{ e.currentTarget.style.background = "#fff"; }}
+            >
+              <span style={{ fontFamily:"monospace", color:"#9ca3af", fontSize:11, minWidth:40 }}>{p.ec || "—"}</span>
+              <span style={{ flex:1, color:"#111827", fontWeight:600 }}>{p.name || "(no name)"}</span>
+              {p.branch && <span style={{ fontSize:11, color:"#6b7280" }}>📍 {p.branch}</span>}
+              {p.role && <span style={{ fontSize:9, fontWeight:700, padding:"1px 6px", borderRadius:99, background:"#FCE7F3", color:"#831843" }}>{p.role}</span>}
+              {p.onMat && <span style={{ fontSize:9, fontWeight:700, padding:"1px 6px", borderRadius:99, background:"#FBCFE8", color:"#831843" }}>🤱</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const SALONS = [
   { name:"Sea Point",       mani:16, pedi:6,  capacity:24, region:"wc" },
   { name:"Bree",            mani:9,  pedi:5,  capacity:15, region:"wc" },
@@ -4552,13 +4631,13 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs }) {
             <div style={{ display:"grid", gap:10, fontSize:13 }}>
               <label style={{ display:"flex", flexDirection:"column", gap:4 }}>
                 <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>NAIL TECH</span>
-                <select value={techReqModal.ec}
-                  onChange={(e) => setTechReqModal({ ...techReqModal, ec: e.target.value })}
-                  style={{ padding:"7px 10px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13 }}>
-                  {techs.filter(t => !t.onMat).map(t => (
-                    <option key={t.ec} value={t.ec}>{t.name} ({t.ec})</option>
-                  ))}
-                </select>
+                <StaffPicker
+                  people={techs.filter(t => !t.onMat)}
+                  valueEc={techReqModal.ec}
+                  onChange={(ec) => setTechReqModal({ ...techReqModal, ec })}
+                  placeholder="Search nail techs…"
+                  formatOption={(t) => t.name + " (" + t.ec + ")"}
+                />
               </label>
               <label style={{ display:"flex", flexDirection:"column", gap:4 }}>
                 <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>DATE</span>
@@ -5295,17 +5374,20 @@ const SETTINGS_TABS = [
   { t: "offboard",   l: "Off-boarding",      cat: "People",     icon: "👋" },
   { t: "recruitment",l: "Recruitment",       cat: "People",     icon: "🎯" },
   { t: "maternity",  l: "Maternity",         cat: "People",     icon: "🤱" },
+  { t: "unpaidLegal",l: "Unpaid Leave (Legal)",cat: "People",   icon: "⏸️" },
   { t: "scheduling", l: "Scheduling",        cat: "Operations", icon: "📅" },
   { t: "locations",  l: "Locations",         cat: "Operations", icon: "📍" },
   { t: "checkins",   l: "Daily Check-ins",   cat: "Operations", icon: "📲" },
   { t: "mgrclockins",l: "Mgr Clock-ins",     cat: "Operations", icon: "🕐" },
   { t: "leave",      l: "Leave Planner",     cat: "Operations", icon: "🌴" },
   { t: "storeOpenings", l: "Store Openings",  cat: "Operations", icon: "🔓" },
+  { t: "movements",  l: "Today's Movements", cat: "Operations", icon: "🔀" },
   { t: "attendance",     l: "Attendance / Payroll", cat: "Payroll", icon: "📕" },
   { t: "payrollProgress",l: "Payroll Progress",     cat: "Payroll", icon: "📊" },
   { t: "alerts",     l: "Alerts",            cat: "Insights",   icon: "🔔" },
   { t: "activity",   l: "Activity Log",      cat: "Insights",   icon: "📜" },
-  { t: "kioskPins",  l: "Kiosk PINs",        cat: "Admin",      icon: "🔑" }
+  { t: "kioskPins",   l: "Kiosk PINs",       cat: "Admin",      icon: "🔑" },
+  { t: "managerPins", l: "Manager PINs",     cat: "Admin",      icon: "🆔" }
 ];
 const SETTINGS_CATS = ["People", "Operations", "Payroll", "Insights", "Admin"];
 
@@ -5724,6 +5806,129 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   const [staff, setStaff] = useState([]);
   const [matRecs, setMatRecs] = useState([]);
+  // Unpaid legal-status leave records — same shape as matRecs but stored in
+  // app_state["boa_unpaid_legal_v1"] rather than the maternity table. People
+  // with status:"on_leave" get the `onUnpaidLegal` flag in `enriched`, which
+  // greys them out everywhere, pins them to the bottom of branch lists, and
+  // excludes them from active staff counts.
+  const [unpaidLegalRecs, setUnpaidLegalRecs] = useState([]);
+  const [unpaidLegalModal, setUnpaidLegalModal] = useState(null);
+  useEffect(() => {
+    if (!window.BOA_DB || !window.BOA_DB.loadUnpaidLegalRecords) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const recs = await window.BOA_DB.loadUnpaidLegalRecords();
+        if (!cancelled) setUnpaidLegalRecs(Array.isArray(recs) ? recs : []);
+      } catch (e) { console.error("loadUnpaidLegalRecords:", e); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  const saveUnpaidLegal = async (record) => {
+    const list = unpaidLegalRecs || [];
+    const isEdit = !!record._id;
+    const stamped = isEdit
+      ? { ...record }
+      : { ...record, _id: "ul_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7) };
+    const next = isEdit
+      ? list.map(r => r._id === stamped._id ? stamped : r)
+      : [...list, stamped];
+    try {
+      await window.BOA_DB.saveUnpaidLegalRecords(next);
+      setUnpaidLegalRecs(next);
+      setUnpaidLegalModal(null);
+      if (window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY(
+          isEdit ? "Updated unpaid-legal-leave record" : "Added unpaid-legal-leave record",
+          (stamped.name || "") + " · " + (stamped.ec || ""),
+          (stamped.branch || "") + " · " + (stamped.status || ""),
+          "Legal"
+        );
+      }
+    } catch (e) { alert("Could not save: " + (e.message || e)); }
+  };
+  const deleteUnpaidLegal = async (id) => {
+    const list = unpaidLegalRecs || [];
+    const rec = list.find(r => r._id === id);
+    const next = list.filter(r => r._id !== id);
+    try {
+      await window.BOA_DB.saveUnpaidLegalRecords(next);
+      setUnpaidLegalRecs(next);
+      if (rec && window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY("Deleted unpaid-legal-leave record", (rec.name || "") + " · " + (rec.ec || ""), rec.branch || "", "Legal");
+      }
+    } catch (e) { alert("Could not delete: " + (e.message || e)); }
+  };
+  // Tech day-loans — one-day cross-branch borrowing. Stored in
+  // app_state['boa_tech_loans_v1'] as an array. Both this portal and the
+  // kiosk read from there. Records: { _id, ec, name, date, fromBranch,
+  // toBranch, note, createdBy, createdAt }. Uniqueness on (ec, date) is
+  // enforced at save time by replacing any prior row for that pair.
+  const [techLoans, setTechLoans] = useState([]);
+  const [loanModal, setLoanModal] = useState(null); // null | { _id?, ec, fromBranch, toBranch, date, note }
+  const [movementsDate, setMovementsDate] = useState(() => new Date().toISOString().slice(0, 10));
+  useEffect(() => {
+    if (!window.BOA_DB || !window.BOA_DB.loadTechLoans) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const recs = await window.BOA_DB.loadTechLoans();
+        if (!cancelled) setTechLoans(Array.isArray(recs) ? recs : []);
+      } catch (e) { console.error("loadTechLoans:", e); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  const saveLoan = async (record) => {
+    if (!record || !record.ec || !record.date || !record.fromBranch || !record.toBranch) {
+      alert("Need tech, date, and a target branch."); return;
+    }
+    if (record.fromBranch === record.toBranch) {
+      alert("Pick a branch different from the tech's home branch."); return;
+    }
+    // Replace any existing loan for the same (ec, date)
+    const list = techLoans || [];
+    const filtered = list.filter(r => !(r && r.ec === record.ec && r.date === record.date));
+    const stamped = {
+      _id: record._id || ("ln_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7)),
+      ec: record.ec,
+      name: record.name || "",
+      date: record.date,
+      fromBranch: record.fromBranch,
+      toBranch: record.toBranch,
+      note: (record.note || "").toString().slice(0, 200),
+      createdBy: record.createdBy || (currentUser && currentUser.name) || "",
+      createdAt: record.createdAt || new Date().toISOString()
+    };
+    const next = [...filtered, stamped];
+    try {
+      await window.BOA_DB.saveTechLoans(next);
+      setTechLoans(next);
+      setLoanModal(null);
+      if (window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY(
+          "Logged tech day-loan",
+          (stamped.name || "") + " · " + stamped.ec,
+          stamped.fromBranch + " → " + stamped.toBranch + " · " + stamped.date,
+          "Movement"
+        );
+      }
+    } catch (e) { alert("Could not save: " + (e.message || e)); }
+  };
+  const cancelLoan = async (id) => {
+    const list = techLoans || [];
+    const rec = list.find(r => r._id === id);
+    if (!rec) return;
+    if (!window.confirm("Cancel " + (rec.name || rec.ec) + "'s loan from " + rec.fromBranch + " → " + rec.toBranch + "?")) return;
+    const next = list.filter(r => r._id !== id);
+    try {
+      await window.BOA_DB.saveTechLoans(next);
+      setTechLoans(next);
+      if (window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY("Cancelled tech day-loan", (rec.name || "") + " · " + rec.ec, rec.fromBranch + " → " + rec.toBranch + " · " + rec.date, "Movement");
+      }
+    } catch (e) { alert("Could not cancel: " + (e.message || e)); }
+  };
+
   const [tab, setTab] = useState("dashboard");
 
   // Custom-locations bootstrap. SALONS is a top-level const array which we
@@ -5789,6 +5994,44 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [kioskPinsLoaded, setKioskPinsLoaded] = useState(false);
   const [kioskPinReveal, setKioskPinReveal] = useState({}); // branchName -> bool
   const [kioskPinSaving, setKioskPinSaving] = useState(null); // branchName currently being saved
+
+  // Manager personal clock-in PINs (6-digit). State lives in mgrPins already
+  // (loaded as part of loadAll); these are just UI-side toggles for the
+  // admin tab.
+  const [mgrPinReveal, setMgrPinReveal] = useState({}); // ec -> bool
+  const [mgrPinSaving, setMgrPinSaving] = useState(null); // ec currently being saved
+  const [mgrPinFilterBranch, setMgrPinFilterBranch] = useState("all");
+  const resetMgrPin = async (manager) => {
+    if (!manager || !manager.ec) { alert("This manager has no EC — set one in their record first."); return; }
+    const proposed = window.prompt(`New 6-digit clock-in PIN for ${manager.name || manager.ec}:\n(Used in the check-in app to confirm their own attendance. Leave blank to clear.)`, mgrPins[manager.ec] || "");
+    if (proposed === null) return;
+    const trimmed = proposed.trim();
+    if (trimmed !== "" && !/^[0-9]{6}$/.test(trimmed)) { alert("PIN must be exactly 6 digits (or empty to clear)."); return; }
+    if (trimmed !== "" && Object.entries(mgrPins).some(([ec, p]) => ec !== manager.ec && p === trimmed)) {
+      if (!window.confirm("That PIN is already used by another manager. Use it anyway?")) return;
+    }
+    try {
+      setMgrPinSaving(manager.ec);
+      const next = { ...mgrPins };
+      if (trimmed === "") delete next[manager.ec];
+      else                next[manager.ec] = trimmed;
+      await window.BOA_DB.saveManagerPins(next);
+      setMgrPins(next);
+      setMgrPinReveal(r => ({ ...r, [manager.ec]: trimmed !== "" }));
+      if (window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY(
+          trimmed === "" ? "Cleared manager clock-in PIN" : "Reset manager clock-in PIN",
+          (manager.name || "") + " · " + manager.ec,
+          manager.branch || "",
+          "Admin"
+        );
+      }
+    } catch (e) {
+      alert("Could not save PIN: " + (e.message || e));
+    } finally {
+      setMgrPinSaving(null);
+    }
+  };
   useEffect(() => {
     if (!window.BOA_DB || !window.BOA_DB.loadKioskPins) return;
     if (tab !== "kioskPins" && kioskPinsLoaded) return;
@@ -6110,6 +6353,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // ── Onboarding / Off-boarding state ────────────────────────────────
   const [obList, setObList] = useState([]);           // joiner records
   const [offList, setOffList] = useState([]);         // leaver records
+  // Controlled value for the "Mark a staff member as off-boarded" StaffPicker;
+  // submitOff() now reads this state instead of an uncontrolled <select> DOM
+  // node so the searchable picker can drive it cleanly.
+  const [offEcInput, setOffEcInput] = useState("");
   const [obForm, setObForm] = useState({              // onboarding inline form
     name:"", ec:"", branch: SALONS[0].name, position:"Nail Tech",
     positionOther:"", startDate:"", notes:"", _editId: null
@@ -6187,6 +6434,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // row and silently hide every kiosk check-in for the current cycle.
   const [attYM,     setAttYM]     = useState(window.BOA_DB ? (window.BOA_DB.currentAttYm ? window.BOA_DB.currentAttYm() : window.BOA_DB.currentSchedYm()) : "2026-04");
   const [attGrid,   setAttGrid]   = useState({});      // per-staff per-day status codes
+  // Cross-branch attGrids loaded for receiving branches that have a tech-loan
+  // landing in the currently-viewed cycle. Map { branchName -> attGrid }.
+  // Used by getStatus to mirror the receiving branch's recorded status into
+  // the home branch's loan_out cell ('Esther was On Time at Bree today').
+  const [crossBranchAttGrids, setCrossBranchAttGrids] = useState({});
   // Snapshot of attGrid taken right before a check-in import — drives the
   // "Undo Check-in Import" button on the attendance toolbar. Null when there
   // is nothing to undo. Cleared when the branch or cycle changes so we never
@@ -6379,6 +6631,42 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     }).catch(e => console.error("Attendance load:", e))
       .finally(() => setAttLoading(false));
   }, [tab, attBranch, attYM]);
+
+  // Load attendance from every other branch we have a loan going out to
+  // during this cycle, so the home-branch cells can mirror what the
+  // receiving branches recorded. Re-runs when the viewed cycle, the
+  // current branch, or the techLoans list changes.
+  useEffect(() => {
+    if (tab !== "attendance") return;
+    if (!window.BOA_DB || !window.BOA_DB.loadAttendance) return;
+    const ymP = attYM.split("-").map(Number);
+    const cycStart = new Date(ymP[0], ymP[1]-1, 25);
+    const cycEnd   = new Date(ymP[0], ymP[1],   24);
+    const pp = z => String(z).padStart(2, "0");
+    const cycStartYmd = cycStart.getFullYear() + "-" + pp(cycStart.getMonth()+1) + "-" + pp(cycStart.getDate());
+    const cycEndYmd   = cycEnd.getFullYear()   + "-" + pp(cycEnd.getMonth()+1)   + "-" + pp(cycEnd.getDate());
+    const targets = new Set();
+    (techLoans || []).forEach(l => {
+      if (!l || !l.date) return;
+      if (l.fromBranch !== attBranch || !l.toBranch || l.toBranch === attBranch) return;
+      if (l.date < cycStartYmd || l.date > cycEndYmd) return;
+      targets.add(l.toBranch);
+    });
+    if (targets.size === 0) { setCrossBranchAttGrids({}); return; }
+    let cancelled = false;
+    Promise.all([...targets].map(async (br) => {
+      try {
+        const att = await window.BOA_DB.loadAttendance(br, attYM);
+        return [br, (att && att.grid) || {}];
+      } catch (_) { return [br, {}]; }
+    })).then(pairs => {
+      if (cancelled) return;
+      const next = {};
+      for (const [br, g] of pairs) next[br] = g;
+      setCrossBranchAttGrids(next);
+    });
+    return () => { cancelled = true; };
+  }, [tab, attBranch, attYM, techLoans]);
 
   // ── Dashboard: count staff scheduled to work today across all branches ──
   const [dashScheduledToday, setDashScheduledToday] = useState(null); // null = loading
@@ -6891,6 +7179,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     new Set(matRecs.filter(r=>r.matStatus==="pregnant").map(r=>r.ec.trim()))
   , [matRecs]);
 
+  // ECs currently on unpaid leave due to legal status → excluded from count,
+  // greyed out, pinned to the bottom of branch lists.
+  const onUnpaidLegalEcs = useMemo(() =>
+    new Set((unpaidLegalRecs || []).filter(r => r && r.status === "on_leave" && r.ec).map(r => r.ec.trim()))
+  , [unpaidLegalRecs]);
+
   // ECs that are off-boarded (any record in offList — current or future leftDate)
   const offboardedMap = useMemo(() => {
     const m = {};
@@ -6917,8 +7211,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       }
       return {
         ...s,
-        onMat:      onMatEcs.has(s.ec.trim()),     // excluded from count
-        pregnant:   pregnantEcs.has(s.ec.trim()),  // still in store
+        onMat:          onMatEcs.has(s.ec.trim()),          // excluded from count
+        pregnant:       pregnantEcs.has(s.ec.trim()),       // still in store
+        onUnpaidLegal:  onUnpaidLegalEcs.has(s.ec.trim()),  // excluded from count (legal-status leave)
+        unpaidLegalRec: (unpaidLegalRecs || []).find(r => r && r.ec && r.ec.trim() === s.ec.trim() && r.status === "on_leave") || null,
         offboarded: !!off,                         // on the off-boarding list — vacancy now open
         offRec:     off || null,
         // Off-boarding records live in `offList`, not on the staff
@@ -6933,7 +7229,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         matRec:     matRecs.find(r=>r.ec.trim()===s.ec.trim()),
       };
     });
-  }, [staff, onMatEcs, pregnantEcs, offboardedMap, matRecs]);
+  }, [staff, onMatEcs, pregnantEcs, onUnpaidLegalEcs, unpaidLegalRecs, offboardedMap, matRecs]);
 
   // Filtered & sorted staff list — always sort by EC (B-number then T-number).
   // Departed staff (leftDate has passed) are pinned to the bottom for the 31-day
@@ -6959,38 +7255,41 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }, [enriched, fShow, fBranch, fPermit, fContract, search]);
 
   const stats = useMemo(() => {
-    // "active" excludes maternity AND off-boarded — both reduce the active headcount.
-    const active = enriched.filter(s=>!s.onMat && !s.offboarded);
+    // "active" excludes maternity, unpaid-legal leave AND off-boarded — all
+    // three reduce the active headcount.
+    const active = enriched.filter(s=>!s.onMat && !s.onUnpaidLegal && !s.offboarded);
     const totalSeats = SALONS.reduce((a,s)=>a+s.capacity,0);
     const returning60 = matRecs.filter(r=>r.matStatus==="on_mat"&&r.returnDate&&daysDiff(r.returnDate)!==null&&daysDiff(r.returnDate)>=0&&daysDiff(r.returnDate)<=60).length;
     return {
       total:staff.length, active:active.length, onMat:onMatEcs.size,
       pregnant:pregnantEcs.size,
+      onUnpaidLegal:onUnpaidLegalEcs.size,
       zna:active.filter(s=>s.permit==="z_na").length,
       noContract:active.filter(s=>s.contract==="NO CONTRACT").length,
-      // Vacancies and understaffed both treat off-boarded staff as gone, so leavers
-      // immediately surface as open positions in the Recruitment tab.
-      vacancies:SALONS.reduce((a,sl)=>{ const g=sl.targetCapacity||sl.capacity; const act=enriched.filter(s=>s.branch===sl.name&&!s.onMat&&!s.offboarded).length; return a+Math.max(0,g-act); },0),
-      understaffed:SALONS.filter(sl=>enriched.filter(s=>s.branch===sl.name&&!s.onMat&&!s.offboarded).length<sl.capacity).length,
+      // Vacancies and understaffed treat off-boarded AND unpaid-legal staff as gone,
+      // so they immediately surface as open positions in the Recruitment tab.
+      vacancies:SALONS.reduce((a,sl)=>{ const g=sl.targetCapacity||sl.capacity; const act=enriched.filter(s=>s.branch===sl.name&&!s.onMat&&!s.onUnpaidLegal&&!s.offboarded).length; return a+Math.max(0,g-act); },0),
+      understaffed:SALONS.filter(sl=>enriched.filter(s=>s.branch===sl.name&&!s.onMat&&!s.onUnpaidLegal&&!s.offboarded).length<sl.capacity).length,
       returning60,
     };
-  }, [enriched, matRecs, onMatEcs, pregnantEcs, staff]);
+  }, [enriched, matRecs, onMatEcs, pregnantEcs, onUnpaidLegalEcs, staff]);
 
   // Locations
   const salonData = useMemo(() => SALONS.map(salon => {
     // .offHidden hides leavers older than 31 days post-leftDate from the cards.
     const all      = enriched.filter(s=>s.branch===salon.name && !s.offHidden).sort(ecSort);
-    // Off-boarded staff are visually present (greyed) but excluded from the
-    // active count and from urgency/fillRate — their seat is OPEN.
-    const active   = all.filter(s=>!s.onMat && !s.isShadow && !s.offboarded);
+    // Off-boarded + maternity + unpaid-legal staff are visually present (greyed) but
+    // excluded from the active count and from urgency/fillRate — their seat is OPEN.
+    const active   = all.filter(s=>!s.onMat && !s.onUnpaidLegal && !s.isShadow && !s.offboarded);
     const onMat    = all.filter(s=>s.onMat);
+    const onUnpaidLegal = all.filter(s=>s.onUnpaidLegal);    // greyed at the bottom
     const offboarded = all.filter(s=>s.offboarded);          // greyed in UI, only those within the 31-day window
     const arriving = all.filter(s=>s.isShadow);              // pending incoming transfers — shown but not counted
     // Use targetCapacity for low-demand stores (e.g. Betty), full capacity otherwise
     const goal = salon.targetCapacity || salon.capacity;
     const fillRate = active.length/goal;
     const urgency = active.length===0?"critical":fillRate<0.5?"high":fillRate<1?"low":"full";
-    return { ...salon, all, active, onMat, offboarded, arriving, urgency, goal };
+    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, urgency, goal };
   }), [enriched]);
 
   const uColor = { critical:"#dc2626", high:"#f97316", low:"#eab308", full:"#16a34a" };
@@ -7225,7 +7524,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t:"offboard",    l: offboardLbl },
                   { t:"staff",       l:"👥 Staff List"    },
                   { t:"recruitment", l:"🎯 Recruitment"   },
-                  { t:"maternity",   l: matLbl }
+                  { t:"maternity",   l: matLbl },
+                  { t:"unpaidLegal", l:"⏸️ Unpaid Leave (Legal)" }
                 ] },
               { key:"Operations", icon:"⚙️", title:"Operations",
                 color:{ bg:"#E0F2FE", bgActive:"#BAE6FD", ink:"#075985" },
@@ -7236,6 +7536,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t:"mgrclockins", l:"🕐 Mgr Clock-ins"  },
                   { t:"leave",       l:"🌴 Leave Planner"  },
                   { t:"storeOpenings", l:"🔓 Store Openings" },
+                  { t:"movements",     l:"🔀 Today's Movements" },
                   { t:"mgrPlanner",  l:"🧩 Manager Planner",
                     isActive: tab==="recruitment" && recruitSubTab==="mgrRecruit" && mgrSubTab==="planner",
                     onClick: () => { setRecruitSubTab("mgrRecruit"); setMgrSubTab("planner"); tryChangeTab("recruitment"); }
@@ -7264,7 +7565,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 key:"Admin", icon:"🛡️", title:"Admin",
                 color:{ bg:"#FEF3C7", bgActive:"#FDE68A", ink:"#92400e" },
                 items: [
-                  { t:"settings", l:"⚙️ Settings" }
+                  { t:"kioskPins",   l:"🔑 Kiosk PINs"   },
+                  { t:"managerPins", l:"🆔 Manager PINs" },
+                  { t:"settings",    l:"⚙️ Settings"     }
                 ]
               }] : [])
             ];
@@ -8038,12 +8341,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         </div>
                       )}
                       <div style={{ display:"flex", flexDirection:"column", gap:5, maxHeight:220, overflowY:"auto" }}>
-                        {/* Active + maternity — editable */}
-                        {[...salon.active, ...salon.onMat].sort(ecSort).map(m=>(
-                          <div key={m._id} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 10px", borderRadius:8, background:"#FFFFFF", border:"1px solid #FBCFE8" }}>
+                        {/* Active + maternity + legal-leave — editable */}
+                        {[...salon.active, ...salon.onMat, ...salon.onUnpaidLegal].sort(ecSort).map(m=>(
+                          <div key={m._id} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 10px", borderRadius:8, background:"#FFFFFF", border:"1px solid #FBCFE8", opacity: m.onUnpaidLegal ? 0.75 : 1 }}>
                             <span style={{ fontSize:9, color:"#9ca3af", fontFamily:"monospace", minWidth:36 }}>{m.ec}</span>
-                            <span style={{ flex:1, fontSize:12, fontWeight:600, color:m.onMat?"#7A4258":m.transferring?"#1d4ed8":"#111827" }}>
-                              {m.onMat?"🤱 ":m.pregnant?"🤰 ":m.transferring?"🔄 ":""}{m.name}
+                            <span style={{ flex:1, fontSize:12, fontWeight:600, color: m.onUnpaidLegal ? "#6b7280" : m.onMat?"#7A4258":m.transferring?"#1d4ed8":"#111827" }}>
+                              {m.onUnpaidLegal?"⏸ ":m.onMat?"🤱 ":m.pregnant?"🤰 ":m.transferring?"🔄 ":""}{m.name}
                               {m.transferring&&<span style={{ fontSize:9, marginLeft:4, color:"#BE185D", fontWeight:400 }}>→ {m.transferTo}</span>}
                             </span>
                             <button onClick={()=>{ setStaffModal(m); setManagePanel(null); }}
@@ -8152,6 +8455,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <span style={{ fontSize:9, color:"#d1d5db", fontFamily:"monospace", minWidth:34 }}>{m.ec}</span>
                           <span style={{ flex:1, fontSize:11, fontStyle:"italic", color:"#8E5570", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>🤱 {m.name}</span>
                           {dBack!==null && <span style={{ fontSize:10, color:"#8E5570", fontWeight:700, whiteSpace:"nowrap" }}>↩{dBack>0?`${dBack}d`:"today"}</span>}
+                        </div>
+                      );
+                    })}
+                    {/* Unpaid leave (legal status) — greyed out at the bottom of
+                        the active list, above off-boarded. Seat counted as
+                        vacancy. Warning chip appears when leave end is within
+                        7 days (or overdue): HR must check work documents on
+                        the last day. */}
+                    {salon.onUnpaidLegal.map(m=>{
+                      const ulr = m.unpaidLegalRec;
+                      const dEnd = ulr && ulr.endDate ? daysDiff(ulr.endDate) : null;
+                      const warn = dEnd !== null && dEnd <= 7;
+                      const endStr = ulr && ulr.endDate
+                        ? new Date(ulr.endDate + "T00:00:00").toLocaleDateString("en-ZA",{day:"2-digit",month:"short"})
+                        : "";
+                      const title = "Unpaid leave (legal status). "
+                        + (ulr && ulr.endDate ? "Leave ends " + endStr + ". " : "")
+                        + "HR: check work documents on the last day. If not received → hearing → terminate."
+                        + (ulr && ulr.notes ? "\n\n" + ulr.notes : "");
+                      return (
+                        <div key={m._id} title={title} style={{ display:"flex", alignItems:"center", gap:6, padding:"5px 7px", borderRadius:7, background: warn ? "#FEF3C7" : "#F3F4F6", border: warn ? "1px solid #fde68a" : "1px dashed #d1d5db", opacity:0.7 }}>
+                          <span style={{ fontSize:9, color:"#9ca3af", fontFamily:"monospace", minWidth:34 }}>{m.ec}</span>
+                          <span style={{ flex:1, fontSize:11, fontStyle:"italic", color:"#6b7280", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>⏸ {m.name}</span>
+                          <span style={{ fontSize:9, fontWeight:800, padding:"1px 6px", borderRadius:99, background: warn ? "#FDE68A" : "#E5E7EB", color: warn ? "#78350F" : "#374151", whiteSpace:"nowrap", letterSpacing:"0.04em" }}>LEGAL</span>
+                          {dEnd !== null && (
+                            <span style={{ fontSize:9, color: warn ? "#78350F" : "#6b7280", fontWeight:700, whiteSpace:"nowrap" }}>
+                              {dEnd > 0 ? "end " + endStr : dEnd === 0 ? "⚠ ends TODAY" : Math.abs(dEnd) + "d overdue"}
+                            </span>
+                          )}
                         </div>
                       );
                     })}
@@ -8359,20 +8691,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         })()}
 
         {/* ── MATERNITY TAB ── */}
-        {tab==="maternity" && (
+        {tab==="maternity" && (() => {
+          // Filter out off-boarded staff (leftDate today or earlier) so
+          // their maternity record disappears from this tracker the moment
+          // their last day passes. Records persist in Supabase for audit
+          // history - they're just hidden from the live tracker.
+          const _todayYmd = new Date().toISOString().slice(0, 10);
+          const _offByEc = new Map((offList || []).filter(o => o && o.ec).map(o => [o.ec, o]));
+          const _hasLeft = (ec) => {
+            const o = _offByEc.get(ec);
+            return !!(o && o.leftDate && o.leftDate <= _todayYmd);
+          };
+          const visibleMatRecs = matRecs.filter(r => r && r.ec && !_hasLeft(r.ec));
+          return (
           <>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
-              <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, color:"#8E5570" }}>Maternity Tracker · {matRecs.length} records</div>
+              <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, color:"#8E5570" }}>Maternity Tracker · {visibleMatRecs.length} records</div>
               <button onClick={()=>setMatModal({ ec:"", name:"", branch:"Sea Point", matStatus:"on_mat", matStart:"", matEnd:"", returnDate:"", notes:"" })}
                 style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:9, padding:"9px 18px", cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:13 }}>+ Add Record</button>
             </div>
 
             {/* Returning soon banner */}
-            {matRecs.filter(r=>r.matStatus==="on_mat"&&r.returnDate&&daysDiff(r.returnDate)!==null&&daysDiff(r.returnDate)>=0&&daysDiff(r.returnDate)<=60).length>0 && (
+            {visibleMatRecs.filter(r=>r.matStatus==="on_mat"&&r.returnDate&&daysDiff(r.returnDate)!==null&&daysDiff(r.returnDate)>=0&&daysDiff(r.returnDate)<=60).length>0 && (
               <div style={{ background:"#FBCFE8", border:"1px solid #6ee7b7", borderRadius:12, padding:"12px 18px", marginBottom:16 }}>
                 <div style={{ fontSize:11, fontWeight:800, color:"#8E5570", marginBottom:8, letterSpacing:"0.07em" }}>🔜 RETURNING WITHIN 60 DAYS — plan ahead</div>
                 <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
-                  {matRecs.filter(r=>r.matStatus==="on_mat"&&r.returnDate&&daysDiff(r.returnDate)>=0&&daysDiff(r.returnDate)<=60)
+                  {visibleMatRecs.filter(r=>r.matStatus==="on_mat"&&r.returnDate&&daysDiff(r.returnDate)>=0&&daysDiff(r.returnDate)<=60)
                     .sort((a,b)=>new Date(a.returnDate)-new Date(b.returnDate))
                     .map(r=>(
                       <div key={r._id} style={{ background:"#FFFFFF", borderRadius:10, padding:"8px 14px", border:"1px solid #6ee7b7", display:"flex", gap:10, alignItems:"center" }}>
@@ -8387,7 +8731,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
             {/* Group by status */}
             {["on_mat","pregnant","returned","sick_leave"].map(status=>{
-              const recs = matRecs.filter(r=>r.matStatus===status).sort(ecSort);
+              const recs = visibleMatRecs.filter(r=>r.matStatus===status).sort(ecSort);
               if (!recs.length) return null;
               const s = MAT_STATUS[status];
               const isExcluded = status==="on_mat";
@@ -8453,7 +8797,291 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               );
             })}
           </>
-        )}
+          );
+        })()}
+
+        {/* ── UNPAID LEAVE (LEGAL STATUS) TAB ── parallel to Maternity but
+            for staff away due to expired / missing work documents. Rows
+            with status:"on_leave" excluded from active count, greyed out
+            under Locations. Banner flags people whose endDate is in ≤7
+            days: HR must verify docs on the last day, otherwise schedule
+            a hearing and terminate. */}
+        {tab==="unpaidLegal" && (() => {
+          const STATUS_META = {
+            on_leave:   { label:"On Unpaid Leave",   icon:"⏸️", color:"#92400e", bg:"#fef3c7", border:"#fde68a" },
+            returned:   { label:"Documents Received — Back at Work", icon:"✅", color:"#166534", bg:"#dcfce7", border:"#86efac" },
+            terminated: { label:"Hearing Held — Contract Terminated", icon:"🛑", color:"#7f1d1d", bg:"#fee2e2", border:"#fecaca" }
+          };
+          const records = (unpaidLegalRecs || []);
+          const blankRec = { _id:null, ec:"", name:"", branch: (SALONS[0]?.name || "Sea Point"), status:"on_leave", startDate:"", endDate:"", hearingDate:"", terminated:false, notes:"" };
+          // Approaching-deadline banner (on_leave with endDate within 7 days
+          // or already past — covers both "check docs on last day" and
+          // "overdue — schedule hearing").
+          const flagged = records
+            .filter(r => r.status === "on_leave" && r.endDate)
+            .map(r => ({ ...r, _dEnd: daysDiff(r.endDate) }))
+            .filter(r => r._dEnd !== null && r._dEnd <= 7)
+            .sort((a, b) => a._dEnd - b._dEnd);
+
+          return (
+            <>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
+                <div>
+                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:"#92400e" }}>⏸️ Unpaid Leave (Legal Status) · {records.length} records</div>
+                  <div style={{ fontSize:12, color:"#78350f", marginTop:2 }}>Staff away because work documents have expired or are missing. Excluded from store counts. HR must verify docs on the last day or initiate a hearing.</div>
+                </div>
+                <button onClick={()=>setUnpaidLegalModal({ ...blankRec })}
+                  style={{ background:"#92400e", color:"#fff", border:"none", borderRadius:9, padding:"9px 18px", cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:13 }}
+                >+ Add Record</button>
+              </div>
+
+              {/* HR action banner */}
+              {flagged.length > 0 && (
+                <div style={{ background:"#FEF3C7", border:"1.5px solid #F59E0B", borderRadius:12, padding:"14px 18px", marginBottom:18 }}>
+                  <div style={{ fontSize:12, fontWeight:800, color:"#78350F", letterSpacing:"0.08em", textTransform:"uppercase", marginBottom:6 }}>⚠ HR action needed</div>
+                  <div style={{ fontSize:13, color:"#78350F", marginBottom:10, lineHeight:1.5 }}>
+                    Check work documents on the last day of leave. <b>If documents are not received, schedule a hearing and terminate the contract.</b>
+                  </div>
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
+                    {flagged.map(r => (
+                      <button key={r._id} onClick={()=>setUnpaidLegalModal({ ...r })}
+                        style={{ background:"#fff", border:"1px solid #FCD34D", borderRadius:10, padding:"8px 12px", display:"flex", gap:10, alignItems:"center", cursor:"pointer", fontFamily:"inherit" }}
+                        title="Open record">
+                        <span style={{ fontWeight:700, fontSize:13, color:"#111827" }}>{r.name || "(no name)"}</span>
+                        <span style={{ fontSize:11, color:"#92400e" }}>📍 {r.branch}</span>
+                        <span style={{ fontSize:12, fontWeight:800, color:"#7F1D1D" }}>
+                          {r._dEnd > 0 ? "ends " + fmt(r.endDate) + " · " + r._dEnd + "d" :
+                           r._dEnd === 0 ? "⚠ ENDS TODAY" :
+                           Math.abs(r._dEnd) + "d overdue"}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Grouped by status */}
+              {["on_leave","returned","terminated"].map(status => {
+                const recs = records.filter(r => r.status === status).sort(ecSort);
+                if (!recs.length) return null;
+                const meta = STATUS_META[status];
+                const isExcluded = status === "on_leave";
+                const isTerminated = status === "terminated";
+                return (
+                  <div key={status} style={{ marginBottom:26 }}>
+                    <div style={{ fontSize:11, fontWeight:800, color:meta.color, letterSpacing:"0.08em", marginBottom:10, textTransform:"uppercase", display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                      {meta.icon} {meta.label} — {recs.length} {recs.length===1?"person":"people"}
+                      {isExcluded && <span style={{ background:meta.bg, color:meta.color, borderRadius:20, padding:"2px 10px", fontSize:10, fontWeight:700 }}>EXCLUDED FROM STORE COUNT</span>}
+                      {isTerminated && <span style={{ background:meta.bg, color:meta.color, borderRadius:20, padding:"2px 10px", fontSize:10, fontWeight:700 }}>HISTORICAL · NO LONGER STAFF</span>}
+                    </div>
+                    <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(360px,1fr))", gap:10 }}>
+                      {recs.map(r => {
+                        const dEnd = r.endDate ? daysDiff(r.endDate) : null;
+                        const urgent = status === "on_leave" && dEnd !== null && dEnd <= 7;
+                        return (
+                          <div key={r._id} style={{ background:"#FFFFFF", borderRadius:14, border:`1.5px solid ${meta.border}`, padding:"16px 18px" }}>
+                            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10 }}>
+                              <div>
+                                <div style={{ fontWeight:700, fontSize:14, color:"#111827" }}>{r.name || <span style={{ color:"#9ca3af", fontStyle:"italic" }}>(no name)</span>}</div>
+                                <div style={{ fontSize:11, color:"#92400e", marginTop:2 }}>
+                                  <span style={{ fontFamily:"monospace", fontWeight:700 }}>{r.ec}</span> · 📍 {r.branch}
+                                </div>
+                              </div>
+                              <button onClick={()=>setUnpaidLegalModal({ ...r })} style={{ background:"#f3f4f6", border:"none", borderRadius:7, padding:"5px 11px", cursor:"pointer", fontSize:11, fontFamily:"inherit", fontWeight:700 }}>Edit</button>
+                            </div>
+                            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}>
+                              <div style={{ background:"#fafafa", borderRadius:8, padding:"8px 10px" }}>
+                                <div style={{ fontSize:9, fontWeight:700, color:"#92400e", letterSpacing:"0.07em", marginBottom:3 }}>LEAVE STARTED</div>
+                                <div style={{ fontSize:12, fontWeight:700, color:"#111827" }}>{fmt(r.startDate) || "—"}</div>
+                              </div>
+                              <div style={{ background: urgent ? "#FEF3C7" : "#fafafa", borderRadius:8, padding:"8px 10px" }}>
+                                <div style={{ fontSize:9, fontWeight:700, color:"#92400e", letterSpacing:"0.07em", marginBottom:3 }}>LEAVE ENDS</div>
+                                <div style={{ fontSize:13, fontWeight:800, color: urgent ? "#7F1D1D" : "#111827", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                                  <span>{fmt(r.endDate) || "—"}</span>
+                                  {dEnd !== null && (
+                                    <span style={{ fontSize:11, padding:"2px 8px", borderRadius:20, background: urgent ? "#FDE68A" : "#f3f4f6", color: urgent ? "#7F1D1D" : "#6b7280", fontWeight:700 }}>
+                                      {dEnd > 0 ? "in " + dEnd + "d" : dEnd === 0 ? "TODAY" : Math.abs(dEnd) + "d overdue"}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              {r.hearingDate && (
+                                <div style={{ background:"#FEE2E2", borderRadius:8, padding:"8px 10px", gridColumn:"1/-1" }}>
+                                  <div style={{ fontSize:9, fontWeight:700, color:"#7F1D1D", letterSpacing:"0.07em", marginBottom:3 }}>HEARING DATE</div>
+                                  <div style={{ fontSize:12, fontWeight:700, color:"#7F1D1D" }}>{fmt(r.hearingDate)}</div>
+                                </div>
+                              )}
+                            </div>
+                            {urgent && status === "on_leave" && (
+                              <div style={{ fontSize:11, color:"#7F1D1D", background:"#FEF3C7", borderRadius:7, padding:"7px 10px", lineHeight:1.5, marginBottom:8, fontWeight:600 }}>
+                                ⚠ HR: check work documents on the last day. If not received → schedule a hearing → terminate.
+                              </div>
+                            )}
+                            {r.notes && <div style={{ fontSize:11, color:"#92400e", background:"#fef9c3", borderRadius:7, padding:"6px 9px", lineHeight:1.5 }}>{r.notes}</div>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {records.length === 0 && (
+                <div style={{ background:"#fff", border:"1px dashed #fde68a", borderRadius:14, padding:"40px 20px", textAlign:"center", color:"#92400e", fontSize:13 }}>
+                  No unpaid-legal-leave records yet. Click <b>+ Add Record</b> to log one.
+                </div>
+              )}
+            </>
+          );
+        })()}
+
+        {/* ── UNPAID-LEGAL MODAL ── */}
+        {unpaidLegalModal && (() => {
+          const m = unpaidLegalModal;
+          const set = (k, v) => setUnpaidLegalModal({ ...m, [k]: v });
+          const isEdit = !!m._id;
+          // Staff picker — only meaningful when adding a new record. Excludes
+          // off-boarded staff and anyone already on legal-leave. Matched on
+          // name OR EC; up to 8 hits to keep the dropdown short.
+          const ecsOnLegalLeave = new Set((unpaidLegalRecs || []).filter(r => r && r.status === "on_leave" && r.ec).map(r => r.ec.trim()));
+          const staffPool = (enriched || [])
+            .filter(s => s && s.ec && !s.offboarded && !ecsOnLegalLeave.has(s.ec.trim()))
+            .sort(ecSort);
+          const searchTerm = (m._search || "").toLowerCase().trim();
+          const matches = !searchTerm ? [] : staffPool
+            .filter(s =>
+              (s.name || "").toLowerCase().includes(searchTerm) ||
+              (s.ec   || "").toLowerCase().includes(searchTerm)
+            )
+            .slice(0, 8);
+          return (
+            <div onClick={()=>setUnpaidLegalModal(null)} style={{ position:"fixed", inset:0, background:"rgba(17,24,39,0.55)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:120 }}>
+              <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:16, padding:"22px 26px", width:"min(520px, 92vw)", maxHeight:"90vh", overflowY:"auto", boxShadow:"0 10px 40px rgba(0,0,0,0.25)" }}>
+                <div style={{ fontFamily:"'Playfair Display',serif", fontSize:20, fontWeight:700, color:"#92400e", marginBottom:6 }}>⏸️ Unpaid leave (legal status)</div>
+                <div style={{ fontSize:11, color:"#6b7280", marginBottom:14 }}>Use this for staff who can't work because their permit / asylum / passport has expired or never been provided.</div>
+
+                {/* Staff picker — pick from the existing roster so EC, name
+                    and branch auto-fill. Anyone already on legal leave is
+                    excluded from the dropdown. Hidden when editing an
+                    existing record. */}
+                {!isEdit && (
+                  <div style={{ marginBottom:14, background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:10, padding:"10px 12px" }}>
+                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#78350F", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:6 }}>Pick from staff list</label>
+                    <input
+                      type="text"
+                      value={m._search || ""}
+                      onChange={e=>set("_search", e.target.value)}
+                      placeholder={`Search ${staffPool.length} staff by name or EC…`}
+                      autoFocus
+                      style={{ width:"100%", padding:"9px 11px", border:"1px solid #FDE68A", borderRadius:8, fontSize:14, fontFamily:"inherit" }}
+                    />
+                    {searchTerm && (
+                      <div style={{ marginTop:8, maxHeight:220, overflowY:"auto", border:"1px solid #FDE68A", borderRadius:8, background:"#fff" }}>
+                        {matches.length === 0 ? (
+                          <div style={{ padding:"10px 12px", fontSize:12, color:"#9ca3af", fontStyle:"italic" }}>No matches in active staff.</div>
+                        ) : matches.map(s => (
+                          <div key={s._id || s.ec}
+                            onClick={()=>setUnpaidLegalModal({ ...m, ec: s.ec, name: s.name, branch: s.branch || m.branch, _search: "" })}
+                            style={{ padding:"8px 12px", borderBottom:"1px solid #FEF3C7", cursor:"pointer", display:"flex", alignItems:"center", gap:10 }}
+                            onMouseEnter={e=>e.currentTarget.style.background="#FEF3C7"}
+                            onMouseLeave={e=>e.currentTarget.style.background="#fff"}
+                          >
+                            <span style={{ fontSize:11, fontFamily:"monospace", color:"#92400e", fontWeight:700, minWidth:42 }}>{s.ec}</span>
+                            <span style={{ flex:1, fontSize:13, color:"#111827", fontWeight:600 }}>{s.name}</span>
+                            <span style={{ fontSize:11, color:"#6b7280" }}>📍 {s.branch || "—"}</span>
+                            {s.onMat && <span style={{ fontSize:9, background:"#FBCFE8", color:"#831843", padding:"1px 6px", borderRadius:99, fontWeight:700 }}>🤱 ON MAT</span>}
+                            {s.pregnant && <span style={{ fontSize:9, background:"#FEF3C7", color:"#7c2d12", padding:"1px 6px", borderRadius:99, fontWeight:700 }}>🤰</span>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {m.ec && !searchTerm && (
+                      <div style={{ marginTop:8, padding:"8px 12px", background:"#FEF3C7", borderRadius:8, fontSize:12, color:"#78350F" }}>
+                        Selected: <b style={{ fontFamily:"monospace" }}>{m.ec}</b> · {m.name} · 📍 {m.branch}
+                        <button type="button" onClick={()=>setUnpaidLegalModal({ ...m, ec:"", name:"", _search:"" })}
+                          style={{ marginLeft:10, background:"transparent", border:"none", color:"#92400e", cursor:"pointer", fontWeight:700, fontSize:11, textDecoration:"underline" }}
+                        >clear</button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:10 }}>
+                  <div>
+                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>EC *</label>
+                    <input value={m.ec} onChange={e=>set("ec", e.target.value)} placeholder="e.g. B442" style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit" }} />
+                  </div>
+                  <div>
+                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Name *</label>
+                    <input value={m.name} onChange={e=>set("name", e.target.value)} placeholder="Full name" style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit" }} />
+                  </div>
+                </div>
+
+                <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Branch</label>
+                <select value={m.branch} onChange={e=>set("branch", e.target.value)} style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit", marginBottom:10 }}>
+                  {SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                </select>
+
+                <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:6 }}>Status</label>
+                <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:14 }}>
+                  {["on_leave","returned","terminated"].map(s => {
+                    const active = m.status === s;
+                    const label = s === "on_leave" ? "⏸️ On leave" : s === "returned" ? "✅ Returned" : "🛑 Terminated";
+                    const color = s === "on_leave" ? "#92400e" : s === "returned" ? "#166534" : "#7f1d1d";
+                    const bg    = s === "on_leave" ? "#fef3c7" : s === "returned" ? "#dcfce7" : "#fee2e2";
+                    return (
+                      <button key={s} type="button" onClick={()=>set("status", s)}
+                        style={{ background: active ? color : bg, color: active ? "#fff" : color, border:`1px solid ${color}`, borderRadius:8, padding:"7px 12px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                      >{label}</button>
+                    );
+                  })}
+                </div>
+
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:10 }}>
+                  <div>
+                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Leave started</label>
+                    <input type="date" value={m.startDate || ""} onChange={e=>set("startDate", e.target.value)} style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit" }} />
+                  </div>
+                  <div>
+                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Leave ends</label>
+                    <input type="date" value={m.endDate || ""} onChange={e=>set("endDate", e.target.value)} style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit" }} />
+                  </div>
+                </div>
+
+                {(m.status === "terminated" || m.status === "on_leave") && (
+                  <div style={{ marginBottom:10 }}>
+                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Hearing date (if needed)</label>
+                    <input type="date" value={m.hearingDate || ""} onChange={e=>set("hearingDate", e.target.value)} style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit" }} />
+                  </div>
+                )}
+
+                <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Notes</label>
+                <textarea rows={3} value={m.notes || ""} onChange={e=>set("notes", e.target.value)} placeholder="Document type, dates, hearing outcome…" style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:13, fontFamily:"inherit", marginBottom:14, resize:"vertical" }} />
+
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8 }}>
+                  {m._id ? (
+                    <button onClick={()=>{ if (window.confirm("Delete this record? This can't be undone.")) deleteUnpaidLegal(m._id); }}
+                      style={{ background:"#fff", color:"#b91c1c", border:"1px solid #fecaca", borderRadius:8, padding:"9px 14px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                    >Delete</button>
+                  ) : <span />}
+                  <div style={{ display:"flex", gap:8 }}>
+                    <button onClick={()=>setUnpaidLegalModal(null)}
+                      style={{ background:"#f3f4f6", color:"#374151", border:"none", borderRadius:8, padding:"9px 16px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                    >Cancel</button>
+                    <button onClick={()=>{
+                      if (!m.ec || !m.ec.trim()) { alert("EC is required."); return; }
+                      if (!m.name || !m.name.trim()) { alert("Name is required."); return; }
+                      const { _search, ...clean } = m;
+                      saveUnpaidLegal({ ...clean, ec: m.ec.trim(), name: m.name.trim() });
+                    }}
+                      style={{ background:"#92400e", color:"#fff", border:"none", borderRadius:8, padding:"9px 18px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                    >{m._id ? "Save changes" : "Add record"}</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* ── ALERTS TAB ── */}
         {tab==="alerts" && (()=>{
@@ -9177,7 +9805,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             catch (e) { alert("Could not save off-boarding: " + (e.message || e)); }
           };
           const submitOff = () => {
-            const ec = document.getElementById("_offEc").value;
+            const ec = offEcInput;
             const date = document.getElementById("_offDate").value;
             const reason = document.getElementById("_offReason").value;
             const notes = document.getElementById("_offNotes").value;
@@ -9192,7 +9820,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               (sRec.name || "") + " (" + sRec.ec + ")",
               "Last day " + date + (reason ? " · " + reason : "") + (sRec.branch ? " · " + sRec.branch : "")
             );
-            document.getElementById("_offEc").value = "";
+            setOffEcInput("");
             document.getElementById("_offDate").value = todayStr;
             document.getElementById("_offNotes").value = "";
           };
@@ -9278,11 +9906,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div style={{ fontSize:13, fontWeight:700, color:"#831843", marginBottom:10 }}>Mark a staff member as off-boarded</div>
                 <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))", gap:10, marginBottom:10 }}>
                   <div>
-                    <label style={{ fontSize:11, fontWeight:700, color:"#831843", letterSpacing:"0.05em" }}>STAFF MEMBER</label>
-                    <select id="_offEc" defaultValue="" style={{ width:"100%", marginTop:4, padding:"8px 10px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:13, fontFamily:"inherit", background:"#fff" }}>
-                      <option value="">— select —</option>
-                      {activeStaffOpts.map(s => <option key={s.ec} value={s.ec}>{s.name} ({s.ec}) · {s.branch || "—"}</option>)}
-                    </select>
+                    <label style={{ fontSize:11, fontWeight:700, color:"#831843", letterSpacing:"0.05em", display:"block", marginBottom:4 }}>STAFF MEMBER</label>
+                    <StaffPicker
+                      people={activeStaffOpts}
+                      valueEc={offEcInput}
+                      onChange={(ec) => setOffEcInput(ec)}
+                      placeholder="Search staff to off-board…"
+                      formatOption={(s) => s.name + " (" + s.ec + ") · " + (s.branch || "—")}
+                    />
                   </div>
                   <div>
                     <label style={{ fontSize:11, fontWeight:700, color:"#831843", letterSpacing:"0.05em" }}>LAST DAY WORKED</label>
@@ -9408,7 +10039,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             trial:  { lbl:"Trial Day",       bg:"#fde047", fg:"#713f12", cat:"work" },
             term:   { lbl:"TERMINATED",      bg:"#dc2626", fg:"#FFFFFF", cat:"none" },
             swap_o: { lbl:"Owes",            bg:"#cbd5e1", fg:"#dc2626", cat:"swap" },
-            swap_i: { lbl:"Owed",            bg:"#86efac", fg:"#14532d", cat:"swap" }
+            swap_i: { lbl:"Owed",            bg:"#86efac", fg:"#14532d", cat:"swap" },
+            // Tech-loan placeholder: shown only while the receiving branch
+            // hasn't recorded the loaned-out tech's status yet. Once they
+            // mark her On/Late/Sick/etc., getStatus mirrors that status into
+            // the home cell so payroll sees the real outcome.
+            loan_out: { lbl:"→ Loan",       bg:"#dbeafe", fg:"#1e40af", cat:"loan" }
           };
           const resolveStat = (v) => {
             if (!v) return null;
@@ -9471,10 +10107,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // remain auditable for payroll. People who left before this cycle
           // are excluded entirely.
           const cycStartYmd = cycStart.getFullYear() + "-" + p2(cycStart.getMonth()+1) + "-" + p2(cycStart.getDate());
+          const cycEndYmd   = cycEnd.getFullYear()   + "-" + p2(cycEnd.getMonth()+1)   + "-" + p2(cycEnd.getDate());
           const stillInCycle = (ec) => {
             const ld = offByEc[ec];
             return !ld || ld >= cycStartYmd;
           };
+
+          // Tech-loan integration for this cycle. outgoingLoanMap is keyed by
+          // home-branch ec → { day → toBranch }. The cell for that (ec, day)
+          // mirrors the status the receiving branch's kiosk recorded - so the
+          // home manager sees Esther's real workday status (e.g. 'On Time')
+          // even though she clocked in at Bree. The receiving branch doesn't
+          // see the guest at all - she's purely a home-branch payroll row.
+          const _loansInCycle = (techLoans || []).filter(l => l && l.date && l.date >= cycStartYmd && l.date <= cycEndYmd);
+          const outgoingLoanMap = {};
+          _loansInCycle.forEach(l => {
+            if (!l.ec) return;
+            const dy = days.find(x => x.ymd === l.date);
+            if (!dy) return;
+            if (l.fromBranch === attBranch && l.toBranch && l.toBranch !== attBranch) {
+              (outgoingLoanMap[l.ec] = outgoingLoanMap[l.ec] || {})[dy.d] = l.toBranch;
+            }
+          });
+
           const attStaff = [
             ...enriched.filter(s => s.branch === attBranch && stillInCycle(s.ec)).map(s => ({ ec:s.ec, name:s.name, role:"NT" })),
             ...managers.filter(m => m.branch === attBranch && stillInCycle(m.ec)).map(m => ({ ec:m.ec, name:m.name, role:m.role || "AM" }))
@@ -9491,6 +10146,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Helpers
           const mirrorSuppressed = !!(attMeta && attMeta.mirrorSuppressed);
           const getStatus = (ec, d) => {
+            // Tech-loan override: the home branch's loaned-out cell mirrors
+            // the status the receiving branch's kiosk recorded that day so
+            // payroll at home sees Esther's real workday (On Time / Late /
+            // Sick / etc.) even though she clocked in elsewhere. Falls back
+            // to the placeholder loan_out chip while the receiving branch
+            // hasn't marked it yet.
+            const toBranch = outgoingLoanMap[ec] && outgoingLoanMap[ec][d];
+            if (toBranch) {
+              const recvGrid = crossBranchAttGrids[toBranch];
+              const recvVal  = recvGrid && recvGrid[ec] && recvGrid[ec][d];
+              if (recvVal) return recvVal.indexOf("~") === 0 ? recvVal.slice(1) : recvVal;
+              return "loan_out";
+            }
+
             // Cross-tab rule: anyone on the off-board list shows TERMINATED
             // automatically from the day AFTER their leftDate, regardless of
             // what's in the attendance or schedule grid.
@@ -9516,6 +10185,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // displays in bold red rather than faded/italic.
             const dayObj = days.find(x => x.d === d);
             if (dayObj && isPostLeftDate(ec, dayObj.ymd)) return true;
+            // Loaned-out days are derived from the loan record (and possibly
+            // mirrored from the receiving branch) - render as a solid override
+            // so the cell isn't italicised like a schedule hint.
+            if (outgoingLoanMap[ec] && outgoingLoanMap[ec][d]) return true;
             const v = attGrid[ec] && attGrid[ec][d];
             return !!v && v.indexOf("~") !== 0;
           };
@@ -10372,6 +11045,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               else if (v === "swap_i") { t.worked++; if (phOk) t.ph++; }
               else if (v === "swap_o") t.off++;
               else if (v === "term")   { t.term++; t.unpaid++; }
+              // Pending loan-out placeholder: counts as worked for home-
+              // branch payroll. Once the receiving branch records a status
+              // the cell mirrors it and falls through one of the branches
+              // above, so this only fires while attendance is pending.
+              else if (v === "loan_out") { t.worked++; }
               else if (v && v.indexOf("deduct") === 0) {
                 let h = 0; if (v.indexOf(":") > 0) h = parseFloat(v.split(":")[1]) || 0;
                 t.unpaidHours += h;
@@ -10710,6 +11388,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const hint = schedHint(s.ec, dy.d);
                             const override = hasOverride(s.ec, dy.d);
                             let st = resolveStat(v) || { lbl:"", bg:"#FFFFFF", fg:"#9ca3af" };
+                            // Pending loan-day placeholder: receiving branch hasn't
+                            // recorded a status yet, so the cell still reads 'loan_out'.
+                            // Swap the static '→ Loan' label for '→ Bree' so the home
+                            // manager can see where she went at a glance. Once the
+                            // receiving manager marks her, getStatus returns the real
+                            // status (on/late/sick/...) and this branch never fires.
+                            if (v === "loan_out" && outgoingLoanMap[s.ec] && outgoingLoanMap[s.ec][dy.d]) {
+                              st = { ...st, lbl: "→ " + outgoingLoanMap[s.ec][dy.d] };
+                            }
                             const isWk = dy.dow === 0 || dy.dow === 6;
                             const deviation = override && hint && hint !== v;
                             const isHol = !!(holidayLookup && holidayLookup[dy.ymd]);
@@ -10850,6 +11537,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               (hint ? " — schedule: " + ((STAT[hint] || {}).lbl || "—") : "") +
                               (deviation ? " (deviation)" : "") +
                               (!override ? " (mirrored from schedule)" : "") +
+                              ((outgoingLoanMap[s.ec] && outgoingLoanMap[s.ec][dy.d])
+                                ? "\n🔀 Loaned out — working at " + outgoingLoanMap[s.ec][dy.d] + " today" + (v === "loan_out" ? " (receiving branch hasn't recorded a status yet)" : " · status recorded by " + outgoingLoanMap[s.ec][dy.d] + "'s kiosk")
+                                : "") +
                               (bareV === "swap_o" ? "\n💡 Owes — tech took today off because she worked on her off day on a previous date for a colleague. Counts as off." : "") +
                               (bareV === "swap_i" ? "\n💡 Owed — tech came in today because she took off on a previous day when a colleague filled in for her." : "") +
                               (isFutureSwap ? "\n(Future swap — placeholder only; fill in the actual status on the day.)" : "") +
@@ -10989,7 +11679,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                     return null;
                                   })()}
                                   {v && (
-                                    <div style={{ position:"absolute", top:6, bottom: s.role === "NT" ? 6 : 0, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle: (override && !isFutureSwap) ? "normal" : "italic", fontWeight: (override && !isFutureSwap) ? 700 : 400, color: isFutureSwap ? "#9ca3af" : (override ? st.fg : (hintFg + "70")), pointerEvents:"none", letterSpacing:"0.02em" }}>{st.lbl || hintLbl || ""}</div>
+                                    <div style={{ position:"absolute", top:6, bottom: s.role === "NT" ? 6 : 0, left:0, right:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:1, fontSize:9, fontStyle: (override && !isFutureSwap) ? "normal" : "italic", fontWeight: (override && !isFutureSwap) ? 700 : 400, color: isFutureSwap ? "#9ca3af" : (override ? st.fg : (hintFg + "70")), pointerEvents:"none", letterSpacing:"0.02em" }}>
+                                      <span>{st.lbl || hintLbl || ""}</span>
+                                      {/* Loan-day badge — only renders when a real status was
+                                          mirrored from the receiving branch (i.e. v !== loan_out,
+                                          which already shows '→ Bree' as the main label). */}
+                                      {(outgoingLoanMap[s.ec] && outgoingLoanMap[s.ec][dy.d] && v !== "loan_out") && (
+                                        <span style={{ fontSize:7, fontWeight:700, color:"#1e40af", letterSpacing:"0.06em", opacity:0.85 }}>→ {outgoingLoanMap[s.ec][dy.d]}</span>
+                                      )}
+                                    </div>
                                   )}
                                   {!v && showKioskReason && (
                                     <div style={{ position:"absolute", top:6, bottom: s.role === "NT" ? 6 : 0, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle:"italic", fontWeight:600, color: kStat.fg || "#9ca3af", pointerEvents:"none", letterSpacing:"0.02em" }}>{kStat.lbl}</div>
@@ -11117,9 +11815,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const isTechMode = leaveSubTab === "techs";
           const peopleType = isTechMode ? "nail tech" : "manager";
           const peopleTypePlural = isTechMode ? "nail techs" : "managers";
+          // Off-boarded people (leftDate in the past) should not appear in
+          // the leave planner. Techs come from `enriched` which already
+          // tracks `offDaysSinceLeft`; managers come from `managers` so
+          // cross-reference with offList directly.
+          const _todayYmd = new Date().toISOString().slice(0, 10);
+          const offByEc = new Map((offList || []).filter(o => o && o.ec).map(o => [o.ec, o]));
+          const _hasLeft = (ec) => {
+            const o = offByEc.get(ec);
+            return !!(o && o.leftDate && o.leftDate <= _todayYmd);
+          };
           const ROLE_GUARD = isTechMode
-            ? (s) => /^[BT]/.test(s.ec) && !s.offHidden
-            : (m) => m.role === "SM" || m.role === "AM";
+            ? (s) => /^[BT]/.test(s.ec) && !s.offHidden && !(s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft > 0)
+            : (m) => (m.role === "SM" || m.role === "AM") && !_hasLeft(m.ec);
           // Active people of the chosen type at this branch — exclude maternity / off-boarded / wrong role
           const sourceArr = isTechMode ? enriched : managers;
           const peopleAtBranch = (sourceArr || [])
@@ -11151,13 +11859,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             for (let d = 25; d <= lastPrev; d++) {
               const dt = new Date(prevY, prevM-1, d);
               const iso = prevY + "-" + String(prevM).padStart(2,"0") + "-" + String(d).padStart(2,"0");
-              allDays.push({ d, m: prevM, y: prevY, iso, dow: dt.getDay(), peak: (prevM >= 10 || prevM <= 4) });
+              allDays.push({ d, m: prevM, y: prevY, iso, dow: dt.getDay(), peak: (prevM >= 10 || prevM <= 3) });
             }
             // Second half of cycle: 1st → 24th of named month.
             for (let d = 1; d <= 24; d++) {
               const dt = new Date(y, m-1, d);
               const iso = y + "-" + String(m).padStart(2,"0") + "-" + String(d).padStart(2,"0");
-              allDays.push({ d, m, y, iso, dow: dt.getDay(), peak: (m >= 10 || m <= 4) });
+              allDays.push({ d, m, y, iso, dow: dt.getDay(), peak: (m >= 10 || m <= 3) });
             }
             // Cycle header: peak flag based on the cycle's named month (it
             // owns more days — 24 vs 6/7 — so it's the dominant influence).
@@ -11165,7 +11873,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               m, y,
               start,
               len: allDays.length - start,
-              peak: (m >= 10 || m <= 4),
+              peak: (m >= 10 || m <= 3),
               label: MN[prevM-1] + " 25 – " + MN[m-1] + " 24, " + y
             });
           }
@@ -11199,15 +11907,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const stBr = stf.branch;
             const stPeople = (isTechMode ? enriched : managers).filter(p => p.branch === stBr && !p.onMat && ROLE_GUARD(p));
             const stMx = Math.max(1, Math.floor(stPeople.length * 0.2));
-            // Peak season check (Oct-Apr)
+            // Peak season check (1 Oct – 31 Mar). Annual leave is allowed
+            // 1 Apr → 30 Sep; blocked the rest of the year except for
+            // emergency leave with proof.
             const sd = new Date(f.startDate), ed = new Date(f.endDate);
             let peakDays = 0;
             for (let d = new Date(sd); d <= ed; d.setDate(d.getDate()+1)) {
               const mo = d.getMonth() + 1;
-              if (mo >= 10 || mo <= 4) peakDays++;
+              if (mo >= 10 || mo <= 3) peakDays++;
             }
             if (peakDays > 0 && !f.emergency) {
-              alert("Cannot add: " + peakDays + " day(s) fall in peak season (October–April). Annual leave is blocked during peak season except for emergency leave with proof. Tick \"Emergency leave\" and add a reason.");
+              alert("Cannot add: " + peakDays + " day(s) fall in peak season (1 October – 31 March). Annual leave is blocked during peak season except for emergency leave with proof. Tick \"Emergency leave\" and add a reason.");
               return;
             }
             if (f.emergency && !f.emergencyNote.trim()) {
@@ -11301,7 +12011,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             <div>
               <div style={{ marginBottom:14 }}>
                 <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>🌴 Leave Planner</div>
-                <div style={{ fontSize:12, color:"#F472B6" }}>Plan annual leave per store. 20% per-day cap enforced. Peak season (Oct–Apr) blocked except for emergency leave with proof.</div>
+                <div style={{ fontSize:12, color:"#F472B6" }}>Plan annual leave per store. 20% per-day cap enforced. Peak season (1 Oct – 31 Mar) blocked except for emergency leave with proof.</div>
               </div>
 
               {/* Sub-tab pill bar */}
@@ -11340,7 +12050,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ background:"#fef3c7", border:"1px solid #fcd34d", borderRadius:11, padding:"10px 14px", marginBottom:14, fontSize:12, color:"#78350f", display:"flex", gap:10, alignItems:"flex-start" }}>
                 <span style={{ fontSize:16 }}>⚠️</span>
                 <div>
-                  <strong>Peak Season Block: October – April</strong>. No annual leave permitted during these months — it's the salon's busiest period. Only emergency leave with proof is allowed during peak season — tick the Emergency box and add a reason / proof description.
+                  <strong>Peak Season Block: 1 October – 31 March</strong>. No annual leave permitted during these months — it's the salon's busiest period. Annual leave is open from 1 April → 30 September. Only emergency leave with proof is allowed during peak season — tick the Emergency box and add a reason / proof description.
                 </div>
               </div>
 
@@ -11349,10 +12059,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div style={{ display:"grid", gridTemplateColumns:"1.5fr 1fr 1fr auto", gap:8, marginBottom:10, alignItems:"flex-end" }}>
                   <div>
                     <label style={{ fontSize:10, color:"#F472B6", fontWeight:700 }}>{isTechMode ? "NAIL TECH" : "MANAGER"}</label>
-                    <select value={f.ec} onChange={e=>setLeaveForm({...f, ec:e.target.value})} style={{ width:"100%", padding:"6px 9px", borderRadius:6, border:"1px solid " + Y, fontFamily:"inherit", fontSize:12, background:aA }}>
-                      <option value="">— select —</option>
-                      {peopleAllBranches.map(z => <option key={z.ec} value={z.ec}>{z.ec} · {z.name} ({z.branch}{z.role && !isTechMode ? " · " + z.role : ""})</option>)}
-                    </select>
+                    <StaffPicker
+                      people={peopleAllBranches}
+                      valueEc={f.ec}
+                      onChange={(ec) => setLeaveForm({ ...f, ec })}
+                      placeholder={"Search " + (isTechMode ? "nail techs" : "managers") + " by name or EC…"}
+                      formatOption={(z) => z.ec + " · " + z.name + " (" + z.branch + (z.role && !isTechMode ? " · " + z.role : "") + ")"}
+                    />
                   </div>
                   <div>
                     <label style={{ fontSize:10, color:"#F472B6", fontWeight:700 }}>FROM</label>
@@ -11586,6 +12299,259 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
               <div style={{ marginTop:14, fontSize:11, color:"#831843", opacity:0.7 }}>
                 Reads <code>boa_store_open_&lt;branch&gt;_&lt;YYYY-MM-DD&gt;</code> rows from <code>app_state</code> — the kiosk writes one of these every time a manager taps "open the store". Date picker defaults to today; switch to view past days.
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ── TODAY'S MOVEMENTS TAB ── one-day cross-branch loans, sourced
+            from app_state['boa_tech_loans_v1']. Date picker lets HR scroll
+            past days too. Read by the kiosk so a loaned tech can clock in
+            at the receiving branch and is blocked at the home branch. */}
+        {tab==="movements" && (() => {
+          const date = movementsDate;
+          const loansToday = (techLoans || [])
+            .filter(l => l && l.date === date)
+            .sort((a, b) => (a.fromBranch || "").localeCompare(b.fromBranch || "") || (a.name || "").localeCompare(b.name || ""));
+          const branchesInvolved = new Set();
+          loansToday.forEach(l => { branchesInvolved.add(l.fromBranch); branchesInvolved.add(l.toBranch); });
+
+          const incoming = SALONS
+            .map(s => ({ branch: s.name, region: s.region, loans: loansToday.filter(l => l.toBranch === s.name) }))
+            .filter(g => g.loans.length > 0);
+
+          const isToday = date === new Date().toISOString().slice(0, 10);
+          const dateLabel = (() => {
+            try {
+              const d = new Date(date + "T00:00:00");
+              return d.toLocaleDateString("en-ZA", { weekday: "long", day: "2-digit", month: "long", year: "numeric" });
+            } catch (_) { return date; }
+          })();
+          const fmtTime = (iso) => {
+            if (!iso) return "";
+            try { return new Date(iso).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; }
+          };
+
+          return (
+            <>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
+                <div>
+                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:"#831843" }}>🔀 Today's Movements</div>
+                  <div style={{ fontSize:12, color:"#6b7280", marginTop:2 }}>
+                    {loansToday.length === 0
+                      ? "No staff moved on this date."
+                      : loansToday.length + " tech" + (loansToday.length === 1 ? "" : "s") + " moved across " + branchesInvolved.size + " branch" + (branchesInvolved.size === 1 ? "" : "es")}
+                    {" · " + dateLabel}
+                  </div>
+                </div>
+                <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap" }}>
+                  {/* Prev / next day arrows for quick navigation, plus a
+                      'Today' chip that's always visible and highlights when
+                      the picker IS on today. The native date input still
+                      handles arbitrary date jumps. Date math uses Date.UTC
+                      so SA's UTC+2 offset doesn't make the arrows skip days
+                      (the old `new Date('YYYY-MM-DD' + 'T00:00:00')` parsed
+                      as local time then toISOString shifted it backwards). */}
+                  <button
+                    onClick={()=>{
+                      const [yy, mm, dd] = date.split("-").map(Number);
+                      const dt = new Date(Date.UTC(yy, mm - 1, dd));
+                      dt.setUTCDate(dt.getUTCDate() - 1);
+                      const p = n => String(n).padStart(2, "0");
+                      setMovementsDate(dt.getUTCFullYear() + "-" + p(dt.getUTCMonth() + 1) + "-" + p(dt.getUTCDate()));
+                    }}
+                    title="Previous day"
+                    style={{ background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, padding:"7px 11px", cursor:"pointer", fontSize:14, fontWeight:700, lineHeight:1 }}
+                  >‹</button>
+                  <input
+                    type="date"
+                    value={date}
+                    onChange={e=>setMovementsDate(e.target.value)}
+                    style={{ padding:"7px 10px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:13, fontFamily:"inherit" }}
+                  />
+                  <button
+                    onClick={()=>{
+                      const [yy, mm, dd] = date.split("-").map(Number);
+                      const dt = new Date(Date.UTC(yy, mm - 1, dd));
+                      dt.setUTCDate(dt.getUTCDate() + 1);
+                      const p = n => String(n).padStart(2, "0");
+                      setMovementsDate(dt.getUTCFullYear() + "-" + p(dt.getUTCMonth() + 1) + "-" + p(dt.getUTCDate()));
+                    }}
+                    title="Next day"
+                    style={{ background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, padding:"7px 11px", cursor:"pointer", fontSize:14, fontWeight:700, lineHeight:1 }}
+                  >›</button>
+                  <button
+                    onClick={()=>setMovementsDate(new Date().toISOString().slice(0, 10))}
+                    disabled={isToday}
+                    title={isToday ? "Already viewing today" : "Jump back to today"}
+                    style={{ background: isToday ? "#FCE7F3" : "#fff", color:"#831843", border:"1px solid " + (isToday ? "#FBCFE8" : "#FBCFE8"), borderRadius:8, padding:"7px 12px", cursor: isToday ? "default" : "pointer", fontSize:12, fontWeight:700, opacity: isToday ? 0.6 : 1, marginLeft:4 }}
+                  >Today</button>
+                  <button onClick={()=>setLoanModal({ _id: null, ec: "", name: "", fromBranch: "", toBranch: "", date: isToday ? date : new Date().toISOString().slice(0, 10), note: "" })}
+                    style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:8, padding:"9px 16px", cursor:"pointer", fontSize:12, fontWeight:700, letterSpacing:"0.04em", marginLeft:4 }}>
+                    + Log a borrow
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ background:"#FCE7F3", border:"1px solid #FBCFE8", borderRadius:10, padding:"10px 14px", fontSize:12, color:"#831843", marginBottom:14, lineHeight:1.5 }}>
+                <b>How loans work:</b> Pick a tech, the branch they're working at today, and an optional note.
+                The kiosk at the receiving branch lets them clock in for the day; their home kiosk blocks them.
+                Hours stay attributed to their home branch. Cancel a loan if it didn't happen.
+              </div>
+
+              {loansToday.length === 0 ? (
+                <div style={{ background:"#fff", border:"1px dashed #FBCFE8", borderRadius:14, padding:"40px 20px", textAlign:"center", color:"#831843", fontSize:13 }}>
+                  No staff moved on this date.
+                  {isToday && <div style={{ fontSize:12, color:"#9ca3af", marginTop:6 }}>Click <b>+ Log a borrow</b> when someone is working at a different branch today.</div>}
+                </div>
+              ) : (
+                <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                  {incoming.map(g => {
+                    const r = REGIONS.find(x => x.key === g.region);
+                    return (
+                      <div key={g.branch} style={{ background:"#fff", border:"1px solid #FBCFE8", borderRadius:14, overflow:"hidden" }}>
+                        <div style={{ background:"#FCE7F3", padding:"10px 16px", display:"flex", alignItems:"center", gap:8, fontFamily:"'Playfair Display',serif", fontSize:16, fontWeight:700, color:"#831843" }}>
+                          ← Working at <span style={{ color:"#BE185D" }}>{g.branch}</span>
+                          {r && <span style={{ background:r.bg, color:r.color, fontSize:10, fontWeight:800, padding:"2px 8px", borderRadius:999, letterSpacing:"0.06em" }}>{r.short.toUpperCase()}</span>}
+                          <span style={{ marginLeft:"auto", fontSize:11, fontWeight:600, color:"#BE185D" }}>{g.loans.length} {g.loans.length === 1 ? "guest" : "guests"}</span>
+                        </div>
+                        <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+                          <thead>
+                            <tr style={{ background:"#fff", color:"#831843", fontWeight:700, fontSize:11, letterSpacing:"0.06em", textTransform:"uppercase" }}>
+                              <th style={{ textAlign:"left", padding:"8px 14px", borderTop:"1px solid #FBCFE8" }}>Tech</th>
+                              <th style={{ textAlign:"left", padding:"8px 14px", borderTop:"1px solid #FBCFE8" }}>From</th>
+                              <th style={{ textAlign:"left", padding:"8px 14px", borderTop:"1px solid #FBCFE8" }}>Logged by</th>
+                              <th style={{ textAlign:"left", padding:"8px 14px", borderTop:"1px solid #FBCFE8" }}>Note</th>
+                              <th style={{ textAlign:"right", padding:"8px 14px", borderTop:"1px solid #FBCFE8" }}>Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {g.loans.map(l => (
+                              <tr key={l._id} style={{ borderTop:"1px solid #FCE7F3" }}>
+                                <td style={{ padding:"9px 14px" }}>
+                                  <span style={{ fontFamily:"monospace", color:"#9ca3af", fontSize:11, marginRight:8 }}>{l.ec}</span>
+                                  <span style={{ fontWeight:600, color:"#111827" }}>{l.name || "(no name)"}</span>
+                                </td>
+                                <td style={{ padding:"9px 14px", color:"#374151" }}>📍 {l.fromBranch}</td>
+                                <td style={{ padding:"9px 14px", color:"#6b7280", fontSize:12 }}>
+                                  {l.createdBy || "—"}{l.createdAt ? <span style={{ marginLeft:6, color:"#9ca3af" }}>{fmtTime(l.createdAt)}</span> : null}
+                                </td>
+                                <td style={{ padding:"9px 14px", color:"#6b7280", fontSize:12, maxWidth:240, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={l.note || ""}>{l.note || "—"}</td>
+                                <td style={{ padding:"9px 14px", textAlign:"right", whiteSpace:"nowrap" }}>
+                                  <button onClick={()=>setLoanModal({ ...l })}
+                                    style={{ background:"#f3f4f6", color:"#374151", border:"none", borderRadius:7, padding:"6px 11px", cursor:"pointer", fontSize:11, fontWeight:700, marginRight:6 }}
+                                  >Edit</button>
+                                  <button onClick={()=>cancelLoan(l._id)}
+                                    style={{ background:"#fff", color:"#b91c1c", border:"1px solid #fecaca", borderRadius:7, padding:"6px 11px", cursor:"pointer", fontSize:11, fontWeight:700 }}
+                                  >Cancel loan</button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          );
+        })()}
+
+        {/* ── LOAN MODAL ── pick tech + receiving branch + optional note */}
+        {loanModal && (() => {
+          const m = loanModal;
+          const set = (k, v) => setLoanModal({ ...m, [k]: v });
+          // Eligible pool: active, on-site staff. Exclude maternity,
+          // unpaid-legal, and anyone already off-boarded with a past leftDate.
+          const todayPool = (enriched || []).filter(s =>
+            s && s.ec && /^[BT]/.test(s.ec) &&
+            !s.onMat && !s.onUnpaidLegal &&
+            !(s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft > 0)
+          );
+          const selected = m.ec ? todayPool.find(p => p.ec === m.ec) : null;
+          // When a tech is picked, fromBranch is locked to their home.
+          const fromBranch = selected ? (selected.branch || "") : (m.fromBranch || "");
+          // toBranch options: every other branch.
+          const toOptions = SALONS.filter(s => s.name !== fromBranch);
+          // Already-on-leave check for the chosen date.
+          const onLeaveBlocker = (() => {
+            if (!m.ec || !m.date) return null;
+            const lv = (leaveRecs || []).find(L => L && L.ec === m.ec && m.date >= L.startDate && m.date <= L.endDate);
+            return lv || null;
+          })();
+          const existingForDay = m.ec && m.date
+            ? (techLoans || []).find(l => l && l.ec === m.ec && l.date === m.date && l._id !== m._id)
+            : null;
+          return (
+            <div onClick={()=>setLoanModal(null)} style={{ position:"fixed", inset:0, background:"rgba(17,24,39,0.55)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:120 }}>
+              <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:16, padding:"22px 26px", width:"min(540px, 92vw)", maxHeight:"90vh", overflowY:"auto", boxShadow:"0 10px 40px rgba(0,0,0,0.25)" }}>
+                <div style={{ fontFamily:"'Playfair Display',serif", fontSize:20, fontWeight:700, color:"#831843", marginBottom:6 }}>🔀 Loan a tech for the day</div>
+                <div style={{ fontSize:11, color:"#6b7280", marginBottom:14 }}>Records a one-day move. Receiving branch's kiosk will let them clock in; home kiosk will block them.</div>
+
+                <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Nail tech *</label>
+                <div style={{ marginBottom:12 }}>
+                  <StaffPicker
+                    people={todayPool}
+                    valueEc={m.ec}
+                    onChange={(ec) => {
+                      const p = todayPool.find(x => x.ec === ec);
+                      setLoanModal({ ...m, ec, name: (p && p.name) || "", fromBranch: (p && p.branch) || "" });
+                    }}
+                    placeholder="Search by name or EC…"
+                  />
+                </div>
+
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:12 }}>
+                  <div>
+                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>From (home)</label>
+                    <input type="text" readOnly value={fromBranch || "—"} style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit", background:"#f9fafb", color:"#374151" }} />
+                  </div>
+                  <div>
+                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Working at *</label>
+                    <select value={m.toBranch || ""} onChange={e=>set("toBranch", e.target.value)} disabled={!m.ec}
+                      style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit", background: m.ec ? "#fff" : "#f3f4f6" }}>
+                      <option value="">— pick branch —</option>
+                      {toOptions.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Date</label>
+                <input type="date" value={m.date || ""} onChange={e=>set("date", e.target.value)} style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit", marginBottom:12 }} />
+
+                <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Note (optional)</label>
+                <textarea rows={2} value={m.note || ""} onChange={e=>set("note", e.target.value)} placeholder='e.g. "Cover for Brita who is sick"' style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:13, fontFamily:"inherit", marginBottom:12, resize:"vertical" }} />
+
+                {/* Inline warnings */}
+                {onLeaveBlocker && (
+                  <div style={{ background:"#fef2f2", border:"1px solid #fecaca", borderRadius:8, padding:"9px 12px", fontSize:12, color:"#7f1d1d", marginBottom:10 }}>
+                    ⚠ This tech is on leave on {m.date} ({onLeaveBlocker.startDate} → {onLeaveBlocker.endDate}). Cancel their leave first or pick another day.
+                  </div>
+                )}
+                {existingForDay && (
+                  <div style={{ background:"#fef3c7", border:"1px solid #fde68a", borderRadius:8, padding:"9px 12px", fontSize:12, color:"#78350f", marginBottom:10 }}>
+                    Heads-up: there's already a loan for {selected ? selected.name : m.ec} on this date ({existingForDay.fromBranch} → {existingForDay.toBranch}). Saving will replace it.
+                  </div>
+                )}
+
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8 }}>
+                  {m._id ? (
+                    <button onClick={()=>{ if (window.confirm("Cancel this loan?")) { cancelLoan(m._id); setLoanModal(null); } }}
+                      style={{ background:"#fff", color:"#b91c1c", border:"1px solid #fecaca", borderRadius:8, padding:"9px 14px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                    >Cancel loan</button>
+                  ) : <span />}
+                  <div style={{ display:"flex", gap:8 }}>
+                    <button onClick={()=>setLoanModal(null)}
+                      style={{ background:"#f3f4f6", color:"#374151", border:"none", borderRadius:8, padding:"9px 16px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                    >Close</button>
+                    <button
+                      disabled={!m.ec || !m.toBranch || !m.date || !!onLeaveBlocker || fromBranch === m.toBranch}
+                      onClick={()=>saveLoan({ ...m, fromBranch })}
+                      style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:8, padding:"9px 18px", cursor:"pointer", fontSize:12, fontWeight:700, opacity: (!m.ec || !m.toBranch || !m.date || !!onLeaveBlocker || fromBranch === m.toBranch) ? 0.5 : 1 }}
+                    >{m._id ? "Save changes" : "Log borrow"}</button>
+                  </div>
+                </div>
               </div>
             </div>
           );
@@ -12461,11 +13427,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <div style={{ fontSize:11, color:"#9ca3af", marginBottom:14 }}>For {branch} · {cycleLabel}</div>
 
                     <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#831843", letterSpacing:"0.04em", marginBottom:4 }}>MANAGER</label>
-                    <select value={mgrReqModal.ec}
-                            onChange={(e) => setMgrReqModal({ ...mgrReqModal, ec: e.target.value })}
-                            style={{ width:"100%", padding:"9px 11px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, background:"#fff", marginBottom:12 }}>
-                      {sortedMgrs.map(m => <option key={m.ec} value={m.ec}>{m.name} ({m.role})</option>)}
-                    </select>
+                    <div style={{ marginBottom:12 }}>
+                      <StaffPicker
+                        people={sortedMgrs}
+                        valueEc={mgrReqModal.ec}
+                        onChange={(ec) => setMgrReqModal({ ...mgrReqModal, ec })}
+                        placeholder="Search managers…"
+                        formatOption={(m) => m.name + " (" + m.role + ")"}
+                      />
+                    </div>
 
                     <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#831843", letterSpacing:"0.04em", marginBottom:4 }}>DATE</label>
                     <input type="date" value={mgrReqModal.date}
@@ -12782,6 +13752,129 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </tbody>
                 </table>
               </div>
+            </>
+          );
+        })()}
+
+        {/* ── MANAGER PINS (ADMIN) ── 6-digit clock-in PINs each manager
+            types into the check-in app to confirm their own attendance.
+            Stored in app_state["boa_mgr_pins_v1"]; this view lets admins
+            see who has a PIN set and reset / clear it without diving into
+            the per-branch Manage panel on the Locations tab. */}
+        {tab==="managerPins" && (() => {
+          const PINK = { ink:"#831843", accent:"#BE185D", soft:"#FBCFE8", softer:"#FCE7F3" };
+          const activeMgrs = (managers || []).filter(m => !m.transferring || m.transferring); // include everyone with a record
+          const filtered = mgrPinFilterBranch === "all"
+            ? activeMgrs
+            : activeMgrs.filter(m => (m.branch || "") === mgrPinFilterBranch);
+          // Group by branch so the table reads naturally.
+          const byBranch = SALONS.map(s => ({
+            branch: s.name,
+            region: s.region,
+            mgrs: filtered.filter(m => m.branch === s.name)
+          })).filter(g => g.mgrs.length > 0);
+          const unassigned = filtered.filter(m => !SALONS.some(s => s.name === m.branch));
+          if (unassigned.length > 0) byBranch.push({ branch: "Unassigned", region: null, mgrs: unassigned });
+          const withPin = activeMgrs.filter(m => mgrPins[m.ec]).length;
+          return (
+            <>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
+                <div>
+                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:PINK.ink }}>🆔 Manager PINs</div>
+                  <div style={{ fontSize:12, color:"#6b7280", marginTop:2 }}>6-digit clock-in PINs each manager uses in the check-in app to confirm their own attendance.</div>
+                </div>
+                <div style={{ fontSize:11, color:"#9ca3af" }}>{withPin} / {activeMgrs.length} have a PIN set</div>
+              </div>
+
+              <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:14 }}>
+                <button onClick={()=>setMgrPinFilterBranch("all")}
+                  style={{ background: mgrPinFilterBranch==="all" ? PINK.accent : PINK.softer, color: mgrPinFilterBranch==="all" ? "#fff" : PINK.ink, border:`1px solid ${PINK.soft}`, borderRadius:999, padding:"6px 14px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                >All branches ({activeMgrs.length})</button>
+                {SALONS.filter(s => activeMgrs.some(m => m.branch === s.name)).map(s => {
+                  const c = activeMgrs.filter(m => m.branch === s.name).length;
+                  const active = mgrPinFilterBranch === s.name;
+                  return (
+                    <button key={s.name} onClick={()=>setMgrPinFilterBranch(s.name)}
+                      style={{ background: active ? PINK.accent : "#fff", color: active ? "#fff" : PINK.ink, border:`1px solid ${PINK.soft}`, borderRadius:999, padding:"6px 14px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                    >{s.name} ({c})</button>
+                  );
+                })}
+              </div>
+
+              <div style={{ background:"#fef9c3", border:"1px solid #fde68a", borderRadius:10, padding:"10px 14px", fontSize:12, color:"#78350f", marginBottom:14 }}>
+                <b>Where this PIN is used:</b> Manager opens the kiosk → Clock-in tab → types this 6-digit code to confirm arrival/departure. Different from the 4-digit Kiosk PIN that unlocks the manager dashboard itself.
+              </div>
+
+              {byBranch.length === 0 ? (
+                <div style={{ background:"#FFFFFF", border:`1px dashed ${PINK.soft}`, borderRadius:14, padding:"30px 20px", textAlign:"center", color:"#9F1A4F", fontSize:13 }}>
+                  No managers match this filter.
+                </div>
+              ) : (
+                <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                  {byBranch.map(g => {
+                    const r = g.region && REGIONS ? REGIONS.find(x => x.key === g.region) : null;
+                    return (
+                      <div key={g.branch} style={{ background:"#fff", border:`1px solid ${PINK.soft}`, borderRadius:14, overflow:"hidden" }}>
+                        <div style={{ background:PINK.softer, padding:"10px 16px", display:"flex", alignItems:"center", gap:8, fontFamily:"'Playfair Display',serif", fontSize:16, fontWeight:700, color:PINK.ink }}>
+                          📍 {g.branch}
+                          {r && <span style={{ background:r.bg, color:r.color, fontSize:10, fontWeight:800, padding:"2px 8px", borderRadius:999, letterSpacing:"0.06em" }}>{r.short.toUpperCase()}</span>}
+                          <span style={{ marginLeft:"auto", fontSize:11, fontWeight:600, color:PINK.accent }}>{g.mgrs.length} manager{g.mgrs.length===1?"":"s"}</span>
+                        </div>
+                        <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+                          <thead>
+                            <tr style={{ background:"#fff", color:PINK.ink, fontWeight:700, fontSize:11, letterSpacing:"0.06em", textTransform:"uppercase" }}>
+                              <th style={{ textAlign:"left", padding:"8px 14px", borderTop:`1px solid ${PINK.soft}` }}>Manager</th>
+                              <th style={{ textAlign:"left", padding:"8px 14px", borderTop:`1px solid ${PINK.soft}` }}>EC</th>
+                              <th style={{ textAlign:"left", padding:"8px 14px", borderTop:`1px solid ${PINK.soft}` }}>Role</th>
+                              <th style={{ textAlign:"left", padding:"8px 14px", borderTop:`1px solid ${PINK.soft}` }}>PIN</th>
+                              <th style={{ textAlign:"left", padding:"8px 14px", borderTop:`1px solid ${PINK.soft}` }}>Status</th>
+                              <th style={{ textAlign:"right", padding:"8px 14px", borderTop:`1px solid ${PINK.soft}` }}>Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {g.mgrs.map(m => {
+                              const pin    = mgrPins[m.ec] || "";
+                              const hasPin = !!pin;
+                              const reveal = !!mgrPinReveal[m.ec];
+                              const saving = mgrPinSaving === m.ec;
+                              return (
+                                <tr key={m._id || m.ec} style={{ borderTop:`1px solid ${PINK.soft}` }}>
+                                  <td style={{ padding:"9px 14px", fontWeight:600, color:"#111827" }}>{m.name || <span style={{ color:"#9ca3af", fontStyle:"italic" }}>(no name)</span>}</td>
+                                  <td style={{ padding:"9px 14px", color:"#374151", fontFamily:"'Outfit',monospace", fontSize:12 }}>{m.ec || "—"}</td>
+                                  <td style={{ padding:"9px 14px", color:"#6b7280", fontSize:12 }}>{m.role || "Manager"}</td>
+                                  <td style={{ padding:"9px 14px", fontFamily:"'Outfit',monospace", fontSize:15, fontWeight:700, color:hasPin ? "#111827" : "#9ca3af", letterSpacing:"0.18em" }}>
+                                    {hasPin ? (reveal ? pin : "••••••") : <span style={{ fontSize:11, fontStyle:"italic", color:"#9ca3af", letterSpacing:0 }}>not set</span>}
+                                  </td>
+                                  <td style={{ padding:"9px 14px" }}>
+                                    {hasPin
+                                      ? <span style={{ background:"#dcfce7", color:"#166534", fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:999 }}>PIN set</span>
+                                      : <span style={{ background:"#fef3c7", color:"#7c2d12", fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:999 }}>No PIN</span>}
+                                  </td>
+                                  <td style={{ padding:"9px 14px", textAlign:"right", whiteSpace:"nowrap" }}>
+                                    {hasPin && (
+                                      <button onClick={()=>setMgrPinReveal(prev => ({ ...prev, [m.ec]: !prev[m.ec] }))}
+                                        style={{ background:"#f3f4f6", color:"#374151", border:"none", borderRadius:7, padding:"6px 11px", cursor:"pointer", fontSize:11, fontWeight:700, marginRight:6 }}
+                                      >{reveal ? "Hide" : "Reveal"}</button>
+                                    )}
+                                    {hasPin && reveal && (
+                                      <button onClick={()=>{ try { navigator.clipboard.writeText(pin); } catch (_e) {} }}
+                                        style={{ background:"#f3f4f6", color:"#374151", border:"none", borderRadius:7, padding:"6px 11px", cursor:"pointer", fontSize:11, fontWeight:700, marginRight:6 }}
+                                      >Copy</button>
+                                    )}
+                                    <button onClick={()=>resetMgrPin(m)} disabled={saving || !m.ec}
+                                      style={{ background:PINK.accent, color:"#fff", border:"none", borderRadius:7, padding:"6px 12px", cursor:"pointer", fontSize:11, fontWeight:700, opacity:(saving || !m.ec)?0.6:1 }}
+                                    >{saving ? "Saving…" : (hasPin ? "Reset" : "Set PIN")}</button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </>
           );
         })()}
