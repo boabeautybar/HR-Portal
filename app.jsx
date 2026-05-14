@@ -1813,11 +1813,21 @@ function Meter({ current, capacity, goal, lowDemand }) {
 }
 
 // ─── MATERNITY MODAL ─────────────────────────────────────────────────────────────
-function MatModal({ rec, onClose, onSave, onDelete }) {
+function MatModal({ rec, onClose, onSave, onDelete, people }) {
   const [f, setF] = useState({ ...rec });
+  const [search, setSearch] = useState("");
   const set = (k,v) => setF(p=>({...p,[k]:v}));
   const inp = { width:"100%", padding:"8px 11px", borderRadius:8, border:"1px solid #FBCFE8", background:"#FCE7F3", fontFamily:"inherit", fontSize:13, boxSizing:"border-box" };
   const lbl = { display:"block", fontSize:10, fontWeight:700, color:"#BE185D", letterSpacing:"0.08em", marginBottom:4, textTransform:"uppercase" };
+  const isNew = !rec._id;
+  // Lookup pool for new records: techs + managers. Match by name OR EC, up
+  // to 10 results. Picking auto-fills EC, name and branch so the record
+  // links back to the existing staff row cleanly.
+  const pool = (people || []).filter(p => p && p.ec);
+  const q = (search || "").trim().toLowerCase();
+  const matches = !q ? [] : pool
+    .filter(p => (p.name || "").toLowerCase().includes(q) || (p.ec || "").toLowerCase().includes(q))
+    .slice(0, 10);
   return (
     <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.55)", zIndex:300, display:"flex", alignItems:"center", justifyContent:"center", padding:16 }}
       onClick={e=>e.target===e.currentTarget&&onClose()}>
@@ -1830,8 +1840,52 @@ function MatModal({ rec, onClose, onSave, onDelete }) {
         {/* Status explanation */}
         <div style={{ background:"#FCE7F3", border:"1px solid #fde68a", borderRadius:10, padding:"10px 14px", marginBottom:16, fontSize:12, color:"#831843", lineHeight:1.5 }}>
           <strong>🤰 Pregnant</strong> = still working in the store, counts toward staffing.<br/>
-          <strong>🤱 On Maternity Leave</strong> = not in the store, <em>excluded</em> from the store's active count.
+          <strong>🤱 On Maternity Leave</strong> = not in the store, <em>excluded</em> from the store's active count + the schedule (marked ML).
         </div>
+
+        {/* Staff lookup — only on new records. Searches techs + managers
+            and auto-fills EC / name / branch so the record links back to
+            the staff row. Manual fields below stay editable. */}
+        {isNew && (
+          <div style={{ background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:10, padding:"12px 14px", marginBottom:14 }}>
+            <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#78350F", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:6 }}>Pick from existing staff</label>
+            <input
+              type="text"
+              autoFocus
+              value={search}
+              onChange={e=>setSearch(e.target.value)}
+              placeholder={"Search " + pool.length + " people by name or EC…"}
+              style={{ width:"100%", padding:"9px 11px", border:"1px solid #FDE68A", borderRadius:8, fontSize:14, fontFamily:"inherit", boxSizing:"border-box" }}
+            />
+            {q && (
+              <div style={{ marginTop:8, maxHeight:220, overflowY:"auto", border:"1px solid #FDE68A", borderRadius:8, background:"#fff" }}>
+                {matches.length === 0 ? (
+                  <div style={{ padding:"10px 12px", fontSize:12, color:"#9ca3af", fontStyle:"italic" }}>No matches.</div>
+                ) : matches.map(p => (
+                  <div key={(p.ec || "") + "_" + (p.role || "tech")}
+                    onClick={()=>{ setF({ ...f, ec: p.ec, name: p.name || "", branch: p.branch || (SALONS[0] && SALONS[0].name) || "" }); setSearch(""); }}
+                    style={{ padding:"8px 12px", borderBottom:"1px solid #FEF3C7", cursor:"pointer", display:"flex", alignItems:"center", gap:10 }}
+                    onMouseEnter={e=>e.currentTarget.style.background="#FEF3C7"}
+                    onMouseLeave={e=>e.currentTarget.style.background="#fff"}
+                  >
+                    <span style={{ fontSize:11, fontFamily:"monospace", color:"#92400e", fontWeight:700, minWidth:42 }}>{p.ec}</span>
+                    <span style={{ flex:1, fontSize:13, color:"#111827", fontWeight:600 }}>{p.name}</span>
+                    <span style={{ fontSize:11, color:"#6b7280" }}>📍 {p.branch || "—"}</span>
+                    <span style={{ fontSize:9, fontWeight:700, padding:"1px 6px", borderRadius:99, background:p.role==="NT"?"#FCE7F3":"#ede9fe", color:p.role==="NT"?"#831843":"#7c3aed" }}>{p.role==="NT" ? "Tech" : (p.role || "Mgr")}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {f.ec && !q && (
+              <div style={{ marginTop:8, padding:"8px 12px", background:"#FEF3C7", borderRadius:8, fontSize:12, color:"#78350F" }}>
+                Selected: <b style={{ fontFamily:"monospace" }}>{f.ec}</b> · {f.name} · 📍 {f.branch}
+                <button type="button" onClick={()=>{ setF({ ...f, ec:"", name:"", branch: (SALONS[0] && SALONS[0].name) || "" }); }}
+                  style={{ marginLeft:10, background:"transparent", border:"none", color:"#92400e", cursor:"pointer", fontWeight:700, fontSize:11, textDecoration:"underline" }}
+                >clear</button>
+              </div>
+            )}
+          </div>
+        )}
 
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:13 }}>
           <div><label style={lbl}>EC Code</label><input style={inp} value={f.ec} onChange={e=>set("ec",e.target.value)} placeholder="e.g. B585" /></div>
@@ -7358,6 +7412,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       return (a.name || "").localeCompare(b.name || "");
     });
   }, [managers, fShow, fBranch, fPermit, fContract, search]);
+
+  // Pool for the Maternity modal lookup: every active tech + every manager,
+  // minus anyone who already has a maternity record (no double-up). Role
+  // tag drives the chip in the picker results.
+  const matPickerPool = useMemo(() => {
+    const seenEcs = new Set((matRecs || []).map(r => r && r.ec).filter(Boolean));
+    const techs = (enriched || [])
+      .filter(s => s && s.ec && !s.offHidden && !(s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft > 0))
+      .filter(s => !seenEcs.has(s.ec))
+      .map(s => ({ ec: s.ec, name: s.name, branch: s.branch, role: "NT" }));
+    const mgrs = (managers || [])
+      .filter(m => m && m.ec)
+      .filter(m => !seenEcs.has(m.ec))
+      .map(m => ({ ec: m.ec, name: m.name, branch: m.branch, role: m.role || "AM" }));
+    return [...mgrs, ...techs].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  }, [enriched, managers, matRecs]);
 
   const stats = useMemo(() => {
     // "active" excludes maternity, unpaid-legal leave AND off-boarded — all
@@ -13431,11 +13501,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const ds = Math.floor((nowMs - Date.parse(o.startDate + "T00:00:00")) / 86400000);
               return { ec: o.ec || ("_OBM_" + (o._id || Math.random()).toString().slice(-6)), name: o.name, branch: o.branch, role: o.position, _onboarding: true, _startDate: o.startDate, _futureStart: fs, _recentlyStarted: !fs && ds >= 0 && ds <= 14 };
             });
-          // Annotate managers with leftDate from offList for ghost overlay
-          const mgrsWithOff = managers.map(m => {
-            const off = (offList || []).find(o => o.ec === m.ec);
-            return off ? { ...m, leftDate: off.leftDate, offRec: off } : m;
-          });
+          // Annotate managers with leftDate (offboarding ghost overlay) AND
+          // onMat from the maternity records, then exclude anyone currently
+          // on maternity from the manager-schedule generator — they're
+          // already away and shouldn't get shifts. Returned managers stay
+          // on the roster as normal.
+          const _onMatEcs = new Set((matRecs || []).filter(r => r && r.matStatus === "on_mat" && r.ec).map(r => r.ec));
+          const mgrsWithOff = managers
+            .filter(m => !_onMatEcs.has(m.ec))
+            .map(m => {
+              const off = (offList || []).find(o => o.ec === m.ec);
+              return off ? { ...m, leftDate: off.leftDate, offRec: off } : m;
+            });
           const allMgrs = [...mgrsWithOff, ...obMgrs];
           const mgrLeaves = (leaveRecs || []).filter(L => allMgrs.some(m => m.ec === L.ec));
 
@@ -15216,7 +15293,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       {staffModal && <StaffModal s={staffModal} onClose={()=>setStaffModal(null)} onSave={saveStaff} onTransfer={(s)=>setTransferModal(s)} allStaff={staff} isOwner={!!currentUser?.isOwner} onHardDelete={hardDeleteStaff} />}
       {mgrModal && <ManagerModal m={mgrModal} pin={mgrPins[mgrModal.ec] || ""} onClose={()=>setMgrModal(null)} onSave={saveMgr} onDelete={delMgr} />}
       {transferModal && <TransferModal s={transferModal} onClose={()=>setTransferModal(null)} onConfirm={handleTransfer} onCancelTransfer={cancelTransfer} />}
-      {matModal && <MatModal rec={matModal} onClose={()=>setMatModal(null)} onSave={saveMat} onDelete={delMat} />}
+      {matModal && <MatModal rec={matModal} onClose={()=>setMatModal(null)} onSave={saveMat} onDelete={delMat} people={matPickerPool} />}
     </div>
   );
 }
