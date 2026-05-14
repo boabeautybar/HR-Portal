@@ -2296,8 +2296,12 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
             <input type="date" style={inp} value={f.startDate||""} onChange={e=>set("startDate",e.target.value||null)} />
           </div>
           <div><label style={lbl}>Contract</label>
-            <select style={inp} value={f.contract} onChange={e=>set("contract",e.target.value)}>
-              <option>Permanent</option><option>Fixed Term</option><option>3 Month</option>
+            <select style={inp} value={f.contract || ""} onChange={e=>set("contract",e.target.value)}>
+              <option value="">— Not set —</option>
+              <option>Permanent</option>
+              <option>Fixed Term</option>
+              <option>3 Month</option>
+              <option value="NO CONTRACT">NO CONTRACT</option>
             </select>
           </div>
           <div style={{ gridColumn:"1/-1" }}>
