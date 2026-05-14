@@ -6588,6 +6588,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }, [dashScope, _hasStoreScope, _customSalonsTick, _myStores.join("|")]);
   const inScope = (name) => scopedSalonNames.has(name);
 
+  // Compact scope toggle reused on the Dashboard, both Check-ins tabs and
+  // Store Openings. Renders nothing if the user has no store scope, so the
+  // call site can just drop it in unconditionally.
+  const renderScopeBar = (style) => {
+    if (!_hasStoreScope) return null;
+    const otherCount = SALONS.length - _myStores.length;
+    const opts = [
+      { v: "mine",  l: "🏬 My stores",    sub: _myStores.length + " store" + (_myStores.length === 1 ? "" : "s") },
+      { v: "other", l: "🤝 Other stores", sub: otherCount + " peer store" + (otherCount === 1 ? "" : "s") },
+      { v: "all",   l: "🌐 All",          sub: SALONS.length + " stores" }
+    ];
+    return (
+      <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:14, padding:"10px 14px", display:"flex", alignItems:"center", flexWrap:"wrap", gap:8, ...(style || {}) }}>
+        <div style={{ fontSize:11, fontWeight:800, color:"#831843", letterSpacing:"0.08em", textTransform:"uppercase", marginRight:4 }}>Viewing</div>
+        {opts.map(o => {
+          const on = dashScope === o.v;
+          return (
+            <button key={o.v} onClick={() => setDashScope(o.v)}
+              style={{ padding:"6px 11px", borderRadius:9, border: on ? "1px solid #BE185D" : "1px solid #FBCFE8", background: on ? "#BE185D" : "#fff", color: on ? "#fff" : "#831843", cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"flex-start", lineHeight:1.15 }}>
+              <span>{o.l}</span>
+              <span style={{ fontSize:9, fontWeight:600, opacity: on ? 0.85 : 0.6 }}>{o.sub}</span>
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
+
   // Modal state for the "+ Add location" form on the Locations tab.
   // Region filter for the Locations tab — "all" or one of the REGIONS keys.
   const [locFilterRegion, setLocFilterRegion] = useState("all");
@@ -7288,6 +7316,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // ── Dashboard: count staff scheduled to work today across all branches ──
   const [dashScheduledToday, setDashScheduledToday] = useState(null); // null = loading
   const [dashByBranch, setDashByBranch] = useState({});
+  // Today's per-branch list of manager EC codes scheduled to work. The
+  // dashboard "managers not checked in" tile cross-references this against
+  // today's manager clockin rows.
+  const [dashSchedMgrsByBranch, setDashSchedMgrsByBranch] = useState({});
+  const [dashTodayMgrClockinEcs, setDashTodayMgrClockinEcs] = useState(null); // null = loading, Set<ec> once loaded
   useEffect(() => {
     if (tab !== "dashboard") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
@@ -7314,6 +7347,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const mgrGrid  = (mgr  && mgr.grid)  || {};
       const isWorking = (v) => v === "W" || v === "WL" || v === "E";
       let count = 0;
+      const mgrsScheduled = [];
       for (const ec in techGrid) {
         const v = techGrid[ec][todayDay];
         if (isWorking(v)) count++;
@@ -7321,17 +7355,40 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       for (const ec in mgrGrid) {
         // manager grid is keyed by YMD strings (mgrSched line 141)
         const v = mgrGrid[ec][ymd] || mgrGrid[ec][todayDay];
-        if (isWorking(v)) count++;
+        if (isWorking(v)) { count++; mgrsScheduled.push(ec); }
       }
-      return [sl.name, count];
-    })).then(pairs => {
+      return [sl.name, count, mgrsScheduled];
+    })).then(triples => {
       if (cancelled) return;
       const map = {};
+      const mgrMap = {};
       let total = 0;
-      for (const [name, c] of pairs) { map[name] = c; total += c; }
+      for (const [name, c, mgrs] of triples) { map[name] = c; mgrMap[name] = mgrs; total += c; }
       setDashByBranch(map);
+      setDashSchedMgrsByBranch(mgrMap);
       setDashScheduledToday(total);
     });
+    // Today's manager clockins — used by the "managers not checked in" tile.
+    // Stored as a Set of EC codes that have at least one IN event today.
+    setDashTodayMgrClockinEcs(null);
+    if (window.BOA_DB.listRecentManagerClockins) {
+      window.BOA_DB.listRecentManagerClockins(1).then(rows => {
+        if (cancelled) return;
+        const set = new Set();
+        const todayY = today.getFullYear(), todayM = today.getMonth(), todayD = today.getDate();
+        (rows || []).forEach(r => {
+          if (!r || !r.ts) return;
+          const t = new Date(r.ts);
+          if (t.getFullYear() === todayY && t.getMonth() === todayM && t.getDate() === todayD) {
+            const ec = (r.staff && r.staff.employee_code) || r.ec;
+            if (ec) set.add(ec);
+          }
+        });
+        setDashTodayMgrClockinEcs(set);
+      }).catch(() => { if (!cancelled) setDashTodayMgrClockinEcs(new Set()); });
+    } else {
+      setDashTodayMgrClockinEcs(new Set());
+    }
     return () => { cancelled = true; };
   }, [tab, staff, managers]);
 
@@ -8525,6 +8582,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             .filter(s => s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft >= 0 && s.offDaysSinceLeft <= 7 && scopedBranchSet.has(s.branch))
             .sort((a, b) => (a.offDaysSinceLeft ?? 0) - (b.offDaysSinceLeft ?? 0));
 
+          // Managers scheduled today vs managers who actually clocked in. The
+          // gap surfaces who hasn't hit the check-in app yet — useful for the
+          // dashboard at-a-glance and especially for ROMs covering branches.
+          let mgrSchedToday = 0;
+          let mgrMissing = [];
+          if (dashTodayMgrClockinEcs) {
+            for (const branchName in dashSchedMgrsByBranch) {
+              if (_hasStoreScope && !scopedBranchSet.has(branchName)) continue;
+              const ecs = dashSchedMgrsByBranch[branchName] || [];
+              for (const ec of ecs) {
+                mgrSchedToday++;
+                if (!dashTodayMgrClockinEcs.has(ec)) {
+                  const m = (managers || []).find(x => x.ec === ec);
+                  mgrMissing.push({ ec, name: (m && m.name) || ec, branch: branchName });
+                }
+              }
+            }
+          }
+          const mgrCheckinLoading = dashTodayMgrClockinEcs == null || dashScheduledToday == null;
+
           // Today's store-openings snapshot (loaded by the useEffect above).
           // null while the first load is in flight; show "…" until data lands.
           const todayY = new Date();
@@ -8608,7 +8685,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ background:`linear-gradient(135deg,${PINK.softer} 0%,#FFFFFF 65%)`, border:`1px solid ${PINK.soft}`, borderRadius:20, padding:"26px 30px", marginBottom:20, boxShadow:"0 4px 18px rgba(190,24,93,0.07)", display:"flex", justifyContent:"space-between", alignItems:"flex-end", flexWrap:"wrap", gap:18, fontFamily:"'Outfit',system-ui,sans-serif" }}>
                 <div>
                   <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:11, fontWeight:700, color:PINK.accent, letterSpacing:"0.22em", textTransform:"uppercase" }}>BOA HR · Dashboard</div>
-                  <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:34, color:PINK.ink, fontWeight:700, lineHeight:1.1, marginTop:6, letterSpacing:"-0.01em" }}>Good {partOfDay}, {currentUser.name}</div>
+                  <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:34, color:PINK.ink, fontWeight:700, lineHeight:1.1, marginTop:6, letterSpacing:"-0.01em" }}>Good {partOfDay}, {(currentUser.name || "").trim().split(/\s+/)[0]}</div>
                   <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:12.5, color:PINK.accent, marginTop:8, fontWeight:500, letterSpacing:"0.02em" }}>{dateLbl}</div>
                 </div>
                 <div style={{ textAlign:"right" }}>
@@ -8617,37 +8694,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               </div>
 
-              {/* ── ROM scope toggle ── only shown when the signed-in user
-                  has a non-empty stores list. Lets a Regional Ops Manager
-                  flip the dashboard between My Stores / Other Stores / All. */}
-              {_hasStoreScope && (() => {
-                const otherCount = SALONS.length - _myStores.length;
-                const opts = [
-                  { v: "mine",  l: "🏬 My stores",    sub: _myStores.length + " store" + (_myStores.length === 1 ? "" : "s") },
-                  { v: "other", l: "🤝 Other stores", sub: otherCount + " peer store" + (otherCount === 1 ? "" : "s") },
-                  { v: "all",   l: "🌐 All",          sub: SALONS.length + " stores" }
-                ];
-                return (
-                  <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:14, padding:"12px 16px", marginBottom:18, display:"flex", alignItems:"center", flexWrap:"wrap", gap:10 }}>
-                    <div style={{ fontSize:11, fontWeight:800, color:"#831843", letterSpacing:"0.08em", textTransform:"uppercase", marginRight:6 }}>Viewing</div>
-                    {opts.map(o => {
-                      const on = dashScope === o.v;
-                      return (
-                        <button key={o.v} onClick={() => setDashScope(o.v)}
-                          style={{ padding:"7px 13px", borderRadius:9, border: on ? "1px solid #BE185D" : "1px solid #FBCFE8", background: on ? "#BE185D" : "#fff", color: on ? "#fff" : "#831843", cursor:"pointer", fontSize:12, fontWeight:700, fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"flex-start", lineHeight:1.15 }}>
-                          <span>{o.l}</span>
-                          <span style={{ fontSize:10, fontWeight:600, opacity: on ? 0.85 : 0.6 }}>{o.sub}</span>
-                        </button>
-                      );
-                    })}
-                    <div style={{ marginLeft:"auto", fontSize:11, color:"#9F1A4F", fontStyle:"italic" }}>
-                      {dashScope === "mine"  && "Showing only the stores allocated to you."}
-                      {dashScope === "other" && "Showing peer stores — handy for covering when a colleague is out."}
-                      {dashScope === "all"   && "Showing every branch."}
-                    </div>
-                  </div>
-                );
-              })()}
+              {/* Shared scope toggle (My / Other / All). Renders nothing
+                  when the user has no store scope. Same control is wired
+                  to the Check-ins tabs and Store Openings — flipping it
+                  here also affects those views. */}
+              {renderScopeBar({ marginBottom: 18 })}
 
               {/* ── SECTION: TODAY ── */}
               <div style={sectionTitle}>
@@ -8670,7 +8721,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { l:"Scheduled today",   v: dashScheduledToday == null ? "…" : (_hasStoreScope ? Object.keys(dashByBranch).filter(b => scopedBranchSet.has(b)).reduce((a, b) => a + (dashByBranch[b] || 0), 0) : dashScheduledToday), sub: _hasStoreScope ? ("scope: " + (dashScope === "mine" ? "my stores" : dashScope === "other" ? "peer stores" : "all branches")) : "across all branches",       i:"📅", c:"#1e3a8a", bg:"#dbeafe" },
                   { l:"Active staff",       v: scopedStats.active,                                    sub:"incl. " + scopedStats.pregnant + " pregnant", i:"👥", c:"#14532d", bg:"#dcfce7" },
                   { l:"On maternity",       v: scopedStats.onMat,                                     sub: scopedStats.returning60 + " returning ≤60d",  i:"🤱", c:"#7A4258", bg:"#fce7f3" },
-                  { l:"Positions to hire",  v: scopedStats.vacancies,                                 sub:"across " + scopedStats.understaffed + " branch" + (scopedStats.understaffed !== 1 ? "es" : ""), i:"🎯", c:"#7c3aed", bg:"#ede9fe", click:()=>tryChangeTab("recruitment") }
+                  { l:"Positions to hire",  v: scopedStats.vacancies,                                 sub:"across " + scopedStats.understaffed + " branch" + (scopedStats.understaffed !== 1 ? "es" : ""), i:"🎯", c:"#7c3aed", bg:"#ede9fe", click:()=>tryChangeTab("recruitment") },
+                  // Manager check-in gap. Highlights how many of today's
+                  // scheduled managers haven't clocked in yet. Green when
+                  // everyone is in; red the moment anyone's missing.
+                  { l:"Mgrs not checked in",
+                    v: mgrCheckinLoading ? "…" : (mgrSchedToday === 0 ? "—" : mgrMissing.length + " / " + mgrSchedToday),
+                    sub: mgrCheckinLoading
+                          ? "loading…"
+                          : (mgrSchedToday === 0
+                              ? "no managers scheduled"
+                              : (mgrMissing.length === 0
+                                  ? "✓ all managers checked in"
+                                  : mgrMissing.slice(0, 2).map(m => m.name + " · " + m.branch).join(", ") + (mgrMissing.length > 2 ? " +" + (mgrMissing.length - 2) + " more" : ""))),
+                    i: mgrCheckinLoading ? "⌛" : (mgrSchedToday === 0 ? "🕐" : (mgrMissing.length === 0 ? "✓" : "🚨")),
+                    c: mgrCheckinLoading ? "#7c2d12" : (mgrMissing.length === 0 ? "#166534" : "#7f1d1d"),
+                    bg: mgrCheckinLoading ? "#fef3c7" : (mgrMissing.length === 0 ? "#dcfce7" : "#fee2e2"),
+                    click: ()=>tryChangeTab("mgrclockins") }
                 ].map(c => (
                   <div key={c.l} onClick={c.click} style={{ background:c.bg, borderRadius:16, padding:"16px 18px", cursor:c.click ? "pointer" : "default", border:"1px solid rgba(255,255,255,0.6)" }}>
                     <div style={{ fontSize:24 }}>{c.i}</div>
@@ -8894,7 +8961,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               </div>
 
-              {/* ── SECTION: ATTENTION ── */}
+              {/* ── SECTION: ATTENTION ── hidden for ROM users; the Z/NA,
+                  no-contract and recent-departure alerts are HR-level
+                  concerns that ROMs can't action on this dashboard. */}
+              {!_hasStoreScope && (<>
               <div style={sectionTitle}>
                 <span>⚠ Needs attention</span>
                 <span style={sectionRule} />
@@ -8949,6 +9019,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </div>
                 )}
               </div>
+              </>)}
 
               {/* ── SECTION: ALL TOOLS ── grouped quick links ── */}
               <div style={sectionTitle}>
@@ -14335,7 +14406,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           rows.forEach(r => { if (r && r.branch) byBranch[r.branch] = r; });
           // Sort: still-closed first (so the ops manager sees who needs chasing),
           // then opened (sorted by openedAt). Stable on branch name.
-          const sorted = SALONS.slice().map(sl => {
+          const sorted = SALONS.slice()
+            .filter(sl => !_hasStoreScope || scopedSalonNames.has(sl.name))
+            .map(sl => {
             const rec = byBranch[sl.name];
             return { branch: sl.name, opened: !!rec, openedAt: rec ? rec.openedAt : null, openedBy: rec ? rec.openedBy : null };
           }).sort((a, b) => {
@@ -14363,6 +14436,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </button>
                 </div>
               </div>
+
+              {renderScopeBar({ marginBottom: 12 })}
 
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12, padding:"10px 14px", background: closedCount > 0 ? "#fef2f2" : "#f0fdf4", border: closedCount > 0 ? "1px solid #fecaca" : "1px solid #bbf7d0", borderRadius:8 }}>
                 <div style={{ fontSize:13, fontWeight:700, color: closedCount > 0 ? "#7f1d1d" : "#166534" }}>
@@ -16192,6 +16267,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const clockinFiltered = (techClockinRows || []).filter(r => {
             const branch = (r.staff && r.staff.branch) || "";
             if (checkinFilterBranch !== "All" && r.staff && branch !== checkinFilterBranch) return false;
+            // ROM scope: hide rows whose home branch isn't in scope. Orphan
+            // rows (no staff record) always pass through so they remain
+            // visible as diagnostics regardless of scope.
+            if (_hasStoreScope && r.staff && !scopedSalonNames.has(branch)) return false;
             return new Date(r.ts) >= since;
           });
           // Look up staff names for attendance-grid rows (which only carry ec).
@@ -16202,6 +16281,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // the existing table renderer can display them next to clockins rows.
           const attShaped = (attCheckinRows || []).filter(r => {
             if (checkinFilterBranch !== "All" && r.branch !== checkinFilterBranch) return false;
+            if (_hasStoreScope && r.branch && !scopedSalonNames.has(r.branch)) return false;
             return new Date(r.ts) >= since;
           }).map(r => {
             const sRec = staffByEc[r.ec] || null;
@@ -16286,12 +16366,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div style={{ fontSize:12, color:"#F472B6" }}>Nail-tech check-ins from the manager check-in app. Used to confirm attendance alongside the Fresha import.</div>
               </div>
 
+              {renderScopeBar({ marginBottom: 12 })}
+
               <div style={{ background:"#FFFFFF", borderRadius:13, padding:"12px 14px", border:"1px solid #FBCFE8", marginBottom:14, display:"flex", gap:14, alignItems:"center", flexWrap:"wrap" }}>
                 <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
                   <label style={{ fontSize:10, fontWeight:700, color:"#F472B6", letterSpacing:"0.06em" }}>BRANCH</label>
                   <select value={checkinFilterBranch} onChange={e=>setCheckinFilterBranch(e.target.value)} style={{ padding:"7px 11px", borderRadius:7, border:"1px solid #FBCFE8", fontSize:13, background:"#fff", minWidth:160 }}>
-                    <option value="All">All branches</option>
-                    {SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                    <option value="All">{_hasStoreScope ? (dashScope === "mine" ? "All my stores" : dashScope === "other" ? "All peer stores" : "All branches") : "All branches"}</option>
+                    {SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name)).map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
                   </select>
                 </div>
                 <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
@@ -16433,9 +16515,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         } })()}
 
         {tab==="mgrclockins" && (() => {
-          const filtered = mgrClockinRows.filter(r =>
-            mgrClockinFilterBranch === "All" || (r.staff && r.staff.branch === mgrClockinFilterBranch)
-          );
+          const filtered = mgrClockinRows.filter(r => {
+            if (mgrClockinFilterBranch !== "All" && (!r.staff || r.staff.branch !== mgrClockinFilterBranch)) return false;
+            if (_hasStoreScope && r.staff && !scopedSalonNames.has(r.staff.branch)) return false;
+            return true;
+          });
           // Group by manager-day for compact display
           const fmtDate = (iso) => new Date(iso).toLocaleString("en-ZA", { day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" });
           const typeLabel = (t) => {
@@ -16453,12 +16537,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div style={{ fontSize:12, color:"#F472B6" }}>Spot-check manager attendance. Each row shows the selfie, GPS distance from store, and timestamp. Auto-out (red) means they forgot to clock out — talk to them.</div>
               </div>
 
+              {renderScopeBar({ marginBottom: 12 })}
+
               <div style={{ background:"#FFFFFF", borderRadius:13, padding:"12px 14px", border:"1px solid #FBCFE8", marginBottom:14, display:"flex", gap:14, alignItems:"center", flexWrap:"wrap" }}>
                 <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
                   <label style={{ fontSize:10, fontWeight:700, color:"#F472B6", letterSpacing:"0.06em" }}>BRANCH</label>
                   <select value={mgrClockinFilterBranch} onChange={e=>setMgrClockinFilterBranch(e.target.value)} style={{ padding:"7px 11px", borderRadius:7, border:"1px solid #FBCFE8", fontSize:13, background:"#fff", minWidth:160 }}>
-                    <option value="All">All branches</option>
-                    {SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                    <option value="All">{_hasStoreScope ? (dashScope === "mine" ? "All my stores" : dashScope === "other" ? "All peer stores" : "All branches") : "All branches"}</option>
+                    {SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name)).map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
                   </select>
                 </div>
                 <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
