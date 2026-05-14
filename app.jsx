@@ -778,21 +778,29 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
       }
       const { days, need } = weeksToFill[i];
       // Generate candidate combinations
+      // Small-team rule: when fewer than 3 mgrs are available that day
+      // (true 2-mgr store, or 3-mgr store with one on leave/maternity),
+      // a 1-mgr day is acceptable — the 6-consec cap and the 2-off-per-week
+      // rule take priority over keeping 2 mgrs working at all times.
+      const _minWorkingFor = (day) => {
+        const activeToday = m - (W[day].leave || 0);
+        return activeToday >= 3 ? 2 : 1;
+      };
       const candidates = [];
       if (need === 2) {
         for (let a = 0; a < days.length; a++) {
           if (grid[h.ec][days[a].d] != null) continue;
-          if ((m - W[days[a].d].off - W[days[a].d].leave - 1) < 2) continue;
+          if ((m - W[days[a].d].off - W[days[a].d].leave - 1) < _minWorkingFor(days[a].d)) continue;
           for (let b = a + 1; b < days.length; b++) {
             if (grid[h.ec][days[b].d] != null) continue;
-            if ((m - W[days[b].d].off - W[days[b].d].leave - 1) < 2) continue;
+            if ((m - W[days[b].d].off - W[days[b].d].leave - 1) < _minWorkingFor(days[b].d)) continue;
             candidates.push([days[a], days[b]]);
           }
         }
       } else {
         for (const d of days) {
           if (grid[h.ec][d.d] != null) continue;
-          if ((m - W[d.d].off - W[d.d].leave - 1) < 2) continue;
+          if ((m - W[d.d].off - W[d.d].leave - 1) < _minWorkingFor(d.d)) continue;
           candidates.push([d]);
         }
       }
@@ -841,7 +849,10 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
         for (const d of wt.days) {
           if (need <= 0) break;
           if (grid[h.ec][d.d] != null) continue;
-          if ((m - W[d.d].off - W[d.d].leave - 1) < 2) continue;
+          // Same small-team rule as the backtracker — accept 1-mgr days
+          // when fewer than 3 mgrs are available that day.
+          const _activeToday = m - (W[d.d].leave || 0);
+          if ((m - W[d.d].off - W[d.d].leave - 1) < (_activeToday >= 3 ? 2 : 1)) continue;
           grid[h.ec][d.d] = "O";
           W[d.d].off++;
           offWk[h.ec][wkOfDay[d.d]]++;
