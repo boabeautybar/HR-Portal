@@ -5943,6 +5943,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   //           workPermitDeadline, workPermitNotes, clearedAt, clearedBy } }
   const [complianceActions, setComplianceActions] = useState({});
   const [complianceModal, setComplianceModal] = useState(null); // null | { ec, name, branch, ... }
+  // Compliance directory filters (used in the bottom section of the
+  // Compliance tab so the user can search + slice by role / branch).
+  const [compSearch, setCompSearch] = useState("");
+  const [compRoleFilter, setCompRoleFilter] = useState("all"); // all | NT | mgr
+  const [compBranchFilter, setCompBranchFilter] = useState("All");
   useEffect(() => {
     if (!window.BOA_DB || !window.BOA_DB.loadComplianceActions) return;
     let cancelled = false;
@@ -9793,6 +9798,175 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </table>
                 )}
               </div>
+
+              {/* ── COMPLIANCE DIRECTORY ── search every active tech +
+                  manager, filter by role / branch, edit the permit inline.
+                  Each row's permit field is a live select bound to
+                  saveStaff / saveMgr so a change persists immediately and
+                  is reflected back in the stat tiles on the next render. */}
+              {(() => {
+                const updatePermit = async (person, newPermit) => {
+                  try {
+                    const isMgr = person.role !== "NT";
+                    if (isMgr) {
+                      const live = (managers || []).find(m => m && m._id === person._id);
+                      if (!live) return;
+                      await saveMgr({ ...live, permit: newPermit || null });
+                    } else {
+                      const live = (staff || []).find(s => s && s._id === person._id);
+                      if (!live) return;
+                      await saveStaff({ ...live, permit: newPermit || null });
+                    }
+                    if (window.BOA_LOG_ACTIVITY) {
+                      const lbl = newPermit ? ((COMPLIANCE[newPermit] && COMPLIANCE[newPermit].label) || newPermit) : "Not set";
+                      window.BOA_LOG_ACTIVITY("Updated compliance permit", (person.name || "") + " · " + person.ec, "→ " + lbl + " · " + (person.branch || "—"), "Compliance");
+                    }
+                  } catch (e) { alert("Could not save permit: " + (e.message || e)); }
+                };
+                // Build the directory pool with _id so we can route the
+                // update to saveStaff / saveMgr cleanly.
+                const dirPool = [
+                  ...(enriched || [])
+                    .filter(s => s && s.ec && (!s.offboarded || (s.offDaysSinceLeft != null && s.offDaysSinceLeft < 0)))
+                    .map(s => ({ _id: s._id, ec: s.ec, name: s.name, branch: s.branch, permit: s.permit, role: "NT", onMat: s.onMat })),
+                  ...(managers || [])
+                    .filter(m => m && m.ec)
+                    .map(m => ({ _id: m._id, ec: m.ec, name: m.name, branch: m.branch, permit: m.permit, role: m.role || "AM", onMat: !!m.onMat }))
+                ];
+                const q = (compSearch || "").trim().toLowerCase();
+                const filtered = dirPool.filter(p => {
+                  if (compRoleFilter === "NT"  && p.role !== "NT") return false;
+                  if (compRoleFilter === "mgr" && p.role === "NT") return false;
+                  if (compBranchFilter !== "All" && p.branch !== compBranchFilter) return false;
+                  if (q && !((p.name || "").toLowerCase().includes(q) || (p.ec || "").toLowerCase().includes(q))) return false;
+                  return true;
+                });
+                // Group by branch then split tech / mgr within so the
+                // structure reads like a directory.
+                const branchesPresent = SALONS.map(s => s.name).filter(name => filtered.some(p => p.branch === name));
+                // Floating bucket for people whose branch isn't in SALONS
+                // (e.g. 'Regional' managers, Head Office) - shown last.
+                const orphanBranches = [...new Set(filtered.map(p => p.branch).filter(b => b && !SALONS.some(s => s.name === b)))];
+                const allBranches = [...branchesPresent, ...orphanBranches];
+
+                const permitChip = (key) => {
+                  if (!key) return { lbl:"Not set", bg:"#f3f4f6", fg:"#6b7280", border:"#d1d5db" };
+                  const c = COMPLIANCE[key] || {};
+                  return { lbl: c.label || key, bg: c.bg || "#f3f4f6", fg: c.color || "#374151", border: c.border || "#d1d5db" };
+                };
+
+                return (
+                  <div style={{ marginTop:22 }}>
+                    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12, flexWrap:"wrap", gap:10 }}>
+                      <div style={{ fontFamily:"'Playfair Display',serif", fontSize:20, fontWeight:700, color:"#831843" }}>📒 Compliance Directory</div>
+                      <div style={{ fontSize:11, color:"#9ca3af" }}>{filtered.length} of {dirPool.length} people · click a permit to change it</div>
+                    </div>
+
+                    {/* Filter toolbar */}
+                    <div style={{ background:"#fff", borderRadius:12, padding:"12px 14px", border:"1px solid #FBCFE8", marginBottom:14, display:"flex", flexWrap:"wrap", gap:10, alignItems:"center" }}>
+                      <input type="search" placeholder="🔍  Search by name or EC…" value={compSearch} onChange={e=>setCompSearch(e.target.value)}
+                        style={{ flex:"1 1 220px", padding:"8px 12px", borderRadius:8, border:"1px solid #FBCFE8", fontFamily:"inherit", fontSize:13, background:"#fff" }} />
+                      <div style={{ display:"flex", gap:4 }}>
+                        {[{ k:"all", l:"All", c:"#831843" }, { k:"NT", l:"💅 Techs", c:"#BE185D" }, { k:"mgr", l:"👑 Managers", c:"#7c3aed" }].map(t => (
+                          <button key={t.k} onClick={()=>setCompRoleFilter(t.k)}
+                            style={{ padding:"7px 12px", borderRadius:8, border:`1px solid ${compRoleFilter===t.k?t.c:"#FBCFE8"}`, background: compRoleFilter===t.k ? t.c : "#fff", color: compRoleFilter===t.k ? "#fff" : t.c, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}
+                          >{t.l}</button>
+                        ))}
+                      </div>
+                      <select value={compBranchFilter} onChange={e=>setCompBranchFilter(e.target.value)}
+                        style={{ padding:"7px 11px", borderRadius:8, border:"1px solid #FBCFE8", fontFamily:"inherit", fontSize:13, background:"#fff" }}>
+                        <option value="All">All Branches</option>
+                        {SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                      </select>
+                    </div>
+
+                    {/* Grouped table - one card per branch, techs/managers
+                        as sub-sections so the user can scan a store at a
+                        glance. */}
+                    {filtered.length === 0 ? (
+                      <div style={{ background:"#fff", border:"1px dashed #FBCFE8", borderRadius:14, padding:"30px 20px", textAlign:"center", color:"#9F1A4F", fontSize:13 }}>
+                        No people match the current filters.
+                      </div>
+                    ) : (
+                      <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                        {allBranches.map(brName => {
+                          const inBranch = filtered.filter(p => p.branch === brName);
+                          if (inBranch.length === 0) return null;
+                          const mgrsInBr  = inBranch.filter(p => p.role !== "NT");
+                          const techsInBr = inBranch.filter(p => p.role === "NT");
+                          return (
+                            <div key={brName} style={{ background:"#fff", border:"1px solid #FBCFE8", borderRadius:14, overflow:"hidden" }}>
+                              <div style={{ background:"#FCE7F3", padding:"10px 16px", display:"flex", alignItems:"center", gap:10, fontFamily:"'Playfair Display',serif", fontSize:16, fontWeight:700, color:"#831843" }}>
+                                📍 {brName}
+                                <span style={{ marginLeft:"auto", fontSize:11, fontWeight:600, color:"#BE185D" }}>{inBranch.length} {inBranch.length===1?"person":"people"}</span>
+                              </div>
+                              {mgrsInBr.length > 0 && (
+                                <div style={{ borderTop:"1px solid #FCE7F3" }}>
+                                  <div style={{ background:"#F5F3FF", padding:"7px 16px", fontSize:11, fontWeight:800, color:"#5b21b6", letterSpacing:"0.06em", textTransform:"uppercase" }}>👑 Managers · {mgrsInBr.length}</div>
+                                  <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+                                    <tbody>
+                                      {mgrsInBr.map(p => {
+                                        const chip = permitChip(p.permit);
+                                        const roleIcon = p.role === "SSM" ? "💎" : p.role === "SM" ? "👑" : "⭐";
+                                        return (
+                                          <tr key={"m-" + p._id} style={{ borderTop:"1px solid #FCE7F3" }}>
+                                            <td style={{ padding:"8px 14px", fontFamily:"monospace", fontSize:11, color:"#9ca3af", width:60 }}>{p.ec}</td>
+                                            <td style={{ padding:"8px 14px", fontWeight:600, color:"#111827" }}>{roleIcon} {p.name || "(no name)"}{p.onMat && <span style={{ marginLeft:6, fontSize:10, background:"#FBCFE8", color:"#8E5570", padding:"1px 6px", borderRadius:99, fontWeight:700 }}>🤱 mat.</span>}</td>
+                                            <td style={{ padding:"8px 14px" }}>
+                                              <span style={{ display:"inline-block", background:chip.bg, color:chip.fg, border:`1px solid ${chip.border}`, fontSize:10, fontWeight:800, padding:"3px 9px", borderRadius:99, letterSpacing:"0.04em" }}>{chip.lbl}</span>
+                                            </td>
+                                            <td style={{ padding:"8px 14px", textAlign:"right" }}>
+                                              <select value={p.permit || ""} onChange={e=>updatePermit(p, e.target.value || null)}
+                                                style={{ padding:"6px 10px", border:"1px solid #FBCFE8", borderRadius:7, fontFamily:"inherit", fontSize:12, background:"#fff", cursor:"pointer" }}
+                                                title="Change compliance status">
+                                                <option value="">Not set</option>
+                                                {Object.entries(COMPLIANCE).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
+                                              </select>
+                                            </td>
+                                          </tr>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+                              {techsInBr.length > 0 && (
+                                <div style={{ borderTop:"1px solid #FCE7F3" }}>
+                                  <div style={{ background:"#FDEEF5", padding:"7px 16px", fontSize:11, fontWeight:800, color:"#831843", letterSpacing:"0.06em", textTransform:"uppercase" }}>💅 Nail Techs · {techsInBr.length}</div>
+                                  <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+                                    <tbody>
+                                      {techsInBr.map(p => {
+                                        const chip = permitChip(p.permit);
+                                        return (
+                                          <tr key={"t-" + p._id} style={{ borderTop:"1px solid #FCE7F3" }}>
+                                            <td style={{ padding:"8px 14px", fontFamily:"monospace", fontSize:11, color:"#9ca3af", width:60 }}>{p.ec}</td>
+                                            <td style={{ padding:"8px 14px", fontWeight:600, color:"#111827" }}>💅 {p.name || "(no name)"}{p.onMat && <span style={{ marginLeft:6, fontSize:10, background:"#FBCFE8", color:"#8E5570", padding:"1px 6px", borderRadius:99, fontWeight:700 }}>🤱 mat.</span>}</td>
+                                            <td style={{ padding:"8px 14px" }}>
+                                              <span style={{ display:"inline-block", background:chip.bg, color:chip.fg, border:`1px solid ${chip.border}`, fontSize:10, fontWeight:800, padding:"3px 9px", borderRadius:99, letterSpacing:"0.04em" }}>{chip.lbl}</span>
+                                            </td>
+                                            <td style={{ padding:"8px 14px", textAlign:"right" }}>
+                                              <select value={p.permit || ""} onChange={e=>updatePermit(p, e.target.value || null)}
+                                                style={{ padding:"6px 10px", border:"1px solid #FBCFE8", borderRadius:7, fontFamily:"inherit", fontSize:12, background:"#fff", cursor:"pointer" }}
+                                                title="Change compliance status">
+                                                <option value="">Not set</option>
+                                                {Object.entries(COMPLIANCE).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
+                                              </select>
+                                            </td>
+                                          </tr>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </>
           );
         })()}
