@@ -2468,7 +2468,7 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
 }
 
 // ─── SCHEDULE EDITOR (Phase 2a — manual editing, save to Supabase) ──────────────
-function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obList }) {
+function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obList, techLoans, onTechLoansChange }) {
   const [branch, setBranch] = useState(SALONS[0].name);
   const [ym, setYm] = useState(window.BOA_DB ? window.BOA_DB.currentSchedYm() : "2026-05");
   const [grid, setGrid] = useState({});
@@ -3892,6 +3892,35 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     setDirty(true);
     setUnhonouredRequests(stillUnhonoured);
 
+    // ── Betty: auto-create first-Sunday cross-store loan records ─────────
+    // Half of the active techs (alphabetical by EC) go to Bree, the other
+    // half go to Green Point. Pre-existing auto-loans (fromBranch=Betty
+    // → Bree/Green Point) for that date are replaced; any other loans
+    // for the same tech/date are left alone.
+    if (_closedDow.includes(0) && onTechLoansChange) {
+      const _firstSun = days.find(d => d.dow === 0);
+      if (_firstSun && sortedTechs.length > 0) {
+        const _firstSunYmd = _firstSun.year + "-" + String(_firstSun.monthIdx + 1).padStart(2, "0") + "-" + String(_firstSun.d).padStart(2, "0");
+        const _activeAlpha = [...sortedTechs].sort((a, b) => (a.ec || "").localeCompare(b.ec || ""));
+        const _half = Math.ceil(_activeAlpha.length / 2);
+        const _assignFor = (idx) => idx < _half ? "Bree" : "Green Point";
+        const _existing = (techLoans || []).filter(l => !(l && l.date === _firstSunYmd && l.fromBranch === branch && (l.toBranch === "Bree" || l.toBranch === "Green Point")));
+        const _newAuto = _activeAlpha.map((s, idx) => ({
+          _id: "ln_betty_auto_" + _firstSunYmd + "_" + s.ec,
+          ec: s.ec,
+          name: s.name || "",
+          date: _firstSunYmd,
+          fromBranch: branch,
+          toBranch: _assignFor(idx),
+          note: "Auto: Betty first-Sunday cross-store rotation",
+          createdBy: "auto",
+          createdAt: new Date().toISOString()
+        }));
+        try { await onTechLoansChange([..._existing, ..._newAuto]); }
+        catch (e) { console.error("Betty auto-loans:", e); }
+      }
+    }
+
     const totalReqs    = consolidatedReqs.length;
     const honouredReqs = totalReqs - stillUnhonoured.length;
     const skippedNote = stillUnhonoured.length > 0
@@ -5193,6 +5222,16 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                       const dYmd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
                       const isPastLeft = isLeaving && dYmd > s.leftDate;
                       const cellLocked = onMat || isPastLeft;
+                      // Cross-store loan: if this tech has a same-day loan FROM
+                      // this branch, the cell is tinted teal and shows the
+                      // destination store (e.g. Betty's first-Sunday Bree/GP
+                      // split, or any manually-logged movement).
+                      const _outgoingLoan = (techLoans || []).find(l => l && l.ec === s.ec && l.date === dYmd && l.fromBranch === branch);
+                      const _loanCell = _outgoingLoan && !onMat && !isPastLeft
+                        ? (_outgoingLoan.toBranch === "Bree"        ? { background:"#cffafe", color:"#155e75" }
+                        :  _outgoingLoan.toBranch === "Green Point" ? { background:"#fce7f3", color:"#9d174d" }
+                        :                                              { background:"#e0e7ff", color:"#3730a3" })
+                        : null;
                       // Maternity leave cells: distinct lavender tint so
                       // ML reads differently from a regular L (annual
                       // leave) and from a post-departure ghost cell.
@@ -5200,7 +5239,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                         ? { background:"#ede9fe", color:"#6b21a8" }
                         : isPastLeft
                           ? { background:"#e5e7eb", color:"#9ca3af" }
-                          : cellStyle(v);
+                          : _loanCell || cellStyle(v);
                       // Drag-drop visual states
                       const isSrc        = dragSource && dragSource.ec === s.ec && dragSource.day === d.d;
                       const isValidDrop  = !cellLocked && isValidDropTarget(s.ec, d.d);
@@ -5213,7 +5252,9 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                         ? `${s.name} · on maternity leave`
                         : isPastLeft
                           ? `${s.name} · left ${s.leftDate} — no longer scheduled`
-                          : `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · click to cycle, drag to swap within the week${requested ? ' · 📝 day-off requested' + (requestUnapplied ? ' (not yet on grid)' : '') : ''}`;
+                          : _loanCell
+                            ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · working at ${_outgoingLoan.toBranch} (cross-store)`
+                            : `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · click to cycle, drag to swap within the week${requested ? ' · 📝 day-off requested' + (requestUnapplied ? ' (not yet on grid)' : '') : ''}`;
                       return (
                         <td key={s.ec+'-'+d.d}
                             draggable={!cellLocked && !!v}
@@ -5224,7 +5265,11 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                             onClick={cellLocked ? undefined : () => cycleCell(s.ec, d.d)}
                             title={cellTitle}
                             style={{ ...matCell, padding:0, height:30, textAlign:"center", borderBottom:"1px solid #FCE7F3", borderLeft:"1px solid #FCE7F3", borderRight: weekEnd ? "3px solid #BE185D" : "none", cursor: dragCursor, fontSize:11, fontWeight:700, userSelect:"none", outline: dropOutline, outlineOffset:-1, opacity: isSrc ? 0.4 : undefined, position:"relative" }}>
-                          {onMat ? "ML" : isPastLeft ? "—" : v}
+                          {onMat ? "ML" : isPastLeft ? "—" : _loanCell ? (
+                            <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: "0.04em" }}>
+                              →{_outgoingLoan.toBranch === "Green Point" ? "GP" : _outgoingLoan.toBranch.slice(0, 4)}
+                            </span>
+                          ) : v}
                           {requestUnapplied && !cellLocked && (
                             <span style={{ position:"absolute", top:1, right:2, fontSize:8, lineHeight:1, color:"#BE185D", pointerEvents:"none" }}>📝</span>
                           )}
@@ -8799,6 +8844,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             onTechRequestsChange={(next) => { setTechRequests(next); setTechRequestsTick(t => t + 1); }}
             leaveRecs={leaveRecs}
             obList={obList}
+            techLoans={techLoans}
+            onTechLoansChange={async (next) => {
+              try { await window.BOA_DB.saveTechLoans(next); setTechLoans(next); }
+              catch (e) { console.error("saveTechLoans (auto):", e); }
+            }}
           />
         )}
 
