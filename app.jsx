@@ -2468,8 +2468,8 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
 }
 
 // ─── SCHEDULE EDITOR (Phase 2a — manual editing, save to Supabase) ──────────────
-function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obList, techLoans, onTechLoansChange }) {
-  const [branch, setBranch] = useState(SALONS[0].name);
+function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obList, techLoans, onTechLoansChange, initialBranch }) {
+  const [branch, setBranch] = useState(initialBranch || SALONS[0].name);
   const [ym, setYm] = useState(window.BOA_DB ? window.BOA_DB.currentSchedYm() : "2026-05");
   const [grid, setGrid] = useState({});
   const [savedAt, setSavedAt] = useState(null);
@@ -5735,7 +5735,7 @@ function userToPerms(u) {
 // reconstruct hideCategories on save — packing per-tab is simpler and the
 // nav renderer treats "every tab in a category hidden" the same as the
 // category itself being hidden.
-function permsToUser(base, perms) {
+function permsToUser(base, perms, stores) {
   const hideTabs = [];
   const readOnlyTabs = [];
   SETTINGS_TABS.forEach(({ t }) => {
@@ -5743,7 +5743,7 @@ function permsToUser(base, perms) {
     if (!p.visible) { hideTabs.push(t); return; }
     if (!p.editable) readOnlyTabs.push(t);
   });
-  return {
+  const out = {
     name: base.name || "",
     role: base.role || "",
     demo: !!base.demo,
@@ -5752,6 +5752,20 @@ function permsToUser(base, perms) {
     hideTabs,
     readOnlyTabs
   };
+  // ROM store allocation. Only persisted when the user actually has stores
+  // assigned — keeps the user record tidy for non-ROM roles.
+  if (Array.isArray(stores) && stores.length > 0) {
+    out.stores = stores.slice();
+  }
+  return out;
+}
+
+// True when the user's role is "Regional Ops Manager" (the canonical label —
+// abbreviations like "ROM" or longer "Regional Operations Manager" also match
+// so a typo or legacy seed doesn't accidentally drop the scope toggle).
+function isRomRole(role) {
+  const r = (role || "").toLowerCase().trim();
+  return r === "regional ops manager" || r === "regional operations manager" || r === "rom";
 }
 
 function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
@@ -5776,7 +5790,8 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
       role: "",
       demo: false,
       isOwner: false,
-      perms: blankPerms
+      perms: blankPerms,
+      stores: []
     });
   };
   const beginEdit = (pin) => {
@@ -5790,7 +5805,8 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
       role: u.role || "",
       demo: !!u.demo,
       isOwner: !!u.isOwner,
-      perms: userToPerms(u)
+      perms: userToPerms(u),
+      stores: Array.isArray(u.stores) ? u.stores.slice() : []
     });
   };
   const cancelEdit = () => setEditing(null);
@@ -5819,7 +5835,7 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
       role: editing.role.trim() || (editing.isOwner ? "Owner" : "Staff"),
       demo: editing.demo,
       isOwner: editing.isOwner
-    }, editing.perms);
+    }, editing.perms, editing.stores);
     const next = { ...users };
     if (!editing.isNew && editing.originalPin && editing.originalPin !== pin) {
       delete next[editing.originalPin];
@@ -5909,6 +5925,7 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
               <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, letterSpacing:"0.04em" }}>FLAGS</th>
               <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, letterSpacing:"0.04em" }}>VISIBLE TABS</th>
               <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, letterSpacing:"0.04em" }}>VIEW-ONLY TABS</th>
+              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, letterSpacing:"0.04em" }}>STORES</th>
               <th style={{ textAlign:"right", padding:"10px 12px", fontSize:11, letterSpacing:"0.04em" }}>ACTIONS</th>
             </tr>
           </thead>
@@ -5940,6 +5957,16 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
                   </td>
                   <td style={{ padding:"10px 12px", color:"#374151", fontSize:11 }}>
                     {roList.length === 0 ? <span style={{ color:"#9CA3AF" }}>—</span> : roList.join(", ")}
+                  </td>
+                  <td style={{ padding:"10px 12px", color:"#374151", fontSize:11 }}>
+                    {(() => {
+                      const sts = Array.isArray(u.stores) ? u.stores : [];
+                      if (sts.length === 0) return <span style={{ color:"#9CA3AF" }}>—</span>;
+                      if (sts.length === SALONS.length) return <span style={{ color:"#15803d", fontWeight:700 }}>All ({sts.length})</span>;
+                      const show = sts.slice(0, 2).join(", ");
+                      const more = sts.length > 2 ? " +" + (sts.length - 2) : "";
+                      return <span title={sts.join(", ")} style={{ color:"#BE185D", fontWeight:600 }}>{sts.length} · {show}{more}</span>;
+                    })()}
                   </td>
                   <td style={{ padding:"10px 12px", textAlign:"right", whiteSpace:"nowrap" }}>
                     <button onClick={() => beginEdit(pin)} disabled={busy}
@@ -6061,6 +6088,59 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
                 </tbody>
               </table>
             </div>
+
+            {/* ── Store allocation ── shown for every user; only Regional Ops
+                Managers actually use the field, but exposing it for any role
+                means an admin can drop a store-scope on a generic Ops Admin
+                if needed. Empty list = no scope = sees everything. */}
+            {(() => {
+              const isRom = isRomRole(editing.role);
+              const stores = Array.isArray(editing.stores) ? editing.stores : [];
+              const toggleStore = (name) => {
+                setEditing(prev => {
+                  const cur = Array.isArray(prev.stores) ? prev.stores : [];
+                  const has = cur.includes(name);
+                  return { ...prev, stores: has ? cur.filter(x => x !== name) : [...cur, name] };
+                });
+              };
+              const setAllStores = (on) => setEditing(prev => ({ ...prev, stores: on ? SALONS.map(s => s.name) : [] }));
+              return (
+                <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:11, padding:"14px 16px", marginBottom:18 }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:8, marginBottom:8 }}>
+                    <div>
+                      <div style={{ fontSize:12, fontWeight:800, color:"#831843", letterSpacing:"0.04em", textTransform:"uppercase" }}>
+                        🏬 Store allocation
+                        {isRom && <span style={{ marginLeft:8, background:"#FCE7F3", color:"#BE185D", border:"1px solid #FBCFE8", padding:"1px 6px", borderRadius:6, fontSize:10, fontWeight:700, letterSpacing:"0.06em" }}>ROM</span>}
+                      </div>
+                      <div style={{ fontSize:11, color:"#9F1A4F", marginTop:3 }}>
+                        {isRom
+                          ? "Stores this ROM owns. The dashboard defaults to 'My Stores' (the ones ticked here); they can still flip to 'Other Stores' to cover for peers."
+                          : "Optional. Tick stores to scope this user's dashboard to a subset of branches. Leave empty for no scope."}
+                      </div>
+                    </div>
+                    <div style={{ display:"flex", gap:6 }}>
+                      <button onClick={() => setAllStores(true)} style={{ padding:"4px 9px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:6, cursor:"pointer", fontSize:10, fontWeight:700, fontFamily:"inherit" }}>Select all</button>
+                      <button onClick={() => setAllStores(false)} style={{ padding:"4px 9px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:6, cursor:"pointer", fontSize:10, fontWeight:700, fontFamily:"inherit" }}>Clear</button>
+                    </div>
+                  </div>
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))", gap:6 }}>
+                    {SALONS.map(sl => {
+                      const on = stores.includes(sl.name);
+                      return (
+                        <label key={sl.name} style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 9px", background: on ? "#FCE7F3" : "#fff", border:"1px solid " + (on ? "#FBCFE8" : "#F3D4DE"), borderRadius:7, cursor:"pointer", fontSize:12, color:"#831843", fontWeight: on ? 700 : 500 }}>
+                          <input type="checkbox" checked={on} onChange={() => toggleStore(sl.name)} style={{ accentColor:"#BE185D" }} />
+                          <span style={{ flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{sl.name}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <div style={{ fontSize:10, color:"#9F1A4F", marginTop:8, fontWeight:600 }}>
+                    {stores.length} of {SALONS.length} stores selected
+                    {isRom && stores.length === 0 && <span style={{ color:"#b91c1c", marginLeft:8 }}>⚠ A ROM with no stores will fall back to viewing all branches.</span>}
+                  </div>
+                </div>
+              );
+            })()}
 
             <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
               <button onClick={cancelEdit} disabled={busy}
@@ -6366,6 +6446,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     })();
     return () => { cancelled = true; };
   }, []);
+
+  // ── ROM dashboard scope ────────────────────────────────────────────────
+  // "mine" = only stores allocated to the signed-in ROM; "other" = the rest
+  // (so they can pick up cover when a peer is on leave); "all" = no filter.
+  // Defaults to "mine" if the user has stores assigned, otherwise "all" so
+  // non-ROMs / unallocated ROMs see everything.
+  const _myStores = Array.isArray(currentUser && currentUser.stores) ? currentUser.stores : [];
+  const _hasStoreScope = isRomRole(currentUser && currentUser.role) && _myStores.length > 0;
+  const [dashScope, setDashScope] = useState(_hasStoreScope ? "mine" : "all");
+  const scopedSalonNames = useMemo(() => {
+    if (!_hasStoreScope || dashScope === "all") return new Set(SALONS.map(s => s.name));
+    if (dashScope === "other") {
+      const mine = new Set(_myStores);
+      return new Set(SALONS.map(s => s.name).filter(n => !mine.has(n)));
+    }
+    return new Set(_myStores);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dashScope, _hasStoreScope, _customSalonsTick, _myStores.join("|")]);
+  const inScope = (name) => scopedSalonNames.has(name);
 
   // Modal state for the "+ Add location" form on the Locations tab.
   // Region filter for the Locations tab — "all" or one of the REGIONS keys.
@@ -6689,7 +6788,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }, [tab, activityTick]);
 
   // ── Manager Schedule state ─────────────────────────────────────────
-  const [mgrSchedBranch, setMgrSchedBranch] = useState(SALONS[0].name);
+  const [mgrSchedBranch, setMgrSchedBranch] = useState(_myStores[0] || SALONS[0].name);
   const [mgrSchedCycle, setMgrSchedCycle] = useState(""); // YYYY-MM-25 cycle start
   const [navCategory, setNavCategory] = useState("People"); // open nav category
   // Whether the user has explicitly picked a category tile while on the dashboard.
@@ -6762,7 +6861,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // ── Leave Planner state ────────────────────────────────────────────
   const [leaveRecs, setLeaveRecs] = useState([]);
-  const [leaveBranch, setLeaveBranch] = useState(SALONS[0].name);
+  const [leaveBranch, setLeaveBranch] = useState(_myStores[0] || SALONS[0].name);
   const [leaveYM, setLeaveYM] = useState(window.BOA_DB ? window.BOA_DB.currentSchedYm() : "2026-05");
   const [leaveForm, setLeaveForm] = useState({ ec:"", startDate:"", endDate:"", emergency:false, emergencyNote:"" });
   // Schedule cache for theoretical-off-day calculation: keyed by `<branch>|<ym>`,
@@ -6823,7 +6922,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }, [tab, leaveBranch, leaveYM, leaveRecs, staff, managers]);
 
   // ── Attendance tab state ───────────────────────────────────────────
-  const [attBranch, setAttBranch] = useState(SALONS[0].name);
+  const [attBranch, setAttBranch] = useState(_myStores[0] || SALONS[0].name);
   // Attendance grid keys rows by START-month of the 25-to-24 cycle (April 25 →
   // May 24, 2026 lives at "2026-04"). The kiosk check-in app writes to the same
   // start-month key. Using currentSchedYm() here would load the FUTURE cycle's
@@ -8253,7 +8352,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const partOfDay = hr < 12 ? "morning" : hr < 17 ? "afternoon" : "evening";
           const dateLbl = now.toLocaleDateString("en-ZA", { weekday:"long", day:"2-digit", month:"long", year:"numeric" });
           const timeLbl = now.toLocaleTimeString("en-ZA", { hour:"2-digit", minute:"2-digit" });
-          const understaffedBranches = SALONS
+          // Dashboard salon scope: drives every branch-aware card below.
+          // When a ROM has a "My / Other / All" scope active, scopedSalons is
+          // the filtered list; otherwise it's just SALONS unchanged.
+          const scopedSalons = SALONS.filter(sl => inScope(sl.name));
+          const scopedBranchSet = scopedSalonNames;
+          // Branch-scoped versions of the headline stats so the four stat
+          // cards reflect "my stores" / "other stores" without re-fetching.
+          const _scopedActive = enriched.filter(s => scopedBranchSet.has(s.branch) && !s.onMat && !s.onUnpaidLegal && !s.offboarded);
+          const _scopedMat    = enriched.filter(s => scopedBranchSet.has(s.branch) && s.onMat);
+          const _scopedPreg   = enriched.filter(s => scopedBranchSet.has(s.branch) && s.pregnant && !s.onMat);
+          const _scopedReturning60 = matRecs.filter(r => r.matStatus === "on_mat" && r.returnDate && daysDiff(r.returnDate) !== null && daysDiff(r.returnDate) >= 0 && daysDiff(r.returnDate) <= 60 && scopedBranchSet.has(((enriched.find(e => e.ec && r.ec && e.ec.trim() === r.ec.trim()) || {}).branch || ""))).length;
+          const _scopedVacancies = scopedSalons.reduce((a, sl) => { const g = sl.targetCapacity || sl.capacity; const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length; return a + Math.max(0, g - act); }, 0);
+          const _scopedUnderstaffed = scopedSalons.filter(sl => enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length < sl.capacity).length;
+          const scopedStats = {
+            active: _scopedActive.length,
+            onMat: _scopedMat.length,
+            pregnant: _scopedPreg.length,
+            returning60: _scopedReturning60,
+            vacancies: _scopedVacancies,
+            understaffed: _scopedUnderstaffed
+          };
+          const scopedAttn = {
+            zna: enriched.filter(s => !s.onMat && !s.onUnpaidLegal && !s.offboarded && s.permit === "z_na" && scopedBranchSet.has(s.branch)).length,
+            noContract: enriched.filter(s => !s.onMat && !s.onUnpaidLegal && !s.offboarded && s.contract === "NO CONTRACT" && scopedBranchSet.has(s.branch)).length
+          };
+          const understaffedBranches = scopedSalons
             .map(sl => {
               const goal = sl.targetCapacity || sl.capacity;
               const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.offboarded).length;
@@ -8262,7 +8386,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             .filter(x => x.gap > 0)
             .sort((a, b) => b.gap - a.gap);
           const recentDepartures = enriched
-            .filter(s => s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft >= 0 && s.offDaysSinceLeft <= 7)
+            .filter(s => s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft >= 0 && s.offDaysSinceLeft <= 7 && scopedBranchSet.has(s.branch))
             .sort((a, b) => (a.offDaysSinceLeft ?? 0) - (b.offDaysSinceLeft ?? 0));
 
           // Today's store-openings snapshot (loaded by the useEffect above).
@@ -8270,11 +8394,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const todayY = new Date();
           const todayYmd = todayY.getFullYear() + "-" + String(todayY.getMonth()+1).padStart(2,"0") + "-" + String(todayY.getDate()).padStart(2,"0");
           const showStoreCard = storeOpenYmd === todayYmd && storeOpenRows !== null;
-          const openedBranchSet = new Set(showStoreCard ? (storeOpenRows || []).map(r => r.branch) : []);
+          const openedBranchSet = new Set(showStoreCard ? (storeOpenRows || []).filter(r => scopedBranchSet.has(r.branch)).map(r => r.branch) : []);
           const stillClosedBranches = showStoreCard
-            ? SALONS.map(s => s.name).filter(n => !openedBranchSet.has(n))
+            ? scopedSalons.map(s => s.name).filter(n => !openedBranchSet.has(n))
             : [];
-          const storeOpenedCount = SALONS.length - stillClosedBranches.length;
+          const storeOpenedCount = scopedSalons.length - stillClosedBranches.length;
           const storeOpenSub = !showStoreCard
             ? "loading…"
             : stillClosedBranches.length === 0
@@ -8287,7 +8411,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Green when complete, amber while pending, red once past the
           // 15th-of-cycle-start-month deadline.
           const schedReady = !!(schedFinalStatus && schedFinalStatus.byBranch);
-          const schedTotal = SALONS.length;
+          const schedTotal = scopedSalons.length;
           const _todayMid = new Date();
           const _today0   = new Date(_todayMid.getFullYear(), _todayMid.getMonth(), _todayMid.getDate());
           const deadline15 = schedReady && schedFinalStatus.deadline ? new Date(schedFinalStatus.deadline) : new Date(_today0.getFullYear(), _today0.getMonth(), 15);
@@ -8295,14 +8419,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const cycSuffix = schedReady && schedFinalStatus.cycLabel ? " · " + schedFinalStatus.cycLabel : "";
           const _buildSchedCard = (kind /* "tech" | "mgr" */) => {
             const doneBranches = schedReady
-              ? SALONS.map(s => s.name).filter(n => {
+              ? scopedSalons.map(s => s.name).filter(n => {
                   const r = schedFinalStatus.byBranch[n] || { tech:false, mgr:false };
                   return r[kind];
                 })
               : [];
             const done = doneBranches.length;
             const missing = schedReady
-              ? SALONS.map(s => s.name).filter(n => {
+              ? scopedSalons.map(s => s.name).filter(n => {
                   const r = schedFinalStatus.byBranch[n] || { tech:false, mgr:false };
                   return !r[kind];
                 })
@@ -8357,6 +8481,38 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               </div>
 
+              {/* ── ROM scope toggle ── only shown when the signed-in user
+                  has a non-empty stores list. Lets a Regional Ops Manager
+                  flip the dashboard between My Stores / Other Stores / All. */}
+              {_hasStoreScope && (() => {
+                const otherCount = SALONS.length - _myStores.length;
+                const opts = [
+                  { v: "mine",  l: "🏬 My stores",    sub: _myStores.length + " store" + (_myStores.length === 1 ? "" : "s") },
+                  { v: "other", l: "🤝 Other stores", sub: otherCount + " peer store" + (otherCount === 1 ? "" : "s") },
+                  { v: "all",   l: "🌐 All",          sub: SALONS.length + " stores" }
+                ];
+                return (
+                  <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:14, padding:"12px 16px", marginBottom:18, display:"flex", alignItems:"center", flexWrap:"wrap", gap:10 }}>
+                    <div style={{ fontSize:11, fontWeight:800, color:"#831843", letterSpacing:"0.08em", textTransform:"uppercase", marginRight:6 }}>Viewing</div>
+                    {opts.map(o => {
+                      const on = dashScope === o.v;
+                      return (
+                        <button key={o.v} onClick={() => setDashScope(o.v)}
+                          style={{ padding:"7px 13px", borderRadius:9, border: on ? "1px solid #BE185D" : "1px solid #FBCFE8", background: on ? "#BE185D" : "#fff", color: on ? "#fff" : "#831843", cursor:"pointer", fontSize:12, fontWeight:700, fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"flex-start", lineHeight:1.15 }}>
+                          <span>{o.l}</span>
+                          <span style={{ fontSize:10, fontWeight:600, opacity: on ? 0.85 : 0.6 }}>{o.sub}</span>
+                        </button>
+                      );
+                    })}
+                    <div style={{ marginLeft:"auto", fontSize:11, color:"#9F1A4F", fontStyle:"italic" }}>
+                      {dashScope === "mine"  && "Showing only the stores allocated to you."}
+                      {dashScope === "other" && "Showing peer stores — handy for covering when a colleague is out."}
+                      {dashScope === "all"   && "Showing every branch."}
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* ── SECTION: TODAY ── */}
               <div style={sectionTitle}>
                 <span>✨ Today at a glance</span>
@@ -8369,16 +8525,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   // (no amber middle state) so it pops on the dashboard until
                   // resolved. While loading, fall back to the neutral amber.
                   { l:"Stores open today",
-                    v: showStoreCard ? (storeOpenedCount + " / " + SALONS.length) : "…",
+                    v: showStoreCard ? (storeOpenedCount + " / " + scopedSalons.length) : "…",
                     sub: storeOpenSub,
                     i: !showStoreCard ? "⚠" : (stillClosedBranches.length === 0 ? "🔓" : "🚨"),
                     c: !showStoreCard ? "#7c2d12" : (stillClosedBranches.length === 0 ? "#166534" : "#7f1d1d"),
                     bg: !showStoreCard ? "#fef3c7" : (stillClosedBranches.length === 0 ? "#dcfce7" : "#fee2e2"),
                     click:()=>tryChangeTab("storeOpenings") },
-                  { l:"Scheduled today",   v: dashScheduledToday == null ? "…" : dashScheduledToday, sub:"across all branches",       i:"📅", c:"#1e3a8a", bg:"#dbeafe" },
-                  { l:"Active staff",       v: stats.active,                                          sub:"incl. " + stats.pregnant + " pregnant", i:"👥", c:"#14532d", bg:"#dcfce7" },
-                  { l:"On maternity",       v: stats.onMat,                                           sub: stats.returning60 + " returning ≤60d",  i:"🤱", c:"#7A4258", bg:"#fce7f3" },
-                  { l:"Positions to hire",  v: stats.vacancies,                                       sub:"across " + stats.understaffed + " branch" + (stats.understaffed !== 1 ? "es" : ""), i:"🎯", c:"#7c3aed", bg:"#ede9fe", click:()=>tryChangeTab("recruitment") }
+                  { l:"Scheduled today",   v: dashScheduledToday == null ? "…" : (_hasStoreScope ? Object.keys(dashByBranch).filter(b => scopedBranchSet.has(b)).reduce((a, b) => a + (dashByBranch[b] || 0), 0) : dashScheduledToday), sub: _hasStoreScope ? ("scope: " + (dashScope === "mine" ? "my stores" : dashScope === "other" ? "peer stores" : "all branches")) : "across all branches",       i:"📅", c:"#1e3a8a", bg:"#dbeafe" },
+                  { l:"Active staff",       v: scopedStats.active,                                    sub:"incl. " + scopedStats.pregnant + " pregnant", i:"👥", c:"#14532d", bg:"#dcfce7" },
+                  { l:"On maternity",       v: scopedStats.onMat,                                     sub: scopedStats.returning60 + " returning ≤60d",  i:"🤱", c:"#7A4258", bg:"#fce7f3" },
+                  { l:"Positions to hire",  v: scopedStats.vacancies,                                 sub:"across " + scopedStats.understaffed + " branch" + (scopedStats.understaffed !== 1 ? "es" : ""), i:"🎯", c:"#7c3aed", bg:"#ede9fe", click:()=>tryChangeTab("recruitment") }
                 ].map(c => (
                   <div key={c.l} onClick={c.click} style={{ background:c.bg, borderRadius:16, padding:"16px 18px", cursor:c.click ? "pointer" : "default", border:"1px solid rgba(255,255,255,0.6)" }}>
                     <div style={{ fontSize:24 }}>{c.i}</div>
@@ -8560,7 +8716,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <div style={{ fontSize:12, color:"#9ca3af", fontStyle:"italic" }}>Loading schedules…</div>
                   ) : (
                     <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))", gap:8 }}>
-                      {SALONS.map(sl => {
+                      {scopedSalons.map(sl => {
                         const c = dashByBranch[sl.name] || 0;
                         return (
                           <div key={sl.name} style={{ background:PINK.softest, border:`1px solid ${PINK.soft}`, borderRadius:11, padding:"10px 12px" }}>
@@ -8582,12 +8738,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <span>🎯 Recruitment needs</span>
                     <button onClick={()=>tryChangeTab("recruitment")} style={{ background:PINK.accent, color:"#fff", border:"none", borderRadius:8, padding:"5px 12px", cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit" }}>Open →</button>
                   </div>
-                  {stats.vacancies === 0 ? (
+                  {scopedStats.vacancies === 0 ? (
                     <div style={{ fontSize:13, color:"#16a34a", fontWeight:700, padding:"8px 0" }}>✅ All branches fully staffed.</div>
                   ) : (
                     <>
                       <div style={{ fontSize:12, color:PINK.ink, marginBottom:10 }}>
-                        <strong>{stats.vacancies}</strong> position{stats.vacancies !== 1 ? "s" : ""} to fill across <strong>{stats.understaffed}</strong> branch{stats.understaffed !== 1 ? "es" : ""}.
+                        <strong>{scopedStats.vacancies}</strong> position{scopedStats.vacancies !== 1 ? "s" : ""} to fill across <strong>{scopedStats.understaffed}</strong> branch{scopedStats.understaffed !== 1 ? "es" : ""}.
                       </div>
                       <div style={{ display:"grid", gap:6 }}>
                         {understaffedBranches.slice(0, 6).map(b => (
@@ -8639,8 +8795,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   }
                   return [
                     schedAlert,
-                    stats.zna           > 0 && { i:"🚨", l: stats.zna + " staff with Z/NA risk", sub:"compliance issue", c:"#7f1d1d", bg:"#fee2e2", to:"staff" },
-                    stats.noContract    > 0 && { i:"📄", l: stats.noContract + " staff with no contract", sub:"upload contracts", c:"#7f1d1d", bg:"#fee2e2", to:"staff" },
+                    scopedAttn.zna           > 0 && { i:"🚨", l: scopedAttn.zna + " staff with Z/NA risk", sub:"compliance issue", c:"#7f1d1d", bg:"#fee2e2", to:"staff" },
+                    scopedAttn.noContract    > 0 && { i:"📄", l: scopedAttn.noContract + " staff with no contract", sub:"upload contracts", c:"#7f1d1d", bg:"#fee2e2", to:"staff" },
                     recentDepartures.length > 0 && { i:"👋", l: recentDepartures.length + " departure" + (recentDepartures.length !== 1 ? "s" : "") + " this week", sub:"in last 7 days", c:"#374151", bg:"#f3f4f6", to:"offboard" }
                   ];
                 })().filter(Boolean).map(b => (
@@ -8650,7 +8806,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <div style={{ fontSize:10, fontWeight:600, color:b.c, opacity:0.7, marginTop:2 }}>{b.sub}</div>
                   </div>
                 ))}
-                {stats.zna === 0 && stats.noContract === 0 && recentDepartures.length === 0 &&
+                {scopedAttn.zna === 0 && scopedAttn.noContract === 0 && recentDepartures.length === 0 &&
                  (!SCHED_ALERT_PINS.has(currentUser.pin) || (upcomingChecked && upcomingMissing.length === 0)) && (
                   <div style={{ background:"#dcfce7", border:"1px solid #86efac", borderRadius:14, padding:"14px 16px", color:"#14532d", fontWeight:700, fontSize:13 }}>
                     ✅ Nothing urgent — everything in good shape.
@@ -8860,6 +9016,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               try { await window.BOA_DB.saveTechLoans(next); setTechLoans(next); }
               catch (e) { console.error("saveTechLoans (auto):", e); }
             }}
+            initialBranch={_myStores[0] || SALONS[0].name}
           />
         )}
 
