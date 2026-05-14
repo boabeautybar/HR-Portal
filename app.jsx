@@ -1957,7 +1957,7 @@ function StaffModal({ s, onClose, onSave, onTransfer, allStaff }) {
             <input type="date" style={inp} value={f.startDate||""} onChange={e=>set("startDate",e.target.value||null)} />
           </div>
           <div style={{ gridColumn:"1/-1" }}><label style={lbl}>Contract</label>
-            <select style={inp} value={f.contract} onChange={e=>set("contract",e.target.value)}>
+            <select style={inp} value={f.contract || "NO CONTRACT"} onChange={e=>set("contract",e.target.value)}>
               <option>Permanent</option><option>Fixed Term</option><option>3 Month</option><option>NO CONTRACT</option><option>2 Weeks</option><option>Induction</option>
             </select>
           </div>
@@ -2414,23 +2414,13 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       // start — they vanish from the schedule entirely.
       .filter(s => !s.leftDate || !_periodStartYmdForTechs || s.leftDate >= _periodStartYmdForTechs);
 
-    const provisionalTechs = obList
-      .filter(o => 
-        o.branch === branch && 
-        (o.status === "Trial Week 1" || o.status === "Pending Trial 1 Review" || o.status === "Trial Week 2" || o.status === "Pending Trial 2 Review")
-      )
-      .map(o => ({
-        ...o,
-        isProvisional: true
-      }));
-
-    return [...regularTechs, ...provisionalTechs].sort((a, b) => {
+    return regularTechs.sort((a, b) => {
       const am = a.onMat ? 1 : 0;
       const bm = b.onMat ? 1 : 0;
       if (am !== bm) return am - bm;                       // active before on-mat
       return (a.ec || "").localeCompare(b.ec || "");
     });
-  }, [allStaff, branch, _periodStartYmdForTechs, obList]);
+  }, [allStaff, branch, _periodStartYmdForTechs]);
 
   // Set of "ec|dayOfMonth" combos that have a pending off-day request in the
   // active branch + cycle. Used to render a small dot on the schedule cell so
@@ -2521,9 +2511,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     // We'll mark their grid rows as Leave separately at the end.
     const allActive = [...techs].filter(t => !t.onMat);
     const sortedTechs = allActive
-      .filter(t => !t.isProvisional)
       .sort((a,b) => (a.ec || "").localeCompare(b.ec || ""));
-    const provTechs = allActive.filter(t => t.isProvisional);
     const onMatTechs = techs.filter(t => t.onMat);
     const totalStaff = sortedTechs.length;
     const sundayGroup = {};
@@ -2613,20 +2601,13 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     };
     // Original uses Math.round (not ceil) — matches the working bundle.
     const minWorkingFor = (d) => {
-      const provW = (d.dow !== 0 && d.dow !== 6) ? provTechs.length : 0;
-      const capRem = Math.max(1, capacity - provW);
-      const target = Math.max(1, Math.round(dayTargetPct(d.dow, isBusyDay(d)) * allActive.length) - provW);
+      const capRem = Math.max(1, capacity);
+      const target = Math.max(1, Math.round(dayTargetPct(d.dow, isBusyDay(d)) * allActive.length));
       return totalStaff <= 2 ? 1 : Math.min(capRem, target);
     };
 
     const newGrid = {};
     sortedTechs.forEach(s => { newGrid[s.ec] = {}; });
-    provTechs.forEach(s => {
-      newGrid[s.ec] = {};
-      days.forEach(d => {
-        newGrid[s.ec][d.d] = (d.dow === 0 || d.dow === 6) ? "O" : "trial";
-      });
-    });
 
     // ── Cross-month carry-over for the leading partial week ─────────────
     // A schedule period (25th–24th) can begin mid-week. The Mon-Sun labour
@@ -4920,7 +4901,6 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                     <td style={{ position:"sticky", left:0, background:nameBg, padding:"6px 10px", borderBottom:"1px solid #FCE7F3", color:nameColor, fontWeight:600, fontSize:12 }}>
                       <div style={{ display:"flex", alignItems:"center", gap:6 }}>
                         <span>{s.name}</span>
-                        {s.isProvisional && <span style={{ background:"#fce7f3", color:"#be185d", padding:"1px 6px", borderRadius:4, fontSize:9, fontWeight:800, letterSpacing:"0.04em" }}>🌱 TRAINEE</span>}
                         {onMat && <span style={{ background:"#e5e7eb", color:"#374151", padding:"1px 6px", borderRadius:4, fontSize:9, fontWeight:700, letterSpacing:"0.04em" }}>🤱 ON MAT</span>}
                         {!onMat && isLeaving && <span style={{ background:"#fee2e2", color:"#991b1b", padding:"1px 6px", borderRadius:4, fontSize:9, fontWeight:700, letterSpacing:"0.04em" }}>👋 LEFT {s.leftDate}</span>}
                       </div>
@@ -4939,7 +4919,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                       // sync pass to stamp X.
                       const dYmd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
                       const isPastLeft = isLeaving && dYmd > s.leftDate;
-                      const cellLocked = onMat || isPastLeft || s.isProvisional;
+                      const cellLocked = onMat || isPastLeft;
                       // Maternity leave cells: distinct lavender tint so
                       // ML reads differently from a regular L (annual
                       // leave) and from a post-departure ghost cell.
@@ -6343,7 +6323,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [navShowCategory, setNavShowCategory] = useState(false);
   // Map of tab → category name. Kept in sync with the groups list below.
   const NAV_TAB_TO_CATEGORY = {
-    onboard:"People", offboard:"People", staff:"People", recruitment:"People", hrLibrary:"People", maternity:"People", unpaidLegal:"People",
+    onboard:"People", offboard:"People", staff:"People", recruitment:"People", hrLibrary:"People", maternity:"People", unpaidLegal:"People", trialPeriod:"People",
     scheduling:"Operations", locations:"Operations", mgrclockins:"Operations", leave:"Operations", checkins:"Operations", storeOpenings:"Operations", movements:"Operations",
     attendance:"Payroll", payrollProgress:"Payroll",
     alerts:"Insights", activity:"Insights",
@@ -6378,20 +6358,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [proofModal,          setProofModal]          = useState(null); // { loading, dataUrl, name, ymd, status }
 
   // ── Onboarding / Off-boarding state ────────────────────────────────
-  const [obList, setObList] = useState([]);           // joiner records
+  const [obList, setObList] = useState([]);           // joiner records (3-month contract signers)
+  const [trialList, setTrialList] = useState([]);     // trial period candidates (pre-contract)
   const [hrTasks, setHrTasks] = useState([]);         // HR Tasks (mocked for now)
   const [offList, setOffList] = useState([]);         // leaver records
   // Controlled value for the "Mark a staff member as off-boarded" StaffPicker;
   // submitOff() now reads this state instead of an uncontrolled <select> DOM
   // node so the searchable picker can drive it cleanly.
   const [offEcInput, setOffEcInput] = useState("");
-  const [obForm, setObForm] = useState({              // onboarding inline form
+  const [obForm, setObForm] = useState({              // onboarding registration form
     name:"", ec:"", branch: SALONS[0].name, position:"Nail Tech",
-    positionOther:"", startDate:"", notes:"", status:"Trainer Week", _editId: null
+    positionOther:"", startDate:"", notes:"",
+    phone:"", email:"", homeAddress:"",
+    idType:"sa_id", idDetails:"",
+    bankName:"", accNumber:"", branchCode:"",
+    nextOfKinName:"", nextOfKinPhone:"",
+    files: [], // Array to hold File objects before upload
+    _editId: null, _fromTrialId: null
   });
   const [hrTaskModal, setHrTaskModal] = useState(null); // { task: <task object>, scores: { lateness:5, reliability:5 }, docs: [] }
   const [quickPick, setQuickPick] = useState(null);   // pending-term quick-pick modal
   const [pendingTerms, setPendingTerms] = useState([]);  // auto-detected from attendance grid
+  // Trial Period add-trainee form state (lifted to component level — used inside tab IIFE)
+  const [tForm, setTForm] = useState({ name:"", phone:"", email:"", homeAddress:"", trainerName:"", inductionPassDate:"", branch: SALONS[0]?.name||"", startDate:"", notes:"", _open: false });
+  // Onboarding registration modal toggle
+  const [obShowForm, setObShowForm] = useState(false);
+  const [obSubmitting, setObSubmitting] = useState(false);
 
   // ── Leave Planner state ────────────────────────────────────────────
   const [leaveRecs, setLeaveRecs] = useState([]);
@@ -6803,8 +6795,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadOffboarding(),
       window.BOA_DB.loadLeaveRecords(),
       window.BOA_DB.loadManagerPins(),
-      window.BOA_DB.loadHRTasks()
-    ]).then(([d, ob, off, lv, pins, tasks]) => {
+      window.BOA_DB.loadHRTasks(),
+      window.BOA_DB.loadTrialPeriod()
+    ]).then(([d, ob, off, lv, pins, tasks, trial]) => {
       setStaff(d.staff);
       setManagers(d.managers);
       setMatRecs(d.matRecs);
@@ -6813,6 +6806,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setLeaveRecs(Array.isArray(lv) ? lv : []);
       setMgrPins(pins && typeof pins === "object" ? pins : {});
       setHrTasks(Array.isArray(tasks) ? tasks : []);
+      setTrialList(Array.isArray(trial) ? trial : []);
       setLoading(false);
     }).catch((err) => {
       setLoadError("Could not load data: " + (err.message || err));
@@ -7316,21 +7310,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const onUnpaidLegal = all.filter(s=>s.onUnpaidLegal);    // greyed at the bottom
     const offboarded = all.filter(s=>s.offboarded);          // greyed in UI, only those within the 31-day window
     const arriving = all.filter(s=>s.isShadow);              // pending incoming transfers — shown but not counted
-    // Trainees in Onboarding (not yet in 'staff'). Exclude those with the trainer (not yet at the branch).
-    const provisional = obList.filter(o => 
-      o.branch === salon.name && 
-      !o.status?.includes("Trainer") &&
-      o.status !== "Hired" &&
-      o.status !== "Failed / Terminated"
-    );
     // Use targetCapacity for low-demand stores (e.g. Betty), full capacity otherwise
     const goal = salon.targetCapacity || salon.capacity;
-    // We add provisional length to fillRate temporarily if we want them to count, or keep them separate.
-    // The requirement says "Show Week 1/Week 2 trainees in vacant branch slots".
-    const fillRate = (active.length + provisional.length) / goal;
+    const fillRate = active.length / goal;
     const urgency = active.length===0?"critical":fillRate<0.5?"high":fillRate<1?"low":"full";
-    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, provisional, urgency, goal };
-  }), [enriched, obList]);
+    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, urgency, goal };
+  }), [enriched]);
 
   const uColor = { critical:"#dc2626", high:"#f97316", low:"#eab308", full:"#16a34a" };
   const uLabel = { critical:"UNSTAFFED", high:"UNDERSTAFFED", low:"NEEDS STAFF", full:"AT CAPACITY" };
@@ -7553,6 +7538,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const ds = Math.floor((t0 - sd) / 86400000);
               return ds <= 31;
             }).length;
+            const activeTrialCount = trialList.filter(r => r.status !== "passed" && r.status !== "failed").length;
+            const trialLbl = "🧪 Trial Period" + (activeTrialCount > 0 ? " (" + activeTrialCount + ")" : "");
             const onboardLbl  = "🌱 Onboarding"  + (obCount > 0 ? " (" + obCount + ")" : "");
             const offboardLbl = "👋 Off-boarding" + (offList.length > 0 ? " (" + offList.length + ")" : "");
             const matLbl      = "🤱 Maternity ("  + matRecs.length + ")";
@@ -7561,6 +7548,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 color:{ bg:"#FDEEF5", bgActive:"#FBCFE8", ink:"#831843" },
                 items: [
                   { t:"onboard",     l: onboardLbl },
+                  { t:"trialPeriod", l: trialLbl   },
                   { t:"offboard",    l: offboardLbl },
                   { t:"staff",       l:"👥 Staff List"    },
                   { t:"recruitment", l:"🎯 Recruitment"   },
@@ -8605,20 +8593,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         </div>
                       );
                     })}
-                    {/* Provisional (Trainees) */}
-                    {salon.provisional && salon.provisional.map(m=>(
-                      <div key={m._id} style={{ display:"flex", alignItems:"center", gap:6, padding:"5px 7px", borderRadius:7, background:"#fdf2f8", border:"1.5px dashed #fbcfe8", opacity:0.8 }}>
-                        <span style={{ fontSize:9, color:"#f472b6", fontFamily:"monospace", minWidth:34 }}>{m.ec}</span>
-                        <span style={{ flex:1, fontSize:11, fontWeight:600, color:"#be185d", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
-                          🌱 {m.name}
-                        </span>
-                        <span style={{ fontSize:9, background:"#be185d", color:"#fff", borderRadius:4, padding:"1px 6px", fontWeight:700, whiteSpace:"nowrap" }}>
-                          {(m.status || "").includes("Week 1") ? "TRIAL (WK1)" : "TRIAL (WK2)"}
-                        </span>
-                      </div>
-                    ))}
-                    {/* Vacant seats — off-boarded rows already visualise their open slot, so subtract them here too */}
-                    {Array.from({ length:Math.max(0, salon.capacity - salon.active.length - salon.offboarded.length - (salon.provisional ? salon.provisional.length : 0)) }).map((_,i)=>(
+                    {/* Vacant seats */}
+                    {Array.from({ length:Math.max(0, salon.capacity - salon.active.length - salon.offboarded.length) }).map((_,i)=>(
                       <div key={i} style={{ padding:"5px 7px", borderRadius:7, border:"1.5px dashed #d1d5db", display:"flex", alignItems:"center", gap:6 }}>
                         <span style={{ fontSize:12, opacity:0.25 }}>👤</span>
                         <span style={{ fontSize:10, color:"#d1d5db", fontStyle:"italic" }}>Vacant seat</span>
@@ -9445,8 +9421,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             <div style={{ marginBottom:10 }}>
                               <div style={{ display:"flex", justifyContent:"space-between", fontSize:11, fontWeight:700, marginBottom:4, color:need===0?"#15803d":"#9a3412" }}>
                                 <span>
-                                  {salon.active.length} of {salon.goal} staff {salon.lowDemand?"(target)":"(capacity)"} 
-                                  {salon.provisional && salon.provisional.length > 0 && <span style={{ color:"#be185d", marginLeft:4 }}>(+{salon.provisional.length} provisional)</span>}
+                                  {salon.active.length} of {salon.goal} staff {salon.lowDemand?"(target)":"(capacity)"}
                                 </span>
                                 <span>{pct}% filled</span>
                               </div>
@@ -9736,9 +9711,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     style={{ padding:"8px 16px", borderRadius:9, border:"1px solid #FBCFE8", background:"#FFFFFF", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700, color:"#831843" }}>
                     ↺ Reset to Live
                   </button>
-                  <button onClick={()=>{ if(window.confirm && !window.confirm("Apply this plan to live data? This will update all manager branch assignments.")) return; setManagers(plannerMgrs.map(m=>({...m}))); setTab("locations"); }}
-                    onClick2={()=>{ setManagers(plannerMgrs.map(m=>({...m}))); alert("Plan applied to live data!"); setTab("locations"); }}
-                    onClick={()=>{ if(totalGaps>0){ if(!window.confirm(`There are still ${totalGaps} coverage gaps. Apply anyway?`)) return; } setManagers(plannerMgrs.map(m=>({...m}))); setTab("locations"); }}
+                  <button onClick={()=>{ 
+                    if(totalGaps > 0) { 
+                      if(!window.confirm(`There are still ${totalGaps} coverage gaps. Apply anyway?`)) return; 
+                    } else {
+                      if(!window.confirm("Apply this plan to live data? This will update all manager branch assignments.")) return;
+                    }
+                    setManagers(plannerMgrs.map(m=>({...m}))); 
+                    alert("Plan applied to live data!"); 
+                    setTab("locations"); 
+                  }}
                     style={{ padding:"8px 16px", borderRadius:9, border:"none", background:"#BE185D", color:"#fff", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
                     ✓ Apply to Live Data
                   </button>
@@ -9847,15 +9829,300 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           </div>
         )}
 
+        {/* ── TRIAL PERIOD TAB ── */}
+        {tab==="trialPeriod" && (() => {
+          const TRIAL_STAGES = [
+            { key:"induction",            label:"Induction",         color:"#7c3aed", bg:"#ede9fe", emoji:"🎓" },
+            { key:"trial_w1",             label:"Trial Week 1",      color:"#0891b2", bg:"#cffafe", emoji:"📅" },
+            { key:"pending_mid_review",   label:"Mid-Review Pending",color:"#d97706", bg:"#fef3c7", emoji:"⏳" },
+            { key:"trial_w2",             label:"Trial Week 2",      color:"#059669", bg:"#d1fae5", emoji:"📅" },
+            { key:"pending_final_review", label:"Final Review",      color:"#BE185D", bg:"#fce7f3", emoji:"⏳" },
+          ];
+          const RESULT_STAGES = [
+            { key:"passed", label:"Passed ✅", color:"#15803d", bg:"#dcfce7" },
+            { key:"failed", label:"Failed ❌", color:"#991b1b", bg:"#fee2e2" }
+          ];
+
+          const now = new Date();
+          const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          const daysInStage = (r) => {
+            const ref = r.updatedAt || r.addedAt;
+            if (!ref) return 0;
+            return Math.floor((t0 - new Date(ref)) / 86400000);
+          };
+          const fmtDate = ymd => ymd ? new Date(ymd+"T00:00:00").toLocaleDateString("en-ZA",{day:"2-digit",month:"short",year:"numeric"}) : "—";
+
+          const persistTrial = async (next) => {
+            setTrialList(next);
+            try { await window.BOA_DB.saveTrialPeriod(next); }
+            catch(e) { alert("Could not save trial data: " + (e.message || e)); }
+          };
+
+          const advanceStage = (id) => {
+            const order = ["induction","trial_w1","pending_mid_review","trial_w2","pending_final_review","passed"];
+            const rec = trialList.find(r => r._id === id);
+            if (!rec) return;
+            const idx = order.indexOf(rec.status);
+            if (idx < 0 || idx >= order.length - 1) return;
+            persistTrial(trialList.map(r => r._id === id
+              ? { ...r, status: order[idx+1], updatedAt: new Date().toISOString() }
+              : r));
+          };
+          const markFailed = (id) => {
+            if (!confirm("Mark this candidate as failed? They will be archived in the Trial Staff folder.")) return;
+            persistTrial(trialList.map(r => r._id === id
+              ? { ...r, status:"failed", updatedAt: new Date().toISOString() }
+              : r));
+          };
+          const markPassed = (id) => {
+            if (!confirm("Mark this candidate as passed? This will allow you to promote them to Onboarding.")) return;
+            persistTrial(trialList.map(r => r._id === id
+              ? { ...r, status:"passed", updatedAt: new Date().toISOString() }
+              : r));
+          };
+          const promoteToOnboarding = (r) => {
+            // Pre-fill the onboarding form and switch to onboarding tab
+            const allEcs = [...staff.map(s=>s.ec), ...managers.map(m=>m.ec), ...obList.map(o=>o.ec)].filter(Boolean);
+            const maxNum = allEcs.reduce((max, ec) => {
+              const m = /B[- ]?(\d+)/i.exec(ec||"");
+              return m ? Math.max(max, parseInt(m[1],10)) : max;
+            }, 900);
+            const nextEc = "B" + (maxNum + 1);
+            setObForm({
+              name: r.name || "", ec: nextEc,
+              branch: r.branch || SALONS[0].name,
+              position: "Nail Tech", positionOther:"",
+              startDate:"", notes: "Promoted from Trial Period · " + fmtDate(r.startDate),
+              phone: r.phone||"", email: r.email||"", homeAddress: r.homeAddress||"",
+              idType:"sa_id", idDetails:"",
+              bankName:"", accNumber:"", branchCode:"",
+              nextOfKinName:"", nextOfKinPhone:"",
+              files: [],
+              _editId: null, _fromTrialId: r._id
+            });
+            persistTrial(trialList.map(x => x._id === r._id
+              ? { ...x, promotedToOnboarding: true, promotedAt: new Date().toISOString() }
+              : x));
+            setTab("onboard");
+            setObShowForm(true);
+          };
+          const deleteTrial = (id) => {
+            if (!confirm("Permanently delete this trial record?")) return;
+            persistTrial(trialList.filter(r => r._id !== id));
+          };
+
+          const submitTrial = () => {
+            if (!tForm.name.trim()) { alert("Name is required."); return; }
+            if (!tForm.branch) { alert("Branch is required."); return; }
+            const rec = {
+              _id: Date.now(),
+              name: tForm.name.trim(),
+              phone: tForm.phone, email: tForm.email,
+              homeAddress: tForm.homeAddress,
+              trainerName: tForm.trainerName,
+              inductionPassDate: tForm.inductionPassDate,
+              branch: tForm.branch,
+              startDate: tForm.startDate,
+              notes: tForm.notes,
+              status: "induction",
+              addedAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            };
+            persistTrial([...trialList, rec]);
+            setTForm({ name:"", phone:"", email:"", homeAddress:"", trainerName:"", inductionPassDate:"", branch: SALONS[0].name, startDate:"", notes:"", _open: false });
+          };
+
+          const activeTrials  = trialList.filter(r => r.status !== "passed" && r.status !== "failed");
+          const passedTrials  = trialList.filter(r => r.status === "passed" && !r.promotedToOnboarding);
+          const failedTrials  = trialList.filter(r => r.status === "failed");
+
+          const inp = { padding:"8px 10px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:13, fontFamily:"inherit", background:"#fff" };
+          const lbl = { display:"block", fontSize:10, fontWeight:700, color:"#BE185D", letterSpacing:"0.08em", marginBottom:4, textTransform:"uppercase" };
+
+          return (
+            <div style={{ fontFamily:"'DM Sans', sans-serif", padding:"0 0 40px 0" }}>
+              {/* Header */}
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:24 }}>
+                <div>
+                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:28, color:"#7c3aed", fontWeight:700, marginBottom:4 }}>🧪 Trial Period</div>
+                  <div style={{ fontSize:13, color:"#9ca3af" }}>Track induction and 2-week branch trials before the 3-month contract is signed.</div>
+                </div>
+                <button
+                  onClick={() => setTForm(f => ({ ...f, _open: !f._open }))}
+                  style={{ padding:"10px 20px", borderRadius:10, border:"none", background:"#7c3aed", color:"#fff", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}
+                >
+                  ➕ Add Trainee
+                </button>
+              </div>
+
+              {/* Stats */}
+              <div style={{ display:"flex", gap:10, marginBottom:24, flexWrap:"wrap" }}>
+                {[
+                  { l:"Total",          v:trialList.length,             c:"#7c3aed", bg:"#ede9fe" },
+                  { l:"Active in Trial",v:activeTrials.length,          c:"#0891b2", bg:"#cffafe" },
+                  { l:"Awaiting Review",v:trialList.filter(r=>r.status?.includes("review")).length, c:"#d97706", bg:"#fef3c7" },
+                  { l:"Passed",         v:passedTrials.length,          c:"#15803d", bg:"#dcfce7" },
+                  { l:"Failed",         v:failedTrials.length,          c:"#991b1b", bg:"#fee2e2" }
+                ].map(s => (
+                  <div key={s.l} style={{ flex:"1 1 140px", background:"#fff", borderRadius:11, padding:"14px 16px", border:`1px solid ${s.bg}`, boxShadow:"0 2px 8px rgba(0,0,0,0.04)" }}>
+                    <div style={{ fontSize:26, fontWeight:800, color:s.c, lineHeight:1.1 }}>{s.v}</div>
+                    <div style={{ fontSize:10, fontWeight:700, color:s.c, opacity:0.7, marginTop:3, letterSpacing:"0.06em" }}>{s.l.toUpperCase()}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Add Trainee Form */}
+              {tForm._open && (
+                <div style={{ background:"#fff", borderRadius:16, border:"2px solid #7c3aed", padding:"20px 22px", marginBottom:24, boxShadow:"0 4px 20px rgba(124,58,237,0.08)" }}>
+                  <div style={{ fontSize:14, fontWeight:800, color:"#7c3aed", marginBottom:16 }}>➕ New Trial Candidate</div>
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:12, marginBottom:12 }}>
+                    <div><label style={lbl}>Full Name *</label><input style={{ ...inp, width:"100%", boxSizing:"border-box" }} value={tForm.name || ""} onChange={e=>setTForm(f=>({...f,name:e.target.value}))} placeholder="e.g. Thandi Mokoena" /></div>
+                    <div><label style={lbl}>Phone</label><input style={{ ...inp, width:"100%", boxSizing:"border-box" }} value={tForm.phone || ""} onChange={e=>setTForm(f=>({...f,phone:e.target.value}))} placeholder="+27 ..." /></div>
+                    <div><label style={lbl}>Email</label><input type="email" style={{ ...inp, width:"100%", boxSizing:"border-box" }} value={tForm.email || ""} onChange={e=>setTForm(f=>({...f,email:e.target.value}))} /></div>
+                    <div><label style={lbl}>Trainer Name</label><input style={{ ...inp, width:"100%", boxSizing:"border-box" }} value={tForm.trainerName || ""} onChange={e=>setTForm(f=>({...f,trainerName:e.target.value}))} /></div>
+                    <div><label style={lbl}>Induction Pass Date</label><input type="date" style={{ ...inp, width:"100%", boxSizing:"border-box" }} value={tForm.inductionPassDate || ""} onChange={e=>setTForm(f=>({...f,inductionPassDate:e.target.value}))} /></div>
+                    <div><label style={lbl}>Assigned Branch *</label>
+                      <select style={{ ...inp, width:"100%", boxSizing:"border-box" }} value={tForm.branch || ""} onChange={e=>setTForm(f=>({...f,branch:e.target.value}))}>
+                        {SALONS.map(s=><option key={s.name} value={s.name}>{s.name}</option>)}
+                      </select>
+                    </div>
+                    <div><label style={lbl}>Trial Start Date</label><input type="date" style={{ ...inp, width:"100%", boxSizing:"border-box" }} value={tForm.startDate || ""} onChange={e=>setTForm(f=>({...f,startDate:e.target.value}))} /></div>
+                  </div>
+                  <div style={{ marginBottom:12 }}>
+                    <label style={lbl}>Home Address <span style={{ fontWeight:400, textTransform:"none", color:"#9ca3af" }}>(helps assign nearest branch)</span></label>
+                    <textarea rows={2} style={{ ...inp, width:"100%", boxSizing:"border-box", resize:"vertical" }} value={tForm.homeAddress || ""} onChange={e=>setTForm(f=>({...f,homeAddress:e.target.value}))} placeholder="Street, suburb, city" />
+                  </div>
+                  <div style={{ marginBottom:16 }}>
+                    <label style={lbl}>Notes</label>
+                    <textarea rows={2} style={{ ...inp, width:"100%", boxSizing:"border-box", resize:"vertical" }} value={tForm.notes || ""} onChange={e=>setTForm(f=>({...f,notes:e.target.value}))} />
+                  </div>
+                  <div style={{ display:"flex", gap:8 }}>
+                    <button onClick={submitTrial} style={{ padding:"9px 22px", borderRadius:9, border:"none", background:"#7c3aed", color:"#fff", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>🧪 Add to Trial Pipeline</button>
+                    <button onClick={() => setTForm(f=>({...f,_open:false}))} style={{ padding:"9px 16px", borderRadius:9, border:"1px solid #e5e7eb", background:"#fff", color:"#6b7280", cursor:"pointer", fontFamily:"inherit", fontSize:13 }}>Cancel</button>
+                  </div>
+                </div>
+              )}
+
+              {/* Pipeline Kanban */}
+              <div style={{ overflowX:"auto", paddingBottom:8 }}>
+                <div style={{ display:"flex", gap:16, minWidth:"max-content" }}>
+                  {TRIAL_STAGES.map(stage => {
+                    const cards = trialList.filter(r => r.status === stage.key);
+                    return (
+                      <div key={stage.key} style={{ width:240, flexShrink:0 }}>
+                        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
+                          <div style={{ background:stage.bg, color:stage.color, borderRadius:8, padding:"4px 10px", fontSize:12, fontWeight:800, letterSpacing:"0.04em" }}>{stage.emoji} {stage.label}</div>
+                          <div style={{ background:stage.color, color:"#fff", borderRadius:99, width:22, height:22, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:800 }}>{cards.length}</div>
+                        </div>
+                        <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                          {cards.length === 0 && (
+                            <div style={{ border:"1.5px dashed #e5e7eb", borderRadius:10, padding:"16px 10px", textAlign:"center", color:"#9ca3af", fontSize:12 }}>No candidates</div>
+                          )}
+                          {cards.map(r => {
+                            const ds = daysInStage(r);
+                            const isStale = ds > 10;
+                            return (
+                              <div key={r._id} style={{ background:"#fff", borderRadius:12, border:`1.5px solid ${isStale?"#fca5a5":stage.bg}`, padding:"12px 14px", boxShadow:"0 2px 8px rgba(0,0,0,0.04)" }}>
+                                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+                                  <div style={{ fontWeight:700, color:"#111827", fontSize:13, marginBottom:2 }}>{r.name}</div>
+                                  <button onClick={()=>deleteTrial(r._id)} style={{ background:"none", border:"none", cursor:"pointer", color:"#d1d5db", fontSize:14, lineHeight:1, padding:0 }} title="Delete">✕</button>
+                                </div>
+                                <div style={{ fontSize:11, color:"#6b7280", marginBottom:8 }}>📍 {r.branch}</div>
+                                {r.startDate && <div style={{ fontSize:11, color:"#9ca3af", marginBottom:4 }}>Started: {fmtDate(r.startDate)}</div>}
+                                <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:10 }}>
+                                  <span style={{ background: isStale?"#fee2e2":stage.bg, color:isStale?"#991b1b":stage.color, fontSize:10, fontWeight:700, padding:"2px 7px", borderRadius:99 }}>{isStale?"⚠ ":""}{ds}d in stage</span>
+                                </div>
+                                {/* Mock Eval card for review stages */}
+                                {(r.status === "pending_mid_review" || r.status === "pending_final_review") && (
+                                  <div style={{ background:"#fef9f0", border:"1px solid #fbbf24", borderRadius:8, padding:"8px 10px", marginBottom:8, fontSize:11 }}>
+                                    <div style={{ fontWeight:700, color:"#92400e", marginBottom:6 }}>📋 {r.status === "pending_mid_review" ? "Mid-Trial" : "Final"} Evaluation</div>
+                                    {["Technique & Skill","Client Manner","Time Management","Cleanliness"].map(criterion => (
+                                      <div key={criterion} style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
+                                        <span style={{ color:"#6b7280" }}>{criterion}</span>
+                                        <span style={{ fontWeight:700, color:"#d97706" }}>{'⭐'.repeat(Math.floor(Math.random()*2)+3)}</span>
+                                      </div>
+                                    ))}
+                                    <div style={{ marginTop:6, fontSize:10, color:"#92400e", fontStyle:"italic" }}>Auto-generated mock · Branch evaluation pending</div>
+                                  </div>
+                                )}
+                                <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                                  {r.status !== "passed" && r.status !== "failed" && (
+                                    <button onClick={()=>advanceStage(r._id)} style={{ flex:1, padding:"6px 8px", borderRadius:7, border:"none", background:stage.color, color:"#fff", cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:700 }}>Advance →</button>
+                                  )}
+                                  {r.status === "pending_final_review" && (
+                                    <button onClick={()=>markPassed(r._id)} style={{ padding:"6px 8px", borderRadius:7, border:"none", background:"#15803d", color:"#fff", cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:700 }}>✅ Pass</button>
+                                  )}
+                                  {r.status !== "failed" && r.status !== "induction" && (
+                                    <button onClick={()=>markFailed(r._id)} style={{ padding:"6px 8px", borderRadius:7, border:"1px solid #fca5a5", background:"#fff", color:"#991b1b", cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:700 }}>❌ Fail</button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {/* Passed column */}
+                  <div style={{ width:240, flexShrink:0 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
+                      <div style={{ background:"#dcfce7", color:"#15803d", borderRadius:8, padding:"4px 10px", fontSize:12, fontWeight:800 }}>✅ Passed</div>
+                      <div style={{ background:"#15803d", color:"#fff", borderRadius:99, width:22, height:22, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:800 }}>{passedTrials.length}</div>
+                    </div>
+                    <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                      {passedTrials.length === 0 && (
+                        <div style={{ border:"1.5px dashed #e5e7eb", borderRadius:10, padding:"16px 10px", textAlign:"center", color:"#9ca3af", fontSize:12 }}>No passed candidates yet</div>
+                      )}
+                      {passedTrials.map(r => (
+                        <div key={r._id} style={{ background:"#fff", borderRadius:12, border:"1.5px solid #bbf7d0", padding:"12px 14px", boxShadow:"0 2px 8px rgba(0,0,0,0.04)" }}>
+                          <div style={{ fontWeight:700, color:"#111827", fontSize:13, marginBottom:2 }}>{r.name}</div>
+                          <div style={{ fontSize:11, color:"#6b7280", marginBottom:10 }}>📍 {r.branch}</div>
+                          <button
+                            onClick={() => promoteToOnboarding(r)}
+                            style={{ width:"100%", padding:"8px", borderRadius:8, border:"none", background:"#BE185D", color:"#fff", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}
+                          >
+                            🌱 Promote to Onboarding
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Failed / Archived */}
+              {failedTrials.length > 0 && (
+                <div style={{ marginTop:32 }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:"#991b1b", marginBottom:10 }}>❌ Failed / Archived ({failedTrials.length})</div>
+                  <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                    {failedTrials.map(r => (
+                      <div key={r._id} style={{ background:"#fff", borderRadius:10, border:"1px solid #fee2e2", padding:"10px 14px", display:"flex", justifyContent:"space-between", alignItems:"center", opacity:0.7 }}>
+                        <div>
+                          <span style={{ fontWeight:600, color:"#374151", fontSize:13 }}>{r.name}</span>
+                          <span style={{ fontSize:11, color:"#9ca3af", marginLeft:8 }}>📍 {r.branch} · {fmtDate(r.startDate)}</span>
+                        </div>
+                        <button onClick={()=>deleteTrial(r._id)} style={{ background:"none", border:"1px solid #fca5a5", borderRadius:6, padding:"3px 10px", cursor:"pointer", fontSize:11, color:"#991b1b" }}>Remove</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         {/* ── ONBOARDING TAB ── */}
         {tab==="onboard" && (() => {
           const now = new Date();
           const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
           const fmt = ymd => ymd ? new Date(ymd+"T00:00:00").toLocaleDateString("en-ZA",{day:"2-digit",month:"short",year:"numeric"}) : "";
           const daysFrom = ymd => Math.floor((t0 - new Date(ymd+"T00:00:00")) / 86400000);
+          
           const active = obList.filter(r => r.startDate && daysFrom(r.startDate) <= 31);
-          const last30 = obList.filter(r => r.startDate && daysFrom(r.startDate) >= 0 && daysFrom(r.startDate) <= 30).length;
+          const last30 = active.length;
           const future = obList.filter(r => r.startDate && daysFrom(r.startDate) < 0).length;
+          
           const grp = { "Nail Tech":[], "Manager":[], "Head Office":[], "Other":[] };
           for (const r of active) {
             if (r.branch === "Head Office")                                  grp["Head Office"].push(r);
@@ -9863,97 +10130,274 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             else if (r.position === "SM" || r.position === "AM" || r.position === "Manager") grp["Manager"].push(r);
             else                                                             grp["Other"].push(r);
           }
+
           const persistOb = async (next) => {
             setObList(next);
             try { await window.BOA_DB.saveOnboarding(next); }
-            catch (e) { alert("Could not save onboarding: " + (e.message || e)); }
+            catch (e) { alert("Could not save onboarding history: " + (e.message || e)); }
           };
-          const addOb = () => {
-            if (!obForm.name || !obForm.startDate) { alert("Name and start date are required."); return; }
-            let next;
-            const wasEdit = !!obForm._editId;
-            if (wasEdit) {
-              next = obList.map(r => r._id === obForm._editId
-                ? { ...r, name: obForm.name, ec: obForm.ec, branch: obForm.branch, position: obForm.position, positionOther: obForm.positionOther||"", startDate: obForm.startDate, notes: obForm.notes, status: obForm.status, updatedAt: new Date().toISOString() }
-                : r);
-            } else {
-              const newRec = { _id: Date.now(), name: obForm.name, ec: obForm.ec, branch: obForm.branch, position: obForm.position, positionOther: obForm.positionOther||"", startDate: obForm.startDate, notes: obForm.notes, status: obForm.status, addedAt: new Date().toISOString() };
-              next = [...obList, newRec];
+
+          const uploadFilesToDrive = async (files, folderName) => {
+            return new Promise((resolve, reject) => {
+              try {
+                const client = window.google.accounts.oauth2.initTokenClient({
+                  client_id: window.BOA_GOOGLE_CONFIG.clientId,
+                  scope: "https://www.googleapis.com/auth/drive.file",
+                  callback: async (tokenResponse) => {
+                    if (!tokenResponse.access_token) return reject("Google Auth failed");
+                    const token = tokenResponse.access_token;
+                    try {
+                      // 1. Create Employee Folder
+                      const fRes = await fetch("https://www.googleapis.com/drive/v3/files", {
+                        method: "POST",
+                        headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+                        body: JSON.stringify({ name: folderName, mimeType: "application/vnd.google-apps.folder", parents: [window.BOA_GOOGLE_CONFIG.folderId] })
+                      });
+                      const folder = await fRes.json();
+                      if (folder.error) throw new Error(folder.error.message);
+                      const folderId = folder.id;
+
+                      // 2. Upload files
+                      for (let i=0; i<files.length; i++) {
+                        const file = files[i];
+                        const metadata = { name: file.name, parents: [folderId] };
+                        const formData = new FormData();
+                        formData.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
+                        formData.append("file", file);
+
+                        const uRes = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart", {
+                          method: "POST",
+                          headers: { "Authorization": `Bearer ${token}` },
+                          body: formData
+                        });
+                        const uData = await uRes.json();
+                        if (uData.error) throw new Error(uData.error.message);
+                      }
+                      resolve(folderId);
+                    } catch(e) { reject(e.message); }
+                  }
+                });
+                client.requestAccessToken();
+              } catch(e) { reject(e.message); }
+            });
+          };
+
+          const submitOb = async () => {
+            if (!obForm.name || !obForm.ec || !obForm.startDate) { alert("Name, EC, and start date are required."); return; }
+            setObSubmitting(true);
+            
+            let driveFolderId = null;
+            if (obForm.files && obForm.files.length > 0) {
+              if (!window.google) {
+                alert("Google API not loaded yet. Please wait a moment.");
+                setObSubmitting(false);
+                return;
+              }
+              const folderName = obForm.ec + " - " + obForm.name;
+              try {
+                driveFolderId = await uploadFilesToDrive(obForm.files, folderName);
+              } catch (err) {
+                alert("Drive Upload Failed: " + err);
+                setObSubmitting(false);
+                return;
+              }
             }
-            persistOb(next);
-            logActivity(
-              wasEdit ? "Edited onboarding" : "Onboarded staff",
-              obForm.name + (obForm.ec ? " (" + obForm.ec + ")" : ""),
-              (obForm.position || "") + " · " + (obForm.branch || "") + " · start " + obForm.startDate
-            );
-            setObForm({ name:"", ec:"", branch: SALONS[0].name, position:"Nail Tech", positionOther:"", startDate:"", notes:"", status:"Trainer Week", _editId: null });
+
+            // 1. Create active staff record
+            const newStaff = {
+              ec: obForm.ec,
+              name: obForm.name,
+              branch: obForm.branch,
+              contract: "Probation (3 Months)",
+              notes: obForm.notes,
+              startDate: obForm.startDate,
+              role_type: "tech" // Handled by saveStaff in data.js
+            };
+
+            let savedStaff;
+            try {
+              savedStaff = await window.BOA_DB.saveStaff(newStaff);
+              setStaff([...staff.filter(s => s.ec !== newStaff.ec), savedStaff]);
+            } catch (e) {
+              alert("Failed to save staff record: " + (e.message || e));
+              setObSubmitting(false);
+              return;
+            }
+
+            // 2. Mark Trial Period as completely passed/hired if applicable
+            if (obForm._fromTrialId) {
+              const updatedTrial = trialList.map(t => 
+                t._id === obForm._fromTrialId ? { ...t, status: "hired", updatedAt: new Date().toISOString() } : t
+              );
+              setTrialList(updatedTrial);
+              try { await window.BOA_DB.saveTrialPeriod(updatedTrial); } catch(e){}
+            }
+
+            // 3. Add to onboarding history (for the UI grid and historical data)
+            const obRecord = {
+              _id: Date.now(),
+              name: obForm.name, ec: obForm.ec, branch: obForm.branch, 
+              position: obForm.position, positionOther: obForm.positionOther||"", 
+              startDate: obForm.startDate, notes: obForm.notes, 
+              phone: obForm.phone, email: obForm.email, homeAddress: obForm.homeAddress,
+              idType: obForm.idType, idDetails: obForm.idDetails,
+              bankName: obForm.bankName, branchCode: obForm.branchCode, accNumber: obForm.accNumber,
+              nextOfKinName: obForm.nextOfKinName, nextOfKinPhone: obForm.nextOfKinPhone,
+              driveFolderId: driveFolderId,
+              status: "Hired", addedAt: new Date().toISOString()
+            };
+            persistOb([...obList, obRecord]);
+
+            logActivity("Onboarded staff", obForm.name + " (" + obForm.ec + ")", obForm.position + " · " + obForm.branch);
+            
+            setObForm({ name:"", ec:"", branch: SALONS[0].name, position:"Nail Tech", positionOther:"", startDate:"", notes:"", phone:"", email:"", homeAddress:"", idType:"sa_id", idDetails:"", bankName:"", accNumber:"", branchCode:"", nextOfKinName:"", nextOfKinPhone:"", files:[], _editId: null, _fromTrialId: null });
+            setObShowForm(false);
+            setObSubmitting(false);
+            alert("✅ Successfully onboarded! " + obForm.name + " is now an Active Staff member.");
           };
-          const editOb = (r) => {
-            setObForm({ name:r.name||"", ec:r.ec||"", branch:r.branch||SALONS[0].name, position:r.position||"Nail Tech", positionOther:r.positionOther||"", startDate:r.startDate||"", notes:r.notes||"", status:r.status||"Trainer Week", _editId:r._id });
-            try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch(_) {}
+
+          const handleFileChange = (e) => {
+            const newFiles = Array.from(e.target.files);
+            setObForm(f => ({ ...f, files: [...f.files, ...newFiles] }));
           };
-          const cancelEdit = () => setObForm({ name:"", ec:"", branch: SALONS[0].name, position:"Nail Tech", positionOther:"", startDate:"", notes:"", status:"Trainer Week", _editId:null });
+          const removeFile = (idx) => {
+            setObForm(f => ({ ...f, files: f.files.filter((_, i) => i !== idx) }));
+          };
+
           const delOb = (id) => {
-            if (!confirm("Remove this onboarding record?")) return;
+            if (!confirm("Remove this onboarding record from the history view?")) return;
             const tgt = obList.find(r => r._id === id);
             persistOb(obList.filter(r => r._id !== id));
-            if (tgt) logActivity("Removed onboarding", (tgt.name || "") + (tgt.ec ? " (" + tgt.ec + ")" : ""), tgt.branch || "");
+            if (tgt) logActivity("Removed onboarding history", (tgt.name || "") + (tgt.ec ? " (" + tgt.ec + ")" : ""), tgt.branch || "");
           };
+
+          const inp = { padding:"10px 12px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:14, fontFamily:"inherit", background:"#fff" };
+          const lbl = { display:"block", fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.06em", marginBottom:6, textTransform:"uppercase" };
 
           return (
             <div>
-              <div style={{ fontFamily:"'Playfair Display',serif", fontSize:26, color:"#831843", fontWeight:700, marginBottom:6, letterSpacing:"0.02em" }}>🌱 Onboarding</div>
-              <div style={{ fontSize:13, color:"#F472B6", marginBottom:18 }}>New starters within the last 31 days. Records auto-archive 31 days after start date.</div>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:18 }}>
+                <div>
+                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:28, color:"#831843", fontWeight:700, marginBottom:4, letterSpacing:"0.02em" }}>🌱 Onboarding Registration</div>
+                  <div style={{ fontSize:13, color:"#F472B6" }}>Convert passing trial members to official employees. Upload contracts to Drive automatically.</div>
+                </div>
+                <button
+                  onClick={() => setObShowForm(!obShowForm)}
+                  style={{ padding:"10px 20px", borderRadius:10, border:"none", background:"#BE185D", color:"#fff", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}
+                >
+                  {obShowForm ? "Close Registration" : "➕ Register New Employee"}
+                </button>
+              </div>
 
+              {/* Registration Form Modal/Panel */}
+              {obShowForm && (
+                <div style={{ background:"#fff", borderRadius:16, border:"2px solid #BE185D", padding:"30px", marginBottom:32, boxShadow:"0 10px 30px rgba(190, 24, 93, 0.1)" }}>
+                  <div style={{ fontSize:18, fontWeight:800, color:"#831843", marginBottom:24, borderBottom:"1px solid #fce7f3", paddingBottom:12 }}>
+                    {obForm._fromTrialId ? "🌱 Convert Trial Candidate" : "➕ Direct Hire Registration"}
+                  </div>
+
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:32 }}>
+                    {/* Left Column: Details */}
+                    <div>
+                      <div style={{ marginBottom:20 }}>
+                        <div style={{ fontSize:14, fontWeight:800, color:"#BE185D", marginBottom:12 }}>1. Employee Details</div>
+                        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+                          <div style={{ gridColumn:"1 / -1" }}><label style={lbl}>Full Name *</label><input style={{...inp, width:"100%", boxSizing:"border-box"}} value={obForm.name || ""} onChange={e=>setObForm({...obForm, name:e.target.value})} placeholder="Full official name" /></div>
+                          <div><label style={lbl}>EC Code *</label><input style={{...inp, width:"100%", boxSizing:"border-box", background:"#fdf2f8", fontWeight:700}} value={obForm.ec || ""} onChange={e=>setObForm({...obForm, ec:e.target.value})} placeholder="e.g. B950" /></div>
+                          <div><label style={lbl}>Start Date *</label><input type="date" style={{...inp, width:"100%", boxSizing:"border-box"}} value={obForm.startDate || ""} onChange={e=>setObForm({...obForm, startDate:e.target.value})} /></div>
+                          <div><label style={lbl}>Branch *</label>
+                            <select style={{...inp, width:"100%", boxSizing:"border-box"}} value={obForm.branch || ""} onChange={e=>setObForm({...obForm, branch:e.target.value})}>
+                              {SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                              <option value="Head Office">🏢 Head Office</option>
+                            </select>
+                          </div>
+                          <div><label style={lbl}>Position *</label>
+                            <select style={{...inp, width:"100%", boxSizing:"border-box"}} value={obForm.position || ""} onChange={e=>setObForm({...obForm, position:e.target.value})}>
+                              <option value="Nail Tech">Nail Tech</option><option value="SM">Store Manager (SM)</option><option value="AM">Assistant Manager (AM)</option><option value="Other">Other</option>
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ marginBottom:20 }}>
+                        <div style={{ fontSize:14, fontWeight:800, color:"#BE185D", marginBottom:12 }}>2. Contact & Identity</div>
+                        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+                          <div><label style={lbl}>Phone Number</label><input style={{...inp, width:"100%", boxSizing:"border-box"}} value={obForm.phone || ""} onChange={e=>setObForm({...obForm, phone:e.target.value})} placeholder="+27..." /></div>
+                          <div><label style={lbl}>Email</label><input type="email" style={{...inp, width:"100%", boxSizing:"border-box"}} value={obForm.email || ""} onChange={e=>setObForm({...obForm, email:e.target.value})} /></div>
+                          <div style={{ gridColumn:"1 / -1" }}><label style={lbl}>Home Address</label><input style={{...inp, width:"100%", boxSizing:"border-box"}} value={obForm.homeAddress || ""} onChange={e=>setObForm({...obForm, homeAddress:e.target.value})} /></div>
+                          <div><label style={lbl}>ID Type</label>
+                            <select style={{...inp, width:"100%", boxSizing:"border-box"}} value={obForm.idType || ""} onChange={e=>setObForm({...obForm, idType:e.target.value})}>
+                              <option value="sa_id">SA ID</option><option value="passport">Passport</option><option value="asylum">Asylum Document</option>
+                            </select>
+                          </div>
+                          <div><label style={lbl}>ID / Passport Number</label><input style={{...inp, width:"100%", boxSizing:"border-box"}} value={obForm.idDetails || ""} onChange={e=>setObForm({...obForm, idDetails:e.target.value})} /></div>
+                        </div>
+                      </div>
+
+                      <div style={{ marginBottom:20 }}>
+                        <div style={{ fontSize:14, fontWeight:800, color:"#BE185D", marginBottom:12 }}>3. Banking & Emergency</div>
+                        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+                          <div><label style={lbl}>Bank Name</label><input style={{...inp, width:"100%", boxSizing:"border-box"}} value={obForm.bankName || ""} onChange={e=>setObForm({...obForm, bankName:e.target.value})} placeholder="Capitec, FNB..." /></div>
+                          <div><label style={lbl}>Branch Code</label><input style={{...inp, width:"100%", boxSizing:"border-box"}} value={obForm.branchCode || ""} onChange={e=>setObForm({...obForm, branchCode:e.target.value})} /></div>
+                          <div style={{ gridColumn:"1 / -1" }}><label style={lbl}>Account Number</label><input style={{...inp, width:"100%", boxSizing:"border-box"}} value={obForm.accNumber || ""} onChange={e=>setObForm({...obForm, accNumber:e.target.value})} /></div>
+                          <div><label style={lbl}>Next of Kin Name</label><input style={{...inp, width:"100%", boxSizing:"border-box"}} value={obForm.nextOfKinName || ""} onChange={e=>setObForm({...obForm, nextOfKinName:e.target.value})} /></div>
+                          <div><label style={lbl}>Next of Kin Phone</label><input style={{...inp, width:"100%", boxSizing:"border-box"}} value={obForm.nextOfKinPhone || ""} onChange={e=>setObForm({...obForm, nextOfKinPhone:e.target.value})} /></div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Right Column: Files & Submit */}
+                    <div style={{ background:"#fdf2f8", borderRadius:12, padding:24, border:"1px dashed #FBCFE8" }}>
+                      <div style={{ fontSize:14, fontWeight:800, color:"#BE185D", marginBottom:8 }}>4. Contract & Documents</div>
+                      <p style={{ fontSize:12, color:"#831843", marginBottom:16 }}>Upload signed contracts, ID copies, and certificates. They will be automatically saved to a new folder in Google Drive.</p>
+                      
+                      <div style={{ background:"#fff", border:"1px solid #FBCFE8", borderRadius:12, padding:16, marginBottom:20 }}>
+                        <label style={{ display:"block", background:"#BE185D", color:"#fff", textAlign:"center", padding:"10px", borderRadius:8, cursor:"pointer", fontWeight:700, fontSize:13 }}>
+                          📄 Select Files
+                          <input type="file" multiple style={{ display:"none" }} onChange={handleFileChange} />
+                        </label>
+                        
+                        {obForm.files.length > 0 && (
+                          <div style={{ marginTop:16, display:"flex", flexDirection:"column", gap:8 }}>
+                            {obForm.files.map((f, idx) => (
+                              <div key={idx} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", background:"#f3f4f6", padding:"8px 12px", borderRadius:6, fontSize:12 }}>
+                                <span style={{ fontWeight:600, color:"#374151", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:200 }}>{f.name}</span>
+                                <button onClick={() => removeFile(idx)} style={{ background:"none", border:"none", color:"#ef4444", cursor:"pointer", fontWeight:800 }}>✕</button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div style={{ marginBottom:24 }}>
+                        <label style={lbl}>Registration Notes</label>
+                        <textarea rows={3} style={{...inp, width:"100%", boxSizing:"border-box", resize:"vertical"}} value={obForm.notes || ""} onChange={e=>setObForm({...obForm, notes:e.target.value})} placeholder="Internal notes about this hire..." />
+                      </div>
+
+                      <button 
+                        onClick={submitOb} 
+                        disabled={obSubmitting}
+                        style={{ width:"100%", padding:"16px", borderRadius:10, border:"none", background:obSubmitting ? "#f472b6" : "#BE185D", color:"#fff", cursor:obSubmitting ? "wait" : "pointer", fontFamily:"inherit", fontSize:15, fontWeight:800, boxShadow:"0 4px 14px rgba(190, 24, 93, 0.3)" }}
+                      >
+                        {obSubmitting ? "⏳ Registering Employee & Uploading..." : "🎉 Complete Registration"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Grid (Historical purely for display) */}
               <div style={{ display:"flex", gap:10, marginBottom:18, flexWrap:"wrap" }}>
                 {[
-                  { l:"Total Records",     v:obList.length, c:"#831843", bg:"#FCE7F3" },
-                  { l:"Started ≤30 Days",  v:last30,        c:"#14532d", bg:"#dcfce7" },
-                  { l:"Future Starts",     v:future,        c:"#1e3a8a", bg:"#dbeafe" }
+                  { l:"Total Onboarded",     v:obList.length, c:"#831843", bg:"#FCE7F3" },
+                  { l:"Started ≤30 Days",    v:last30,        c:"#14532d", bg:"#dcfce7" },
+                  { l:"Future Starts",       v:future,        c:"#1e3a8a", bg:"#dbeafe" }
                 ].map(s => (
-                  <div key={s.l} style={{ flex:"1 1 160px", background:"#FFFFFF", borderRadius:11, padding:"14px 16px", border:"1px solid #FBCFE8" }}>
+                  <div key={s.l} style={{ flex:"1 1 160px", background:"#FFFFFF", borderRadius:11, padding:"14px 16px", border:"1px solid #FBCFE8", boxShadow:"0 2px 8px rgba(0,0,0,0.02)" }}>
                     <div style={{ fontSize:24, fontWeight:800, color:s.c, lineHeight:1.1 }}>{s.v}</div>
                     <div style={{ fontSize:10, fontWeight:700, color:s.c, opacity:0.72, marginTop:3, letterSpacing:"0.06em" }}>{s.l.toUpperCase()}</div>
                   </div>
                 ))}
-              </div>
-
-              <div style={{ background:"#FFFFFF", borderRadius:13, border:"1px solid #FBCFE8", padding:"16px 18px", marginBottom:24 }}>
-                <div style={{ fontSize:13, fontWeight:700, color:"#831843", marginBottom:10 }}>{obForm._editId ? "✏️ Editing starter" : "➕ Add a new starter"}</div>
-                <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))", gap:10, marginBottom:10 }}>
-                  <input type="text" placeholder="Full name" value={obForm.name} onChange={e=>setObForm({...obForm, name:e.target.value})} style={{ padding:"8px 10px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:13, fontFamily:"inherit" }} />
-                  <input type="text" placeholder="EC code (e.g. B900)" value={obForm.ec} onChange={e=>setObForm({...obForm, ec:e.target.value})} style={{ padding:"8px 10px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:13, fontFamily:"inherit" }} />
-                  <select value={obForm.branch} onChange={e=>setObForm({...obForm, branch:e.target.value})} style={{ padding:"8px 10px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:13, fontFamily:"inherit", background:"#fff" }}>
-                    {SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
-                    <option value="Head Office">🏢 Head Office</option>
-                    <option value="Other">✨ Other</option>
-                  </select>
-                  <select value={obForm.position} onChange={e=>setObForm({...obForm, position:e.target.value})} style={{ padding:"8px 10px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:13, fontFamily:"inherit", background:"#fff" }}>
-                    <option value="Nail Tech">Nail Tech</option>
-                    <option value="SM">Store Manager (SM)</option>
-                    <option value="AM">Assistant Manager (AM)</option>
-                    <option value="Other">Other (custom…)</option>
-                  </select>
-                  <select value={obForm.status} onChange={e=>setObForm({...obForm, status:e.target.value})} style={{ padding:"8px 10px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:13, fontFamily:"inherit", background:"#fff" }}>
-                    <option value="Trainer Week">Trainer Week</option>
-                    <option value="Pending Trainer Review">Pending Trainer Review</option>
-                    <option value="Trial Week 1">Trial Week 1 (Branch)</option>
-                    <option value="Pending Trial 1 Review">Pending Trial 1 Review</option>
-                    <option value="Trial Week 2">Trial Week 2 (Branch)</option>
-                    <option value="Pending Trial 2 Review">Pending Trial 2 Review</option>
-                    <option value="Hired">Hired / Completed</option>
-                    <option value="Failed / Terminated">Failed / Terminated</option>
-                  </select>
-                  <input type="date" value={obForm.startDate} onChange={e=>setObForm({...obForm, startDate:e.target.value})} style={{ padding:"8px 10px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:13, fontFamily:"inherit" }} />
-                </div>
-                {obForm.position === "Other" && (
-                  <input type="text" placeholder="✏️ Position name (e.g. Receptionist, Cleaner, IT)" value={obForm.positionOther} onChange={e=>setObForm({...obForm, positionOther:e.target.value})} style={{ width:"100%", padding:"8px 10px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:13, fontFamily:"inherit", marginBottom:10 }} />
-                )}
-                <textarea placeholder="Notes (optional)" value={obForm.notes} onChange={e=>setObForm({...obForm, notes:e.target.value})} rows={2} style={{ width:"100%", padding:"8px 10px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:13, fontFamily:"inherit", marginBottom:10, resize:"vertical" }} />
-                <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-                  <button onClick={addOb} style={{ padding:"8px 18px", borderRadius:9, border:"none", background:"#BE185D", color:"#fff", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>{obForm._editId ? "💾 Update Starter" : "🌱 Add to Onboarding"}</button>
-                  {obForm._editId && <button onClick={cancelEdit} style={{ padding:"8px 14px", borderRadius:9, border:"1px solid #FBCFE8", background:"#fff", color:"#831843", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:600 }}>Cancel Edit</button>}
-                </div>
               </div>
 
               {active.length === 0 ? (
@@ -9980,15 +10424,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const [bg, color] = ds<0 ? ["#dbeafe","#1e3a8a"] : ds<=7 ? ["#dcfce7","#14532d"] : ["#f3f4f6","#475569"];
                           const posLabel = r.position==="SM" ? "Store Manager" : r.position==="AM" ? "Assistant Manager" : (r.position==="Other" && r.positionOther) ? r.positionOther : r.position;
                           return (
-                            <div key={r._id} style={{ background:"#FFFFFF", borderRadius:11, border:"1px solid #FBCFE8", padding:"12px 14px" }}>
+                            <div key={r._id} style={{ background:"#FFFFFF", borderRadius:11, border:"1px solid #FBCFE8", padding:"12px 14px", boxShadow:"0 2px 4px rgba(0,0,0,0.02)" }}>
                               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:6, gap:8 }}>
                                 <div>
                                   <div style={{ fontWeight:700, color:"#831843", fontSize:14 }}>{r.name}</div>
                                   <div style={{ fontSize:11, color:"#9ca3af" }}>{r.ec || "—"} · {r.branch}</div>
                                 </div>
                                 <div style={{ display:"flex", gap:4 }}>
-                                  <button onClick={()=>editOb(r)} title="Edit" style={{ background:"none", border:"1px solid #FBCFE8", borderRadius:6, padding:"4px 8px", cursor:"pointer", fontSize:13 }}>✏️</button>
-                                  <button onClick={()=>delOb(r._id)} title="Remove" style={{ background:"none", border:"1px solid #fca5a5", borderRadius:6, padding:"4px 8px", cursor:"pointer", fontSize:13 }}>🗑</button>
+                                  <button onClick={()=>delOb(r._id)} title="Remove from view" style={{ background:"none", border:"1px solid #fca5a5", borderRadius:6, padding:"4px 8px", cursor:"pointer", fontSize:11, color:"#991b1b" }}>✕ Remove</button>
                                 </div>
                               </div>
                               <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center", marginTop:8 }}>
