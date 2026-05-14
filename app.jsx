@@ -2468,7 +2468,7 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
 }
 
 // ─── SCHEDULE EDITOR (Phase 2a — manual editing, save to Supabase) ──────────────
-function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obList }) {
+function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obList, techLoans, onTechLoansChange }) {
   const [branch, setBranch] = useState(SALONS[0].name);
   const [ym, setYm] = useState(window.BOA_DB ? window.BOA_DB.currentSchedYm() : "2026-05");
   const [grid, setGrid] = useState({});
@@ -2754,7 +2754,9 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     // the busy ones hit the 35% per-week cap. This is what allows "some
     // people to work their 6-day week later in the month, not just during
     // busy period." Branches that opt out entirely: Table Bay, Sandown.
-    const NO_SIX_DAY_BRANCHES = new Set(["Table Bay", "Sandown"]);
+    // Branches that opt out of the 6-day busy-week designation. Betty is
+    // closed Sun+Mon (5 working days/week max), so no tech ever works 6.
+    const NO_SIX_DAY_BRANCHES = new Set(["Table Bay", "Sandown", "Betty"]);
     const designatedBusyWeek = {};
     if (!NO_SIX_DAY_BRANCHES.has(branch)) {
       const allFullWeeks = weeks.map((w, i) => ({ w, i })).filter(x => x.w.length >= 7).map(x => x.i);
@@ -2820,6 +2822,24 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
 
     const newGrid = {};
     sortedTechs.forEach(s => { newGrid[s.ec] = {}; });
+
+    // ── Store-closed days (e.g. Betty closes Sun+Mon) ───────────────────
+    // Pre-seed every closed-DOW cell as 'O' for every active tech. The
+    // FIRST closed Sunday in the cycle stays as a normal work day — Betty
+    // techs work in another store that day (half at Bree, half at Green
+    // Point); the banner above the schedule shows the split.
+    const _closedDow = Array.isArray(salon.closedDow) ? salon.closedDow.map(Number) : [];
+    if (_closedDow.length) {
+      const _closedSet = new Set(_closedDow);
+      const _firstSunday = _closedSet.has(0) ? days.find(d => d.dow === 0) : null;
+      for (const d of days) {
+        if (!_closedSet.has(d.dow)) continue;
+        if (_firstSunday && d.year === _firstSunday.year && d.monthIdx === _firstSunday.monthIdx && d.d === _firstSunday.d) continue;
+        for (const s of sortedTechs) {
+          if (newGrid[s.ec][d.d] == null) newGrid[s.ec][d.d] = "O";
+        }
+      }
+    }
 
     // ── Cross-month carry-over for the leading partial week ─────────────
     // A schedule period (25th–24th) can begin mid-week. The Mon-Sun labour
@@ -3871,6 +3891,35 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     setGrid(newGrid);
     setDirty(true);
     setUnhonouredRequests(stillUnhonoured);
+
+    // ── Betty: auto-create first-Sunday cross-store loan records ─────────
+    // Half of the active techs (alphabetical by EC) go to Bree, the other
+    // half go to Green Point. Pre-existing auto-loans (fromBranch=Betty
+    // → Bree/Green Point) for that date are replaced; any other loans
+    // for the same tech/date are left alone.
+    if (_closedDow.includes(0) && onTechLoansChange) {
+      const _firstSun = days.find(d => d.dow === 0);
+      if (_firstSun && sortedTechs.length > 0) {
+        const _firstSunYmd = _firstSun.year + "-" + String(_firstSun.monthIdx + 1).padStart(2, "0") + "-" + String(_firstSun.d).padStart(2, "0");
+        const _activeAlpha = [...sortedTechs].sort((a, b) => (a.ec || "").localeCompare(b.ec || ""));
+        const _half = Math.ceil(_activeAlpha.length / 2);
+        const _assignFor = (idx) => idx < _half ? "Bree" : "Green Point";
+        const _existing = (techLoans || []).filter(l => !(l && l.date === _firstSunYmd && l.fromBranch === branch && (l.toBranch === "Bree" || l.toBranch === "Green Point")));
+        const _newAuto = _activeAlpha.map((s, idx) => ({
+          _id: "ln_betty_auto_" + _firstSunYmd + "_" + s.ec,
+          ec: s.ec,
+          name: s.name || "",
+          date: _firstSunYmd,
+          fromBranch: branch,
+          toBranch: _assignFor(idx),
+          note: "Auto: Betty first-Sunday cross-store rotation",
+          createdBy: "auto",
+          createdAt: new Date().toISOString()
+        }));
+        try { await onTechLoansChange([..._existing, ..._newAuto]); }
+        catch (e) { console.error("Betty auto-loans:", e); }
+      }
+    }
 
     const totalReqs    = consolidatedReqs.length;
     const honouredReqs = totalReqs - stillUnhonoured.length;
@@ -5056,6 +5105,47 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         </div>
       )}
 
+      {/* Betty: store closed Sun + Mon. On the first Sunday of the cycle
+          all techs work in another store — half at Bree, half at Green
+          Point. Split is deterministic by EC (alphabetical first half
+          → Bree, second half → Green Point). */}
+      {Array.isArray(salonForBranch.closedDow) && salonForBranch.closedDow.includes(0) && (() => {
+        const firstSun = days.find(d => d.dow === 0);
+        if (!firstSun) return null;
+        const active = techs.filter(t => !t.onMat).sort((a,b) => (a.ec || "").localeCompare(b.ec || ""));
+        if (active.length === 0) return null;
+        const half = Math.ceil(active.length / 2);
+        const breeTechs = active.slice(0, half);
+        const gpTechs   = active.slice(half);
+        const dayLabel = firstSun.d + " " + (["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][firstSun.monthIdx]);
+        return (
+          <div style={{ background:"#fef3c7", border:"1px solid #fde68a", borderRadius:10, padding:"12px 16px", marginBottom:12 }}>
+            <div style={{ fontSize:13, fontWeight:800, color:"#7c2d12", marginBottom:6 }}>
+              📍 Betty rule — first Sunday of cycle ({dayLabel})
+            </div>
+            <div style={{ fontSize:11, color:"#7c2d12", marginBottom:8, lineHeight:1.4 }}>
+              Betty closes every Sun + Mon. On the first Sunday of the cycle all techs work at another store. Half go to <strong>Bree</strong>, half go to <strong>Green Point</strong>.
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+              <div>
+                <div style={{ fontSize:10, fontWeight:800, color:"#7c2d12", letterSpacing:"0.06em", marginBottom:4 }}>→ BREE ({breeTechs.length})</div>
+                {breeTechs.length === 0 ? <div style={{ fontSize:11, color:"#9ca3af", fontStyle:"italic" }}>—</div> :
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:4 }}>
+                    {breeTechs.map(t => <span key={t.ec} style={{ background:"#FFFFFF", border:"1px solid #fde68a", borderRadius:6, padding:"2px 8px", fontSize:11, fontWeight:700, color:"#7c2d12" }}>{t.name}</span>)}
+                  </div>}
+              </div>
+              <div>
+                <div style={{ fontSize:10, fontWeight:800, color:"#7c2d12", letterSpacing:"0.06em", marginBottom:4 }}>→ GREEN POINT ({gpTechs.length})</div>
+                {gpTechs.length === 0 ? <div style={{ fontSize:11, color:"#9ca3af", fontStyle:"italic" }}>—</div> :
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:4 }}>
+                    {gpTechs.map(t => <span key={t.ec} style={{ background:"#FFFFFF", border:"1px solid #fde68a", borderRadius:6, padding:"2px 8px", fontSize:11, fontWeight:700, color:"#7c2d12" }}>{t.name}</span>)}
+                  </div>}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {techs.length === 0 ? (
         <div style={{ padding:24, background:"#FCE7F3", borderRadius:10, color:"#831843" }}>No staff at <strong>{branch}</strong>.</div>
       ) : loading ? (
@@ -5132,6 +5222,16 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                       const dYmd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
                       const isPastLeft = isLeaving && dYmd > s.leftDate;
                       const cellLocked = onMat || isPastLeft;
+                      // Cross-store loan: if this tech has a same-day loan FROM
+                      // this branch, the cell is tinted teal and shows the
+                      // destination store (e.g. Betty's first-Sunday Bree/GP
+                      // split, or any manually-logged movement).
+                      const _outgoingLoan = (techLoans || []).find(l => l && l.ec === s.ec && l.date === dYmd && l.fromBranch === branch);
+                      const _loanCell = _outgoingLoan && !onMat && !isPastLeft
+                        ? (_outgoingLoan.toBranch === "Bree"        ? { background:"#cffafe", color:"#155e75" }
+                        :  _outgoingLoan.toBranch === "Green Point" ? { background:"#fce7f3", color:"#9d174d" }
+                        :                                              { background:"#e0e7ff", color:"#3730a3" })
+                        : null;
                       // Maternity leave cells: distinct lavender tint so
                       // ML reads differently from a regular L (annual
                       // leave) and from a post-departure ghost cell.
@@ -5139,7 +5239,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                         ? { background:"#ede9fe", color:"#6b21a8" }
                         : isPastLeft
                           ? { background:"#e5e7eb", color:"#9ca3af" }
-                          : cellStyle(v);
+                          : _loanCell || cellStyle(v);
                       // Drag-drop visual states
                       const isSrc        = dragSource && dragSource.ec === s.ec && dragSource.day === d.d;
                       const isValidDrop  = !cellLocked && isValidDropTarget(s.ec, d.d);
@@ -5152,7 +5252,9 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                         ? `${s.name} · on maternity leave`
                         : isPastLeft
                           ? `${s.name} · left ${s.leftDate} — no longer scheduled`
-                          : `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · click to cycle, drag to swap within the week${requested ? ' · 📝 day-off requested' + (requestUnapplied ? ' (not yet on grid)' : '') : ''}`;
+                          : _loanCell
+                            ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · working at ${_outgoingLoan.toBranch} (cross-store)`
+                            : `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · click to cycle, drag to swap within the week${requested ? ' · 📝 day-off requested' + (requestUnapplied ? ' (not yet on grid)' : '') : ''}`;
                       return (
                         <td key={s.ec+'-'+d.d}
                             draggable={!cellLocked && !!v}
@@ -5163,7 +5265,11 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                             onClick={cellLocked ? undefined : () => cycleCell(s.ec, d.d)}
                             title={cellTitle}
                             style={{ ...matCell, padding:0, height:30, textAlign:"center", borderBottom:"1px solid #FCE7F3", borderLeft:"1px solid #FCE7F3", borderRight: weekEnd ? "3px solid #BE185D" : "none", cursor: dragCursor, fontSize:11, fontWeight:700, userSelect:"none", outline: dropOutline, outlineOffset:-1, opacity: isSrc ? 0.4 : undefined, position:"relative" }}>
-                          {onMat ? "ML" : isPastLeft ? "—" : v}
+                          {onMat ? "ML" : isPastLeft ? "—" : _loanCell ? (
+                            <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: "0.04em" }}>
+                              →{_outgoingLoan.toBranch === "Green Point" ? "GP" : _outgoingLoan.toBranch.slice(0, 4)}
+                            </span>
+                          ) : v}
                           {requestUnapplied && !cellLocked && (
                             <span style={{ position:"absolute", top:1, right:2, fontSize:8, lineHeight:1, color:"#BE185D", pointerEvents:"none" }}>📝</span>
                           )}
@@ -8738,6 +8844,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             onTechRequestsChange={(next) => { setTechRequests(next); setTechRequestsTick(t => t + 1); }}
             leaveRecs={leaveRecs}
             obList={obList}
+            techLoans={techLoans}
+            onTechLoansChange={async (next) => {
+              try { await window.BOA_DB.saveTechLoans(next); setTechLoans(next); }
+              catch (e) { console.error("saveTechLoans (auto):", e); }
+            }}
           />
         )}
 
