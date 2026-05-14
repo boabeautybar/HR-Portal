@@ -2145,6 +2145,7 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
             <div><label style={lbl}>Role</label>
               <select style={inp} value={f.role} onChange={e=>set("role",e.target.value)}>
                 <option value="SM">👑 Store Manager (SM)</option>
+                <option value="SSM">💎 Senior Store Manager (SSM)</option>
                 <option value="AM">⭐ Assistant Manager (AM)</option>
               </select>
             </div>
@@ -8170,6 +8171,97 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </table>
               </div>
             </div>
+
+            {/* ── Managers section ─────────────────────────────────────────
+                Managers are stored separately from techs (different role
+                fields, no compliance/level) but the user asked to see them
+                here too. They honour the search + branch filters from the
+                toolbar above. Active maternity filter is honoured loosely
+                (we only have onMat info, not on/off). Edit opens the
+                ManagerModal so all role/PIN/start-date edits work. */}
+            {(() => {
+              const mgrRoleLabel = r => r==="SM" ? "Store Manager" : r==="SSM" ? "Senior Store Manager" : r==="AM" ? "Assistant Manager" : (r || "—");
+              const mgrRoleIcon  = r => r==="SM" ? "👑" : r==="SSM" ? "💎" : r==="AM" ? "⭐" : "·";
+              const mgrRoleColor = r => r==="SM" ? "#7c3aed" : r==="SSM" ? "#be185d" : r==="AM" ? "#0369a1" : "#475569";
+              const rank = r => r==="SM" ? 0 : r==="SSM" ? 1 : r==="AM" ? 2 : 3;
+              const mgrFiltered = managers.filter(m => {
+                if (fBranch !== "All" && m.branch !== fBranch) return false;
+                if (fShow === "on_mat" && !m.onMat) return false;
+                if (fShow === "active_only" && m.onMat) return false;
+                if (search) {
+                  const q = search.toLowerCase();
+                  if (!(m.name || "").toLowerCase().includes(q) && !(m.ec || "").toLowerCase().includes(q)) return false;
+                }
+                // fPermit/fContract: managers don't have permit; honour contract
+                // when set to a specific value so the filter doesn't silently
+                // suppress them when the user filters by Permanent etc.
+                if (fContract !== "All" && (m.contract || "Permanent") !== fContract) return false;
+                return true;
+              }).slice().sort((a, b) => {
+                if (a.branch !== b.branch) return (a.branch || "").localeCompare(b.branch || "");
+                if (rank(a.role) !== rank(b.role)) return rank(a.role) - rank(b.role);
+                return (a.name || "").localeCompare(b.name || "");
+              });
+
+              return (
+                <div style={{ marginTop:24 }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+                    <div style={{ fontFamily:"'Playfair Display',serif", fontSize:18, color:"#831843", fontWeight:700 }}>👔 Managers</div>
+                    <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                      <span style={{ fontSize:11, color:"#BE185D", fontWeight:700 }}>{mgrFiltered.length} shown</span>
+                      <button onClick={()=>setMgrModal({ ec:"", name:"", branch: SALONS[0].name, role:"AM", contract:"Permanent" })}
+                        style={{ background:"#7c3aed", color:"#fff", border:"none", borderRadius:8, padding:"6px 14px", cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:12 }}>+ Add Manager</button>
+                    </div>
+                  </div>
+                  <div style={{ background:"#FFFFFF", borderRadius:15, border:`1px solid ${bdr}`, overflow:"hidden", boxShadow:"0 2px 12px rgba(0,0,0,.05)" }}>
+                    <div style={{ overflowX:"auto" }}>
+                      <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5 }}>
+                        <thead>
+                          <tr style={{ background:"#5b21b6", color:"#FFFFFF" }}>
+                            {["EC","Name","Branch","Role","Contract","Start Date","Status",""].map(h=>(
+                              <th key={h} style={{ padding:"11px 12px", textAlign:"left", fontWeight:600, fontSize:9.5, letterSpacing:"0.07em", whiteSpace:"nowrap" }}>{h.toUpperCase()}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {mgrFiltered.length===0 && <tr><td colSpan={8} style={{ textAlign:"center", padding:30, color:"#9ca3af" }}>No managers match the current filters.</td></tr>}
+                          {mgrFiltered.map(m => (
+                            <tr key={m._id} style={{ background:m.onMat?"#fdf4ff":"#fff", borderTop:`1px solid ${bdr}`, opacity:m.onMat?0.7:1 }}>
+                              <td style={{ padding:"10px 12px", fontFamily:"monospace", fontSize:11, color:"#5b21b6", fontWeight:700 }}>{m.ec || "—"}</td>
+                              <td style={{ padding:"10px 12px", fontWeight:700, color:m.onMat?"#7A4258":"#111827", whiteSpace:"nowrap", fontStyle:m.onMat?"italic":"normal" }}>
+                                {m.onMat?"🤱 ":m.pregnant?"🤰 ":""}{m.name}
+                              </td>
+                              <td style={{ padding:"10px 12px", fontSize:11, color:"#831843", whiteSpace:"nowrap" }}>📍 {m.branch}</td>
+                              <td style={{ padding:"10px 12px", whiteSpace:"nowrap" }}>
+                                <span style={{ background:mgrRoleColor(m.role), color:"#fff", fontSize:10, fontWeight:700, padding:"3px 8px", borderRadius:99 }}>{mgrRoleIcon(m.role)} {mgrRoleLabel(m.role)}</span>
+                              </td>
+                              <td style={{ padding:"10px 12px", fontSize:11 }}>{m.contract || "Permanent"}</td>
+                              <td style={{ padding:"10px 12px", fontSize:11, whiteSpace:"nowrap" }}>
+                                {m.startDate ? (() => {
+                                  const d = new Date(m.startDate + "T00:00:00");
+                                  const days = Math.floor((Date.now() - d) / 86400000);
+                                  const dStr = d.toLocaleDateString("en-ZA", { day:"2-digit", month:"short", year:"numeric" });
+                                  const tenure = days < 365 ? days + "d" : (days/365).toFixed(1) + "y";
+                                  return (<span style={{ display:"flex", flexDirection:"column", gap:1 }}><span style={{ color:"#831843", fontWeight:600 }}>{dStr}</span><span style={{ fontSize:9, color:"#9ca3af", fontWeight:600 }}>{tenure} tenure</span></span>);
+                                })() : <span style={{ color:"#d1d5db" }}>—</span>}
+                              </td>
+                              <td style={{ padding:"10px 12px" }}>
+                                {m.onMat ? <Chip bg="#fce7f3" color="#7A4258" border="#fbcfe8">🤱 On Maternity</Chip>
+                                  : m.pregnant ? <Chip bg="#fef3c7" color="#92400e" border="#fde68a">🤰 Pregnant – In Store</Chip>
+                                  : <span style={{ color:"#d1d5db", fontSize:11 }}>—</span>}
+                              </td>
+                              <td style={{ padding:"10px 12px", whiteSpace:"nowrap" }}>
+                                <button onClick={()=>setMgrModal(m)} style={{ background:"#f3f4f6", border:"none", borderRadius:6, padding:"4px 10px", cursor:"pointer", fontSize:11, fontFamily:"inherit", fontWeight:700 }}>Edit</button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
           </>
         )}
 
@@ -8313,26 +8405,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   {managePanel===salon.name && (
                     <div style={{ background:"#FCE7F3", border:"1px solid #FBCFE8", borderRadius:10, padding:"12px 14px", marginBottom:12 }}>
                       <div style={{ fontSize:11, fontWeight:700, color:"#831843", marginBottom:8 }}>Select a staff member to edit or transfer:</div>
-                      {/* Managers sub-section */}
-                      {managers.filter(m=>m.branch===salon.name).length>0 && (
-                        <div style={{ marginBottom:8 }}>
-                          <div style={{ fontSize:9, fontWeight:800, color:"#BE185D", letterSpacing:"0.08em", marginBottom:5 }}>MANAGEMENT</div>
-                          {managers.filter(m=>m.branch===salon.name).sort((a,b)=>a.role===b.role?0:a.role==="SM"?-1:1).map(m=>(
-                            <div key={m._id} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 10px", borderRadius:8, background:"#F9A8D4", border:"1px solid #FBCFE8", marginBottom:4 }}>
-                              <span style={{ fontSize:11 }}>{m.role==="SM"?"👑":"⭐"}</span>
-                              <span style={{ flex:1, fontSize:12, fontWeight:600, color:"#831843" }}>{m.name}</span>
-                              <span style={{ fontSize:9, background:m.role==="SM"?"#7c3aed":"#0369a1", color:"#fff", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>{m.role}</span>
-                              {m.onMat&&<span style={{ fontSize:9, background:"#FBCFE8", color:"#8E5570", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>🤱 mat.</span>}
-                              {m.pregnant&&!m.onMat&&<span style={{ fontSize:9, background:"#FCE7F3", color:"#8E5570", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>🤰 pregnant</span>}
-                              <button onClick={()=>{ setMgrModal(m); setManagePanel(null); }}
-                                style={{ background:"#e2e8f0", border:"none", borderRadius:6, padding:"4px 10px", cursor:"pointer", fontSize:11, fontWeight:700, color:"#831843" }}>✏️ Edit</button>
-                            </div>
-                          ))}
-                          <button onClick={()=>{ setMgrModal({ec:"",name:"",branch:salon.name,role:"AM",contract:"Permanent"}); setManagePanel(null); }}
-                            style={{ width:"100%", background:"#FCE7F3", border:"1px dashed #FBCFE8", borderRadius:7, padding:"5px", cursor:"pointer", fontSize:11, fontWeight:700, color:"#BE185D", marginBottom:6 }}>+ Add Manager</button>
-                          <div style={{ height:1, background:"#e5e7eb", marginBottom:8 }} />
-                        </div>
-                      )}
+                      {/* Managers sub-section — always shows the "+ Add Manager"
+                          button so a store with zero managers can still get one. */}
+                      {(() => {
+                        const branchMgrs = managers.filter(m=>m.branch===salon.name);
+                        const rank = r => r==="SM"?0:r==="SSM"?1:r==="AM"?2:3;
+                        const sortedMgrs = branchMgrs.slice().sort((a,b)=>rank(a.role)-rank(b.role));
+                        const roleIcon  = r => r==="SM"?"👑":r==="SSM"?"💎":r==="AM"?"⭐":"·";
+                        const roleColor = r => r==="SM"?"#7c3aed":r==="SSM"?"#be185d":r==="AM"?"#0369a1":"#475569";
+                        return (
+                          <div style={{ marginBottom:8 }}>
+                            <div style={{ fontSize:9, fontWeight:800, color:"#BE185D", letterSpacing:"0.08em", marginBottom:5 }}>MANAGEMENT</div>
+                            {sortedMgrs.map(m=>(
+                              <div key={m._id} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 10px", borderRadius:8, background:"#F9A8D4", border:"1px solid #FBCFE8", marginBottom:4 }}>
+                                <span style={{ fontSize:11 }}>{roleIcon(m.role)}</span>
+                                <span style={{ flex:1, fontSize:12, fontWeight:600, color:"#831843" }}>{m.name}</span>
+                                <span style={{ fontSize:9, background:roleColor(m.role), color:"#fff", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>{m.role}</span>
+                                {m.onMat&&<span style={{ fontSize:9, background:"#FBCFE8", color:"#8E5570", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>🤱 mat.</span>}
+                                {m.pregnant&&!m.onMat&&<span style={{ fontSize:9, background:"#FCE7F3", color:"#8E5570", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>🤰 pregnant</span>}
+                                <button onClick={()=>{ setMgrModal(m); setManagePanel(null); }}
+                                  style={{ background:"#e2e8f0", border:"none", borderRadius:6, padding:"4px 10px", cursor:"pointer", fontSize:11, fontWeight:700, color:"#831843" }}>✏️ Edit</button>
+                              </div>
+                            ))}
+                            <button onClick={()=>{ setMgrModal({ec:"",name:"",branch:salon.name,role:"AM",contract:"Permanent"}); setManagePanel(null); }}
+                              style={{ width:"100%", background:"#FCE7F3", border:"1px dashed #FBCFE8", borderRadius:7, padding:"5px", cursor:"pointer", fontSize:11, fontWeight:700, color:"#BE185D", marginBottom:6 }}>+ Add Manager</button>
+                            <div style={{ height:1, background:"#e5e7eb", marginBottom:8 }} />
+                          </div>
+                        );
+                      })()}
                       <div style={{ display:"flex", flexDirection:"column", gap:5, maxHeight:220, overflowY:"auto" }}>
                         {/* Active + maternity + legal-leave — editable */}
                         {[...salon.active, ...salon.onMat, ...salon.onUnpaidLegal].sort(ecSort).map(m=>(
@@ -9461,16 +9561,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div style={{ background:"#FCE7F3", border:"1px solid #FBCFE8", borderRadius:12, padding:"14px 18px", marginBottom:0, marginTop:20 }}>
                   <div style={{ fontSize:11, fontWeight:800, color:"#8E5570", letterSpacing:"0.08em", marginBottom:10 }}>🌍 REGIONAL MANAGERS — Not assigned to a specific store</div>
                   <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
-                    {managers.filter(m=>m.branch==="Regional").sort((a,b)=>a.role===b.role?0:a.role==="SM"?-1:1).map(m=>(
-                      <div key={m._id} style={{ display:"flex", alignItems:"center", gap:6, background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:8, padding:"6px 12px", opacity:m.onMat?0.55:1 }}>
-                        <span style={{ fontSize:13 }}>{m.onMat?"🤱":m.pregnant?"🤰":m.role==="SM"?"👑":"⭐"}</span>
-                        <span style={{ fontSize:12, fontWeight:600, color:m.onMat?"#7A4258":"#374151" }}>{m.name}</span>
-                        {m.notes&&<span style={{ fontSize:10, color:"#BE185D", fontStyle:"italic" }}>— {m.notes}</span>}
-                        <span style={{ fontSize:9, background:m.role==="SM"?"#ede9fe":"#e0f2fe", color:m.role==="SM"?"#7c3aed":"#0369a1", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>{m.role}</span>
-                        {m.onMat&&<span style={{ fontSize:9, color:"#8E5570", background:"#FBCFE8", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>mat.</span>}
-                        {m.pregnant&&!m.onMat&&<span style={{ fontSize:9, color:"#8E5570", background:"#FCE7F3", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>🤰</span>}
-                      </div>
-                    ))}
+                    {managers.filter(m=>m.branch==="Regional").slice().sort((a,b)=>{ const rk=r=>r==="SM"?0:r==="SSM"?1:r==="AM"?2:3; return rk(a.role)-rk(b.role); }).map(m=>{
+                      const ico = m.role==="SM"?"👑":m.role==="SSM"?"💎":"⭐";
+                      const pillBg = m.role==="SM"?"#ede9fe":m.role==="SSM"?"#fce7f3":"#e0f2fe";
+                      const pillCol = m.role==="SM"?"#7c3aed":m.role==="SSM"?"#be185d":"#0369a1";
+                      return (
+                        <div key={m._id} style={{ display:"flex", alignItems:"center", gap:6, background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:8, padding:"6px 12px", opacity:m.onMat?0.55:1 }}>
+                          <span style={{ fontSize:13 }}>{m.onMat?"🤱":m.pregnant?"🤰":ico}</span>
+                          <span style={{ fontSize:12, fontWeight:600, color:m.onMat?"#7A4258":"#374151" }}>{m.name}</span>
+                          {m.notes&&<span style={{ fontSize:10, color:"#BE185D", fontStyle:"italic" }}>— {m.notes}</span>}
+                          <span style={{ fontSize:9, background:pillBg, color:pillCol, borderRadius:4, padding:"1px 6px", fontWeight:700 }}>{m.role}</span>
+                          {m.onMat&&<span style={{ fontSize:9, color:"#8E5570", background:"#FBCFE8", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>mat.</span>}
+                          {m.pregnant&&!m.onMat&&<span style={{ fontSize:9, color:"#8E5570", background:"#FCE7F3", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>🤰</span>}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -9644,7 +9749,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           for (const r of active) {
             if (r.branch === "Head Office")                                  grp["Head Office"].push(r);
             else if (r.position === "Nail Tech")                             grp["Nail Tech"].push(r);
-            else if (r.position === "SM" || r.position === "AM" || r.position === "Manager") grp["Manager"].push(r);
+            else if (r.position === "SM" || r.position === "SSM" || r.position === "AM" || r.position === "Manager") grp["Manager"].push(r);
             else                                                             grp["Other"].push(r);
           }
           const persistOb = async (next) => {
@@ -9683,10 +9788,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             persistOb(obList.filter(r => r._id !== id));
             if (tgt) logActivity("Removed onboarding", (tgt.name || "") + (tgt.ec ? " (" + tgt.ec + ")" : ""), tgt.branch || "");
           };
+          // Open the Manager modal pre-filled from the current Onboarding form.
+          // Saved manager records show up on the Locations card for their
+          // branch AND on the Staff List, so a new SM/SSM/AM goes everywhere
+          // they need to be in one shot. Branch defaults to a real salon if
+          // the onboarding row was logged under Head Office / Other.
+          const openMgrFromOnboard = () => {
+            const branch = (obForm.branch && SALONS.find(s => s.name === obForm.branch)) ? obForm.branch : SALONS[0].name;
+            const role = (obForm.position === "SM" || obForm.position === "SSM" || obForm.position === "AM") ? obForm.position : "AM";
+            setMgrModal({
+              ec: obForm.ec || "",
+              name: obForm.name || "",
+              branch,
+              role,
+              contract: "Permanent",
+              startDate: obForm.startDate || null,
+              notes: obForm.notes || ""
+            });
+          };
 
           return (
             <div>
-              <div style={{ fontFamily:"'Playfair Display',serif", fontSize:26, color:"#831843", fontWeight:700, marginBottom:6, letterSpacing:"0.02em" }}>🌱 Onboarding</div>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:10, marginBottom:6 }}>
+                <div style={{ fontFamily:"'Playfair Display',serif", fontSize:26, color:"#831843", fontWeight:700, letterSpacing:"0.02em" }}>🌱 Onboarding</div>
+                <button onClick={()=>setMgrModal({ ec:"", name:"", branch: SALONS[0].name, role:"AM", contract:"Permanent" })}
+                  style={{ padding:"7px 14px", borderRadius:8, border:"1px solid #7c3aed", background:"#ede9fe", color:"#5b21b6", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
+                  👔 + Add Manager
+                </button>
+              </div>
               <div style={{ fontSize:13, color:"#F472B6", marginBottom:18 }}>New starters within the last 31 days. Records auto-archive 31 days after start date.</div>
 
               <div style={{ display:"flex", gap:10, marginBottom:18, flexWrap:"wrap" }}>
@@ -9715,6 +9844,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <select value={obForm.position} onChange={e=>setObForm({...obForm, position:e.target.value})} style={{ padding:"8px 10px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:13, fontFamily:"inherit", background:"#fff" }}>
                     <option value="Nail Tech">Nail Tech</option>
                     <option value="SM">Store Manager (SM)</option>
+                    <option value="SSM">Senior Store Manager (SSM)</option>
                     <option value="AM">Assistant Manager (AM)</option>
                     <option value="Other">Other (custom…)</option>
                   </select>
@@ -9724,9 +9854,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <input type="text" placeholder="✏️ Position name (e.g. Receptionist, Cleaner, IT)" value={obForm.positionOther} onChange={e=>setObForm({...obForm, positionOther:e.target.value})} style={{ width:"100%", padding:"8px 10px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:13, fontFamily:"inherit", marginBottom:10 }} />
                 )}
                 <textarea placeholder="Notes (optional)" value={obForm.notes} onChange={e=>setObForm({...obForm, notes:e.target.value})} rows={2} style={{ width:"100%", padding:"8px 10px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:13, fontFamily:"inherit", marginBottom:10, resize:"vertical" }} />
-                <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
                   <button onClick={addOb} style={{ padding:"8px 18px", borderRadius:9, border:"none", background:"#BE185D", color:"#fff", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>{obForm._editId ? "💾 Update Starter" : "🌱 Add to Onboarding"}</button>
                   {obForm._editId && <button onClick={cancelEdit} style={{ padding:"8px 14px", borderRadius:9, border:"1px solid #FBCFE8", background:"#fff", color:"#831843", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:600 }}>Cancel Edit</button>}
+                  {(obForm.position === "SM" || obForm.position === "SSM" || obForm.position === "AM") && (
+                    <>
+                      <span style={{ fontSize:11, color:"#9ca3af" }}>—</span>
+                      <button onClick={openMgrFromOnboard}
+                        style={{ padding:"8px 14px", borderRadius:9, border:"1px solid #7c3aed", background:"#ede9fe", color:"#5b21b6", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>
+                        👔 Also add to Manager roster…
+                      </button>
+                      <span style={{ fontSize:10, color:"#6b7280", maxWidth:240, lineHeight:1.4 }}>Creates the manager record (PIN, role, schedule) and lists them on Locations + Staff List.</span>
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -9752,7 +9892,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const ds = daysFrom(r.startDate);
                           const statusLabel = ds<0 ? "starts in " + Math.abs(ds) + "d" : ds===0 ? "started today" : ds===1 ? "started yesterday" : ds + " days in";
                           const [bg, color] = ds<0 ? ["#dbeafe","#1e3a8a"] : ds<=7 ? ["#dcfce7","#14532d"] : ["#f3f4f6","#475569"];
-                          const posLabel = r.position==="SM" ? "Store Manager" : r.position==="AM" ? "Assistant Manager" : (r.position==="Other" && r.positionOther) ? r.positionOther : r.position;
+                          const posLabel = r.position==="SM" ? "Store Manager" : r.position==="SSM" ? "Senior Store Manager" : r.position==="AM" ? "Assistant Manager" : (r.position==="Other" && r.positionOther) ? r.positionOther : r.position;
                           return (
                             <div key={r._id} style={{ background:"#FFFFFF", borderRadius:11, border:"1px solid #FBCFE8", padding:"12px 14px" }}>
                               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:6, gap:8 }}>
