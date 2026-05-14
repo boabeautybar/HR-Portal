@@ -2547,6 +2547,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     if (z === "O")  return { background:"#fee2e2", color:"#991b1b" };
     if (z === "R")  return { background:"#fca5a5", color:"#7f1d1d" };
     if (z === "L")  return { background:"#cbd5e1", color:"#475569" };
+    if (z === "ML") return { background:"#ede9fe", color:"#6b21a8", fontStyle:"italic", fontWeight:700 };
     if (z === "E")  return { background:"#6ee7b7", color:"#064e3b" };
     if (z === "X")  return { background:"#f3f4f6", color:"#9ca3af", fontStyle:"italic", fontWeight:500 };
     if (z === "trial") return { background:"#fef08a", color:"#854d0e", fontWeight:700 };
@@ -7358,6 +7359,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     });
   }, [staff, onMatEcs, pregnantEcs, onUnpaidLegalEcs, unpaidLegalRecs, offboardedMap, matRecs]);
 
+  // Managers don't go through enriched - their state is a flat array loaded
+  // from Supabase. To keep the rest of the UI honest about maternity, expose
+  // an enriched view that joins managers with the maternity-record ECs and
+  // adds onMat / pregnant flags. Used by the Locations card, Manage panel
+  // and any list that needs to grey out / exclude maternity managers.
+  const enrichedManagers = useMemo(() => {
+    return (managers || []).map(m => {
+      if (!m) return m;
+      const matRec = (matRecs || []).find(r => r && r.ec && m.ec && r.ec === m.ec) || null;
+      const onMat    = !!matRec && matRec.matStatus === "on_mat";
+      const pregnant = !!matRec && matRec.matStatus === "pregnant";
+      return { ...m, onMat: onMat || !!m.onMat, pregnant: pregnant || !!m.pregnant, matRec };
+    });
+  }, [managers, matRecs]);
+
   // Filtered & sorted staff list — always sort by EC (B-number then T-number).
   // Departed staff (leftDate has passed) are pinned to the bottom for the 31-day
   // grace window so the active list stays clean.
@@ -7387,7 +7403,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // for managers so those columns render empty.
   const filteredMgrs = useMemo(() => {
     const q = (search || "").toLowerCase();
-    const list = (managers || []).filter(m => {
+    const list = (enrichedManagers || []).filter(m => {
       if (!m) return false;
       if (fShow==="on_mat" && !m.onMat) return false;
       if (fShow==="active_only" && m.onMat) return false;
@@ -7411,7 +7427,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (rd !== 0) return rd;                                       // SSM → SM → AM
       return (a.name || "").localeCompare(b.name || "");
     });
-  }, [managers, fShow, fBranch, fPermit, fContract, search]);
+  }, [enrichedManagers, fShow, fBranch, fPermit, fContract, search]);
 
   // Pool for the Maternity modal lookup: every active tech + every manager,
   // minus anyone who already has a maternity record (no double-up). Role
@@ -8646,20 +8662,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <div style={{ background:"#FCE7F3", border:"1px solid #FBCFE8", borderRadius:10, padding:"12px 14px", marginBottom:12 }}>
                       <div style={{ fontSize:11, fontWeight:700, color:"#831843", marginBottom:8 }}>Select a staff member to edit or transfer:</div>
                       {/* Managers sub-section */}
-                      {managers.filter(m=>m.branch===salon.name).length>0 && (
+                      {enrichedManagers.filter(m=>m.branch===salon.name).length>0 && (
                         <div style={{ marginBottom:8 }}>
                           <div style={{ fontSize:9, fontWeight:800, color:"#BE185D", letterSpacing:"0.08em", marginBottom:5 }}>MANAGEMENT</div>
-                          {managers.filter(m=>m.branch===salon.name).sort((a,b)=>{
+                          {enrichedManagers.filter(m=>m.branch===salon.name).sort((a,b)=>{
                             const rank = (r)=> r==="SSM"?0 : r==="SM"?1 : 2;
                             return rank(a.role) - rank(b.role);
                           }).map(m=>{
                             const _icon = m.role==="SSM"?"💎":m.role==="SM"?"👑":"⭐";
                             const _bg   = m.role==="SSM"?"#92400e":m.role==="SM"?"#7c3aed":"#0369a1";
                             return (
-                            <div key={m._id} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 10px", borderRadius:8, background:"#F9A8D4", border:"1px solid #FBCFE8", marginBottom:4 }}>
-                              <span style={{ fontSize:11 }}>{_icon}</span>
-                              <span style={{ flex:1, fontSize:12, fontWeight:600, color:"#831843" }}>{m.name}</span>
-                              <span style={{ fontSize:9, background:_bg, color:"#fff", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>{m.role}</span>
+                            <div key={m._id} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 10px", borderRadius:8, background: m.onMat ? "#f3f4f6" : "#F9A8D4", border:"1px solid #FBCFE8", marginBottom:4, opacity: m.onMat ? 0.55 : 1 }}>
+                              <span style={{ fontSize:11 }}>{m.onMat ? "🤱" : _icon}</span>
+                              <span style={{ flex:1, fontSize:12, fontWeight:600, color: m.onMat ? "#7A4258" : "#831843", fontStyle: m.onMat ? "italic" : "normal" }}>{m.name}</span>
+                              <span style={{ fontSize:9, background:_bg, color:"#fff", borderRadius:4, padding:"1px 6px", fontWeight:700, opacity: m.onMat ? 0.7 : 1 }}>{m.role}</span>
                               {m.onMat&&<span style={{ fontSize:9, background:"#FBCFE8", color:"#8E5570", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>🤱 mat.</span>}
                               {m.pregnant&&!m.onMat&&<span style={{ fontSize:9, background:"#FCE7F3", color:"#8E5570", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>🤰 pregnant</span>}
                               <button onClick={()=>{ setMgrModal(m); setManagePanel(null); }}
@@ -8721,7 +8737,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       Senior Store Manager (💎) → Store Manager (👑) →
                       Assistant Manager (⭐). */}
                   {(() => {
-                    const mgrs = managers.filter(m=>m.branch===salon.name);
+                    const mgrs = enrichedManagers.filter(m=>m.branch===salon.name);
                     const ssm  = mgrs.filter(m=>m.role==="SSM");
                     const sm   = mgrs.filter(m=>m.role==="SM");
                     const am   = mgrs.filter(m=>m.role==="AM");
@@ -9173,35 +9189,36 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
             )}
 
-            {/* Group by status */}
+            {/* Group by status — within each status, split into Managers
+                then Nail Techs so the bigger picture (who's actually away)
+                reads cleanly. Manager / tech classification is by checking
+                the EC against the managers state. */}
             {["on_mat","pregnant","returned","sick_leave"].map(status=>{
               const recs = visibleMatRecs.filter(r=>r.matStatus===status).sort(ecSort);
               if (!recs.length) return null;
               const s = MAT_STATUS[status];
               const isExcluded = status==="on_mat";
-              return (
-                <div key={status} style={{ marginBottom:26 }}>
-                  <div style={{ fontSize:11, fontWeight:800, color:s.color, letterSpacing:"0.08em", marginBottom:10, textTransform:"uppercase", display:"flex", alignItems:"center", gap:8 }}>
-                    {s.icon} {s.label} — {recs.length} {recs.length===1?"person":"people"}
-                    {isExcluded && <span style={{ background:"#FBCFE8", color:"#831843", borderRadius:20, padding:"2px 10px", fontSize:10, fontWeight:700 }}>EXCLUDED FROM STORE COUNT</span>}
-                    {status==="pregnant" && <span style={{ background:"#FCE7F3", color:"#831843", borderRadius:20, padding:"2px 10px", fontSize:10, fontWeight:700 }}>COUNTED IN STORE</span>}
-                  </div>
-                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))", gap:10 }}>
-                    {recs.map(r=>{
-                      const dBack = r.returnDate ? daysDiff(r.returnDate) : null;
-                      const totalDays = r.matStart&&r.matEnd ? Math.ceil((new Date(r.matEnd)-new Date(r.matStart))/86400000) : null;
-                      const elapsed = r.matStart ? Math.ceil((TODAY-new Date(r.matStart))/86400000) : null;
-                      const progress = totalDays&&elapsed ? Math.min(Math.max(elapsed/totalDays,0),1) : null;
-                      return (
-                        <div key={r._id} style={{ background:"#FFFFFF", borderRadius:14, border:`1.5px solid ${s.border}`, padding:"16px 18px" }}>
-                          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10 }}>
-                            <div>
-                              <div style={{ fontWeight:700, fontSize:14, color:"#111827" }}>{r.name}</div>
-                              <div style={{ fontSize:11, color:"#BE185D", marginTop:2 }}>
-                                <span style={{ fontFamily:"monospace", color:"#8E5570", fontWeight:700 }}>{r.ec}</span> · 📍 {r.branch}
-                              </div>
-                            </div>
-                            <button onClick={()=>setMatModal(r)} style={{ background:"#f3f4f6", border:"none", borderRadius:7, padding:"5px 11px", cursor:"pointer", fontSize:11, fontFamily:"inherit", fontWeight:700 }}>Edit</button>
+              const mgrEcs = new Set((managers || []).map(m => m && m.ec).filter(Boolean));
+              const mgrRecs  = recs.filter(r => mgrEcs.has(r.ec));
+              const techRecs = recs.filter(r => !mgrEcs.has(r.ec));
+              const renderCard = (r) => {
+                const dBack = r.returnDate ? daysDiff(r.returnDate) : null;
+                const totalDays = r.matStart&&r.matEnd ? Math.ceil((new Date(r.matEnd)-new Date(r.matStart))/86400000) : null;
+                const elapsed = r.matStart ? Math.ceil((TODAY-new Date(r.matStart))/86400000) : null;
+                const progress = totalDays&&elapsed ? Math.min(Math.max(elapsed/totalDays,0),1) : null;
+                const isMgr = mgrEcs.has(r.ec);
+                return (
+                  <div key={r._id} style={{ background:"#FFFFFF", borderRadius:14, border:`1.5px solid ${s.border}`, padding:"16px 18px" }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10 }}>
+                      <div>
+                        <div style={{ fontWeight:700, fontSize:14, color:"#111827" }}>
+                          {isMgr ? "👑 " : "💅 "}{r.name}
+                        </div>
+                        <div style={{ fontSize:11, color:"#BE185D", marginTop:2 }}>
+                          <span style={{ fontFamily:"monospace", color:"#8E5570", fontWeight:700 }}>{r.ec}</span> · 📍 {r.branch}
+                        </div>
+                      </div>
+                      <button onClick={()=>setMatModal(r)} style={{ background:"#f3f4f6", border:"none", borderRadius:7, padding:"5px 11px", cursor:"pointer", fontSize:11, fontFamily:"inherit", fontWeight:700 }}>Edit</button>
                           </div>
                           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}>
                             <div style={{ background:"#fafafa", borderRadius:8, padding:"8px 10px" }}>
@@ -9232,11 +9249,33 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               </div>
                             </div>
                           )}
-                          {r.notes && <div style={{ fontSize:11, color:"#BE185D", background:"#FCE7F3", borderRadius:7, padding:"6px 9px", lineHeight:1.5 }}>{r.notes}</div>}
-                        </div>
-                      );
-                    })}
+                    {r.notes && <div style={{ fontSize:11, color:"#BE185D", background:"#FCE7F3", borderRadius:7, padding:"6px 9px", lineHeight:1.5 }}>{r.notes}</div>}
                   </div>
+                );
+              };
+              return (
+                <div key={status} style={{ marginBottom:26 }}>
+                  <div style={{ fontSize:11, fontWeight:800, color:s.color, letterSpacing:"0.08em", marginBottom:10, textTransform:"uppercase", display:"flex", alignItems:"center", gap:8 }}>
+                    {s.icon} {s.label} — {recs.length} {recs.length===1?"person":"people"}
+                    {isExcluded && <span style={{ background:"#FBCFE8", color:"#831843", borderRadius:20, padding:"2px 10px", fontSize:10, fontWeight:700 }}>EXCLUDED FROM STORE COUNT</span>}
+                    {status==="pregnant" && <span style={{ background:"#FCE7F3", color:"#831843", borderRadius:20, padding:"2px 10px", fontSize:10, fontWeight:700 }}>COUNTED IN STORE</span>}
+                  </div>
+                  {mgrRecs.length > 0 && (
+                    <div style={{ marginBottom:14 }}>
+                      <div style={{ fontSize:10, fontWeight:800, color:"#7c3aed", letterSpacing:"0.08em", marginBottom:6, textTransform:"uppercase" }}>👑 Managers · {mgrRecs.length}</div>
+                      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))", gap:10 }}>
+                        {mgrRecs.map(renderCard)}
+                      </div>
+                    </div>
+                  )}
+                  {techRecs.length > 0 && (
+                    <div>
+                      <div style={{ fontSize:10, fontWeight:800, color:"#BE185D", letterSpacing:"0.08em", marginBottom:6, textTransform:"uppercase" }}>💅 Nail Techs · {techRecs.length}</div>
+                      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))", gap:10 }}>
+                        {techRecs.map(renderCard)}
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -9600,7 +9639,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // excluding Regional managers and active maternity leave.
               const MIN_SM = 1, MIN_AM = 2;
               const mgrVacancies = SALONS.reduce((a, sl) => {
-                const mgrs = managers.filter(m => m.branch === sl.name && !m.onMat);
+                const mgrs = enrichedManagers.filter(m => m.branch === sl.name && !m.onMat);
                 const sms = mgrs.filter(m => m.role === "SM").length;
                 const ams = mgrs.filter(m => m.role === "AM").length;
                 return a + Math.max(0, MIN_SM - sms) + Math.max(0, MIN_AM - ams);
@@ -9743,7 +9782,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         {mgrSubTab==="coverage" && (() => {
           const MIN_SM = 1, MIN_AM = 2;
           const branchStats = SALONS.map(salon => { // Regional managers excluded from store coverage
-            const mgrs = managers.filter(m => m.branch === salon.name);
+            const mgrs = enrichedManagers.filter(m => m.branch === salon.name);
             const sms  = mgrs.filter(m => (m.role === "SM" || m.role === "SSM") && !m.onMat);
             const ams  = mgrs.filter(m => m.role === "AM" && !m.onMat);
             const onMatMgrs = mgrs.filter(m => m.onMat);
@@ -9758,9 +9797,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const gapBranches   = branchStats.filter(b => !b.ok).length;
           // 'Store Managers' folds SSM + SM together (both are store-tier
           // managers - SSM is just the senior bracket). AM stays separate.
-          const totalActiveSM = managers.filter(m=>(m.role==="SM"||m.role==="SSM")&&!m.onMat&&m.branch!=="Regional").length;
-          const totalActiveAM = managers.filter(m=>m.role==="AM"&&!m.onMat&&m.branch!=="Regional").length;
-          const totalPregnant = managers.filter(m=>m.pregnant&&!m.onMat).length;
+          const totalActiveSM = enrichedManagers.filter(m=>(m.role==="SM"||m.role==="SSM")&&!m.onMat&&m.branch!=="Regional").length;
+          const totalActiveAM = enrichedManagers.filter(m=>m.role==="AM"&&!m.onMat&&m.branch!=="Regional").length;
+          const totalPregnant = enrichedManagers.filter(m=>m.pregnant&&!m.onMat).length;
           const totalOnMat    = managers.filter(m=>m.onMat).length;
           return (
             <div>
@@ -9772,7 +9811,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { l:"Asst. Managers",      v:totalActiveAM,  i:"⭐", c:"#0369a1", bg:"#e0f2fe", note:"active in store" },
                   { l:"Pregnant (upcoming)", v:totalPregnant,  i:"🤰", c:"#92400e", bg:"#fef3c7", note:"still working" },
                   { l:"On Maternity Leave",  v:totalOnMat,     i:"🤱", c:"#7A4258", bg:"#fce7f3", note:"not counted" },
-                  { l:"Regional Managers",   v:managers.filter(m=>m.branch==="Regional"&&!m.onMat).length, i:"🌍", c:"#475569", bg:"#f1f5f9", note:"not store-based" },
+                  { l:"Regional Managers",   v:enrichedManagers.filter(m=>m.branch==="Regional"&&!m.onMat).length, i:"🌍", c:"#475569", bg:"#f1f5f9", note:"not store-based" },
                   { l:"Fully Covered Stores",v:SALONS.length-gapBranches, i:"✅", c:"#065f46", bg:"#d1fae5", note:`of ${SALONS.length} stores` },
                 ].map(c=>(
                   <div key={c.l} style={{ background:c.bg, borderRadius:13, padding:"12px 14px" }}>
@@ -13502,19 +13541,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               return { ec: o.ec || ("_OBM_" + (o._id || Math.random()).toString().slice(-6)), name: o.name, branch: o.branch, role: o.position, _onboarding: true, _startDate: o.startDate, _futureStart: fs, _recentlyStarted: !fs && ds >= 0 && ds <= 14 };
             });
           // Annotate managers with leftDate (offboarding ghost overlay) AND
-          // onMat from the maternity records, then exclude anyone currently
-          // on maternity from the manager-schedule generator — they're
-          // already away and shouldn't get shifts. Returned managers stay
-          // on the roster as normal.
+          // onMat from the maternity records. On-mat managers stay on the
+          // schedule but get _onMat = true so their row is greyed out and
+          // every cell is rendered as 'ML' (matching the tech behaviour).
+          // mgrSched honours _onMat by skipping shift assignment for them.
           const _onMatEcs = new Set((matRecs || []).filter(r => r && r.matStatus === "on_mat" && r.ec).map(r => r.ec));
-          const mgrsWithOff = managers
-            .filter(m => !_onMatEcs.has(m.ec))
-            .map(m => {
-              const off = (offList || []).find(o => o.ec === m.ec);
-              return off ? { ...m, leftDate: off.leftDate, offRec: off } : m;
-            });
+          const mgrsWithOff = managers.map(m => {
+            const off  = (offList || []).find(o => o.ec === m.ec);
+            const flag = _onMatEcs.has(m.ec);
+            const base = off ? { ...m, leftDate: off.leftDate, offRec: off } : { ...m };
+            return flag ? { ...base, _onMat: true } : base;
+          });
           const allMgrs = [...mgrsWithOff, ...obMgrs];
           const mgrLeaves = (leaveRecs || []).filter(L => allMgrs.some(m => m.ec === L.ec));
+          // Synthetic full-cycle leaves for on-mat managers - mgrSched
+          // treats these as 'L' cells so the on-mat manager doesn't get
+          // shifts. We rewrite the cells to 'ML' after generation so the
+          // grid renders the maternity-specific marker.
+          const cycleEndForMat = (() => {
+            const cs = new Date(cycleStart + "T00:00:00");
+            const ed = new Date(cs.getFullYear(), cs.getMonth() + 1, 24);
+            return ed.getFullYear() + "-" + String(ed.getMonth()+1).padStart(2,"0") + "-" + String(ed.getDate()).padStart(2,"0");
+          })();
+          const _matLeaves = allMgrs.filter(m => m._onMat).map(m => ({
+            ec: m.ec, startDate: cycleStart, endDate: cycleEndForMat, _synthetic: "mat"
+          }));
+          const mgrLeavesPlusMat = [..._matLeaves, ...mgrLeaves];
 
           // Build the structural skeleton (dates, manager filter, weeksMap, etc.).
           // We always run mgrSched once for that — but the GRID inside it is the
@@ -13535,7 +13587,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           );
           const _otherCycleMgr  = _branchReqsMgr.length - currentRequests.length;
           const _otherBranchMgr = (mgrRequests || []).filter(r => r && _normMgrBranch(r.branch) !== _branchKeyMgr).length;
-          let result = mgrSched(branch, cycleStart, allMgrs, mgrLeaves, currentRequests, mgrPriorCtx);
+          let result = mgrSched(branch, cycleStart, allMgrs, mgrLeavesPlusMat, currentRequests, mgrPriorCtx);
+          // Rewrite the synthetic leave cells for on-mat managers from 'L'
+          // to 'ML' so the grid renders the maternity marker (and not a
+          // generic annual-leave 'L').
+          if (result && result.grid) {
+            allMgrs.filter(m => m._onMat).forEach(m => {
+              if (!result.grid[m.ec]) return;
+              Object.keys(result.grid[m.ec]).forEach(k => {
+                if (result.grid[m.ec][k] === "L") result.grid[m.ec][k] = "ML";
+              });
+            });
+          }
           const haveDraft = !!mgrSchedDraft;
           if (haveDraft) {
             const newGrid = JSON.parse(JSON.stringify(mgrSchedDraft));
@@ -13759,7 +13822,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             if (mgrSchedDirty) {
               if (!window.confirm("This will replace the current draft with a freshly generated schedule. Discard your unsaved edits?")) return;
             }
-            const fresh = mgrSched(branch, cycleStart, allMgrs, mgrLeaves, currentRequests, mgrPriorCtx);
+            const fresh = mgrSched(branch, cycleStart, allMgrs, mgrLeavesPlusMat, currentRequests, mgrPriorCtx);
+            // Same ML rewrite as the load path - keeps the regenerated grid
+            // consistent with maternity status.
+            if (fresh && fresh.grid) {
+              allMgrs.filter(m => m._onMat).forEach(m => {
+                if (!fresh.grid[m.ec]) return;
+                Object.keys(fresh.grid[m.ec]).forEach(k => {
+                  if (fresh.grid[m.ec][k] === "L") fresh.grid[m.ec][k] = "ML";
+                });
+              });
+            }
             setMgrSchedDraft(JSON.parse(JSON.stringify(fresh.grid)));
             setMgrSchedDirty(true);
             setMgrSchedHist(h => { const n = { ...h }; delete n[editKey]; return n; });
@@ -14292,8 +14365,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     )}
                     {sortedMgrs.map(mg => (
                       <tr key={mg.ec}>
-                        <td style={{ position:"sticky", left:0, background: mg._offGhost ? "#f9fafb" : (mg._obStarting ? "#fefce8" : "#fff"), padding:"6px 10px", borderBottom:"1px solid #FCE7F3", borderRight:"2px solid #FBCFE8", zIndex:2, minWidth:200, opacity: mg._offGhost ? 0.55 : 1 }}>
-                          <div style={{ fontSize:12, fontWeight:700, color: mg._offGhost ? "#9ca3af" : "#831843", textDecoration: mg._offGhost ? "line-through" : "none", fontStyle: mg._offGhost ? "italic" : "normal" }}>{mg.name}</div>
+                        <td style={{ position:"sticky", left:0, background: mg._offGhost ? "#f9fafb" : (mg._onMat ? "#f5e1ed" : (mg._obStarting ? "#fefce8" : "#fff")), padding:"6px 10px", borderBottom:"1px solid #FCE7F3", borderRight:"2px solid #FBCFE8", zIndex:2, minWidth:200, opacity: mg._offGhost || mg._onMat ? 0.55 : 1 }}>
+                          <div style={{ fontSize:12, fontWeight:700, color: mg._offGhost ? "#9ca3af" : mg._onMat ? "#7A4258" : "#831843", textDecoration: mg._offGhost ? "line-through" : "none", fontStyle: (mg._offGhost || mg._onMat) ? "italic" : "normal" }}>{mg._onMat ? "🤱 " : ""}{mg.name}</div>
                           {mg._offGhost
                             ? <div style={{ fontSize:9, color:"#9ca3af", fontStyle:"italic", marginTop:1 }}>Left {mg._offLeftDate}{mg._offReason ? " · " + mg._offReason : ""}</div>
                             : mg._obStarting
