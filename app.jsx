@@ -6332,19 +6332,23 @@ function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
 
   const beginAdd = () => setEditing({
     _id: null, isNew: true, title: "", description: "",
+    target: "portal",                                  // "portal" = per-user dashboard, "kiosk" = manager-kiosk broadcast
     // New tasks support multi-assign: one record is created per pin
     // so each assignee gets their own independent done-tracking.
     assigneePins: [],
+    branches: [],                                      // kiosk target — empty = every branch
     date: todayYmd,
     kind: "once", repeatDow: [], startDate: todayYmd
   });
   const beginEdit = (t) => setEditing({
     _id: t._id, isNew: false,
     title: t.title || "", description: t.description || "",
+    target: t.target === "kiosk" ? "kiosk" : "portal",
     // Editing an existing record is single-assignee. Re-pointing it to
     // another person is just changing the one record; bulk fan-out
     // only happens at create time.
     assigneePins: t.assigneePin ? [t.assigneePin] : [],
+    branches: Array.isArray(t.branches) ? t.branches.slice() : [],
     date: t.date || todayYmd,
     kind: t.kind === "weekly" ? "weekly" : "once",
     repeatDow: Array.isArray(t.repeatDow) ? t.repeatDow.slice() : [],
@@ -6369,8 +6373,9 @@ function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
   const saveEdit = async () => {
     if (!editing) return;
     if (!editing.title.trim())                                  { alert("Task title is required."); return; }
+    const isKiosk = editing.target === "kiosk";
     const pins = Array.isArray(editing.assigneePins) ? editing.assigneePins.filter(Boolean) : [];
-    if (pins.length === 0)                                       { alert("Pick at least one person to assign this to."); return; }
+    if (!isKiosk && pins.length === 0)                          { alert("Pick at least one person to assign this to."); return; }
     if (editing.kind === "weekly") {
       if (!Array.isArray(editing.repeatDow) || editing.repeatDow.length === 0) {
         alert("Pick at least one day of the week for the reminder to repeat on.");
@@ -6384,30 +6389,45 @@ function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
       const prior = (tasks || []).find(t => t && t._id === editing._id) || {};
       const isWeekly = editing.kind === "weekly";
       const stampNow = new Date().toISOString();
-      const buildRec = (pin, recId) => {
+      // Build a single record. For portal tasks `key` is the assignee
+      // PIN (one record per assignee). Kiosk reminders have no per-
+      // person done-tracking, so the assignee fields are omitted and
+      // `branches` is recorded instead (empty = every branch).
+      const buildRec = (key, recId) => {
         const r = {
           _id: recId,
           title: editing.title.trim(),
           description: (editing.description || "").trim().slice(0, 500),
-          assigneePin: pin,
+          target: isKiosk ? "kiosk" : "portal",
           kind: isWeekly ? "weekly" : "once",
           createdBy: editing.isNew ? ((currentUser && currentUser.name) || "") : (prior.createdBy || ""),
           createdAt: editing.isNew ? stampNow : (prior.createdAt || stampNow)
         };
+        if (isKiosk) {
+          r.branches = Array.isArray(editing.branches) ? editing.branches.slice() : [];
+        } else {
+          r.assigneePin = key;
+        }
         if (isWeekly) {
           r.repeatDow = editing.repeatDow.slice().sort();
           r.startDate = editing.startDate || todayYmd;
-          r.doneByDate = (recId === prior._id) ? (prior.doneByDate || {}) : {};
+          if (!isKiosk) r.doneByDate = (recId === prior._id) ? (prior.doneByDate || {}) : {};
         } else {
           r.date = editing.date;
-          r.doneAt = (recId === prior._id) ? (prior.doneAt || null) : null;
-          r.doneBy = (recId === prior._id) ? (prior.doneBy || null) : null;
+          if (!isKiosk) {
+            r.doneAt = (recId === prior._id) ? (prior.doneAt || null) : null;
+            r.doneBy = (recId === prior._id) ? (prior.doneBy || null) : null;
+          }
         }
         return r;
       };
       const mkId = () => "tk_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7);
       let newList;
-      if (!editing.isNew) {
+      if (isKiosk) {
+        // Kiosk reminders are always a single record (no fan-out).
+        const rec = buildRec(null, editing._id || mkId());
+        newList = (tasks || []).filter(t => !t || t._id !== rec._id).concat([rec]);
+      } else if (!editing.isNew) {
         // Edit mode: this represents a single record. Re-point its
         // assignee to the (single) selected pin; ignore any extras.
         const rec = buildRec(pins[0], editing._id);
@@ -6420,11 +6440,13 @@ function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
       }
       await onSave(newList);
       if (window.BOA_LOG_ACTIVITY) {
-        const names = pins.map(p => (users[p] && users[p].name) || p).join(", ");
+        const audience = isKiosk
+          ? "🖥 " + ((editing.branches || []).length === 0 ? "all kiosks" : (editing.branches || []).join(", "))
+          : pins.map(p => (users[p] && users[p].name) || p).join(", ");
         window.BOA_LOG_ACTIVITY(
           editing.isNew ? "Created daily task" : "Edited daily task",
           editing.title.trim(),
-          names + " · " + describeRepeat(isWeekly ? { kind:"weekly", repeatDow: editing.repeatDow } : { kind:"once", date: editing.date }),
+          audience + " · " + describeRepeat(isWeekly ? { kind:"weekly", repeatDow: editing.repeatDow } : { kind:"once", date: editing.date }),
           "Task"
         );
       }
@@ -6435,7 +6457,9 @@ function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
 
   const removeTask = async (t) => {
     if (!t) return;
-    const who = (users[t.assigneePin] && users[t.assigneePin].name) || t.assigneePin;
+    const who = t.target === "kiosk"
+      ? ("🖥 " + ((t.branches || []).length === 0 ? "all kiosks" : (t.branches || []).join(", ")))
+      : ((users[t.assigneePin] && users[t.assigneePin].name) || t.assigneePin);
     if (!window.confirm("Delete this task for " + who + " (" + describeRepeat(t) + ")?")) return;
     setBusy(true);
     try {
@@ -6536,28 +6560,61 @@ function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
             </thead>
             <tbody>
               {visible.map(t => {
-                const u = users[t.assigneePin] || {};
+                const isKiosk = t.target === "kiosk";
+                const u = isKiosk ? null : (users[t.assigneePin] || {});
                 const isWeekly = t.kind === "weekly";
-                const doneTodayOnly = isTaskDoneOn(t, todayYmd);
-                const overdue = !isWeekly && !t.doneAt && t.date && t.date < todayYmd;
+                const doneTodayOnly = !isKiosk && isTaskDoneOn(t, todayYmd);
+                const overdue = !isKiosk && !isWeekly && !t.doneAt && t.date && t.date < todayYmd;
                 const dateLbl = isWeekly ? describeRepeat(t) : fmtDate(t.date);
                 return (
                   <tr key={t._id} style={{ borderTop:"1px solid #FCE7F3" }}>
                     <td style={{ padding:"10px 12px", color: overdue ? "#7f1d1d" : "#831843", fontWeight:600 }}>
+                      {isKiosk && <span style={{ display:"inline-block", marginRight:5, background:"#fef3c7", color:"#78350f", border:"1px solid #fde68a", padding:"1px 6px", borderRadius:5, fontSize:9, fontWeight:800, letterSpacing:"0.06em" }}>🖥 KIOSK</span>}
                       {isWeekly && <span style={{ display:"inline-block", marginRight:5, background:"#ede9fe", color:"#5b21b6", border:"1px solid #ddd6fe", padding:"1px 6px", borderRadius:5, fontSize:9, fontWeight:800, letterSpacing:"0.06em" }}>WEEKLY</span>}
                       {dateLbl}
                       {overdue && <div style={{ fontSize:9, color:"#7f1d1d", fontWeight:800, letterSpacing:"0.06em", marginTop:1 }}>OVERDUE</div>}
                     </td>
                     <td style={{ padding:"10px 12px", color:"#111827" }}>
-                      <div style={{ fontWeight:700, textDecoration: (!isWeekly && t.doneAt) ? "line-through" : "none", opacity: (!isWeekly && t.doneAt) ? 0.6 : 1 }}>{t.title}</div>
+                      <div style={{ fontWeight:700, textDecoration: (!isWeekly && !isKiosk && t.doneAt) ? "line-through" : "none", opacity: (!isWeekly && !isKiosk && t.doneAt) ? 0.6 : 1 }}>{t.title}</div>
                       {t.description && <div style={{ fontSize:11, color:"#6b7280", marginTop:2, whiteSpace:"pre-wrap" }}>{t.description}</div>}
                     </td>
                     <td style={{ padding:"10px 12px", color:"#374151" }}>
-                      {u.name || "(unknown)"}
-                      <div style={{ fontFamily:"monospace", fontSize:10, color:"#9CA3AF" }}>PIN {t.assigneePin}</div>
+                      {isKiosk ? (
+                        <div>
+                          <div style={{ fontWeight:700 }}>{(t.branches || []).length === 0 ? "Every manager kiosk" : (t.branches || []).slice(0,3).join(", ") + ((t.branches || []).length > 3 ? " +" + ((t.branches || []).length - 3) + " more" : "")}</div>
+                          <div style={{ fontSize:10, color:"#9CA3AF" }}>Broadcast · ticked per branch on the kiosk</div>
+                        </div>
+                      ) : (
+                        <>
+                          {u.name || "(unknown)"}
+                          <div style={{ fontFamily:"monospace", fontSize:10, color:"#9CA3AF" }}>PIN {t.assigneePin}</div>
+                        </>
+                      )}
                     </td>
                     <td style={{ padding:"10px 12px" }}>
-                      {isWeekly ? (
+                      {isKiosk ? (
+                        isTaskActiveToday(t, todayYmd, todayDow) ? (() => {
+                          // For kiosk tasks the "audience" is every branch in
+                          // t.branches (or all branches when the list is
+                          // empty). Each branch ticks Done independently.
+                          const targetBranches = (Array.isArray(t.branches) && t.branches.length > 0)
+                            ? t.branches.slice()
+                            : SALONS.map(s => s.name);
+                          const doneSet = t.kioskDoneByBranch || {};
+                          const doneBranches = targetBranches.filter(b => doneSet[b] && doneSet[b][todayYmd]);
+                          const total = targetBranches.length;
+                          const done = doneBranches.length;
+                          if (done === 0) {
+                            return <span style={{ background:"#fef3c7", color:"#78350f", border:"1px solid #fde68a", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }}>● 0 / {total} done today</span>;
+                          }
+                          if (done === total) {
+                            return <span style={{ background:"#dcfce7", color:"#166534", border:"1px solid #86efac", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }} title={doneBranches.join(", ")}>✓ All {total} branches done</span>;
+                          }
+                          return <span style={{ background:"#fef3c7", color:"#78350f", border:"1px solid #fde68a", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }} title={"Done at: " + doneBranches.join(", ")}>● {done} / {total} done today</span>;
+                        })() : (
+                          <span style={{ background:"#f3f4f6", color:"#374151", border:"1px solid #e5e7eb", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }}>Scheduled</span>
+                        )
+                      ) : isWeekly ? (
                         doneTodayOnly ? (
                           <span style={{ background:"#dcfce7", color:"#166534", border:"1px solid #86efac", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }}>✓ Done today</span>
                         ) : isTaskActiveToday(t, todayYmd, todayDow) ? (
@@ -6576,7 +6633,7 @@ function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
                       )}
                     </td>
                     <td style={{ padding:"10px 12px", textAlign:"right", whiteSpace:"nowrap" }}>
-                      {!readOnly && (isWeekly ? doneTodayOnly : !!t.doneAt) && (
+                      {!readOnly && !isKiosk && (isWeekly ? doneTodayOnly : !!t.doneAt) && (
                         <button onClick={() => reopenTask(t)} disabled={busy}
                           style={{ padding:"5px 10px", marginRight:5, background:"#fff", color:"#374151", border:"1px solid #d1d5db", borderRadius:6, cursor:"pointer", fontSize:11, fontWeight:600 }}>Re-open{isWeekly ? " today" : ""}</button>
                       )}
@@ -6623,6 +6680,63 @@ function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
                 style={{ padding:"9px 12px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, fontFamily:"inherit", resize:"vertical" }} />
             </label>
 
+            {/* Target picker: who sees this task? */}
+            <div style={{ marginBottom:12 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em", marginBottom:6 }}>SHOW ON</div>
+              <div style={{ display:"flex", gap:6 }}>
+                {[
+                  { v:"portal", l:"👤 Portal user(s)", sub:"Per-person to-do · click Done" },
+                  { v:"kiosk",  l:"🖥 Manager kiosks", sub:"Branch-wide reminder · no done tracking" }
+                ].map(o => {
+                  const on = (editing.target || "portal") === o.v;
+                  return (
+                    <button key={o.v} type="button" onClick={() => setEditing({ ...editing, target: o.v })}
+                      style={{ flex:1, padding:"9px 12px", borderRadius:9, border: on ? "1px solid #BE185D" : "1px solid #FBCFE8", background: on ? "#BE185D" : "#fff", color: on ? "#fff" : "#831843", cursor:"pointer", fontSize:12, fontWeight:700, fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"flex-start", lineHeight:1.2 }}>
+                      <span>{o.l}</span>
+                      <span style={{ fontSize:10, fontWeight:600, opacity: on ? 0.85 : 0.6, marginTop:2 }}>{o.sub}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {editing.target === "kiosk" ? (
+              <div style={{ display:"flex", flexDirection:"column", gap:4, marginBottom:12 }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                  <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>
+                    BRANCHES <span style={{ color:"#9F1A4F", fontWeight:600 }}>(empty = every branch)</span>
+                  </span>
+                  <div style={{ display:"flex", gap:6 }}>
+                    <button type="button" onClick={() => setEditing({ ...editing, branches: SALONS.map(s => s.name) })}
+                      style={{ background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:6, padding:"3px 9px", cursor:"pointer", fontSize:10, fontWeight:700, fontFamily:"inherit" }}>Select all</button>
+                    <button type="button" onClick={() => setEditing({ ...editing, branches: [] })}
+                      style={{ background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:6, padding:"3px 9px", cursor:"pointer", fontSize:10, fontWeight:700, fontFamily:"inherit" }}>Clear</button>
+                  </div>
+                </div>
+                <div style={{ border:"1px solid #FBCFE8", borderRadius:8, padding:"8px 10px", background:"#fff", maxHeight:170, overflowY:"auto", display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))", gap:4 }}>
+                  {SALONS.map(sl => {
+                    const on = (editing.branches || []).includes(sl.name);
+                    return (
+                      <label key={sl.name} style={{ display:"flex", alignItems:"center", gap:6, padding:"5px 8px", background: on ? "#FCE7F3" : "transparent", border:"1px solid " + (on ? "#FBCFE8" : "transparent"), borderRadius:6, cursor:"pointer", fontSize:12, color:"#831843", fontWeight: on ? 700 : 500 }}>
+                        <input type="checkbox" checked={on}
+                          onChange={() => {
+                            const cur = Array.isArray(editing.branches) ? editing.branches : [];
+                            const has = cur.includes(sl.name);
+                            setEditing({ ...editing, branches: has ? cur.filter(x => x !== sl.name) : [...cur, sl.name] });
+                          }}
+                          style={{ accentColor:"#BE185D" }} />
+                        <span style={{ flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{sl.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize:10, color:"#9F1A4F", fontWeight:600 }}>
+                  {(editing.branches || []).length === 0
+                    ? "Every kiosk will see this reminder."
+                    : (editing.branches || []).length + " branch" + ((editing.branches || []).length === 1 ? "" : "es") + " selected"}
+                </div>
+              </div>
+            ) : (
             <div style={{ display:"flex", flexDirection:"column", gap:4, marginBottom:12 }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
                 <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>
@@ -6677,6 +6791,7 @@ function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
                 </div>
               )}
             </div>
+            )}
 
             <div style={{ marginBottom:12 }}>
               <div style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em", marginBottom:6 }}>REPEATS</div>
