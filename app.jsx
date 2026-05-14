@@ -6582,7 +6582,7 @@ function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
                       {isKiosk ? (
                         <div>
                           <div style={{ fontWeight:700 }}>{(t.branches || []).length === 0 ? "Every manager kiosk" : (t.branches || []).slice(0,3).join(", ") + ((t.branches || []).length > 3 ? " +" + ((t.branches || []).length - 3) + " more" : "")}</div>
-                          <div style={{ fontSize:10, color:"#9CA3AF" }}>Broadcast · no per-person done tracking</div>
+                          <div style={{ fontSize:10, color:"#9CA3AF" }}>Broadcast · ticked per branch on the kiosk</div>
                         </div>
                       ) : (
                         <>
@@ -6593,9 +6593,25 @@ function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
                     </td>
                     <td style={{ padding:"10px 12px" }}>
                       {isKiosk ? (
-                        isTaskActiveToday(t, todayYmd, todayDow) ? (
-                          <span style={{ background:"#fef3c7", color:"#78350f", border:"1px solid #fde68a", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }}>● Showing today</span>
-                        ) : (
+                        isTaskActiveToday(t, todayYmd, todayDow) ? (() => {
+                          // For kiosk tasks the "audience" is every branch in
+                          // t.branches (or all branches when the list is
+                          // empty). Each branch ticks Done independently.
+                          const targetBranches = (Array.isArray(t.branches) && t.branches.length > 0)
+                            ? t.branches.slice()
+                            : SALONS.map(s => s.name);
+                          const doneSet = t.kioskDoneByBranch || {};
+                          const doneBranches = targetBranches.filter(b => doneSet[b] && doneSet[b][todayYmd]);
+                          const total = targetBranches.length;
+                          const done = doneBranches.length;
+                          if (done === 0) {
+                            return <span style={{ background:"#fef3c7", color:"#78350f", border:"1px solid #fde68a", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }}>● 0 / {total} done today</span>;
+                          }
+                          if (done === total) {
+                            return <span style={{ background:"#dcfce7", color:"#166534", border:"1px solid #86efac", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }} title={doneBranches.join(", ")}>✓ All {total} branches done</span>;
+                          }
+                          return <span style={{ background:"#fef3c7", color:"#78350f", border:"1px solid #fde68a", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }} title={"Done at: " + doneBranches.join(", ")}>● {done} / {total} done today</span>;
+                        })() : (
                           <span style={{ background:"#f3f4f6", color:"#374151", border:"1px solid #e5e7eb", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }}>Scheduled</span>
                         )
                       ) : isWeekly ? (

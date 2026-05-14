@@ -255,14 +255,26 @@
     var DOW_LONG = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
     var today = new Date();
     var dowLong = DOW_LONG[today.getDay()];
+    var doneCount = items.filter(function (t) { return t._doneTodayHere; }).length;
+    var allDone = doneCount === items.length;
+    var headerBg = allDone
+      ? "linear-gradient(135deg,#dcfce7 0%,#FFFFFF 60%)"
+      : "linear-gradient(135deg,#FCE7F3 0%,#FFFFFF 60%)";
+    var headerBorder = allDone ? "#86efac" : "#F472B6";
+    var headerShadow = allDone ? "rgba(34,197,94,0.18)" : "rgba(244,114,182,0.18)";
     var cards = items.map(function (t) {
       var weekly = t.kind === "weekly";
+      var done = !!t._doneTodayHere;
+      var bar = done ? "#16a34a" : "#BE185D";
+      var btnHtml = done
+        ? '<button type="button" data-task-id="' + esc(t._id) + '" data-undo="1" class="kiosk-rem-btn" style="background:#fff;color:#15803d;border:1px solid #86efac;border-radius:10px;padding:10px 14px;cursor:pointer;font-size:12px;font-weight:700;font-family:inherit;white-space:nowrap">✓ Done · tap to undo</button>'
+        : '<button type="button" data-task-id="' + esc(t._id) + '" data-undo="0" class="kiosk-rem-btn" style="background:#BE185D;color:#fff;border:none;border-radius:10px;padding:12px 20px;cursor:pointer;font-size:13px;font-weight:800;font-family:inherit;white-space:nowrap;box-shadow:0 2px 6px rgba(190,24,93,0.35)">✓ Mark done</button>';
       return (
-        '<div style="background:#fff;border:1px solid #FBCFE8;border-left:6px solid #BE185D;border-radius:12px;padding:14px 16px;display:flex;align-items:center;gap:12px;box-shadow:0 1px 4px rgba(190,24,93,0.08)">' +
-          '<div style="font-size:22px;line-height:1">📌</div>' +
+        '<div style="background:#fff;border:1px solid ' + (done ? "#bbf7d0" : "#FBCFE8") + ';border-left:6px solid ' + bar + ';border-radius:12px;padding:14px 16px;display:flex;align-items:center;gap:12px;box-shadow:0 1px 4px rgba(190,24,93,0.08);opacity:' + (done ? "0.85" : "1") + '">' +
+          '<div style="font-size:22px;line-height:1">' + (done ? "✅" : "📌") + '</div>' +
           '<div style="flex:1;min-width:0">' +
             '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:3px">' +
-              '<span style="font-family:\'Outfit\',system-ui,sans-serif;font-size:16px;font-weight:800;color:#831843">' + esc(t.title || "") + '</span>' +
+              '<span style="font-family:\'Outfit\',system-ui,sans-serif;font-size:16px;font-weight:800;color:#831843;text-decoration:' + (done ? "line-through" : "none") + '">' + esc(t.title || "") + '</span>' +
               (weekly
                 ? '<span style="background:#ede9fe;color:#5b21b6;border:1px solid #ddd6fe;padding:1px 7px;border-radius:6px;font-size:9px;font-weight:800;letter-spacing:0.06em">WEEKLY</span>'
                 : '') +
@@ -270,19 +282,28 @@
             (t.description
               ? '<div style="font-size:12px;color:#4b5563;white-space:pre-wrap;line-height:1.35">' + esc(t.description) + '</div>'
               : '') +
+            (done && t._doneAtHere
+              ? '<div style="font-size:10px;color:#15803d;font-weight:700;margin-top:4px">Ticked at ' + esc(new Date(t._doneAtHere).toLocaleTimeString("en-ZA",{hour:"2-digit",minute:"2-digit"})) + '</div>'
+              : '') +
           '</div>' +
+          btnHtml +
         '</div>'
       );
     }).join("");
     return (
-      '<div style="background:linear-gradient(135deg,#FCE7F3 0%,#FFFFFF 60%);border:2px solid #F472B6;border-radius:18px;padding:16px 20px;margin-bottom:18px;box-shadow:0 4px 18px rgba(244,114,182,0.18)">' +
-        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">' +
-          '<div style="font-size:24px">📋</div>' +
-          '<div>' +
-            '<div style="font-family:\'Outfit\',system-ui,sans-serif;font-size:10px;font-weight:800;color:#BE185D;letter-spacing:0.18em;text-transform:uppercase">Today\'s Reminders</div>' +
-            '<div style="font-family:\'Outfit\',system-ui,sans-serif;font-size:18px;font-weight:800;color:#831843;line-height:1.15;margin-top:1px">' +
-              esc(dowLong) + ' · ' + items.length + ' reminder' + (items.length === 1 ? "" : "s") +
+      '<div style="background:' + headerBg + ';border:2px solid ' + headerBorder + ';border-radius:18px;padding:16px 20px;margin-bottom:18px;box-shadow:0 4px 18px ' + headerShadow + '">' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:12px">' +
+          '<div style="display:flex;align-items:center;gap:10px">' +
+            '<div style="font-size:24px">📋</div>' +
+            '<div>' +
+              '<div style="font-family:\'Outfit\',system-ui,sans-serif;font-size:10px;font-weight:800;color:' + (allDone ? "#15803d" : "#BE185D") + ';letter-spacing:0.18em;text-transform:uppercase">Today\'s Reminders</div>' +
+              '<div style="font-family:\'Outfit\',system-ui,sans-serif;font-size:18px;font-weight:800;color:#831843;line-height:1.15;margin-top:1px">' +
+                esc(dowLong) + ' · ' + items.length + ' reminder' + (items.length === 1 ? "" : "s") +
+              '</div>' +
             '</div>' +
+          '</div>' +
+          '<div style="background:' + (allDone ? "#16a34a" : "#BE185D") + ';color:#fff;padding:5px 12px;border-radius:999px;font-size:12px;font-weight:800;letter-spacing:0.04em">' +
+            doneCount + ' / ' + items.length + ' done' +
           '</div>' +
         '</div>' +
         '<div style="display:flex;flex-direction:column;gap:8px">' + cards + '</div>' +
@@ -300,9 +321,36 @@
       if (!items || items.length === 0) { p.style.display = "none"; return; }
       p.innerHTML = renderKioskRemindersHtml(items);
       p.style.display = "block";
+      wireKioskReminderButtons();
     }).catch(function (e) {
       console.warn("loadKioskReminders failed:", e);
     });
+  }
+  // Wire every '✓ Mark done' / 'tap to undo' button on the reminders
+  // panel. Tapping disables the button while the Supabase write is in
+  // flight, then re-renders the panel from a fresh listKioskReminders
+  // so the badge counts + side-bar colours update atomically.
+  function wireKioskReminderButtons() {
+    var btns = document.querySelectorAll(".kiosk-rem-btn");
+    for (var i = 0; i < btns.length; i++) {
+      (function (btn) {
+        btn.onclick = function () {
+          if (btn.disabled) return;
+          var taskId = btn.getAttribute("data-task-id");
+          var undo   = btn.getAttribute("data-undo") === "1";
+          btn.disabled = true;
+          btn.textContent = undo ? "Undoing…" : "Saving…";
+          var fn = undo ? window.APP_DATA.markKioskReminderUndone : window.APP_DATA.markKioskReminderDone;
+          fn(taskId).then(function () {
+            loadKioskRemindersIntoPanel();
+          }).catch(function (e) {
+            console.error("kiosk reminder write failed:", e);
+            alert("Could not update reminder: " + ((e && e.message) || e));
+            loadKioskRemindersIntoPanel();
+          });
+        };
+      })(btns[i]);
+    }
   }
 
   // ---------------- Tile landing ----------------

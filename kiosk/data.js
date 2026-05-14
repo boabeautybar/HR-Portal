@@ -148,8 +148,57 @@
         return true;
       }
       return t.date === ymd;
+    }).map(function (t) {
+      // Tag each task with this-branch's done status for today. Kiosk
+      // reminders are branch-level: any manager at the kiosk can mark
+      // them done, and the tick survives until tomorrow (weekly) or
+      // forever (one-off, since the date passes).
+      var done = t.kioskDoneByBranch && t.kioskDoneByBranch[thisBranch] && t.kioskDoneByBranch[thisBranch][ymd];
+      return Object.assign({}, t, {
+        _doneTodayHere: !!done,
+        _doneAtHere:    done && done.at || null
+      });
     });
   }
+
+  // Mark / unmark a kiosk reminder as done for THIS branch on TODAY's
+  // date. Reads the whole boa_daily_tasks_v1 row, mutates just the
+  // matching task's kioskDoneByBranch[branch][ymd] field, writes back.
+  // Returns the updated task or null on failure.
+  async function _writeKioskDoneState(taskId, mark) {
+    var c = client(); if (!c) return null;
+    var res = await c.from("app_state").select("value").eq("key", "boa_daily_tasks_v1").maybeSingle();
+    if (res.error) { console.error("kiosk-done read:", res.error); return null; }
+    var v = res.data && res.data.value;
+    var all = Array.isArray(v) ? v : [];
+    var now = new Date();
+    var ymd = now.getFullYear() + "-" + String(now.getMonth()+1).padStart(2,"0") + "-" + String(now.getDate()).padStart(2,"0");
+    var thisBranch = branch();
+    var changed = null;
+    var next = all.map(function (t) {
+      if (!t || t._id !== taskId) return t;
+      var dbd = (t.kioskDoneByBranch && typeof t.kioskDoneByBranch === "object") ? Object.assign({}, t.kioskDoneByBranch) : {};
+      var bMap = dbd[thisBranch] ? Object.assign({}, dbd[thisBranch]) : {};
+      if (mark) {
+        bMap[ymd] = { at: new Date().toISOString() };
+      } else {
+        delete bMap[ymd];
+      }
+      if (Object.keys(bMap).length === 0) {
+        delete dbd[thisBranch];
+      } else {
+        dbd[thisBranch] = bMap;
+      }
+      changed = Object.assign({}, t, { kioskDoneByBranch: dbd });
+      return changed;
+    });
+    if (!changed) return null;
+    var w = await c.from("app_state").upsert({ key: "boa_daily_tasks_v1", value: next });
+    if (w.error) { console.error("kiosk-done write:", w.error); throw w.error; }
+    return changed;
+  }
+  function markKioskReminderDone(taskId)   { return _writeKioskDoneState(taskId, true); }
+  function markKioskReminderUndone(taskId) { return _writeKioskDoneState(taskId, false); }
 
   // Save a single tech-loan record. Replaces any existing loan for the same
   // (ec, date) pair so a tech can't be in two places on the same day. Used by
@@ -1110,6 +1159,8 @@
     listStaff: listStaff, listMaternity: listMaternity, listLeaveRecords: listLeaveRecords, loadOffboarding: loadOffboarding,
     listTechLoans: listTechLoans, saveTechLoan: saveTechLoan, listStaffAllBranches: listStaffAllBranches,
     listKioskReminders: listKioskReminders,
+    markKioskReminderDone: markKioskReminderDone,
+    markKioskReminderUndone: markKioskReminderUndone,
     categorizeStaff: categorizeStaff, addStaff: addStaff, updateStaff: updateStaff,
     deactivateStaff: deactivateStaff,
     lastClockinToday: lastClockinToday, addClockin: addClockin, listTodayClockins: listTodayClockins,
