@@ -912,6 +912,23 @@
     return records;
   }
 
+  // ---------- Compliance actions (boa_compliance_actions_v1) ----------
+  // Sidecar tracking per-staff compliance follow-ups. Shape:
+  //   { [ec]: { workPermitRequestedAt, workPermitRequestedBy,
+  //             workPermitDeadline, workPermitNotes, clearedAt, clearedBy } }
+  // Stored on app_state so we don't need a schema migration.
+  async function loadComplianceActions() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_compliance_actions_v1").maybeSingle();
+    if (res.error) { console.error("loadComplianceActions:", res.error); return {}; }
+    var v = res.data && res.data.value;
+    return (v && typeof v === "object" && !Array.isArray(v)) ? v : {};
+  }
+  async function saveComplianceActions(map) {
+    var res = await sb.from("app_state").upsert({ key: "boa_compliance_actions_v1", value: map || {} });
+    if (res.error) { console.error("saveComplianceActions:", res.error); throw res.error; }
+    return map;
+  }
+
   // ---------- Tech day-loans (boa_tech_loans_v1) ----------
   // One-day cross-branch borrowing of a nail tech. Stored as a JSON array on
   // app_state so we don't need a schema migration. Each record is:
@@ -1089,6 +1106,8 @@
     // Unpaid legal-status leave
     loadTechLoans:          loadTechLoans,
     saveTechLoans:          saveTechLoans,
+    loadComplianceActions:  loadComplianceActions,
+    saveComplianceActions:  saveComplianceActions,
     loadUnpaidLegalRecords: loadUnpaidLegalRecords,
     saveUnpaidLegalRecords: saveUnpaidLegalRecords
   };

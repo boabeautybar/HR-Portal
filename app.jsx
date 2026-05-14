@@ -5498,6 +5498,7 @@ const SETTINGS_TABS = [
   { t: "recruitment",l: "Recruitment",       cat: "People",     icon: "🎯" },
   { t: "maternity",  l: "Maternity",         cat: "People",     icon: "🤱" },
   { t: "unpaidLegal",l: "Unpaid Leave (Legal)",cat: "People",   icon: "⏸️" },
+  { t: "compliance", l: "Compliance",        cat: "People",     icon: "📋" },
   { t: "scheduling", l: "Scheduling",        cat: "Operations", icon: "📅" },
   { t: "locations",  l: "Locations",         cat: "Operations", icon: "📍" },
   { t: "checkins",   l: "Daily Check-ins",   cat: "Operations", icon: "📲" },
@@ -5936,6 +5937,43 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // excludes them from active staff counts.
   const [unpaidLegalRecs, setUnpaidLegalRecs] = useState([]);
   const [unpaidLegalModal, setUnpaidLegalModal] = useState(null);
+
+  // Compliance follow-up actions per EC. Shape:
+  // { [ec]: { workPermitRequestedAt, workPermitRequestedBy,
+  //           workPermitDeadline, workPermitNotes, clearedAt, clearedBy } }
+  const [complianceActions, setComplianceActions] = useState({});
+  const [complianceModal, setComplianceModal] = useState(null); // null | { ec, name, branch, ... }
+  useEffect(() => {
+    if (!window.BOA_DB || !window.BOA_DB.loadComplianceActions) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const v = await window.BOA_DB.loadComplianceActions();
+        if (!cancelled) setComplianceActions((v && typeof v === "object") ? v : {});
+      } catch (e) { console.error("loadComplianceActions:", e); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  const saveComplianceAction = async (ec, patch) => {
+    if (!ec) return;
+    const next = { ...complianceActions };
+    const cur = next[ec] || {};
+    next[ec] = { ...cur, ...patch };
+    // Drop the row entirely if every field cleared, so no orphan keys.
+    if (!next[ec].workPermitRequestedAt && !next[ec].clearedAt && !next[ec].workPermitDeadline && !next[ec].workPermitRequestedBy && !next[ec].workPermitNotes) {
+      delete next[ec];
+    }
+    try {
+      await window.BOA_DB.saveComplianceActions(next);
+      setComplianceActions(next);
+      if (window.BOA_LOG_ACTIVITY) {
+        const action = patch.clearedAt ? "Cleared compliance follow-up"
+                     : patch.workPermitRequestedAt ? "Marked work permit request sent"
+                     : "Updated compliance follow-up";
+        window.BOA_LOG_ACTIVITY(action, ec, JSON.stringify(patch), "Compliance");
+      }
+    } catch (e) { alert("Could not save compliance action: " + (e.message || e)); }
+  };
   useEffect(() => {
     if (!window.BOA_DB || !window.BOA_DB.loadUnpaidLegalRecords) return;
     let cancelled = false;
@@ -7775,7 +7813,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     { t:"hrLibrary", l:"📁 Employee Files" }
                   ] : []),
                   { t:"maternity",   l: matLbl },
-                  { t:"unpaidLegal", l:"⏸️ Unpaid Leave (Legal)" }
+                  { t:"unpaidLegal", l:"⏸️ Unpaid Leave (Legal)" },
+                  { t:"compliance",  l:"📋 Compliance" }
                 ] },
               { key:"Operations", icon:"⚙️", title:"Operations",
                 color:{ bg:"#E0F2FE", bgActive:"#BAE6FD", ink:"#075985" },
@@ -9599,6 +9638,218 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     }}
                       style={{ background:"#92400e", color:"#fff", border:"none", borderRadius:8, padding:"9px 18px", cursor:"pointer", fontSize:12, fontWeight:700 }}
                     >{m._id ? "Save changes" : "Add record"}</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ── COMPLIANCE TAB ── work-permit / asylum / DHA status across all
+            staff + managers, with a follow-up workflow for non-compliant
+            people (Z/NA or no permit on file). Tracking lives in
+            app_state['boa_compliance_actions_v1'] so requests survive page
+            reloads and other users. */}
+        {tab==="compliance" && (() => {
+          // Build the combined pool: active techs (exclude off-boarded /
+          // on-mat for clarity - they're not the people to chase) + every
+          // manager. Off-boarded folk who have already left are dropped
+          // because chasing them is pointless.
+          const pool = [
+            ...enriched
+              .filter(s => !s.offboarded || (s.offDaysSinceLeft != null && s.offDaysSinceLeft < 0))
+              .map(s => ({ ec: s.ec, name: s.name, branch: s.branch, permit: s.permit, role: "NT", onMat: s.onMat })),
+            ...(managers || [])
+              .map(m => ({ ec: m.ec, name: m.name, branch: m.branch, permit: m.permit, role: m.role || "AM", onMat: !!m.onMat }))
+          ].filter(p => p && p.ec);
+
+          // Bucket by permit. Non-compliant = explicit z_na OR no permit set.
+          const isNonCompliant = (p) => !p.permit || p.permit === "z_na";
+          const byPermit = { sa_citizen:[], work_permit:[], asylum:[], verified_dha:[], z_na:[], unset:[] };
+          pool.forEach(p => {
+            if (!p.permit) byPermit.unset.push(p);
+            else if (byPermit[p.permit]) byPermit[p.permit].push(p);
+            else byPermit.unset.push(p);
+          });
+          const totalCompliant = byPermit.sa_citizen.length + byPermit.work_permit.length + byPermit.verified_dha.length;
+          const nonCompliant = [...byPermit.z_na, ...byPermit.unset]
+            .sort((a, b) => (a.branch || "").localeCompare(b.branch || "") || (a.name || "").localeCompare(b.name || ""));
+
+          // Helpers for the action panel.
+          const today = new Date();
+          const ymd0 = today.toISOString().slice(0, 10);
+          const fmtDate = (iso) => {
+            if (!iso) return "—";
+            try { return new Date(iso + "T00:00:00").toLocaleDateString("en-ZA", { day:"2-digit", month:"short", year:"numeric" }); } catch (_) { return iso; }
+          };
+          const daysToDeadline = (iso) => {
+            if (!iso) return null;
+            const d = new Date(iso + "T00:00:00");
+            const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+            return Math.ceil((d - t0) / 86400000);
+          };
+
+          const STATS = [
+            { l:"🇿🇦 SA Citizens",        v:byPermit.sa_citizen.length, c:"#14532d", bg:"#dcfce7" },
+            { l:"📋 Asylum on file",      v:byPermit.asylum.length,     c:"#4c1d95", bg:"#ede9fe" },
+            { l:"✅ Valid Work Permit",   v:byPermit.work_permit.length,c:"#8E5570", bg:"#dbeafe" },
+            { l:"🔵 Verified by DHA",      v:byPermit.verified_dha.length,c:"#0c4a6e",bg:"#e0f2fe" },
+            { l:"⚠ Not compliant",        v:nonCompliant.length,         c:"#7f1d1d", bg:"#fee2e2" },
+          ];
+
+          return (
+            <>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
+                <div>
+                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:"#831843" }}>📋 Compliance</div>
+                  <div style={{ fontSize:12, color:"#6b7280", marginTop:2 }}>Work-permit status across all staff + managers. Non-compliant rows can have a permit request logged with deadline tracking.</div>
+                </div>
+                <div style={{ fontSize:11, color:"#9ca3af" }}>{pool.length} people · {totalCompliant + byPermit.asylum.length} with docs · {nonCompliant.length} without</div>
+              </div>
+
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))", gap:10, marginBottom:20 }}>
+                {STATS.map(c => (
+                  <div key={c.l} style={{ background:c.bg, borderRadius:14, padding:"14px 16px", border:"1px solid rgba(255,255,255,0.6)" }}>
+                    <div style={{ fontSize:32, fontWeight:800, color:c.c, lineHeight:1.05 }}>{c.v}</div>
+                    <div style={{ fontSize:10, fontWeight:700, color:c.c, letterSpacing:"0.1em", textTransform:"uppercase", marginTop:6 }}>{c.l}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Non-compliant follow-up list */}
+              <div style={{ background:"#fff", border:"1px solid #fecaca", borderRadius:14, overflow:"hidden" }}>
+                <div style={{ background:"#fee2e2", padding:"12px 16px", borderBottom:"1px solid #fecaca", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:16, fontWeight:700, color:"#7f1d1d" }}>⚠ Not compliant · {nonCompliant.length}</div>
+                  <div style={{ fontSize:11, color:"#7f1d1d", opacity:0.8 }}>Log a work-permit request to track follow-up + deadlines.</div>
+                </div>
+                {nonCompliant.length === 0 ? (
+                  <div style={{ padding:"30px 20px", textAlign:"center", color:"#15803d", fontSize:13 }}>✓ Everyone has documents on file. Well done.</div>
+                ) : (
+                  <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+                    <thead>
+                      <tr style={{ background:"#fff", color:"#7f1d1d", fontWeight:700, fontSize:11, letterSpacing:"0.06em", textTransform:"uppercase" }}>
+                        <th style={{ textAlign:"left", padding:"9px 14px", borderTop:"1px solid #fecaca" }}>Person</th>
+                        <th style={{ textAlign:"left", padding:"9px 14px", borderTop:"1px solid #fecaca" }}>Branch</th>
+                        <th style={{ textAlign:"left", padding:"9px 14px", borderTop:"1px solid #fecaca" }}>Permit Status</th>
+                        <th style={{ textAlign:"left", padding:"9px 14px", borderTop:"1px solid #fecaca" }}>Request Sent</th>
+                        <th style={{ textAlign:"left", padding:"9px 14px", borderTop:"1px solid #fecaca" }}>Deadline</th>
+                        <th style={{ textAlign:"right", padding:"9px 14px", borderTop:"1px solid #fecaca" }}>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {nonCompliant.map(p => {
+                        const act = complianceActions[p.ec] || {};
+                        const hasRequest = !!act.workPermitRequestedAt;
+                        const dToDeadline = daysToDeadline(act.workPermitDeadline);
+                        const overdue = dToDeadline !== null && dToDeadline < 0;
+                        const dueSoon = dToDeadline !== null && dToDeadline >= 0 && dToDeadline <= 14;
+                        const roleIcon = p.role === "SSM" ? "💎" : p.role === "SM" ? "👑" : p.role === "AM" ? "⭐" : "💅";
+                        return (
+                          <tr key={p.ec} style={{ borderTop:"1px solid #fee2e2" }}>
+                            <td style={{ padding:"9px 14px", fontWeight:600, color:"#111827" }}>
+                              <span style={{ fontFamily:"monospace", fontSize:11, color:"#9ca3af", marginRight:6 }}>{p.ec}</span>
+                              {roleIcon} {p.name || "(no name)"}
+                              {p.onMat && <span style={{ marginLeft:6, fontSize:10, background:"#FBCFE8", color:"#8E5570", padding:"1px 6px", borderRadius:99, fontWeight:700 }}>🤱 mat.</span>}
+                            </td>
+                            <td style={{ padding:"9px 14px", color:"#475569", fontSize:12 }}>📍 {p.branch || "—"}</td>
+                            <td style={{ padding:"9px 14px" }}>
+                              <span style={{ fontSize:10, fontWeight:800, padding:"2px 8px", borderRadius:99, background:!p.permit?"#f3f4f6":"#fecaca", color:!p.permit?"#6b7280":"#7f1d1d" }}>
+                                {p.permit === "z_na" ? "Z/NA" : "Not set"}
+                              </span>
+                            </td>
+                            <td style={{ padding:"9px 14px", fontSize:12, color:"#374151" }}>
+                              {hasRequest ? (
+                                <div>
+                                  <div style={{ fontWeight:700 }}>{fmtDate(act.workPermitRequestedAt)}</div>
+                                  <div style={{ fontSize:10, color:"#6b7280" }}>by {act.workPermitRequestedBy || "—"}</div>
+                                </div>
+                              ) : <span style={{ color:"#9ca3af", fontStyle:"italic" }}>—</span>}
+                            </td>
+                            <td style={{ padding:"9px 14px", fontSize:12 }}>
+                              {act.workPermitDeadline ? (
+                                <div>
+                                  <div style={{ fontWeight:700, color: overdue ? "#7f1d1d" : dueSoon ? "#92400e" : "#111827" }}>{fmtDate(act.workPermitDeadline)}</div>
+                                  <div style={{ fontSize:10, color: overdue ? "#7f1d1d" : dueSoon ? "#92400e" : "#9ca3af", fontWeight:600 }}>
+                                    {overdue ? Math.abs(dToDeadline) + "d overdue" : dToDeadline === 0 ? "TODAY" : "in " + dToDeadline + "d"}
+                                  </div>
+                                </div>
+                              ) : <span style={{ color:"#9ca3af", fontStyle:"italic" }}>—</span>}
+                            </td>
+                            <td style={{ padding:"9px 14px", textAlign:"right", whiteSpace:"nowrap" }}>
+                              {hasRequest ? (
+                                <button onClick={()=>setComplianceModal({ ...p, ...act, _edit:true })}
+                                  style={{ background:"#fff", color:"#7c2d12", border:"1px solid #fed7aa", borderRadius:7, padding:"6px 11px", cursor:"pointer", fontSize:11, fontWeight:700 }}
+                                >Update</button>
+                              ) : (
+                                <button onClick={()=>setComplianceModal({ ec:p.ec, name:p.name, branch:p.branch, role:p.role, workPermitRequestedAt: ymd0, workPermitRequestedBy: (currentUser && currentUser.name) || "", workPermitDeadline: "", workPermitNotes: "" })}
+                                  style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:7, padding:"6px 12px", cursor:"pointer", fontSize:11, fontWeight:700 }}
+                                >Log Request</button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </>
+          );
+        })()}
+
+        {/* ── COMPLIANCE ACTION MODAL ── log / edit work-permit request */}
+        {complianceModal && (() => {
+          const m = complianceModal;
+          const set = (k, v) => setComplianceModal({ ...m, [k]: v });
+          return (
+            <div onClick={()=>setComplianceModal(null)} style={{ position:"fixed", inset:0, background:"rgba(17,24,39,0.55)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:120 }}>
+              <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:16, padding:"22px 26px", width:"min(500px, 92vw)", maxHeight:"90vh", overflowY:"auto", boxShadow:"0 10px 40px rgba(0,0,0,0.25)" }}>
+                <div style={{ fontFamily:"'Playfair Display',serif", fontSize:20, fontWeight:700, color:"#831843", marginBottom:4 }}>📋 Work-permit request</div>
+                <div style={{ fontSize:12, color:"#6b7280", marginBottom:16 }}><b>{m.name}</b> · 📍 {m.branch} · <span style={{ fontFamily:"monospace" }}>{m.ec}</span></div>
+
+                <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Date request sent *</label>
+                <input type="date" value={m.workPermitRequestedAt || ""} onChange={e=>set("workPermitRequestedAt", e.target.value)}
+                  style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit", marginBottom:12 }} />
+
+                <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Sent by *</label>
+                <input type="text" value={m.workPermitRequestedBy || ""} onChange={e=>set("workPermitRequestedBy", e.target.value)} placeholder="e.g. Theresa"
+                  style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit", marginBottom:12 }} />
+
+                <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Deadline</label>
+                <input type="date" value={m.workPermitDeadline || ""} onChange={e=>set("workPermitDeadline", e.target.value)}
+                  style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit", marginBottom:12 }} />
+
+                <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Notes</label>
+                <textarea rows={3} value={m.workPermitNotes || ""} onChange={e=>set("workPermitNotes", e.target.value)} placeholder="e.g. Awaiting acknowledgement from DHA…"
+                  style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:13, fontFamily:"inherit", marginBottom:14, resize:"vertical" }} />
+
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                  {m._edit && (
+                    <button onClick={()=>{
+                      if (!window.confirm("Clear this request and start fresh?")) return;
+                      saveComplianceAction(m.ec, { workPermitRequestedAt: null, workPermitRequestedBy: null, workPermitDeadline: null, workPermitNotes: null });
+                      setComplianceModal(null);
+                    }}
+                      style={{ background:"#fff", color:"#b91c1c", border:"1px solid #fecaca", borderRadius:8, padding:"9px 14px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                    >Clear request</button>
+                  )}
+                  <div style={{ display:"flex", gap:8, marginLeft:"auto" }}>
+                    <button onClick={()=>setComplianceModal(null)}
+                      style={{ background:"#f3f4f6", color:"#374151", border:"none", borderRadius:8, padding:"9px 16px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                    >Cancel</button>
+                    <button onClick={()=>{
+                      if (!m.workPermitRequestedAt) { alert("Pick the date the request was sent."); return; }
+                      if (!(m.workPermitRequestedBy || "").trim()) { alert("Enter who sent the request."); return; }
+                      saveComplianceAction(m.ec, {
+                        workPermitRequestedAt: m.workPermitRequestedAt,
+                        workPermitRequestedBy: (m.workPermitRequestedBy || "").trim(),
+                        workPermitDeadline:    m.workPermitDeadline || null,
+                        workPermitNotes:       (m.workPermitNotes || "").trim() || null
+                      });
+                      setComplianceModal(null);
+                    }}
+                      style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:8, padding:"9px 18px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                    >{m._edit ? "Save changes" : "Log request sent"}</button>
                   </div>
                 </div>
               </div>
