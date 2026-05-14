@@ -526,6 +526,16 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
       dayTotals: {}, branch: branchName, cycleStart: cycleStartYmd, cycleEnd, weekOrder: [], weeksMap: {} };
   }
   const m = f.length;
+  // Small-team coverage threshold (per-day function):
+  //   - 3+ managers AVAILABLE that day (none on leave/mat) → require >=2 working.
+  //   - 2 or fewer available (true 2-mgr store, OR 3-mgr store where one is
+  //     on leave/maternity that day)               → allow 1 working.
+  // The 6-consecutive-day cap and 2-off-per-week rule take priority over
+  // keeping 2 mgrs on duty when the available team has dropped to 2.
+  const _minCoverageFor = (ymd) => {
+    const activeToday = m - (W[ymd] && W[ymd].leave ? W[ymd].leave : 0);
+    return activeToday >= 3 ? 2 : 1;
+  };
 
   // ISO week mapping
   const wkOf = ymd => {
@@ -802,29 +812,26 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
       }
       const { days, need } = weeksToFill[i];
       // Generate candidate combinations
-      // Small-team rule: when fewer than 3 mgrs are available that day
-      // (true 2-mgr store, or 3-mgr store with one on leave/maternity),
-      // a 1-mgr day is acceptable — the 6-consec cap and the 2-off-per-week
-      // rule take priority over keeping 2 mgrs working at all times.
-      const _minWorkingFor = (day) => {
-        const activeToday = m - (W[day].leave || 0);
-        return activeToday >= 3 ? 2 : 1;
-      };
+      // Small-team rule: stores with exactly 2 managers (total) are allowed
+      // to run with 1 mgr on duty so the 6-consec cap and 2-off-per-week
+      // rule can both be honoured. 3+ manager stores always require >=2
+      // working, even when one is on leave (those cases surface as
+      // conflicts for manual review).
       const candidates = [];
       if (need === 2) {
         for (let a = 0; a < days.length; a++) {
           if (grid[h.ec][days[a].d] != null) continue;
-          if ((m - W[days[a].d].off - W[days[a].d].leave - 1) < _minWorkingFor(days[a].d)) continue;
+          if ((m - W[days[a].d].off - W[days[a].d].leave - 1) < _minCoverageFor(days[a].d)) continue;
           for (let b = a + 1; b < days.length; b++) {
             if (grid[h.ec][days[b].d] != null) continue;
-            if ((m - W[days[b].d].off - W[days[b].d].leave - 1) < _minWorkingFor(days[b].d)) continue;
+            if ((m - W[days[b].d].off - W[days[b].d].leave - 1) < _minCoverageFor(days[b].d)) continue;
             candidates.push([days[a], days[b]]);
           }
         }
       } else {
         for (const d of days) {
           if (grid[h.ec][d.d] != null) continue;
-          if ((m - W[d.d].off - W[d.d].leave - 1) < _minWorkingFor(d.d)) continue;
+          if ((m - W[d.d].off - W[d.d].leave - 1) < _minCoverageFor(d.d)) continue;
           candidates.push([d]);
         }
       }
@@ -873,10 +880,8 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
         for (const d of wt.days) {
           if (need <= 0) break;
           if (grid[h.ec][d.d] != null) continue;
-          // Same small-team rule as the backtracker — accept 1-mgr days
-          // when fewer than 3 mgrs are available that day.
-          const _activeToday = m - (W[d.d].leave || 0);
-          if ((m - W[d.d].off - W[d.d].leave - 1) < (_activeToday >= 3 ? 2 : 1)) continue;
+          // Same small-team rule as the backtracker.
+          if ((m - W[d.d].off - W[d.d].leave - 1) < _minCoverageFor(d.d)) continue;
           grid[h.ec][d.d] = "O";
           W[d.d].off++;
           offWk[h.ec][wkOfDay[d.d]]++;
@@ -931,15 +936,9 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
           // OLD restricts targets to the SAME ISO WEEK as the source-O.
           if (wkOfDay[dates[ix].d] !== srcWk) continue;
           const wb = m - W[dates[ix].d].off - W[dates[ix].d].leave;
-          // Small-team rule: a 1-mgr day is acceptable when fewer than 3
-          // managers are available that day. This applies to true 2-mgr
-          // stores AND to 3-mgr stores where one is on leave/maternity.
-          // The 6-consecutive-day cap is a hard rule everywhere, so we
-          // need to permit the swap that takes a 7th-day worker off,
-          // even if it leaves a single mgr that day.
-          const activeIx = m - (W[dates[ix].d].leave || 0);
-          const minWorking = activeIx >= 3 ? 2 : 1;
-          if (wb - 1 < minWorking) continue;                  // target's coverage
+          // Small-team rule: 2 or fewer available that day (true 2-mgr
+          // store, or 3-mgr store with one on leave) allows 1-mgr days.
+          if (wb - 1 < _minCoverageFor(dates[ix].d)) continue;  // target's coverage
           // Try the swap, measure new max run, revert
           const oldSrc = grid[h.ec][dates[src].d];
           const oldTgt = grid[h.ec][dates[ix].d];
@@ -1025,12 +1024,11 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
           const cur = grid[h.ec][dy.d];
           if (cur !== "W") continue;
           if (pairLocked[h.ec].has(dy.d)) continue;
-          // Small-team rule: 1-mgr day OK when fewer than 3 mgrs are
-          // available that day — rollover/partial weeks honour the same
-          // 2-off cap as full weeks via offWk + partialCarry, so the
-          // rules apply uniformly across the cycle boundary.
-          const _activePart = m - (W[dy.d].leave || 0);
-          if ((m - W[dy.d].off - W[dy.d].leave - 1) < (_activePart >= 3 ? 2 : 1)) continue;
+          // Small-team rule applied per-day. Rollover/partial weeks
+          // honour the same 2-off cap as full weeks via offWk +
+          // partialCarry, so the rules apply uniformly across the
+          // cycle boundary.
+          if ((m - W[dy.d].off - W[dy.d].leave - 1) < _minCoverageFor(dy.d)) continue;
           grid[h.ec][dy.d] = "O";
           const mx = longestWRun(h.ec);
           grid[h.ec][dy.d] = "W";
@@ -1090,9 +1088,8 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
             }
           }
           const wb = m - W[dates[ix].d].off - W[dates[ix].d].leave;
-          // Small-team rule: 1-mgr day OK if <3 mgrs are available today.
-          const activeIx = m - (W[dates[ix].d].leave || 0);
-          if (wb - 1 < (activeIx >= 3 ? 2 : 1)) continue;
+          // Small-team rule applied per-day.
+          if (wb - 1 < _minCoverageFor(dates[ix].d)) continue;
           const oS = grid[h.ec][dates[src].d];
           const oT = grid[h.ec][dates[ix].d];
           grid[h.ec][dates[src].d] = "W";
@@ -1127,9 +1124,8 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
         const carryT = partialCarry(h.ec, tgtWk);
         if (offWk[h.ec][tgtWk] + carryT >= 2) continue;
         const wb = m - W[dates[ix].d].off - W[dates[ix].d].leave;
-        // Small-team rule: 1-mgr day OK if <3 mgrs are available today.
-        const _activeIx = m - (W[dates[ix].d].leave || 0);
-        if (wb - 1 < (_activeIx >= 3 ? 2 : 1)) continue;
+        // Small-team rule applied per-day.
+        if (wb - 1 < _minCoverageFor(dates[ix].d)) continue;
         grid[h.ec][dates[ix].d] = "O";
         W[dates[ix].d].working--; W[dates[ix].d].off++; offWk[h.ec][wkOfDay[dates[ix].d]]++;
         inserted = true;
@@ -1155,12 +1151,10 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
   const conflicts = [];
   for (const x of dates) {
     const w = dayTotals[x.d].working;
-    // Small-team rule: in a 2-mgr store (or a 3-mgr store with one on
-    // leave/maternity) some days must run with a single mgr — don't
-    // flag those as 'solo' conflicts. The 6-consec cap is enforced elsewhere.
-    const activeToday = m - (W[x.d].leave || 0);
-    const minRequired = activeToday >= 3 ? 2 : 1;
-    if (w < minRequired) conflicts.push({ type:"solo_or_empty", msg: x.d + ": only " + w + " manager(s) working", severity:"high", date: x.d });
+    // Small-team rule applied per-day: a true 2-mgr store, or a 3-mgr store
+    // where one is on leave that day, may run with a single mgr — don't
+    // flag those as 'solo' conflicts. 3+ mgrs available → require >=2.
+    if (w < _minCoverageFor(x.d)) conflicts.push({ type:"solo_or_empty", msg: x.d + ": only " + w + " manager(s) working", severity:"high", date: x.d });
   }
   // Map of managers who submitted off-day requests this cycle. A request
   // can overrule the guaranteed weekend pair (the request takes priority,
@@ -15225,14 +15219,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <tfoot>
                     <tr>
                       <td style={{ position:"sticky", left:0, background:"#FDEEF5", padding:"6px 10px", fontSize:10, fontWeight:700, color:"#831843", letterSpacing:"0.04em", borderTop:"2px solid #FBCFE8", borderRight:"2px solid #FBCFE8", zIndex:2 }}>WORKING TOTAL</td>
-                      {result.dates.map((dy, di) => {
-                        const w = result.dayTotals[dy.d] ? result.dayTotals[dy.d].working : 0;
-                        const understaffed = w < 2;
+                      {(() => {
+                        // Match mgrSched's per-day coverage rule: 3+ mgrs available
+                        // that day → require >=2 working (red if not); 2 or fewer
+                        // available (true 2-mgr store, or a 3-mgr store with one on
+                        // leave that day) → 1 mgr is acceptable.
+                        const _activeMgrs = (result.managers || []).filter(mg => !mg._onMat).length;
+                        return result.dates.map((dy, di) => {
+                        const dt = result.dayTotals[dy.d] || { working:0, leave:0 };
+                        const w = dt.working || 0;
+                        const activeToday = _activeMgrs - (dt.leave || 0);
+                        const minCov = activeToday >= 3 ? 2 : 1;
+                        const understaffed = w < minCov;
                         const isMon = dy.dow === 1;
                         return (
                           <td key={dy.d} style={{ padding:"6px 0", textAlign:"center", borderTop:"2px solid #FBCFE8", borderLeft: isMon ? "3px solid #E84B9B" : "1px solid #FCE7F3", background: understaffed ? "#fee2e2" : "#FDEEF5", color: understaffed ? "#7f1d1d" : "#831843", fontSize:11, fontWeight:800 }}>{w}</td>
                         );
-                      })}
+                      });
+                      })()}
                     </tr>
                   </tfoot>
                 </table>
