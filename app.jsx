@@ -1160,7 +1160,17 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
       if (grid[h.ec]) for (const x of dates) if (x.d < h._startDate) grid[h.ec][x.d] = "X";
     }
   }
-  return { managers: f, dates, grid, conflicts, dayTotals, branch: branchName, cycleStart: cycleStartYmd, cycleEnd, weekOrder: wkOrder, weeksMap: wkMap };
+  // Seed grid rows for on-mat managers (they were not in `f` so the
+  // grid-init loop above didn't create their row). Every day shows 'ML'
+  // so the schedule grid renders a greyed maternity-leave band for them.
+  for (const h of fAll) {
+    if (!h._onMat) continue;
+    if (!grid[h.ec]) grid[h.ec] = {};
+    for (const x of dates) grid[h.ec][x.d] = "ML";
+  }
+  // Return fAll (not f) so on-mat managers appear on the rendered
+  // schedule. Their row is greyed via _onMat and every cell reads 'ML'.
+  return { managers: fAll, dates, grid, conflicts, dayTotals, branch: branchName, cycleStart: cycleStartYmd, cycleEnd, weekOrder: wkOrder, weeksMap: wkMap };
 }
 
 
