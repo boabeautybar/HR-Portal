@@ -619,9 +619,10 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
   for (let i = 0; i < dates.length-1; i++) {
     if (dates[i].dow === 6 && dates[i+1].dow === 0) allWePairs.push([dates[i], dates[i+1]]);
   }
-  const ordered = [...f].sort((a,b) => (a.role==="SM"?0:1)-(b.role==="SM"?0:1));
+  const _isStoreTier = (r) => r === "SM" || r === "SSM";
+  const ordered = [...f].sort((a,b) => (_isStoreTier(a.role)?0:1) - (_isStoreTier(b.role)?0:1));
   for (const h of ordered) {
-    const need = h.role === "SM" ? 2 : 1;
+    const need = _isStoreTier(h.role) ? 2 : 1;
     let have = wePairs(h);
     if (have >= need) continue;
     let candidates = allWePairs.filter(([fr,sa]) =>
@@ -1097,7 +1098,7 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
   const hasReq = new Set();
   for (const r of (requests || [])) if (r && r.ec) hasReq.add(r.ec);
   for (const h of f) {
-    const need = h.role === "SM" ? 2 : 1;
+    const need = (h.role === "SM" || h.role === "SSM") ? 2 : 1;
     const have = wePairs(h);
     if (have < need && !hasReq.has(h.ec)) conflicts.push({ type:"short_weekend", msg: h.name + " has " + have + " weekend(s) off (target " + need + ")", severity:"medium", ec: h.ec });
     for (const w of wkOrder) {
@@ -1868,7 +1869,7 @@ function MatModal({ rec, onClose, onSave, onDelete }) {
 }
 
 // ─── STAFF MODAL ──────────────────────────────────────────────────────────────────
-function StaffModal({ s, onClose, onSave, onTransfer, allStaff }) {
+function StaffModal({ s, onClose, onSave, onTransfer, allStaff, isOwner, onHardDelete }) {
   // Split existing "name" into firstName / surname for the form. New records
   // start blank. Combined back into `name` on save.
   const splitName = (full) => {
@@ -1974,12 +1975,21 @@ function StaffModal({ s, onClose, onSave, onTransfer, allStaff }) {
             </div>
           </div>
         </div>
-        <div style={{ display:"flex", gap:10, marginTop:22, justifyContent:"space-between", alignItems:"center" }}>
+        <div style={{ display:"flex", gap:10, marginTop:22, justifyContent:"space-between", alignItems:"center", flexWrap:"wrap" }}>
           {s._id !== undefined && (
-            <button onClick={()=>{ onClose(); onTransfer(s); }}
-              style={{ padding:"9px 16px", borderRadius:9, border:"none", background:"#BE185D", color:"#fff", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
-              🔄 Transfer Branch
-            </button>
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+              <button onClick={()=>{ onClose(); onTransfer(s); }}
+                style={{ padding:"9px 16px", borderRadius:9, border:"none", background:"#BE185D", color:"#fff", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
+                🔄 Transfer Branch
+              </button>
+              {isOwner && onHardDelete && (
+                <button onClick={()=>onHardDelete(s)}
+                  title="Hard delete — owner only. Removes the record entirely; bypasses off-boarding."
+                  style={{ padding:"9px 16px", borderRadius:9, border:"1px solid #fecaca", background:"#fff", color:"#7f1d1d", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
+                  🗑 Delete (owner)
+                </button>
+              )}
+            </div>
           )}
           <div style={{ display:"flex", gap:10, marginLeft:"auto" }}>
             <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:9, border:"1px solid #FBCFE8", background:"#FFFFFF", cursor:"pointer", fontFamily:"inherit", fontSize:13 }}>Cancel</button>
@@ -2116,7 +2126,12 @@ function TransferModal({ s, onClose, onConfirm, onCancelTransfer }) {
 // ─── MANAGER MODAL ────────────────────────────────────────────────────────────────
 function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
   const [f, setF] = useState(m);
-  const [pinInput, setPinInput] = useState(pin || "");
+  // Auto-generate a random 6-digit clock-in PIN for brand-new managers so
+  // the owner doesn't have to think one up. Existing managers keep their
+  // saved PIN. The PIN is still editable in the input below either way.
+  const _randomPin = () => String(Math.floor(100000 + Math.random() * 900000));
+  const _initPin = (m && m._id !== undefined) ? (pin || "") : (pin || _randomPin());
+  const [pinInput, setPinInput] = useState(_initPin);
   const set = (k,v) => setF(p=>({...p,[k]:v}));
   const inp = { width:"100%", padding:"8px 11px", borderRadius:8, border:"1px solid #FBCFE8", background:"#FCE7F3", fontFamily:"inherit", fontSize:13, color:"#111827", boxSizing:"border-box" };
   const lbl = { display:"block", fontSize:10, fontWeight:700, color:"#BE185D", letterSpacing:"0.08em", marginBottom:4, textTransform:"uppercase" };
@@ -2144,6 +2159,7 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
             </div>
             <div><label style={lbl}>Role</label>
               <select style={inp} value={f.role} onChange={e=>set("role",e.target.value)}>
+                <option value="SSM">💎 Senior Store Manager (SSM)</option>
                 <option value="SM">👑 Store Manager (SM)</option>
                 <option value="AM">⭐ Assistant Manager (AM)</option>
               </select>
@@ -2151,18 +2167,50 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
           </div>
           <div><label style={lbl}>Notes</label>
             <input style={inp} value={f.notes||""} onChange={e=>set("notes",e.target.value)} placeholder="e.g. Transfer from Sandown, Pregnant..." /></div>
+
+          {/* Compliance / work-permit status. Same options the staff modal
+              uses; persists to the same `permit` column on the staff row. */}
           <div>
-            <label style={lbl}>Personal Clock-in PIN <span style={{ fontWeight:500, color:"#9CA3AF", letterSpacing:0, textTransform:"none", marginLeft:4 }}>(6 digits — used in the check-in app)</span></label>
-            <input
-              style={{ ...inp, fontFamily:"monospace", letterSpacing:"0.2em", fontSize:14 }}
-              value={pinInput}
-              maxLength={6}
-              inputMode="numeric"
-              placeholder="6-digit PIN"
-              onChange={e=>setPinInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
-            />
+            <label style={lbl}>Compliance / Work Permit</label>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))", gap:8 }}>
+              <label style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 10px", borderRadius:8, border:`1.5px solid ${!f.permit?"#F472B6":"#e5e7eb"}`, background:!f.permit?"#fdf2f8":"#f9fafb", cursor:"pointer" }}>
+                <input type="radio" checked={!f.permit} onChange={()=>set("permit", null)} style={{ display:"none" }} />
+                <span style={{ fontSize:16 }}>❔</span>
+                <span style={{ fontSize:11, fontWeight:700, color:!f.permit?"#831843":"#6b7280" }}>Not set</span>
+              </label>
+              {Object.entries(COMPLIANCE).map(([k,c])=>(
+                <label key={k} style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 10px", borderRadius:8, border:`1.5px solid ${f.permit===k?c.border:"#e5e7eb"}`, background:f.permit===k?c.bg:"#f9fafb", cursor:"pointer" }}>
+                  <input type="radio" checked={f.permit===k} onChange={()=>set("permit",k)} style={{ display:"none" }} />
+                  <span style={{ fontSize:16 }}>{c.icon}</span>
+                  <span style={{ fontSize:11, fontWeight:700, color:f.permit===k?c.color:"#831843" }}>{c.label}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label style={lbl}>Personal Clock-in PIN <span style={{ fontWeight:500, color:"#9CA3AF", letterSpacing:0, textTransform:"none", marginLeft:4 }}>(6 digits — used in the check-in app{isNew && pinInput ? " · auto-generated" : ""})</span></label>
+            <div style={{ display:"flex", gap:6 }}>
+              <input
+                style={{ ...inp, fontFamily:"monospace", letterSpacing:"0.2em", fontSize:14, flex:1 }}
+                value={pinInput}
+                maxLength={6}
+                inputMode="numeric"
+                placeholder="6-digit PIN"
+                onChange={e=>setPinInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              />
+              <button type="button" onClick={()=>setPinInput(_randomPin())}
+                title="Generate a fresh random 6-digit PIN"
+                style={{ padding:"0 12px", borderRadius:8, border:"1px solid #FBCFE8", background:"#FFFFFF", color:"#831843", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700, whiteSpace:"nowrap" }}
+              >🎲 Random</button>
+            </div>
             {pinInput && pinInput.length !== 6 && (
               <div style={{ fontSize:11, color:"#dc2626", marginTop:4 }}>PIN must be exactly 6 digits (or empty to clear).</div>
+            )}
+            {isNew && pinInput.length === 6 && (
+              <div style={{ fontSize:11, color:"#92400e", marginTop:6, background:"#fef3c7", border:"1px solid #fde68a", borderRadius:6, padding:"6px 10px" }}>
+                💡 Share this PIN with the manager — they'll type it into the check-in kiosk to confirm their attendance. Resettable later from Admin → Manager PINs.
+              </div>
             )}
           </div>
           <div><label style={lbl}>Start Date {f.startDate && (() => {
@@ -7279,6 +7327,38 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     });
   }, [enriched, fShow, fBranch, fPermit, fContract, search]);
 
+  // Managers shown on the Staff List with the same filter set as techs.
+  // Sorted SSM → SM → AM, then by name. Off-mat managers always at the top
+  // so they're easy to find; on-mat below. We don't have a level/compliance
+  // for managers so those columns render empty.
+  const filteredMgrs = useMemo(() => {
+    const q = (search || "").toLowerCase();
+    const list = (managers || []).filter(m => {
+      if (!m) return false;
+      if (fShow==="on_mat" && !m.onMat) return false;
+      if (fShow==="active_only" && m.onMat) return false;
+      if (fBranch!=="All" && m.branch!==fBranch) return false;
+      if (fContract!=="All" && (m.contract||"")!==fContract) return false;
+      // Compliance filter is a permit field; managers may not have one — skip
+      // filtering if user picked a specific permit AND the manager has none,
+      // otherwise compare.
+      if (fPermit!=="All") {
+        if (!m.permit) return false;
+        if (m.permit !== fPermit) return false;
+      }
+      if (q && !(m.name||"").toLowerCase().includes(q) && !(m.ec||"").toLowerCase().includes(q)) return false;
+      return true;
+    });
+    const rank = (r) => r==="SSM"?0 : r==="SM"?1 : r==="AM"?2 : 3;
+    return list.sort((a, b) => {
+      const am = a.onMat ? 1 : 0, bm = b.onMat ? 1 : 0;
+      if (am !== bm) return am - bm;                                 // active mgrs first
+      const rd = rank(a.role) - rank(b.role);
+      if (rd !== 0) return rd;                                       // SSM → SM → AM
+      return (a.name || "").localeCompare(b.name || "");
+    });
+  }, [managers, fShow, fBranch, fPermit, fContract, search]);
+
   const stats = useMemo(() => {
     // "active" excludes maternity, unpaid-legal leave AND off-boarded — all
     // three reduce the active headcount.
@@ -7332,6 +7412,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         "Branch: " + (saved.branch || "—")
       );
     } catch (e) { alert("Could not save staff: " + (e.message || e)); }
+  }
+  // Owner-only hard delete - bypasses off-boarding entirely. Removes the
+  // staff row from Supabase AND scrubs any existing off-boarding entry for
+  // that EC so the deleted person doesn't linger in the Off-boarding tab.
+  // Activity-logged so the action is auditable.
+  async function hardDeleteStaff(rec) {
+    if (!currentUser?.isOwner) { alert("Only the owner can hard-delete staff."); return; }
+    if (!rec || !rec._id) return;
+    const label = (rec.name || "") + (rec.ec ? " (" + rec.ec + ")" : "");
+    if (!window.confirm("PERMANENTLY DELETE " + label + "?\n\nThis removes the staff record from the database and any off-boarding entry. The person will vanish from every view, including the Off-boarding tab. This can't be undone.\n\nFor normal departures use Off-board instead.")) return;
+    try {
+      await window.BOA_DB.deleteStaff(rec._id);
+      setStaff(p => p.filter(x => x._id !== rec._id));
+      // Scrub any off-boarding record for this EC so they don't reappear
+      // in the Off-boarding tab.
+      const nextOff = (offList || []).filter(o => o && o.ec !== rec.ec);
+      if (nextOff.length !== (offList || []).length) {
+        try {
+          await window.BOA_DB.saveOffboarding(nextOff);
+          setOffList(nextOff);
+        } catch (oe) { console.warn("offboard scrub failed (record still deleted):", oe); }
+      }
+      setStaffModal(null);
+      logActivity(
+        "🗑 Hard-deleted staff",
+        label,
+        "Owner override · Branch: " + (rec.branch || "—") + " · also removed from off-boarding list"
+      );
+    } catch (e) { alert("Could not delete staff: " + (e.message || e)); }
   }
 
   function handleTransfer({ staff, toBranch, transferDate, note, isPending }) {
@@ -7432,6 +7541,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     try {
       await window.BOA_DB.deleteManager(id);
       setManagers(p => p.filter(x => x._id !== id));
+      // Scrub any off-boarding record so the deleted manager doesn't
+      // linger in the Off-boarding tab.
+      if (target && target.ec) {
+        const nextOff = (offList || []).filter(o => o && o.ec !== target.ec);
+        if (nextOff.length !== (offList || []).length) {
+          try {
+            await window.BOA_DB.saveOffboarding(nextOff);
+            setOffList(nextOff);
+          } catch (oe) { console.warn("offboard scrub failed (record still deleted):", oe); }
+        }
+      }
       setMgrModal(null);
       if (target) logActivity("Deleted manager", target.name + (target.ec ? " (" + target.ec + ")" : ""), target.branch || "");
     }
@@ -8184,9 +8304,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <select value={fContract} onChange={e=>setFContract(e.target.value)} style={{ padding:"7px 11px", borderRadius:7, border:`1px solid ${bdr}`, fontFamily:"inherit", fontSize:13, background:cream }}>
                 <option value="All">All Contracts</option>{["Permanent","Fixed Term","NO CONTRACT","2 Weeks","Induction"].map(c=><option key={c}>{c}</option>)}
               </select>
-              <span style={{ marginLeft:"auto", fontSize:11, color:"#BE185D", fontWeight:700 }}>{filtered.length} shown (sorted by EC)</span>
+              <span style={{ marginLeft:"auto", fontSize:11, color:"#BE185D", fontWeight:700 }}>{filteredMgrs.length + filtered.length} shown {filteredMgrs.length > 0 ? "(" + filteredMgrs.length + " mgrs · " + filtered.length + " techs)" : "(sorted by EC)"}</span>
               <button onClick={()=>setStaffModal({ ec:"", name:"", branch:"Sea Point", contract:"Permanent", permit:"sa_citizen", level:"" })}
-                style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:8, padding:"7px 14px", cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:12 }}>+ Add Staff</button>
+                style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:8, padding:"7px 14px", cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:12 }}>+ Add Tech</button>
+              <button onClick={()=>setMgrModal({ ec:"", name:"", branch:"Sea Point", role:"AM", contract:"Permanent" })}
+                style={{ background:"#7c3aed", color:"#fff", border:"none", borderRadius:8, padding:"7px 14px", cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:12 }}>+ Add Manager</button>
             </div>
 
             <div style={{ background:"#FFFFFF", borderRadius:15, border:`1px solid ${bdr}`, overflow:"hidden", boxShadow:"0 2px 12px rgba(0,0,0,.05)" }}>
@@ -8200,7 +8322,50 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {filtered.length===0 && <tr><td colSpan={10} style={{ textAlign:"center", padding:40, color:"#9ca3af" }}>No results.</td></tr>}
+                    {filtered.length===0 && filteredMgrs.length===0 && <tr><td colSpan={10} style={{ textAlign:"center", padding:40, color:"#9ca3af" }}>No results.</td></tr>}
+
+                    {/* Managers section header */}
+                    {filteredMgrs.length > 0 && (
+                      <tr><td colSpan={10} style={{ background:"#FDEEF5", padding:"8px 14px", fontSize:11, fontWeight:800, letterSpacing:"0.12em", color:"#831843", textTransform:"uppercase", borderTop:"2px solid #FBCFE8", borderBottom:"1px solid #FBCFE8" }}>
+                        👑 Managers · {filteredMgrs.length}
+                      </td></tr>
+                    )}
+                    {filteredMgrs.map(m => {
+                      const icon = m.role === "SSM" ? "💎" : m.role === "SM" ? "👑" : "⭐";
+                      const roleBg = m.role === "SSM" ? "#92400e" : m.role === "SM" ? "#7c3aed" : "#0369a1";
+                      const rowBg  = m.onMat ? "#fdf4ff" : m.pregnant ? "#fffbeb" : "#fff";
+                      const rowOpacity = m.onMat ? 0.6 : 1;
+                      return (
+                        <tr key={"mgr-" + (m._id || m.ec)} style={{ background:rowBg, borderTop:`1px solid ${bdr}`, opacity:rowOpacity }}>
+                          <td style={{ padding:"10px 12px", fontFamily:"monospace", fontSize:11, color:"#8E5570", fontWeight:700 }}>{m.ec}</td>
+                          <td style={{ padding:"10px 12px", fontWeight:700, color: m.onMat ? "#7A4258" : "#111827", whiteSpace:"nowrap", fontStyle: m.onMat?"italic":"normal" }}>
+                            {m.onMat ? "🤱 " : m.pregnant ? "🤰 " : ""}{icon} {m.name}
+                            {m.transferring && <span style={{ fontSize:10, marginLeft:5, background:"#FBCFE8", color:"#BE185D", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>→ {m.transferTo} on {m.transferDate ? new Date(m.transferDate).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"}) : ""}</span>}
+                          </td>
+                          <td style={{ padding:"10px 12px", color:"#475569", fontSize:12, whiteSpace:"nowrap" }}>📍 {m.branch || "—"}</td>
+                          <td style={{ padding:"10px 12px", color:"#9ca3af" }}>—</td>
+                          <td style={{ padding:"10px 12px", color:"#475569", fontSize:12, whiteSpace:"nowrap" }}>{m.contract || "—"}</td>
+                          <td style={{ padding:"10px 12px" }}>{m.permit ? <Chip {...(COMPLIANCE[m.permit] || { icon:"❔", color:"#6b7280", bg:"#f3f4f6", border:"#d1d5db", label:m.permit })}>{(COMPLIANCE[m.permit] || {}).label || m.permit}</Chip> : <span style={{ color:"#9ca3af" }}>—</span>}</td>
+                          <td style={{ padding:"10px 12px", fontSize:11, color:"#831843", fontWeight:600, whiteSpace:"nowrap" }}>{m.startDate ? new Date(m.startDate + "T00:00:00").toLocaleDateString("en-ZA",{day:"2-digit",month:"short",year:"numeric"}) : <span style={{ color:"#d1d5db" }}>—</span>}</td>
+                          <td style={{ padding:"10px 12px" }}>
+                            <span style={{ fontSize:10, fontWeight:800, background:roleBg, color:"#fff", padding:"3px 8px", borderRadius:6, letterSpacing:"0.04em" }}>{m.role || "—"}</span>
+                            {m.onMat && <span style={{ marginLeft:6, fontSize:10, background:"#FBCFE8", color:"#8E5570", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>🤱 mat.</span>}
+                          </td>
+                          <td style={{ padding:"10px 12px", fontSize:11, color:"#831843" }}>{m.matRec && m.matRec.returnDate ? new Date(m.matRec.returnDate + "T00:00:00").toLocaleDateString("en-ZA",{day:"2-digit",month:"short"}) : <span style={{ color:"#d1d5db" }}>—</span>}</td>
+                          <td style={{ padding:"10px 12px", textAlign:"right" }}>
+                            <button onClick={()=>setMgrModal(m)} style={{ background:"#e2e8f0", border:"none", borderRadius:6, padding:"5px 11px", cursor:"pointer", fontSize:11, fontWeight:700, color:"#831843" }}>✏️ Edit</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+
+                    {/* Nail Techs section header */}
+                    {filteredMgrs.length > 0 && filtered.length > 0 && (
+                      <tr><td colSpan={10} style={{ background:"#FDEEF5", padding:"8px 14px", fontSize:11, fontWeight:800, letterSpacing:"0.12em", color:"#831843", textTransform:"uppercase", borderTop:"2px solid #FBCFE8", borderBottom:"1px solid #FBCFE8" }}>
+                        💅 Nail Techs · {filtered.length}
+                      </td></tr>
+                    )}
+
                     {filtered.map(s => {
                       const dBack = s.matRec?.returnDate ? daysDiff(s.matRec.returnDate) : null;
                       const departed = s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft >= 0;
@@ -8414,17 +8579,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       {managers.filter(m=>m.branch===salon.name).length>0 && (
                         <div style={{ marginBottom:8 }}>
                           <div style={{ fontSize:9, fontWeight:800, color:"#BE185D", letterSpacing:"0.08em", marginBottom:5 }}>MANAGEMENT</div>
-                          {managers.filter(m=>m.branch===salon.name).sort((a,b)=>a.role===b.role?0:a.role==="SM"?-1:1).map(m=>(
+                          {managers.filter(m=>m.branch===salon.name).sort((a,b)=>{
+                            const rank = (r)=> r==="SSM"?0 : r==="SM"?1 : 2;
+                            return rank(a.role) - rank(b.role);
+                          }).map(m=>{
+                            const _icon = m.role==="SSM"?"💎":m.role==="SM"?"👑":"⭐";
+                            const _bg   = m.role==="SSM"?"#92400e":m.role==="SM"?"#7c3aed":"#0369a1";
+                            return (
                             <div key={m._id} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 10px", borderRadius:8, background:"#F9A8D4", border:"1px solid #FBCFE8", marginBottom:4 }}>
-                              <span style={{ fontSize:11 }}>{m.role==="SM"?"👑":"⭐"}</span>
+                              <span style={{ fontSize:11 }}>{_icon}</span>
                               <span style={{ flex:1, fontSize:12, fontWeight:600, color:"#831843" }}>{m.name}</span>
-                              <span style={{ fontSize:9, background:m.role==="SM"?"#7c3aed":"#0369a1", color:"#fff", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>{m.role}</span>
+                              <span style={{ fontSize:9, background:_bg, color:"#fff", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>{m.role}</span>
                               {m.onMat&&<span style={{ fontSize:9, background:"#FBCFE8", color:"#8E5570", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>🤱 mat.</span>}
                               {m.pregnant&&!m.onMat&&<span style={{ fontSize:9, background:"#FCE7F3", color:"#8E5570", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>🤰 pregnant</span>}
                               <button onClick={()=>{ setMgrModal(m); setManagePanel(null); }}
                                 style={{ background:"#e2e8f0", border:"none", borderRadius:6, padding:"4px 10px", cursor:"pointer", fontSize:11, fontWeight:700, color:"#831843" }}>✏️ Edit</button>
                             </div>
-                          ))}
+                            );
+                          })}
                           <button onClick={()=>{ setMgrModal({ec:"",name:"",branch:salon.name,role:"AM",contract:"Permanent"}); setManagePanel(null); }}
                             style={{ width:"100%", background:"#FCE7F3", border:"1px dashed #FBCFE8", borderRadius:7, padding:"5px", cursor:"pointer", fontSize:11, fontWeight:700, color:"#BE185D", marginBottom:6 }}>+ Add Manager</button>
                           <div style={{ height:1, background:"#e5e7eb", marginBottom:8 }} />
@@ -8473,9 +8645,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </div>
                   )}
 
-                  {/* ── MANAGERS SECTION ── */}
+                  {/* ── MANAGERS SECTION ── shown on the card by default
+                      (independent of the Manage panel). Three tiers stacked
+                      worst-to-best so a missing SM stands out:
+                      Senior Store Manager (💎) → Store Manager (👑) →
+                      Assistant Manager (⭐). */}
                   {(() => {
                     const mgrs = managers.filter(m=>m.branch===salon.name);
+                    const ssm  = mgrs.filter(m=>m.role==="SSM");
                     const sm   = mgrs.filter(m=>m.role==="SM");
                     const am   = mgrs.filter(m=>m.role==="AM");
                     if (mgrs.length===0) return null;
@@ -8483,6 +8660,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <div style={{ background:"#FCE7F3", border:"1px solid #FBCFE8", borderRadius:10, padding:"9px 12px", marginBottom:10 }}>
                         <div style={{ fontSize:9, fontWeight:800, color:"#BE185D", letterSpacing:"0.1em", marginBottom:7 }}>MANAGEMENT TEAM</div>
                         <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                          {ssm.map(m=>(
+                            <div key={m._id} style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap", opacity:m.onMat?0.5:1 }}>
+                              <span style={{ fontSize:13 }}>{m.onMat?"🤱":"💎"}</span>
+                              <span style={{ fontSize:11, fontWeight:700, color:m.onMat?"#7A4258":"#92400e", fontStyle:m.onMat?"italic":"normal", flex:1 }}>{m.name}</span>
+                              {m.onMat && <span style={{ fontSize:9, color:"#8E5570", background:"#FBCFE8", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>on leave{m.matReturn?` · ↩${new Date(m.matReturn).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"})}`:""}</span>}
+                              {m.pregnant && !m.onMat && <span style={{ fontSize:9, color:"#8E5570", background:"#FCE7F3", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>🤰 pregnant{m.matStart?` · leaves ${new Date(m.matStart).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"})}`:""}</span>}
+                              {!m.onMat && !m.pregnant && m.notes && <span style={{ fontSize:9, color:"#8E5570", fontStyle:"italic", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={m.notes}>⚑ {m.notes}</span>}
+                              <span style={{ fontSize:9, background:"#FEF3C7", color:"#92400e", border:"1px solid #FDE68A", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>SSM</span>
+                            </div>
+                          ))}
                           {sm.map(m=>(
                             <div key={m._id} style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap", opacity:m.onMat?0.5:1 }}>
                               <span style={{ fontSize:13 }}>{m.onMat?"🤱":"👑"}</span>
@@ -9487,7 +9674,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const MIN_SM = 1, MIN_AM = 2;
           const branchStats = SALONS.map(salon => { // Regional managers excluded from store coverage
             const mgrs = managers.filter(m => m.branch === salon.name);
-            const sms  = mgrs.filter(m => m.role === "SM" && !m.onMat);
+            const sms  = mgrs.filter(m => (m.role === "SM" || m.role === "SSM") && !m.onMat);
             const ams  = mgrs.filter(m => m.role === "AM" && !m.onMat);
             const onMatMgrs = mgrs.filter(m => m.onMat);
             const missSM = Math.max(0, MIN_SM - sms.length);
@@ -9499,7 +9686,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const totalSMNeeded = branchStats.reduce((a,b) => a + b.missSM, 0);
           const totalAMNeeded = branchStats.reduce((a,b) => a + b.missAM, 0);
           const gapBranches   = branchStats.filter(b => !b.ok).length;
-          const totalActiveSM = managers.filter(m=>m.role==="SM"&&!m.onMat&&m.branch!=="Regional").length;
+          // 'Store Managers' folds SSM + SM together (both are store-tier
+          // managers - SSM is just the senior bracket). AM stays separate.
+          const totalActiveSM = managers.filter(m=>(m.role==="SM"||m.role==="SSM")&&!m.onMat&&m.branch!=="Regional").length;
           const totalActiveAM = managers.filter(m=>m.role==="AM"&&!m.onMat&&m.branch!=="Regional").length;
           const totalPregnant = managers.filter(m=>m.pregnant&&!m.onMat).length;
           const totalOnMat    = managers.filter(m=>m.onMat).length;
@@ -9686,7 +9875,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const MIN_SM = 1, MIN_AM = 2;
 
           const branchMgrs = salon => plannerMgrs.filter(m => m.branch === salon && m.branch !== 'Regional');
-          const smCount  = salon => branchMgrs(salon).filter(m=>m.role==="SM"&&!m.onMat).length;
+          const smCount  = salon => branchMgrs(salon).filter(m=>(m.role==="SM"||m.role==="SSM")&&!m.onMat).length;
           const amCount  = salon => branchMgrs(salon).filter(m=>m.role==="AM"&&!m.onMat).length;
           const gapColor = salon => {
             if (smCount(salon) < MIN_SM) return "#dc2626";
@@ -10318,7 +10507,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           </div>
                           <div><label style={lbl}>Position *</label>
                             <select style={{...inp, width:"100%", boxSizing:"border-box"}} value={obForm.position || ""} onChange={e=>setObForm({...obForm, position:e.target.value})}>
-                              <option value="Nail Tech">Nail Tech</option><option value="SM">Store Manager (SM)</option><option value="AM">Assistant Manager (AM)</option><option value="Other">Other</option>
+                              <option value="Nail Tech">Nail Tech</option><option value="SSM">Senior Store Manager (SSM)</option><option value="SM">Store Manager (SM)</option><option value="AM">Assistant Manager (AM)</option><option value="Other">Other</option>
                             </select>
                           </div>
                         </div>
@@ -10427,7 +10616,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const ds = daysFrom(r.startDate);
                           const statusLabel = ds<0 ? "starts in " + Math.abs(ds) + "d" : ds===0 ? "started today" : ds===1 ? "started yesterday" : ds + " days in";
                           const [bg, color] = ds<0 ? ["#dbeafe","#1e3a8a"] : ds<=7 ? ["#dcfce7","#14532d"] : ["#f3f4f6","#475569"];
-                          const posLabel = r.position==="SM" ? "Store Manager" : r.position==="AM" ? "Assistant Manager" : (r.position==="Other" && r.positionOther) ? r.positionOther : r.position;
+                          const posLabel = r.position==="SSM" ? "Senior Store Manager" : r.position==="SM" ? "Store Manager" : r.position==="AM" ? "Assistant Manager" : (r.position==="Other" && r.positionOther) ? r.positionOther : r.position;
                           return (
                             <div key={r._id} style={{ background:"#FFFFFF", borderRadius:11, border:"1px solid #FBCFE8", padding:"12px 14px", boxShadow:"0 2px 4px rgba(0,0,0,0.02)" }}>
                               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:6, gap:8 }}>
@@ -15024,7 +15213,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         </div>
       )}
 
-      {staffModal && <StaffModal s={staffModal} onClose={()=>setStaffModal(null)} onSave={saveStaff} onTransfer={(s)=>setTransferModal(s)} allStaff={staff} />}
+      {staffModal && <StaffModal s={staffModal} onClose={()=>setStaffModal(null)} onSave={saveStaff} onTransfer={(s)=>setTransferModal(s)} allStaff={staff} isOwner={!!currentUser?.isOwner} onHardDelete={hardDeleteStaff} />}
       {mgrModal && <ManagerModal m={mgrModal} pin={mgrPins[mgrModal.ec] || ""} onClose={()=>setMgrModal(null)} onSave={saveMgr} onDelete={delMgr} />}
       {transferModal && <TransferModal s={transferModal} onClose={()=>setTransferModal(null)} onConfirm={handleTransfer} onCancelTransfer={cancelTransfer} />}
       {matModal && <MatModal rec={matModal} onClose={()=>setMatModal(null)} onSave={saveMat} onDelete={delMat} />}
