@@ -255,7 +255,9 @@
 
     var matByEc = {};
     matRecs.forEach(function (m) {
-      if (m.mat_status === "on_mat" && m.employee_code) matByEc[m.employee_code] = m;
+      // dates_tbc is treated the same as on_mat — person is away even
+      // though we don't have firm start / end / return dates yet.
+      if ((m.mat_status === "on_mat" || m.mat_status === "dates_tbc") && m.employee_code) matByEc[m.employee_code] = m;
     });
     var leaveByEc = {};
     leaveRecs.forEach(function (l) {

@@ -1376,10 +1376,16 @@ const COMPLIANCE = {
 //   "returned"  = back at work → fully active
 //   "sick_leave"= on sick leave
 const MAT_STATUS = {
-  on_mat:    { label:"On Maternity Leave", icon:"🤱", color:"#8E5570", bg:"#fce7f3", border:"#fbcfe8" },
-  pregnant:  { label:"Pregnant – At Work", icon:"🤰", color:"#8E5570", bg:"#fef3c7", border:"#fde68a" },
-  returned:  { label:"Back at Work",       icon:"✅",  color:"#8E5570", bg:"#d1fae5", border:"#6ee7b7" },
-  sick_leave:{ label:"Sick Leave",         icon:"🏥",  color:"#8E5570", bg:"#dbeafe", border:"#93c5fd" },
+  on_mat:    { label:"On Maternity Leave",       icon:"🤱", color:"#8E5570", bg:"#fce7f3", border:"#fbcfe8" },
+  // 'dates_tbc' = on maternity but we don't know start / end / return yet.
+  // Treated the same as on_mat for every exclusion (active count, store
+  // counts, schedule generation, kiosk roster) so the person is firmly
+  // 'away'; just rendered with the ⏳ icon and amber palette to flag the
+  // missing dates as something HR needs to chase.
+  dates_tbc: { label:"Maternity — Dates TBC",    icon:"⏳", color:"#7c2d12", bg:"#fef3c7", border:"#fde68a" },
+  pregnant:  { label:"Pregnant – At Work",       icon:"🤰", color:"#8E5570", bg:"#fef3c7", border:"#fde68a" },
+  returned:  { label:"Back at Work",             icon:"✅",  color:"#8E5570", bg:"#d1fae5", border:"#6ee7b7" },
+  sick_leave:{ label:"Sick Leave",               icon:"🏥",  color:"#8E5570", bg:"#dbeafe", border:"#93c5fd" },
 };
 
 
@@ -1913,6 +1919,7 @@ function MatModal({ rec, onClose, onSave, onDelete, people }) {
             <label style={lbl}>Status</label>
             <select style={inp} value={f.matStatus} onChange={e=>set("matStatus",e.target.value)}>
               <option value="on_mat">🤱 On Maternity Leave (excluded from count)</option>
+              <option value="dates_tbc">⏳ Maternity — Dates TBC (excluded; dates pending)</option>
               <option value="pregnant">🤰 Pregnant – Still at Work (counted in)</option>
               <option value="returned">✅ Returned to Work</option>
               <option value="sick_leave">🏥 Sick Leave</option>
@@ -2295,11 +2302,12 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
           </div>
           <div style={{ gridColumn:"1/-1" }}>
             <label style={{ ...lbl, marginBottom:8 }}>Maternity Status</label>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:10 }}>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))", gap:8, marginBottom:10 }}>
               {[
                 { val:"active",    icon:"✅", label:"Active",           desc:"Working normally",              border:"#86efac", bg:"#f0fdf4", col:"#15803d" },
                 { val:"pregnant",  icon:"🤰", label:"Pregnant",         desc:"Still at work, leave upcoming", border:"#fde68a", bg:"#fffbeb", col:"#92400e" },
                 { val:"on_mat",    icon:"🤱", label:"On Maternity",     desc:"Currently on leave",            border:"#fbcfe8", bg:"#fdf4ff", col:"#7A4258" },
+                { val:"dates_tbc", icon:"⏳", label:"Dates TBC",        desc:"Away, no dates yet",            border:"#fde68a", bg:"#fef3c7", col:"#7c2d12" },
               ].map(opt=>{
                 const selected = (f.matStatus||"active")===opt.val;
                 return (
@@ -7355,7 +7363,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // ECs currently ON maternity leave (not just pregnant) → excluded from count
   const onMatEcs = useMemo(() =>
-    new Set(matRecs.filter(r=>r.matStatus==="on_mat").map(r=>r.ec.trim()))
+    new Set(matRecs.filter(r=> r.matStatus==="on_mat" || r.matStatus==="dates_tbc").map(r=>r.ec.trim()))
   , [matRecs]);
 
   // ECs who are pregnant (still in store)
@@ -7424,7 +7432,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return (managers || []).map(m => {
       if (!m) return m;
       const matRec = (matRecs || []).find(r => r && r.ec && m.ec && r.ec === m.ec) || null;
-      const onMat    = !!matRec && matRec.matStatus === "on_mat";
+      const onMat    = !!matRec && (matRec.matStatus === "on_mat" || matRec.matStatus === "dates_tbc");
       const pregnant = !!matRec && matRec.matStatus === "pregnant";
       return { ...m, onMat: onMat || !!m.onMat, pregnant: pregnant || !!m.pregnant, matRec };
     });
@@ -9250,11 +9258,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 then Nail Techs so the bigger picture (who's actually away)
                 reads cleanly. Manager / tech classification is by checking
                 the EC against the managers state. */}
-            {["on_mat","pregnant","returned","sick_leave"].map(status=>{
+            {["on_mat","dates_tbc","pregnant","returned","sick_leave"].map(status=>{
               const recs = visibleMatRecs.filter(r=>r.matStatus===status).sort(ecSort);
               if (!recs.length) return null;
               const s = MAT_STATUS[status];
-              const isExcluded = status==="on_mat";
+              const isExcluded = status==="on_mat" || status==="dates_tbc";
               const mgrEcs = new Set((managers || []).map(m => m && m.ec).filter(Boolean));
               const mgrRecs  = recs.filter(r => mgrEcs.has(r.ec));
               const techRecs = recs.filter(r => !mgrEcs.has(r.ec));
@@ -13993,7 +14001,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // schedule but get _onMat = true so their row is greyed out and
           // every cell is rendered as 'ML' (matching the tech behaviour).
           // mgrSched honours _onMat by skipping shift assignment for them.
-          const _onMatEcs = new Set((matRecs || []).filter(r => r && r.matStatus === "on_mat" && r.ec).map(r => r.ec));
+          const _onMatEcs = new Set((matRecs || []).filter(r => r && (r.matStatus === "on_mat" || r.matStatus === "dates_tbc") && r.ec).map(r => r.ec));
           const mgrsWithOff = managers.map(m => {
             const off  = (offList || []).find(o => o.ec === m.ec);
             const flag = _onMatEcs.has(m.ec);
