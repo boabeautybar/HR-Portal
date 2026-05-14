@@ -6515,6 +6515,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // when the dashboard is checking the next, also probe the CURRENT cycle
   // and merge — if a branch has finalised either, count it as done.
   const [schedFinalStatus, setSchedFinalStatus] = useState(null);
+  // Which schedule-progress card is expanded inline on the dashboard
+  // (null | "tech" | "mgr"). Clicking a card toggles its details panel.
+  const [schedDetailsOpen, setSchedDetailsOpen] = useState(null);
   const loadSchedFinalStatus = async () => {
     if (!window.BOA_DB || !window.BOA_DB.loadApprovedSchedules) return;
     const today = new Date();
@@ -8174,12 +8177,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const daysToDeadline = Math.ceil((deadline15 - _today0) / 86400000);
           const cycSuffix = schedReady && schedFinalStatus.cycLabel ? " · " + schedFinalStatus.cycLabel : "";
           const _buildSchedCard = (kind /* "tech" | "mgr" */) => {
-            const done = schedReady
-              ? SALONS.reduce((n, sl) => {
-                  const r = schedFinalStatus.byBranch[sl.name] || { tech:false, mgr:false };
-                  return n + (r[kind] ? 1 : 0);
-                }, 0)
-              : 0;
+            const doneBranches = schedReady
+              ? SALONS.map(s => s.name).filter(n => {
+                  const r = schedFinalStatus.byBranch[n] || { tech:false, mgr:false };
+                  return r[kind];
+                })
+              : [];
+            const done = doneBranches.length;
             const missing = schedReady
               ? SALONS.map(s => s.name).filter(n => {
                   const r = schedFinalStatus.byBranch[n] || { tech:false, mgr:false };
@@ -8197,7 +8201,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const bg    = !schedReady ? "#fef3c7" : (done === schedTotal ? "#dcfce7" : (overdue ? "#fee2e2" : "#fef3c7"));
             const color = !schedReady ? "#7c2d12" : (done === schedTotal ? "#166534" : (overdue ? "#7f1d1d" : "#7c2d12"));
             const icon  = !schedReady ? "📋" : (done === schedTotal ? "📌" : (overdue ? "🚨" : "📌"));
-            return { done, missing, sub, bg, color, icon };
+            return { done, missing, doneBranches, sub, bg, color, icon };
           };
           const techCard = _buildSchedCard("tech");
           const mgrCard  = _buildSchedCard("mgr");
@@ -8342,21 +8346,62 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     : _anyOverdue
                       ? { txt: "Overdue " + Math.abs(daysToDeadline) + " day" + (Math.abs(daysToDeadline) === 1 ? "" : "s"), color: "#7f1d1d", bg: "#fee2e2" }
                       : { txt: (daysToDeadline >= 0 ? daysToDeadline + " day" + (daysToDeadline === 1 ? "" : "s") + " left" : "Due today"), color: "#7c2d12", bg: "#fef3c7" };
-                const _inner = (title, emoji, c /* card descriptor */) => {
+                const _inner = (title, emoji, c /* card descriptor */, kind) => {
                   const pct = schedReady ? Math.round((c.done / schedTotal) * 100) : 0;
+                  const open = schedDetailsOpen === kind;
                   return (
-                    <div onClick={() => tryChangeTab("scheduling")} style={{ background: c.bg, borderRadius: 14, padding: "16px 18px", cursor: "pointer", border: "1px solid rgba(255,255,255,0.6)", flex: 1, minWidth: 220 }}>
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                        <div style={{ fontSize: 11, fontWeight: 700, color: c.color, letterSpacing: "0.12em", textTransform: "uppercase" }}>{emoji} {title}</div>
-                        <div style={{ fontSize: 20 }}>{c.icon}</div>
+                    <div style={{ background: c.bg, borderRadius: 14, padding: "16px 18px", border: "1px solid rgba(255,255,255,0.6)", flex: 1, minWidth: 220 }}>
+                      <div onClick={() => setSchedDetailsOpen(open ? null : kind)} style={{ cursor: "pointer" }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: c.color, letterSpacing: "0.12em", textTransform: "uppercase" }}>{emoji} {title}</div>
+                          <div style={{ fontSize: 20 }}>{c.icon}</div>
+                        </div>
+                        <div style={{ fontSize: 30, fontWeight: 800, color: c.color, lineHeight: 1.05, marginTop: 8 }}>
+                          {schedReady ? c.done : "…"}<span style={{ fontSize: 16, fontWeight: 600, opacity: 0.7 }}> / {schedTotal}</span>
+                        </div>
+                        <div style={{ height: 6, borderRadius: 999, background: "rgba(0,0,0,0.06)", marginTop: 10, overflow: "hidden" }}>
+                          <div style={{ height: "100%", width: pct + "%", background: c.color, opacity: 0.85, transition: "width .3s ease" }} />
+                        </div>
+                        <div style={{ fontSize: 11, color: c.color, opacity: 0.8, marginTop: 8, lineHeight: 1.35 }}>{c.sub}</div>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: c.color, opacity: 0.7, marginTop: 6, letterSpacing: "0.04em" }}>
+                          {open ? "▲ hide details" : "▼ click to see which stores are done"}
+                        </div>
                       </div>
-                      <div style={{ fontSize: 30, fontWeight: 800, color: c.color, lineHeight: 1.05, marginTop: 8 }}>
-                        {schedReady ? c.done : "…"}<span style={{ fontSize: 16, fontWeight: 600, opacity: 0.7 }}> / {schedTotal}</span>
-                      </div>
-                      <div style={{ height: 6, borderRadius: 999, background: "rgba(0,0,0,0.06)", marginTop: 10, overflow: "hidden" }}>
-                        <div style={{ height: "100%", width: pct + "%", background: c.color, opacity: 0.85, transition: "width .3s ease" }} />
-                      </div>
-                      <div style={{ fontSize: 11, color: c.color, opacity: 0.8, marginTop: 8, lineHeight: 1.35 }}>{c.sub}</div>
+                      {open && schedReady && (
+                        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(0,0,0,0.08)" }}>
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                            <div>
+                              <div style={{ fontSize: 10, fontWeight: 800, color: "#166534", letterSpacing: "0.08em", marginBottom: 6 }}>✓ COMPLETED ({c.doneBranches.length})</div>
+                              {c.doneBranches.length === 0 ? (
+                                <div style={{ fontSize: 11, color: "#6b7280", fontStyle: "italic" }}>None yet</div>
+                              ) : (
+                                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                  {c.doneBranches.map(b => (
+                                    <div key={b} style={{ background: "#dcfce7", color: "#166534", border: "1px solid #86efac", borderRadius: 7, padding: "4px 8px", fontSize: 11, fontWeight: 700 }}>📍 {b}</div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                            <div>
+                              <div style={{ fontSize: 10, fontWeight: 800, color: "#7c2d12", letterSpacing: "0.08em", marginBottom: 6 }}>⏳ PENDING ({c.missing.length})</div>
+                              {c.missing.length === 0 ? (
+                                <div style={{ fontSize: 11, color: "#16a34a", fontWeight: 700 }}>✓ All branches finalised</div>
+                              ) : (
+                                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                  {c.missing.map(b => (
+                                    <div key={b} style={{ background: "#fef3c7", color: "#7c2d12", border: "1px solid #fde68a", borderRadius: 7, padding: "4px 8px", fontSize: 11, fontWeight: 700 }}>📍 {b}</div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          <div style={{ marginTop: 12, textAlign: "right" }}>
+                            <button onClick={(e) => { e.stopPropagation(); tryChangeTab("scheduling"); }} style={{ background: c.color, color: "#fff", border: "none", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit" }}>
+                              Open scheduling →
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 };
@@ -8375,8 +8420,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       </div>
                     </div>
                     <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-                      {_inner("Nail tech schedules", "💅", techCard)}
-                      {_inner("Manager schedules",   "👔", mgrCard)}
+                      {_inner("Nail tech schedules", "💅", techCard, "tech")}
+                      {_inner("Manager schedules",   "👔", mgrCard, "mgr")}
                     </div>
                   </div>
                 );
