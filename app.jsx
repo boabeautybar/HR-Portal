@@ -1001,7 +1001,12 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
           const cur = grid[h.ec][dy.d];
           if (cur !== "W") continue;
           if (pairLocked[h.ec].has(dy.d)) continue;
-          if ((m - W[dy.d].off - W[dy.d].leave - 1) < 2) continue;
+          // Small-team rule: 1-mgr day OK when fewer than 3 mgrs are
+          // available that day — rollover/partial weeks honour the same
+          // 2-off cap as full weeks via offWk + partialCarry, so the
+          // rules apply uniformly across the cycle boundary.
+          const _activePart = m - (W[dy.d].leave || 0);
+          if ((m - W[dy.d].off - W[dy.d].leave - 1) < (_activePart >= 3 ? 2 : 1)) continue;
           grid[h.ec][dy.d] = "O";
           const mx = longestWRun(h.ec);
           grid[h.ec][dy.d] = "W";
