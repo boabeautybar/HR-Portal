@@ -15821,52 +15821,47 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               });
             });
           }
-          // ── Sandown: rewrite W cells to WE / WL per day. ─────────────────
-          // SM is always WE (08:00–17:00) every day they work. When an SM
-          // is on, every working AM that day is WL (SM covers opening, AMs
-          // cover the tail). When no SM is on, exactly one AM is WE and the
-          // rest are WL. The WE pick rotates fairly across the cycle using
-          // a per-AM lateShiftCount (we promote the AM with the fewest WE
-          // shifts so far to opener on a no-SM day). Sunday is treated
-          // identically — the rule says SM always 08–17 even on Sundays.
-          if (result && result.grid && branch === "Sandown") {
+          // Sandown WE / WL stamper. Applied to the FINAL merged grid
+          // (after the haveDraft branch runs) so it can't be overwritten
+          // by a re-load of the saved draft. Re-run-safe: works whether
+          // the input cells are W, WE or WL.
+          // SM is always WE 08:00–17:00 every working day (incl. Sunday).
+          // When SM is on, every working AM that day is WL.
+          // When no SM is on, exactly one AM (the one with the fewest WE
+          // shifts so far) is WE, the rest are WL.
+          const _applySandownWeWl = (grid, dates, managers) => {
+            if (!grid || branch !== "Sandown") return;
             const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
             const _earlyCount = {};
-            (result.managers || []).forEach(m => { _earlyCount[m.ec] = 0; });
-            (result.dates || []).forEach(dy => {
-              const workers = (result.managers || []).filter(m =>
-                m && m.ec && result.grid[m.ec] && (
-                  result.grid[m.ec][dy.d] === "W" ||
-                  result.grid[m.ec][dy.d] === "WE" ||
-                  result.grid[m.ec][dy.d] === "WL"
+            (managers || []).forEach(m => { _earlyCount[m.ec] = 0; });
+            (dates || []).forEach(dy => {
+              const workers = (managers || []).filter(m =>
+                m && m.ec && grid[m.ec] && (
+                  grid[m.ec][dy.d] === "W" ||
+                  grid[m.ec][dy.d] === "WE" ||
+                  grid[m.ec][dy.d] === "WL"
                 )
               );
               if (workers.length === 0) return;
+              workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
               const sm  = workers.find(_isSM);
               const ams = workers.filter(m => !_isSM(m));
-              // First, reset everyone's working cell on this day to W so a
-              // re-run of this loop (e.g. after a draft edit) settles back
-              // to the right WE/WL without locking in a stale label.
-              workers.forEach(m => { result.grid[m.ec][dy.d] = "W"; });
               if (sm) {
-                result.grid[sm.ec][dy.d] = "WE";
-                ams.forEach(m => { result.grid[m.ec][dy.d] = "WL"; });
+                grid[sm.ec][dy.d] = "WE";
+                ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
               } else if (ams.length > 0) {
-                // Pick the AM with the smallest earlyCount so far → WE; ties
-                // broken by EC for determinism.
                 ams.sort((a, b) =>
                   ((_earlyCount[a.ec] || 0) - (_earlyCount[b.ec] || 0)) ||
                   (a.ec || "").localeCompare(b.ec || "")
                 );
-                const opener = ams[0];
-                result.grid[opener.ec][dy.d] = "WE";
-                _earlyCount[opener.ec] = (_earlyCount[opener.ec] || 0) + 1;
-                for (let i = 1; i < ams.length; i++) {
-                  result.grid[ams[i].ec][dy.d] = "WL";
-                }
+                grid[ams[0].ec][dy.d] = "WE";
+                _earlyCount[ams[0].ec] = (_earlyCount[ams[0].ec] || 0) + 1;
+                for (let i = 1; i < ams.length; i++) grid[ams[i].ec][dy.d] = "WL";
               }
             });
-          }
+          };
+          // Apply to the freshly-generated grid (covers the no-draft path).
+          _applySandownWeWl(result.grid, result.dates, result.managers);
           const haveDraft = !!mgrSchedDraft;
           if (haveDraft) {
             const newGrid = JSON.parse(JSON.stringify(mgrSchedDraft));
@@ -15958,6 +15953,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               }
             }
             result.conflicts = newConflicts;
+            // Re-apply Sandown WE / WL after merging the saved draft so
+            // the labels survive a reload. The merge above stomps the
+            // earlier stamps with the draft's plain W cells.
+            _applySandownWeWl(result.grid, result.dates, result.managers);
           } else {
             // No draft yet — show an empty grid + Generate CTA. We keep the
             // structural fields (dates, managers, weeksMap, weekOrder) but
