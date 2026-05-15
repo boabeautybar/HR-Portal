@@ -7632,6 +7632,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [fBranch, setFBranch] = useState("All");
   const [fPermit, setFPermit] = useState("All");
   const [fContract, setFContract] = useState("All");
+  // Role filter. Values:
+  //   "All"   — show everyone (techs + managers).
+  //   "Tech"  — nail techs only.
+  //   "SM"    — Store Managers (treats SSM separately).
+  //   "SSM"   — Senior Store Managers.
+  //   "AM"    — Assistant Managers.
+  //   "Mgr"   — every manager tier (SM + SSM + AM).
+  const [fRole, setFRole] = useState("All");
   const [fShow, setFShow] = useState("all"); // all | on_mat | active_only
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
@@ -8777,6 +8785,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (fBranch!=="All" && s.branch!==fBranch) return false;
       if (fPermit!=="All" && s.permit!==fPermit) return false;
       if (fContract!=="All" && s.contract!==fContract) return false;
+      // Role filter: techs are dropped from the visible list for any role
+      // value other than 'All' or 'Tech'. The manager-side filter below
+      // handles SM / SSM / AM / Mgr.
+      if (fRole !== "All" && fRole !== "Tech") return false;
       if (search && !s.name.toLowerCase().includes(search.toLowerCase()) && !s.ec.toLowerCase().includes(search.toLowerCase())) return false;
       return true;
     });
@@ -8787,7 +8799,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (ad !== bd) return ad - bd;          // active first, departed last
       return ecSort(a, b);
     });
-  }, [enriched, fShow, fBranch, fPermit, fContract, search]);
+  }, [enriched, fShow, fBranch, fPermit, fContract, fRole, search]);
 
   // Managers shown on the Staff List with the same filter set as techs.
   // Sorted SSM → SM → AM, then by name. Off-mat managers always at the top
@@ -8801,6 +8813,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (fShow==="active_only" && m.onMat) return false;
       if (fBranch!=="All" && m.branch!==fBranch) return false;
       if (fContract!=="All" && (m.contract||"")!==fContract) return false;
+      // Role filter:
+      //   'Tech'          → hide all managers
+      //   'SM' / 'SSM' / 'AM' → keep only that tier
+      //   'Mgr'           → keep every manager tier
+      //   'All'           → no filter
+      if (fRole === "Tech") return false;
+      if (fRole === "SM"  && m.role !== "SM")  return false;
+      if (fRole === "SSM" && m.role !== "SSM") return false;
+      if (fRole === "AM"  && m.role !== "AM")  return false;
       // Compliance filter is a permit field; managers may not have one — skip
       // filtering if user picked a specific permit AND the manager has none,
       // otherwise compare.
@@ -8819,7 +8840,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (rd !== 0) return rd;                                       // SSM → SM → AM
       return (a.name || "").localeCompare(b.name || "");
     });
-  }, [enrichedManagers, fShow, fBranch, fPermit, fContract, search]);
+  }, [enrichedManagers, fShow, fBranch, fPermit, fContract, fRole, search]);
 
   // Pool for the Maternity modal lookup: every active tech + every manager,
   // minus anyone who already has a maternity record (no double-up). Role
@@ -10119,6 +10140,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </select>
               <select value={fContract} onChange={e=>setFContract(e.target.value)} style={{ padding:"7px 11px", borderRadius:7, border:`1px solid ${bdr}`, fontFamily:"inherit", fontSize:13, background:cream }}>
                 <option value="All">All Contracts</option>{["Permanent","Fixed Term","NO CONTRACT","2 Weeks","Induction"].map(c=><option key={c}>{c}</option>)}
+              </select>
+              <select value={fRole} onChange={e=>setFRole(e.target.value)} style={{ padding:"7px 11px", borderRadius:7, border:`1px solid ${bdr}`, fontFamily:"inherit", fontSize:13, background:cream }} title="Filter by role">
+                <option value="All">All Roles</option>
+                <option value="Tech">💅 Nail Techs</option>
+                <option value="Mgr">👔 All Managers</option>
+                <option value="SSM">💎 Senior Store Manager</option>
+                <option value="SM">👑 Store Manager</option>
+                <option value="AM">⭐ Assistant Manager</option>
               </select>
               <span style={{ marginLeft:"auto", fontSize:11, color:"#BE185D", fontWeight:700 }}>{filteredMgrs.length + filtered.length} shown {filteredMgrs.length > 0 ? "(" + filteredMgrs.length + " mgrs · " + filtered.length + " techs)" : "(sorted by EC)"}</span>
               <button onClick={()=>setStaffModal({ ec:"", name:"", branch:"Sea Point", contract:"Permanent", permit:"sa_citizen", level:"" })}
