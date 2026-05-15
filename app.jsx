@@ -8837,6 +8837,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const saved = await window.BOA_DB.saveStaff(f);
       setStaff(p => isEdit ? p.map(x => x._id === f._id ? saved : x) : [...p, saved]);
       setStaffModal(null);
+      // Carry the maternity-section fields from the form onto the saved
+      // record (they're not persisted on the staff row itself, but the
+      // sync helper needs them) and reconcile with matRecs.
+      await syncMatFromStaffEdit({
+        ec:        saved.ec || f.ec,
+        name:      saved.name || f.name,
+        branch:    saved.branch || f.branch,
+        matStatus: f.matStatus,
+        matStart:  f.matStart,
+        matEnd:    f.matEnd,
+        matReturn: f.matReturn,
+        matNotes:  f.matNotes
+      });
       logActivity(
         isEdit ? "Edited staff" : "Added staff",
         (saved.name || "") + (saved.ec ? " (" + saved.ec + ")" : ""),
@@ -8935,6 +8948,51 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setMatModal(null);
     } catch (e) { alert("Could not save: " + (e.message || e)); }
   }
+  // Sync the maternity record store with what the staff / manager edit
+  // modal just saved. The form carries matStatus + matStart + matReturn +
+  // matNotes (plus the existing ec / name / branch). Mapping rules:
+  //   - matStatus 'active'  → delete any existing mat record for this ec
+  //                            so the person stops being treated as on-mat /
+  //                            pregnant by every grid that reads matRecs.
+  //   - any other status    → upsert a mat record keyed by ec (replacing
+  //                            an existing one rather than duplicating).
+  // Best-effort: errors are surfaced but don't block the underlying
+  // staff/manager save, which has already succeeded by the time we run.
+  async function syncMatFromStaffEdit(savedPerson) {
+    if (!savedPerson || !savedPerson.ec) return;
+    const ec     = savedPerson.ec;
+    const status = (savedPerson.matStatus || "active").trim() || "active";
+    const list   = matRecs || [];
+    const existing = list.find(r => r && r.ec && r.ec.trim() === ec.trim());
+    try {
+      if (status === "active") {
+        if (existing && existing._id != null) {
+          await window.BOA_DB.deleteMat(existing._id);
+          setMatRecs(p => p.filter(x => x._id !== existing._id));
+        }
+        return;
+      }
+      const rec = {
+        _id:        existing ? existing._id : undefined,
+        ec,
+        name:       savedPerson.name   || (existing && existing.name)   || "",
+        branch:     savedPerson.branch || (existing && existing.branch) || "",
+        matStatus:  status,
+        matStart:   savedPerson.matStart  || (existing && existing.matStart)  || null,
+        matEnd:     savedPerson.matEnd    || (existing && existing.matEnd)    || null,
+        returnDate: savedPerson.matReturn || (existing && existing.returnDate) || null,
+        notes:      savedPerson.matNotes  || (existing && existing.notes) || ""
+      };
+      const saved = await window.BOA_DB.saveMat(rec);
+      setMatRecs(p => existing
+        ? p.map(x => x._id === existing._id ? saved : x)
+        : [...p, saved]
+      );
+    } catch (e) {
+      console.warn("syncMatFromStaffEdit:", e);
+      alert("Saved, but the maternity record didn't update: " + ((e && e.message) || e));
+    }
+  }
   async function delMat(id) {
     const rec = matRecs.find(r => r._id === id);
     try {
@@ -8960,6 +9018,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         catch (pe) { alert("Manager saved but PIN could not be saved: " + (pe.message || pe)); }
       }
       setMgrModal(null);
+      // Same maternity reconciliation as for nail techs — flipping
+      // matStatus on the manager edit modal now propagates to matRecs.
+      await syncMatFromStaffEdit({
+        ec:        saved.ec || f.ec,
+        name:      saved.name || f.name,
+        branch:    saved.branch || f.branch,
+        matStatus: f.matStatus,
+        matStart:  f.matStart,
+        matEnd:    f.matEnd,
+        matReturn: f.matReturn,
+        matNotes:  f.matNotes
+      });
       logActivity(
         isEdit ? "Edited manager" : "Added manager",
         (saved.name || "") + (saved.ec ? " (" + saved.ec + ")" : ""),
