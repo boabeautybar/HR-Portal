@@ -4878,7 +4878,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                   style={{ padding:"7px 14px", background:"#FFFFFF", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:600 }}>
                   🔍 Diagnose
                 </button>
-                <button onClick={() => setTechReqModal({ ec:(techsActive[0] && techsActive[0].ec) || "", date: (days && days[0] ? (days[0].year + "-" + String(days[0].monthIdx+1).padStart(2,"0") + "-" + String(days[0].d).padStart(2,"0")) : ""), note:"" })}
+                <button onClick={() => setTechReqModal({ ec:(techsActive[0] && techsActive[0].ec) || "", dates: [], date: (days && days[0] ? (days[0].year + "-" + String(days[0].monthIdx+1).padStart(2,"0") + "-" + String(days[0].d).padStart(2,"0")) : ""), note:"" })}
                   disabled={techsActive.length === 0}
                   style={{ padding:"7px 14px", background: techsActive.length ? "#BE185D" : "#FBCFE8", color: techsActive.length ? "#fff" : "#9F1A4F", border:"none", borderRadius:8, cursor: techsActive.length ? "pointer" : "not-allowed", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
                   + Request day off
@@ -4970,10 +4970,33 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                 />
               </label>
               <label style={{ display:"flex", flexDirection:"column", gap:4 }}>
-                <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>DATE</span>
-                <input type="date" value={techReqModal.date}
-                  onChange={(e) => setTechReqModal({ ...techReqModal, date: e.target.value })}
-                  style={{ padding:"7px 10px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13 }} />
+                <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>DATES <span style={{ fontWeight:600, color:"#9F1A4F" }}>(pick one or more)</span></span>
+                <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap" }}>
+                  <input type="date" value={techReqModal.date || ""}
+                    onChange={(e) => setTechReqModal({ ...techReqModal, date: e.target.value })}
+                    style={{ padding:"7px 10px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, flex:"1 1 160px" }} />
+                  <button type="button"
+                    onClick={() => {
+                      const dt = (techReqModal.date || "").trim();
+                      if (!dt) return;
+                      const cur = Array.isArray(techReqModal.dates) ? techReqModal.dates : [];
+                      if (cur.includes(dt)) return;
+                      setTechReqModal({ ...techReqModal, dates: [...cur, dt].sort(), date: "" });
+                    }}
+                    style={{ padding:"7px 12px", background:"#FCE7F3", color:"#BE185D", border:"1px solid #FBCFE8", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>+ Add</button>
+                </div>
+                {Array.isArray(techReqModal.dates) && techReqModal.dates.length > 0 && (
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginTop:4 }}>
+                    {techReqModal.dates.map(d => (
+                      <span key={d} style={{ display:"inline-flex", alignItems:"center", gap:4, background:"#FCE7F3", color:"#831843", border:"1px solid #FBCFE8", borderRadius:999, padding:"3px 9px", fontSize:11, fontWeight:700 }}>
+                        {new Date(d + "T00:00:00").toLocaleDateString("en-ZA", { weekday:"short", day:"2-digit", month:"short" })}
+                        <button type="button"
+                          onClick={() => setTechReqModal({ ...techReqModal, dates: techReqModal.dates.filter(x => x !== d) })}
+                          style={{ background:"transparent", border:"none", color:"#9F1A4F", cursor:"pointer", fontWeight:800, padding:0, lineHeight:1, fontSize:13 }}>×</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
               </label>
               <label style={{ display:"flex", flexDirection:"column", gap:4 }}>
                 <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>NOTE (optional)</span>
@@ -4987,22 +5010,34 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
               <button onClick={() => setTechReqModal(null)}
                 style={{ padding:"8px 14px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:13 }}>Cancel</button>
               <button onClick={async () => {
-                if (!techReqModal.ec || !techReqModal.date) { alert("Pick a tech and a date."); return; }
-                if ((techRequests || []).some(r => r.ec === techReqModal.ec && r.date === techReqModal.date)) {
-                  alert("That tech already has a request on that date."); return;
+                if (!techReqModal.ec) { alert("Pick a nail tech."); return; }
+                // Combine the dates-chip list with the lone date input so a
+                // user who just typed one date and clicked Save (without
+                // pressing + Add) still gets it captured.
+                const dateList = Array.isArray(techReqModal.dates) ? techReqModal.dates.slice() : [];
+                const single = (techReqModal.date || "").trim();
+                if (single && !dateList.includes(single)) dateList.push(single);
+                if (dateList.length === 0) { alert("Pick at least one date."); return; }
+                const dupes = dateList.filter(d => (techRequests || []).some(r => r.ec === techReqModal.ec && r.date === d));
+                if (dupes.length > 0) {
+                  if (!confirm(dupes.length + " of those date(s) are already requested for this tech. Skip the duplicates and save the rest?")) return;
                 }
+                const datesToSave = dateList.filter(d => !dupes.includes(d));
+                if (datesToSave.length === 0) { setTechReqModal(null); return; }
                 const tx = techs.find(t => t.ec === techReqModal.ec);
-                const newReq = {
-                  id: "tr_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+                const stamp = new Date().toISOString();
+                const note = techReqModal.note || "";
+                const newReqs = datesToSave.map(d => ({
+                  id: "tr_" + Date.now().toString(36) + "_" + d.replace(/-/g, "") + "_" + Math.random().toString(36).slice(2, 5),
                   ec: techReqModal.ec,
                   name: (tx && tx.name) || "",
                   branch,
-                  date: techReqModal.date,
-                  note: techReqModal.note || "",
-                  addedAt: new Date().toISOString(),
+                  date: d,
+                  note,
+                  addedAt: stamp,
                   source: "portal"
-                };
-                const next = [...(techRequests || []), newReq];
+                }));
+                const next = [...(techRequests || []), ...newReqs];
                 try {
                   await window.BOA_DB.saveTechRequests(next);
                   if (onTechRequestsChange) onTechRequestsChange(next);
@@ -16529,7 +16564,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       style={{ padding:"7px 14px", background:"#FFFFFF", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:600 }}>
                       🔍 Diagnose
                     </button>
-                    <button onClick={() => setMgrReqModal({ ec: (sortedMgrs[0] && sortedMgrs[0].ec) || "", date: cycleStart, note: "" })}
+                    <button onClick={() => setMgrReqModal({ ec: (sortedMgrs[0] && sortedMgrs[0].ec) || "", dates: [], date: cycleStart, note: "" })}
                             disabled={sortedMgrs.length === 0}
                             style={{ padding:"7px 14px", background: sortedMgrs.length ? "#BE185D" : "#FBCFE8", color: sortedMgrs.length ? "#fff" : "#9F1A4F", border:"none", borderRadius:8, cursor: sortedMgrs.length ? "pointer" : "not-allowed", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
                       + Request day off
@@ -16732,11 +16767,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       />
                     </div>
 
-                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#831843", letterSpacing:"0.04em", marginBottom:4 }}>DATE</label>
-                    <input type="date" value={mgrReqModal.date}
-                           min={cycleStart} max={cycleEndStr}
-                           onChange={(e) => setMgrReqModal({ ...mgrReqModal, date: e.target.value })}
-                           style={{ width:"100%", padding:"9px 11px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, background:"#fff", marginBottom:12, fontFamily:"inherit" }} />
+                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#831843", letterSpacing:"0.04em", marginBottom:4 }}>DATES <span style={{ fontWeight:600, color:"#9ca3af" }}>(pick one or more)</span></label>
+                    <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap", marginBottom: (mgrReqModal.dates && mgrReqModal.dates.length > 0) ? 6 : 12 }}>
+                      <input type="date" value={mgrReqModal.date || ""}
+                             min={cycleStart} max={cycleEndStr}
+                             onChange={(e) => setMgrReqModal({ ...mgrReqModal, date: e.target.value })}
+                             style={{ flex:"1 1 160px", padding:"9px 11px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, background:"#fff", fontFamily:"inherit" }} />
+                      <button type="button"
+                        onClick={() => {
+                          const dt = (mgrReqModal.date || "").trim();
+                          if (!dt) return;
+                          if (dt < cycleStart || dt > cycleEndStr) { alert("Date must fall within the current cycle."); return; }
+                          const cur = Array.isArray(mgrReqModal.dates) ? mgrReqModal.dates : [];
+                          if (cur.includes(dt)) return;
+                          setMgrReqModal({ ...mgrReqModal, dates: [...cur, dt].sort(), date: "" });
+                        }}
+                        style={{ padding:"9px 13px", background:"#FCE7F3", color:"#BE185D", border:"1px solid #FBCFE8", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>+ Add</button>
+                    </div>
+                    {Array.isArray(mgrReqModal.dates) && mgrReqModal.dates.length > 0 && (
+                      <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginBottom:12 }}>
+                        {mgrReqModal.dates.map(d => (
+                          <span key={d} style={{ display:"inline-flex", alignItems:"center", gap:4, background:"#FCE7F3", color:"#831843", border:"1px solid #FBCFE8", borderRadius:999, padding:"3px 9px", fontSize:11, fontWeight:700 }}>
+                            {new Date(d + "T00:00:00").toLocaleDateString("en-ZA", { weekday:"short", day:"2-digit", month:"short" })}
+                            <button type="button"
+                              onClick={() => setMgrReqModal({ ...mgrReqModal, dates: mgrReqModal.dates.filter(x => x !== d) })}
+                              style={{ background:"transparent", border:"none", color:"#9F1A4F", cursor:"pointer", fontWeight:800, padding:0, lineHeight:1, fontSize:13 }}>×</button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
 
                     <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#831843", letterSpacing:"0.04em", marginBottom:4 }}>NOTE (OPTIONAL)</label>
                     <input type="text" value={mgrReqModal.note} placeholder="e.g. doctor's appointment"
@@ -16748,14 +16807,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               style={{ padding:"8px 16px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:600 }}>Cancel</button>
                       <button
                         onClick={async () => {
-                          if (!mgrReqModal.ec || !mgrReqModal.date) { alert("Pick a manager and a date."); return; }
-                          if (mgrReqModal.date < cycleStart || mgrReqModal.date > cycleEndStr) { alert("Date must fall within the current cycle."); return; }
-                          // Block duplicates (same ec + date already requested)
-                          if ((mgrRequests || []).some(r => r.ec === mgrReqModal.ec && r.date === mgrReqModal.date)) {
-                            alert("That manager already has a request for that date.");
-                            return;
+                          if (!mgrReqModal.ec) { alert("Pick a manager."); return; }
+                          // Combine the dates chip-list with the lone date
+                          // input so a user who typed one date and clicked
+                          // Save (without pressing + Add) still gets it.
+                          const dateList = Array.isArray(mgrReqModal.dates) ? mgrReqModal.dates.slice() : [];
+                          const single = (mgrReqModal.date || "").trim();
+                          if (single && !dateList.includes(single)) dateList.push(single);
+                          if (dateList.length === 0) { alert("Pick at least one date."); return; }
+                          const outOfCycle = dateList.filter(d => d < cycleStart || d > cycleEndStr);
+                          if (outOfCycle.length > 0) { alert("Some dates fall outside the current cycle:\n" + outOfCycle.join("\n")); return; }
+                          const dupes = dateList.filter(d => (mgrRequests || []).some(r => r.ec === mgrReqModal.ec && r.date === d));
+                          if (dupes.length === dateList.length) {
+                            alert("All of those dates are already requested for this manager."); return;
                           }
-                          // HARD cap check: combined offs in target ISO week (incl. existing requests, leaves, and any saved schedule cells) must allow another off.
+                          if (dupes.length > 0) {
+                            if (!confirm(dupes.length + " of those date(s) are already requested. Skip the duplicates and save the rest?")) return;
+                          }
+                          const datesToSave = dateList.filter(d => !dupes.includes(d));
+                          // HARD per-week cap. Compute on a running snapshot so
+                          // multiple dates in the same week stack correctly.
                           const wkOf = (ymd) => {
                             const x = new Date(ymd + "T00:00:00");
                             const dn = (x.getDay()+6) % 7;
@@ -16766,33 +16837,52 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const wk = 1 + Math.round((x - ff) / (7*86400000));
                             return x.getFullYear() + "-W" + String(wk).padStart(2,"0");
                           };
-                          const targetWk = wkOf(mgrReqModal.date);
-                          const sameWkRequests = (mgrRequests || []).filter(r => r.ec === mgrReqModal.ec && wkOf(r.date) === targetWk).length;
-                          // Count leave + saved-schedule offs already in this week for this manager
-                          let savedOffs = 0;
+                          const baseSavedOffByWk = {};
                           if (mgrSchedDraft && mgrSchedDraft[mgrReqModal.ec]) {
                             for (const day of Object.keys(mgrSchedDraft[mgrReqModal.ec])) {
-                              if (wkOf(day) !== targetWk) continue;
                               const v = mgrSchedDraft[mgrReqModal.ec][day];
-                              if (v === "L") savedOffs++;
+                              if (v === "L") baseSavedOffByWk[wkOf(day)] = (baseSavedOffByWk[wkOf(day)] || 0) + 1;
                             }
                           }
-                          if (sameWkRequests + savedOffs >= 2) {
-                            alert("Blocked — that manager already has " + (sameWkRequests + savedOffs) + " off-day(s) in that week. The 2-offs-per-week cap is hard.");
-                            return;
+                          const baseReqByWk = {};
+                          (mgrRequests || []).forEach(r => {
+                            if (r.ec !== mgrReqModal.ec) return;
+                            baseReqByWk[wkOf(r.date)] = (baseReqByWk[wkOf(r.date)] || 0) + 1;
+                          });
+                          const addedByWk = {};
+                          const blocked = [];
+                          const goodDates = [];
+                          for (const d of datesToSave) {
+                            const w = wkOf(d);
+                            const total = (baseSavedOffByWk[w] || 0) + (baseReqByWk[w] || 0) + (addedByWk[w] || 0);
+                            if (total >= 2) { blocked.push(d); continue; }
+                            addedByWk[w] = (addedByWk[w] || 0) + 1;
+                            goodDates.push(d);
                           }
+                          if (blocked.length > 0) {
+                            const proceed = goodDates.length > 0
+                              ? confirm(blocked.length + " date(s) would push this manager past the 2-offs-per-week cap and will be skipped:\n" + blocked.join("\n") + "\n\nSave the remaining " + goodDates.length + "?")
+                              : false;
+                            if (!proceed) {
+                              if (goodDates.length === 0) alert("Blocked — every date would exceed the 2-offs-per-week cap.");
+                              return;
+                            }
+                          }
+                          if (goodDates.length === 0) { setMgrReqModal(null); return; }
                           const mg = sortedMgrs.find(m => m.ec === mgrReqModal.ec);
-                          const newReq = {
-                            id: "req_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2,7),
+                          const stamp = new Date().toISOString();
+                          const note = mgrReqModal.note || "";
+                          const newReqs = goodDates.map(d => ({
+                            id: "req_" + Date.now().toString(36) + "_" + d.replace(/-/g, "") + "_" + Math.random().toString(36).slice(2,5),
                             ec: mgrReqModal.ec,
                             name: mg ? mg.name : "",
                             branch,
-                            date: mgrReqModal.date,
-                            note: mgrReqModal.note || "",
-                            addedAt: new Date().toISOString()
-                          };
+                            date: d,
+                            note,
+                            addedAt: stamp
+                          }));
                           try {
-                            const next = [...(mgrRequests || []), newReq];
+                            const next = [...(mgrRequests || []), ...newReqs];
                             await window.BOA_DB.saveMgrRequests(next);
                             setMgrRequests(next);
                             setMgrReqModal(null);
