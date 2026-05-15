@@ -15579,7 +15579,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const base = off ? { ...m, leftDate: off.leftDate, offRec: off } : { ...m };
             return flag ? { ...base, _onMat: true } : base;
           });
-          const allMgrs = [...mgrsWithOff, ...obMgrs];
+          // Dedupe so a manager who lives in BOTH the live managers list AND
+          // the onboarding list (the trial record can survive after they
+          // convert to a full employee) doesn't render twice on the schedule.
+          // Order of preference: live manager record wins. As a safety net we
+          // also drop any duplicate-EC entries inside the manager list itself.
+          const _seenMgrEcs = new Set();
+          const _dedupedMgrs = [];
+          for (const m of mgrsWithOff) {
+            const key = m && m.ec ? String(m.ec).trim() : "";
+            if (!key || _seenMgrEcs.has(key)) continue;
+            _seenMgrEcs.add(key);
+            _dedupedMgrs.push(m);
+          }
+          const _dedupedObMgrs = obMgrs.filter(o => {
+            const key = o && o.ec ? String(o.ec).trim() : "";
+            return key && !_seenMgrEcs.has(key);
+          });
+          const allMgrs = [..._dedupedMgrs, ..._dedupedObMgrs];
           const mgrLeaves = (leaveRecs || []).filter(L => allMgrs.some(m => m.ec === L.ec));
           // Synthetic full-cycle leaves for on-mat managers - mgrSched
           // treats these as 'L' cells so the on-mat manager doesn't get
