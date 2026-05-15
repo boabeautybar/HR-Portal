@@ -371,6 +371,7 @@ function exportSchedulePdf(opts) {
     // ── Cell palette: vivid working / off / leave / etc. ──
     + 'td.c{font-weight:800;font-size:11px;letter-spacing:0.02em}'
     + 'td.c-W,.legend .c-W,.guide .c-W{background:#22c55e !important;color:#052e16 !important}'   // working — vivid green
+    + 'td.c-WE,.legend .c-WE,.guide .c-WE{background:#4ade80 !important;color:#052e16 !important}'// working early — bright green
     + 'td.c-WL,.legend .c-WL,.guide .c-WL{background:#15803d !important;color:#f0fdf4 !important}'// working late — deeper green
     + 'td.c-O,.legend .c-O,.guide .c-O{background:#fda4af !important;color:#7f1d1d !important}'  // off — soft pink
     + 'td.c-R,.legend .c-R,.guide .c-R{background:#ef4444 !important;color:#fff !important}'      // requested off — vivid red
@@ -2649,9 +2650,10 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     return out;
   }, [techRequests, branch, days]);
 
-  const cycle = ["W","WL","O","R","L","E","X","trial",""];
+  const cycle = ["W","WE","WL","O","R","L","E","X","trial",""];
   const cellStyle = (z) => {
     if (z === "W")  return { background:"#dcfce7", color:"#14532d" };
+    if (z === "WE") return { background:"#a7f3d0", color:"#064e3b" };
     if (z === "WL") return { background:"#86efac", color:"#14532d" };
     if (z === "O")  return { background:"#fee2e2", color:"#991b1b" };
     if (z === "R")  return { background:"#fca5a5", color:"#7f1d1d" };
@@ -2966,7 +2968,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         let cu = 0, rs = -1, maxRun = 0, maxRs = -1, maxRe = -1;
         for (let i = 0; i < allDays.length; i++) {
           const v = g[ec] && g[ec][allDays[i].d];
-          if (v === "W" || v === "WL" || v === "E") {
+          if (v === "W" || v === "WE" || v === "WL" || v === "E") {
             if (cu === 0) rs = i;
             cu++;
             if (cu > maxRun) { maxRun = cu; maxRs = rs; maxRe = i; }
@@ -2984,7 +2986,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       };
       const dayWorking = (d) => ecList.reduce((n, e2) => {
         const v = g[e2] && g[e2][d.d];
-        return n + ((v === "W" || v === "WL" || v === "E") ? 1 : 0);
+        return n + ((v === "W" || v === "WE" || v === "WL" || v === "E") ? 1 : 0);
       }, 0);
 
       ecList.forEach(ec => {
@@ -3050,7 +3052,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
           for (let ix = maxRs; ix <= maxRe; ix++) {
             const tgt = allDays[ix];
             if (tgt.dow === 0) continue;
-            if (g[ec][tgt.d] !== "W" && g[ec][tgt.d] !== "WL") continue;
+            if (g[ec][tgt.d] !== "W" && g[ec][tgt.d] !== "WE" && g[ec][tgt.d] !== "WL") continue;
             const wIdx = dayToWk.get(tgt.d);
             if (wIdx == null) continue;
             const wk = weekChunks[wIdx];
@@ -3344,7 +3346,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
           let run = 0, viol = false;
           for (const dd of days) {
             const v = newGrid[cand.ec][dd.d];
-            if (v === "W" || v === "WL" || v === "E") {
+            if (v === "W" || v === "WE" || v === "WL" || v === "E") {
               run++;
               if (run >= 7) { viol = true; break; }
             } else run = 0;
@@ -3382,7 +3384,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     const techWkOffs = (ec, wkIdx) => {
       const wk = weekChunks[wkIdx]; if (!wk) return 0;
       const inWk = wk.reduce((n, d) => {
-        const v = newGrid[ec][d.d]; return n + ((v && v !== "W" && v !== "WL" && v !== "E") ? 1 : 0);
+        const v = newGrid[ec][d.d]; return n + ((v && v !== "W" && v !== "WE" && v !== "WL" && v !== "E") ? 1 : 0);
       }, 0);
       return inWk + _carryFor(ec, wkIdx);
     };
@@ -3392,7 +3394,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       let cnt = 0, start = null, end = null;
       for (const d of days) {
         const v = newGrid[ec][d.d];
-        if (v === "W" || v === "WL" || v === "E") {
+        if (v === "W" || v === "WE" || v === "WL" || v === "E") {
           if (cnt === 0) start = d.d;
           cnt++; end = d.d;
           if (cnt >= 7) return { start, end };
@@ -3576,7 +3578,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         let cu = 0, rs = -1, maxRun = 0, maxRs = -1, maxRe = -1;
         for (let i = 0; i < days.length; i++) {
           const v = newGrid[ec][days[i].d];
-          if (v === "W" || v === "WL" || v === "E") {
+          if (v === "W" || v === "WE" || v === "WL" || v === "E") {
             if (cu === 0) rs = i;
             cu++;
             if (cu > maxRun) { maxRun = cu; maxRs = rs; maxRe = i; }
@@ -3607,7 +3609,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
             let nr = 0, nm = 0;
             for (const dd of days) {
               const v = newGrid[ec][dd.d];
-              if (v === "W" || v === "WL" || v === "E") { nr++; if (nr > nm) nm = nr; } else nr = 0;
+              if (v === "W" || v === "WE" || v === "WL" || v === "E") { nr++; if (nr > nm) nm = nr; } else nr = 0;
             }
             newGrid[ec][days[src].d] = "O";
             newGrid[ec][days[ix].d] = "W";
@@ -3663,7 +3665,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
           let ok = true, run = 0;
           for (const d of days) {
             const v = newGrid[tech.ec][d.d];
-            if (v === "W" || v === "WL" || v === "E") { run++; if (run >= 7) { ok = false; break; } } else run = 0;
+            if (v === "W" || v === "WE" || v === "WL" || v === "E") { run++; if (run >= 7) { ok = false; break; } } else run = 0;
           }
           if (!ok) {
             newGrid[tech.ec][heavy.d] = "O"; newGrid[tech.ec][light.d] = "W";
@@ -3701,7 +3703,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         const runs = [];
         for (let i = 0; i < days.length; i++) {
           const v = newGrid[ec][days[i].d];
-          if (v === "W" || v === "WL" || v === "E") {
+          if (v === "W" || v === "WE" || v === "WL" || v === "E") {
             if (run === 0) runStart = i;
             run++;
           } else {
@@ -3725,7 +3727,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
               let ok = true, r2 = 0;
               for (const dd2 of days) {
                 const v = newGrid[ec][dd2.d];
-                if (v === "W" || v === "WL" || v === "E") { r2++; if (r2 >= 7) { ok = false; break; } } else r2 = 0;
+                if (v === "W" || v === "WE" || v === "WL" || v === "E") { r2++; if (r2 >= 7) { ok = false; break; } } else r2 = 0;
               }
               // Cross-month strict 2-cap: if newOffD lands in a partial
               // week with cross-month carry (leading or trailing) and
@@ -3748,10 +3750,16 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       if (!fixedAny) break;
     }
 
-    // PHASE 17 — Table Bay late-shift WL assignment.
-    // For each non-Sunday day at Table Bay, designate up to 3 working techs
-    // as "WL" (work late). Distributed evenly using a per-tech counter so
-    // no single tech is always on late shift.
+    // PHASE 17 — Late-shift assignment per store.
+    //   Table Bay: designate up to 3 working techs per non-Sunday as "WL"
+    //              (work late). Existing rule, unchanged.
+    //   Sandown:   split working techs 50/50 each non-Sunday between
+    //              "WE" (work early, 08:00–17:15) and "WL" (work late,
+    //              11:00–20:00). Both cells render green; the WE/WL text
+    //              labels who is on which shift. With an odd headcount,
+    //              WE gets the extra (more morning coverage).
+    // Distribution uses a per-tech `lateShiftCount` so the same techs
+    // don't always end up on the late shift.
     const lateShiftCount = {};
     if (branch === "Table Bay") {
       sortedTechs.forEach(s => { lateShiftCount[s.ec] = 0; });
@@ -3766,6 +3774,24 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         for (let i = 0; i < need; i++) {
           newGrid[workers[i].ec][dy.d] = "WL";
           lateShiftCount[workers[i].ec]++;
+        }
+      });
+    } else if (branch === "Sandown") {
+      sortedTechs.forEach(s => { lateShiftCount[s.ec] = 0; });
+      days.forEach(dy => {
+        if (dy.dow === 0) return;
+        const workers = sortedTechs.filter(s => newGrid[s.ec][dy.d] === "W");
+        // Sort so techs who've been on late shift least often go to WL
+        // first — keeps the late shift fairly rotated across the cycle.
+        workers.sort((a, b) =>
+          (lateShiftCount[a.ec] - lateShiftCount[b.ec]) ||
+          a.ec.localeCompare(b.ec)
+        );
+        const lateCount = Math.floor(workers.length / 2);
+        for (let i = 0; i < workers.length; i++) {
+          const code = i < lateCount ? "WL" : "WE";
+          newGrid[workers[i].ec][dy.d] = code;
+          if (code === "WL") lateShiftCount[workers[i].ec]++;
         }
       });
     }
@@ -3836,13 +3862,13 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       let run = 0;
       for (const dd of days) {
         const v = newGrid[ec][dd.d];
-        if (v === "W" || v === "WL" || v === "E") { run++; if (run >= 7) return true; }
+        if (v === "W" || v === "WE" || v === "WL" || v === "E") { run++; if (run >= 7) return true; }
         else run = 0;
       }
       return false;
     };
     const dayWorking = (dnum) => sortedTechs.reduce((n, s) => {
-      const v = newGrid[s.ec][dnum]; return n + ((v === "W" || v === "WL" || v === "E") ? 1 : 0);
+      const v = newGrid[s.ec][dnum]; return n + ((v === "W" || v === "WE" || v === "WL" || v === "E") ? 1 : 0);
     }, 0);
     unhonouredList.forEach(u => {
       // Only attempt rescue for the week-cap reason; other reasons (leave,
@@ -3859,7 +3885,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       if (!dDay) { stillUnhonoured.push(u); return; }
       // Min-coverage on the request day after R: working drops by 1.
       const reqDayMin = minWorkingFor(dDay);
-      const reqDayWorkingAfter = dayWorking(u.dayNum) - ((newGrid[ec][u.dayNum] === "W" || newGrid[ec][u.dayNum] === "WL" || newGrid[ec][u.dayNum] === "E") ? 1 : 0);
+      const reqDayWorkingAfter = dayWorking(u.dayNum) - ((newGrid[ec][u.dayNum] === "W" || newGrid[ec][u.dayNum] === "WE" || newGrid[ec][u.dayNum] === "WL" || newGrid[ec][u.dayNum] === "E") ? 1 : 0);
       if (reqDayWorkingAfter < reqDayMin) {
         u.reason = "would drop coverage on " + (u.date || u.dayNum) + " below the minimum (" + reqDayWorkingAfter + " < " + reqDayMin + ")";
         stillUnhonoured.push(u); return;
@@ -3971,6 +3997,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     const dowAbbr   = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
     const cellInfo = {
       W:  { text:"W",   bg:"#dcfce7", fg:"#14532d" },
+      WE: { text:"WE",  bg:"#a7f3d0", fg:"#064e3b" },
       WL: { text:"WL",  bg:"#86efac", fg:"#14532d" },
       O:  { text:"OFF", bg:"#fee2e2", fg:"#991b1b" },
       R:  { text:"REQ", bg:"#fca5a5", fg:"#7f1d1d" },
@@ -4006,7 +4033,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       let w = 0;
       techs.forEach(t => {
         const v = (grid[t.ec] || {})[c.day];
-        if (v === "W" || v === "WL" || v === "E") w++;
+        if (v === "W" || v === "WE" || v === "WL" || v === "E") w++;
       });
       return { key: c.key, value: w };
     });
@@ -4014,7 +4041,8 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     Object.keys(cellInfo).forEach(k => { codeStyles[k] = { bg: cellInfo[k].bg, fg: cellInfo[k].fg }; });
     const legend = [
       { code:"W",  text:"W",   label:"Working" },
-      { code:"WL", text:"WL",  label:"Working late" },
+      { code:"WE", text:"WE",  label:"Working early shift" },
+      { code:"WL", text:"WL",  label:"Working late shift" },
       { code:"O",  text:"OFF", label:"Off" },
       { code:"R",  text:"REQ", label:"Requested off" },
       { code:"L",  text:"LV",  label:"Leave" },
@@ -4213,7 +4241,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     let w = 0, off = 0;
     days.forEach(d => {
       const v = row[d.d];
-      if (v === "W" || v === "WL" || v === "E") w++;
+      if (v === "W" || v === "WE" || v === "WL" || v === "E") w++;
       if (v === "O" || v === "R" || v === "L")  off++;
     });
     return { w, off };
@@ -4322,7 +4350,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       let streak = 0, startIdx = -1;
       for (let i = 0; i < days.length; i++) {
         const v = (grid[s.ec] || {})[days[i].d];
-        if (v === "W" || v === "WL" || v === "E") {
+        if (v === "W" || v === "WE" || v === "WL" || v === "E") {
           if (streak === 0) startIdx = i;
           streak++;
         } else {
@@ -4491,7 +4519,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       Object.keys(existingGrid).forEach(otherEc => {
         if (otherEc === ec) return;
         const v = existingGrid[otherEc] && existingGrid[otherEc][dnum];
-        if (v === "W" || v === "WL" || v === "E") n++;
+        if (v === "W" || v === "WE" || v === "WL" || v === "E") n++;
       });
       return n;
     };
@@ -4604,7 +4632,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       let longestRun = 0, longestStart = -1, longestEnd = -1;
       for (let i = 0; i < days.length; i++) {
         const v = row[days[i].d];
-        if (v === "W" || v === "WL" || v === "E") {
+        if (v === "W" || v === "WE" || v === "WL" || v === "E") {
           if (run === 0) runStart = i;
           run++;
           if (run > longestRun) { longestRun = run; longestStart = runStart; longestEnd = i; }
@@ -4615,7 +4643,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       for (let ix = longestStart + 1; ix < longestEnd; ix++) {
         const d = days[ix];
         if (d.dow === 0) continue;
-        if (row[d.d] !== "W" && row[d.d] !== "WL") continue;
+        if (row[d.d] !== "W" && row[d.d] !== "WE" && row[d.d] !== "WL") continue;
         const wIdx = weekChunks.findIndex(wk => wk.some(x => x.d === d.d));
         if (wIdx < 0) continue;
         // Respect the per-week off-target. Closed-day branches cap at
@@ -5078,7 +5106,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                   if (v.grid) {
                     Object.values(v.grid).forEach(row => Object.values(row || {}).forEach(cell => {
                       if (cell === "O" || cell === "R" || cell === "L") offCount++;
-                      else if (cell === "W" || cell === "WL" || cell === "E") workCount++;
+                      else if (cell === "W" || cell === "WE" || cell === "WL" || cell === "E") workCount++;
                     }));
                   }
                   return (
@@ -5248,6 +5276,24 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       ) : loading ? (
         <div style={{ padding:24, color:"#831843", fontStyle:"italic" }}>Loading schedule…</div>
       ) : (
+        <>
+        {/* Per-store shift-time info banners — display the exact start/end
+            times that the WE / WL cells correspond to. The schedule grid
+            only carries the WE/WL label; the actual hours live here. */}
+        {branch === "Sandown" && (
+          <div style={{ background:"#ecfdf5", border:"1px solid #a7f3d0", borderRadius:10, padding:"10px 14px", marginBottom:10, fontSize:12, color:"#065f46", display:"flex", flexWrap:"wrap", gap:14, alignItems:"center" }}>
+            <span style={{ fontSize:11, fontWeight:800, color:"#065f46", letterSpacing:"0.08em", textTransform:"uppercase" }}>🕐 Sandown shift times</span>
+            <span><strong>Mon–Fri</strong> · WE 08:00–17:15 · WL 11:00–20:00</span>
+            <span><strong>Saturday</strong> · WE 08:15–17:15 · WL 10:00–19:00</span>
+            <span><strong>Sunday</strong> · all shifts 09:00–18:00 (no early/late split)</span>
+          </div>
+        )}
+        {branch === "Table Bay" && (
+          <div style={{ background:"#ecfdf5", border:"1px solid #a7f3d0", borderRadius:10, padding:"10px 14px", marginBottom:10, fontSize:12, color:"#065f46", display:"flex", flexWrap:"wrap", gap:14, alignItems:"center" }}>
+            <span style={{ fontSize:11, fontWeight:800, color:"#065f46", letterSpacing:"0.08em", textTransform:"uppercase" }}>🕐 Table Bay shift times</span>
+            <span>Up to 3 nail techs per day on the late shift (WL).</span>
+          </div>
+        )}
         <div style={{ overflowX:"auto", border:"1px solid #FBCFE8", borderRadius:10, background:"#fff" }}>
           <table style={{ borderCollapse:"collapse", minWidth:"100%", fontSize:11 }}>
             <thead>
@@ -5385,7 +5431,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                 {(() => { const activeTechs = techs.filter(t => !t.onMat); return days.map(d => {
                   const working = activeTechs.filter(s => {
                     const v = (grid[s.ec] || {})[d.d];
-                    return v === "W" || v === "WL" || v === "E";
+                    return v === "W" || v === "WE" || v === "WL" || v === "E";
                   }).length;
                   const needed = minWorkingFor(d, activeTechs.length);
                   const ok = working >= needed;
@@ -5410,14 +5456,15 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
             </tfoot>
           </table>
         </div>
+        </>
       )}
 
       <div style={{ display:"flex", gap:14, flexWrap:"wrap", marginTop:14, fontSize:11, color:"#831843", alignItems:"center" }}>
         <strong>Legend:</strong>
-        {["W","WL","O","R","L","ML","E","X"].map(c => (
+        {["W","WE","WL","O","R","L","ML","E","X"].map(c => (
           <span key={c} style={{ display:"inline-flex", alignItems:"center", gap:6 }}>
             <span style={{ ...(c === "ML" ? { background:"#ede9fe", color:"#6b21a8" } : cellStyle(c)), padding:"2px 7px", borderRadius:4, fontWeight:700, minWidth:22, textAlign:"center" }}>{c}</span>
-            {c==="W"?"Work":c==="WL"?"Work late":c==="O"?"Off":c==="R"?"Requested off":c==="L"?"Leave":c==="ML"?"Maternity leave":c==="E"?"Extra cover":"Pre-start"}
+            {c==="W"?"Work":c==="WE"?"Work early":c==="WL"?"Work late":c==="O"?"Off":c==="R"?"Requested off":c==="L"?"Leave":c==="ML"?"Maternity leave":c==="E"?"Extra cover":"Pre-start"}
           </span>
         ))}
         <span style={{ display:"inline-flex", alignItems:"center", gap:6, marginLeft:8 }}>
@@ -5521,7 +5568,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                     sundaysInPeriod.forEach(d => {
                       const v = row[d.d];
                       if (v === "O" || v === "R" || v === "L") sundaysOff++;
-                      else if (v === "W" || v === "WL" || v === "E") sundaysWorked++;
+                      else if (v === "W" || v === "WE" || v === "WL" || v === "E") sundaysWorked++;
                     });
                     return (
                       <tr key={s.ec} style={{ borderBottom:"1px solid #FCE7F3" }}>
@@ -7923,7 +7970,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const getHint = (ec, d) => {
             const sv = bSched[ec] && bSched[ec][d];
             if (!sv) return null;
-            if (sv === "W" || sv === "WL") return "on";
+            if (sv === "W" || sv === "WE" || sv === "WL") return "on";
             if (sv === "O" || sv === "R")  return "off";
             if (sv === "L") return "al";
             if (sv === "X") return "term";
@@ -8091,7 +8138,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       ]);
       const techGrid = (tech && tech.grid) || {};
       const mgrGrid  = (mgr  && mgr.grid)  || {};
-      const isWorking = (v) => v === "W" || v === "WL" || v === "E";
+      const isWorking = (v) => v === "W" || v === "WE" || v === "WL" || v === "E";
       let count = 0;
       const mgrsScheduled = [];
       for (const ec in techGrid) {
@@ -13289,7 +13336,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             if (sv === "L") return "al";
             if (sv === "X") return "term";
             if (sv === "E") return "ext";
-            if (sv === "W" || sv === "WL") return "on";
+            if (sv === "W" || sv === "WE" || sv === "WL") return "on";
             return "";
           };
           const hasOverride = (ec, d) => {
@@ -13308,7 +13355,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             if (mirrorSuppressed) return null;        // hide schedule signal after a Total Reset
             const sv = attSched[ec] && attSched[ec][d];
             if (!sv) return null;
-            if (sv === "W" || sv === "WL") return "on";
+            if (sv === "W" || sv === "WE" || sv === "WL") return "on";
             if (sv === "O" || sv === "R")  return "off";
             if (sv === "L") return "al";
             if (sv === "X") return "term";
@@ -13973,7 +14020,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const rawHintFor = (ec, d) => {
               const sv = attSched[ec] && attSched[ec][d];
               if (!sv) return null;
-              if (sv === "W" || sv === "WL") return "on";
+              if (sv === "W" || sv === "WE" || sv === "WL") return "on";
               if (sv === "O" || sv === "R")  return "off";
               if (sv === "L") return "al";
               if (sv === "X") return "term";
