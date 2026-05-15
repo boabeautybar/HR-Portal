@@ -7631,6 +7631,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // ── Onboarding / Off-boarding state ────────────────────────────────
   const [obList, setObList] = useState([]);           // joiner records (3-month contract signers)
+  const [obFilter, setObFilter] = useState("recent"); // "recent" = last 31 days, "all" = every onboarded record
   const [trialList, setTrialList] = useState([]);     // trial period candidates (pre-contract)
   const [hrTasks, setHrTasks] = useState([]);         // HR Tasks (mocked for now)
   const [offList, setOffList] = useState([]);         // leaver records
@@ -12439,11 +12440,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
           const fmt = ymd => ymd ? new Date(ymd+"T00:00:00").toLocaleDateString("en-ZA",{day:"2-digit",month:"short",year:"numeric"}) : "";
           const daysFrom = ymd => Math.floor((t0 - new Date(ymd+"T00:00:00")) / 86400000);
-          
-          const active = obList.filter(r => r.startDate && daysFrom(r.startDate) <= 31);
-          const last30 = active.length;
+
+          const recentActive = obList.filter(r => r.startDate && daysFrom(r.startDate) <= 31);
+          const last30 = recentActive.length;
           const future = obList.filter(r => r.startDate && daysFrom(r.startDate) < 0).length;
-          
+          // Active list = what the grid below renders. Defaults to the
+          // "last 31 days" view so HR sees who they're actively chasing;
+          // flip to All to see every onboarded employee on record
+          // (including older starters that the recent filter hides — the
+          // reason Total Onboarded > 0 but the grid was empty).
+          const active = obFilter === "all" ? obList.slice() : recentActive;
+
           const grp = { "Nail Tech":[], "Manager":[], "Head Office":[], "Other":[] };
           for (const r of active) {
             if (r.branch === "Head Office")                                  grp["Head Office"].push(r);
@@ -12721,8 +12728,33 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 ))}
               </div>
 
+              {/* Filter chips: "Recent" (the chasable arrivals) vs "All"
+                  (every onboarded record). The Recent default keeps the
+                  view focused on the people HR still has open actions on;
+                  All is for browsing the full history. */}
+              <div style={{ display:"flex", gap:6, marginBottom:12, alignItems:"center" }}>
+                <span style={{ fontSize:10, fontWeight:800, color:"#831843", letterSpacing:"0.08em", textTransform:"uppercase", marginRight:4 }}>Show</span>
+                {[
+                  { v:"recent", l:"Recent (≤31 days)", n:last30 },
+                  { v:"all",    l:"All onboarded",      n:obList.length }
+                ].map(o => {
+                  const on = obFilter === o.v;
+                  return (
+                    <button key={o.v} onClick={() => setObFilter(o.v)}
+                      style={{ padding:"6px 12px", borderRadius:8, border: on ? "1px solid #BE185D" : "1px solid #FBCFE8", background: on ? "#BE185D" : "#fff", color: on ? "#fff" : "#831843", cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit", display:"flex", alignItems:"center", gap:6 }}>
+                      {o.l}
+                      <span style={{ background: on ? "rgba(255,255,255,0.22)" : "#FCE7F3", color: on ? "#fff" : "#BE185D", padding:"1px 6px", borderRadius:999, fontSize:10, fontWeight:700 }}>{o.n}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
               {active.length === 0 ? (
-                <div style={{ fontSize:13, color:"#9ca3af", padding:"30px 4px", textAlign:"center", border:"1px dashed #FBCFE8", borderRadius:11 }}>No new starters in the last 31 days yet.</div>
+                <div style={{ fontSize:13, color:"#9ca3af", padding:"30px 4px", textAlign:"center", border:"1px dashed #FBCFE8", borderRadius:11 }}>
+                  {obFilter === "recent" && obList.length > 0
+                    ? "No new starters in the last 31 days — but you have " + obList.length + " older onboarded employee" + (obList.length === 1 ? "" : "s") + ". Switch to ‘All onboarded’ to see them."
+                    : "No onboarded employees yet."}
+                </div>
               ) : (
                 [
                   { t:"Nail Tech",   l:"💅 Nail Techs",        c:"#F472B6" },
