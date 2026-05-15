@@ -45,7 +45,11 @@
       branch:        s.branch || "",
       contract:      s.contract || null,
       permit:        s.permit   || null,
-      permit_expiry: s.permitExpiry || null,
+      // permit_expiry: column not yet added to the `staff` Supabase table —
+      // including it here makes every save fail with a schema-cache error.
+      // Re-enable once the column is added; the read side already handles
+      // either case (missing column → null).
+      // permit_expiry: s.permitExpiry || null,
       notes:         s.notes    || null,
       is_shadow:     !!s.isShadow,
       transferring:  !!s.transferring,
@@ -88,7 +92,10 @@
       notes:         m.notes || null,
       contract:      m.contract || null,
       permit:        m.permit   || null,
-      permit_expiry: m.permitExpiry || null,
+      // permit_expiry: see note in staffToRow — column not yet in
+      // Supabase, kept out of the write payload to avoid schema-cache
+      // errors on save. Re-enable once the column is added.
+      // permit_expiry: m.permitExpiry || null,
       transferring:  !!m.transferring,
       transfer_to:   m.transferTo   || null,
       transfer_date: m.transferDate || null,
