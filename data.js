@@ -1031,8 +1031,13 @@
   // ---------- Maternity CRUD ----------
   async function saveMat(m) {
     var row = matToRow(m);
-    if (m.id) {
-      var u = await sb.from("maternity").update(row).eq("id", m.id).select().single();
+    // Accept either `id` or `_id` — rowToMat exposes both and some app
+    // code paths only carry `_id`. Without this fallback an existing-
+    // record update would silently degrade to an INSERT and either
+    // duplicate the row or trip a unique constraint.
+    var existingId = (m && (m.id != null ? m.id : m._id));
+    if (existingId != null) {
+      var u = await sb.from("maternity").update(row).eq("id", existingId).select().single();
       if (u.error) throw u.error;
       return rowToMat(u.data);
     }
