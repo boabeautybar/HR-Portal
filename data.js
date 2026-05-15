@@ -1031,18 +1031,42 @@
   // ---------- Maternity CRUD ----------
   async function saveMat(m) {
     var row = matToRow(m);
-    if (m.id) {
-      var u = await sb.from("maternity").update(row).eq("id", m.id).select().single();
-      if (u.error) throw u.error;
-      return rowToMat(u.data);
+    // Accept either id or _id — rowToMat exposes both and some sync code
+    // paths only carry _id. Without this, an update silently degraded to
+    // an INSERT.
+    var existingId = (m && (m.id != null ? m.id : m._id));
+    // Verbose context attached to any thrown error so the alert in
+    // app.jsx surfaces *what* went wrong (column missing, RLS, etc.)
+    // instead of an opaque 'Could not save'.
+    function decorate(err, mode) {
+      try {
+        var e = new Error(
+          "[mat " + mode + "] " +
+          (err && (err.message || err.hint || err.details) || "unknown error") +
+          (err && err.code ? " (code " + err.code + ")" : "")
+        );
+        e.cause = err;
+        e._payload = row;
+        e._id      = existingId;
+        return e;
+      } catch (_) { return err; }
     }
-    var i = await sb.from("maternity").insert(row).select().single();
-    if (i.error) throw i.error;
-    return rowToMat(i.data);
+    if (existingId != null) {
+      // .maybeSingle() instead of .single() — if RLS lets the UPDATE
+      // through but blocks the SELECT-after-update we still don't want
+      // the write to look like a failure to the user. Fall back to
+      // reconstructing the saved object from the input row.
+      var u = await sb.from("maternity").update(row).eq("id", existingId).select().maybeSingle();
+      if (u.error) { console.error("[BOA DB] saveMat update:", u.error, "payload:", row, "id:", existingId); throw decorate(u.error, "update"); }
+      return rowToMat(u.data || Object.assign({ id: existingId }, row));
+    }
+    var i = await sb.from("maternity").insert(row).select().maybeSingle();
+    if (i.error) { console.error("[BOA DB] saveMat insert:", i.error, "payload:", row); throw decorate(i.error, "insert"); }
+    return rowToMat(i.data || row);
   }
   async function deleteMat(id) {
     var r = await sb.from("maternity").delete().eq("id", id);
-    if (r.error) throw r.error;
+    if (r.error) { console.error("[BOA DB] deleteMat:", r.error, "id:", id); throw r.error; }
   }
 
   window.BOA_DB = {

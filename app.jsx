@@ -8783,11 +8783,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       .filter(s => s && s.ec && !s.offHidden && !(s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft > 0))
       .filter(s => !seenEcs.has(s.ec))
       .map(s => ({ ec: s.ec, name: s.name, branch: s.branch, role: "NT" }));
+    // Managers: include everyone with an EC. We DON'T filter out ECs
+    // already in matRecs here — the modal can flag those inline if
+    // needed, but the previous filter made the manager half of the
+    // picker look empty whenever every Sandown / Sea Point AM already
+    // had a mat record from an earlier seed import.
     const mgrs = (managers || [])
       .filter(m => m && m.ec)
-      .filter(m => !seenEcs.has(m.ec))
       .map(m => ({ ec: m.ec, name: m.name, branch: m.branch, role: m.role || "AM" }));
-    return [...mgrs, ...techs].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    const pool = [...mgrs, ...techs].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    // Log once when the pool changes so we can see in DevTools whether
+    // managers are actually arriving here.
+    try { console.log("matPickerPool size:", pool.length, "mgrs:", mgrs.length, "techs:", techs.length); } catch (_) {}
+    return pool;
   }, [enriched, managers, matRecs]);
 
   const stats = useMemo(() => {
@@ -8943,10 +8951,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }
   async function saveMat(f) {
     try {
+      console.log("saveMat input:", f);
       const saved = await window.BOA_DB.saveMat(f);
+      console.log("saveMat saved:", saved);
       setMatRecs(p => f._id !== undefined ? p.map(x => x._id === f._id ? saved : x) : [...p, saved]);
       setMatModal(null);
-    } catch (e) { alert("Could not save: " + (e.message || e)); }
+    } catch (e) {
+      console.error("saveMat failed:", e, "cause:", e && e.cause, "payload:", e && e._payload);
+      const detail =
+        (e && e.message) ? e.message :
+        (e && e.cause && e.cause.message) ? e.cause.message :
+        String(e);
+      alert("Could not save maternity record:\n\n" + detail + "\n\nOpen DevTools → Console for the full request payload.");
+    }
   }
   // Sync the maternity record store with what the staff / manager edit
   // modal just saved. The form carries matStatus + matStart + matReturn +
