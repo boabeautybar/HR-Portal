@@ -3158,6 +3158,13 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     weeks.forEach((week, wIdx) => {
       const sundayDay = week.find(d => d.dow === 0);
       if (!sundayDay) return;
+      // Skip the Sunday rotation entirely on closed Sundays — the
+      // closedDow pre-seed has already stamped everyone O on every
+      // Sunday EXCEPT the first one (which is the cross-store loan day
+      // and must stay W for all techs). Running the rotation here
+      // would otherwise mark half the team Sun=O on the first Sunday,
+      // contradicting the loan-day rule.
+      if (_closedDow.indexOf(0) !== -1) return;
       const sundayOffGroup = sundayDateParity(sundayDay);
       sortedTechs.forEach(s => {
         if (sundayGroup[s.ec] === sundayOffGroup) {
@@ -3887,6 +3894,24 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         stillUnhonoured.push(u);
       }
     });
+
+    // ── Closed-day branches: enforce the "off-days ONLY on closed DOWs" rule
+    // User rule for Betty (closedDow: [0, 1]): nail-tech off-days can ONLY
+    // fall on Sun or Mon — never Tue-Sat. The various autoFill phases above
+    // place O on other weekdays when they think a tech needs more rest or
+    // when coverage exceeds capacity. Sweep those back to W so the final
+    // schedule respects the rule, regardless of which phase placed them.
+    // Sunday cells stay untouched (the first-Sunday week intentionally
+    // leaves Sun blank → loaned out → set to W here).
+    if (_closedDow.length > 0) {
+      const _closedDowSetFinal = new Set(_closedDow);
+      for (const ec of Object.keys(newGrid)) {
+        for (const d of days) {
+          if (_closedDowSetFinal.has(d.dow)) continue;
+          if (newGrid[ec][d.d] === "O") newGrid[ec][d.d] = "W";
+        }
+      }
+    }
 
     setGrid(newGrid);
     setDirty(true);
