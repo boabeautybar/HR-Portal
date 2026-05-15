@@ -12226,10 +12226,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
                     {managers.filter(m=>m.branch==="Regional").sort((a,b)=>a.role===b.role?0:a.role==="SM"?-1:1).map(m=>(
                       <div key={m._id} style={{ display:"flex", alignItems:"center", gap:6, background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:8, padding:"6px 12px", opacity:m.onMat?0.55:1 }}>
-                        <span style={{ fontSize:13 }}>{m.onMat?"🤱":m.pregnant?"🤰":m.role==="SM"?"👑":"⭐"}</span>
+                        <span style={{ fontSize:13 }}>{m.onMat?"🤱":m.pregnant?"🤰":isSMRole(m.role)?"👑":"⭐"}</span>
                         <span style={{ fontSize:12, fontWeight:600, color:m.onMat?"#7A4258":"#374151" }}>{m.name}</span>
                         {m.notes&&<span style={{ fontSize:10, color:"#BE185D", fontStyle:"italic" }}>— {m.notes}</span>}
-                        <span style={{ fontSize:9, background:m.role==="SM"?"#ede9fe":"#e0f2fe", color:m.role==="SM"?"#7c3aed":"#0369a1", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>{m.role}</span>
+                        <span style={{ fontSize:9, background:isSMRole(m.role)?"#ede9fe":"#e0f2fe", color:isSMRole(m.role)?"#7c3aed":"#0369a1", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>{m.role}</span>
                         {m.onMat&&<span style={{ fontSize:9, color:"#8E5570", background:"#FBCFE8", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>mat.</span>}
                         {m.pregnant&&!m.onMat&&<span style={{ fontSize:9, color:"#8E5570", background:"#FCE7F3", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>🤰</span>}
                       </div>
@@ -12260,7 +12260,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const MIN_SM = 1, MIN_AM = 2;
 
           const branchMgrs = salon => plannerMgrs.filter(m => m.branch === salon && m.branch !== 'Regional');
-          const smCount  = salon => branchMgrs(salon).filter(m=>(m.role==="SM"||m.role==="SSM")&&!m.onMat).length;
+          // 'Store Manager' covers both SM and SSM (Senior Store Manager) —
+          // an SSM still occupies the store-manager slot, gets the crown
+          // icon, and counts toward the SM cover requirement. Without
+          // this match the SM render filter (==="SM") let an SSM count
+          // for cover but never render, so the slot showed empty.
+          const isSMRole = (r) => r === "SM" || r === "SSM";
+          const smCount  = salon => branchMgrs(salon).filter(m=>isSMRole(m.role)&&!m.onMat).length;
           const amCount  = salon => branchMgrs(salon).filter(m=>m.role==="AM"&&!m.onMat).length;
           const gapColor = salon => {
             if (smCount(salon) < MIN_SM) return "#dc2626";
@@ -12329,8 +12335,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <div key={m._id} draggable
                       onDragStart={()=>setDragMgr(m)}
                       style={{ display:"flex", alignItems:"center", gap:6, background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:8, padding:"5px 10px", cursor:"grab", fontSize:12, fontWeight:600, color:"#831843" }}>
-                      {m.role==="SM"?"👑":"⭐"} {m.name}
-                      <span style={{ fontSize:9, background:m.role==="SM"?"#ede9fe":"#e0f2fe", color:m.role==="SM"?"#7c3aed":"#0369a1", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>{m.role}</span>
+                      {isSMRole(m.role)?"👑":"⭐"} {m.name}
+                      <span style={{ fontSize:9, background:isSMRole(m.role)?"#ede9fe":"#e0f2fe", color:isSMRole(m.role)?"#7c3aed":"#0369a1", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>{m.role}</span>
                     </div>
                   ))}
                   {plannerMgrs.filter(m=>m.branch==="__bench__").length===0&&<span style={{ color:"#cbd5e1", fontSize:12, fontStyle:"italic" }}>Empty — drag a manager here to bench them</span>}
@@ -12341,8 +12347,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))", gap:12 }}>
                 {SALONS.map(salon=>{
                   const mgrs = branchMgrs(salon.name);
-                  const sms = mgrs.filter(m=>m.role==="SM");
-                  const ams = mgrs.filter(m=>m.role==="AM");
+                  // SM bucket includes SSM (Senior Store Manager); AM bucket
+                  // includes anyone who isn't an SM-tier role — that catches
+                  // legacy 'Manager', 'AAM', etc. role labels too, so a
+                  // manager with a typo'd role still surfaces somewhere.
+                  const sms = mgrs.filter(m=>isSMRole(m.role));
+                  const ams = mgrs.filter(m=>!isSMRole(m.role));
                   const missSM = Math.max(0, MIN_SM - sms.length);
                   const missAM = Math.max(0, MIN_AM - ams.length);
                   const col = gapColor(salon.name);
@@ -12363,7 +12373,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         {/* SM slots */}
                         <div style={{ marginBottom:6 }}>
                           <div style={{ fontSize:9, fontWeight:800, color:"#BE185D", marginBottom:4 }}>STORE MANAGER</div>
-                          {plannerMgrs.filter(m=>m.branch===salon.name&&m.role==="SM").map(m=>(
+                          {plannerMgrs.filter(m=>m.branch===salon.name&&isSMRole(m.role)).map(m=>(
                             <div key={m._id} draggable={!m.onMat} onDragStart={()=>!m.onMat&&setDragMgr(m)}
                               style={{ display:"flex", alignItems:"center", gap:6, background:m.onMat?"#fdf4ff":"#faf5ff", border:`1px solid ${m.onMat?"#fbcfe8":"#e9d5ff"}`, borderRadius:7, padding:"4px 8px", marginBottom:3, cursor:m.onMat?"default":"grab", fontSize:11, fontWeight:600, opacity:m.onMat?0.55:1 }}>
                               {m.onMat?"🤱":"👑"} <span style={{ flex:1, fontStyle:m.onMat?"italic":"normal", color:m.onMat?"#7A4258":"inherit" }}>{m.name}</span>
@@ -12380,7 +12390,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         {/* AM slots */}
                         <div>
                           <div style={{ fontSize:9, fontWeight:800, color:"#BE185D", marginBottom:4 }}>ASSISTANT MANAGERS ({ams.length}/{MIN_AM} min)</div>
-                          {plannerMgrs.filter(m=>m.branch===salon.name&&m.role==="AM").map(m=>(
+                          {plannerMgrs.filter(m=>m.branch===salon.name&&!isSMRole(m.role)).map(m=>(
                             <div key={m._id} draggable={!m.onMat} onDragStart={()=>!m.onMat&&setDragMgr(m)}
                               style={{ display:"flex", alignItems:"center", gap:6, background:m.onMat?"#fdf4ff":"#f0f9ff", border:`1px solid ${m.onMat?"#fbcfe8":"#bae6fd"}`, borderRadius:7, padding:"4px 8px", marginBottom:3, cursor:m.onMat?"default":"grab", fontSize:11, fontWeight:500, opacity:m.onMat?0.55:1 }}>
                               {m.onMat?"🤱":"⭐"} <span style={{ flex:1, color:m.onMat?"#7A4258":"#475569", fontStyle:m.onMat?"italic":"normal" }}>{m.name}</span>
