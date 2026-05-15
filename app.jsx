@@ -502,17 +502,40 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
 
   // Filter managers for this branch + cycle (skip future-onboarding, skip
   // anyone who left before the cycle started).
-  const f = allManagers.filter(h => {
+  const fAll = allManagers.filter(h => {
     if (h.branch !== branchName) return false;
     if (h._onboarding && h._startDate && h._startDate > cycleEnd) return false;
     if (h.leftDate && h.leftDate < cycleStartYmd) return false;
     return true;
   });
-  if (f.length === 0) {
+  // Scheduling pool excludes anyone currently on maternity. The grid still
+  // renders a row for them (with every cell as 'ML') so the manager team
+  // sees who's away, but every shift-assignment / coverage loop below uses
+  // `f` and pretends maternity people don't exist.
+  const f = fAll.filter(h => !h._onMat);
+  if (fAll.length === 0) {
     return { managers: [], dates, grid: {}, conflicts: [{ type:"no_managers", msg:"No managers at " + branchName, severity:"high" }],
       dayTotals: {}, branch: branchName, cycleStart: cycleStartYmd, cycleEnd, weekOrder: [], weeksMap: {} };
   }
+  if (f.length === 0) {
+    // Every manager at this branch is on maternity - render an ML-only grid
+    // and surface a conflict so the user knows nobody can be scheduled.
+    const matGrid = {};
+    for (const h of fAll) { matGrid[h.ec] = {}; for (const x of dates) matGrid[h.ec][x.d] = "ML"; }
+    return { managers: fAll, dates, grid: matGrid, conflicts: [{ type:"no_active_managers", msg:"All managers at " + branchName + " are on maternity leave.", severity:"high" }],
+      dayTotals: {}, branch: branchName, cycleStart: cycleStartYmd, cycleEnd, weekOrder: [], weeksMap: {} };
+  }
   const m = f.length;
+  // Small-team coverage threshold (per-day function):
+  //   - 3+ managers AVAILABLE that day (none on leave/mat) → require >=2 working.
+  //   - 2 or fewer available (true 2-mgr store, OR 3-mgr store where one is
+  //     on leave/maternity that day)               → allow 1 working.
+  // The 6-consecutive-day cap and 2-off-per-week rule take priority over
+  // keeping 2 mgrs on duty when the available team has dropped to 2.
+  const _minCoverageFor = (ymd) => {
+    const activeToday = m - (W[ymd] && W[ymd].leave ? W[ymd].leave : 0);
+    return activeToday >= 3 ? 2 : 1;
+  };
 
   // ISO week mapping
   const wkOf = ymd => {
@@ -549,6 +572,25 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
   for (const r of requests || []) {
     if (grid[r.ec] && grid[r.ec][r.date] == null) {
       grid[r.ec][r.date] = "R"; W[r.date].off++;
+    }
+  }
+
+  // ── Store-closed days ─────────────────────────────────────────────
+  // Some branches are closed on fixed weekdays (e.g. Betty is closed Sun+Mon).
+  // Every manager at those branches is off on those days, always. We seed
+  // those cells as "O" before the rest of the solver runs so they consume
+  // the per-week off budget and block any working-day placement.
+  const _salonCfg = (typeof SALONS !== "undefined") ? SALONS.find(s => s && s.name === branchName) : null;
+  const closedDow = (_salonCfg && Array.isArray(_salonCfg.closedDow)) ? _salonCfg.closedDow : [];
+  if (closedDow.length) {
+    const closedSet = new Set(closedDow.map(Number));
+    for (const x of dates) {
+      if (!closedSet.has(x.dow)) continue;
+      for (const h of f) {
+        if (grid[h.ec][x.d] == null) {
+          grid[h.ec][x.d] = "O"; W[x.d].off++;
+        }
+      }
     }
   }
 
@@ -619,9 +661,15 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
   for (let i = 0; i < dates.length-1; i++) {
     if (dates[i].dow === 6 && dates[i+1].dow === 0) allWePairs.push([dates[i], dates[i+1]]);
   }
-  const ordered = [...f].sort((a,b) => (a.role==="SM"?0:1)-(b.role==="SM"?0:1));
+  const _isStoreTier = (r) => r === "SM" || r === "SSM";
+  // Branches with fixed closed days (e.g. Betty: Sun+Mon) already give every
+  // manager a guaranteed multi-day off-block every week. Skip the Sat+Sun
+  // pairing pass entirely — trying to add a Sat+Sun pair would blow the 2-off
+  // weekly cap (closed days already consume it).
+  const _skipWePair = closedDow.length > 0;
+  const ordered = _skipWePair ? [] : [...f].sort((a,b) => (_isStoreTier(a.role)?0:1) - (_isStoreTier(b.role)?0:1));
   for (const h of ordered) {
-    const need = h.role === "SM" ? 2 : 1;
+    const need = _isStoreTier(h.role) ? 2 : 1;
     let have = wePairs(h);
     if (have >= need) continue;
     let candidates = allWePairs.filter(([fr,sa]) =>
@@ -764,21 +812,26 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
       }
       const { days, need } = weeksToFill[i];
       // Generate candidate combinations
+      // Small-team rule: stores with exactly 2 managers (total) are allowed
+      // to run with 1 mgr on duty so the 6-consec cap and 2-off-per-week
+      // rule can both be honoured. 3+ manager stores always require >=2
+      // working, even when one is on leave (those cases surface as
+      // conflicts for manual review).
       const candidates = [];
       if (need === 2) {
         for (let a = 0; a < days.length; a++) {
           if (grid[h.ec][days[a].d] != null) continue;
-          if ((m - W[days[a].d].off - W[days[a].d].leave - 1) < 2) continue;
+          if ((m - W[days[a].d].off - W[days[a].d].leave - 1) < _minCoverageFor(days[a].d)) continue;
           for (let b = a + 1; b < days.length; b++) {
             if (grid[h.ec][days[b].d] != null) continue;
-            if ((m - W[days[b].d].off - W[days[b].d].leave - 1) < 2) continue;
+            if ((m - W[days[b].d].off - W[days[b].d].leave - 1) < _minCoverageFor(days[b].d)) continue;
             candidates.push([days[a], days[b]]);
           }
         }
       } else {
         for (const d of days) {
           if (grid[h.ec][d.d] != null) continue;
-          if ((m - W[d.d].off - W[d.d].leave - 1) < 2) continue;
+          if ((m - W[d.d].off - W[d.d].leave - 1) < _minCoverageFor(d.d)) continue;
           candidates.push([d]);
         }
       }
@@ -827,7 +880,8 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
         for (const d of wt.days) {
           if (need <= 0) break;
           if (grid[h.ec][d.d] != null) continue;
-          if ((m - W[d.d].off - W[d.d].leave - 1) < 2) continue;
+          // Same small-team rule as the backtracker.
+          if ((m - W[d.d].off - W[d.d].leave - 1) < _minCoverageFor(d.d)) continue;
           grid[h.ec][d.d] = "O";
           W[d.d].off++;
           offWk[h.ec][wkOfDay[d.d]]++;
@@ -882,7 +936,9 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
           // OLD restricts targets to the SAME ISO WEEK as the source-O.
           if (wkOfDay[dates[ix].d] !== srcWk) continue;
           const wb = m - W[dates[ix].d].off - W[dates[ix].d].leave;
-          if (wb - 1 < 2) continue;                         // target's coverage
+          // Small-team rule: 2 or fewer available that day (true 2-mgr
+          // store, or 3-mgr store with one on leave) allows 1-mgr days.
+          if (wb - 1 < _minCoverageFor(dates[ix].d)) continue;  // target's coverage
           // Try the swap, measure new max run, revert
           const oldSrc = grid[h.ec][dates[src].d];
           const oldTgt = grid[h.ec][dates[ix].d];
@@ -968,7 +1024,11 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
           const cur = grid[h.ec][dy.d];
           if (cur !== "W") continue;
           if (pairLocked[h.ec].has(dy.d)) continue;
-          if ((m - W[dy.d].off - W[dy.d].leave - 1) < 2) continue;
+          // Small-team rule applied per-day. Rollover/partial weeks
+          // honour the same 2-off cap as full weeks via offWk +
+          // partialCarry, so the rules apply uniformly across the
+          // cycle boundary.
+          if ((m - W[dy.d].off - W[dy.d].leave - 1) < _minCoverageFor(dy.d)) continue;
           grid[h.ec][dy.d] = "O";
           const mx = longestWRun(h.ec);
           grid[h.ec][dy.d] = "W";
@@ -1028,7 +1088,8 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
             }
           }
           const wb = m - W[dates[ix].d].off - W[dates[ix].d].leave;
-          if (wb - 1 < 2) continue;
+          // Small-team rule applied per-day.
+          if (wb - 1 < _minCoverageFor(dates[ix].d)) continue;
           const oS = grid[h.ec][dates[src].d];
           const oT = grid[h.ec][dates[ix].d];
           grid[h.ec][dates[src].d] = "W";
@@ -1063,7 +1124,8 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
         const carryT = partialCarry(h.ec, tgtWk);
         if (offWk[h.ec][tgtWk] + carryT >= 2) continue;
         const wb = m - W[dates[ix].d].off - W[dates[ix].d].leave;
-        if (wb - 1 < 2) continue;
+        // Small-team rule applied per-day.
+        if (wb - 1 < _minCoverageFor(dates[ix].d)) continue;
         grid[h.ec][dates[ix].d] = "O";
         W[dates[ix].d].working--; W[dates[ix].d].off++; offWk[h.ec][wkOfDay[dates[ix].d]]++;
         inserted = true;
@@ -1089,7 +1151,10 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
   const conflicts = [];
   for (const x of dates) {
     const w = dayTotals[x.d].working;
-    if (w < 2) conflicts.push({ type:"solo_or_empty", msg: x.d + ": only " + w + " manager(s) working", severity:"high", date: x.d });
+    // Small-team rule applied per-day: a true 2-mgr store, or a 3-mgr store
+    // where one is on leave that day, may run with a single mgr — don't
+    // flag those as 'solo' conflicts. 3+ mgrs available → require >=2.
+    if (w < _minCoverageFor(x.d)) conflicts.push({ type:"solo_or_empty", msg: x.d + ": only " + w + " manager(s) working", severity:"high", date: x.d });
   }
   // Map of managers who submitted off-day requests this cycle. A request
   // can overrule the guaranteed weekend pair (the request takes priority,
@@ -1097,9 +1162,12 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
   const hasReq = new Set();
   for (const r of (requests || [])) if (r && r.ec) hasReq.add(r.ec);
   for (const h of f) {
-    const need = h.role === "SM" ? 2 : 1;
+    const need = (h.role === "SM" || h.role === "SSM") ? 2 : 1;
     const have = wePairs(h);
-    if (have < need && !hasReq.has(h.ec)) conflicts.push({ type:"short_weekend", msg: h.name + " has " + have + " weekend(s) off (target " + need + ")", severity:"medium", ec: h.ec });
+    // Skip the Sat+Sun pair conflict on branches with fixed closed days —
+    // every manager already has a guaranteed weekly off-block from the
+    // store-closed seed (e.g. Betty: Sun+Mon).
+    if (!_skipWePair && have < need && !hasReq.has(h.ec)) conflicts.push({ type:"short_weekend", msg: h.name + " has " + have + " weekend(s) off (target " + need + ")", severity:"medium", ec: h.ec });
     for (const w of wkOrder) {
       if (wkMap[w].length < 7) continue;
       if (offWk[h.ec][w] < 2) conflicts.push({ type:"short_off_week", msg: h.name + " has " + offWk[h.ec][w] + " off in " + w + " (target 2)", severity:"medium", ec: h.ec, week: w });
@@ -1146,7 +1214,17 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
       if (grid[h.ec]) for (const x of dates) if (x.d < h._startDate) grid[h.ec][x.d] = "X";
     }
   }
-  return { managers: f, dates, grid, conflicts, dayTotals, branch: branchName, cycleStart: cycleStartYmd, cycleEnd, weekOrder: wkOrder, weeksMap: wkMap };
+  // Seed grid rows for on-mat managers (they were not in `f` so the
+  // grid-init loop above didn't create their row). Every day shows 'ML'
+  // so the schedule grid renders a greyed maternity-leave band for them.
+  for (const h of fAll) {
+    if (!h._onMat) continue;
+    if (!grid[h.ec]) grid[h.ec] = {};
+    for (const x of dates) grid[h.ec][x.d] = "ML";
+  }
+  // Return fAll (not f) so on-mat managers appear on the rendered
+  // schedule. Their row is greyed via _onMat and every cell reads 'ML'.
+  return { managers: fAll, dates, grid, conflicts, dayTotals, branch: branchName, cycleStart: cycleStartYmd, cycleEnd, weekOrder: wkOrder, weeksMap: wkMap };
 }
 
 
@@ -1251,7 +1329,7 @@ const SALONS = [
   { name:"Sandown",         mani:9,  pedi:7,  capacity:18, region:"wc" },
   { name:"Cape Gate",       mani:9,  pedi:7,  capacity:18, region:"wc" },
   { name:"Winelands",       mani:9,  pedi:7,  capacity:18, region:"wc" },
-  { name:"Betty",           mani:9,  pedi:7,  capacity:18, targetCapacity:10, lowDemand:true, region:"wc" },
+  { name:"Betty",           mani:9,  pedi:7,  capacity:18, targetCapacity:10, lowDemand:true, region:"wc", closedDow:[0,1] },
 ];
 
 // Shared region metadata for the Locations filter and the Add Location form.
@@ -1362,10 +1440,16 @@ const COMPLIANCE = {
 //   "returned"  = back at work → fully active
 //   "sick_leave"= on sick leave
 const MAT_STATUS = {
-  on_mat:    { label:"On Maternity Leave", icon:"🤱", color:"#8E5570", bg:"#fce7f3", border:"#fbcfe8" },
-  pregnant:  { label:"Pregnant – At Work", icon:"🤰", color:"#8E5570", bg:"#fef3c7", border:"#fde68a" },
-  returned:  { label:"Back at Work",       icon:"✅",  color:"#8E5570", bg:"#d1fae5", border:"#6ee7b7" },
-  sick_leave:{ label:"Sick Leave",         icon:"🏥",  color:"#8E5570", bg:"#dbeafe", border:"#93c5fd" },
+  on_mat:    { label:"On Maternity Leave",       icon:"🤱", color:"#8E5570", bg:"#fce7f3", border:"#fbcfe8" },
+  // 'dates_tbc' = on maternity but we don't know start / end / return yet.
+  // Treated the same as on_mat for every exclusion (active count, store
+  // counts, schedule generation, kiosk roster) so the person is firmly
+  // 'away'; just rendered with the ⏳ icon and amber palette to flag the
+  // missing dates as something HR needs to chase.
+  dates_tbc: { label:"Maternity — Dates TBC",    icon:"⏳", color:"#7c2d12", bg:"#fef3c7", border:"#fde68a" },
+  pregnant:  { label:"Pregnant – At Work",       icon:"🤰", color:"#8E5570", bg:"#fef3c7", border:"#fde68a" },
+  returned:  { label:"Back at Work",             icon:"✅",  color:"#8E5570", bg:"#d1fae5", border:"#6ee7b7" },
+  sick_leave:{ label:"Sick Leave",               icon:"🏥",  color:"#8E5570", bg:"#dbeafe", border:"#93c5fd" },
 };
 
 
@@ -1812,11 +1896,21 @@ function Meter({ current, capacity, goal, lowDemand }) {
 }
 
 // ─── MATERNITY MODAL ─────────────────────────────────────────────────────────────
-function MatModal({ rec, onClose, onSave, onDelete }) {
+function MatModal({ rec, onClose, onSave, onDelete, people }) {
   const [f, setF] = useState({ ...rec });
+  const [search, setSearch] = useState("");
   const set = (k,v) => setF(p=>({...p,[k]:v}));
   const inp = { width:"100%", padding:"8px 11px", borderRadius:8, border:"1px solid #FBCFE8", background:"#FCE7F3", fontFamily:"inherit", fontSize:13, boxSizing:"border-box" };
   const lbl = { display:"block", fontSize:10, fontWeight:700, color:"#BE185D", letterSpacing:"0.08em", marginBottom:4, textTransform:"uppercase" };
+  const isNew = !rec._id;
+  // Lookup pool for new records: techs + managers. Match by name OR EC, up
+  // to 10 results. Picking auto-fills EC, name and branch so the record
+  // links back to the existing staff row cleanly.
+  const pool = (people || []).filter(p => p && p.ec);
+  const q = (search || "").trim().toLowerCase();
+  const matches = !q ? [] : pool
+    .filter(p => (p.name || "").toLowerCase().includes(q) || (p.ec || "").toLowerCase().includes(q))
+    .slice(0, 10);
   return (
     <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.55)", zIndex:300, display:"flex", alignItems:"center", justifyContent:"center", padding:16 }}
       onClick={e=>e.target===e.currentTarget&&onClose()}>
@@ -1829,8 +1923,52 @@ function MatModal({ rec, onClose, onSave, onDelete }) {
         {/* Status explanation */}
         <div style={{ background:"#FCE7F3", border:"1px solid #fde68a", borderRadius:10, padding:"10px 14px", marginBottom:16, fontSize:12, color:"#831843", lineHeight:1.5 }}>
           <strong>🤰 Pregnant</strong> = still working in the store, counts toward staffing.<br/>
-          <strong>🤱 On Maternity Leave</strong> = not in the store, <em>excluded</em> from the store's active count.
+          <strong>🤱 On Maternity Leave</strong> = not in the store, <em>excluded</em> from the store's active count + the schedule (marked ML).
         </div>
+
+        {/* Staff lookup — only on new records. Searches techs + managers
+            and auto-fills EC / name / branch so the record links back to
+            the staff row. Manual fields below stay editable. */}
+        {isNew && (
+          <div style={{ background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:10, padding:"12px 14px", marginBottom:14 }}>
+            <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#78350F", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:6 }}>Pick from existing staff</label>
+            <input
+              type="text"
+              autoFocus
+              value={search}
+              onChange={e=>setSearch(e.target.value)}
+              placeholder={"Search " + pool.length + " people by name or EC…"}
+              style={{ width:"100%", padding:"9px 11px", border:"1px solid #FDE68A", borderRadius:8, fontSize:14, fontFamily:"inherit", boxSizing:"border-box" }}
+            />
+            {q && (
+              <div style={{ marginTop:8, maxHeight:220, overflowY:"auto", border:"1px solid #FDE68A", borderRadius:8, background:"#fff" }}>
+                {matches.length === 0 ? (
+                  <div style={{ padding:"10px 12px", fontSize:12, color:"#9ca3af", fontStyle:"italic" }}>No matches.</div>
+                ) : matches.map(p => (
+                  <div key={(p.ec || "") + "_" + (p.role || "tech")}
+                    onClick={()=>{ setF({ ...f, ec: p.ec, name: p.name || "", branch: p.branch || (SALONS[0] && SALONS[0].name) || "" }); setSearch(""); }}
+                    style={{ padding:"8px 12px", borderBottom:"1px solid #FEF3C7", cursor:"pointer", display:"flex", alignItems:"center", gap:10 }}
+                    onMouseEnter={e=>e.currentTarget.style.background="#FEF3C7"}
+                    onMouseLeave={e=>e.currentTarget.style.background="#fff"}
+                  >
+                    <span style={{ fontSize:11, fontFamily:"monospace", color:"#92400e", fontWeight:700, minWidth:42 }}>{p.ec}</span>
+                    <span style={{ flex:1, fontSize:13, color:"#111827", fontWeight:600 }}>{p.name}</span>
+                    <span style={{ fontSize:11, color:"#6b7280" }}>📍 {p.branch || "—"}</span>
+                    <span style={{ fontSize:9, fontWeight:700, padding:"1px 6px", borderRadius:99, background:p.role==="NT"?"#FCE7F3":"#ede9fe", color:p.role==="NT"?"#831843":"#7c3aed" }}>{p.role==="NT" ? "Tech" : (p.role || "Mgr")}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {f.ec && !q && (
+              <div style={{ marginTop:8, padding:"8px 12px", background:"#FEF3C7", borderRadius:8, fontSize:12, color:"#78350F" }}>
+                Selected: <b style={{ fontFamily:"monospace" }}>{f.ec}</b> · {f.name} · 📍 {f.branch}
+                <button type="button" onClick={()=>{ setF({ ...f, ec:"", name:"", branch: (SALONS[0] && SALONS[0].name) || "" }); }}
+                  style={{ marginLeft:10, background:"transparent", border:"none", color:"#92400e", cursor:"pointer", fontWeight:700, fontSize:11, textDecoration:"underline" }}
+                >clear</button>
+              </div>
+            )}
+          </div>
+        )}
 
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:13 }}>
           <div><label style={lbl}>EC Code</label><input style={inp} value={f.ec} onChange={e=>set("ec",e.target.value)} placeholder="e.g. B585" /></div>
@@ -1845,6 +1983,7 @@ function MatModal({ rec, onClose, onSave, onDelete }) {
             <label style={lbl}>Status</label>
             <select style={inp} value={f.matStatus} onChange={e=>set("matStatus",e.target.value)}>
               <option value="on_mat">🤱 On Maternity Leave (excluded from count)</option>
+              <option value="dates_tbc">⏳ Maternity — Dates TBC (excluded; dates pending)</option>
               <option value="pregnant">🤰 Pregnant – Still at Work (counted in)</option>
               <option value="returned">✅ Returned to Work</option>
               <option value="sick_leave">🏥 Sick Leave</option>
@@ -1868,7 +2007,7 @@ function MatModal({ rec, onClose, onSave, onDelete }) {
 }
 
 // ─── STAFF MODAL ──────────────────────────────────────────────────────────────────
-function StaffModal({ s, onClose, onSave, onTransfer, allStaff }) {
+function StaffModal({ s, onClose, onSave, onTransfer, allStaff, isOwner, onHardDelete }) {
   // Split existing "name" into firstName / surname for the form. New records
   // start blank. Combined back into `name` on save.
   const splitName = (full) => {
@@ -1972,14 +2111,35 @@ function StaffModal({ s, onClose, onSave, onTransfer, allStaff }) {
                 </label>
               ))}
             </div>
+            {/* Expiry date - only relevant for asylum / work permit. Lets HR
+                surface anyone whose doc is about to lapse via the Compliance
+                'Expiring soon' panel. */}
+            {(f.permit === "asylum" || f.permit === "work_permit") && (
+              <div style={{ marginTop:10 }}>
+                <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>
+                  {f.permit === "asylum" ? "Asylum document expiry" : "Work permit expiry"}
+                </label>
+                <input type="date" value={f.permitExpiry || ""} onChange={e=>set("permitExpiry", e.target.value || null)}
+                  style={{ width:"100%", padding:"8px 11px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:13, fontFamily:"inherit", background:"#FCE7F3" }} />
+              </div>
+            )}
           </div>
         </div>
-        <div style={{ display:"flex", gap:10, marginTop:22, justifyContent:"space-between", alignItems:"center" }}>
+        <div style={{ display:"flex", gap:10, marginTop:22, justifyContent:"space-between", alignItems:"center", flexWrap:"wrap" }}>
           {s._id !== undefined && (
-            <button onClick={()=>{ onClose(); onTransfer(s); }}
-              style={{ padding:"9px 16px", borderRadius:9, border:"none", background:"#BE185D", color:"#fff", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
-              🔄 Transfer Branch
-            </button>
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+              <button onClick={()=>{ onClose(); onTransfer(s); }}
+                style={{ padding:"9px 16px", borderRadius:9, border:"none", background:"#BE185D", color:"#fff", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
+                🔄 Transfer Branch
+              </button>
+              {isOwner && onHardDelete && (
+                <button onClick={()=>onHardDelete(s)}
+                  title="Hard delete — owner only. Removes the record entirely; bypasses off-boarding."
+                  style={{ padding:"9px 16px", borderRadius:9, border:"1px solid #fecaca", background:"#fff", color:"#7f1d1d", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
+                  🗑 Delete (owner)
+                </button>
+              )}
+            </div>
           )}
           <div style={{ display:"flex", gap:10, marginLeft:"auto" }}>
             <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:9, border:"1px solid #FBCFE8", background:"#FFFFFF", cursor:"pointer", fontFamily:"inherit", fontSize:13 }}>Cancel</button>
@@ -2116,7 +2276,12 @@ function TransferModal({ s, onClose, onConfirm, onCancelTransfer }) {
 // ─── MANAGER MODAL ────────────────────────────────────────────────────────────────
 function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
   const [f, setF] = useState(m);
-  const [pinInput, setPinInput] = useState(pin || "");
+  // Auto-generate a random 6-digit clock-in PIN for brand-new managers so
+  // the owner doesn't have to think one up. Existing managers keep their
+  // saved PIN. The PIN is still editable in the input below either way.
+  const _randomPin = () => String(Math.floor(100000 + Math.random() * 900000));
+  const _initPin = (m && m._id !== undefined) ? (pin || "") : (pin || _randomPin());
+  const [pinInput, setPinInput] = useState(_initPin);
   const set = (k,v) => setF(p=>({...p,[k]:v}));
   const inp = { width:"100%", padding:"8px 11px", borderRadius:8, border:"1px solid #FBCFE8", background:"#FCE7F3", fontFamily:"inherit", fontSize:13, color:"#111827", boxSizing:"border-box" };
   const lbl = { display:"block", fontSize:10, fontWeight:700, color:"#BE185D", letterSpacing:"0.08em", marginBottom:4, textTransform:"uppercase" };
@@ -2144,6 +2309,7 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
             </div>
             <div><label style={lbl}>Role</label>
               <select style={inp} value={f.role} onChange={e=>set("role",e.target.value)}>
+                <option value="SSM">💎 Senior Store Manager (SSM)</option>
                 <option value="SM">👑 Store Manager (SM)</option>
                 <option value="AM">⭐ Assistant Manager (AM)</option>
               </select>
@@ -2151,18 +2317,58 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
           </div>
           <div><label style={lbl}>Notes</label>
             <input style={inp} value={f.notes||""} onChange={e=>set("notes",e.target.value)} placeholder="e.g. Transfer from Sandown, Pregnant..." /></div>
+
+          {/* Compliance / work-permit status. Same options the staff modal
+              uses; persists to the same `permit` column on the staff row. */}
           <div>
-            <label style={lbl}>Personal Clock-in PIN <span style={{ fontWeight:500, color:"#9CA3AF", letterSpacing:0, textTransform:"none", marginLeft:4 }}>(6 digits — used in the check-in app)</span></label>
-            <input
-              style={{ ...inp, fontFamily:"monospace", letterSpacing:"0.2em", fontSize:14 }}
-              value={pinInput}
-              maxLength={6}
-              inputMode="numeric"
-              placeholder="6-digit PIN"
-              onChange={e=>setPinInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
-            />
+            <label style={lbl}>Compliance / Work Permit</label>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))", gap:8 }}>
+              <label style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 10px", borderRadius:8, border:`1.5px solid ${!f.permit?"#F472B6":"#e5e7eb"}`, background:!f.permit?"#fdf2f8":"#f9fafb", cursor:"pointer" }}>
+                <input type="radio" checked={!f.permit} onChange={()=>set("permit", null)} style={{ display:"none" }} />
+                <span style={{ fontSize:16 }}>❔</span>
+                <span style={{ fontSize:11, fontWeight:700, color:!f.permit?"#831843":"#6b7280" }}>Not set</span>
+              </label>
+              {Object.entries(COMPLIANCE).map(([k,c])=>(
+                <label key={k} style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 10px", borderRadius:8, border:`1.5px solid ${f.permit===k?c.border:"#e5e7eb"}`, background:f.permit===k?c.bg:"#f9fafb", cursor:"pointer" }}>
+                  <input type="radio" checked={f.permit===k} onChange={()=>set("permit",k)} style={{ display:"none" }} />
+                  <span style={{ fontSize:16 }}>{c.icon}</span>
+                  <span style={{ fontSize:11, fontWeight:700, color:f.permit===k?c.color:"#831843" }}>{c.label}</span>
+                </label>
+              ))}
+            </div>
+            {/* Expiry date - only relevant for asylum / work permit. Feeds
+                the Compliance tab's 'Expiring soon' panel. */}
+            {(f.permit === "asylum" || f.permit === "work_permit") && (
+              <div style={{ marginTop:10 }}>
+                <label style={lbl}>{f.permit === "asylum" ? "Asylum document expiry" : "Work permit expiry"}</label>
+                <input type="date" value={f.permitExpiry || ""} onChange={e=>set("permitExpiry", e.target.value || null)} style={inp} />
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label style={lbl}>Personal Clock-in PIN <span style={{ fontWeight:500, color:"#9CA3AF", letterSpacing:0, textTransform:"none", marginLeft:4 }}>(6 digits — used in the check-in app{isNew && pinInput ? " · auto-generated" : ""})</span></label>
+            <div style={{ display:"flex", gap:6 }}>
+              <input
+                style={{ ...inp, fontFamily:"monospace", letterSpacing:"0.2em", fontSize:14, flex:1 }}
+                value={pinInput}
+                maxLength={6}
+                inputMode="numeric"
+                placeholder="6-digit PIN"
+                onChange={e=>setPinInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              />
+              <button type="button" onClick={()=>setPinInput(_randomPin())}
+                title="Generate a fresh random 6-digit PIN"
+                style={{ padding:"0 12px", borderRadius:8, border:"1px solid #FBCFE8", background:"#FFFFFF", color:"#831843", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700, whiteSpace:"nowrap" }}
+              >🎲 Random</button>
+            </div>
             {pinInput && pinInput.length !== 6 && (
               <div style={{ fontSize:11, color:"#dc2626", marginTop:4 }}>PIN must be exactly 6 digits (or empty to clear).</div>
+            )}
+            {isNew && pinInput.length === 6 && (
+              <div style={{ fontSize:11, color:"#92400e", marginTop:6, background:"#fef3c7", border:"1px solid #fde68a", borderRadius:6, padding:"6px 10px" }}>
+                💡 Share this PIN with the manager — they'll type it into the check-in kiosk to confirm their attendance. Resettable later from Admin → Manager PINs.
+              </div>
             )}
           </div>
           <div><label style={lbl}>Start Date {f.startDate && (() => {
@@ -2174,17 +2380,22 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
             <input type="date" style={inp} value={f.startDate||""} onChange={e=>set("startDate",e.target.value||null)} />
           </div>
           <div><label style={lbl}>Contract</label>
-            <select style={inp} value={f.contract} onChange={e=>set("contract",e.target.value)}>
-              <option>Permanent</option><option>Fixed Term</option><option>3 Month</option>
+            <select style={inp} value={f.contract || ""} onChange={e=>set("contract",e.target.value)}>
+              <option value="">— Not set —</option>
+              <option>Permanent</option>
+              <option>Fixed Term</option>
+              <option>3 Month</option>
+              <option value="NO CONTRACT">NO CONTRACT</option>
             </select>
           </div>
           <div style={{ gridColumn:"1/-1" }}>
             <label style={{ ...lbl, marginBottom:8 }}>Maternity Status</label>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:10 }}>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))", gap:8, marginBottom:10 }}>
               {[
                 { val:"active",    icon:"✅", label:"Active",           desc:"Working normally",              border:"#86efac", bg:"#f0fdf4", col:"#15803d" },
                 { val:"pregnant",  icon:"🤰", label:"Pregnant",         desc:"Still at work, leave upcoming", border:"#fde68a", bg:"#fffbeb", col:"#92400e" },
                 { val:"on_mat",    icon:"🤱", label:"On Maternity",     desc:"Currently on leave",            border:"#fbcfe8", bg:"#fdf4ff", col:"#7A4258" },
+                { val:"dates_tbc", icon:"⏳", label:"Dates TBC",        desc:"Away, no dates yet",            border:"#fde68a", bg:"#fef3c7", col:"#7c2d12" },
               ].map(opt=>{
                 const selected = (f.matStatus||"active")===opt.val;
                 return (
@@ -2257,8 +2468,8 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
 }
 
 // ─── SCHEDULE EDITOR (Phase 2a — manual editing, save to Supabase) ──────────────
-function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obList }) {
-  const [branch, setBranch] = useState(SALONS[0].name);
+function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obList, techLoans, onTechLoansChange, initialBranch }) {
+  const [branch, setBranch] = useState(initialBranch || SALONS[0].name);
   const [ym, setYm] = useState(window.BOA_DB ? window.BOA_DB.currentSchedYm() : "2026-05");
   const [grid, setGrid] = useState({});
   const [savedAt, setSavedAt] = useState(null);
@@ -2445,6 +2656,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     if (z === "O")  return { background:"#fee2e2", color:"#991b1b" };
     if (z === "R")  return { background:"#fca5a5", color:"#7f1d1d" };
     if (z === "L")  return { background:"#cbd5e1", color:"#475569" };
+    if (z === "ML") return { background:"#ede9fe", color:"#6b21a8", fontStyle:"italic", fontWeight:700 };
     if (z === "E")  return { background:"#6ee7b7", color:"#064e3b" };
     if (z === "X")  return { background:"#f3f4f6", color:"#9ca3af", fontStyle:"italic", fontWeight:500 };
     if (z === "trial") return { background:"#fef08a", color:"#854d0e", fontWeight:700 };
@@ -2542,7 +2754,9 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     // the busy ones hit the 35% per-week cap. This is what allows "some
     // people to work their 6-day week later in the month, not just during
     // busy period." Branches that opt out entirely: Table Bay, Sandown.
-    const NO_SIX_DAY_BRANCHES = new Set(["Table Bay", "Sandown"]);
+    // Branches that opt out of the 6-day busy-week designation. Betty is
+    // closed Sun+Mon (5 working days/week max), so no tech ever works 6.
+    const NO_SIX_DAY_BRANCHES = new Set(["Table Bay", "Sandown", "Betty"]);
     const designatedBusyWeek = {};
     if (!NO_SIX_DAY_BRANCHES.has(branch)) {
       const allFullWeeks = weeks.map((w, i) => ({ w, i })).filter(x => x.w.length >= 7).map(x => x.i);
@@ -2608,6 +2822,24 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
 
     const newGrid = {};
     sortedTechs.forEach(s => { newGrid[s.ec] = {}; });
+
+    // ── Store-closed days (e.g. Betty closes Sun+Mon) ───────────────────
+    // Pre-seed every closed-DOW cell as 'O' for every active tech. The
+    // FIRST closed Sunday in the cycle stays as a normal work day — Betty
+    // techs work in another store that day (half at Bree, half at Green
+    // Point); the banner above the schedule shows the split.
+    const _closedDow = Array.isArray(salon.closedDow) ? salon.closedDow.map(Number) : [];
+    if (_closedDow.length) {
+      const _closedSet = new Set(_closedDow);
+      const _firstSunday = _closedSet.has(0) ? days.find(d => d.dow === 0) : null;
+      for (const d of days) {
+        if (!_closedSet.has(d.dow)) continue;
+        if (_firstSunday && d.year === _firstSunday.year && d.monthIdx === _firstSunday.monthIdx && d.d === _firstSunday.d) continue;
+        for (const s of sortedTechs) {
+          if (newGrid[s.ec][d.d] == null) newGrid[s.ec][d.d] = "O";
+        }
+      }
+    }
 
     // ── Cross-month carry-over for the leading partial week ─────────────
     // A schedule period (25th–24th) can begin mid-week. The Mon-Sun labour
@@ -3659,6 +3891,35 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     setGrid(newGrid);
     setDirty(true);
     setUnhonouredRequests(stillUnhonoured);
+
+    // ── Betty: auto-create first-Sunday cross-store loan records ─────────
+    // Half of the active techs (alphabetical by EC) go to Bree, the other
+    // half go to Green Point. Pre-existing auto-loans (fromBranch=Betty
+    // → Bree/Green Point) for that date are replaced; any other loans
+    // for the same tech/date are left alone.
+    if (_closedDow.includes(0) && onTechLoansChange) {
+      const _firstSun = days.find(d => d.dow === 0);
+      if (_firstSun && sortedTechs.length > 0) {
+        const _firstSunYmd = _firstSun.year + "-" + String(_firstSun.monthIdx + 1).padStart(2, "0") + "-" + String(_firstSun.d).padStart(2, "0");
+        const _activeAlpha = [...sortedTechs].sort((a, b) => (a.ec || "").localeCompare(b.ec || ""));
+        const _half = Math.ceil(_activeAlpha.length / 2);
+        const _assignFor = (idx) => idx < _half ? "Bree" : "Green Point";
+        const _existing = (techLoans || []).filter(l => !(l && l.date === _firstSunYmd && l.fromBranch === branch && (l.toBranch === "Bree" || l.toBranch === "Green Point")));
+        const _newAuto = _activeAlpha.map((s, idx) => ({
+          _id: "ln_betty_auto_" + _firstSunYmd + "_" + s.ec,
+          ec: s.ec,
+          name: s.name || "",
+          date: _firstSunYmd,
+          fromBranch: branch,
+          toBranch: _assignFor(idx),
+          note: "Auto: Betty first-Sunday cross-store rotation",
+          createdBy: "auto",
+          createdAt: new Date().toISOString()
+        }));
+        try { await onTechLoansChange([..._existing, ..._newAuto]); }
+        catch (e) { console.error("Betty auto-loans:", e); }
+      }
+    }
 
     const totalReqs    = consolidatedReqs.length;
     const honouredReqs = totalReqs - stillUnhonoured.length;
@@ -4844,6 +5105,47 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         </div>
       )}
 
+      {/* Betty: store closed Sun + Mon. On the first Sunday of the cycle
+          all techs work in another store — half at Bree, half at Green
+          Point. Split is deterministic by EC (alphabetical first half
+          → Bree, second half → Green Point). */}
+      {Array.isArray(salonForBranch.closedDow) && salonForBranch.closedDow.includes(0) && (() => {
+        const firstSun = days.find(d => d.dow === 0);
+        if (!firstSun) return null;
+        const active = techs.filter(t => !t.onMat).sort((a,b) => (a.ec || "").localeCompare(b.ec || ""));
+        if (active.length === 0) return null;
+        const half = Math.ceil(active.length / 2);
+        const breeTechs = active.slice(0, half);
+        const gpTechs   = active.slice(half);
+        const dayLabel = firstSun.d + " " + (["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][firstSun.monthIdx]);
+        return (
+          <div style={{ background:"#fef3c7", border:"1px solid #fde68a", borderRadius:10, padding:"12px 16px", marginBottom:12 }}>
+            <div style={{ fontSize:13, fontWeight:800, color:"#7c2d12", marginBottom:6 }}>
+              📍 Betty rule — first Sunday of cycle ({dayLabel})
+            </div>
+            <div style={{ fontSize:11, color:"#7c2d12", marginBottom:8, lineHeight:1.4 }}>
+              Betty closes every Sun + Mon. On the first Sunday of the cycle all techs work at another store. Half go to <strong>Bree</strong>, half go to <strong>Green Point</strong>.
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+              <div>
+                <div style={{ fontSize:10, fontWeight:800, color:"#7c2d12", letterSpacing:"0.06em", marginBottom:4 }}>→ BREE ({breeTechs.length})</div>
+                {breeTechs.length === 0 ? <div style={{ fontSize:11, color:"#9ca3af", fontStyle:"italic" }}>—</div> :
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:4 }}>
+                    {breeTechs.map(t => <span key={t.ec} style={{ background:"#FFFFFF", border:"1px solid #fde68a", borderRadius:6, padding:"2px 8px", fontSize:11, fontWeight:700, color:"#7c2d12" }}>{t.name}</span>)}
+                  </div>}
+              </div>
+              <div>
+                <div style={{ fontSize:10, fontWeight:800, color:"#7c2d12", letterSpacing:"0.06em", marginBottom:4 }}>→ GREEN POINT ({gpTechs.length})</div>
+                {gpTechs.length === 0 ? <div style={{ fontSize:11, color:"#9ca3af", fontStyle:"italic" }}>—</div> :
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:4 }}>
+                    {gpTechs.map(t => <span key={t.ec} style={{ background:"#FFFFFF", border:"1px solid #fde68a", borderRadius:6, padding:"2px 8px", fontSize:11, fontWeight:700, color:"#7c2d12" }}>{t.name}</span>)}
+                  </div>}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {techs.length === 0 ? (
         <div style={{ padding:24, background:"#FCE7F3", borderRadius:10, color:"#831843" }}>No staff at <strong>{branch}</strong>.</div>
       ) : loading ? (
@@ -4920,6 +5222,16 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                       const dYmd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
                       const isPastLeft = isLeaving && dYmd > s.leftDate;
                       const cellLocked = onMat || isPastLeft;
+                      // Cross-store loan: if this tech has a same-day loan FROM
+                      // this branch, the cell is tinted teal and shows the
+                      // destination store (e.g. Betty's first-Sunday Bree/GP
+                      // split, or any manually-logged movement).
+                      const _outgoingLoan = (techLoans || []).find(l => l && l.ec === s.ec && l.date === dYmd && l.fromBranch === branch);
+                      const _loanCell = _outgoingLoan && !onMat && !isPastLeft
+                        ? (_outgoingLoan.toBranch === "Bree"        ? { background:"#cffafe", color:"#155e75" }
+                        :  _outgoingLoan.toBranch === "Green Point" ? { background:"#fce7f3", color:"#9d174d" }
+                        :                                              { background:"#e0e7ff", color:"#3730a3" })
+                        : null;
                       // Maternity leave cells: distinct lavender tint so
                       // ML reads differently from a regular L (annual
                       // leave) and from a post-departure ghost cell.
@@ -4927,7 +5239,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                         ? { background:"#ede9fe", color:"#6b21a8" }
                         : isPastLeft
                           ? { background:"#e5e7eb", color:"#9ca3af" }
-                          : cellStyle(v);
+                          : _loanCell || cellStyle(v);
                       // Drag-drop visual states
                       const isSrc        = dragSource && dragSource.ec === s.ec && dragSource.day === d.d;
                       const isValidDrop  = !cellLocked && isValidDropTarget(s.ec, d.d);
@@ -4940,7 +5252,9 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                         ? `${s.name} · on maternity leave`
                         : isPastLeft
                           ? `${s.name} · left ${s.leftDate} — no longer scheduled`
-                          : `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · click to cycle, drag to swap within the week${requested ? ' · 📝 day-off requested' + (requestUnapplied ? ' (not yet on grid)' : '') : ''}`;
+                          : _loanCell
+                            ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · working at ${_outgoingLoan.toBranch} (cross-store)`
+                            : `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · click to cycle, drag to swap within the week${requested ? ' · 📝 day-off requested' + (requestUnapplied ? ' (not yet on grid)' : '') : ''}`;
                       return (
                         <td key={s.ec+'-'+d.d}
                             draggable={!cellLocked && !!v}
@@ -4951,7 +5265,11 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                             onClick={cellLocked ? undefined : () => cycleCell(s.ec, d.d)}
                             title={cellTitle}
                             style={{ ...matCell, padding:0, height:30, textAlign:"center", borderBottom:"1px solid #FCE7F3", borderLeft:"1px solid #FCE7F3", borderRight: weekEnd ? "3px solid #BE185D" : "none", cursor: dragCursor, fontSize:11, fontWeight:700, userSelect:"none", outline: dropOutline, outlineOffset:-1, opacity: isSrc ? 0.4 : undefined, position:"relative" }}>
-                          {onMat ? "ML" : isPastLeft ? "—" : v}
+                          {onMat ? "ML" : isPastLeft ? "—" : _loanCell ? (
+                            <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: "0.04em" }}>
+                              →{_outgoingLoan.toBranch === "Green Point" ? "GP" : _outgoingLoan.toBranch.slice(0, 4)}
+                            </span>
+                          ) : v}
                           {requestUnapplied && !cellLocked && (
                             <span style={{ position:"absolute", top:1, right:2, fontSize:8, lineHeight:1, color:"#BE185D", pointerEvents:"none" }}>📝</span>
                           )}
@@ -5202,7 +5520,7 @@ function PinLogin(props) {
       setPin("");
       return;
     }
-    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, isOwner: !!u.isOwner, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], readOnlyTabs: u.readOnlyTabs || [], signedInAt: new Date().toISOString() };
+    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, isOwner: !!u.isOwner, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], readOnlyTabs: u.readOnlyTabs || [], stores: Array.isArray(u.stores) ? u.stores.slice() : [], signedInAt: new Date().toISOString() };
     try { sessionStorage.setItem(PIN_SESSION_KEY, JSON.stringify(session)); } catch (_) {}
     window.BOA_CURRENT_USER = session;
     onUnlock(session);
@@ -5296,7 +5614,8 @@ function AppGate() {
               demo: !!u.demo, isOwner: !!u.isOwner,
               hideCategories: u.hideCategories || [],
               hideTabs: u.hideTabs || [],
-              readOnlyTabs: u.readOnlyTabs || []
+              readOnlyTabs: u.readOnlyTabs || [],
+              stores: Array.isArray(u.stores) ? u.stores.slice() : []
             };
             window.BOA_CURRENT_USER = merged;
             setCurrentUser(merged);
@@ -5321,13 +5640,17 @@ function AppGate() {
     const cleaned = { ...next };
     Object.keys(cleaned).forEach(pin => {
       const u = cleaned[pin];
-      cleaned[pin] = {
+      const rec = {
         name: u.name, role: u.role,
         demo: !!u.demo, isOwner: !!u.isOwner,
         hideCategories: u.hideCategories || [],
         hideTabs: u.hideTabs || [],
         readOnlyTabs: u.readOnlyTabs || []
       };
+      // ROM store allocation — only stamp the field when actually set, so
+      // the user record stays tidy for non-ROM roles.
+      if (Array.isArray(u.stores) && u.stores.length > 0) rec.stores = u.stores.slice();
+      cleaned[pin] = rec;
     });
     await saveAppUsersToDb(cleaned);
     window.__BOA_APP_USERS = cleaned;
@@ -5345,7 +5668,8 @@ function AppGate() {
         demo: !!u.demo, isOwner: !!u.isOwner,
         hideCategories: u.hideCategories || [],
         hideTabs: u.hideTabs || [],
-        readOnlyTabs: u.readOnlyTabs || []
+        readOnlyTabs: u.readOnlyTabs || [],
+        stores: Array.isArray(u.stores) ? u.stores.slice() : []
       };
       window.BOA_CURRENT_USER = merged;
       setCurrentUser(merged);
@@ -5382,19 +5706,22 @@ const SETTINGS_TABS = [
   { t: "recruitment",l: "Recruitment",       cat: "People",     icon: "🎯" },
   { t: "maternity",  l: "Maternity",         cat: "People",     icon: "🤱" },
   { t: "unpaidLegal",l: "Unpaid Leave (Legal)",cat: "People",   icon: "⏸️" },
+  { t: "compliance", l: "Compliance",        cat: "People",     icon: "📋" },
   { t: "scheduling", l: "Scheduling",        cat: "Operations", icon: "📅" },
   { t: "locations",  l: "Locations",         cat: "Operations", icon: "📍" },
-  { t: "checkins",   l: "Daily Check-ins",   cat: "Operations", icon: "📲" },
-  { t: "mgrclockins",l: "Mgr Clock-ins",     cat: "Operations", icon: "🕐" },
+  { t: "checkins",   l: "Nail Tech Check-ins", cat: "Operations", icon: "📲" },
+  { t: "mgrclockins",l: "Manager Check-ins",   cat: "Operations", icon: "🕐" },
   { t: "leave",      l: "Leave Planner",     cat: "Operations", icon: "🌴" },
   { t: "storeOpenings", l: "Store Openings",  cat: "Operations", icon: "🔓" },
   { t: "movements",  l: "Today's Movements", cat: "Operations", icon: "🔀" },
+  { t: "dailyTasks", l: "Daily Tasks",       cat: "Operations", icon: "📋" },
   { t: "attendance",     l: "Attendance / Payroll", cat: "Payroll", icon: "📕" },
   { t: "payrollProgress",l: "Payroll Progress",     cat: "Payroll", icon: "📊" },
   { t: "alerts",     l: "Alerts",            cat: "Insights",   icon: "🔔" },
   { t: "activity",   l: "Activity Log",      cat: "Insights",   icon: "📜" },
   { t: "kioskPins",   l: "Kiosk PINs",       cat: "Admin",      icon: "🔑" },
-  { t: "managerPins", l: "Manager PINs",     cat: "Admin",      icon: "🆔" }
+  { t: "managerPins", l: "Manager PINs",     cat: "Admin",      icon: "🆔" },
+  { t: "storeAllocation", l: "Store Allocation", cat: "Admin",  icon: "🏬" }
 ];
 const SETTINGS_CATS = ["People", "Operations", "Payroll", "Insights", "Admin"];
 
@@ -5416,7 +5743,7 @@ function userToPerms(u) {
 // reconstruct hideCategories on save — packing per-tab is simpler and the
 // nav renderer treats "every tab in a category hidden" the same as the
 // category itself being hidden.
-function permsToUser(base, perms) {
+function permsToUser(base, perms, stores) {
   const hideTabs = [];
   const readOnlyTabs = [];
   SETTINGS_TABS.forEach(({ t }) => {
@@ -5424,7 +5751,7 @@ function permsToUser(base, perms) {
     if (!p.visible) { hideTabs.push(t); return; }
     if (!p.editable) readOnlyTabs.push(t);
   });
-  return {
+  const out = {
     name: base.name || "",
     role: base.role || "",
     demo: !!base.demo,
@@ -5433,6 +5760,20 @@ function permsToUser(base, perms) {
     hideTabs,
     readOnlyTabs
   };
+  // ROM store allocation. Only persisted when the user actually has stores
+  // assigned — keeps the user record tidy for non-ROM roles.
+  if (Array.isArray(stores) && stores.length > 0) {
+    out.stores = stores.slice();
+  }
+  return out;
+}
+
+// True when the user's role is "Regional Ops Manager" (the canonical label —
+// abbreviations like "ROM" or longer "Regional Operations Manager" also match
+// so a typo or legacy seed doesn't accidentally drop the scope toggle).
+function isRomRole(role) {
+  const r = (role || "").toLowerCase().trim();
+  return r === "regional ops manager" || r === "regional operations manager" || r === "rom";
 }
 
 function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
@@ -5457,7 +5798,8 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
       role: "",
       demo: false,
       isOwner: false,
-      perms: blankPerms
+      perms: blankPerms,
+      stores: []
     });
   };
   const beginEdit = (pin) => {
@@ -5471,7 +5813,8 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
       role: u.role || "",
       demo: !!u.demo,
       isOwner: !!u.isOwner,
-      perms: userToPerms(u)
+      perms: userToPerms(u),
+      stores: Array.isArray(u.stores) ? u.stores.slice() : []
     });
   };
   const cancelEdit = () => setEditing(null);
@@ -5500,7 +5843,7 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
       role: editing.role.trim() || (editing.isOwner ? "Owner" : "Staff"),
       demo: editing.demo,
       isOwner: editing.isOwner
-    }, editing.perms);
+    }, editing.perms, editing.stores);
     const next = { ...users };
     if (!editing.isNew && editing.originalPin && editing.originalPin !== pin) {
       delete next[editing.originalPin];
@@ -5590,6 +5933,7 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
               <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, letterSpacing:"0.04em" }}>FLAGS</th>
               <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, letterSpacing:"0.04em" }}>VISIBLE TABS</th>
               <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, letterSpacing:"0.04em" }}>VIEW-ONLY TABS</th>
+              <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, letterSpacing:"0.04em" }}>STORES</th>
               <th style={{ textAlign:"right", padding:"10px 12px", fontSize:11, letterSpacing:"0.04em" }}>ACTIONS</th>
             </tr>
           </thead>
@@ -5621,6 +5965,16 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
                   </td>
                   <td style={{ padding:"10px 12px", color:"#374151", fontSize:11 }}>
                     {roList.length === 0 ? <span style={{ color:"#9CA3AF" }}>—</span> : roList.join(", ")}
+                  </td>
+                  <td style={{ padding:"10px 12px", color:"#374151", fontSize:11 }}>
+                    {(() => {
+                      const sts = Array.isArray(u.stores) ? u.stores : [];
+                      if (sts.length === 0) return <span style={{ color:"#9CA3AF" }}>—</span>;
+                      if (sts.length === SALONS.length) return <span style={{ color:"#15803d", fontWeight:700 }}>All ({sts.length})</span>;
+                      const show = sts.slice(0, 2).join(", ");
+                      const more = sts.length > 2 ? " +" + (sts.length - 2) : "";
+                      return <span title={sts.join(", ")} style={{ color:"#BE185D", fontWeight:600 }}>{sts.length} · {show}{more}</span>;
+                    })()}
                   </td>
                   <td style={{ padding:"10px 12px", textAlign:"right", whiteSpace:"nowrap" }}>
                     <button onClick={() => beginEdit(pin)} disabled={busy}
@@ -5743,12 +6097,755 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
               </table>
             </div>
 
+            <div style={{ background:"#FDF2F8", border:"1px solid #FBCFE8", borderRadius:9, padding:"9px 13px", fontSize:11, color:"#9F1A4F", marginBottom:14 }}>
+              🏬 <strong>Store allocation</strong> is now managed on the dedicated <strong>Store Allocation</strong> tab (under Admin), so a National Ops Manager can be granted edit rights to it without full Settings access.
+            </div>
+
             <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
               <button onClick={cancelEdit} disabled={busy}
                 style={{ padding:"9px 16px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:9, cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:600 }}>Cancel</button>
               <button onClick={saveEditing} disabled={busy}
                 style={{ padding:"9px 18px", background:"#BE185D", color:"#fff", border:"none", borderRadius:9, cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>
                 {busy ? "Saving…" : (editing.isNew ? "Create user" : "Save changes")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── STORE ALLOCATION ADMIN ──────────────────────────────────────────────
+// Dedicated tab for assigning which salons each user (typically a Regional
+// Ops Manager) "owns". Read-only when readOnly is true — gives the Owner /
+// National Ops Manager a single place to edit, and lets it be granted to
+// other roles via the standard tab permission grid without exposing the
+// full Settings panel.
+function StoreAllocationAdmin({ appUsers, onUsersUpdate, currentUser, readOnly }) {
+  const users = appUsers || {};
+  const [busy, setBusy]   = useState(false);
+  const [filter, setFilter] = useState("rom"); // "rom" | "all"
+  const [draft, setDraft]   = useState({});    // pin → string[] of stores (uncommitted edits)
+  const [savedFor, setSavedFor] = useState(""); // pin of last-saved user, for the brief ✓ chip
+
+  const pins = Object.keys(users).sort((a, b) => {
+    const ua = users[a], ub = users[b];
+    if (!!ub.isOwner !== !!ua.isOwner) return ub.isOwner ? 1 : -1;
+    return (ua.name || "").localeCompare(ub.name || "");
+  });
+  const visiblePins = filter === "rom" ? pins.filter(p => isRomRole(users[p] && users[p].role)) : pins;
+
+  const storesFor = (pin) => {
+    if (draft[pin] !== undefined) return draft[pin];
+    const s = users[pin] && users[pin].stores;
+    return Array.isArray(s) ? s : [];
+  };
+  const isDirty = (pin) => {
+    const saved = (users[pin] && users[pin].stores) || [];
+    const cur = storesFor(pin);
+    if (saved.length !== cur.length) return true;
+    const a = saved.slice().sort();
+    const b = cur.slice().sort();
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return true;
+    return false;
+  };
+  const toggle = (pin, name) => {
+    if (readOnly) return;
+    setDraft(prev => {
+      const cur = prev[pin] !== undefined ? prev[pin] : ((users[pin] && users[pin].stores) || []);
+      const has = cur.includes(name);
+      return { ...prev, [pin]: has ? cur.filter(x => x !== name) : [...cur, name] };
+    });
+  };
+  const setAllFor = (pin, on) => {
+    if (readOnly) return;
+    setDraft(prev => ({ ...prev, [pin]: on ? SALONS.map(s => s.name) : [] }));
+  };
+  const saveFor = async (pin) => {
+    if (readOnly) return;
+    setBusy(true);
+    try {
+      const next = { ...users };
+      const cur = storesFor(pin);
+      next[pin] = { ...(users[pin] || {}) };
+      if (cur.length > 0) next[pin].stores = cur.slice();
+      else delete next[pin].stores;
+      await onUsersUpdate(next);
+      setDraft(prev => { const n = { ...prev }; delete n[pin]; return n; });
+      setSavedFor(pin);
+      window.setTimeout(() => setSavedFor(s => s === pin ? "" : s), 1800);
+    } catch (e) {
+      alert("Could not save: " + ((e && e.message) || e));
+    } finally { setBusy(false); }
+  };
+  const resetFor = (pin) => {
+    setDraft(prev => { const n = { ...prev }; delete n[pin]; return n; });
+  };
+
+  const romCount = pins.filter(p => isRomRole(users[p] && users[p].role)).length;
+
+  return (
+    <div>
+      <div style={{ marginBottom:14 }}>
+        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>🏬 Store Allocation</div>
+        <div style={{ fontSize:12, color:"#F472B6" }}>
+          {readOnly
+            ? "View-only. Each Regional Ops Manager's allocated stores drive their 'My stores' dashboard filter."
+            : "Assign the stores each Regional Ops Manager owns. The dashboard 'My stores / Other stores / All' toggle uses this list. Granting edit rights to this tab is enough — no Settings access needed."}
+        </div>
+      </div>
+
+      <div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap", alignItems:"center" }}>
+        <div style={{ fontSize:11, fontWeight:800, color:"#831843", letterSpacing:"0.06em", textTransform:"uppercase" }}>Show</div>
+        {[
+          { v: "rom", l: "Regional Ops Managers", sub: romCount + " user" + (romCount === 1 ? "" : "s") },
+          { v: "all", l: "All users",             sub: pins.length + " user" + (pins.length === 1 ? "" : "s") }
+        ].map(o => {
+          const on = filter === o.v;
+          return (
+            <button key={o.v} onClick={() => setFilter(o.v)}
+              style={{ padding:"7px 13px", borderRadius:9, border: on ? "1px solid #BE185D" : "1px solid #FBCFE8", background: on ? "#BE185D" : "#fff", color: on ? "#fff" : "#831843", cursor:"pointer", fontSize:12, fontWeight:700, fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"flex-start", lineHeight:1.15 }}>
+              <span>{o.l}</span>
+              <span style={{ fontSize:10, fontWeight:600, opacity: on ? 0.85 : 0.6 }}>{o.sub}</span>
+            </button>
+          );
+        })}
+        {busy && <span style={{ alignSelf:"center", fontSize:11, color:"#9F1A4F", fontStyle:"italic" }}>Saving…</span>}
+      </div>
+
+      {visiblePins.length === 0 ? (
+        <div style={{ background:"#FDF2F8", border:"1px dashed #FBCFE8", borderRadius:12, padding:"30px 18px", textAlign:"center", color:"#9F1A4F", fontSize:13 }}>
+          {filter === "rom"
+            ? "No Regional Ops Managers yet. Create one in Settings (role = \"Regional Ops Manager\")."
+            : "No users."}
+        </div>
+      ) : (
+        <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+          {visiblePins.map(pin => {
+            const u = users[pin] || {};
+            const cur = storesFor(pin);
+            const dirty = isDirty(pin);
+            const rom = isRomRole(u.role);
+            return (
+              <div key={pin} style={{ background:"#fff", border:"1px solid #FBCFE8", borderRadius:14, padding:"16px 18px" }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:10, marginBottom:10 }}>
+                  <div>
+                    <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                      <span style={{ fontSize:16, fontWeight:800, color:"#831843" }}>{u.name || "(unnamed)"}</span>
+                      <span style={{ fontFamily:"monospace", fontSize:11, color:"#9CA3AF" }}>PIN {pin}</span>
+                      {rom && <span style={{ background:"#FCE7F3", color:"#BE185D", border:"1px solid #FBCFE8", padding:"1px 7px", borderRadius:6, fontSize:10, fontWeight:700, letterSpacing:"0.06em" }}>ROM</span>}
+                      {u.isOwner && <span style={{ background:"#FEF3C7", color:"#92400e", border:"1px solid #FDE68A", padding:"1px 7px", borderRadius:6, fontSize:10, fontWeight:700 }}>OWNER</span>}
+                      {savedFor === pin && <span style={{ background:"#dcfce7", color:"#166534", border:"1px solid #86efac", padding:"1px 7px", borderRadius:6, fontSize:10, fontWeight:700 }}>✓ Saved</span>}
+                    </div>
+                    <div style={{ fontSize:11, color:"#9F1A4F", marginTop:2 }}>{u.role || "—"}</div>
+                  </div>
+                  <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                    {!readOnly && (
+                      <>
+                        <button onClick={() => setAllFor(pin, true)}  disabled={busy} style={{ padding:"5px 10px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:7, cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit" }}>Select all</button>
+                        <button onClick={() => setAllFor(pin, false)} disabled={busy} style={{ padding:"5px 10px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:7, cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit" }}>Clear</button>
+                      </>
+                    )}
+                    {!readOnly && dirty && (
+                      <>
+                        <button onClick={() => resetFor(pin)} disabled={busy} style={{ padding:"5px 11px", background:"#fff", color:"#7f1d1d", border:"1px solid #fecaca", borderRadius:7, cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit" }}>Cancel</button>
+                        <button onClick={() => saveFor(pin)}  disabled={busy} style={{ padding:"5px 13px", background:"#BE185D", color:"#fff", border:"none", borderRadius:7, cursor:"pointer", fontSize:11, fontWeight:800, fontFamily:"inherit" }}>{busy ? "Saving…" : "Save"}</button>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))", gap:6 }}>
+                  {SALONS.map(sl => {
+                    const on = cur.includes(sl.name);
+                    return (
+                      <label key={sl.name} style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 9px", background: on ? "#FCE7F3" : "#fff", border:"1px solid " + (on ? "#FBCFE8" : "#F3D4DE"), borderRadius:7, cursor: readOnly ? "default" : "pointer", fontSize:12, color:"#831843", fontWeight: on ? 700 : 500, opacity: readOnly ? 0.85 : 1 }}>
+                        <input type="checkbox" checked={on} disabled={readOnly || busy} onChange={() => toggle(pin, sl.name)} style={{ accentColor:"#BE185D" }} />
+                        <span style={{ flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{sl.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize:10, color:"#9F1A4F", marginTop:8, fontWeight:600 }}>
+                  {cur.length} of {SALONS.length} stores selected
+                  {rom && cur.length === 0 && <span style={{ color:"#b91c1c", marginLeft:8 }}>⚠ A ROM with no stores will fall back to viewing all branches.</span>}
+                  {dirty && <span style={{ color:"#b45309", marginLeft:8 }}>● unsaved</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── DAILY TASKS ADMIN ───────────────────────────────────────────────────
+// Admin UI for assigning per-user to-do items. Each task has a single
+// assignee (by PIN), a title + optional description, and a recurrence:
+//   - kind: "once"   → fixed `date` (YYYY-MM-DD)
+//   - kind: "weekly" → `repeatDow: [0..6]`, where 0 = Sunday. The task
+//                      auto-appears every matching weekday from
+//                      `startDate` onwards.
+// Done-tracking:
+//   - once:   doneAt / doneBy (one-shot)
+//   - weekly: doneByDate { "YYYY-MM-DD": { at, by } } per-occurrence
+// Tasks for today appear on the assignee's dashboard; future / non-
+// matching days stay hidden.
+const DOW_LABEL = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const DOW_LONG  = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+function isTaskActiveToday(task, ymdStr, dow) {
+  if (!task) return false;
+  if (task.kind === "weekly") {
+    if (!Array.isArray(task.repeatDow) || !task.repeatDow.includes(dow)) return false;
+    if (task.startDate && ymdStr < task.startDate) return false;
+    return true;
+  }
+  // Default ("once") — show only on the exact date.
+  return task.date === ymdStr;
+}
+function isTaskDoneOn(task, ymdStr) {
+  if (!task) return false;
+  if (task.kind === "weekly") return !!(task.doneByDate && task.doneByDate[ymdStr]);
+  return !!task.doneAt;
+}
+function describeRepeat(task) {
+  if (!task) return "";
+  if (task.kind === "weekly") {
+    const dows = Array.isArray(task.repeatDow) ? task.repeatDow.slice().sort() : [];
+    if (dows.length === 0) return "Weekly (no day picked)";
+    if (dows.length === 7) return "Every day";
+    return "Every " + dows.map(d => DOW_LABEL[d]).join(" · ");
+  }
+  return task.date || "—";
+}
+function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
+  const todayYmd = new Date().toISOString().slice(0, 10);
+  const [editing, setEditing] = useState(null); // null | { _id, isNew, title, description, assigneePin, date }
+  const [filter, setFilter]   = useState("today"); // "today" | "upcoming" | "past" | "all"
+  const [busy, setBusy]       = useState(false);
+
+  const users = appUsers || {};
+  const sortedUserPins = Object.keys(users).sort((a, b) =>
+    (users[a].name || "").localeCompare(users[b].name || "")
+  );
+
+  const beginAdd = () => setEditing({
+    _id: null, isNew: true, title: "", description: "",
+    target: "portal",                                  // "portal" = per-user dashboard, "kiosk" = manager-kiosk broadcast
+    // New tasks support multi-assign: one record is created per pin
+    // so each assignee gets their own independent done-tracking.
+    assigneePins: [],
+    branches: [],                                      // kiosk target — empty = every branch
+    date: todayYmd,
+    kind: "once", repeatDow: [], startDate: todayYmd
+  });
+  const beginEdit = (t) => setEditing({
+    _id: t._id, isNew: false,
+    title: t.title || "", description: t.description || "",
+    target: t.target === "kiosk" ? "kiosk" : "portal",
+    // Editing an existing record is single-assignee. Re-pointing it to
+    // another person is just changing the one record; bulk fan-out
+    // only happens at create time.
+    assigneePins: t.assigneePin ? [t.assigneePin] : [],
+    branches: Array.isArray(t.branches) ? t.branches.slice() : [],
+    date: t.date || todayYmd,
+    kind: t.kind === "weekly" ? "weekly" : "once",
+    repeatDow: Array.isArray(t.repeatDow) ? t.repeatDow.slice() : [],
+    startDate: t.startDate || todayYmd
+  });
+  const cancelEdit = () => setEditing(null);
+
+  const todayDow = new Date().getDay();
+  const visible = (tasks || []).filter(t => {
+    if (!t) return false;
+    if (filter === "today")    return isTaskActiveToday(t, todayYmd, todayDow);
+    if (filter === "upcoming") return t.kind === "weekly" || (t.date && t.date > todayYmd);
+    if (filter === "past")     return t.kind !== "weekly" && t.date && t.date < todayYmd;
+    return true;
+  }).sort((a, b) => {
+    // Weekly tasks sort to the top of "all" / "upcoming"; among them, by
+    // created-at. One-off tasks sort by their date.
+    if ((a.kind === "weekly") !== (b.kind === "weekly")) return a.kind === "weekly" ? -1 : 1;
+    return (a.date || "").localeCompare(b.date || "") || (a.createdAt || "").localeCompare(b.createdAt || "");
+  });
+
+  const saveEdit = async () => {
+    if (!editing) return;
+    if (!editing.title.trim())                                  { alert("Task title is required."); return; }
+    const isKiosk = editing.target === "kiosk";
+    const pins = Array.isArray(editing.assigneePins) ? editing.assigneePins.filter(Boolean) : [];
+    if (!isKiosk && pins.length === 0)                          { alert("Pick at least one person to assign this to."); return; }
+    if (editing.kind === "weekly") {
+      if (!Array.isArray(editing.repeatDow) || editing.repeatDow.length === 0) {
+        alert("Pick at least one day of the week for the reminder to repeat on.");
+        return;
+      }
+    } else if (!editing.date) {
+      alert("Pick a date."); return;
+    }
+    setBusy(true);
+    try {
+      const prior = (tasks || []).find(t => t && t._id === editing._id) || {};
+      const isWeekly = editing.kind === "weekly";
+      const stampNow = new Date().toISOString();
+      // Build a single record. For portal tasks `key` is the assignee
+      // PIN (one record per assignee). Kiosk reminders have no per-
+      // person done-tracking, so the assignee fields are omitted and
+      // `branches` is recorded instead (empty = every branch).
+      const buildRec = (key, recId) => {
+        const r = {
+          _id: recId,
+          title: editing.title.trim(),
+          description: (editing.description || "").trim().slice(0, 500),
+          target: isKiosk ? "kiosk" : "portal",
+          kind: isWeekly ? "weekly" : "once",
+          createdBy: editing.isNew ? ((currentUser && currentUser.name) || "") : (prior.createdBy || ""),
+          createdAt: editing.isNew ? stampNow : (prior.createdAt || stampNow)
+        };
+        if (isKiosk) {
+          r.branches = Array.isArray(editing.branches) ? editing.branches.slice() : [];
+        } else {
+          r.assigneePin = key;
+        }
+        if (isWeekly) {
+          r.repeatDow = editing.repeatDow.slice().sort();
+          r.startDate = editing.startDate || todayYmd;
+          if (!isKiosk) r.doneByDate = (recId === prior._id) ? (prior.doneByDate || {}) : {};
+        } else {
+          r.date = editing.date;
+          if (!isKiosk) {
+            r.doneAt = (recId === prior._id) ? (prior.doneAt || null) : null;
+            r.doneBy = (recId === prior._id) ? (prior.doneBy || null) : null;
+          }
+        }
+        return r;
+      };
+      const mkId = () => "tk_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7);
+      let newList;
+      if (isKiosk) {
+        // Kiosk reminders are always a single record (no fan-out).
+        const rec = buildRec(null, editing._id || mkId());
+        newList = (tasks || []).filter(t => !t || t._id !== rec._id).concat([rec]);
+      } else if (!editing.isNew) {
+        // Edit mode: this represents a single record. Re-point its
+        // assignee to the (single) selected pin; ignore any extras.
+        const rec = buildRec(pins[0], editing._id);
+        newList = (tasks || []).filter(t => !t || t._id !== rec._id).concat([rec]);
+      } else {
+        // Create mode: fan out to one record per selected pin so each
+        // assignee has independent done-tracking.
+        const newRecs = pins.map(p => buildRec(p, mkId()));
+        newList = (tasks || []).concat(newRecs);
+      }
+      await onSave(newList);
+      if (window.BOA_LOG_ACTIVITY) {
+        const audience = isKiosk
+          ? "🖥 " + ((editing.branches || []).length === 0 ? "all kiosks" : (editing.branches || []).join(", "))
+          : pins.map(p => (users[p] && users[p].name) || p).join(", ");
+        window.BOA_LOG_ACTIVITY(
+          editing.isNew ? "Created daily task" : "Edited daily task",
+          editing.title.trim(),
+          audience + " · " + describeRepeat(isWeekly ? { kind:"weekly", repeatDow: editing.repeatDow } : { kind:"once", date: editing.date }),
+          "Task"
+        );
+      }
+      setEditing(null);
+    } catch (_) { /* onSave already alerted */ }
+    finally { setBusy(false); }
+  };
+
+  const removeTask = async (t) => {
+    if (!t) return;
+    const who = t.target === "kiosk"
+      ? ("🖥 " + ((t.branches || []).length === 0 ? "all kiosks" : (t.branches || []).join(", ")))
+      : ((users[t.assigneePin] && users[t.assigneePin].name) || t.assigneePin);
+    if (!window.confirm("Delete this task for " + who + " (" + describeRepeat(t) + ")?")) return;
+    setBusy(true);
+    try {
+      await onSave((tasks || []).filter(x => x && x._id !== t._id));
+      if (window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY("Deleted daily task", t.title || "", who + " · " + describeRepeat(t), "Task");
+      }
+    } catch (_) {} finally { setBusy(false); }
+  };
+
+  // Re-open a task. For one-off tasks this clears doneAt; for weekly
+  // tasks we clear only today's done-stamp so the row reopens for today
+  // without erasing historical completions.
+  const reopenTask = async (t) => {
+    setBusy(true);
+    try {
+      const next = (tasks || []).map(x => {
+        if (!x || x._id !== t._id) return x;
+        if (x.kind === "weekly") {
+          const dbd = { ...(x.doneByDate || {}) };
+          delete dbd[todayYmd];
+          return { ...x, doneByDate: dbd };
+        }
+        return { ...x, doneAt: null, doneBy: null };
+      });
+      await onSave(next);
+    } catch (_) {} finally { setBusy(false); }
+  };
+
+  const fmtDate = (ymd) => {
+    if (!ymd) return "—";
+    if (ymd === todayYmd) return "Today";
+    const d = new Date(ymd + "T00:00:00");
+    return d.toLocaleDateString("en-ZA", { weekday:"short", day:"2-digit", month:"short" });
+  };
+
+  const counts = {
+    today:    (tasks || []).filter(t => t && t.date === todayYmd).length,
+    upcoming: (tasks || []).filter(t => t && t.date > todayYmd).length,
+    past:     (tasks || []).filter(t => t && t.date < todayYmd).length,
+    all:      (tasks || []).length
+  };
+
+  return (
+    <div>
+      <div style={{ marginBottom:14 }}>
+        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>📋 Daily Tasks</div>
+        <div style={{ fontSize:12, color:"#F472B6" }}>
+          {readOnly
+            ? "View-only. Tasks appear on each assignee's dashboard on the matching date."
+            : "Assign a one-day to-do to any portal user. They'll see it on their dashboard on the date you pick and tick 'Done' when finished. Future dates are hidden from the assignee until that day."}
+        </div>
+      </div>
+
+      <div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap", alignItems:"center" }}>
+        {[
+          { v:"today",    l:"Today",    n:counts.today },
+          { v:"upcoming", l:"Upcoming", n:counts.upcoming },
+          { v:"past",     l:"Past",     n:counts.past },
+          { v:"all",      l:"All",      n:counts.all }
+        ].map(o => {
+          const on = filter === o.v;
+          return (
+            <button key={o.v} onClick={() => setFilter(o.v)}
+              style={{ padding:"7px 13px", borderRadius:9, border: on ? "1px solid #BE185D" : "1px solid #FBCFE8", background: on ? "#BE185D" : "#fff", color: on ? "#fff" : "#831843", cursor:"pointer", fontSize:12, fontWeight:700, fontFamily:"inherit", display:"flex", alignItems:"center", gap:6 }}>
+              {o.l}
+              <span style={{ background: on ? "rgba(255,255,255,0.22)" : "#FCE7F3", color: on ? "#fff" : "#BE185D", padding:"1px 7px", borderRadius:999, fontSize:11, fontWeight:700 }}>{o.n}</span>
+            </button>
+          );
+        })}
+        <div style={{ flex:1 }} />
+        {!readOnly && (
+          <button onClick={beginAdd} disabled={busy}
+            style={{ padding:"9px 16px", background:"#BE185D", color:"#fff", border:"none", borderRadius:9, cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>
+            + New task
+          </button>
+        )}
+      </div>
+
+      {visible.length === 0 ? (
+        <div style={{ background:"#FDF2F8", border:"1px dashed #FBCFE8", borderRadius:12, padding:"30px 18px", textAlign:"center", color:"#9F1A4F", fontSize:13 }}>
+          {filter === "today"    && "No tasks scheduled for today."}
+          {filter === "upcoming" && "No upcoming tasks yet."}
+          {filter === "past"     && "No past tasks."}
+          {filter === "all"      && "No tasks yet. Click + New task to create one."}
+        </div>
+      ) : (
+        <div style={{ background:"#fff", border:"1px solid #FBCFE8", borderRadius:12, overflow:"hidden" }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+            <thead>
+              <tr style={{ background:"#FCE7F3", color:"#831843", fontSize:11, letterSpacing:"0.04em" }}>
+                <th style={{ textAlign:"left", padding:"9px 12px" }}>DATE</th>
+                <th style={{ textAlign:"left", padding:"9px 12px" }}>TASK</th>
+                <th style={{ textAlign:"left", padding:"9px 12px" }}>ASSIGNED TO</th>
+                <th style={{ textAlign:"left", padding:"9px 12px" }}>STATUS</th>
+                <th style={{ textAlign:"right", padding:"9px 12px" }}>ACTIONS</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map(t => {
+                const isKiosk = t.target === "kiosk";
+                const u = isKiosk ? null : (users[t.assigneePin] || {});
+                const isWeekly = t.kind === "weekly";
+                const doneTodayOnly = !isKiosk && isTaskDoneOn(t, todayYmd);
+                const overdue = !isKiosk && !isWeekly && !t.doneAt && t.date && t.date < todayYmd;
+                const dateLbl = isWeekly ? describeRepeat(t) : fmtDate(t.date);
+                return (
+                  <tr key={t._id} style={{ borderTop:"1px solid #FCE7F3" }}>
+                    <td style={{ padding:"10px 12px", color: overdue ? "#7f1d1d" : "#831843", fontWeight:600 }}>
+                      {isKiosk && <span style={{ display:"inline-block", marginRight:5, background:"#fef3c7", color:"#78350f", border:"1px solid #fde68a", padding:"1px 6px", borderRadius:5, fontSize:9, fontWeight:800, letterSpacing:"0.06em" }}>🖥 KIOSK</span>}
+                      {isWeekly && <span style={{ display:"inline-block", marginRight:5, background:"#ede9fe", color:"#5b21b6", border:"1px solid #ddd6fe", padding:"1px 6px", borderRadius:5, fontSize:9, fontWeight:800, letterSpacing:"0.06em" }}>WEEKLY</span>}
+                      {dateLbl}
+                      {overdue && <div style={{ fontSize:9, color:"#7f1d1d", fontWeight:800, letterSpacing:"0.06em", marginTop:1 }}>OVERDUE</div>}
+                    </td>
+                    <td style={{ padding:"10px 12px", color:"#111827" }}>
+                      <div style={{ fontWeight:700, textDecoration: (!isWeekly && !isKiosk && t.doneAt) ? "line-through" : "none", opacity: (!isWeekly && !isKiosk && t.doneAt) ? 0.6 : 1 }}>{t.title}</div>
+                      {t.description && <div style={{ fontSize:11, color:"#6b7280", marginTop:2, whiteSpace:"pre-wrap" }}>{t.description}</div>}
+                    </td>
+                    <td style={{ padding:"10px 12px", color:"#374151" }}>
+                      {isKiosk ? (
+                        <div>
+                          <div style={{ fontWeight:700 }}>{(t.branches || []).length === 0 ? "Every manager kiosk" : (t.branches || []).slice(0,3).join(", ") + ((t.branches || []).length > 3 ? " +" + ((t.branches || []).length - 3) + " more" : "")}</div>
+                          <div style={{ fontSize:10, color:"#9CA3AF" }}>Broadcast · ticked per branch on the kiosk</div>
+                        </div>
+                      ) : (
+                        <>
+                          {u.name || "(unknown)"}
+                          <div style={{ fontFamily:"monospace", fontSize:10, color:"#9CA3AF" }}>PIN {t.assigneePin}</div>
+                        </>
+                      )}
+                    </td>
+                    <td style={{ padding:"10px 12px" }}>
+                      {isKiosk ? (
+                        isTaskActiveToday(t, todayYmd, todayDow) ? (() => {
+                          // For kiosk tasks the "audience" is every branch in
+                          // t.branches (or all branches when the list is
+                          // empty). Each branch ticks Done independently.
+                          const targetBranches = (Array.isArray(t.branches) && t.branches.length > 0)
+                            ? t.branches.slice()
+                            : SALONS.map(s => s.name);
+                          const doneSet = t.kioskDoneByBranch || {};
+                          const doneBranches = targetBranches.filter(b => doneSet[b] && doneSet[b][todayYmd]);
+                          const total = targetBranches.length;
+                          const done = doneBranches.length;
+                          if (done === 0) {
+                            return <span style={{ background:"#fef3c7", color:"#78350f", border:"1px solid #fde68a", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }}>● 0 / {total} done today</span>;
+                          }
+                          if (done === total) {
+                            return <span style={{ background:"#dcfce7", color:"#166534", border:"1px solid #86efac", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }} title={doneBranches.join(", ")}>✓ All {total} branches done</span>;
+                          }
+                          return <span style={{ background:"#fef3c7", color:"#78350f", border:"1px solid #fde68a", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }} title={"Done at: " + doneBranches.join(", ")}>● {done} / {total} done today</span>;
+                        })() : (
+                          <span style={{ background:"#f3f4f6", color:"#374151", border:"1px solid #e5e7eb", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }}>Scheduled</span>
+                        )
+                      ) : isWeekly ? (
+                        doneTodayOnly ? (
+                          <span style={{ background:"#dcfce7", color:"#166534", border:"1px solid #86efac", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }}>✓ Done today</span>
+                        ) : isTaskActiveToday(t, todayYmd, todayDow) ? (
+                          <span style={{ background:"#fef3c7", color:"#78350f", border:"1px solid #fde68a", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }}>● Open today</span>
+                        ) : (
+                          <span style={{ background:"#f3f4f6", color:"#374151", border:"1px solid #e5e7eb", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }}>Scheduled</span>
+                        )
+                      ) : t.doneAt ? (
+                        <span style={{ background:"#dcfce7", color:"#166534", border:"1px solid #86efac", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }}>
+                          ✓ {t.doneBy ? "Done · " + t.doneBy : "Done"}
+                        </span>
+                      ) : overdue ? (
+                        <span style={{ background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fca5a5", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }}>● Open</span>
+                      ) : (
+                        <span style={{ background:"#fef3c7", color:"#78350f", border:"1px solid #fde68a", padding:"2px 8px", borderRadius:6, fontSize:11, fontWeight:700 }}>● Open</span>
+                      )}
+                    </td>
+                    <td style={{ padding:"10px 12px", textAlign:"right", whiteSpace:"nowrap" }}>
+                      {!readOnly && !isKiosk && (isWeekly ? doneTodayOnly : !!t.doneAt) && (
+                        <button onClick={() => reopenTask(t)} disabled={busy}
+                          style={{ padding:"5px 10px", marginRight:5, background:"#fff", color:"#374151", border:"1px solid #d1d5db", borderRadius:6, cursor:"pointer", fontSize:11, fontWeight:600 }}>Re-open{isWeekly ? " today" : ""}</button>
+                      )}
+                      {!readOnly && (
+                        <>
+                          <button onClick={() => beginEdit(t)} disabled={busy}
+                            style={{ padding:"5px 10px", marginRight:5, background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:6, cursor:"pointer", fontSize:11, fontWeight:600 }}>Edit</button>
+                          <button onClick={() => removeTask(t)} disabled={busy}
+                            style={{ padding:"5px 10px", background:"#fff", color:"#b91c1c", border:"1px solid #fecaca", borderRadius:6, cursor:"pointer", fontSize:11, fontWeight:600 }}>Delete</button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {editing && (
+        <div onClick={cancelEdit} style={{ position:"fixed", inset:0, background:"rgba(131,24,67,0.4)", zIndex:9000, display:"flex", alignItems:"center", justifyContent:"center", padding:"30px 20px", overflow:"auto" }}>
+          <div onClick={e => e.stopPropagation()} style={{ background:"#fff", borderRadius:14, padding:"24px 28px", width:"min(520px, 100%)", maxHeight:"90vh", overflow:"auto", border:"1px solid #FBCFE8", boxShadow:"0 20px 50px rgba(131,24,67,0.25)" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:14 }}>
+              <div style={{ fontFamily:"'Playfair Display',serif", fontSize:20, color:"#831843", fontWeight:700 }}>
+                {editing.isNew ? "New task" : "Edit task"}
+              </div>
+              <button onClick={cancelEdit} style={{ background:"transparent", border:"none", color:"#9F1A4F", cursor:"pointer", fontSize:22, lineHeight:1 }}>×</button>
+            </div>
+
+            <label style={{ display:"flex", flexDirection:"column", gap:4, marginBottom:12 }}>
+              <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>TITLE *</span>
+              <input value={editing.title}
+                onChange={e => setEditing({ ...editing, title: e.target.value })}
+                placeholder="e.g. Submit weekly stock count"
+                style={{ padding:"9px 12px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, fontFamily:"inherit" }} />
+            </label>
+
+            <label style={{ display:"flex", flexDirection:"column", gap:4, marginBottom:12 }}>
+              <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>DESCRIPTION</span>
+              <textarea value={editing.description} rows={3}
+                onChange={e => setEditing({ ...editing, description: e.target.value })}
+                placeholder="Optional. Anything the assignee should know."
+                style={{ padding:"9px 12px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, fontFamily:"inherit", resize:"vertical" }} />
+            </label>
+
+            {/* Target picker: who sees this task? */}
+            <div style={{ marginBottom:12 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em", marginBottom:6 }}>SHOW ON</div>
+              <div style={{ display:"flex", gap:6 }}>
+                {[
+                  { v:"portal", l:"👤 Portal user(s)", sub:"Per-person to-do · click Done" },
+                  { v:"kiosk",  l:"🖥 Manager kiosks", sub:"Branch-wide reminder · no done tracking" }
+                ].map(o => {
+                  const on = (editing.target || "portal") === o.v;
+                  return (
+                    <button key={o.v} type="button" onClick={() => setEditing({ ...editing, target: o.v })}
+                      style={{ flex:1, padding:"9px 12px", borderRadius:9, border: on ? "1px solid #BE185D" : "1px solid #FBCFE8", background: on ? "#BE185D" : "#fff", color: on ? "#fff" : "#831843", cursor:"pointer", fontSize:12, fontWeight:700, fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"flex-start", lineHeight:1.2 }}>
+                      <span>{o.l}</span>
+                      <span style={{ fontSize:10, fontWeight:600, opacity: on ? 0.85 : 0.6, marginTop:2 }}>{o.sub}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {editing.target === "kiosk" ? (
+              <div style={{ display:"flex", flexDirection:"column", gap:4, marginBottom:12 }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                  <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>
+                    BRANCHES <span style={{ color:"#9F1A4F", fontWeight:600 }}>(empty = every branch)</span>
+                  </span>
+                  <div style={{ display:"flex", gap:6 }}>
+                    <button type="button" onClick={() => setEditing({ ...editing, branches: SALONS.map(s => s.name) })}
+                      style={{ background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:6, padding:"3px 9px", cursor:"pointer", fontSize:10, fontWeight:700, fontFamily:"inherit" }}>Select all</button>
+                    <button type="button" onClick={() => setEditing({ ...editing, branches: [] })}
+                      style={{ background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:6, padding:"3px 9px", cursor:"pointer", fontSize:10, fontWeight:700, fontFamily:"inherit" }}>Clear</button>
+                  </div>
+                </div>
+                <div style={{ border:"1px solid #FBCFE8", borderRadius:8, padding:"8px 10px", background:"#fff", maxHeight:170, overflowY:"auto", display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))", gap:4 }}>
+                  {SALONS.map(sl => {
+                    const on = (editing.branches || []).includes(sl.name);
+                    return (
+                      <label key={sl.name} style={{ display:"flex", alignItems:"center", gap:6, padding:"5px 8px", background: on ? "#FCE7F3" : "transparent", border:"1px solid " + (on ? "#FBCFE8" : "transparent"), borderRadius:6, cursor:"pointer", fontSize:12, color:"#831843", fontWeight: on ? 700 : 500 }}>
+                        <input type="checkbox" checked={on}
+                          onChange={() => {
+                            const cur = Array.isArray(editing.branches) ? editing.branches : [];
+                            const has = cur.includes(sl.name);
+                            setEditing({ ...editing, branches: has ? cur.filter(x => x !== sl.name) : [...cur, sl.name] });
+                          }}
+                          style={{ accentColor:"#BE185D" }} />
+                        <span style={{ flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{sl.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize:10, color:"#9F1A4F", fontWeight:600 }}>
+                  {(editing.branches || []).length === 0
+                    ? "Every kiosk will see this reminder."
+                    : (editing.branches || []).length + " branch" + ((editing.branches || []).length === 1 ? "" : "es") + " selected"}
+                </div>
+              </div>
+            ) : (
+            <div style={{ display:"flex", flexDirection:"column", gap:4, marginBottom:12 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>
+                  ASSIGN TO * {editing.isNew && <span style={{ color:"#9F1A4F", fontWeight:600 }}>(pick one or more)</span>}
+                </span>
+                {editing.isNew && (
+                  <div style={{ display:"flex", gap:6 }}>
+                    <button type="button" onClick={() => setEditing({ ...editing, assigneePins: sortedUserPins.slice() })}
+                      style={{ background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:6, padding:"3px 9px", cursor:"pointer", fontSize:10, fontWeight:700, fontFamily:"inherit" }}>Select all</button>
+                    <button type="button" onClick={() => setEditing({ ...editing, assigneePins: [] })}
+                      style={{ background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:6, padding:"3px 9px", cursor:"pointer", fontSize:10, fontWeight:700, fontFamily:"inherit" }}>Clear</button>
+                  </div>
+                )}
+              </div>
+              {editing.isNew ? (
+                <div style={{ border:"1px solid #FBCFE8", borderRadius:8, padding:"8px 10px", background:"#fff", maxHeight:170, overflowY:"auto", display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(170px,1fr))", gap:4 }}>
+                  {sortedUserPins.length === 0 && <div style={{ fontSize:12, color:"#9CA3AF", fontStyle:"italic" }}>No portal users yet.</div>}
+                  {sortedUserPins.map(pin => {
+                    const u = users[pin];
+                    const on = (editing.assigneePins || []).includes(pin);
+                    return (
+                      <label key={pin} style={{ display:"flex", alignItems:"center", gap:6, padding:"5px 8px", background: on ? "#FCE7F3" : "transparent", border:"1px solid " + (on ? "#FBCFE8" : "transparent"), borderRadius:6, cursor:"pointer", fontSize:12, color:"#831843", fontWeight: on ? 700 : 500 }}>
+                        <input type="checkbox" checked={on}
+                          onChange={() => {
+                            const cur = Array.isArray(editing.assigneePins) ? editing.assigneePins : [];
+                            const has = cur.includes(pin);
+                            setEditing({ ...editing, assigneePins: has ? cur.filter(x => x !== pin) : [...cur, pin] });
+                          }}
+                          style={{ accentColor:"#BE185D" }} />
+                        <span style={{ flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                          {u.name || "(unnamed)"}
+                          {u.role && <span style={{ color:"#9F1A4F", fontWeight:500 }}> · {u.role}</span>}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              ) : (
+                <select value={(editing.assigneePins && editing.assigneePins[0]) || ""}
+                  onChange={e => setEditing({ ...editing, assigneePins: e.target.value ? [e.target.value] : [] })}
+                  style={{ padding:"9px 12px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, fontFamily:"inherit", background:"#fff" }}>
+                  <option value="">— pick a user —</option>
+                  {sortedUserPins.map(pin => {
+                    const u = users[pin];
+                    return <option key={pin} value={pin}>{u.name || "(unnamed)"} · {u.role || ""}</option>;
+                  })}
+                </select>
+              )}
+              {editing.isNew && (
+                <div style={{ fontSize:10, color:"#9F1A4F", fontWeight:600 }}>
+                  {(editing.assigneePins || []).length} selected · one task is created per person, each tracked independently
+                </div>
+              )}
+            </div>
+            )}
+
+            <div style={{ marginBottom:12 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em", marginBottom:6 }}>REPEATS</div>
+              <div style={{ display:"flex", gap:6, marginBottom:8 }}>
+                {[
+                  { v:"once",   l:"One-off date" },
+                  { v:"weekly", l:"Every week" }
+                ].map(o => {
+                  const on = editing.kind === o.v;
+                  return (
+                    <button key={o.v} onClick={() => setEditing({ ...editing, kind: o.v })}
+                      style={{ padding:"7px 13px", borderRadius:9, border: on ? "1px solid #BE185D" : "1px solid #FBCFE8", background: on ? "#BE185D" : "#fff", color: on ? "#fff" : "#831843", cursor:"pointer", fontSize:12, fontWeight:700, fontFamily:"inherit" }}>{o.l}</button>
+                  );
+                })}
+              </div>
+              {editing.kind === "weekly" ? (
+                <div>
+                  <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:8 }}>
+                    {[1,2,3,4,5,6,0].map(d => {
+                      const on = (editing.repeatDow || []).includes(d);
+                      return (
+                        <button key={d}
+                          onClick={() => {
+                            const cur = Array.isArray(editing.repeatDow) ? editing.repeatDow : [];
+                            const has = cur.includes(d);
+                            setEditing({ ...editing, repeatDow: has ? cur.filter(x => x !== d) : [...cur, d] });
+                          }}
+                          style={{ width:50, padding:"7px 0", borderRadius:8, border: on ? "1px solid #BE185D" : "1px solid #FBCFE8", background: on ? "#BE185D" : "#fff", color: on ? "#fff" : "#831843", cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit", textAlign:"center" }}>{DOW_LABEL[d]}</button>
+                      );
+                    })}
+                  </div>
+                  <label style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                    <span style={{ fontSize:10, fontWeight:700, color:"#9F1A4F", letterSpacing:"0.04em" }}>STARTS FROM</span>
+                    <input type="date" value={editing.startDate} min={todayYmd}
+                      onChange={e => setEditing({ ...editing, startDate: e.target.value })}
+                      style={{ padding:"7px 10px", borderRadius:7, border:"1px solid #FBCFE8", fontSize:12, fontFamily:"inherit", width:200 }} />
+                  </label>
+                </div>
+              ) : (
+                <label style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                  <span style={{ fontSize:10, fontWeight:700, color:"#9F1A4F", letterSpacing:"0.04em" }}>DATE *</span>
+                  <input type="date" value={editing.date} min={todayYmd}
+                    onChange={e => setEditing({ ...editing, date: e.target.value })}
+                    style={{ padding:"7px 10px", borderRadius:7, border:"1px solid #FBCFE8", fontSize:12, fontFamily:"inherit", width:200 }} />
+                </label>
+              )}
+            </div>
+
+            <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
+              <button onClick={cancelEdit} disabled={busy}
+                style={{ padding:"9px 16px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:9, cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:600 }}>Cancel</button>
+              <button onClick={saveEdit} disabled={busy}
+                style={{ padding:"9px 18px", background:"#BE185D", color:"#fff", border:"none", borderRadius:9, cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>
+                {busy ? "Saving…" : (editing.isNew ? "Create task" : "Save changes")}
               </button>
             </div>
           </div>
@@ -5820,6 +6917,48 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // excludes them from active staff counts.
   const [unpaidLegalRecs, setUnpaidLegalRecs] = useState([]);
   const [unpaidLegalModal, setUnpaidLegalModal] = useState(null);
+
+  // Compliance follow-up actions per EC. Shape:
+  // { [ec]: { workPermitRequestedAt, workPermitRequestedBy,
+  //           workPermitDeadline, workPermitNotes, clearedAt, clearedBy } }
+  const [complianceActions, setComplianceActions] = useState({});
+  const [complianceModal, setComplianceModal] = useState(null); // null | { ec, name, branch, ... }
+  // Compliance directory filters (used in the bottom section of the
+  // Compliance tab so the user can search + slice by role / branch).
+  const [compSearch, setCompSearch] = useState("");
+  const [compRoleFilter, setCompRoleFilter] = useState("all"); // all | NT | mgr
+  const [compBranchFilter, setCompBranchFilter] = useState("All");
+  useEffect(() => {
+    if (!window.BOA_DB || !window.BOA_DB.loadComplianceActions) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const v = await window.BOA_DB.loadComplianceActions();
+        if (!cancelled) setComplianceActions((v && typeof v === "object") ? v : {});
+      } catch (e) { console.error("loadComplianceActions:", e); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  const saveComplianceAction = async (ec, patch) => {
+    if (!ec) return;
+    const next = { ...complianceActions };
+    const cur = next[ec] || {};
+    next[ec] = { ...cur, ...patch };
+    // Drop the row entirely if every field cleared, so no orphan keys.
+    if (!next[ec].workPermitRequestedAt && !next[ec].clearedAt && !next[ec].workPermitDeadline && !next[ec].workPermitRequestedBy && !next[ec].workPermitNotes) {
+      delete next[ec];
+    }
+    try {
+      await window.BOA_DB.saveComplianceActions(next);
+      setComplianceActions(next);
+      if (window.BOA_LOG_ACTIVITY) {
+        const action = patch.clearedAt ? "Cleared compliance follow-up"
+                     : patch.workPermitRequestedAt ? "Marked work permit request sent"
+                     : "Updated compliance follow-up";
+        window.BOA_LOG_ACTIVITY(action, ec, JSON.stringify(patch), "Compliance");
+      }
+    } catch (e) { alert("Could not save compliance action: " + (e.message || e)); }
+  };
   useEffect(() => {
     if (!window.BOA_DB || !window.BOA_DB.loadUnpaidLegalRecords) return;
     let cancelled = false;
@@ -5872,7 +7011,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // toBranch, note, createdBy, createdAt }. Uniqueness on (ec, date) is
   // enforced at save time by replacing any prior row for that pair.
   const [techLoans, setTechLoans] = useState([]);
-  const [loanModal, setLoanModal] = useState(null); // null | { _id?, ec, fromBranch, toBranch, date, note }
+  const [loanModal, setLoanModal] = useState(null); // null | { _id?, ec, fromBranch, toBranch, date, note, _err? }
+  const [loanSaving, setLoanSaving] = useState(false);
   const [movementsDate, setMovementsDate] = useState(() => new Date().toISOString().slice(0, 10));
   useEffect(() => {
     if (!window.BOA_DB || !window.BOA_DB.loadTechLoans) return;
@@ -5885,13 +7025,96 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     })();
     return () => { cancelled = true; };
   }, []);
+
+  // ── Daily tasks — admin assigns per-user to-dos, dashboard renders
+  // today's open items for the signed-in user. Stored as a flat array
+  // in app_state['boa_daily_tasks_v1'].
+  const [dailyTasks, setDailyTasks] = useState([]);
+  useEffect(() => {
+    if (!window.BOA_DB || !window.BOA_DB.loadDailyTasks) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const recs = await window.BOA_DB.loadDailyTasks();
+        if (!cancelled) setDailyTasks(Array.isArray(recs) ? recs : []);
+      } catch (e) { console.error("loadDailyTasks:", e); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  const persistDailyTasks = async (next) => {
+    try {
+      await window.BOA_DB.saveDailyTasks(next);
+      setDailyTasks(next);
+    } catch (e) {
+      alert("Could not save tasks: " + ((e && e.message) || e));
+      throw e;
+    }
+  };
+  // Today's open tasks for the signed-in user — drives the dashboard
+  // "Today's To-Dos" section. Both one-off tasks dated today and weekly
+  // tasks whose repeatDow includes today's weekday are included; the
+  // "done" check uses doneAt (once) or doneByDate[today] (weekly).
+  const todayYmdStr = new Date().toISOString().slice(0, 10);
+  const todayDowNum = new Date().getDay();
+  const myTodayTasks = (dailyTasks || []).filter(t =>
+    t && t.assigneePin === (currentUser && currentUser.pin) && isTaskActiveToday(t, todayYmdStr, todayDowNum)
+  ).sort((a, b) => {
+    const ad = isTaskDoneOn(a, todayYmdStr) ? 1 : 0;
+    const bd = isTaskDoneOn(b, todayYmdStr) ? 1 : 0;
+    return ad - bd || (a.createdAt || "").localeCompare(b.createdAt || "");
+  });
+  const markTaskDone = async (id) => {
+    const list = dailyTasks || [];
+    const stamp = new Date().toISOString();
+    const by = (currentUser && currentUser.name) || "";
+    const next = list.map(t => {
+      if (!t || t._id !== id) return t;
+      if (t.kind === "weekly") {
+        const dbd = { ...(t.doneByDate || {}) };
+        dbd[todayYmdStr] = { at: dbd[todayYmdStr] ? dbd[todayYmdStr].at : stamp, by: dbd[todayYmdStr] ? dbd[todayYmdStr].by : by };
+        return { ...t, doneByDate: dbd };
+      }
+      return { ...t, doneAt: t.doneAt || stamp, doneBy: t.doneBy || by };
+    });
+    await persistDailyTasks(next);
+    if (window.BOA_LOG_ACTIVITY) {
+      const r = list.find(t => t && t._id === id);
+      if (r) window.BOA_LOG_ACTIVITY("Completed daily task", r.title || "", todayYmdStr, "Task");
+    }
+  };
+  const markTaskUndone = async (id) => {
+    const list = dailyTasks || [];
+    const next = list.map(t => {
+      if (!t || t._id !== id) return t;
+      if (t.kind === "weekly") {
+        const dbd = { ...(t.doneByDate || {}) };
+        delete dbd[todayYmdStr];
+        return { ...t, doneByDate: dbd };
+      }
+      return { ...t, doneAt: null, doneBy: null };
+    });
+    await persistDailyTasks(next);
+  };
+
   const saveLoan = async (record) => {
-    if (!record || !record.ec || !record.date || !record.fromBranch || !record.toBranch) {
-      alert("Need tech, date, and a target branch."); return;
+    const showErr = (msg) => {
+      console.error("saveLoan:", msg, record);
+      setLoanModal(m => m ? { ...m, _err: msg } : m);
+    };
+    if (!record || !record.ec)   return showErr("Pick a nail tech.");
+    if (!record.date)            return showErr("Pick a date.");
+    if (!record.toBranch)        return showErr("Pick the branch they're working at.");
+    // fromBranch fallback: when the staff record passed in didn't carry a
+    // branch field, look it up from the live staff list before bailing.
+    let fromBranch = record.fromBranch || "";
+    if (!fromBranch) {
+      const live = (staff || []).find(p => p && p.ec === record.ec);
+      fromBranch = (live && live.branch) || "";
     }
-    if (record.fromBranch === record.toBranch) {
-      alert("Pick a branch different from the tech's home branch."); return;
-    }
+    if (!fromBranch)                       return showErr("This tech isn't assigned to a home branch yet — set their branch in Staff first.");
+    if (fromBranch === record.toBranch)    return showErr("Pick a branch different from the tech's home (" + fromBranch + ").");
+    if (!window.BOA_DB || !window.BOA_DB.saveTechLoans) return showErr("Database not ready — refresh and try again.");
+
     // Replace any existing loan for the same (ec, date)
     const list = techLoans || [];
     const filtered = list.filter(r => !(r && r.ec === record.ec && r.date === record.date));
@@ -5900,13 +7123,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       ec: record.ec,
       name: record.name || "",
       date: record.date,
-      fromBranch: record.fromBranch,
+      fromBranch,
       toBranch: record.toBranch,
       note: (record.note || "").toString().slice(0, 200),
       createdBy: record.createdBy || (currentUser && currentUser.name) || "",
       createdAt: record.createdAt || new Date().toISOString()
     };
     const next = [...filtered, stamped];
+    setLoanSaving(true);
     try {
       await window.BOA_DB.saveTechLoans(next);
       setTechLoans(next);
@@ -5919,7 +7143,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           "Movement"
         );
       }
-    } catch (e) { alert("Could not save: " + (e.message || e)); }
+    } catch (e) {
+      showErr("Could not save: " + ((e && e.message) || e));
+    } finally {
+      setLoanSaving(false);
+    }
   };
   const cancelLoan = async (id) => {
     const list = techLoans || [];
@@ -5987,6 +7215,53 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     })();
     return () => { cancelled = true; };
   }, []);
+
+  // ── ROM dashboard scope ────────────────────────────────────────────────
+  // "mine" = only stores allocated to the signed-in ROM; "other" = the rest
+  // (so they can pick up cover when a peer is on leave); "all" = no filter.
+  // Defaults to "mine" if the user has stores assigned, otherwise "all" so
+  // non-ROMs / unallocated ROMs see everything.
+  const _myStores = Array.isArray(currentUser && currentUser.stores) ? currentUser.stores : [];
+  const _hasStoreScope = isRomRole(currentUser && currentUser.role) && _myStores.length > 0;
+  const [dashScope, setDashScope] = useState(_hasStoreScope ? "mine" : "all");
+  const scopedSalonNames = useMemo(() => {
+    if (!_hasStoreScope || dashScope === "all") return new Set(SALONS.map(s => s.name));
+    if (dashScope === "other") {
+      const mine = new Set(_myStores);
+      return new Set(SALONS.map(s => s.name).filter(n => !mine.has(n)));
+    }
+    return new Set(_myStores);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dashScope, _hasStoreScope, _customSalonsTick, _myStores.join("|")]);
+  const inScope = (name) => scopedSalonNames.has(name);
+
+  // Compact scope toggle reused on the Dashboard, both Check-ins tabs and
+  // Store Openings. Renders nothing if the user has no store scope, so the
+  // call site can just drop it in unconditionally.
+  const renderScopeBar = (style) => {
+    if (!_hasStoreScope) return null;
+    const otherCount = SALONS.length - _myStores.length;
+    const opts = [
+      { v: "mine",  l: "🏬 My stores",    sub: _myStores.length + " store" + (_myStores.length === 1 ? "" : "s") },
+      { v: "other", l: "🤝 Other stores", sub: otherCount + " peer store" + (otherCount === 1 ? "" : "s") },
+      { v: "all",   l: "🌐 All",          sub: SALONS.length + " stores" }
+    ];
+    return (
+      <div style={{ background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:14, padding:"10px 14px", display:"flex", alignItems:"center", flexWrap:"wrap", gap:8, ...(style || {}) }}>
+        <div style={{ fontSize:11, fontWeight:800, color:"#831843", letterSpacing:"0.08em", textTransform:"uppercase", marginRight:4 }}>Viewing</div>
+        {opts.map(o => {
+          const on = dashScope === o.v;
+          return (
+            <button key={o.v} onClick={() => setDashScope(o.v)}
+              style={{ padding:"6px 11px", borderRadius:9, border: on ? "1px solid #BE185D" : "1px solid #FBCFE8", background: on ? "#BE185D" : "#fff", color: on ? "#fff" : "#831843", cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"flex-start", lineHeight:1.15 }}>
+              <span>{o.l}</span>
+              <span style={{ fontSize:9, fontWeight:600, opacity: on ? 0.85 : 0.6 }}>{o.sub}</span>
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
 
   // Modal state for the "+ Add location" form on the Locations tab.
   // Region filter for the Locations tab — "all" or one of the REGIONS keys.
@@ -6256,10 +7531,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   //   • Today ≥ 25th of current month → finalise cycle starting 25th next month
   // Tech schedule ym uses END-month convention; manager schedule + attendance
   // use START-month. We probe boa_(mgr)schedapproved_<branch>_<ym> per branch.
-  // To avoid the off-by-one frustration of saving under the current cycle
-  // when the dashboard is checking the next, also probe the CURRENT cycle
-  // and merge — if a branch has finalised either, count it as done.
+  // schedFinalStatus tracks finalised schedules for the upcoming 25th→24th
+  // cycle ONLY. The dashboard's "Schedule progress" widget must reflect
+  // saves for the NEXT cycle (the one HR is currently preparing for the
+  // 15th deadline), not the cycle that's already running.
   const [schedFinalStatus, setSchedFinalStatus] = useState(null);
+  // Which schedule-progress card is expanded inline on the dashboard
+  // (null | "tech" | "mgr"). Clicking a card toggles its details panel.
+  const [schedDetailsOpen, setSchedDetailsOpen] = useState(null);
   const loadSchedFinalStatus = async () => {
     if (!window.BOA_DB || !window.BOA_DB.loadApprovedSchedules) return;
     const today = new Date();
@@ -6269,12 +7548,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const cycEnd   = new Date(cycStart.getFullYear(), cycStart.getMonth() + 1, 24);
     const ymMgr    = cycStart.getFullYear() + "-" + String(cycStart.getMonth() + 1).padStart(2, "0");
     const ymTech   = cycEnd.getFullYear()   + "-" + String(cycEnd.getMonth() + 1).padStart(2, "0");
-    // Also the cycle currently RUNNING (the one before cycStart), to tolerate
-    // saves under the current cycle's ym.
-    const prevStart = new Date(cycStart.getFullYear(), cycStart.getMonth() - 1, 25);
-    const prevEnd   = new Date(cycStart.getFullYear(), cycStart.getMonth(), 24);
-    const ymMgrPrev  = prevStart.getFullYear() + "-" + String(prevStart.getMonth() + 1).padStart(2, "0");
-    const ymTechPrev = prevEnd.getFullYear()   + "-" + String(prevEnd.getMonth() + 1).padStart(2, "0");
     const deadline = new Date(cycStart.getFullYear(), cycStart.getMonth(), 15); // 15th of month the cycle starts in
     const cycLabel = cycStart.toLocaleDateString("en-ZA", { day:"2-digit", month:"short" }) + " → " + cycEnd.toLocaleDateString("en-ZA", { day:"2-digit", month:"short" });
     try {
@@ -6282,14 +7555,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       await Promise.all(SALONS.map(async (sl) => {
         const branch = sl.name;
         try {
-          const [t, mg, tPrev, mgPrev] = await Promise.all([
-            window.BOA_DB.loadApprovedSchedules(branch, ymTech,     false),
-            window.BOA_DB.loadApprovedSchedules(branch, ymMgr,      true),
-            window.BOA_DB.loadApprovedSchedules(branch, ymTechPrev, false),
-            window.BOA_DB.loadApprovedSchedules(branch, ymMgrPrev,  true)
+          const [t, mg] = await Promise.all([
+            window.BOA_DB.loadApprovedSchedules(branch, ymTech, false),
+            window.BOA_DB.loadApprovedSchedules(branch, ymMgr,  true)
           ]);
-          const techDone = (Array.isArray(t) && t.length > 0) || (Array.isArray(tPrev) && tPrev.length > 0);
-          const mgrDone  = (Array.isArray(mg) && mg.length > 0) || (Array.isArray(mgPrev) && mgPrev.length > 0);
+          const techDone = Array.isArray(t)  && t.length  > 0;
+          const mgrDone  = Array.isArray(mg) && mg.length > 0;
           results[branch] = { tech: techDone, mgr: mgrDone };
         } catch (e) { results[branch] = { tech: false, mgr: false }; }
       }));
@@ -6314,7 +7585,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }, [tab, activityTick]);
 
   // ── Manager Schedule state ─────────────────────────────────────────
-  const [mgrSchedBranch, setMgrSchedBranch] = useState(SALONS[0].name);
+  const [mgrSchedBranch, setMgrSchedBranch] = useState(_myStores[0] || SALONS[0].name);
   const [mgrSchedCycle, setMgrSchedCycle] = useState(""); // YYYY-MM-25 cycle start
   const [navCategory, setNavCategory] = useState("People"); // open nav category
   // Whether the user has explicitly picked a category tile while on the dashboard.
@@ -6387,7 +7658,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // ── Leave Planner state ────────────────────────────────────────────
   const [leaveRecs, setLeaveRecs] = useState([]);
-  const [leaveBranch, setLeaveBranch] = useState(SALONS[0].name);
+  const [leaveBranch, setLeaveBranch] = useState(_myStores[0] || SALONS[0].name);
   const [leaveYM, setLeaveYM] = useState(window.BOA_DB ? window.BOA_DB.currentSchedYm() : "2026-05");
   const [leaveForm, setLeaveForm] = useState({ ec:"", startDate:"", endDate:"", emergency:false, emergencyNote:"" });
   // Schedule cache for theoretical-off-day calculation: keyed by `<branch>|<ym>`,
@@ -6448,7 +7719,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }, [tab, leaveBranch, leaveYM, leaveRecs, staff, managers]);
 
   // ── Attendance tab state ───────────────────────────────────────────
-  const [attBranch, setAttBranch] = useState(SALONS[0].name);
+  const [attBranch, setAttBranch] = useState(_myStores[0] || SALONS[0].name);
   // Attendance grid keys rows by START-month of the 25-to-24 cycle (April 25 →
   // May 24, 2026 lives at "2026-04"). The kiosk check-in app writes to the same
   // start-month key. Using currentSchedYm() here would load the FUTURE cycle's
@@ -6692,6 +7963,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // ── Dashboard: count staff scheduled to work today across all branches ──
   const [dashScheduledToday, setDashScheduledToday] = useState(null); // null = loading
   const [dashByBranch, setDashByBranch] = useState({});
+  // Today's per-branch list of manager EC codes scheduled to work. The
+  // dashboard "managers not checked in" tile cross-references this against
+  // today's manager clockin rows.
+  const [dashSchedMgrsByBranch, setDashSchedMgrsByBranch] = useState({});
+  const [dashTodayMgrClockinEcs, setDashTodayMgrClockinEcs] = useState(null); // null = loading, Set<ec> once loaded
   useEffect(() => {
     if (tab !== "dashboard") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
@@ -6718,6 +7994,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const mgrGrid  = (mgr  && mgr.grid)  || {};
       const isWorking = (v) => v === "W" || v === "WL" || v === "E";
       let count = 0;
+      const mgrsScheduled = [];
       for (const ec in techGrid) {
         const v = techGrid[ec][todayDay];
         if (isWorking(v)) count++;
@@ -6725,17 +8002,40 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       for (const ec in mgrGrid) {
         // manager grid is keyed by YMD strings (mgrSched line 141)
         const v = mgrGrid[ec][ymd] || mgrGrid[ec][todayDay];
-        if (isWorking(v)) count++;
+        if (isWorking(v)) { count++; mgrsScheduled.push(ec); }
       }
-      return [sl.name, count];
-    })).then(pairs => {
+      return [sl.name, count, mgrsScheduled];
+    })).then(triples => {
       if (cancelled) return;
       const map = {};
+      const mgrMap = {};
       let total = 0;
-      for (const [name, c] of pairs) { map[name] = c; total += c; }
+      for (const [name, c, mgrs] of triples) { map[name] = c; mgrMap[name] = mgrs; total += c; }
       setDashByBranch(map);
+      setDashSchedMgrsByBranch(mgrMap);
       setDashScheduledToday(total);
     });
+    // Today's manager clockins — used by the "managers not checked in" tile.
+    // Stored as a Set of EC codes that have at least one IN event today.
+    setDashTodayMgrClockinEcs(null);
+    if (window.BOA_DB.listRecentManagerClockins) {
+      window.BOA_DB.listRecentManagerClockins(1).then(rows => {
+        if (cancelled) return;
+        const set = new Set();
+        const todayY = today.getFullYear(), todayM = today.getMonth(), todayD = today.getDate();
+        (rows || []).forEach(r => {
+          if (!r || !r.ts) return;
+          const t = new Date(r.ts);
+          if (t.getFullYear() === todayY && t.getMonth() === todayM && t.getDate() === todayD) {
+            const ec = (r.staff && r.staff.employee_code) || r.ec;
+            if (ec) set.add(ec);
+          }
+        });
+        setDashTodayMgrClockinEcs(set);
+      }).catch(() => { if (!cancelled) setDashTodayMgrClockinEcs(new Set()); });
+    } else {
+      setDashTodayMgrClockinEcs(new Set());
+    }
     return () => { cancelled = true; };
   }, [tab, staff, managers]);
 
@@ -7196,7 +8496,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // ECs currently ON maternity leave (not just pregnant) → excluded from count
   const onMatEcs = useMemo(() =>
-    new Set(matRecs.filter(r=>r.matStatus==="on_mat").map(r=>r.ec.trim()))
+    new Set(matRecs.filter(r=> r.matStatus==="on_mat" || r.matStatus==="dates_tbc").map(r=>r.ec.trim()))
   , [matRecs]);
 
   // ECs who are pregnant (still in store)
@@ -7256,6 +8556,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     });
   }, [staff, onMatEcs, pregnantEcs, onUnpaidLegalEcs, unpaidLegalRecs, offboardedMap, matRecs]);
 
+  // Managers don't go through enriched - their state is a flat array loaded
+  // from Supabase. To keep the rest of the UI honest about maternity, expose
+  // an enriched view that joins managers with the maternity-record ECs and
+  // adds onMat / pregnant flags. Used by the Locations card, Manage panel
+  // and any list that needs to grey out / exclude maternity managers.
+  const enrichedManagers = useMemo(() => {
+    return (managers || []).map(m => {
+      if (!m) return m;
+      const matRec = (matRecs || []).find(r => r && r.ec && m.ec && r.ec === m.ec) || null;
+      const onMat    = !!matRec && (matRec.matStatus === "on_mat" || matRec.matStatus === "dates_tbc");
+      const pregnant = !!matRec && matRec.matStatus === "pregnant";
+      return { ...m, onMat: onMat || !!m.onMat, pregnant: pregnant || !!m.pregnant, matRec };
+    });
+  }, [managers, matRecs]);
+
   // Filtered & sorted staff list — always sort by EC (B-number then T-number).
   // Departed staff (leftDate has passed) are pinned to the bottom for the 31-day
   // grace window so the active list stays clean.
@@ -7278,6 +8593,54 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       return ecSort(a, b);
     });
   }, [enriched, fShow, fBranch, fPermit, fContract, search]);
+
+  // Managers shown on the Staff List with the same filter set as techs.
+  // Sorted SSM → SM → AM, then by name. Off-mat managers always at the top
+  // so they're easy to find; on-mat below. We don't have a level/compliance
+  // for managers so those columns render empty.
+  const filteredMgrs = useMemo(() => {
+    const q = (search || "").toLowerCase();
+    const list = (enrichedManagers || []).filter(m => {
+      if (!m) return false;
+      if (fShow==="on_mat" && !m.onMat) return false;
+      if (fShow==="active_only" && m.onMat) return false;
+      if (fBranch!=="All" && m.branch!==fBranch) return false;
+      if (fContract!=="All" && (m.contract||"")!==fContract) return false;
+      // Compliance filter is a permit field; managers may not have one — skip
+      // filtering if user picked a specific permit AND the manager has none,
+      // otherwise compare.
+      if (fPermit!=="All") {
+        if (!m.permit) return false;
+        if (m.permit !== fPermit) return false;
+      }
+      if (q && !(m.name||"").toLowerCase().includes(q) && !(m.ec||"").toLowerCase().includes(q)) return false;
+      return true;
+    });
+    const rank = (r) => r==="SSM"?0 : r==="SM"?1 : r==="AM"?2 : 3;
+    return list.sort((a, b) => {
+      const am = a.onMat ? 1 : 0, bm = b.onMat ? 1 : 0;
+      if (am !== bm) return am - bm;                                 // active mgrs first
+      const rd = rank(a.role) - rank(b.role);
+      if (rd !== 0) return rd;                                       // SSM → SM → AM
+      return (a.name || "").localeCompare(b.name || "");
+    });
+  }, [enrichedManagers, fShow, fBranch, fPermit, fContract, search]);
+
+  // Pool for the Maternity modal lookup: every active tech + every manager,
+  // minus anyone who already has a maternity record (no double-up). Role
+  // tag drives the chip in the picker results.
+  const matPickerPool = useMemo(() => {
+    const seenEcs = new Set((matRecs || []).map(r => r && r.ec).filter(Boolean));
+    const techs = (enriched || [])
+      .filter(s => s && s.ec && !s.offHidden && !(s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft > 0))
+      .filter(s => !seenEcs.has(s.ec))
+      .map(s => ({ ec: s.ec, name: s.name, branch: s.branch, role: "NT" }));
+    const mgrs = (managers || [])
+      .filter(m => m && m.ec)
+      .filter(m => !seenEcs.has(m.ec))
+      .map(m => ({ ec: m.ec, name: m.name, branch: m.branch, role: m.role || "AM" }));
+    return [...mgrs, ...techs].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  }, [enriched, managers, matRecs]);
 
   const stats = useMemo(() => {
     // "active" excludes maternity, unpaid-legal leave AND off-boarded — all
@@ -7332,6 +8695,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         "Branch: " + (saved.branch || "—")
       );
     } catch (e) { alert("Could not save staff: " + (e.message || e)); }
+  }
+  // Owner-only hard delete - bypasses off-boarding entirely. Removes the
+  // staff row from Supabase AND scrubs any existing off-boarding entry for
+  // that EC so the deleted person doesn't linger in the Off-boarding tab.
+  // Activity-logged so the action is auditable.
+  async function hardDeleteStaff(rec) {
+    if (!currentUser?.isOwner) { alert("Only the owner can hard-delete staff."); return; }
+    if (!rec || !rec._id) return;
+    const label = (rec.name || "") + (rec.ec ? " (" + rec.ec + ")" : "");
+    if (!window.confirm("PERMANENTLY DELETE " + label + "?\n\nThis removes the staff record from the database and any off-boarding entry. The person will vanish from every view, including the Off-boarding tab. This can't be undone.\n\nFor normal departures use Off-board instead.")) return;
+    try {
+      await window.BOA_DB.deleteStaff(rec._id);
+      setStaff(p => p.filter(x => x._id !== rec._id));
+      // Scrub any off-boarding record for this EC so they don't reappear
+      // in the Off-boarding tab.
+      const nextOff = (offList || []).filter(o => o && o.ec !== rec.ec);
+      if (nextOff.length !== (offList || []).length) {
+        try {
+          await window.BOA_DB.saveOffboarding(nextOff);
+          setOffList(nextOff);
+        } catch (oe) { console.warn("offboard scrub failed (record still deleted):", oe); }
+      }
+      setStaffModal(null);
+      logActivity(
+        "🗑 Hard-deleted staff",
+        label,
+        "Owner override · Branch: " + (rec.branch || "—") + " · also removed from off-boarding list"
+      );
+    } catch (e) { alert("Could not delete staff: " + (e.message || e)); }
   }
 
   function handleTransfer({ staff, toBranch, transferDate, note, isPending }) {
@@ -7432,6 +8824,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     try {
       await window.BOA_DB.deleteManager(id);
       setManagers(p => p.filter(x => x._id !== id));
+      // Scrub any off-boarding record so the deleted manager doesn't
+      // linger in the Off-boarding tab.
+      if (target && target.ec) {
+        const nextOff = (offList || []).filter(o => o && o.ec !== target.ec);
+        if (nextOff.length !== (offList || []).length) {
+          try {
+            await window.BOA_DB.saveOffboarding(nextOff);
+            setOffList(nextOff);
+          } catch (oe) { console.warn("offboard scrub failed (record still deleted):", oe); }
+        }
+      }
       setMgrModal(null);
       if (target) logActivity("Deleted manager", target.name + (target.ec ? " (" + target.ec + ")" : ""), target.branch || "");
     }
@@ -7517,7 +8920,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <img src="data:image/png;base64,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" alt="BOA Beauty Bar" style={{ height:34, width:"auto", objectFit:"contain", flex:"0 0 auto" }} />
               <div style={{ width:1, height:38, background:"rgba(255,255,255,0.4)" }} />
               <div>
-                <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:28, color:"#FFFFFF", letterSpacing:"0.06em", fontWeight:800, textTransform:"uppercase", lineHeight:1.1, textShadow:"0 0 18px rgba(255,255,255,0.55)" }}>BOA HR PORTAL</div>
+                <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize: _hasStoreScope ? 40 : 34, color:"#FFFFFF", letterSpacing:"0.06em", fontWeight:800, textTransform:"uppercase", lineHeight:1.1, textShadow: _hasStoreScope ? "0 0 14px rgba(253,186,116,0.55), 0 0 30px rgba(244,114,182,0.45)" : "0 0 18px rgba(255,255,255,0.55)" }}>{_hasStoreScope ? "BOA PORTAL" : "BOA HR PORTAL"}</div>
                 <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:13, color:"#FFFFFF", letterSpacing:"0.04em", marginTop:5, fontWeight:500 }}>
                   {SALONS.length} LOCATIONS · {stats.active} ACTIVE (incl. {stats.pregnant} pregnant) · {stats.onMat} ON MATERNITY LEAVE
                 </div>
@@ -7556,18 +8959,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     { t:"hrLibrary", l:"📁 Employee Files" }
                   ] : []),
                   { t:"maternity",   l: matLbl },
-                  { t:"unpaidLegal", l:"⏸️ Unpaid Leave (Legal)" }
+                  { t:"unpaidLegal", l:"⏸️ Unpaid Leave (Legal)" },
+                  { t:"compliance",  l:"📋 Compliance" }
                 ] },
               { key:"Operations", icon:"⚙️", title:"Operations",
                 color:{ bg:"#E0F2FE", bgActive:"#BAE6FD", ink:"#075985" },
                 items: [
                   { t:"scheduling",  l:"📅 Scheduling"     },
                   { t:"locations",   l:"📍 Locations"      },
-                  { t:"checkins",    l:"📲 Daily Check-ins" },
-                  { t:"mgrclockins", l:"🕐 Mgr Clock-ins"  },
+                  { t:"checkins",    l:"📲 Nail Tech Check-ins" },
+                  { t:"mgrclockins", l:"🕐 Manager Check-ins"  },
                   { t:"leave",       l:"🌴 Leave Planner"  },
                   { t:"storeOpenings", l:"🔓 Store Openings" },
                   { t:"movements",     l:"🔀 Today's Movements" },
+                  { t:"dailyTasks",    l:"📋 Daily Tasks" },
                   { t:"mgrPlanner",  l:"🧩 Manager Planner",
                     isActive: tab==="recruitment" && recruitSubTab==="mgrRecruit" && mgrSubTab==="planner",
                     onClick: () => { setRecruitSubTab("mgrRecruit"); setMgrSubTab("planner"); tryChangeTab("recruitment"); }
@@ -7585,15 +8990,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t:"alerts",      l:"🔔 Alerts"         },
                   { t:"activity",    l:"📜 Activity Log"   }
                 ] },
-              ...(currentUser?.isOwner ? [{
-                key:"Admin", icon:"🛡️", title:"Admin",
-                color:{ bg:"#FEF3C7", bgActive:"#FDE68A", ink:"#92400e" },
-                items: [
-                  { t:"kioskPins",   l:"🔑 Kiosk PINs"   },
-                  { t:"managerPins", l:"🆔 Manager PINs" },
-                  { t:"settings",    l:"⚙️ Settings"     }
-                ]
-              }] : [])
+              // Admin group. Kiosk PINs / Manager PINs / Settings are
+              // owner-only. Store Allocation is shown to the Owner and to
+              // anyone whose role looks like a National Ops Manager; the
+              // standard hideTabs / readOnlyTabs grid still applies on top,
+              // so the Owner can fine-tune visibility for any specific user.
+              ...(() => {
+                const role = (currentUser?.role || "").toLowerCase();
+                const isNationalOps = role.includes("national ops") || role.includes("national operations");
+                const adminItems = [];
+                if (currentUser?.isOwner) {
+                  adminItems.push({ t:"kioskPins",   l:"🔑 Kiosk PINs"   });
+                  adminItems.push({ t:"managerPins", l:"🆔 Manager PINs" });
+                  adminItems.push({ t:"settings",    l:"⚙️ Settings"     });
+                }
+                if (currentUser?.isOwner || isNationalOps) {
+                  adminItems.push({ t:"storeAllocation", l:"🏬 Store Allocation" });
+                }
+                return adminItems.length > 0 ? [{
+                  key:"Admin", icon:"🛡️", title:"Admin",
+                  color:{ bg:"#FEF3C7", bgActive:"#FDE68A", ink:"#92400e" },
+                  items: adminItems
+                }] : [];
+              })()
             ];
             // Category that owns the currently-active tab.
             // Permission filter: hide entire categories AND/OR individual tabs.
@@ -7774,7 +9193,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const partOfDay = hr < 12 ? "morning" : hr < 17 ? "afternoon" : "evening";
           const dateLbl = now.toLocaleDateString("en-ZA", { weekday:"long", day:"2-digit", month:"long", year:"numeric" });
           const timeLbl = now.toLocaleTimeString("en-ZA", { hour:"2-digit", minute:"2-digit" });
-          const understaffedBranches = SALONS
+          // Dashboard salon scope: drives every branch-aware card below.
+          // When a ROM has a "My / Other / All" scope active, scopedSalons is
+          // the filtered list; otherwise it's just SALONS unchanged.
+          const scopedSalons = SALONS.filter(sl => inScope(sl.name));
+          const scopedBranchSet = scopedSalonNames;
+          // Branch-scoped versions of the headline stats so the four stat
+          // cards reflect "my stores" / "other stores" without re-fetching.
+          const _scopedActive = enriched.filter(s => scopedBranchSet.has(s.branch) && !s.onMat && !s.onUnpaidLegal && !s.offboarded);
+          const _scopedMat    = enriched.filter(s => scopedBranchSet.has(s.branch) && s.onMat);
+          const _scopedPreg   = enriched.filter(s => scopedBranchSet.has(s.branch) && s.pregnant && !s.onMat);
+          const _scopedReturning60 = matRecs.filter(r => r.matStatus === "on_mat" && r.returnDate && daysDiff(r.returnDate) !== null && daysDiff(r.returnDate) >= 0 && daysDiff(r.returnDate) <= 60 && scopedBranchSet.has(((enriched.find(e => e.ec && r.ec && e.ec.trim() === r.ec.trim()) || {}).branch || ""))).length;
+          const _scopedVacancies = scopedSalons.reduce((a, sl) => { const g = sl.targetCapacity || sl.capacity; const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length; return a + Math.max(0, g - act); }, 0);
+          const _scopedUnderstaffed = scopedSalons.filter(sl => enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length < sl.capacity).length;
+          const scopedStats = {
+            active: _scopedActive.length,
+            onMat: _scopedMat.length,
+            pregnant: _scopedPreg.length,
+            returning60: _scopedReturning60,
+            vacancies: _scopedVacancies,
+            understaffed: _scopedUnderstaffed
+          };
+          const scopedAttn = {
+            zna: enriched.filter(s => !s.onMat && !s.onUnpaidLegal && !s.offboarded && s.permit === "z_na" && scopedBranchSet.has(s.branch)).length,
+            noContract: enriched.filter(s => !s.onMat && !s.onUnpaidLegal && !s.offboarded && s.contract === "NO CONTRACT" && scopedBranchSet.has(s.branch)).length
+          };
+          const understaffedBranches = scopedSalons
             .map(sl => {
               const goal = sl.targetCapacity || sl.capacity;
               const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.offboarded).length;
@@ -7783,19 +9227,39 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             .filter(x => x.gap > 0)
             .sort((a, b) => b.gap - a.gap);
           const recentDepartures = enriched
-            .filter(s => s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft >= 0 && s.offDaysSinceLeft <= 7)
+            .filter(s => s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft >= 0 && s.offDaysSinceLeft <= 7 && scopedBranchSet.has(s.branch))
             .sort((a, b) => (a.offDaysSinceLeft ?? 0) - (b.offDaysSinceLeft ?? 0));
+
+          // Managers scheduled today vs managers who actually clocked in. The
+          // gap surfaces who hasn't hit the check-in app yet — useful for the
+          // dashboard at-a-glance and especially for ROMs covering branches.
+          let mgrSchedToday = 0;
+          let mgrMissing = [];
+          if (dashTodayMgrClockinEcs) {
+            for (const branchName in dashSchedMgrsByBranch) {
+              if (_hasStoreScope && !scopedBranchSet.has(branchName)) continue;
+              const ecs = dashSchedMgrsByBranch[branchName] || [];
+              for (const ec of ecs) {
+                mgrSchedToday++;
+                if (!dashTodayMgrClockinEcs.has(ec)) {
+                  const m = (managers || []).find(x => x.ec === ec);
+                  mgrMissing.push({ ec, name: (m && m.name) || ec, branch: branchName });
+                }
+              }
+            }
+          }
+          const mgrCheckinLoading = dashTodayMgrClockinEcs == null || dashScheduledToday == null;
 
           // Today's store-openings snapshot (loaded by the useEffect above).
           // null while the first load is in flight; show "…" until data lands.
           const todayY = new Date();
           const todayYmd = todayY.getFullYear() + "-" + String(todayY.getMonth()+1).padStart(2,"0") + "-" + String(todayY.getDate()).padStart(2,"0");
           const showStoreCard = storeOpenYmd === todayYmd && storeOpenRows !== null;
-          const openedBranchSet = new Set(showStoreCard ? (storeOpenRows || []).map(r => r.branch) : []);
+          const openedBranchSet = new Set(showStoreCard ? (storeOpenRows || []).filter(r => scopedBranchSet.has(r.branch)).map(r => r.branch) : []);
           const stillClosedBranches = showStoreCard
-            ? SALONS.map(s => s.name).filter(n => !openedBranchSet.has(n))
+            ? scopedSalons.map(s => s.name).filter(n => !openedBranchSet.has(n))
             : [];
-          const storeOpenedCount = SALONS.length - stillClosedBranches.length;
+          const storeOpenedCount = scopedSalons.length - stillClosedBranches.length;
           const storeOpenSub = !showStoreCard
             ? "loading…"
             : stillClosedBranches.length === 0
@@ -7808,21 +9272,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Green when complete, amber while pending, red once past the
           // 15th-of-cycle-start-month deadline.
           const schedReady = !!(schedFinalStatus && schedFinalStatus.byBranch);
-          const schedTotal = SALONS.length;
+          const schedTotal = scopedSalons.length;
           const _todayMid = new Date();
           const _today0   = new Date(_todayMid.getFullYear(), _todayMid.getMonth(), _todayMid.getDate());
           const deadline15 = schedReady && schedFinalStatus.deadline ? new Date(schedFinalStatus.deadline) : new Date(_today0.getFullYear(), _today0.getMonth(), 15);
           const daysToDeadline = Math.ceil((deadline15 - _today0) / 86400000);
           const cycSuffix = schedReady && schedFinalStatus.cycLabel ? " · " + schedFinalStatus.cycLabel : "";
           const _buildSchedCard = (kind /* "tech" | "mgr" */) => {
-            const done = schedReady
-              ? SALONS.reduce((n, sl) => {
-                  const r = schedFinalStatus.byBranch[sl.name] || { tech:false, mgr:false };
-                  return n + (r[kind] ? 1 : 0);
-                }, 0)
-              : 0;
+            const doneBranches = schedReady
+              ? scopedSalons.map(s => s.name).filter(n => {
+                  const r = schedFinalStatus.byBranch[n] || { tech:false, mgr:false };
+                  return r[kind];
+                })
+              : [];
+            const done = doneBranches.length;
             const missing = schedReady
-              ? SALONS.map(s => s.name).filter(n => {
+              ? scopedSalons.map(s => s.name).filter(n => {
                   const r = schedFinalStatus.byBranch[n] || { tech:false, mgr:false };
                   return !r[kind];
                 })
@@ -7838,7 +9303,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const bg    = !schedReady ? "#fef3c7" : (done === schedTotal ? "#dcfce7" : (overdue ? "#fee2e2" : "#fef3c7"));
             const color = !schedReady ? "#7c2d12" : (done === schedTotal ? "#166534" : (overdue ? "#7f1d1d" : "#7c2d12"));
             const icon  = !schedReady ? "📋" : (done === schedTotal ? "📌" : (overdue ? "🚨" : "📌"));
-            return { done, missing, sub, bg, color, icon };
+            return { done, missing, doneBranches, sub, bg, color, icon };
           };
           const techCard = _buildSchedCard("tech");
           const mgrCard  = _buildSchedCard("mgr");
@@ -7857,7 +9322,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             { lbl:"Locations",    icon:"📍", to:"locations" }
           ];
           const oversightActions = [
-            { lbl:"Mgr Clock-ins", icon:"🕐", to:"mgrclockins" },
+            { lbl:"Manager Check-ins", icon:"🕐", to:"mgrclockins" },
             { lbl:"Activity Log",  icon:"📜", to:"activity"    },
             { lbl:"Alerts",        icon:"🔔", to:"alerts"      }
           ];
@@ -7868,7 +9333,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ background:`linear-gradient(135deg,${PINK.softer} 0%,#FFFFFF 65%)`, border:`1px solid ${PINK.soft}`, borderRadius:20, padding:"26px 30px", marginBottom:20, boxShadow:"0 4px 18px rgba(190,24,93,0.07)", display:"flex", justifyContent:"space-between", alignItems:"flex-end", flexWrap:"wrap", gap:18, fontFamily:"'Outfit',system-ui,sans-serif" }}>
                 <div>
                   <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:11, fontWeight:700, color:PINK.accent, letterSpacing:"0.22em", textTransform:"uppercase" }}>BOA HR · Dashboard</div>
-                  <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:34, color:PINK.ink, fontWeight:700, lineHeight:1.1, marginTop:6, letterSpacing:"-0.01em" }}>Good {partOfDay}, {currentUser.name}</div>
+                  <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:34, color:PINK.ink, fontWeight:700, lineHeight:1.1, marginTop:6, letterSpacing:"-0.01em" }}>Good {partOfDay}, {(currentUser.name || "").trim().split(/\s+/)[0]}</div>
                   <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:12.5, color:PINK.accent, marginTop:8, fontWeight:500, letterSpacing:"0.02em" }}>{dateLbl}</div>
                 </div>
                 <div style={{ textAlign:"right" }}>
@@ -7877,29 +9342,165 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               </div>
 
+              {/* Shared scope toggle (My / Other / All). Renders nothing
+                  when the user has no store scope. Same control is wired
+                  to the Check-ins tabs and Store Openings — flipping it
+                  here also affects those views. */}
+              {renderScopeBar({ marginBottom: 18 })}
+
+              {/* ── SECTION: TODAY'S TO-DOS ── personal task list. Renders
+                  only when the signed-in user has at least one task for
+                  today (one-off dated today OR a weekly task whose
+                  repeatDow includes today). Wrapped in a loud pink panel
+                  so it pops near the top of the dashboard; each card has
+                  a coloured side-bar that flips green on Done. */}
+              {myTodayTasks.length > 0 && (() => {
+                const openCount = myTodayTasks.filter(t => !isTaskDoneOn(t, todayYmdStr)).length;
+                const allDone = openCount === 0;
+                // ROM dashboards lean on Stores Open / Mgr Check-ins
+                // first; tone the to-dos panel down so it doesn't draw
+                // the eye away from those headline tiles.
+                const muted = _hasStoreScope;
+                return (
+                <div style={muted ? {
+                  background: "#fff",
+                  border: "1px solid " + (allDone ? "#bbf7d0" : "#FBCFE8"),
+                  borderRadius: 14,
+                  padding: "12px 16px",
+                  marginBottom: 18,
+                  boxShadow: "0 1px 4px rgba(190,24,93,0.06)"
+                } : {
+                  background: allDone ? "linear-gradient(135deg,#dcfce7 0%,#FFFFFF 70%)" : "linear-gradient(135deg,#FCE7F3 0%,#FFFFFF 65%)",
+                  border: "2px solid " + (allDone ? "#86efac" : "#F472B6"),
+                  borderRadius: 18,
+                  padding: "18px 22px",
+                  marginBottom: 22,
+                  boxShadow: allDone ? "0 4px 18px rgba(34,197,94,0.10)" : "0 4px 22px rgba(244,114,182,0.22)"
+                }}>
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:10, marginBottom: muted ? 10 : 14 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap: muted ? 8 : 10 }}>
+                      <span style={{ fontSize: muted ? 18 : 28 }}>📋</span>
+                      <div>
+                        <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize: muted ? 10 : 11, fontWeight: 800, color: allDone ? "#15803d" : "#BE185D", letterSpacing: "0.18em", textTransform: "uppercase" }}>
+                          Today's To-Dos
+                        </div>
+                        <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize: muted ? 14 : 22, fontWeight: muted ? 700 : 800, color: "#831843", lineHeight: 1.15, marginTop: 2 }}>
+                          {allDone
+                            ? "All done — nice one!"
+                            : openCount + " task" + (openCount === 1 ? "" : "s") + " to tick off today"}
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{
+                      background: allDone ? "#16a34a" : "#BE185D",
+                      color: "#fff",
+                      padding: muted ? "3px 10px" : "6px 14px",
+                      borderRadius: 999,
+                      fontSize: muted ? 11 : 13,
+                      fontWeight: 800,
+                      letterSpacing: "0.04em",
+                      boxShadow: muted ? "none" : (allDone ? "0 0 0 3px rgba(22,163,74,0.18)" : "0 0 0 3px rgba(190,24,93,0.18)")
+                    }}>
+                      {myTodayTasks.length - openCount} / {myTodayTasks.length} done
+                    </div>
+                  </div>
+                  <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                    {myTodayTasks.map(t => {
+                      const done = isTaskDoneOn(t, todayYmdStr);
+                      const weekly = t.kind === "weekly";
+                      const bar = done ? "#16a34a" : "#BE185D";
+                      return (
+                        <div key={t._id} style={{
+                          background: "#fff",
+                          border: "1px solid " + (done ? "#bbf7d0" : "#FBCFE8"),
+                          borderLeft: "6px solid " + bar,
+                          borderRadius: 12,
+                          padding: "14px 18px",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          gap: 12,
+                          opacity: done ? 0.78 : 1,
+                          boxShadow: done ? "none" : "0 1px 4px rgba(190,24,93,0.08)"
+                        }}>
+                          <div style={{ minWidth:0, flex:1 }}>
+                            <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:4 }}>
+                              <span style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize: 17, fontWeight: 800, color:"#831843", textDecoration: done ? "line-through" : "none" }}>{t.title}</span>
+                              {weekly && (
+                                <span style={{ background:"#ede9fe", color:"#5b21b6", border:"1px solid #ddd6fe", padding:"2px 8px", borderRadius:6, fontSize:10, fontWeight:800, letterSpacing:"0.06em" }}>
+                                  WEEKLY · {DOW_LABEL[todayDowNum].toUpperCase()}
+                                </span>
+                              )}
+                            </div>
+                            {t.description && <div style={{ fontSize:13, color:"#4b5563", whiteSpace:"pre-wrap", lineHeight: 1.4 }}>{t.description}</div>}
+                            {done && (
+                              <div style={{ fontSize:11, color:"#15803d", fontWeight:700, marginTop:5 }}>
+                                ✓ Done {weekly
+                                  ? (t.doneByDate[todayYmdStr] && t.doneByDate[todayYmdStr].by ? "· by " + t.doneByDate[todayYmdStr].by : "")
+                                  : (t.doneBy ? "· by " + t.doneBy : "")}
+                              </div>
+                            )}
+                          </div>
+                          {done ? (
+                            <button onClick={() => markTaskUndone(t._id)}
+                              style={{ background:"#fff", color:"#374151", border:"1px solid #d1d5db", borderRadius:8, padding:"8px 14px", cursor:"pointer", fontSize:12, fontWeight:700, fontFamily:"inherit", whiteSpace:"nowrap" }}>Undo</button>
+                          ) : (
+                            <button onClick={() => markTaskDone(t._id)}
+                              style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:10, padding:"12px 22px", cursor:"pointer", fontSize:14, fontWeight:800, fontFamily:"inherit", whiteSpace:"nowrap", boxShadow:"0 2px 6px rgba(190,24,93,0.35)" }}>
+                              ✓ Mark done
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                );
+              })()}
+
               {/* ── SECTION: TODAY ── */}
               <div style={sectionTitle}>
                 <span>✨ Today at a glance</span>
                 <span style={sectionRule} />
               </div>
               <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:11, marginBottom:24 }}>
-                {[
-                  // Today's store-opening status — bright green when every
-                  // branch is open, red the moment ANY branch is still closed
-                  // (no amber middle state) so it pops on the dashboard until
-                  // resolved. While loading, fall back to the neutral amber.
-                  { l:"Stores open today",
-                    v: showStoreCard ? (storeOpenedCount + " / " + SALONS.length) : "…",
-                    sub: storeOpenSub,
-                    i: !showStoreCard ? "⚠" : (stillClosedBranches.length === 0 ? "🔓" : "🚨"),
-                    c: !showStoreCard ? "#7c2d12" : (stillClosedBranches.length === 0 ? "#166534" : "#7f1d1d"),
-                    bg: !showStoreCard ? "#fef3c7" : (stillClosedBranches.length === 0 ? "#dcfce7" : "#fee2e2"),
-                    click:()=>tryChangeTab("storeOpenings") },
-                  { l:"Scheduled today",   v: dashScheduledToday == null ? "…" : dashScheduledToday, sub:"across all branches",       i:"📅", c:"#1e3a8a", bg:"#dbeafe" },
-                  { l:"Active staff",       v: stats.active,                                          sub:"incl. " + stats.pregnant + " pregnant", i:"👥", c:"#14532d", bg:"#dcfce7" },
-                  { l:"On maternity",       v: stats.onMat,                                           sub: stats.returning60 + " returning ≤60d",  i:"🤱", c:"#7A4258", bg:"#fce7f3" },
-                  { l:"Positions to hire",  v: stats.vacancies,                                       sub:"across " + stats.understaffed + " branch" + (stats.understaffed !== 1 ? "es" : ""), i:"🎯", c:"#7c3aed", bg:"#ede9fe", click:()=>tryChangeTab("recruitment") }
-                ].map(c => (
+                {(() => {
+                  // Stat tile catalog. Order is reshuffled for ROM users:
+                  // 'Stores open today' and 'Mgrs not checked in' lead the
+                  // row because they're the headline operational signals
+                  // a Regional Ops Manager checks first. For everyone else
+                  // the original ordering stays.
+                  const tiles = {
+                    storesOpen: { l:"Stores open today",
+                      v: showStoreCard ? (storeOpenedCount + " / " + scopedSalons.length) : "…",
+                      sub: storeOpenSub,
+                      i: !showStoreCard ? "⚠" : (stillClosedBranches.length === 0 ? "🔓" : "🚨"),
+                      c: !showStoreCard ? "#7c2d12" : (stillClosedBranches.length === 0 ? "#166534" : "#7f1d1d"),
+                      bg: !showStoreCard ? "#fef3c7" : (stillClosedBranches.length === 0 ? "#dcfce7" : "#fee2e2"),
+                      click:()=>tryChangeTab("storeOpenings") },
+                    mgrCheckin: { l:"Mgrs not checked in",
+                      v: mgrCheckinLoading ? "…" : (mgrSchedToday === 0 ? "—" : mgrMissing.length + " / " + mgrSchedToday),
+                      sub: mgrCheckinLoading
+                            ? "loading…"
+                            : (mgrSchedToday === 0
+                                ? "no managers scheduled"
+                                : (mgrMissing.length === 0
+                                    ? "✓ all managers checked in"
+                                    : mgrMissing.slice(0, 2).map(m => m.name + " · " + m.branch).join(", ") + (mgrMissing.length > 2 ? " +" + (mgrMissing.length - 2) + " more" : ""))),
+                      i: mgrCheckinLoading ? "⌛" : (mgrSchedToday === 0 ? "🕐" : (mgrMissing.length === 0 ? "✓" : "🚨")),
+                      c: mgrCheckinLoading ? "#7c2d12" : (mgrMissing.length === 0 ? "#166534" : "#7f1d1d"),
+                      bg: mgrCheckinLoading ? "#fef3c7" : (mgrMissing.length === 0 ? "#dcfce7" : "#fee2e2"),
+                      click: ()=>tryChangeTab("mgrclockins") },
+                    scheduledToday: { l:"Scheduled today", v: dashScheduledToday == null ? "…" : (_hasStoreScope ? Object.keys(dashByBranch).filter(b => scopedBranchSet.has(b)).reduce((a, b) => a + (dashByBranch[b] || 0), 0) : dashScheduledToday), sub: _hasStoreScope ? ("scope: " + (dashScope === "mine" ? "my stores" : dashScope === "other" ? "peer stores" : "all branches")) : "across all branches", i:"📅", c:"#1e3a8a", bg:"#dbeafe" },
+                    activeStaff: { l:"Active staff", v: scopedStats.active, sub:"incl. " + scopedStats.pregnant + " pregnant", i:"👥", c:"#14532d", bg:"#dcfce7" },
+                    onMaternity: { l:"On maternity", v: scopedStats.onMat, sub: scopedStats.returning60 + " returning ≤60d", i:"🤱", c:"#7A4258", bg:"#fce7f3" },
+                    vacancies:   { l:"Positions to hire", v: scopedStats.vacancies, sub:"across " + scopedStats.understaffed + " branch" + (scopedStats.understaffed !== 1 ? "es" : ""), i:"🎯", c:"#7c3aed", bg:"#ede9fe", click:()=>tryChangeTab("recruitment") }
+                  };
+                  const order = _hasStoreScope
+                    ? ["storesOpen", "mgrCheckin", "scheduledToday", "activeStaff", "vacancies", "onMaternity"]
+                    : ["storesOpen", "scheduledToday", "activeStaff", "onMaternity", "vacancies", "mgrCheckin"];
+                  return order.map(k => tiles[k]);
+                })().map(c => (
                   <div key={c.l} onClick={c.click} style={{ background:c.bg, borderRadius:16, padding:"16px 18px", cursor:c.click ? "pointer" : "default", border:"1px solid rgba(255,255,255,0.6)" }}>
                     <div style={{ fontSize:24 }}>{c.i}</div>
                     <div style={{ fontSize:32, fontWeight:800, color:c.c, lineHeight:1.05, marginTop:4 }}>{c.v}</div>
@@ -7909,10 +9510,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 ))}
               </div>
 
-              {/* ── SECTION: HR TASKS (Mocked Phase 3) ── */}
-              {(() => {
-                const pendingTasks = obList.filter(o => 
-                  o.status === "Pending Trainer Review" || 
+              {/* ── SECTION: HR TASKS (Mocked Phase 3) ── hidden for ROM
+                  users — onboarding trial-review actions are HR's job,
+                  not something a Regional Ops Manager would action. */}
+              {!_hasStoreScope && (() => {
+                const pendingTasks = obList.filter(o =>
+                  o.status === "Pending Trainer Review" ||
                   o.status === "Pending Trial 1 Review" ||
                   o.status === "Pending Trial 2 Review"
                 ).map(o => {
@@ -7983,21 +9586,62 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     : _anyOverdue
                       ? { txt: "Overdue " + Math.abs(daysToDeadline) + " day" + (Math.abs(daysToDeadline) === 1 ? "" : "s"), color: "#7f1d1d", bg: "#fee2e2" }
                       : { txt: (daysToDeadline >= 0 ? daysToDeadline + " day" + (daysToDeadline === 1 ? "" : "s") + " left" : "Due today"), color: "#7c2d12", bg: "#fef3c7" };
-                const _inner = (title, emoji, c /* card descriptor */) => {
+                const _inner = (title, emoji, c /* card descriptor */, kind) => {
                   const pct = schedReady ? Math.round((c.done / schedTotal) * 100) : 0;
+                  const open = schedDetailsOpen === kind;
                   return (
-                    <div onClick={() => tryChangeTab("scheduling")} style={{ background: c.bg, borderRadius: 14, padding: "16px 18px", cursor: "pointer", border: "1px solid rgba(255,255,255,0.6)", flex: 1, minWidth: 220 }}>
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                        <div style={{ fontSize: 11, fontWeight: 700, color: c.color, letterSpacing: "0.12em", textTransform: "uppercase" }}>{emoji} {title}</div>
-                        <div style={{ fontSize: 20 }}>{c.icon}</div>
+                    <div style={{ background: c.bg, borderRadius: 14, padding: "16px 18px", border: "1px solid rgba(255,255,255,0.6)", flex: 1, minWidth: 220 }}>
+                      <div onClick={() => setSchedDetailsOpen(open ? null : kind)} style={{ cursor: "pointer" }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: c.color, letterSpacing: "0.12em", textTransform: "uppercase" }}>{emoji} {title}</div>
+                          <div style={{ fontSize: 20 }}>{c.icon}</div>
+                        </div>
+                        <div style={{ fontSize: 30, fontWeight: 800, color: c.color, lineHeight: 1.05, marginTop: 8 }}>
+                          {schedReady ? c.done : "…"}<span style={{ fontSize: 16, fontWeight: 600, opacity: 0.7 }}> / {schedTotal}</span>
+                        </div>
+                        <div style={{ height: 6, borderRadius: 999, background: "rgba(0,0,0,0.06)", marginTop: 10, overflow: "hidden" }}>
+                          <div style={{ height: "100%", width: pct + "%", background: c.color, opacity: 0.85, transition: "width .3s ease" }} />
+                        </div>
+                        <div style={{ fontSize: 11, color: c.color, opacity: 0.8, marginTop: 8, lineHeight: 1.35 }}>{c.sub}</div>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: c.color, opacity: 0.7, marginTop: 6, letterSpacing: "0.04em" }}>
+                          {open ? "▲ hide details" : "▼ click to see which stores are done"}
+                        </div>
                       </div>
-                      <div style={{ fontSize: 30, fontWeight: 800, color: c.color, lineHeight: 1.05, marginTop: 8 }}>
-                        {schedReady ? c.done : "…"}<span style={{ fontSize: 16, fontWeight: 600, opacity: 0.7 }}> / {schedTotal}</span>
-                      </div>
-                      <div style={{ height: 6, borderRadius: 999, background: "rgba(0,0,0,0.06)", marginTop: 10, overflow: "hidden" }}>
-                        <div style={{ height: "100%", width: pct + "%", background: c.color, opacity: 0.85, transition: "width .3s ease" }} />
-                      </div>
-                      <div style={{ fontSize: 11, color: c.color, opacity: 0.8, marginTop: 8, lineHeight: 1.35 }}>{c.sub}</div>
+                      {open && schedReady && (
+                        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(0,0,0,0.08)" }}>
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                            <div>
+                              <div style={{ fontSize: 10, fontWeight: 800, color: "#166534", letterSpacing: "0.08em", marginBottom: 6 }}>✓ COMPLETED ({c.doneBranches.length})</div>
+                              {c.doneBranches.length === 0 ? (
+                                <div style={{ fontSize: 11, color: "#6b7280", fontStyle: "italic" }}>None yet</div>
+                              ) : (
+                                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                  {c.doneBranches.map(b => (
+                                    <div key={b} style={{ background: "#dcfce7", color: "#166534", border: "1px solid #86efac", borderRadius: 7, padding: "4px 8px", fontSize: 11, fontWeight: 700 }}>📍 {b}</div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                            <div>
+                              <div style={{ fontSize: 10, fontWeight: 800, color: "#7c2d12", letterSpacing: "0.08em", marginBottom: 6 }}>⏳ PENDING ({c.missing.length})</div>
+                              {c.missing.length === 0 ? (
+                                <div style={{ fontSize: 11, color: "#16a34a", fontWeight: 700 }}>✓ All branches finalised</div>
+                              ) : (
+                                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                  {c.missing.map(b => (
+                                    <div key={b} style={{ background: "#fef3c7", color: "#7c2d12", border: "1px solid #fde68a", borderRadius: 7, padding: "4px 8px", fontSize: 11, fontWeight: 700 }}>📍 {b}</div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          <div style={{ marginTop: 12, textAlign: "right" }}>
+                            <button onClick={(e) => { e.stopPropagation(); tryChangeTab("scheduling"); }} style={{ background: c.color, color: "#fff", border: "none", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit" }}>
+                              Open scheduling →
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 };
@@ -8016,8 +9660,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       </div>
                     </div>
                     <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-                      {_inner("Nail tech schedules", "💅", techCard)}
-                      {_inner("Manager schedules",   "👔", mgrCard)}
+                      {_inner("Nail tech schedules", "💅", techCard, "tech")}
+                      {_inner("Manager schedules",   "👔", mgrCard, "mgr")}
                     </div>
                   </div>
                 );
@@ -8039,7 +9683,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <div style={{ fontSize:12, color:"#9ca3af", fontStyle:"italic" }}>Loading schedules…</div>
                   ) : (
                     <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))", gap:8 }}>
-                      {SALONS.map(sl => {
+                      {scopedSalons.map(sl => {
                         const c = dashByBranch[sl.name] || 0;
                         return (
                           <div key={sl.name} style={{ background:PINK.softest, border:`1px solid ${PINK.soft}`, borderRadius:11, padding:"10px 12px" }}>
@@ -8061,12 +9705,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <span>🎯 Recruitment needs</span>
                     <button onClick={()=>tryChangeTab("recruitment")} style={{ background:PINK.accent, color:"#fff", border:"none", borderRadius:8, padding:"5px 12px", cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit" }}>Open →</button>
                   </div>
-                  {stats.vacancies === 0 ? (
+                  {scopedStats.vacancies === 0 ? (
                     <div style={{ fontSize:13, color:"#16a34a", fontWeight:700, padding:"8px 0" }}>✅ All branches fully staffed.</div>
                   ) : (
                     <>
                       <div style={{ fontSize:12, color:PINK.ink, marginBottom:10 }}>
-                        <strong>{stats.vacancies}</strong> position{stats.vacancies !== 1 ? "s" : ""} to fill across <strong>{stats.understaffed}</strong> branch{stats.understaffed !== 1 ? "es" : ""}.
+                        <strong>{scopedStats.vacancies}</strong> position{scopedStats.vacancies !== 1 ? "s" : ""} to fill across <strong>{scopedStats.understaffed}</strong> branch{scopedStats.understaffed !== 1 ? "es" : ""}.
                       </div>
                       <div style={{ display:"grid", gap:6 }}>
                         {understaffedBranches.slice(0, 6).map(b => (
@@ -8081,7 +9725,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               </div>
 
-              {/* ── SECTION: ATTENTION ── */}
+              {/* ── SECTION: ATTENTION ── hidden for ROM users; the Z/NA,
+                  no-contract and recent-departure alerts are HR-level
+                  concerns that ROMs can't action on this dashboard. */}
+              {!_hasStoreScope && (<>
               <div style={sectionTitle}>
                 <span>⚠ Needs attention</span>
                 <span style={sectionRule} />
@@ -8118,8 +9765,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   }
                   return [
                     schedAlert,
-                    stats.zna           > 0 && { i:"🚨", l: stats.zna + " staff with Z/NA risk", sub:"compliance issue", c:"#7f1d1d", bg:"#fee2e2", to:"staff" },
-                    stats.noContract    > 0 && { i:"📄", l: stats.noContract + " staff with no contract", sub:"upload contracts", c:"#7f1d1d", bg:"#fee2e2", to:"staff" },
+                    scopedAttn.zna           > 0 && { i:"🚨", l: scopedAttn.zna + " staff with Z/NA risk", sub:"compliance issue", c:"#7f1d1d", bg:"#fee2e2", to:"staff" },
+                    scopedAttn.noContract    > 0 && { i:"📄", l: scopedAttn.noContract + " staff with no contract", sub:"upload contracts", c:"#7f1d1d", bg:"#fee2e2", to:"staff" },
                     recentDepartures.length > 0 && { i:"👋", l: recentDepartures.length + " departure" + (recentDepartures.length !== 1 ? "s" : "") + " this week", sub:"in last 7 days", c:"#374151", bg:"#f3f4f6", to:"offboard" }
                   ];
                 })().filter(Boolean).map(b => (
@@ -8129,13 +9776,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <div style={{ fontSize:10, fontWeight:600, color:b.c, opacity:0.7, marginTop:2 }}>{b.sub}</div>
                   </div>
                 ))}
-                {stats.zna === 0 && stats.noContract === 0 && recentDepartures.length === 0 &&
+                {scopedAttn.zna === 0 && scopedAttn.noContract === 0 && recentDepartures.length === 0 &&
                  (!SCHED_ALERT_PINS.has(currentUser.pin) || (upcomingChecked && upcomingMissing.length === 0)) && (
                   <div style={{ background:"#dcfce7", border:"1px solid #86efac", borderRadius:14, padding:"14px 16px", color:"#14532d", fontWeight:700, fontSize:13 }}>
                     ✅ Nothing urgent — everything in good shape.
                   </div>
                 )}
               </div>
+              </>)}
 
               {/* ── SECTION: ALL TOOLS ── grouped quick links ── */}
               <div style={sectionTitle}>
@@ -8184,9 +9832,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <select value={fContract} onChange={e=>setFContract(e.target.value)} style={{ padding:"7px 11px", borderRadius:7, border:`1px solid ${bdr}`, fontFamily:"inherit", fontSize:13, background:cream }}>
                 <option value="All">All Contracts</option>{["Permanent","Fixed Term","NO CONTRACT","2 Weeks","Induction"].map(c=><option key={c}>{c}</option>)}
               </select>
-              <span style={{ marginLeft:"auto", fontSize:11, color:"#BE185D", fontWeight:700 }}>{filtered.length} shown (sorted by EC)</span>
+              <span style={{ marginLeft:"auto", fontSize:11, color:"#BE185D", fontWeight:700 }}>{filteredMgrs.length + filtered.length} shown {filteredMgrs.length > 0 ? "(" + filteredMgrs.length + " mgrs · " + filtered.length + " techs)" : "(sorted by EC)"}</span>
               <button onClick={()=>setStaffModal({ ec:"", name:"", branch:"Sea Point", contract:"Permanent", permit:"sa_citizen", level:"" })}
-                style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:8, padding:"7px 14px", cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:12 }}>+ Add Staff</button>
+                style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:8, padding:"7px 14px", cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:12 }}>+ Add Tech</button>
+              <button onClick={()=>setMgrModal({ ec:"", name:"", branch:"Sea Point", role:"AM", contract:"Permanent" })}
+                style={{ background:"#7c3aed", color:"#fff", border:"none", borderRadius:8, padding:"7px 14px", cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:12 }}>+ Add Manager</button>
             </div>
 
             <div style={{ background:"#FFFFFF", borderRadius:15, border:`1px solid ${bdr}`, overflow:"hidden", boxShadow:"0 2px 12px rgba(0,0,0,.05)" }}>
@@ -8200,7 +9850,50 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {filtered.length===0 && <tr><td colSpan={10} style={{ textAlign:"center", padding:40, color:"#9ca3af" }}>No results.</td></tr>}
+                    {filtered.length===0 && filteredMgrs.length===0 && <tr><td colSpan={10} style={{ textAlign:"center", padding:40, color:"#9ca3af" }}>No results.</td></tr>}
+
+                    {/* Managers section header */}
+                    {filteredMgrs.length > 0 && (
+                      <tr><td colSpan={10} style={{ background:"#FDEEF5", padding:"8px 14px", fontSize:11, fontWeight:800, letterSpacing:"0.12em", color:"#831843", textTransform:"uppercase", borderTop:"2px solid #FBCFE8", borderBottom:"1px solid #FBCFE8" }}>
+                        👑 Managers · {filteredMgrs.length}
+                      </td></tr>
+                    )}
+                    {filteredMgrs.map(m => {
+                      const icon = m.role === "SSM" ? "💎" : m.role === "SM" ? "👑" : "⭐";
+                      const roleBg = m.role === "SSM" ? "#92400e" : m.role === "SM" ? "#7c3aed" : "#0369a1";
+                      const rowBg  = m.onMat ? "#fdf4ff" : m.pregnant ? "#fffbeb" : "#fff";
+                      const rowOpacity = m.onMat ? 0.6 : 1;
+                      return (
+                        <tr key={"mgr-" + (m._id || m.ec)} style={{ background:rowBg, borderTop:`1px solid ${bdr}`, opacity:rowOpacity }}>
+                          <td style={{ padding:"10px 12px", fontFamily:"monospace", fontSize:11, color:"#8E5570", fontWeight:700 }}>{m.ec}</td>
+                          <td style={{ padding:"10px 12px", fontWeight:700, color: m.onMat ? "#7A4258" : "#111827", whiteSpace:"nowrap", fontStyle: m.onMat?"italic":"normal" }}>
+                            {m.onMat ? "🤱 " : m.pregnant ? "🤰 " : ""}{icon} {m.name}
+                            {m.transferring && <span style={{ fontSize:10, marginLeft:5, background:"#FBCFE8", color:"#BE185D", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>→ {m.transferTo} on {m.transferDate ? new Date(m.transferDate).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"}) : ""}</span>}
+                          </td>
+                          <td style={{ padding:"10px 12px", color:"#475569", fontSize:12, whiteSpace:"nowrap" }}>📍 {m.branch || "—"}</td>
+                          <td style={{ padding:"10px 12px", color:"#9ca3af" }}>—</td>
+                          <td style={{ padding:"10px 12px", color:"#475569", fontSize:12, whiteSpace:"nowrap" }}>{m.contract || "—"}</td>
+                          <td style={{ padding:"10px 12px" }}>{m.permit ? <Chip {...(COMPLIANCE[m.permit] || { icon:"❔", color:"#6b7280", bg:"#f3f4f6", border:"#d1d5db", label:m.permit })}>{(COMPLIANCE[m.permit] || {}).label || m.permit}</Chip> : <span style={{ color:"#9ca3af" }}>—</span>}</td>
+                          <td style={{ padding:"10px 12px", fontSize:11, color:"#831843", fontWeight:600, whiteSpace:"nowrap" }}>{m.startDate ? new Date(m.startDate + "T00:00:00").toLocaleDateString("en-ZA",{day:"2-digit",month:"short",year:"numeric"}) : <span style={{ color:"#d1d5db" }}>—</span>}</td>
+                          <td style={{ padding:"10px 12px" }}>
+                            <span style={{ fontSize:10, fontWeight:800, background:roleBg, color:"#fff", padding:"3px 8px", borderRadius:6, letterSpacing:"0.04em" }}>{m.role || "—"}</span>
+                            {m.onMat && <span style={{ marginLeft:6, fontSize:10, background:"#FBCFE8", color:"#8E5570", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>🤱 mat.</span>}
+                          </td>
+                          <td style={{ padding:"10px 12px", fontSize:11, color:"#831843" }}>{m.matRec && m.matRec.returnDate ? new Date(m.matRec.returnDate + "T00:00:00").toLocaleDateString("en-ZA",{day:"2-digit",month:"short"}) : <span style={{ color:"#d1d5db" }}>—</span>}</td>
+                          <td style={{ padding:"10px 12px", textAlign:"right" }}>
+                            <button onClick={()=>setMgrModal(m)} style={{ background:"#e2e8f0", border:"none", borderRadius:6, padding:"5px 11px", cursor:"pointer", fontSize:11, fontWeight:700, color:"#831843" }}>✏️ Edit</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+
+                    {/* Nail Techs section header */}
+                    {filteredMgrs.length > 0 && filtered.length > 0 && (
+                      <tr><td colSpan={10} style={{ background:"#FDEEF5", padding:"8px 14px", fontSize:11, fontWeight:800, letterSpacing:"0.12em", color:"#831843", textTransform:"uppercase", borderTop:"2px solid #FBCFE8", borderBottom:"1px solid #FBCFE8" }}>
+                        💅 Nail Techs · {filtered.length}
+                      </td></tr>
+                    )}
+
                     {filtered.map(s => {
                       const dBack = s.matRec?.returnDate ? daysDiff(s.matRec.returnDate) : null;
                       const departed = s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft >= 0;
@@ -8289,6 +9982,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             onTechRequestsChange={(next) => { setTechRequests(next); setTechRequestsTick(t => t + 1); }}
             leaveRecs={leaveRecs}
             obList={obList}
+            techLoans={techLoans}
+            onTechLoansChange={async (next) => {
+              try { await window.BOA_DB.saveTechLoans(next); setTechLoans(next); }
+              catch (e) { console.error("saveTechLoans (auto):", e); }
+            }}
+            initialBranch={_myStores[0] || SALONS[0].name}
           />
         )}
 
@@ -8298,13 +9997,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // so the whole tab reflects the selected region. Counts shown in
           // each pill are computed from the unfiltered salonData so the
           // pills always read like a stable map of where branches live.
+          // ROM scope filter applied to the salonData feed before the region
+          // pills run. Region counts also respect the scope so the pills
+          // show how many in-scope branches each region has.
+          const scopedSalonData = _hasStoreScope
+            ? salonData.filter(s => scopedSalonNames.has(s.name))
+            : salonData;
           const regionCounts = REGIONS.reduce((acc, r) => {
-            acc[r.key] = salonData.filter(s => s.region === r.key).length;
+            acc[r.key] = scopedSalonData.filter(s => s.region === r.key).length;
             return acc;
           }, {});
           const filteredSalonData = locFilterRegion === "all"
-            ? salonData
-            : salonData.filter(s => s.region === locFilterRegion);
+            ? scopedSalonData
+            : scopedSalonData.filter(s => s.region === locFilterRegion);
           const filteredActive    = filteredSalonData.reduce((a, s) => a + s.active.length,    0);
           const filteredOnMat     = filteredSalonData.reduce((a, s) => a + s.onMat.length,     0);
           const filteredSeats     = filteredSalonData.reduce((a, s) => a + s.capacity,          0);
@@ -8320,13 +10025,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               >+ Add new location</button>
             </div>
 
+            {renderScopeBar({ marginBottom: 12 })}
+
             {/* Region filter pills. "All" shows everything; each region pill
                 lists its count so an empty region (e.g. KZN before Ballito
                 imports) is still visible but greyed via the count. */}
             <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:14 }}>
               {[{ key:"all", label:"All regions", short:"All", color:"#831843", bg:"#fce7f3" }, ...REGIONS].map(r => {
                 const isActive = locFilterRegion === r.key;
-                const count = r.key === "all" ? salonData.length : (regionCounts[r.key] || 0);
+                const count = r.key === "all" ? scopedSalonData.length : (regionCounts[r.key] || 0);
                 return (
                   <button key={r.key} onClick={()=>setLocFilterRegion(r.key)}
                     style={{ background: isActive ? r.color : r.bg, color: isActive ? "#fff" : r.color, border:`1px solid ${r.color}`, borderRadius:999, padding:"7px 14px", cursor:"pointer", fontSize:12, fontWeight:700, letterSpacing:"0.04em", display:"flex", alignItems:"center", gap:6 }}>
@@ -8355,9 +10062,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
             <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))", gap:10, marginBottom:20 }}>
               {[
-                { l:"At Capacity",  v:filteredSalonData.filter(s=>s.urgency==="full").length,  c:"#15803d", bg:"#dcfce7" },
-                { l:"Needs Staff",  v:filteredSalonData.filter(s=>s.urgency==="low").length,   c:"#b45309", bg:"#fef9c3" },
-                { l:"Understaffed", v:filteredSalonData.filter(s=>s.urgency==="high").length,  c:"#c2410c", bg:"#ffedd5" },
+                // Urgency ladder shown left → right (worst to best). Previously
+                // "critical" (0 active staff) had no tile, so branches with no
+                // staff were invisible in the bucket totals - users saw the
+                // sum of the visible tiles undershoot the branch-pill count.
+                { l:"Unstaffed (0 staff)", v:filteredSalonData.filter(s=>s.urgency==="critical").length, c:"#7f1d1d", bg:"#fee2e2" },
+                { l:"Understaffed",        v:filteredSalonData.filter(s=>s.urgency==="high").length,     c:"#c2410c", bg:"#ffedd5" },
+                { l:"Needs Staff",         v:filteredSalonData.filter(s=>s.urgency==="low").length,      c:"#b45309", bg:"#fef9c3" },
+                { l:"At Capacity",         v:filteredSalonData.filter(s=>s.urgency==="full").length,     c:"#15803d", bg:"#dcfce7" },
                 { l:"Active (incl. pregnant)", v:filteredActive, c:"#1e3a8a", bg:"#dbeafe" },
                 { l:"On Mat. Leave",v:filteredOnMat,    c:"#7A4258", bg:"#fce7f3" },
                 { l:"Total Seats",  v:filteredSeats, c:"#111827", bg:"#f3f4f6" },
@@ -8406,20 +10118,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <div style={{ background:"#FCE7F3", border:"1px solid #FBCFE8", borderRadius:10, padding:"12px 14px", marginBottom:12 }}>
                       <div style={{ fontSize:11, fontWeight:700, color:"#831843", marginBottom:8 }}>Select a staff member to edit or transfer:</div>
                       {/* Managers sub-section */}
-                      {managers.filter(m=>m.branch===salon.name).length>0 && (
+                      {enrichedManagers.filter(m=>m.branch===salon.name).length>0 && (
                         <div style={{ marginBottom:8 }}>
                           <div style={{ fontSize:9, fontWeight:800, color:"#BE185D", letterSpacing:"0.08em", marginBottom:5 }}>MANAGEMENT</div>
-                          {managers.filter(m=>m.branch===salon.name).sort((a,b)=>a.role===b.role?0:a.role==="SM"?-1:1).map(m=>(
-                            <div key={m._id} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 10px", borderRadius:8, background:"#F9A8D4", border:"1px solid #FBCFE8", marginBottom:4 }}>
-                              <span style={{ fontSize:11 }}>{m.role==="SM"?"👑":"⭐"}</span>
-                              <span style={{ flex:1, fontSize:12, fontWeight:600, color:"#831843" }}>{m.name}</span>
-                              <span style={{ fontSize:9, background:m.role==="SM"?"#7c3aed":"#0369a1", color:"#fff", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>{m.role}</span>
+                          {enrichedManagers.filter(m=>m.branch===salon.name).sort((a,b)=>{
+                            const rank = (r)=> r==="SSM"?0 : r==="SM"?1 : 2;
+                            return rank(a.role) - rank(b.role);
+                          }).map(m=>{
+                            const _icon = m.role==="SSM"?"💎":m.role==="SM"?"👑":"⭐";
+                            const _bg   = m.role==="SSM"?"#92400e":m.role==="SM"?"#7c3aed":"#0369a1";
+                            return (
+                            <div key={m._id} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 10px", borderRadius:8, background: m.onMat ? "#f3f4f6" : "#F9A8D4", border:"1px solid #FBCFE8", marginBottom:4, opacity: m.onMat ? 0.55 : 1 }}>
+                              <span style={{ fontSize:11 }}>{m.onMat ? "🤱" : _icon}</span>
+                              <span style={{ flex:1, fontSize:12, fontWeight:600, color: m.onMat ? "#7A4258" : "#831843", fontStyle: m.onMat ? "italic" : "normal" }}>{m.name}</span>
+                              <span style={{ fontSize:9, background:_bg, color:"#fff", borderRadius:4, padding:"1px 6px", fontWeight:700, opacity: m.onMat ? 0.7 : 1 }}>{m.role}</span>
                               {m.onMat&&<span style={{ fontSize:9, background:"#FBCFE8", color:"#8E5570", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>🤱 mat.</span>}
                               {m.pregnant&&!m.onMat&&<span style={{ fontSize:9, background:"#FCE7F3", color:"#8E5570", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>🤰 pregnant</span>}
                               <button onClick={()=>{ setMgrModal(m); setManagePanel(null); }}
                                 style={{ background:"#e2e8f0", border:"none", borderRadius:6, padding:"4px 10px", cursor:"pointer", fontSize:11, fontWeight:700, color:"#831843" }}>✏️ Edit</button>
                             </div>
-                          ))}
+                            );
+                          })}
                           <button onClick={()=>{ setMgrModal({ec:"",name:"",branch:salon.name,role:"AM",contract:"Permanent"}); setManagePanel(null); }}
                             style={{ width:"100%", background:"#FCE7F3", border:"1px dashed #FBCFE8", borderRadius:7, padding:"5px", cursor:"pointer", fontSize:11, fontWeight:700, color:"#BE185D", marginBottom:6 }}>+ Add Manager</button>
                           <div style={{ height:1, background:"#e5e7eb", marginBottom:8 }} />
@@ -8468,16 +10187,36 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </div>
                   )}
 
-                  {/* ── MANAGERS SECTION ── */}
+                  {/* ── MANAGERS SECTION ── shown on the card by default
+                      (independent of the Manage panel). Three tiers stacked
+                      worst-to-best so a missing SM stands out:
+                      Senior Store Manager (💎) → Store Manager (👑) →
+                      Assistant Manager (⭐). */}
                   {(() => {
-                    const mgrs = managers.filter(m=>m.branch===salon.name);
+                    const allMgrs = enrichedManagers.filter(m=>m.branch===salon.name);
+                    // Split active vs on-mat - active mgrs grouped by tier
+                    // first (SSM > SM > AM), maternity mgrs pinned at the
+                    // bottom so the working roster is what you see first.
+                    const mgrs    = allMgrs.filter(m => !m.onMat);
+                    const onMatBl = allMgrs.filter(m =>  m.onMat);
+                    const ssm  = mgrs.filter(m=>m.role==="SSM");
                     const sm   = mgrs.filter(m=>m.role==="SM");
                     const am   = mgrs.filter(m=>m.role==="AM");
-                    if (mgrs.length===0) return null;
+                    if (allMgrs.length===0) return null;
                     return (
                       <div style={{ background:"#FCE7F3", border:"1px solid #FBCFE8", borderRadius:10, padding:"9px 12px", marginBottom:10 }}>
                         <div style={{ fontSize:9, fontWeight:800, color:"#BE185D", letterSpacing:"0.1em", marginBottom:7 }}>MANAGEMENT TEAM</div>
                         <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                          {ssm.map(m=>(
+                            <div key={m._id} style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap", opacity:m.onMat?0.5:1 }}>
+                              <span style={{ fontSize:13 }}>{m.onMat?"🤱":"💎"}</span>
+                              <span style={{ fontSize:11, fontWeight:700, color:m.onMat?"#7A4258":"#92400e", fontStyle:m.onMat?"italic":"normal", flex:1 }}>{m.name}</span>
+                              {m.onMat && <span style={{ fontSize:9, color:"#8E5570", background:"#FBCFE8", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>on leave{m.matReturn?` · ↩${new Date(m.matReturn).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"})}`:""}</span>}
+                              {m.pregnant && !m.onMat && <span style={{ fontSize:9, color:"#8E5570", background:"#FCE7F3", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>🤰 pregnant{m.matStart?` · leaves ${new Date(m.matStart).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"})}`:""}</span>}
+                              {!m.onMat && !m.pregnant && m.notes && <span style={{ fontSize:9, color:"#8E5570", fontStyle:"italic", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={m.notes}>⚑ {m.notes}</span>}
+                              <span style={{ fontSize:9, background:"#FEF3C7", color:"#92400e", border:"1px solid #FDE68A", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>SSM</span>
+                            </div>
+                          ))}
                           {sm.map(m=>(
                             <div key={m._id} style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap", opacity:m.onMat?0.5:1 }}>
                               <span style={{ fontSize:13 }}>{m.onMat?"🤱":"👑"}</span>
@@ -8489,15 +10228,33 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             </div>
                           ))}
                           {am.map(m=>(
-                            <div key={m._id} style={{ display:"flex", alignItems:"center", gap:6, opacity:m.onMat?0.5:1 }}>
-                              <span style={{ fontSize:13 }}>{m.onMat?"🤱":"⭐"}</span>
-                              <span style={{ fontSize:11, fontWeight:500, color:m.onMat?"#7A4258":"#475569", fontStyle:m.onMat?"italic":"normal", flex:1 }}>{m.name}</span>
-                              {m.onMat && <span style={{ fontSize:9, color:"#8E5570", background:"#FBCFE8", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>on leave{m.matReturn?` · ↩${new Date(m.matReturn).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"})}`:""}</span>}
-                              {m.pregnant && !m.onMat && <span style={{ fontSize:9, color:"#8E5570", background:"#FCE7F3", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>🤰 pregnant{m.matStart?` · leaves ${new Date(m.matStart).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"})}`:""}</span>}
-                              {!m.onMat && !m.pregnant && m.notes && <span style={{ fontSize:9, color:"#BE185D", fontStyle:"italic", maxWidth:110, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={m.notes}>⚑</span>}
+                            <div key={m._id} style={{ display:"flex", alignItems:"center", gap:6, opacity:1 }}>
+                              <span style={{ fontSize:13 }}>⭐</span>
+                              <span style={{ fontSize:11, fontWeight:500, color:"#475569", flex:1 }}>{m.name}</span>
+                              {m.pregnant && <span style={{ fontSize:9, color:"#8E5570", background:"#FCE7F3", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>🤰 pregnant{m.matStart?` · leaves ${new Date(m.matStart).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"})}`:""}</span>}
+                              {!m.pregnant && m.notes && <span style={{ fontSize:9, color:"#BE185D", fontStyle:"italic", maxWidth:110, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={m.notes}>⚑</span>}
                               <span style={{ fontSize:9, background:"#FBCFE8", color:"#BE185D", border:"1px solid #bae6fd", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>AM</span>
                             </div>
                           ))}
+                          {/* On-maternity block sits at the bottom and is
+                              tagged with the role badge + return date if known. */}
+                          {onMatBl.length > 0 && (
+                            <div style={{ marginTop:6, paddingTop:6, borderTop:"1px dashed #FBCFE8" }}>
+                              <div style={{ fontSize:9, fontWeight:800, color:"#7A4258", letterSpacing:"0.08em", marginBottom:4 }}>🤱 ON MATERNITY · {onMatBl.length}</div>
+                              {onMatBl.map(m => {
+                                const matRec = (matRecs || []).find(r => r && r.ec && m.ec && r.ec.trim() === m.ec.trim());
+                                const ret = (matRec && matRec.returnDate) || m.matReturn;
+                                return (
+                                  <div key={m._id} style={{ display:"flex", alignItems:"center", gap:6, opacity:0.55 }}>
+                                    <span style={{ fontSize:13 }}>🤱</span>
+                                    <span style={{ fontSize:11, fontWeight:600, color:"#7A4258", fontStyle:"italic", flex:1 }}>{m.name}</span>
+                                    {ret && <span style={{ fontSize:9, color:"#8E5570", background:"#FBCFE8", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>↩ {new Date(ret + "T00:00:00").toLocaleDateString("en-ZA",{day:"2-digit",month:"short"})}</span>}
+                                    <span style={{ fontSize:9, background:m.role==="SSM"?"#FEF3C7":m.role==="SM"?"#FBCFE8":"#FBCFE8", color:m.role==="SSM"?"#92400e":"#BE185D", border:`1px solid ${m.role==="SSM"?"#FDE68A":"#E8C9D2"}`, borderRadius:4, padding:"1px 6px", fontWeight:700 }}>{m.role || "—"}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
                       </div>
                     );
@@ -8911,35 +10668,36 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
             )}
 
-            {/* Group by status */}
-            {["on_mat","pregnant","returned","sick_leave"].map(status=>{
+            {/* Group by status — within each status, split into Managers
+                then Nail Techs so the bigger picture (who's actually away)
+                reads cleanly. Manager / tech classification is by checking
+                the EC against the managers state. */}
+            {["on_mat","dates_tbc","pregnant","returned","sick_leave"].map(status=>{
               const recs = visibleMatRecs.filter(r=>r.matStatus===status).sort(ecSort);
               if (!recs.length) return null;
               const s = MAT_STATUS[status];
-              const isExcluded = status==="on_mat";
-              return (
-                <div key={status} style={{ marginBottom:26 }}>
-                  <div style={{ fontSize:11, fontWeight:800, color:s.color, letterSpacing:"0.08em", marginBottom:10, textTransform:"uppercase", display:"flex", alignItems:"center", gap:8 }}>
-                    {s.icon} {s.label} — {recs.length} {recs.length===1?"person":"people"}
-                    {isExcluded && <span style={{ background:"#FBCFE8", color:"#831843", borderRadius:20, padding:"2px 10px", fontSize:10, fontWeight:700 }}>EXCLUDED FROM STORE COUNT</span>}
-                    {status==="pregnant" && <span style={{ background:"#FCE7F3", color:"#831843", borderRadius:20, padding:"2px 10px", fontSize:10, fontWeight:700 }}>COUNTED IN STORE</span>}
-                  </div>
-                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))", gap:10 }}>
-                    {recs.map(r=>{
-                      const dBack = r.returnDate ? daysDiff(r.returnDate) : null;
-                      const totalDays = r.matStart&&r.matEnd ? Math.ceil((new Date(r.matEnd)-new Date(r.matStart))/86400000) : null;
-                      const elapsed = r.matStart ? Math.ceil((TODAY-new Date(r.matStart))/86400000) : null;
-                      const progress = totalDays&&elapsed ? Math.min(Math.max(elapsed/totalDays,0),1) : null;
-                      return (
-                        <div key={r._id} style={{ background:"#FFFFFF", borderRadius:14, border:`1.5px solid ${s.border}`, padding:"16px 18px" }}>
-                          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10 }}>
-                            <div>
-                              <div style={{ fontWeight:700, fontSize:14, color:"#111827" }}>{r.name}</div>
-                              <div style={{ fontSize:11, color:"#BE185D", marginTop:2 }}>
-                                <span style={{ fontFamily:"monospace", color:"#8E5570", fontWeight:700 }}>{r.ec}</span> · 📍 {r.branch}
-                              </div>
-                            </div>
-                            <button onClick={()=>setMatModal(r)} style={{ background:"#f3f4f6", border:"none", borderRadius:7, padding:"5px 11px", cursor:"pointer", fontSize:11, fontFamily:"inherit", fontWeight:700 }}>Edit</button>
+              const isExcluded = status==="on_mat" || status==="dates_tbc";
+              const mgrEcs = new Set((managers || []).map(m => m && m.ec).filter(Boolean));
+              const mgrRecs  = recs.filter(r => mgrEcs.has(r.ec));
+              const techRecs = recs.filter(r => !mgrEcs.has(r.ec));
+              const renderCard = (r) => {
+                const dBack = r.returnDate ? daysDiff(r.returnDate) : null;
+                const totalDays = r.matStart&&r.matEnd ? Math.ceil((new Date(r.matEnd)-new Date(r.matStart))/86400000) : null;
+                const elapsed = r.matStart ? Math.ceil((TODAY-new Date(r.matStart))/86400000) : null;
+                const progress = totalDays&&elapsed ? Math.min(Math.max(elapsed/totalDays,0),1) : null;
+                const isMgr = mgrEcs.has(r.ec);
+                return (
+                  <div key={r._id} style={{ background:"#FFFFFF", borderRadius:14, border:`1.5px solid ${s.border}`, padding:"16px 18px" }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10 }}>
+                      <div>
+                        <div style={{ fontWeight:700, fontSize:14, color:"#111827" }}>
+                          {isMgr ? "👑 " : "💅 "}{r.name}
+                        </div>
+                        <div style={{ fontSize:11, color:"#BE185D", marginTop:2 }}>
+                          <span style={{ fontFamily:"monospace", color:"#8E5570", fontWeight:700 }}>{r.ec}</span> · 📍 {r.branch}
+                        </div>
+                      </div>
+                      <button onClick={()=>setMatModal(r)} style={{ background:"#f3f4f6", border:"none", borderRadius:7, padding:"5px 11px", cursor:"pointer", fontSize:11, fontFamily:"inherit", fontWeight:700 }}>Edit</button>
                           </div>
                           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}>
                             <div style={{ background:"#fafafa", borderRadius:8, padding:"8px 10px" }}>
@@ -8970,11 +10728,60 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               </div>
                             </div>
                           )}
-                          {r.notes && <div style={{ fontSize:11, color:"#BE185D", background:"#FCE7F3", borderRadius:7, padding:"6px 9px", lineHeight:1.5 }}>{r.notes}</div>}
-                        </div>
-                      );
-                    })}
+                    {r.notes && <div style={{ fontSize:11, color:"#BE185D", background:"#FCE7F3", borderRadius:7, padding:"6px 9px", lineHeight:1.5 }}>{r.notes}</div>}
                   </div>
+                );
+              };
+              return (
+                <div key={status} style={{ marginBottom:26 }}>
+                  <div style={{ fontSize:11, fontWeight:800, color:s.color, letterSpacing:"0.08em", marginBottom:10, textTransform:"uppercase", display:"flex", alignItems:"center", gap:8 }}>
+                    {s.icon} {s.label} — {recs.length} {recs.length===1?"person":"people"}
+                    {isExcluded && <span style={{ background:"#FBCFE8", color:"#831843", borderRadius:20, padding:"2px 10px", fontSize:10, fontWeight:700 }}>EXCLUDED FROM STORE COUNT</span>}
+                    {status==="pregnant" && <span style={{ background:"#FCE7F3", color:"#831843", borderRadius:20, padding:"2px 10px", fontSize:10, fontWeight:700 }}>COUNTED IN STORE</span>}
+                  </div>
+                  {/* Manager subsection — bold full-width purple banner with
+                      white text + large icon. Designed to be unmissable so
+                      the management bloc reads as a different block from the
+                      techs below; cards sit inside a lavender-tinted card
+                      container with a 6px purple left bar. */}
+                  {mgrRecs.length > 0 && (
+                    <div style={{ marginBottom:22, borderRadius:14, overflow:"hidden", border:"1.5px solid #c4b5fd", boxShadow:"0 4px 14px rgba(124,58,237,0.08)" }}>
+                      <div style={{ background:"linear-gradient(135deg,#7c3aed 0%,#5b21b6 100%)", padding:"14px 22px", display:"flex", alignItems:"center", gap:14, flexWrap:"wrap" }}>
+                        <span style={{ fontSize:32, lineHeight:1 }}>👑</span>
+                        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:26, fontWeight:700, color:"#fff", letterSpacing:"0.005em", flex:1, minWidth:140 }}>
+                          Managers
+                        </div>
+                        <span style={{ background:"#fff", color:"#5b21b6", borderRadius:999, padding:"5px 16px", fontSize:13, fontWeight:800, letterSpacing:"0.04em" }}>
+                          {mgrRecs.length} {mgrRecs.length===1?"person":"people"}
+                        </span>
+                      </div>
+                      <div style={{ background:"#F5F3FF", borderLeft:"6px solid #7c3aed", padding:"16px 18px" }}>
+                        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))", gap:10 }}>
+                          {mgrRecs.map(renderCard)}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {/* Nail-tech subsection — bold full-width BOA-pink banner
+                      to mirror the manager block. */}
+                  {techRecs.length > 0 && (
+                    <div style={{ borderRadius:14, overflow:"hidden", border:"1.5px solid #fbcfe8", boxShadow:"0 4px 14px rgba(190,24,93,0.08)" }}>
+                      <div style={{ background:"linear-gradient(135deg,#BE185D 0%,#831843 100%)", padding:"14px 22px", display:"flex", alignItems:"center", gap:14, flexWrap:"wrap" }}>
+                        <span style={{ fontSize:32, lineHeight:1 }}>💅</span>
+                        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:26, fontWeight:700, color:"#fff", letterSpacing:"0.005em", flex:1, minWidth:140 }}>
+                          Nail Techs
+                        </div>
+                        <span style={{ background:"#fff", color:"#831843", borderRadius:999, padding:"5px 16px", fontSize:13, fontWeight:800, letterSpacing:"0.04em" }}>
+                          {techRecs.length} {techRecs.length===1?"person":"people"}
+                        </span>
+                      </div>
+                      <div style={{ background:"#FDEEF5", borderLeft:"6px solid #BE185D", padding:"16px 18px" }}>
+                        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))", gap:10 }}>
+                          {techRecs.map(renderCard)}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -9265,6 +11072,481 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           );
         })()}
 
+        {/* ── COMPLIANCE TAB ── work-permit / asylum / DHA status across all
+            staff + managers, with a follow-up workflow for non-compliant
+            people (Z/NA or no permit on file). Tracking lives in
+            app_state['boa_compliance_actions_v1'] so requests survive page
+            reloads and other users. */}
+        {tab==="compliance" && (() => {
+          // Build the combined pool: active techs (exclude off-boarded /
+          // on-mat for clarity - they're not the people to chase) + every
+          // manager. Off-boarded folk who have already left are dropped
+          // because chasing them is pointless.
+          const pool = [
+            ...enriched
+              .filter(s => !s.offboarded || (s.offDaysSinceLeft != null && s.offDaysSinceLeft < 0))
+              .map(s => ({ ec: s.ec, name: s.name, branch: s.branch, permit: s.permit, role: "NT", onMat: s.onMat })),
+            ...(managers || [])
+              .map(m => ({ ec: m.ec, name: m.name, branch: m.branch, permit: m.permit, role: m.role || "AM", onMat: !!m.onMat }))
+          ].filter(p => p && p.ec);
+
+          // Bucket by permit. Non-compliant = explicit z_na OR no permit set.
+          const isNonCompliant = (p) => !p.permit || p.permit === "z_na";
+          const byPermit = { sa_citizen:[], work_permit:[], asylum:[], verified_dha:[], z_na:[], unset:[] };
+          pool.forEach(p => {
+            if (!p.permit) byPermit.unset.push(p);
+            else if (byPermit[p.permit]) byPermit[p.permit].push(p);
+            else byPermit.unset.push(p);
+          });
+          const totalCompliant = byPermit.sa_citizen.length + byPermit.work_permit.length + byPermit.verified_dha.length;
+          const nonCompliant = [...byPermit.z_na, ...byPermit.unset]
+            .sort((a, b) => (a.branch || "").localeCompare(b.branch || "") || (a.name || "").localeCompare(b.name || ""));
+
+          // Helpers for the action panel.
+          const today = new Date();
+          const ymd0 = today.toISOString().slice(0, 10);
+          const fmtDate = (iso) => {
+            if (!iso) return "—";
+            try { return new Date(iso + "T00:00:00").toLocaleDateString("en-ZA", { day:"2-digit", month:"short", year:"numeric" }); } catch (_) { return iso; }
+          };
+          const daysToDeadline = (iso) => {
+            if (!iso) return null;
+            const d = new Date(iso + "T00:00:00");
+            const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+            return Math.ceil((d - t0) / 86400000);
+          };
+
+          const STATS = [
+            { l:"🇿🇦 SA Citizens",        v:byPermit.sa_citizen.length, c:"#14532d", bg:"#dcfce7" },
+            { l:"📋 Asylum on file",      v:byPermit.asylum.length,     c:"#4c1d95", bg:"#ede9fe" },
+            { l:"✅ Valid Work Permit",   v:byPermit.work_permit.length,c:"#8E5570", bg:"#dbeafe" },
+            { l:"🔵 Verified by DHA",      v:byPermit.verified_dha.length,c:"#0c4a6e",bg:"#e0f2fe" },
+            { l:"⚠ Not compliant",        v:nonCompliant.length,         c:"#7f1d1d", bg:"#fee2e2" },
+          ];
+
+          return (
+            <>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
+                <div>
+                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:"#831843" }}>📋 Compliance</div>
+                  <div style={{ fontSize:12, color:"#6b7280", marginTop:2 }}>Work-permit status across all staff + managers. Non-compliant rows can have a permit request logged with deadline tracking.</div>
+                </div>
+                <div style={{ fontSize:11, color:"#9ca3af" }}>{pool.length} people · {totalCompliant + byPermit.asylum.length} with docs · {nonCompliant.length} without</div>
+              </div>
+
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))", gap:10, marginBottom:20 }}>
+                {STATS.map(c => (
+                  <div key={c.l} style={{ background:c.bg, borderRadius:14, padding:"14px 16px", border:"1px solid rgba(255,255,255,0.6)" }}>
+                    <div style={{ fontSize:32, fontWeight:800, color:c.c, lineHeight:1.05 }}>{c.v}</div>
+                    <div style={{ fontSize:10, fontWeight:700, color:c.c, letterSpacing:"0.1em", textTransform:"uppercase", marginTop:6 }}>{c.l}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* ── EXPIRING SOON ── asylum / work-permit holders whose
+                  document expiry date is within the next 90 days (or
+                  already past). Grouped by store and split into mgrs /
+                  techs, same look as the non-compliant follow-up below. */}
+              {(() => {
+                const today0 = new Date();
+                today0.setHours(0,0,0,0);
+                const _expDaysOut = (iso) => {
+                  if (!iso) return null;
+                  const d = new Date(iso + "T00:00:00");
+                  return Math.ceil((d - today0) / 86400000);
+                };
+                const expPool = [
+                  ...(enriched || [])
+                    .filter(s => s && s.ec && (!s.offboarded || (s.offDaysSinceLeft != null && s.offDaysSinceLeft < 0)))
+                    .filter(s => (s.permit === "asylum" || s.permit === "work_permit") && s.permitExpiry)
+                    .map(s => ({ _id: s._id, ec: s.ec, name: s.name, branch: s.branch, permit: s.permit, permitExpiry: s.permitExpiry, role: "NT", onMat: s.onMat })),
+                  ...(managers || [])
+                    .filter(m => m && m.ec)
+                    .filter(m => (m.permit === "asylum" || m.permit === "work_permit") && m.permitExpiry)
+                    .map(m => ({ _id: m._id, ec: m.ec, name: m.name, branch: m.branch, permit: m.permit, permitExpiry: m.permitExpiry, role: m.role || "AM", onMat: !!m.onMat }))
+                ];
+                // Within next 90 days OR already expired.
+                const flagged = expPool
+                  .map(p => ({ ...p, _dOut: _expDaysOut(p.permitExpiry) }))
+                  .filter(p => p._dOut !== null && p._dOut <= 90)
+                  .sort((a, b) => a._dOut - b._dOut);
+                if (flagged.length === 0) return null;
+
+                const expiredCount = flagged.filter(p => p._dOut < 0).length;
+                const branchesPresent = SALONS.map(s => s.name).filter(name => flagged.some(p => p.branch === name));
+                const orphanBranches = [...new Set(flagged.map(p => p.branch).filter(b => b && !SALONS.some(s => s.name === b)))];
+                const allBranches = [...branchesPresent, ...orphanBranches];
+
+                const fmtExp = (iso) => { try { return new Date(iso + "T00:00:00").toLocaleDateString("en-ZA", { day:"2-digit", month:"short", year:"numeric" }); } catch (_) { return iso; } };
+                const expRow = (p) => {
+                  const d = p._dOut;
+                  const overdue = d < 0;
+                  const veryClose = d >= 0 && d <= 30;
+                  const close = d > 30 && d <= 90;
+                  const pillBg = overdue ? "#fee2e2" : veryClose ? "#fef3c7" : "#f1f5f9";
+                  const pillFg = overdue ? "#7f1d1d" : veryClose ? "#92400e" : "#1e40af";
+                  const pillTxt = overdue ? Math.abs(d) + "d overdue" : d === 0 ? "EXPIRES TODAY" : "in " + d + "d";
+                  const roleIcon = p.role === "SSM" ? "💎" : p.role === "SM" ? "👑" : p.role === "AM" ? "⭐" : "💅";
+                  const permitChip = p.permit === "asylum"
+                    ? { lbl: "📋 Asylum", bg: "#ede9fe", fg: "#4c1d95" }
+                    : { lbl: "✅ Work permit", bg: "#dbeafe", fg: "#1e40af" };
+                  return (
+                    <tr key={"exp-" + p._id} style={{ borderTop:"1px solid #FEF3C7" }}>
+                      <td style={{ padding:"8px 14px", fontFamily:"monospace", fontSize:11, color:"#9ca3af", width:60 }}>{p.ec}</td>
+                      <td style={{ padding:"8px 14px", fontWeight:600, color:"#111827" }}>{roleIcon} {p.name || "(no name)"}{p.onMat && <span style={{ marginLeft:6, fontSize:10, background:"#FBCFE8", color:"#8E5570", padding:"1px 6px", borderRadius:99, fontWeight:700 }}>🤱 mat.</span>}</td>
+                      <td style={{ padding:"8px 14px" }}><span style={{ fontSize:10, fontWeight:800, padding:"3px 9px", borderRadius:99, background:permitChip.bg, color:permitChip.fg, letterSpacing:"0.04em" }}>{permitChip.lbl}</span></td>
+                      <td style={{ padding:"8px 14px", fontSize:12, color:"#374151" }}><b>{fmtExp(p.permitExpiry)}</b></td>
+                      <td style={{ padding:"8px 14px" }}><span style={{ fontSize:10, fontWeight:800, padding:"3px 9px", borderRadius:99, background:pillBg, color:pillFg, letterSpacing:"0.04em" }}>{pillTxt}</span></td>
+                      <td style={{ padding:"8px 14px", textAlign:"right" }}>
+                        <button onClick={() => p.role === "NT"
+                          ? setStaffModal((staff || []).find(s => s._id === p._id) || null)
+                          : setMgrModal((managers || []).find(m => m._id === p._id) || null)}
+                          style={{ background:"#f3f4f6", color:"#374151", border:"none", borderRadius:7, padding:"6px 11px", cursor:"pointer", fontSize:11, fontWeight:700 }}
+                        >Edit profile</button>
+                      </td>
+                    </tr>
+                  );
+                };
+                return (
+                  <div style={{ marginBottom:22 }}>
+                    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12, flexWrap:"wrap", gap:10 }}>
+                      <div>
+                        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:20, fontWeight:700, color:"#92400e" }}>⏰ Expiring in the next 3 months</div>
+                        <div style={{ fontSize:12, color:"#6b7280", marginTop:2 }}>
+                          Asylum + work-permit holders whose document expires soon (or already has). {expiredCount > 0 && <b style={{ color:"#7f1d1d" }}>{expiredCount} already overdue.</b>}
+                        </div>
+                      </div>
+                      <div style={{ fontSize:11, color:"#9ca3af" }}>{flagged.length} flagged</div>
+                    </div>
+                    <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                      {allBranches.map(brName => {
+                        const inBr = flagged.filter(p => p.branch === brName);
+                        if (inBr.length === 0) return null;
+                        const mgrsIn  = inBr.filter(p => p.role !== "NT");
+                        const techsIn = inBr.filter(p => p.role === "NT");
+                        return (
+                          <div key={"exp-br-" + brName} style={{ background:"#fff", border:"1px solid #FDE68A", borderRadius:14, overflow:"hidden" }}>
+                            <div style={{ background:"#FEF3C7", padding:"10px 16px", display:"flex", alignItems:"center", gap:10, fontFamily:"'Playfair Display',serif", fontSize:16, fontWeight:700, color:"#7c2d12" }}>
+                              📍 {brName}
+                              <span style={{ marginLeft:"auto", fontSize:11, fontWeight:600, color:"#92400e" }}>{inBr.length} expiring</span>
+                            </div>
+                            {mgrsIn.length > 0 && (
+                              <div style={{ borderTop:"1px solid #FEF3C7" }}>
+                                <div style={{ background:"#F5F3FF", padding:"7px 16px", fontSize:11, fontWeight:800, color:"#5b21b6", letterSpacing:"0.06em", textTransform:"uppercase" }}>👑 Managers · {mgrsIn.length}</div>
+                                <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+                                  <tbody>{mgrsIn.map(expRow)}</tbody>
+                                </table>
+                              </div>
+                            )}
+                            {techsIn.length > 0 && (
+                              <div style={{ borderTop:"1px solid #FEF3C7" }}>
+                                <div style={{ background:"#FDEEF5", padding:"7px 16px", fontSize:11, fontWeight:800, color:"#831843", letterSpacing:"0.06em", textTransform:"uppercase" }}>💅 Nail Techs · {techsIn.length}</div>
+                                <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+                                  <tbody>{techsIn.map(expRow)}</tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* ── COMPLIANCE FOLLOW-UP ── ONLY non-compliant people
+                  (Z/NA or no permit set) grouped by store + role. Each row
+                  exposes both the inline permit edit AND a 'Log Request'
+                  button so the manager can record the document letter
+                  without leaving the page. */}
+              {(() => {
+                const updatePermit = async (person, newPermit) => {
+                  try {
+                    const isMgr = person.role !== "NT";
+                    if (isMgr) {
+                      const live = (managers || []).find(m => m && m._id === person._id);
+                      if (!live) return;
+                      await saveMgr({ ...live, permit: newPermit || null });
+                    } else {
+                      const live = (staff || []).find(s => s && s._id === person._id);
+                      if (!live) return;
+                      await saveStaff({ ...live, permit: newPermit || null });
+                    }
+                    if (window.BOA_LOG_ACTIVITY) {
+                      const lbl = newPermit ? ((COMPLIANCE[newPermit] && COMPLIANCE[newPermit].label) || newPermit) : "Not set";
+                      window.BOA_LOG_ACTIVITY("Updated compliance permit", (person.name || "") + " · " + person.ec, "→ " + lbl + " · " + (person.branch || "—"), "Compliance");
+                    }
+                  } catch (e) { alert("Could not save permit: " + (e.message || e)); }
+                };
+                // Build the directory pool with _id so we can route the
+                // update to saveStaff / saveMgr cleanly. ONLY include
+                // non-compliant people (Z/NA permit or no permit set) -
+                // compliant rows belong in the stat tiles above.
+                const dirPool = [
+                  ...(enriched || [])
+                    .filter(s => s && s.ec && (!s.offboarded || (s.offDaysSinceLeft != null && s.offDaysSinceLeft < 0)))
+                    .filter(s => !s.permit || s.permit === "z_na")
+                    .map(s => ({ _id: s._id, ec: s.ec, name: s.name, branch: s.branch, permit: s.permit, role: "NT", onMat: s.onMat })),
+                  ...(managers || [])
+                    .filter(m => m && m.ec)
+                    .filter(m => !m.permit || m.permit === "z_na")
+                    .map(m => ({ _id: m._id, ec: m.ec, name: m.name, branch: m.branch, permit: m.permit, role: m.role || "AM", onMat: !!m.onMat }))
+                ];
+                const q = (compSearch || "").trim().toLowerCase();
+                const filtered = dirPool.filter(p => {
+                  if (compRoleFilter === "NT"  && p.role !== "NT") return false;
+                  if (compRoleFilter === "mgr" && p.role === "NT") return false;
+                  if (compBranchFilter !== "All" && p.branch !== compBranchFilter) return false;
+                  if (q && !((p.name || "").toLowerCase().includes(q) || (p.ec || "").toLowerCase().includes(q))) return false;
+                  return true;
+                });
+                // Group by branch then split tech / mgr within so the
+                // structure reads like a directory.
+                const branchesPresent = SALONS.map(s => s.name).filter(name => filtered.some(p => p.branch === name));
+                // Floating bucket for people whose branch isn't in SALONS
+                // (e.g. 'Regional' managers, Head Office) - shown last.
+                const orphanBranches = [...new Set(filtered.map(p => p.branch).filter(b => b && !SALONS.some(s => s.name === b)))];
+                const allBranches = [...branchesPresent, ...orphanBranches];
+
+                const permitChip = (key) => {
+                  if (!key) return { lbl:"Not set", bg:"#f3f4f6", fg:"#6b7280", border:"#d1d5db" };
+                  const c = COMPLIANCE[key] || {};
+                  return { lbl: c.label || key, bg: c.bg || "#f3f4f6", fg: c.color || "#374151", border: c.border || "#d1d5db" };
+                };
+
+                return (
+                  <div style={{ marginTop:22 }}>
+                    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12, flexWrap:"wrap", gap:10 }}>
+                      <div>
+                        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:20, fontWeight:700, color:"#7f1d1d" }}>⚠ Non-compliant — grouped by store + role</div>
+                        <div style={{ fontSize:12, color:"#6b7280", marginTop:2 }}>Update each person's permit when documents come in, or log the work-permit request letter to track the deadline.</div>
+                      </div>
+                      <div style={{ fontSize:11, color:"#9ca3af" }}>{filtered.length} of {dirPool.length} non-compliant · search filters apply</div>
+                    </div>
+
+                    {/* Filter toolbar */}
+                    <div style={{ background:"#fff", borderRadius:12, padding:"12px 14px", border:"1px solid #FBCFE8", marginBottom:14, display:"flex", flexWrap:"wrap", gap:10, alignItems:"center" }}>
+                      <input type="search" placeholder="🔍  Search by name or EC…" value={compSearch} onChange={e=>setCompSearch(e.target.value)}
+                        style={{ flex:"1 1 220px", padding:"8px 12px", borderRadius:8, border:"1px solid #FBCFE8", fontFamily:"inherit", fontSize:13, background:"#fff" }} />
+                      <div style={{ display:"flex", gap:4 }}>
+                        {[{ k:"all", l:"All", c:"#831843" }, { k:"NT", l:"💅 Techs", c:"#BE185D" }, { k:"mgr", l:"👑 Managers", c:"#7c3aed" }].map(t => (
+                          <button key={t.k} onClick={()=>setCompRoleFilter(t.k)}
+                            style={{ padding:"7px 12px", borderRadius:8, border:`1px solid ${compRoleFilter===t.k?t.c:"#FBCFE8"}`, background: compRoleFilter===t.k ? t.c : "#fff", color: compRoleFilter===t.k ? "#fff" : t.c, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}
+                          >{t.l}</button>
+                        ))}
+                      </div>
+                      <select value={compBranchFilter} onChange={e=>setCompBranchFilter(e.target.value)}
+                        style={{ padding:"7px 11px", borderRadius:8, border:"1px solid #FBCFE8", fontFamily:"inherit", fontSize:13, background:"#fff" }}>
+                        <option value="All">All Branches</option>
+                        {SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                      </select>
+                    </div>
+
+                    {/* Grouped table - one card per branch, techs/managers
+                        as sub-sections so the user can scan a store at a
+                        glance. */}
+                    {filtered.length === 0 ? (
+                      <div style={{ background:"#fff", border:"1px dashed #FBCFE8", borderRadius:14, padding:"30px 20px", textAlign:"center", color:"#9F1A4F", fontSize:13 }}>
+                        {dirPool.length === 0 ? "✓ Everyone has documents on file. Well done." : "No non-compliant people match the current filters."}
+                      </div>
+                    ) : (
+                      <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                        {allBranches.map(brName => {
+                          const inBranch = filtered.filter(p => p.branch === brName);
+                          if (inBranch.length === 0) return null;
+                          const mgrsInBr  = inBranch.filter(p => p.role !== "NT");
+                          const techsInBr = inBranch.filter(p => p.role === "NT");
+                          return (
+                            <div key={brName} style={{ background:"#fff", border:"1px solid #FBCFE8", borderRadius:14, overflow:"hidden" }}>
+                              <div style={{ background:"#FCE7F3", padding:"10px 16px", display:"flex", alignItems:"center", gap:10, fontFamily:"'Playfair Display',serif", fontSize:16, fontWeight:700, color:"#831843" }}>
+                                📍 {brName}
+                                <span style={{ marginLeft:"auto", fontSize:11, fontWeight:600, color:"#BE185D" }}>{inBranch.length} {inBranch.length===1?"person":"people"}</span>
+                              </div>
+                              {mgrsInBr.length > 0 && (
+                                <div style={{ borderTop:"1px solid #FCE7F3" }}>
+                                  <div style={{ background:"#F5F3FF", padding:"7px 16px", fontSize:11, fontWeight:800, color:"#5b21b6", letterSpacing:"0.06em", textTransform:"uppercase" }}>👑 Managers · {mgrsInBr.length}</div>
+                                  <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+                                    <tbody>
+                                      {mgrsInBr.map(p => {
+                                        const chip = permitChip(p.permit);
+                                        const roleIcon = p.role === "SSM" ? "💎" : p.role === "SM" ? "👑" : "⭐";
+                                        const act = complianceActions[p.ec] || {};
+                                        const hasReq = !!act.workPermitRequestedAt;
+                                        const dDead = daysToDeadline(act.workPermitDeadline);
+                                        const overdue = dDead !== null && dDead < 0;
+                                        const dueSoon = dDead !== null && dDead >= 0 && dDead <= 14;
+                                        return (
+                                          <tr key={"m-" + p._id} style={{ borderTop:"1px solid #FCE7F3" }}>
+                                            <td style={{ padding:"8px 14px", fontFamily:"monospace", fontSize:11, color:"#9ca3af", width:60 }}>{p.ec}</td>
+                                            <td style={{ padding:"8px 14px", fontWeight:600, color:"#111827" }}>{roleIcon} {p.name || "(no name)"}{p.onMat && <span style={{ marginLeft:6, fontSize:10, background:"#FBCFE8", color:"#8E5570", padding:"1px 6px", borderRadius:99, fontWeight:700 }}>🤱 mat.</span>}</td>
+                                            <td style={{ padding:"8px 14px" }}>
+                                              <span style={{ display:"inline-block", background:chip.bg, color:chip.fg, border:`1px solid ${chip.border}`, fontSize:10, fontWeight:800, padding:"3px 9px", borderRadius:99, letterSpacing:"0.04em" }}>{chip.lbl}</span>
+                                            </td>
+                                            <td style={{ padding:"8px 14px", fontSize:11 }}>
+                                              {hasReq ? (
+                                                <div>
+                                                  <div style={{ fontWeight:700, color:"#374151" }}>📨 {fmtDate(act.workPermitRequestedAt)}</div>
+                                                  <div style={{ fontSize:10, color:"#6b7280" }}>by {act.workPermitRequestedBy || "—"}</div>
+                                                  {act.workPermitDeadline && (
+                                                    <div style={{ fontSize:10, fontWeight:700, color: overdue ? "#7f1d1d" : dueSoon ? "#92400e" : "#374151", marginTop:2 }}>
+                                                      Deadline {fmtDate(act.workPermitDeadline)} · {overdue ? Math.abs(dDead)+"d overdue" : dDead===0 ? "TODAY" : "in "+dDead+"d"}
+                                                    </div>
+                                                  )}
+                                                </div>
+                                              ) : <span style={{ color:"#9ca3af", fontStyle:"italic" }}>No request logged</span>}
+                                            </td>
+                                            <td style={{ padding:"8px 14px", textAlign:"right", whiteSpace:"nowrap" }}>
+                                              <select value={p.permit || ""} onChange={e=>updatePermit(p, e.target.value || null)}
+                                                style={{ padding:"6px 10px", border:"1px solid #FBCFE8", borderRadius:7, fontFamily:"inherit", fontSize:12, background:"#fff", cursor:"pointer", marginRight:6 }}
+                                                title="Change compliance status">
+                                                <option value="">Not set</option>
+                                                {Object.entries(COMPLIANCE).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
+                                              </select>
+                                              {hasReq ? (
+                                                <button onClick={()=>setComplianceModal({ ...p, ...act, _edit:true })}
+                                                  style={{ background:"#fff", color:"#7c2d12", border:"1px solid #fed7aa", borderRadius:7, padding:"6px 11px", cursor:"pointer", fontSize:11, fontWeight:700 }}
+                                                >Update</button>
+                                              ) : (
+                                                <button onClick={()=>setComplianceModal({ ec:p.ec, name:p.name, branch:p.branch, role:p.role, workPermitRequestedAt: ymd0, workPermitRequestedBy: (currentUser && currentUser.name) || "", workPermitDeadline: "", workPermitNotes: "" })}
+                                                  style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:7, padding:"6px 12px", cursor:"pointer", fontSize:11, fontWeight:700 }}
+                                                >📨 Log Request</button>
+                                              )}
+                                            </td>
+                                          </tr>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+                              {techsInBr.length > 0 && (
+                                <div style={{ borderTop:"1px solid #FCE7F3" }}>
+                                  <div style={{ background:"#FDEEF5", padding:"7px 16px", fontSize:11, fontWeight:800, color:"#831843", letterSpacing:"0.06em", textTransform:"uppercase" }}>💅 Nail Techs · {techsInBr.length}</div>
+                                  <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+                                    <tbody>
+                                      {techsInBr.map(p => {
+                                        const chip = permitChip(p.permit);
+                                        const act = complianceActions[p.ec] || {};
+                                        const hasReq = !!act.workPermitRequestedAt;
+                                        const dDead = daysToDeadline(act.workPermitDeadline);
+                                        const overdue = dDead !== null && dDead < 0;
+                                        const dueSoon = dDead !== null && dDead >= 0 && dDead <= 14;
+                                        return (
+                                          <tr key={"t-" + p._id} style={{ borderTop:"1px solid #FCE7F3" }}>
+                                            <td style={{ padding:"8px 14px", fontFamily:"monospace", fontSize:11, color:"#9ca3af", width:60 }}>{p.ec}</td>
+                                            <td style={{ padding:"8px 14px", fontWeight:600, color:"#111827" }}>💅 {p.name || "(no name)"}{p.onMat && <span style={{ marginLeft:6, fontSize:10, background:"#FBCFE8", color:"#8E5570", padding:"1px 6px", borderRadius:99, fontWeight:700 }}>🤱 mat.</span>}</td>
+                                            <td style={{ padding:"8px 14px" }}>
+                                              <span style={{ display:"inline-block", background:chip.bg, color:chip.fg, border:`1px solid ${chip.border}`, fontSize:10, fontWeight:800, padding:"3px 9px", borderRadius:99, letterSpacing:"0.04em" }}>{chip.lbl}</span>
+                                            </td>
+                                            <td style={{ padding:"8px 14px", fontSize:11 }}>
+                                              {hasReq ? (
+                                                <div>
+                                                  <div style={{ fontWeight:700, color:"#374151" }}>📨 {fmtDate(act.workPermitRequestedAt)}</div>
+                                                  <div style={{ fontSize:10, color:"#6b7280" }}>by {act.workPermitRequestedBy || "—"}</div>
+                                                  {act.workPermitDeadline && (
+                                                    <div style={{ fontSize:10, fontWeight:700, color: overdue ? "#7f1d1d" : dueSoon ? "#92400e" : "#374151", marginTop:2 }}>
+                                                      Deadline {fmtDate(act.workPermitDeadline)} · {overdue ? Math.abs(dDead)+"d overdue" : dDead===0 ? "TODAY" : "in "+dDead+"d"}
+                                                    </div>
+                                                  )}
+                                                </div>
+                                              ) : <span style={{ color:"#9ca3af", fontStyle:"italic" }}>No request logged</span>}
+                                            </td>
+                                            <td style={{ padding:"8px 14px", textAlign:"right", whiteSpace:"nowrap" }}>
+                                              <select value={p.permit || ""} onChange={e=>updatePermit(p, e.target.value || null)}
+                                                style={{ padding:"6px 10px", border:"1px solid #FBCFE8", borderRadius:7, fontFamily:"inherit", fontSize:12, background:"#fff", cursor:"pointer", marginRight:6 }}
+                                                title="Change compliance status">
+                                                <option value="">Not set</option>
+                                                {Object.entries(COMPLIANCE).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
+                                              </select>
+                                              {hasReq ? (
+                                                <button onClick={()=>setComplianceModal({ ...p, ...act, _edit:true })}
+                                                  style={{ background:"#fff", color:"#7c2d12", border:"1px solid #fed7aa", borderRadius:7, padding:"6px 11px", cursor:"pointer", fontSize:11, fontWeight:700 }}
+                                                >Update</button>
+                                              ) : (
+                                                <button onClick={()=>setComplianceModal({ ec:p.ec, name:p.name, branch:p.branch, role:p.role, workPermitRequestedAt: ymd0, workPermitRequestedBy: (currentUser && currentUser.name) || "", workPermitDeadline: "", workPermitNotes: "" })}
+                                                  style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:7, padding:"6px 12px", cursor:"pointer", fontSize:11, fontWeight:700 }}
+                                                >📨 Log Request</button>
+                                              )}
+                                            </td>
+                                          </tr>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </>
+          );
+        })()}
+
+        {/* ── COMPLIANCE ACTION MODAL ── log / edit work-permit request */}
+        {complianceModal && (() => {
+          const m = complianceModal;
+          const set = (k, v) => setComplianceModal({ ...m, [k]: v });
+          return (
+            <div onClick={()=>setComplianceModal(null)} style={{ position:"fixed", inset:0, background:"rgba(17,24,39,0.55)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:120 }}>
+              <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:16, padding:"22px 26px", width:"min(500px, 92vw)", maxHeight:"90vh", overflowY:"auto", boxShadow:"0 10px 40px rgba(0,0,0,0.25)" }}>
+                <div style={{ fontFamily:"'Playfair Display',serif", fontSize:20, fontWeight:700, color:"#831843", marginBottom:4 }}>📋 Work-permit request</div>
+                <div style={{ fontSize:12, color:"#6b7280", marginBottom:16 }}><b>{m.name}</b> · 📍 {m.branch} · <span style={{ fontFamily:"monospace" }}>{m.ec}</span></div>
+
+                <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Date request sent *</label>
+                <input type="date" value={m.workPermitRequestedAt || ""} onChange={e=>set("workPermitRequestedAt", e.target.value)}
+                  style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit", marginBottom:12 }} />
+
+                <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Sent by *</label>
+                <input type="text" value={m.workPermitRequestedBy || ""} onChange={e=>set("workPermitRequestedBy", e.target.value)} placeholder="e.g. Theresa"
+                  style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit", marginBottom:12 }} />
+
+                <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Deadline</label>
+                <input type="date" value={m.workPermitDeadline || ""} onChange={e=>set("workPermitDeadline", e.target.value)}
+                  style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:14, fontFamily:"inherit", marginBottom:12 }} />
+
+                <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#374151", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Notes</label>
+                <textarea rows={3} value={m.workPermitNotes || ""} onChange={e=>set("workPermitNotes", e.target.value)} placeholder="e.g. Awaiting acknowledgement from DHA…"
+                  style={{ width:"100%", padding:"9px 11px", border:"1px solid #e5e7eb", borderRadius:8, fontSize:13, fontFamily:"inherit", marginBottom:14, resize:"vertical" }} />
+
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                  {m._edit && (
+                    <button onClick={()=>{
+                      if (!window.confirm("Clear this request and start fresh?")) return;
+                      saveComplianceAction(m.ec, { workPermitRequestedAt: null, workPermitRequestedBy: null, workPermitDeadline: null, workPermitNotes: null });
+                      setComplianceModal(null);
+                    }}
+                      style={{ background:"#fff", color:"#b91c1c", border:"1px solid #fecaca", borderRadius:8, padding:"9px 14px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                    >Clear request</button>
+                  )}
+                  <div style={{ display:"flex", gap:8, marginLeft:"auto" }}>
+                    <button onClick={()=>setComplianceModal(null)}
+                      style={{ background:"#f3f4f6", color:"#374151", border:"none", borderRadius:8, padding:"9px 16px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                    >Cancel</button>
+                    <button onClick={()=>{
+                      if (!m.workPermitRequestedAt) { alert("Pick the date the request was sent."); return; }
+                      if (!(m.workPermitRequestedBy || "").trim()) { alert("Enter who sent the request."); return; }
+                      saveComplianceAction(m.ec, {
+                        workPermitRequestedAt: m.workPermitRequestedAt,
+                        workPermitRequestedBy: (m.workPermitRequestedBy || "").trim(),
+                        workPermitDeadline:    m.workPermitDeadline || null,
+                        workPermitNotes:       (m.workPermitNotes || "").trim() || null
+                      });
+                      setComplianceModal(null);
+                    }}
+                      style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:8, padding:"9px 18px", cursor:"pointer", fontSize:12, fontWeight:700 }}
+                    >{m._edit ? "Save changes" : "Log request sent"}</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* ── ALERTS TAB ── */}
         {tab==="alerts" && (()=>{
           const active = enriched.filter(s=>!s.onMat);
@@ -9338,7 +11620,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // excluding Regional managers and active maternity leave.
               const MIN_SM = 1, MIN_AM = 2;
               const mgrVacancies = SALONS.reduce((a, sl) => {
-                const mgrs = managers.filter(m => m.branch === sl.name && !m.onMat);
+                const mgrs = enrichedManagers.filter(m => m.branch === sl.name && !m.onMat);
                 const sms = mgrs.filter(m => m.role === "SM").length;
                 const ams = mgrs.filter(m => m.role === "AM").length;
                 return a + Math.max(0, MIN_SM - sms) + Math.max(0, MIN_AM - ams);
@@ -9481,8 +11763,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         {mgrSubTab==="coverage" && (() => {
           const MIN_SM = 1, MIN_AM = 2;
           const branchStats = SALONS.map(salon => { // Regional managers excluded from store coverage
-            const mgrs = managers.filter(m => m.branch === salon.name);
-            const sms  = mgrs.filter(m => m.role === "SM" && !m.onMat);
+            const mgrs = enrichedManagers.filter(m => m.branch === salon.name);
+            const sms  = mgrs.filter(m => (m.role === "SM" || m.role === "SSM") && !m.onMat);
             const ams  = mgrs.filter(m => m.role === "AM" && !m.onMat);
             const onMatMgrs = mgrs.filter(m => m.onMat);
             const missSM = Math.max(0, MIN_SM - sms.length);
@@ -9494,9 +11776,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const totalSMNeeded = branchStats.reduce((a,b) => a + b.missSM, 0);
           const totalAMNeeded = branchStats.reduce((a,b) => a + b.missAM, 0);
           const gapBranches   = branchStats.filter(b => !b.ok).length;
-          const totalActiveSM = managers.filter(m=>m.role==="SM"&&!m.onMat&&m.branch!=="Regional").length;
-          const totalActiveAM = managers.filter(m=>m.role==="AM"&&!m.onMat&&m.branch!=="Regional").length;
-          const totalPregnant = managers.filter(m=>m.pregnant&&!m.onMat).length;
+          // 'Store Managers' folds SSM + SM together (both are store-tier
+          // managers - SSM is just the senior bracket). AM stays separate.
+          const totalActiveSM = enrichedManagers.filter(m=>(m.role==="SM"||m.role==="SSM")&&!m.onMat&&m.branch!=="Regional").length;
+          const totalActiveAM = enrichedManagers.filter(m=>m.role==="AM"&&!m.onMat&&m.branch!=="Regional").length;
+          const totalPregnant = enrichedManagers.filter(m=>m.pregnant&&!m.onMat).length;
           const totalOnMat    = managers.filter(m=>m.onMat).length;
           return (
             <div>
@@ -9508,7 +11792,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { l:"Asst. Managers",      v:totalActiveAM,  i:"⭐", c:"#0369a1", bg:"#e0f2fe", note:"active in store" },
                   { l:"Pregnant (upcoming)", v:totalPregnant,  i:"🤰", c:"#92400e", bg:"#fef3c7", note:"still working" },
                   { l:"On Maternity Leave",  v:totalOnMat,     i:"🤱", c:"#7A4258", bg:"#fce7f3", note:"not counted" },
-                  { l:"Regional Managers",   v:managers.filter(m=>m.branch==="Regional"&&!m.onMat).length, i:"🌍", c:"#475569", bg:"#f1f5f9", note:"not store-based" },
+                  { l:"Regional Managers",   v:enrichedManagers.filter(m=>m.branch==="Regional"&&!m.onMat).length, i:"🌍", c:"#475569", bg:"#f1f5f9", note:"not store-based" },
                   { l:"Fully Covered Stores",v:SALONS.length-gapBranches, i:"✅", c:"#065f46", bg:"#d1fae5", note:`of ${SALONS.length} stores` },
                 ].map(c=>(
                   <div key={c.l} style={{ background:c.bg, borderRadius:13, padding:"12px 14px" }}>
@@ -9681,7 +11965,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const MIN_SM = 1, MIN_AM = 2;
 
           const branchMgrs = salon => plannerMgrs.filter(m => m.branch === salon && m.branch !== 'Regional');
-          const smCount  = salon => branchMgrs(salon).filter(m=>m.role==="SM"&&!m.onMat).length;
+          const smCount  = salon => branchMgrs(salon).filter(m=>(m.role==="SM"||m.role==="SSM")&&!m.onMat).length;
           const amCount  = salon => branchMgrs(salon).filter(m=>m.role==="AM"&&!m.onMat).length;
           const gapColor = salon => {
             if (smCount(salon) < MIN_SM) return "#dc2626";
@@ -10313,7 +12597,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           </div>
                           <div><label style={lbl}>Position *</label>
                             <select style={{...inp, width:"100%", boxSizing:"border-box"}} value={obForm.position || ""} onChange={e=>setObForm({...obForm, position:e.target.value})}>
-                              <option value="Nail Tech">Nail Tech</option><option value="SM">Store Manager (SM)</option><option value="AM">Assistant Manager (AM)</option><option value="Other">Other</option>
+                              <option value="Nail Tech">Nail Tech</option><option value="SSM">Senior Store Manager (SSM)</option><option value="SM">Store Manager (SM)</option><option value="AM">Assistant Manager (AM)</option><option value="Other">Other</option>
                             </select>
                           </div>
                         </div>
@@ -10422,7 +12706,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const ds = daysFrom(r.startDate);
                           const statusLabel = ds<0 ? "starts in " + Math.abs(ds) + "d" : ds===0 ? "started today" : ds===1 ? "started yesterday" : ds + " days in";
                           const [bg, color] = ds<0 ? ["#dbeafe","#1e3a8a"] : ds<=7 ? ["#dcfce7","#14532d"] : ["#f3f4f6","#475569"];
-                          const posLabel = r.position==="SM" ? "Store Manager" : r.position==="AM" ? "Assistant Manager" : (r.position==="Other" && r.positionOther) ? r.positionOther : r.position;
+                          const posLabel = r.position==="SSM" ? "Senior Store Manager" : r.position==="SM" ? "Store Manager" : r.position==="AM" ? "Assistant Manager" : (r.position==="Other" && r.positionOther) ? r.positionOther : r.position;
                           return (
                             <div key={r._id} style={{ background:"#FFFFFF", borderRadius:11, border:"1px solid #FBCFE8", padding:"12px 14px", boxShadow:"0 2px 4px rgba(0,0,0,0.02)" }}>
                               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:6, gap:8 }}>
@@ -11103,7 +13387,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             logActivity("Imported check-ins", attBranch + " · " + cycLabel,
               "Stamped " + stamped + " day" + (stamped === 1 ? "" : "s") + " · " + skippedConfirmed + " confirmed kept · " + skippedPostLeft + " post-leave skipped", "Bulk");
             alert(
-              "✓ Marked " + stamped + " day" + (stamped === 1 ? "" : "s") + " from Daily Check-ins (" + attBranch + ")." +
+              "✓ Marked " + stamped + " day" + (stamped === 1 ? "" : "s") + " from Nail Tech Check-ins (" + attBranch + ")." +
               (skippedConfirmed > 0 ? "\n\n• " + skippedConfirmed + " confirmed cell" + (skippedConfirmed === 1 ? "" : "s") + " preserved." : "") +
               (skippedPostLeft > 0  ? "\n• " + skippedPostLeft  + " post-departure day"  + (skippedPostLeft === 1  ? "" : "s") + " skipped."   : "") +
               "\n\nUse the ↩ Undo button to roll this back."
@@ -12894,7 +15178,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           rows.forEach(r => { if (r && r.branch) byBranch[r.branch] = r; });
           // Sort: still-closed first (so the ops manager sees who needs chasing),
           // then opened (sorted by openedAt). Stable on branch name.
-          const sorted = SALONS.slice().map(sl => {
+          const sorted = SALONS.slice()
+            .filter(sl => !_hasStoreScope || scopedSalonNames.has(sl.name))
+            .map(sl => {
             const rec = byBranch[sl.name];
             return { branch: sl.name, opened: !!rec, openedAt: rec ? rec.openedAt : null, openedBy: rec ? rec.openedBy : null };
           }).sort((a, b) => {
@@ -12922,6 +15208,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </button>
                 </div>
               </div>
+
+              {renderScopeBar({ marginBottom: 12 })}
 
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12, padding:"10px 14px", background: closedCount > 0 ? "#fef2f2" : "#f0fdf4", border: closedCount > 0 ? "1px solid #fecaca" : "1px solid #bbf7d0", borderRadius:8 }}>
                 <div style={{ fontSize:13, fontWeight:700, color: closedCount > 0 ? "#7f1d1d" : "#166534" }}>
@@ -13196,6 +15484,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     Heads-up: there's already a loan for {selected ? selected.name : m.ec} on this date ({existingForDay.fromBranch} → {existingForDay.toBranch}). Saving will replace it.
                   </div>
                 )}
+                {m._err && (
+                  <div style={{ background:"#fef2f2", border:"1px solid #fecaca", borderRadius:8, padding:"9px 12px", fontSize:12, color:"#7f1d1d", marginBottom:10 }}>
+                    ⚠ {m._err}
+                  </div>
+                )}
 
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8 }}>
                   {m._id ? (
@@ -13208,10 +15501,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       style={{ background:"#f3f4f6", color:"#374151", border:"none", borderRadius:8, padding:"9px 16px", cursor:"pointer", fontSize:12, fontWeight:700 }}
                     >Close</button>
                     <button
-                      disabled={!m.ec || !m.toBranch || !m.date || !!onLeaveBlocker || fromBranch === m.toBranch}
+                      disabled={loanSaving || !m.ec || !m.toBranch || !m.date || !!onLeaveBlocker || (fromBranch && fromBranch === m.toBranch)}
                       onClick={()=>saveLoan({ ...m, fromBranch })}
-                      style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:8, padding:"9px 18px", cursor:"pointer", fontSize:12, fontWeight:700, opacity: (!m.ec || !m.toBranch || !m.date || !!onLeaveBlocker || fromBranch === m.toBranch) ? 0.5 : 1 }}
-                    >{m._id ? "Save changes" : "Log borrow"}</button>
+                      style={{ background:"#BE185D", color:"#fff", border:"none", borderRadius:8, padding:"9px 18px", cursor: loanSaving ? "wait" : "pointer", fontSize:12, fontWeight:700, opacity: (loanSaving || !m.ec || !m.toBranch || !m.date || !!onLeaveBlocker || (fromBranch && fromBranch === m.toBranch)) ? 0.5 : 1 }}
+                    >{loanSaving ? "Saving…" : (m._id ? "Save changes" : "Log borrow")}</button>
                   </div>
                 </div>
               </div>
@@ -13237,13 +15530,33 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const ds = Math.floor((nowMs - Date.parse(o.startDate + "T00:00:00")) / 86400000);
               return { ec: o.ec || ("_OBM_" + (o._id || Math.random()).toString().slice(-6)), name: o.name, branch: o.branch, role: o.position, _onboarding: true, _startDate: o.startDate, _futureStart: fs, _recentlyStarted: !fs && ds >= 0 && ds <= 14 };
             });
-          // Annotate managers with leftDate from offList for ghost overlay
+          // Annotate managers with leftDate (offboarding ghost overlay) AND
+          // onMat from the maternity records. On-mat managers stay on the
+          // schedule but get _onMat = true so their row is greyed out and
+          // every cell is rendered as 'ML' (matching the tech behaviour).
+          // mgrSched honours _onMat by skipping shift assignment for them.
+          const _onMatEcs = new Set((matRecs || []).filter(r => r && (r.matStatus === "on_mat" || r.matStatus === "dates_tbc") && r.ec).map(r => r.ec));
           const mgrsWithOff = managers.map(m => {
-            const off = (offList || []).find(o => o.ec === m.ec);
-            return off ? { ...m, leftDate: off.leftDate, offRec: off } : m;
+            const off  = (offList || []).find(o => o.ec === m.ec);
+            const flag = _onMatEcs.has(m.ec);
+            const base = off ? { ...m, leftDate: off.leftDate, offRec: off } : { ...m };
+            return flag ? { ...base, _onMat: true } : base;
           });
           const allMgrs = [...mgrsWithOff, ...obMgrs];
           const mgrLeaves = (leaveRecs || []).filter(L => allMgrs.some(m => m.ec === L.ec));
+          // Synthetic full-cycle leaves for on-mat managers - mgrSched
+          // treats these as 'L' cells so the on-mat manager doesn't get
+          // shifts. We rewrite the cells to 'ML' after generation so the
+          // grid renders the maternity-specific marker.
+          const cycleEndForMat = (() => {
+            const cs = new Date(cycleStart + "T00:00:00");
+            const ed = new Date(cs.getFullYear(), cs.getMonth() + 1, 24);
+            return ed.getFullYear() + "-" + String(ed.getMonth()+1).padStart(2,"0") + "-" + String(ed.getDate()).padStart(2,"0");
+          })();
+          const _matLeaves = allMgrs.filter(m => m._onMat).map(m => ({
+            ec: m.ec, startDate: cycleStart, endDate: cycleEndForMat, _synthetic: "mat"
+          }));
+          const mgrLeavesPlusMat = [..._matLeaves, ...mgrLeaves];
 
           // Build the structural skeleton (dates, manager filter, weeksMap, etc.).
           // We always run mgrSched once for that — but the GRID inside it is the
@@ -13264,7 +15577,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           );
           const _otherCycleMgr  = _branchReqsMgr.length - currentRequests.length;
           const _otherBranchMgr = (mgrRequests || []).filter(r => r && _normMgrBranch(r.branch) !== _branchKeyMgr).length;
-          let result = mgrSched(branch, cycleStart, allMgrs, mgrLeaves, currentRequests, mgrPriorCtx);
+          let result = mgrSched(branch, cycleStart, allMgrs, mgrLeavesPlusMat, currentRequests, mgrPriorCtx);
+          // Rewrite the synthetic leave cells for on-mat managers from 'L'
+          // to 'ML' so the grid renders the maternity marker (and not a
+          // generic annual-leave 'L').
+          if (result && result.grid) {
+            allMgrs.filter(m => m._onMat).forEach(m => {
+              if (!result.grid[m.ec]) return;
+              Object.keys(result.grid[m.ec]).forEach(k => {
+                if (result.grid[m.ec][k] === "L") result.grid[m.ec][k] = "ML";
+              });
+            });
+          }
           const haveDraft = !!mgrSchedDraft;
           if (haveDraft) {
             const newGrid = JSON.parse(JSON.stringify(mgrSchedDraft));
@@ -13281,23 +15605,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }
             for (const ec of Object.keys(newGrid)) if (!result.managers.find(m => m.ec === ec)) delete newGrid[ec];
             result = { ...result, grid: newGrid, _loadedFromSaved: true };
-            // Recompute dayTotals + conflicts from merged grid
+            // Recompute dayTotals + conflicts from merged grid. On-mat
+            // managers are skipped entirely - they never count as working,
+            // off, or on-leave for coverage purposes.
             const newDT = {};
             for (const x of result.dates) newDT[x.d] = { dow: x.dow, working: 0, off: 0, leave: 0 };
-            for (const m of result.managers) for (const x of result.dates) {
-              const v = newGrid[m.ec] && newGrid[m.ec][x.d];
-              if (v === "W" || v === "E") newDT[x.d].working++;
-              else if (v === "O" || v === "R") newDT[x.d].off++;
-              else if (v === "L") newDT[x.d].leave++;
+            for (const m of result.managers) {
+              if (m._onMat) continue;
+              for (const x of result.dates) {
+                const v = newGrid[m.ec] && newGrid[m.ec][x.d];
+                if (v === "W" || v === "E") newDT[x.d].working++;
+                else if (v === "O" || v === "R") newDT[x.d].off++;
+                else if (v === "L") newDT[x.d].leave++;
+              }
             }
             result.dayTotals = newDT;
             const newConflicts = [];
             const dows = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+            // Match mgrSched's per-day coverage rule: 3+ mgrs available that
+            // day → require >=2 working; 2 or fewer available (true 2-mgr
+            // store, or 3-mgr store with one on leave that day) → 1 mgr ok.
+            const _activeMgrsMerged = (result.managers || []).filter(mm => !mm._onMat).length;
             for (const x of result.dates) {
               const w = newDT[x.d].working;
-              if (w < 2) newConflicts.push({ type:"understaffed", msg: x.d + " " + dows[x.dow] + ": " + w + " manager" + (w===1?"":"s") + " working, need at least 2", severity:"high" });
+              const activeToday = _activeMgrsMerged - (newDT[x.d].leave || 0);
+              const minCov = activeToday >= 3 ? 2 : 1;
+              if (w < minCov) newConflicts.push({ type:"understaffed", msg: x.d + " " + dows[x.dow] + ": " + w + " manager" + (w===1?"":"s") + " working, need at least " + minCov, severity:"high" });
             }
             for (const m of result.managers) {
+              if (m._onMat) continue;     // skip maternity from consecutive-days check
               let run = 0, rs = -1;
               for (let i = 0; i < result.dates.length; i++) {
                 const v = newGrid[m.ec] && newGrid[m.ec][result.dates[i].d];
@@ -13483,12 +15819,106 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             });
           };
 
-          // Generate fresh schedule into the draft (does not save).
+          // Roster-change detection. Compares the ECs in the live mgr
+          // schedule (saved or draft, whichever is rendered) with the
+          // current roster at this branch. `added` = mgrs now here who
+          // aren't on the schedule yet (new hire, transferred in).
+          // `removed` = ECs sitting in the saved grid but no longer in the
+          // current roster (left, moved away). Used to surface a sync
+          // banner and to drive the smart-regenerate behaviour below.
+          // allMgrs is global (every branch + onboarding). The diff only
+          // makes sense against the managers actually rostered at THIS
+          // branch, so filter both sides to branch === branch before the
+          // compare - otherwise every manager from every other store
+          // shows as '+ Added' here. Onboarding placeholders are also
+          // skipped (they don't have a saved grid entry yet, by design).
+          const _branchMgrs = allMgrs.filter(m => m.branch === branch && !m._onboarding);
+          const _liveEcs = new Set(_branchMgrs.map(m => m.ec));
+          const _sourceGridForDiff = (mgrSchedDraft && Object.keys(mgrSchedDraft).length > 0)
+            ? mgrSchedDraft
+            : (mgrSchedSaved || result.grid || {});
+          const _gridEcs = Object.keys(_sourceGridForDiff || {});
+          const rosterAdded   = _branchMgrs.filter(m => m._onMat ? false : !_gridEcs.includes(m.ec)).map(m => m.ec);
+          const rosterRemoved = _gridEcs.filter(ec => !_liveEcs.has(ec));
+          // Where did the removed mgrs go? Look up the global managers
+          // list. If they're still in another branch, label as 'moved';
+          // otherwise 'left'.
+          const _whereGone = (ec) => {
+            const live = (managers || []).find(m => m && m.ec === ec);
+            if (!live)             return { kind: "left",  to: null };
+            if (live.branch && live.branch !== branch) return { kind: "moved", to: live.branch };
+            return { kind: "removed", to: null };
+          };
+          const rosterChangeCount = rosterAdded.length + rosterRemoved.length;
+          const hasApprovedFinal  = (mgrSchedVersions || []).length > 0;
+
+          // Sync only roster-affected rows into the draft. Existing
+          // managers' cells stay exactly as they are - the goal post
+          // approval is to not reshuffle people who already signed off
+          // on their cycle. Removed managers' rows are dropped; new
+          // managers' rows are filled from a fresh mgrSched run.
+          const syncRoster = () => {
+            if (rosterChangeCount === 0) { alert("Roster matches the schedule — nothing to sync."); return; }
+            const base = mgrSchedDraft ? JSON.parse(JSON.stringify(mgrSchedDraft)) : JSON.parse(JSON.stringify(_sourceGridForDiff || {}));
+            // Drop departed mgrs
+            rosterRemoved.forEach(ec => { delete base[ec]; });
+            // Bring in fresh cells for new mgrs
+            if (rosterAdded.length > 0) {
+              const fresh = mgrSched(branch, cycleStart, allMgrs, mgrLeavesPlusMat, currentRequests, mgrPriorCtx);
+              rosterAdded.forEach(ec => {
+                if (fresh && fresh.grid && fresh.grid[ec]) {
+                  base[ec] = JSON.parse(JSON.stringify(fresh.grid[ec]));
+                }
+              });
+              // ML rewrite for any added on-mat mgr (defence in depth)
+              allMgrs.filter(m => m._onMat && rosterAdded.includes(m.ec)).forEach(m => {
+                if (base[m.ec]) Object.keys(base[m.ec]).forEach(k => {
+                  if (base[m.ec][k] === "L") base[m.ec][k] = "ML";
+                });
+              });
+            }
+            setMgrSchedDraft(base);
+            setMgrSchedDirty(true);
+            setMgrSchedHist(h => { const n = { ...h }; delete n[editKey]; return n; });
+            const summary = (rosterAdded.length ? rosterAdded.length + " added" : "") +
+                             (rosterAdded.length && rosterRemoved.length ? " · " : "") +
+                             (rosterRemoved.length ? rosterRemoved.length + " removed" : "");
+            if (window.BOA_LOG_ACTIVITY) {
+              window.BOA_LOG_ACTIVITY("Synced mgr roster to schedule", branch + " · " + ymKey, summary, "Schedule");
+            }
+            alert("Roster synced: " + summary + ".\n\nClick Save to persist.");
+          };
+
+          // Generate fresh schedule into the draft (does not save). If an
+          // approved final version exists and the roster has only minor
+          // changes, route to the safer sync flow that keeps everyone
+          // else's cells intact.
           const generate = () => {
-            if (mgrSchedDirty) {
+            if (hasApprovedFinal && rosterChangeCount > 0) {
+              const useSync = window.confirm(
+                "A final approved schedule exists for this cycle.\n\n" +
+                "Roster changed: " + rosterAdded.length + " added · " + rosterRemoved.length + " removed.\n\n" +
+                "OK → Sync only the changed managers (keep everyone else's cells as approved).\n" +
+                "Cancel → Full regenerate (overwrites the approved schedule for every manager)."
+              );
+              if (useSync) { syncRoster(); return; }
+              if (!window.confirm("Confirm full regenerate? This will overwrite the approved schedule for ALL managers.")) return;
+            } else if (hasApprovedFinal) {
+              if (!window.confirm("A final approved schedule exists. Regenerate will overwrite every manager's cells. Continue?")) return;
+            } else if (mgrSchedDirty) {
               if (!window.confirm("This will replace the current draft with a freshly generated schedule. Discard your unsaved edits?")) return;
             }
-            const fresh = mgrSched(branch, cycleStart, allMgrs, mgrLeaves, currentRequests, mgrPriorCtx);
+            const fresh = mgrSched(branch, cycleStart, allMgrs, mgrLeavesPlusMat, currentRequests, mgrPriorCtx);
+            // Same ML rewrite as the load path - keeps the regenerated grid
+            // consistent with maternity status.
+            if (fresh && fresh.grid) {
+              allMgrs.filter(m => m._onMat).forEach(m => {
+                if (!fresh.grid[m.ec]) return;
+                Object.keys(fresh.grid[m.ec]).forEach(k => {
+                  if (fresh.grid[m.ec][k] === "L") fresh.grid[m.ec][k] = "ML";
+                });
+              });
+            }
             setMgrSchedDraft(JSON.parse(JSON.stringify(fresh.grid)));
             setMgrSchedDirty(true);
             setMgrSchedHist(h => { const n = { ...h }; delete n[editKey]; return n; });
@@ -13709,16 +16139,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           };
 
           // Visual constants
-          const cellBg    = { W:"#dcfce7", O:"#FCE7F3", L:"#fde68a", R:"#fbcfe8", X:"#f3f4f6", E:"#6ee7b7" };
-          const cellTxt   = { W:"W",       O:"OFF",     L:"LV",      R:"REQ",     X:"—",       E:"EXT" };
-          const cellColor = { W:"#15803d", O:"#831843", L:"#92400e", R:"#831843", X:"#9ca3af", E:"#064e3b" };
+          const cellBg    = { W:"#dcfce7", O:"#FCE7F3", L:"#fde68a", R:"#fbcfe8", X:"#f3f4f6", E:"#6ee7b7", ML:"#ede9fe" };
+          const cellTxt   = { W:"W",       O:"OFF",     L:"LV",      R:"REQ",     X:"—",       E:"EXT",   ML:"ML"      };
+          const cellColor = { W:"#15803d", O:"#831843", L:"#92400e", R:"#831843", X:"#9ca3af", E:"#064e3b", ML:"#6b21a8" };
           const dowsAbbr  = ["Su","Mo","Tu","We","Th","Fr","Sa"];
           const moNames   = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
           const csObj = new Date(cycleStart + "T00:00:00");
           const ceObj = new Date(result.cycleEnd + "T00:00:00");
           const cycleLabel = csObj.getDate() + " " + moNames[csObj.getMonth()] + " " + csObj.getFullYear() + " → " + ceObj.getDate() + " " + moNames[ceObj.getMonth()] + " " + ceObj.getFullYear();
           // Sort managers SM-first, then by name
-          const sortedMgrs = [...result.managers].sort((a,b) => (a.role==="SM"?0:1)-(b.role==="SM"?0:1) || (a.name||"").localeCompare(b.name||""));
+          // Sort: active managers first (SSM > SM > AM), maternity managers
+          // pinned to the bottom so the people who can actually be assigned
+          // shifts are at the top of the grid.
+          const sortedMgrs = [...result.managers].sort((a,b) => {
+            const am = a._onMat ? 1 : 0, bm = b._onMat ? 1 : 0;
+            if (am !== bm) return am - bm;
+            const rank = (r) => r === "SSM" ? 0 : r === "SM" ? 1 : 2;
+            return rank(a.role) - rank(b.role) || (a.name||"").localeCompare(b.name||"");
+          });
 
           return (
             <div>
@@ -13872,6 +16310,39 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               )}
 
+              {/* Roster-change banner — surfaces when the live managers at
+                  this branch differ from the people sitting on the saved /
+                  draft grid. Lists who's been added or removed and offers a
+                  Sync button that touches ONLY those mgrs (everyone else's
+                  cells are preserved, which is critical after an approved
+                  version exists). */}
+              {rosterChangeCount > 0 && (
+                <div style={{ background:"#FEF9C3", border:"1px solid #FDE68A", borderRadius:11, padding:"12px 14px", marginBottom:14 }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:"#78350F", marginBottom:6, display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                    <span>🔄 Manager roster changed since this schedule was built</span>
+                    {hasApprovedFinal && <span style={{ fontSize:10, fontWeight:800, padding:"2px 8px", borderRadius:99, background:"#92400e", color:"#fff", letterSpacing:"0.06em" }}>FINAL EXISTS</span>}
+                  </div>
+                  <ul style={{ margin:"4px 0 10px", paddingLeft:20, fontSize:12, color:"#78350F", lineHeight:1.6 }}>
+                    {rosterAdded.map(ec => {
+                      const live = allMgrs.find(m => m.ec === ec) || {};
+                      return <li key={"add_"+ec}><b>+ Added:</b> {live.name || ec} ({ec}) · {live.role || "?"}</li>;
+                    })}
+                    {rosterRemoved.map(ec => {
+                      const w = _whereGone(ec);
+                      return <li key={"rem_"+ec}><b>– Removed:</b> {ec} {w.kind === "moved" ? "(moved to " + w.to + ")" : w.kind === "left" ? "(left)" : "(no longer at branch)"}</li>;
+                    })}
+                  </ul>
+                  <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
+                    <button onClick={syncRoster}
+                      title="Add the new manager rows (auto-filled) and drop the removed ones. Existing managers' cells are left untouched."
+                      style={{ padding:"7px 14px", background:"#BE185D", color:"#fff", border:"none", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
+                      🔄 Sync changes only
+                    </button>
+                    <span style={{ fontSize:11, color:"#78350F" }}>Preserves every other manager's cells — safe after final approval.</span>
+                  </div>
+                </div>
+              )}
+
               {/* Conflicts panel */}
               {result.conflicts && result.conflicts.length > 0 && (
                 <div style={{ background:"#fee2e2", border:"1px solid #fca5a5", borderRadius:11, padding:"12px 14px", marginBottom:14 }}>
@@ -14021,8 +16492,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     )}
                     {sortedMgrs.map(mg => (
                       <tr key={mg.ec}>
-                        <td style={{ position:"sticky", left:0, background: mg._offGhost ? "#f9fafb" : (mg._obStarting ? "#fefce8" : "#fff"), padding:"6px 10px", borderBottom:"1px solid #FCE7F3", borderRight:"2px solid #FBCFE8", zIndex:2, minWidth:200, opacity: mg._offGhost ? 0.55 : 1 }}>
-                          <div style={{ fontSize:12, fontWeight:700, color: mg._offGhost ? "#9ca3af" : "#831843", textDecoration: mg._offGhost ? "line-through" : "none", fontStyle: mg._offGhost ? "italic" : "normal" }}>{mg.name}</div>
+                        <td style={{ position:"sticky", left:0, background: mg._offGhost ? "#f9fafb" : (mg._onMat ? "#f5e1ed" : (mg._obStarting ? "#fefce8" : "#fff")), padding:"6px 10px", borderBottom:"1px solid #FCE7F3", borderRight:"2px solid #FBCFE8", zIndex:2, minWidth:200, opacity: mg._offGhost || mg._onMat ? 0.55 : 1 }}>
+                          <div style={{ fontSize:12, fontWeight:700, color: mg._offGhost ? "#9ca3af" : mg._onMat ? "#7A4258" : "#831843", textDecoration: mg._offGhost ? "line-through" : "none", fontStyle: (mg._offGhost || mg._onMat) ? "italic" : "normal" }}>{mg._onMat ? "🤱 " : ""}{mg.name}</div>
                           {mg._offGhost
                             ? <div style={{ fontSize:9, color:"#9ca3af", fontStyle:"italic", marginTop:1 }}>Left {mg._offLeftDate}{mg._offReason ? " · " + mg._offReason : ""}</div>
                             : mg._obStarting
@@ -14031,7 +16502,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           }
                         </td>
                         {result.dates.map((dy, di) => {
-                          const v = (result.grid[mg.ec] && result.grid[mg.ec][dy.d]) || "";
+                          // On-mat managers always read 'ML' for every cell -
+                          // belt-and-braces so the row never falls back to
+                          // blank when mgrSched didn't write a value.
+                          const rawV = (result.grid[mg.ec] && result.grid[mg.ec][dy.d]) || "";
+                          const v = mg._onMat ? "ML" : rawV;
                           const bg = cellBg[v] || "#fff";
                           const fg = cellColor[v] || "#9ca3af";
                           const txt = cellTxt[v] || "";
@@ -14062,14 +16537,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <tfoot>
                     <tr>
                       <td style={{ position:"sticky", left:0, background:"#FDEEF5", padding:"6px 10px", fontSize:10, fontWeight:700, color:"#831843", letterSpacing:"0.04em", borderTop:"2px solid #FBCFE8", borderRight:"2px solid #FBCFE8", zIndex:2 }}>WORKING TOTAL</td>
-                      {result.dates.map((dy, di) => {
-                        const w = result.dayTotals[dy.d] ? result.dayTotals[dy.d].working : 0;
-                        const understaffed = w < 2;
+                      {(() => {
+                        // Match mgrSched's per-day coverage rule: 3+ mgrs available
+                        // that day → require >=2 working (red if not); 2 or fewer
+                        // available (true 2-mgr store, or a 3-mgr store with one on
+                        // leave that day) → 1 mgr is acceptable.
+                        const _activeMgrs = (result.managers || []).filter(mg => !mg._onMat).length;
+                        return result.dates.map((dy, di) => {
+                        const dt = result.dayTotals[dy.d] || { working:0, leave:0 };
+                        const w = dt.working || 0;
+                        const activeToday = _activeMgrs - (dt.leave || 0);
+                        const minCov = activeToday >= 3 ? 2 : 1;
+                        const understaffed = w < minCov;
                         const isMon = dy.dow === 1;
                         return (
                           <td key={dy.d} style={{ padding:"6px 0", textAlign:"center", borderTop:"2px solid #FBCFE8", borderLeft: isMon ? "3px solid #E84B9B" : "1px solid #FCE7F3", background: understaffed ? "#fee2e2" : "#FDEEF5", color: understaffed ? "#7f1d1d" : "#831843", fontSize:11, fontWeight:800 }}>{w}</td>
                         );
-                      })}
+                      });
+                      })()}
                     </tr>
                   </tfoot>
                 </table>
@@ -14554,6 +17039,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const clockinFiltered = (techClockinRows || []).filter(r => {
             const branch = (r.staff && r.staff.branch) || "";
             if (checkinFilterBranch !== "All" && r.staff && branch !== checkinFilterBranch) return false;
+            // ROM scope: hide rows whose home branch isn't in scope. Orphan
+            // rows (no staff record) always pass through so they remain
+            // visible as diagnostics regardless of scope.
+            if (_hasStoreScope && r.staff && !scopedSalonNames.has(branch)) return false;
             return new Date(r.ts) >= since;
           });
           // Look up staff names for attendance-grid rows (which only carry ec).
@@ -14564,6 +17053,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // the existing table renderer can display them next to clockins rows.
           const attShaped = (attCheckinRows || []).filter(r => {
             if (checkinFilterBranch !== "All" && r.branch !== checkinFilterBranch) return false;
+            if (_hasStoreScope && r.branch && !scopedSalonNames.has(r.branch)) return false;
             return new Date(r.ts) >= since;
           }).map(r => {
             const sRec = staffByEc[r.ec] || null;
@@ -14644,16 +17134,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           return (
             <div>
               <div style={{ marginBottom:14 }}>
-                <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>📲 Daily Check-ins</div>
+                <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>📲 Nail Tech Check-ins</div>
                 <div style={{ fontSize:12, color:"#F472B6" }}>Nail-tech check-ins from the manager check-in app. Used to confirm attendance alongside the Fresha import.</div>
               </div>
+
+              {renderScopeBar({ marginBottom: 12 })}
 
               <div style={{ background:"#FFFFFF", borderRadius:13, padding:"12px 14px", border:"1px solid #FBCFE8", marginBottom:14, display:"flex", gap:14, alignItems:"center", flexWrap:"wrap" }}>
                 <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
                   <label style={{ fontSize:10, fontWeight:700, color:"#F472B6", letterSpacing:"0.06em" }}>BRANCH</label>
                   <select value={checkinFilterBranch} onChange={e=>setCheckinFilterBranch(e.target.value)} style={{ padding:"7px 11px", borderRadius:7, border:"1px solid #FBCFE8", fontSize:13, background:"#fff", minWidth:160 }}>
-                    <option value="All">All branches</option>
-                    {SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                    <option value="All">{_hasStoreScope ? (dashScope === "mine" ? "All my stores" : dashScope === "other" ? "All peer stores" : "All branches") : "All branches"}</option>
+                    {SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name)).map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
                   </select>
                 </div>
                 <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
@@ -14787,7 +17279,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           console.error("Daily Check-ins render failed:", err);
           return (
             <div style={{ background:"#fee2e2", border:"1px solid #fca5a5", borderRadius:11, padding:"16px 18px", color:"#7f1d1d", fontFamily:"'Outfit',system-ui,sans-serif" }}>
-              <div style={{ fontWeight:800, marginBottom:6 }}>Daily Check-ins failed to render.</div>
+              <div style={{ fontWeight:800, marginBottom:6 }}>Nail Tech Check-ins failed to render.</div>
               <div style={{ fontSize:12 }}>{(err && err.message) || String(err)}</div>
               <div style={{ fontSize:11, marginTop:8, opacity:0.7 }}>See the browser console for details.</div>
             </div>
@@ -14795,9 +17287,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         } })()}
 
         {tab==="mgrclockins" && (() => {
-          const filtered = mgrClockinRows.filter(r =>
-            mgrClockinFilterBranch === "All" || (r.staff && r.staff.branch === mgrClockinFilterBranch)
-          );
+          const filtered = mgrClockinRows.filter(r => {
+            if (mgrClockinFilterBranch !== "All" && (!r.staff || r.staff.branch !== mgrClockinFilterBranch)) return false;
+            if (_hasStoreScope && r.staff && !scopedSalonNames.has(r.staff.branch)) return false;
+            return true;
+          });
           // Group by manager-day for compact display
           const fmtDate = (iso) => new Date(iso).toLocaleString("en-ZA", { day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" });
           const typeLabel = (t) => {
@@ -14811,16 +17305,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           return (
             <div>
               <div style={{ marginBottom:14 }}>
-                <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>🕐 Manager Clock-ins</div>
+                <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>🕐 Manager Check-ins</div>
                 <div style={{ fontSize:12, color:"#F472B6" }}>Spot-check manager attendance. Each row shows the selfie, GPS distance from store, and timestamp. Auto-out (red) means they forgot to clock out — talk to them.</div>
               </div>
+
+              {renderScopeBar({ marginBottom: 12 })}
 
               <div style={{ background:"#FFFFFF", borderRadius:13, padding:"12px 14px", border:"1px solid #FBCFE8", marginBottom:14, display:"flex", gap:14, alignItems:"center", flexWrap:"wrap" }}>
                 <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
                   <label style={{ fontSize:10, fontWeight:700, color:"#F472B6", letterSpacing:"0.06em" }}>BRANCH</label>
                   <select value={mgrClockinFilterBranch} onChange={e=>setMgrClockinFilterBranch(e.target.value)} style={{ padding:"7px 11px", borderRadius:7, border:"1px solid #FBCFE8", fontSize:13, background:"#fff", minWidth:160 }}>
-                    <option value="All">All branches</option>
-                    {SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                    <option value="All">{_hasStoreScope ? (dashScope === "mine" ? "All my stores" : dashScope === "other" ? "All peer stores" : "All branches") : "All branches"}</option>
+                    {SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name)).map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
                   </select>
                 </div>
                 <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
@@ -14966,6 +17462,38 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         />
       )}
 
+      {tab === "storeAllocation" && (() => {
+        const role = (currentUser?.role || "").toLowerCase();
+        const isNationalOps = role.includes("national ops") || role.includes("national operations");
+        const allowed = !!currentUser?.isOwner || isNationalOps;
+        if (!allowed) {
+          return (
+            <div style={{ background:"#fef2f2", border:"1px solid #fca5a5", borderRadius:11, padding:"20px 22px", color:"#7f1d1d", fontFamily:"'Outfit',system-ui,sans-serif" }}>
+              <div style={{ fontWeight:800, marginBottom:6 }}>🔒 You don't have access to Store Allocation.</div>
+              <div style={{ fontSize:12 }}>Ask the Owner to grant access, or to assign you the National Ops Manager role.</div>
+            </div>
+          );
+        }
+        return (
+          <StoreAllocationAdmin
+            appUsers={appUsers}
+            onUsersUpdate={onUsersUpdate}
+            currentUser={currentUser}
+            readOnly={currentTabIsReadOnly}
+          />
+        );
+      })()}
+
+      {tab === "dailyTasks" && (
+        <DailyTasksAdmin
+          tasks={dailyTasks}
+          onSave={persistDailyTasks}
+          appUsers={appUsers}
+          currentUser={currentUser}
+          readOnly={currentTabIsReadOnly}
+        />
+      )}
+
       {tab === "hrLibrary" && (currentUser?.role === "Master Admin" || currentUser?.isOwner) && (
         window.EmployeeDataLibrary ? React.createElement(window.EmployeeDataLibrary, { staff: staff, currentUser: currentUser, managers: managers, obList: obList, offList: offList }) : <div style={{padding:24}}>Loading Employee Files...</div>
       )}
@@ -15019,10 +17547,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         </div>
       )}
 
-      {staffModal && <StaffModal s={staffModal} onClose={()=>setStaffModal(null)} onSave={saveStaff} onTransfer={(s)=>setTransferModal(s)} allStaff={staff} />}
-      {mgrModal && <ManagerModal m={mgrModal} pin={mgrPins[mgrModal.ec] || ""} onClose={()=>setMgrModal(null)} onSave={saveMgr} onDelete={delMgr} />}
+      {staffModal && <StaffModal s={(() => { const mr = (matRecs || []).find(r => r && r.ec && staffModal.ec && r.ec.trim() === staffModal.ec.trim()); return mr ? { ...staffModal, matStatus: staffModal.matStatus || mr.matStatus, matStart: staffModal.matStart || mr.matStart, matEnd: staffModal.matEnd || mr.matEnd, matReturn: staffModal.matReturn || mr.returnDate, matNotes: staffModal.matNotes || mr.notes } : staffModal; })()} onClose={()=>setStaffModal(null)} onSave={saveStaff} onTransfer={(s)=>setTransferModal(s)} allStaff={staff} isOwner={!!currentUser?.isOwner} onHardDelete={hardDeleteStaff} />}
+      {mgrModal && <ManagerModal m={(() => { const mr = (matRecs || []).find(r => r && r.ec && mgrModal.ec && r.ec.trim() === mgrModal.ec.trim()); return mr ? { ...mgrModal, matStatus: mgrModal.matStatus || mr.matStatus, matStart: mgrModal.matStart || mr.matStart, matEnd: mgrModal.matEnd || mr.matEnd, matReturn: mgrModal.matReturn || mr.returnDate, matNotes: mgrModal.matNotes || mr.notes } : mgrModal; })()} pin={mgrPins[mgrModal.ec] || ""} onClose={()=>setMgrModal(null)} onSave={saveMgr} onDelete={delMgr} />}
       {transferModal && <TransferModal s={transferModal} onClose={()=>setTransferModal(null)} onConfirm={handleTransfer} onCancelTransfer={cancelTransfer} />}
-      {matModal && <MatModal rec={matModal} onClose={()=>setMatModal(null)} onSave={saveMat} onDelete={delMat} />}
+      {matModal && <MatModal rec={matModal} onClose={()=>setMatModal(null)} onSave={saveMat} onDelete={delMat} people={matPickerPool} />}
     </div>
   );
 }

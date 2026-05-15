@@ -26,6 +26,7 @@
       branch:        r.branch         || "",
       contract:      r.contract       || null,
       permit:        r.permit         || null,
+      permitExpiry:  r.permit_expiry  || null,
       notes:         r.notes          || "",
       isShadow:      !!r.is_shadow,
       transferring:  !!r.transferring,
@@ -44,6 +45,7 @@
       branch:        s.branch || "",
       contract:      s.contract || null,
       permit:        s.permit   || null,
+      permit_expiry: s.permitExpiry || null,
       notes:         s.notes    || null,
       is_shadow:     !!s.isShadow,
       transferring:  !!s.transferring,
@@ -67,6 +69,9 @@
       branch: r.branch || "",
       role:   r.role   || "",
       notes:  r.notes  || "",
+      contract:     r.contract      || null,
+      permit:       r.permit        || null,
+      permitExpiry: r.permit_expiry || null,
       transferring: !!r.transferring,
       transferTo:   r.transfer_to   || null,
       transferDate: r.transfer_date || null,
@@ -81,6 +86,9 @@
       branch:        m.branch || "",
       role:          m.role || null,
       notes:         m.notes || null,
+      contract:      m.contract || null,
+      permit:        m.permit   || null,
+      permit_expiry: m.permitExpiry || null,
       transferring:  !!m.transferring,
       transfer_to:   m.transferTo   || null,
       transfer_date: m.transferDate || null,
@@ -908,6 +916,23 @@
     return records;
   }
 
+  // ---------- Compliance actions (boa_compliance_actions_v1) ----------
+  // Sidecar tracking per-staff compliance follow-ups. Shape:
+  //   { [ec]: { workPermitRequestedAt, workPermitRequestedBy,
+  //             workPermitDeadline, workPermitNotes, clearedAt, clearedBy } }
+  // Stored on app_state so we don't need a schema migration.
+  async function loadComplianceActions() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_compliance_actions_v1").maybeSingle();
+    if (res.error) { console.error("loadComplianceActions:", res.error); return {}; }
+    var v = res.data && res.data.value;
+    return (v && typeof v === "object" && !Array.isArray(v)) ? v : {};
+  }
+  async function saveComplianceActions(map) {
+    var res = await sb.from("app_state").upsert({ key: "boa_compliance_actions_v1", value: map || {} });
+    if (res.error) { console.error("saveComplianceActions:", res.error); throw res.error; }
+    return map;
+  }
+
   // ---------- Tech day-loans (boa_tech_loans_v1) ----------
   // One-day cross-branch borrowing of a nail tech. Stored as a JSON array on
   // app_state so we don't need a schema migration. Each record is:
@@ -924,6 +949,24 @@
   async function saveTechLoans(records) {
     var res = await sb.from("app_state").upsert({ key: "boa_tech_loans_v1", value: records || [] });
     if (res.error) { console.error("saveTechLoans:", res.error); throw res.error; }
+    return records;
+  }
+
+  // ---------- Daily tasks (boa_daily_tasks_v1) ----------
+  // Per-user to-do items assigned by an admin. Records:
+  //   { _id, title, description, assigneePin, date (YYYY-MM-DD),
+  //     createdBy, createdAt, doneAt?, doneBy? }
+  // The HR portal dashboard reads only TODAY's tasks for the signed-in
+  // user; the admin "Daily Tasks" tab edits the whole list.
+  async function loadDailyTasks() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_daily_tasks_v1").maybeSingle();
+    if (res.error) { console.error("loadDailyTasks:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveDailyTasks(records) {
+    var res = await sb.from("app_state").upsert({ key: "boa_daily_tasks_v1", value: records || [] });
+    if (res.error) { console.error("saveDailyTasks:", res.error); throw res.error; }
     return records;
   }
 
@@ -1085,6 +1128,10 @@
     // Unpaid legal-status leave
     loadTechLoans:          loadTechLoans,
     saveTechLoans:          saveTechLoans,
+    loadDailyTasks:         loadDailyTasks,
+    saveDailyTasks:         saveDailyTasks,
+    loadComplianceActions:  loadComplianceActions,
+    saveComplianceActions:  saveComplianceActions,
     loadUnpaidLegalRecords: loadUnpaidLegalRecords,
     saveUnpaidLegalRecords: saveUnpaidLegalRecords
   };

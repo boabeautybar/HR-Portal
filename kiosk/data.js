@@ -120,6 +120,86 @@
     return arr.filter(function (l) { return l && l.date === dateIso; });
   }
 
+  // Kiosk reminders. The HR portal writes daily tasks to
+  // boa_daily_tasks_v1. Records with target === "kiosk" are branch-
+  // wide broadcasts (no per-person done tracking). For everything else
+  // we ignore — those are portal-user to-dos. Returns only reminders
+  // that are active today (one-off date matches OR weekly repeatDow
+  // includes today's weekday) and whose branches list includes this
+  // kiosk's branch (or is empty, meaning all branches).
+  async function listKioskReminders() {
+    var c = client(); if (!c) return [];
+    var res = await c.from("app_state").select("value").eq("key", "boa_daily_tasks_v1").maybeSingle();
+    if (res.error) { console.error("listKioskReminders:", res.error); return []; }
+    var v = res.data && res.data.value;
+    var all = Array.isArray(v) ? v : [];
+    var now = new Date();
+    var ymd = now.getFullYear() + "-" + String(now.getMonth()+1).padStart(2,"0") + "-" + String(now.getDate()).padStart(2,"0");
+    var dow = now.getDay();
+    var thisBranch = branch();
+    return all.filter(function (t) {
+      if (!t || t.target !== "kiosk") return false;
+      // Branch scope: empty list = every branch.
+      if (Array.isArray(t.branches) && t.branches.length > 0 && t.branches.indexOf(thisBranch) === -1) return false;
+      // Active-today check.
+      if (t.kind === "weekly") {
+        if (!Array.isArray(t.repeatDow) || t.repeatDow.indexOf(dow) === -1) return false;
+        if (t.startDate && ymd < t.startDate) return false;
+        return true;
+      }
+      return t.date === ymd;
+    }).map(function (t) {
+      // Tag each task with this-branch's done status for today. Kiosk
+      // reminders are branch-level: any manager at the kiosk can mark
+      // them done, and the tick survives until tomorrow (weekly) or
+      // forever (one-off, since the date passes).
+      var done = t.kioskDoneByBranch && t.kioskDoneByBranch[thisBranch] && t.kioskDoneByBranch[thisBranch][ymd];
+      return Object.assign({}, t, {
+        _doneTodayHere: !!done,
+        _doneAtHere:    done && done.at || null
+      });
+    });
+  }
+
+  // Mark / unmark a kiosk reminder as done for THIS branch on TODAY's
+  // date. Reads the whole boa_daily_tasks_v1 row, mutates just the
+  // matching task's kioskDoneByBranch[branch][ymd] field, writes back.
+  // Returns the updated task or null on failure.
+  async function _writeKioskDoneState(taskId, mark) {
+    var c = client(); if (!c) return null;
+    var res = await c.from("app_state").select("value").eq("key", "boa_daily_tasks_v1").maybeSingle();
+    if (res.error) { console.error("kiosk-done read:", res.error); return null; }
+    var v = res.data && res.data.value;
+    var all = Array.isArray(v) ? v : [];
+    var now = new Date();
+    var ymd = now.getFullYear() + "-" + String(now.getMonth()+1).padStart(2,"0") + "-" + String(now.getDate()).padStart(2,"0");
+    var thisBranch = branch();
+    var changed = null;
+    var next = all.map(function (t) {
+      if (!t || t._id !== taskId) return t;
+      var dbd = (t.kioskDoneByBranch && typeof t.kioskDoneByBranch === "object") ? Object.assign({}, t.kioskDoneByBranch) : {};
+      var bMap = dbd[thisBranch] ? Object.assign({}, dbd[thisBranch]) : {};
+      if (mark) {
+        bMap[ymd] = { at: new Date().toISOString() };
+      } else {
+        delete bMap[ymd];
+      }
+      if (Object.keys(bMap).length === 0) {
+        delete dbd[thisBranch];
+      } else {
+        dbd[thisBranch] = bMap;
+      }
+      changed = Object.assign({}, t, { kioskDoneByBranch: dbd });
+      return changed;
+    });
+    if (!changed) return null;
+    var w = await c.from("app_state").upsert({ key: "boa_daily_tasks_v1", value: next });
+    if (w.error) { console.error("kiosk-done write:", w.error); throw w.error; }
+    return changed;
+  }
+  function markKioskReminderDone(taskId)   { return _writeKioskDoneState(taskId, true); }
+  function markKioskReminderUndone(taskId) { return _writeKioskDoneState(taskId, false); }
+
   // Save a single tech-loan record. Replaces any existing loan for the same
   // (ec, date) pair so a tech can't be in two places on the same day. Used by
   // the manager kiosk "Borrow tech today" flow.
@@ -255,7 +335,9 @@
 
     var matByEc = {};
     matRecs.forEach(function (m) {
-      if (m.mat_status === "on_mat" && m.employee_code) matByEc[m.employee_code] = m;
+      // dates_tbc is treated the same as on_mat — person is away even
+      // though we don't have firm start / end / return dates yet.
+      if ((m.mat_status === "on_mat" || m.mat_status === "dates_tbc") && m.employee_code) matByEc[m.employee_code] = m;
     });
     var leaveByEc = {};
     leaveRecs.forEach(function (l) {
@@ -1076,6 +1158,9 @@
     branch: branch, branchDisplay: branchDisplay, todayStr: todayStr,
     listStaff: listStaff, listMaternity: listMaternity, listLeaveRecords: listLeaveRecords, loadOffboarding: loadOffboarding,
     listTechLoans: listTechLoans, saveTechLoan: saveTechLoan, listStaffAllBranches: listStaffAllBranches,
+    listKioskReminders: listKioskReminders,
+    markKioskReminderDone: markKioskReminderDone,
+    markKioskReminderUndone: markKioskReminderUndone,
     categorizeStaff: categorizeStaff, addStaff: addStaff, updateStaff: updateStaff,
     deactivateStaff: deactivateStaff,
     lastClockinToday: lastClockinToday, addClockin: addClockin, listTodayClockins: listTodayClockins,
