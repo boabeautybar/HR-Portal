@@ -911,7 +911,7 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
       let run = 0, rs = -1, maxRun = 0, maxRs = -1, maxRe = -1;
       for (let i = 0; i < dates.length; i++) {
         const v = grid[h.ec][dates[i].d];
-        if (v === "W") {
+        if (v === "W" || v === "WE" || v === "WL") {
           if (run === 0) rs = i;
           run++;
           if (run > maxRun) { maxRun = run; maxRs = rs; maxRe = i; }
@@ -947,7 +947,7 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
           grid[h.ec][dates[ix].d]  = "O";
           let nr = 0, nm = 0;
           for (let j = 0; j < dates.length; j++) {
-            if (grid[h.ec][dates[j].d] === "W") { nr++; if (nr > nm) nm = nr; } else nr = 0;
+            { const _vv = grid[h.ec][dates[j].d]; if (_vv === "W" || _vv === "WE" || _vv === "WL") { nr++; if (nr > nm) nm = nr; } else nr = 0; }
           }
           grid[h.ec][dates[src].d] = oldSrc;
           grid[h.ec][dates[ix].d]  = oldTgt;
@@ -985,7 +985,7 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
     let run = 0, mx = 0;
     for (const x of dates) {
       const v = grid[ec][x.d];
-      if (v === "W" || v === "E") { run++; if (run > mx) mx = run; }
+      if (v === "W" || v === "WE" || v === "WL" || v === "E") { run++; if (run > mx) mx = run; }
       else if (v === null || v === undefined) { run++; if (run > mx) mx = run; }
       else run = 0;
     }
@@ -1058,7 +1058,7 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
       let run = 0, rs = -1, maxRun = 0, maxRs = -1, maxRe = -1;
       for (let i = 0; i < dates.length; i++) {
         const v = grid[h.ec][dates[i].d];
-        if (v === "W" || v === "E") {
+        if (v === "W" || v === "WE" || v === "WL" || v === "E") {
           if (run === 0) rs = i;
           run++;
           if (run > maxRun) { maxRun = run; maxRs = rs; maxRe = i; }
@@ -1098,7 +1098,7 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
           let nr = 0, nm = 0;
           for (let j = 0; j < dates.length; j++) {
             const v2 = grid[h.ec][dates[j].d];
-            if (v2 === "W" || v2 === "E") { nr++; if (nr > nm) nm = nr; } else nr = 0;
+            if (v2 === "W" || v2 === "WE" || v2 === "WL" || v2 === "E") { nr++; if (nr > nm) nm = nr; } else nr = 0;
           }
           grid[h.ec][dates[src].d] = oS;
           grid[h.ec][dates[ix].d]  = oT;
@@ -1142,7 +1142,8 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
     let w = 0, o = 0, l = 0, r = 0;
     for (const h of f) {
       const v = grid[h.ec][x.d];
-      if (v === "W")      w++;
+      // WE / WL are working states too (Sandown early/late split).
+      if (v === "W" || v === "WE" || v === "WL") w++;
       else if (v === "O") o++;
       else if (v === "L") l++;
       else if (v === "R") { r++; o++; }
@@ -1186,7 +1187,8 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
     }
     let run = 0, seen7 = false;
     for (const x of dates) {
-      if (grid[h.ec][x.d] === "W") {
+      const _v = grid[h.ec][x.d];
+      if (_v === "W" || _v === "WE" || _v === "WL") {
         run++;
         if (run >= 7 && !seen7) { conflicts.push({ type:"consecutive", msg: h.name + " " + run + "+ consecutive working days", severity:"high", ec: h.ec }); seen7 = true; }
       } else { run = 0; seen7 = false; }
@@ -15819,6 +15821,52 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               });
             });
           }
+          // ── Sandown: rewrite W cells to WE / WL per day. ─────────────────
+          // SM is always WE (08:00–17:00) every day they work. When an SM
+          // is on, every working AM that day is WL (SM covers opening, AMs
+          // cover the tail). When no SM is on, exactly one AM is WE and the
+          // rest are WL. The WE pick rotates fairly across the cycle using
+          // a per-AM lateShiftCount (we promote the AM with the fewest WE
+          // shifts so far to opener on a no-SM day). Sunday is treated
+          // identically — the rule says SM always 08–17 even on Sundays.
+          if (result && result.grid && branch === "Sandown") {
+            const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
+            const _earlyCount = {};
+            (result.managers || []).forEach(m => { _earlyCount[m.ec] = 0; });
+            (result.dates || []).forEach(dy => {
+              const workers = (result.managers || []).filter(m =>
+                m && m.ec && result.grid[m.ec] && (
+                  result.grid[m.ec][dy.d] === "W" ||
+                  result.grid[m.ec][dy.d] === "WE" ||
+                  result.grid[m.ec][dy.d] === "WL"
+                )
+              );
+              if (workers.length === 0) return;
+              const sm  = workers.find(_isSM);
+              const ams = workers.filter(m => !_isSM(m));
+              // First, reset everyone's working cell on this day to W so a
+              // re-run of this loop (e.g. after a draft edit) settles back
+              // to the right WE/WL without locking in a stale label.
+              workers.forEach(m => { result.grid[m.ec][dy.d] = "W"; });
+              if (sm) {
+                result.grid[sm.ec][dy.d] = "WE";
+                ams.forEach(m => { result.grid[m.ec][dy.d] = "WL"; });
+              } else if (ams.length > 0) {
+                // Pick the AM with the smallest earlyCount so far → WE; ties
+                // broken by EC for determinism.
+                ams.sort((a, b) =>
+                  ((_earlyCount[a.ec] || 0) - (_earlyCount[b.ec] || 0)) ||
+                  (a.ec || "").localeCompare(b.ec || "")
+                );
+                const opener = ams[0];
+                result.grid[opener.ec][dy.d] = "WE";
+                _earlyCount[opener.ec] = (_earlyCount[opener.ec] || 0) + 1;
+                for (let i = 1; i < ams.length; i++) {
+                  result.grid[ams[i].ec][dy.d] = "WL";
+                }
+              }
+            });
+          }
           const haveDraft = !!mgrSchedDraft;
           if (haveDraft) {
             const newGrid = JSON.parse(JSON.stringify(mgrSchedDraft));
@@ -15844,7 +15892,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               if (m._onMat) continue;
               for (const x of result.dates) {
                 const v = newGrid[m.ec] && newGrid[m.ec][x.d];
-                if (v === "W" || v === "E") newDT[x.d].working++;
+                if (v === "W" || v === "WE" || v === "WL" || v === "E") newDT[x.d].working++;
                 else if (v === "O" || v === "R") newDT[x.d].off++;
                 else if (v === "L") newDT[x.d].leave++;
               }
@@ -15867,7 +15915,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               let run = 0, rs = -1;
               for (let i = 0; i < result.dates.length; i++) {
                 const v = newGrid[m.ec] && newGrid[m.ec][result.dates[i].d];
-                if (v === "W" || v === "E") { if (run === 0) rs = i; run++; if (run >= 7) { newConflicts.push({ type:"consecutive", msg: m.name + ": 7+ consecutive working days starting " + result.dates[rs].d, severity:"high" }); break; } } else run = 0;
+                if (v === "W" || v === "WE" || v === "WL" || v === "E") { if (run === 0) rs = i; run++; if (run >= 7) { newConflicts.push({ type:"consecutive", msg: m.name + ": 7+ consecutive working days starting " + result.dates[rs].d, severity:"high" }); break; } } else run = 0;
               }
             }
             // Cross-month rollover re-check on the merged grid
@@ -15988,7 +16036,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               let w = 0;
               for (const m of result.managers) {
                 const v = (m.ec === ec) ? (newGrid[m.ec] && newGrid[m.ec][d]) : (result.grid[m.ec] && result.grid[m.ec][d]);
-                if (v === "W" || v === "E") w++;
+                if (v === "W" || v === "WE" || v === "WL" || v === "E") w++;
               }
               return w;
             };
@@ -16202,7 +16250,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               let w = 0;
               sortedMgrs.forEach(mg => {
                 const v = (sourceGrid[mg.ec] || {})[c.key];
-                if (v === "W" || v === "E") w++;
+                if (v === "W" || v === "WE" || v === "WL" || v === "E") w++;
               });
               return { key: c.key, value: w };
             });
@@ -16369,9 +16417,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           };
 
           // Visual constants
-          const cellBg    = { W:"#dcfce7", O:"#FCE7F3", L:"#fde68a", R:"#fbcfe8", X:"#f3f4f6", E:"#6ee7b7", ML:"#ede9fe" };
-          const cellTxt   = { W:"W",       O:"OFF",     L:"LV",      R:"REQ",     X:"—",       E:"EXT",   ML:"ML"      };
-          const cellColor = { W:"#15803d", O:"#831843", L:"#92400e", R:"#831843", X:"#9ca3af", E:"#064e3b", ML:"#6b21a8" };
+          const cellBg    = { W:"#dcfce7", WE:"#a7f3d0", WL:"#86efac", O:"#FCE7F3", L:"#fde68a", R:"#fbcfe8", X:"#f3f4f6", E:"#6ee7b7", ML:"#ede9fe" };
+          const cellTxt   = { W:"W",       WE:"WE",      WL:"WL",      O:"OFF",     L:"LV",      R:"REQ",     X:"—",       E:"EXT",   ML:"ML"      };
+          const cellColor = { W:"#15803d", WE:"#064e3b", WL:"#14532d", O:"#831843", L:"#92400e", R:"#831843", X:"#9ca3af", E:"#064e3b", ML:"#6b21a8" };
           const dowsAbbr  = ["Su","Mo","Tu","We","Th","Fr","Sa"];
           const moNames   = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
           const csObj = new Date(cycleStart + "T00:00:00");
@@ -16699,6 +16747,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               )}
 
+              {/* Sandown manager shift-time banner — surfaces the three
+                  time profiles since the WE / WL cell label alone doesn't
+                  carry hours. SM always 08:00–17:00 on every working day. */}
+              {mgrSchedDraft && branch === "Sandown" && (
+                <div style={{ background:"#ecfdf5", border:"1px solid #a7f3d0", borderRadius:10, padding:"10px 14px", marginBottom:10, fontSize:12, color:"#065f46", display:"flex", flexWrap:"wrap", gap:14, alignItems:"center" }}>
+                  <span style={{ fontSize:11, fontWeight:800, color:"#065f46", letterSpacing:"0.08em", textTransform:"uppercase" }}>🕐 Sandown manager shifts</span>
+                  <span><strong>SM (every day)</strong> · 08:00–17:00</span>
+                  <span><strong>Mon–Fri</strong> · WE 08:00–17:00 · WL 11:00–20:00</span>
+                  <span><strong>Saturday</strong> · WE 08:00–17:00 · WL 10:00–19:00</span>
+                  <span><strong>Sunday</strong> · WE 08:00–17:00 · WL 09:00–18:00</span>
+                </div>
+              )}
+
               {/* Schedule grid */}
               {mgrSchedDraft && <div style={{ background:"#FFFFFF", borderRadius:11, border:"1px solid #FBCFE8", overflow:"auto" }}>
                 <table style={{ borderCollapse:"separate", borderSpacing:0, minWidth:"100%", fontSize:11 }}>
@@ -16741,7 +16802,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const fg = cellColor[v] || "#9ca3af";
                           const txt = cellTxt[v] || "";
                           const isMon = dy.dow === 1;
-                          const draggable = (v === "W" || v === "O" || v === "E");
+                          // WE / WL (Sandown early / late shift) are working
+                          // cells just like W, so they're draggable for the
+                          // same-week swap. R stays included from PR #105.
+                          const draggable = (v === "W" || v === "WE" || v === "WL" || v === "O" || v === "E" || v === "R");
                           return (
                             <td key={dy.d}
                               draggable={draggable}
