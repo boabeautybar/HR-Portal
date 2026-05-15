@@ -16015,12 +16015,39 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // When SM is on, every working AM that day is WL.
           // When no SM is on, exactly one AM (the one with the fewest WE
           // shifts so far) is WE, the rest are WL.
-          const _applySandownWeWl = (grid, dates, managers) => {
-            if (!grid || branch !== "Sandown") return;
+          // Manager shift-split helper. Walks each day, identifies who's
+          // working that day on the grid, and re-stamps WE / WM / WL based
+          // on store-specific rules:
+          //   - SM / SSM always gets WE (the early shift). The role they
+          //     occupy never changes regardless of how many people are on.
+          //   - AMs split: when SM is on, AMs default to WL; when no SM is
+          //     on, one AM gets WE (opener) and the rest go WL.
+          //   - WM (middle shift) is a tie-breaker for when 3+ managers
+          //     are working a WM-eligible day-of-week. The wmDows set
+          //     decides which DOWs that applies to:
+          //       Sandown:   Mon-Fri only      → {1,2,3,4,5}
+          //       Table Bay: Mon-Sat           → {1,2,3,4,5,6}
+          //     If we'd be assigning a WM, we always keep at least one WL,
+          //     because both stores require an opener AND a closer on the
+          //     floor.
+          // Per-AM earlyCount / middleCount keep both rotations even
+          // across the cycle so the same AM doesn't always open or always
+          // get the middle shift.
+          const _applyMgrShiftSplit = (grid, dates, managers, wmDows) => {
+            if (!grid) return;
             const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
             const _earlyCount  = {};
             const _middleCount = {};
             (managers || []).forEach(m => { _earlyCount[m.ec] = 0; _middleCount[m.ec] = 0; });
+            const _pickLowest = (list, counter) => {
+              const sorted = list.slice().sort((a, b) =>
+                ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
+                (a.ec || "").localeCompare(b.ec || "")
+              );
+              const winner = sorted[0];
+              counter[winner.ec] = (counter[winner.ec] || 0) + 1;
+              return winner;
+            };
             (dates || []).forEach(dy => {
               const workers = (managers || []).filter(m =>
                 m && m.ec && grid[m.ec] && (
@@ -16033,27 +16060,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               if (workers.length === 0) return;
               // Reset to W so a re-run lands on the right labels (re-run-safe).
               workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
-              // WM (middle shift 09:00–18:00) only exists Mon-Fri AND only
-              // when there are 3+ managers working that day. Otherwise we
-              // stay on the simpler WE / WL split.
-              const isMonFri = dy.dow >= 1 && dy.dow <= 5;
+              const wmAllowedToday = wmDows && wmDows.has(dy.dow);
               const sm  = workers.find(_isSM);
               const ams = workers.filter(m => !_isSM(m));
-              // Helper: pick the AM (from a list) with the lowest counter,
-              // ties broken by EC. Increments the counter on the pick.
-              const _pickLowest = (list, counter) => {
-                const sorted = list.slice().sort((a, b) =>
-                  ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
-                  (a.ec || "").localeCompare(b.ec || "")
-                );
-                const winner = sorted[0];
-                counter[winner.ec] = (counter[winner.ec] || 0) + 1;
-                return winner;
-              };
               if (sm) {
                 grid[sm.ec][dy.d] = "WE";
-                // SM + 2+ AMs Mon-Fri → 1 middle shift, rest late.
-                if (isMonFri && ams.length >= 2) {
+                // SM + 2+ AMs on a WM-eligible day → 1 middle shift, rest late.
+                if (wmAllowedToday && ams.length >= 2) {
                   const mid = _pickLowest(ams, _middleCount);
                   grid[mid.ec][dy.d] = "WM";
                   ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
@@ -16064,9 +16077,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const opener = _pickLowest(ams, _earlyCount);
                 grid[opener.ec][dy.d] = "WE";
                 const rest = ams.filter(m => m.ec !== opener.ec);
-                // No-SM + 3+ AMs Mon-Fri → 1 early + 1 middle + rest late.
-                // (i.e. need at least 2 non-opener AMs to spawn a WM.)
-                if (isMonFri && rest.length >= 2) {
+                // No-SM + 3+ AMs on a WM-eligible day → 1 early + 1 middle + rest late.
+                // (Need at least 2 non-opener AMs to spawn a WM so a WL still exists.)
+                if (wmAllowedToday && rest.length >= 2) {
                   const mid = _pickLowest(rest, _middleCount);
                   grid[mid.ec][dy.d] = "WM";
                   rest.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
@@ -16076,8 +16089,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               }
             });
           };
+          const _applyBranchShiftRules = (grid, dates, managers) => {
+            if (!grid) return;
+            if (branch === "Sandown")   return _applyMgrShiftSplit(grid, dates, managers, new Set([1,2,3,4,5]));
+            if (branch === "Table Bay") return _applyMgrShiftSplit(grid, dates, managers, new Set([1,2,3,4,5,6]));
+          };
           // Apply to the freshly-generated grid (covers the no-draft path).
-          _applySandownWeWl(result.grid, result.dates, result.managers);
+          _applyBranchShiftRules(result.grid, result.dates, result.managers);
           const haveDraft = !!mgrSchedDraft;
           if (haveDraft) {
             const newGrid = JSON.parse(JSON.stringify(mgrSchedDraft));
@@ -16172,7 +16190,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // Re-apply Sandown WE / WL after merging the saved draft so
             // the labels survive a reload. The merge above stomps the
             // earlier stamps with the draft's plain W cells.
-            _applySandownWeWl(result.grid, result.dates, result.managers);
+            _applyBranchShiftRules(result.grid, result.dates, result.managers);
           } else {
             // No draft yet — show an empty grid + Generate CTA. We keep the
             // structural fields (dates, managers, weeksMap, weekOrder) but
@@ -16454,12 +16472,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const info = cellInfo[code];
                 cells[c.key] = { code, text: info ? info.text : "" };
               });
+              // Sandown + Table Bay use per-shift hours (WE/WM/WL on the
+              // cells + a banner above the grid), so the row subtitle drops
+              // the generic 8–17 / 9:30–18:30 fallback for those stores.
+              const _hideHours = branch === "Sandown" || branch === "Table Bay";
               const sub = mg._offGhost
                 ? "Left " + mg._offLeftDate + (mg._offReason ? " · " + mg._offReason : "")
                 : mg._obStarting
                   ? "Starts " + mg._obStartDate
-                  : branch === "Sandown"
-                    ? (mg.role === "SM" ? "Store Manager" : "Assistant Manager")
+                  : _hideHours
+                    ? (mg.role === "SM" ? "Store Manager" : mg.role === "SSM" ? "Senior Store Manager" : "Assistant Manager")
                     : (mg.role === "SM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · 9:30–18:30");
               return { ec: mg.ec, name: mg.name, sub, cells };
             });
@@ -16976,6 +16998,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <span><strong>Sunday</strong> · WE 08:00–17:00 · WL 09:00–18:00</span>
                 </div>
               )}
+              {mgrSchedDraft && branch === "Table Bay" && (
+                <div style={{ background:"#ecfdf5", border:"1px solid #a7f3d0", borderRadius:10, padding:"10px 14px", marginBottom:10, fontSize:12, color:"#065f46", display:"flex", flexWrap:"wrap", gap:14, alignItems:"center" }}>
+                  <span style={{ fontSize:11, fontWeight:800, color:"#065f46", letterSpacing:"0.08em", textTransform:"uppercase" }}>🕐 Table Bay manager shifts</span>
+                  <span><strong>SM / SSM (every day)</strong> · 08:00–17:00</span>
+                  <span><strong>Mon–Sat</strong> · WE 08:00–17:00 · <span style={{ color:"#0f766e" }}>WM 09:00–18:00 (only with 3+ on duty)</span> · WL 11:00–20:00</span>
+                  <span><strong>Sunday</strong> · WE 08:00–17:00 · WL 09:00–18:00</span>
+                </div>
+              )}
 
               {/* Schedule grid */}
               {mgrSchedDraft && <div style={{ background:"#FFFFFF", borderRadius:11, border:"1px solid #FBCFE8", overflow:"auto" }}>
@@ -17006,8 +17036,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             ? <div style={{ fontSize:9, color:"#9ca3af", fontStyle:"italic", marginTop:1 }}>Left {mg._offLeftDate}{mg._offReason ? " · " + mg._offReason : ""}</div>
                             : mg._obStarting
                               ? <div style={{ fontSize:9, color:"#854d0e", fontWeight:700, marginTop:1, fontStyle:"italic" }}>🌱 starts {mg._obStartDate}</div>
-                              : branch === "Sandown"
-                                ? <div style={{ fontSize:9, color:"#BE185D", marginTop:1 }}>{mg.role === "SM" ? "Store Manager" : "Assistant Manager"}</div>
+                              : (branch === "Sandown" || branch === "Table Bay")
+                                ? <div style={{ fontSize:9, color:"#BE185D", marginTop:1 }}>{mg.role === "SM" ? "Store Manager" : mg.role === "SSM" ? "Senior Store Manager" : "Assistant Manager"}</div>
                                 : <div style={{ fontSize:9, color:"#BE185D", marginTop:1 }}>{mg.role === "SM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · 9:30–18:30"}</div>
                           }
                         </td>
