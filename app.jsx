@@ -3158,6 +3158,13 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     weeks.forEach((week, wIdx) => {
       const sundayDay = week.find(d => d.dow === 0);
       if (!sundayDay) return;
+      // Skip the Sunday rotation entirely on closed Sundays — the
+      // closedDow pre-seed has already stamped everyone O on every
+      // Sunday EXCEPT the first one (which is the cross-store loan day
+      // and must stay W for all techs). Running the rotation here
+      // would otherwise mark half the team Sun=O on the first Sunday,
+      // contradicting the loan-day rule.
+      if (_closedDow.indexOf(0) !== -1) return;
       const sundayOffGroup = sundayDateParity(sundayDay);
       sortedTechs.forEach(s => {
         if (sundayGroup[s.ec] === sundayOffGroup) {
@@ -3888,6 +3895,24 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       }
     });
 
+    // ── Closed-day branches: enforce the "off-days ONLY on closed DOWs" rule
+    // User rule for Betty (closedDow: [0, 1]): nail-tech off-days can ONLY
+    // fall on Sun or Mon — never Tue-Sat. The various autoFill phases above
+    // place O on other weekdays when they think a tech needs more rest or
+    // when coverage exceeds capacity. Sweep those back to W so the final
+    // schedule respects the rule, regardless of which phase placed them.
+    // Sunday cells stay untouched (the first-Sunday week intentionally
+    // leaves Sun blank → loaned out → set to W here).
+    if (_closedDow.length > 0) {
+      const _closedDowSetFinal = new Set(_closedDow);
+      for (const ec of Object.keys(newGrid)) {
+        for (const d of days) {
+          if (_closedDowSetFinal.has(d.dow)) continue;
+          if (newGrid[ec][d.d] === "O") newGrid[ec][d.d] = "W";
+        }
+      }
+    }
+
     setGrid(newGrid);
     setDirty(true);
     setUnhonouredRequests(stillUnhonoured);
@@ -4479,6 +4504,27 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       const avail = wk.filter(d => row[d.d] !== "X");
       if (avail.length === 0) return;
 
+      // Per-week off-target.
+      //  - Default branches: 2 off-days (Mon-Sun rotation).
+      //  - Closed-day branches (e.g. Betty closes Sun+Mon): the only
+      //    off-days are the pre-seeded closed-DOW cells. So the target
+      //    is exactly the count of closed-DOW days in this chunk that
+      //    were pre-seeded as O. That gives:
+      //      • 2 for a normal full week (Sun=O + Mon=O),
+      //      • 1 for the first-Sunday week (only Mon=O; Sun is left
+      //        blank because techs are loaned to Bree / Green Point),
+      //      • 0 for a leading partial that doesn't include Monday
+      //        (the labour week's Monday-off lives in the prior cycle).
+      //    User rule: Betty staff can ONLY ever be off on Sun or Mon —
+      //    deriving the target from the pre-seed stops autoFill from
+      //    adding a Tue-Sat off-day under any week shape.
+      const _closedDowForRow = Array.isArray(salonForBranch.closedDow) ? salonForBranch.closedDow.map(Number) : [];
+      const _closedDowSet = new Set(_closedDowForRow);
+      const _isClosedBranch = _closedDowSet.size > 0;
+      const offTarget = _isClosedBranch
+        ? wk.filter(d => _closedDowSet.has(d.dow) && row[d.d] === "O").length
+        : 2;
+
       // Sunday rotation — date-anchored so the alternation continues
       // correctly across cycle boundaries.
       const sundayDay = avail.find(d => d.dow === 0);
@@ -4486,7 +4532,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         row[sundayDay.d] = "O";
       }
 
-      // Apply requested off-days first, with the 2-cap
+      // Apply requested off-days first, with the per-week cap
       const reqDays = avail.filter(d => myReqs.has(d.d));
       for (const reqD of reqDays) {
         const meta = reqMeta[reqD.d] || {};
@@ -4503,19 +4549,19 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         if (cur === "O") { row[reqD.d] = "R"; continue; }
         if (cur === "R") continue;
         const off = weekOffCount(wk);
-        if (off >= 2) {
-          unhonored.push({ ec, name: tech.name, date: dt, dayNum: reqD.d, reason: "would put 3 off-days in that Mon-Sun labour week (max 2 allowed)", source: meta.source, note: meta.note });
+        if (off >= offTarget) {
+          unhonored.push({ ec, name: tech.name, date: dt, dayNum: reqD.d, reason: "would put " + (offTarget + 1) + " off-days in that Mon-Sun labour week (max " + offTarget + " allowed)", source: meta.source, note: meta.note });
           continue;
         }
         row[reqD.d] = "R";
       }
 
-      // Top up to 2 offs (full weeks only). Prefer Mon→Tue→Wed and days
-      // where the existing schedule is already at capacity (so this tech
-      // being off relieves the pressure rather than creating excess).
+      // Top up to per-week off-target (full weeks only). Prefer Mon→Tue→Wed
+      // and days where the existing schedule is already at capacity (so this
+      // tech being off relieves the pressure rather than creating excess).
       if (avail.length >= 7) {
         let safety = 0;
-        while (weekOffCount(wk) < 2 && safety++ < 10) {
+        while (weekOffCount(wk) < offTarget && safety++ < 10) {
           const candidates = avail.filter(d => !row[d.d] && d.dow !== 0);
           if (candidates.length === 0) break;
           candidates.sort((a, b) => {
@@ -4536,11 +4582,11 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       }
 
       // Fill remaining cells. If a day is already at capacity in the
-      // existing schedule, mark this tech off there (within 2-cap); else
-      // mark them as W.
+      // existing schedule, mark this tech off there (within per-week
+      // cap); else mark them as W.
       avail.forEach(d => {
         if (row[d.d]) return;
-        if (d.dow !== 0 && dayWorkingExisting(d.d) >= capacity && weekOffCount(wk) < 2) {
+        if (d.dow !== 0 && dayWorkingExisting(d.d) >= capacity && weekOffCount(wk) < offTarget) {
           row[d.d] = "O";
         } else {
           row[d.d] = "W";
@@ -4549,7 +4595,10 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     });
 
     // Max-6-consecutive: try to insert an off inside any 7+ streak,
-    // respecting the 2-cap per week. Bail when no valid insertion exists.
+    // respecting the per-week off-cap. Bail when no valid insertion exists.
+    const _closedDowForStreak = Array.isArray(salonForBranch.closedDow) ? salonForBranch.closedDow.map(Number) : [];
+    const _closedDowSetStreak  = new Set(_closedDowForStreak);
+    const _isClosedBranchStreak = _closedDowSetStreak.size > 0;
     for (let attempt = 0; attempt < 10; attempt++) {
       let run = 0, runStart = -1;
       let longestRun = 0, longestStart = -1, longestEnd = -1;
@@ -4569,7 +4618,20 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         if (row[d.d] !== "W" && row[d.d] !== "WL") continue;
         const wIdx = weekChunks.findIndex(wk => wk.some(x => x.d === d.d));
         if (wIdx < 0) continue;
-        if (weekOffCount(weekChunks[wIdx]) >= 2) continue;
+        // Respect the per-week off-target. Closed-day branches cap at
+        // the number of closed-DOW cells in that chunk (1 in the
+        // first-Sunday week, 2 in normal weeks, 0 in some partials);
+        // everyone else caps at 2.
+        const _wkForStreak = weekChunks[wIdx];
+        const targetForThisWeek = _isClosedBranchStreak
+          ? _wkForStreak.filter(d => _closedDowSetStreak.has(d.dow) && row[d.d] === "O").length
+          : 2;
+        if (weekOffCount(_wkForStreak) >= targetForThisWeek) continue;
+        // For closed-day branches, the insertion must land on a closed
+        // DOW (Sun/Mon for Betty) — never Tue-Sat. The cell is currently
+        // a W (we only inserted if it's W/WL), so this guard prevents
+        // adding an out-of-policy mid-week off when breaking a streak.
+        if (_isClosedBranchStreak && !_closedDowSetStreak.has(d.dow)) continue;
         row[d.d] = "O";
         inserted = true;
         break;
