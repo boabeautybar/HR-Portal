@@ -8973,7 +8973,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         return;
       }
       const rec = {
+        // saveMat() in data.js dispatches on `m.id` to decide update-vs-
+        // insert. The matRec store carries both `_id` and `id` (rowToMat
+        // populates both), so pass both — earlier versions of this helper
+        // only set `_id`, which caused the sync to INSERT a duplicate row
+        // instead of updating the existing maternity record.
         _id:        existing ? existing._id : undefined,
+        id:         existing ? (existing.id != null ? existing.id : existing._id) : undefined,
         ec,
         name:       savedPerson.name   || (existing && existing.name)   || "",
         branch:     savedPerson.branch || (existing && existing.branch) || "",
