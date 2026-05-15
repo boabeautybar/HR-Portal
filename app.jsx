@@ -7473,6 +7473,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [schedSubTab, setSchedSubTab] = useState("techs");          // "techs" | "managers"
   // Leave Planner has a similar split.
   const [leaveSubTab, setLeaveSubTab] = useState("techs");          // "techs" | "managers"
+  const [trialSubTab, setTrialSubTab] = useState("nt");             // "nt" | "am"
   const [staffModal, setStaffModal] = useState(null);
   const [matModal, setMatModal] = useState(null);
   const [transferModal, setTransferModal] = useState(null);
@@ -7651,7 +7652,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [quickPick, setQuickPick] = useState(null);   // pending-term quick-pick modal
   const [pendingTerms, setPendingTerms] = useState([]);  // auto-detected from attendance grid
   // Trial Period add-trainee form state (lifted to component level — used inside tab IIFE)
-  const [tForm, setTForm] = useState({ name:"", phone:"", email:"", homeAddress:"", trainerName:"", inductionPassDate:"", branch: SALONS[0]?.name||"", startDate:"", notes:"", _open: false });
+  const [tForm, setTForm] = useState({ name:"", phone:"", email:"", homeAddress:"", trainerName:"", inductionPassDate:"", branch: SALONS[0]?.name||"", startDate:"", notes:"", role: "nt", _open: false });
   // Onboarding registration modal toggle
   const [obShowForm, setObShowForm] = useState(false);
   const [obSubmitting, setObSubmitting] = useState(false);
@@ -12115,13 +12116,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* ── TRIAL PERIOD TAB ── */}
         {tab==="trialPeriod" && (() => {
-          const TRIAL_STAGES = [
-            { key:"induction",            label:"Induction",         color:"#7c3aed", bg:"#ede9fe", emoji:"🎓" },
-            { key:"trial_w1",             label:"Trial Week 1",      color:"#0891b2", bg:"#cffafe", emoji:"📅" },
-            { key:"pending_mid_review",   label:"Mid-Review Pending",color:"#d97706", bg:"#fef3c7", emoji:"⏳" },
-            { key:"trial_w2",             label:"Trial Week 2",      color:"#059669", bg:"#d1fae5", emoji:"📅" },
-            { key:"pending_final_review", label:"Final Review",      color:"#BE185D", bg:"#fce7f3", emoji:"⏳" },
+          const ALL_STAGES = [
+            { key:"induction",            label:"Induction",         color:"#7c3aed", bg:"#ede9fe", emoji:"🎓", roles:["nt"] },
+            { key:"trial_w1",             label:"Trial Week 1",      color:"#0891b2", bg:"#cffafe", emoji:"📅", roles:["nt","am"] },
+            { key:"pending_mid_review",   label:"Mid-Review Pending",color:"#d97706", bg:"#fef3c7", emoji:"⏳", roles:["nt","am"] },
+            { key:"trial_w2",             label:"Trial Week 2",      color:"#059669", bg:"#d1fae5", emoji:"📅", roles:["nt","am"] },
+            { key:"pending_final_review", label:"Final Review",      color:"#BE185D", bg:"#fce7f3", emoji:"⏳", roles:["nt","am"] },
           ];
+          const TRIAL_STAGES = ALL_STAGES.filter(s => s.roles.includes(trialSubTab));
           const RESULT_STAGES = [
             { key:"passed", label:"Passed ✅", color:"#15803d", bg:"#dcfce7" },
             { key:"failed", label:"Failed ❌", color:"#991b1b", bg:"#fee2e2" }
@@ -12143,9 +12145,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           };
 
           const advanceStage = (id) => {
-            const order = ["induction","trial_w1","pending_mid_review","trial_w2","pending_final_review","passed"];
             const rec = trialList.find(r => r._id === id);
             if (!rec) return;
+            const role = rec.role || "nt";
+            const order = role === "am"
+              ? ["trial_w1","pending_mid_review","trial_w2","pending_final_review","passed"]
+              : ["induction","trial_w1","pending_mid_review","trial_w2","pending_final_review","passed"];
+            
             const idx = order.indexOf(rec.status);
             if (idx < 0 || idx >= order.length - 1) return;
             persistTrial(trialList.map(r => r._id === id
@@ -12175,7 +12181,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             setObForm({
               name: r.name || "", ec: nextEc,
               branch: r.branch || SALONS[0].name,
-              position: "Nail Tech", positionOther:"",
+              position: (r.role === "am" ? "AM" : "Nail Tech"), positionOther:"",
               startDate:"", notes: "Promoted from Trial Period · " + fmtDate(r.startDate),
               phone: r.phone||"", email: r.email||"", homeAddress: r.homeAddress||"",
               idType:"sa_id", idDetails:"",
@@ -12198,6 +12204,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const submitTrial = () => {
             if (!tForm.name.trim()) { alert("Name is required."); return; }
             if (!tForm.branch) { alert("Branch is required."); return; }
+            const role = trialSubTab;
             const rec = {
               _id: Date.now(),
               name: tForm.name.trim(),
@@ -12208,17 +12215,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               branch: tForm.branch,
               startDate: tForm.startDate,
               notes: tForm.notes,
-              status: "induction",
+              role: role,
+              status: role === "am" ? "trial_w1" : "induction",
               addedAt: new Date().toISOString(),
               updatedAt: new Date().toISOString()
             };
             persistTrial([...trialList, rec]);
-            setTForm({ name:"", phone:"", email:"", homeAddress:"", trainerName:"", inductionPassDate:"", branch: SALONS[0].name, startDate:"", notes:"", _open: false });
+            setTForm({ name:"", phone:"", email:"", homeAddress:"", trainerName:"", inductionPassDate:"", branch: SALONS[0].name, startDate:"", notes:"", role: "nt", _open: false });
           };
 
-          const activeTrials  = trialList.filter(r => r.status !== "passed" && r.status !== "failed");
-          const passedTrials  = trialList.filter(r => r.status === "passed" && !r.promotedToOnboarding);
-          const failedTrials  = trialList.filter(r => r.status === "failed");
+          const currentList = trialList.filter(r => (r.role || "nt") === trialSubTab);
+          const activeTrials  = currentList.filter(r => r.status !== "passed" && r.status !== "failed");
+          const passedTrials  = currentList.filter(r => r.status === "passed" && !r.promotedToOnboarding);
+          const failedTrials  = currentList.filter(r => r.status === "failed");
 
           const inp = { padding:"8px 10px", border:"1px solid #FBCFE8", borderRadius:8, fontSize:13, fontFamily:"inherit", background:"#fff" };
           const lbl = { display:"block", fontSize:10, fontWeight:700, color:"#BE185D", letterSpacing:"0.08em", marginBottom:4, textTransform:"uppercase" };
@@ -12226,14 +12235,38 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           return (
             <div style={{ fontFamily:"'DM Sans', sans-serif", padding:"0 24px 40px 24px" }}>
               {/* Header */}
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:24 }}>
-                <div>
-                  <div style={{ fontFamily:"'Playfair Display',serif", fontSize:28, color:"#7c3aed", fontWeight:700, marginBottom:4 }}>🧪 Trial Period</div>
-                  <div style={{ fontSize:13, color:"#9ca3af" }}>Track induction and 2-week branch trials before the 3-month contract is signed.</div>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:24, flexWrap:"wrap", gap:16 }}>
+                <div style={{ display:"flex", gap:24, alignItems:"center", flexWrap:"wrap" }}>
+                  <div>
+                    <div style={{ fontFamily:"'Playfair Display',serif", fontSize:28, color:"#7c3aed", fontWeight:700, marginBottom:4 }}>🧪 Trial Period</div>
+                    <div style={{ fontSize:13, color:"#9ca3af" }}>Track induction and 2-week branch trials before the 3-month contract is signed.</div>
+                  </div>
+
+                  {/* Sub-tab Toggles */}
+                  <div style={{ display:"flex", background:"#F3F4F6", padding:4, borderRadius:12, border:"1px solid #E5E7EB" }}>
+                    {[
+                      { k:"nt", l:"Nail Tech" },
+                      { k:"am", l:"Assistant Manager" }
+                    ].map(t => {
+                      const active = trialSubTab === t.k;
+                      return (
+                        <button key={t.k} onClick={() => setTrialSubTab(t.k)}
+                          style={{
+                            padding:"8px 16px", borderRadius:10, border:"none",
+                            background: active ? "#fff" : "transparent",
+                            color: active ? "#7c3aed" : "#6B7280",
+                            boxShadow: active ? "0 2px 4px rgba(0,0,0,0.05)" : "none",
+                            cursor:"pointer", fontSize:13, fontWeight:700, fontFamily:"inherit", transition:"all 0.2s"
+                          }}
+                        >{t.l}</button>
+                      );
+                    })}
+                  </div>
                 </div>
+
                 <button
                   onClick={() => setTForm(f => ({ ...f, _open: !f._open }))}
-                  style={{ padding:"10px 20px", borderRadius:10, border:"none", background:"#7c3aed", color:"#fff", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}
+                  style={{ padding:"10px 20px", borderRadius:10, border:"none", background:"#7c3aed", color:"#fff", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700, boxShadow:"0 4px 12px rgba(124,58,237,0.2)" }}
                 >
                   ➕ Add Trainee
                 </button>
@@ -12242,9 +12275,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               {/* Stats */}
               <div style={{ display:"flex", gap:10, marginBottom:24, flexWrap:"wrap" }}>
                 {[
-                  { l:"Total",          v:trialList.length,             c:"#7c3aed", bg:"#ede9fe" },
+                  { l:"Total",          v:currentList.length,           c:"#7c3aed", bg:"#ede9fe" },
                   { l:"Active in Trial",v:activeTrials.length,          c:"#0891b2", bg:"#cffafe" },
-                  { l:"Awaiting Review",v:trialList.filter(r=>r.status?.includes("review")).length, c:"#d97706", bg:"#fef3c7" },
+                  { l:"Awaiting Review",v:currentList.filter(r=>r.status?.includes("review")).length, c:"#d97706", bg:"#fef3c7" },
                   { l:"Passed",         v:passedTrials.length,          c:"#15803d", bg:"#dcfce7" },
                   { l:"Failed",         v:failedTrials.length,          c:"#991b1b", bg:"#fee2e2" }
                 ].map(s => (
@@ -12263,8 +12296,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <div><label style={lbl}>Full Name *</label><input style={{ ...inp, width:"100%", boxSizing:"border-box" }} value={tForm.name || ""} onChange={e=>setTForm(f=>({...f,name:e.target.value}))} placeholder="e.g. Thandi Mokoena" /></div>
                     <div><label style={lbl}>Phone</label><input style={{ ...inp, width:"100%", boxSizing:"border-box" }} value={tForm.phone || ""} onChange={e=>setTForm(f=>({...f,phone:e.target.value}))} placeholder="+27 ..." /></div>
                     <div><label style={lbl}>Email</label><input type="email" style={{ ...inp, width:"100%", boxSizing:"border-box" }} value={tForm.email || ""} onChange={e=>setTForm(f=>({...f,email:e.target.value}))} /></div>
-                    <div><label style={lbl}>Trainer Name</label><input style={{ ...inp, width:"100%", boxSizing:"border-box" }} value={tForm.trainerName || ""} onChange={e=>setTForm(f=>({...f,trainerName:e.target.value}))} /></div>
-                    <div><label style={lbl}>Induction Pass Date</label><input type="date" style={{ ...inp, width:"100%", boxSizing:"border-box" }} value={tForm.inductionPassDate || ""} onChange={e=>setTForm(f=>({...f,inductionPassDate:e.target.value}))} /></div>
+                    {trialSubTab === "nt" && (
+                      <div><label style={lbl}>Trainer Name</label><input style={{ ...inp, width:"100%", boxSizing:"border-box" }} value={tForm.trainerName || ""} onChange={e=>setTForm(f=>({...f,trainerName:e.target.value}))} /></div>
+                    )}
+                    {trialSubTab === "nt" && (
+                      <div><label style={lbl}>Induction Pass Date</label><input type="date" style={{ ...inp, width:"100%", boxSizing:"border-box" }} value={tForm.inductionPassDate || ""} onChange={e=>setTForm(f=>({...f,inductionPassDate:e.target.value}))} /></div>
+                    )}
                     <div><label style={lbl}>Assigned Branch *</label>
                       <select style={{ ...inp, width:"100%", boxSizing:"border-box" }} value={tForm.branch || ""} onChange={e=>setTForm(f=>({...f,branch:e.target.value}))}>
                         {SALONS.map(s=><option key={s.name} value={s.name}>{s.name}</option>)}
@@ -12281,7 +12318,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <textarea rows={2} style={{ ...inp, width:"100%", boxSizing:"border-box", resize:"vertical" }} value={tForm.notes || ""} onChange={e=>setTForm(f=>({...f,notes:e.target.value}))} />
                   </div>
                   <div style={{ display:"flex", gap:8 }}>
-                    <button onClick={submitTrial} style={{ padding:"9px 22px", borderRadius:9, border:"none", background:"#7c3aed", color:"#fff", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>🧪 Add to Trial Pipeline</button>
+                    <button onClick={submitTrial} style={{ padding:"9px 22px", borderRadius:9, border:"none", background:"#7c3aed", color:"#fff", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>🧪 Add to {trialSubTab === "am" ? "AM Trial" : "Trial Pipeline"}</button>
                     <button onClick={() => setTForm(f=>({...f,_open:false}))} style={{ padding:"9px 16px", borderRadius:9, border:"1px solid #e5e7eb", background:"#fff", color:"#6b7280", cursor:"pointer", fontFamily:"inherit", fontSize:13 }}>Cancel</button>
                   </div>
                 </div>
@@ -12291,7 +12328,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ overflowX:"auto", paddingBottom:8 }}>
                 <div style={{ display:"flex", gap:16, minWidth:"max-content" }}>
                   {TRIAL_STAGES.map(stage => {
-                    const cards = trialList.filter(r => r.status === stage.key);
+                    const cards = currentList.filter(r => r.status === stage.key);
                     return (
                       <div key={stage.key} style={{ width:240, flexShrink:0 }}>
                         <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
