@@ -15799,8 +15799,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const a = (result.grid[ec] && result.grid[ec][fromD]) || "W";
             const b = (result.grid[ec] && result.grid[ec][toD])   || "W";
             if (a === b) return;
-            if (a === "L" || a === "R" || a === "X" || b === "L" || b === "R" || b === "X") {
-              alert("Cannot drag onto leave (LV), request (REQ), or pre-start (—) cells.");
+            // Leave (L / ML) and pre-start (X) are immutable — dragging onto
+            // or off them is blocked. Request (R) cells are now movable so
+            // HR can re-home a request onto a different day in the same
+            // week without first clearing and re-creating it.
+            if (a === "L" || a === "ML" || a === "X" || b === "L" || b === "ML" || b === "X") {
+              alert("Cannot drag onto leave (LV / ML) or pre-start (—) cells.");
               return;
             }
             // HARD: cross-month rollover cap. If the swap touches a partial
@@ -16597,7 +16601,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const fg = cellColor[v] || "#9ca3af";
                           const txt = cellTxt[v] || "";
                           const isMon = dy.dow === 1;
-                          const draggable = (v === "W" || v === "O" || v === "E");
+                          // Cells that can be dragged for a same-week swap.
+                          // Includes R (request) so HR can re-home a request
+                          // onto a different day in the same week without
+                          // first clearing and re-creating it.
+                          const draggable = (v === "W" || v === "O" || v === "E" || v === "R");
                           return (
                             <td key={dy.d}
                               draggable={draggable}
