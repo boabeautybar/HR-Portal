@@ -16272,7 +16272,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 ? "Left " + mg._offLeftDate + (mg._offReason ? " · " + mg._offReason : "")
                 : mg._obStarting
                   ? "Starts " + mg._obStartDate
-                  : (mg.role === "SM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · 9:30–18:30");
+                  : branch === "Sandown"
+                    ? (mg.role === "SM" ? "Store Manager" : "Assistant Manager")
+                    : (mg.role === "SM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · 9:30–18:30");
               return { ec: mg.ec, name: mg.name, sub, cells };
             });
             const totals = columns.map(c => {
@@ -16818,7 +16820,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             ? <div style={{ fontSize:9, color:"#9ca3af", fontStyle:"italic", marginTop:1 }}>Left {mg._offLeftDate}{mg._offReason ? " · " + mg._offReason : ""}</div>
                             : mg._obStarting
                               ? <div style={{ fontSize:9, color:"#854d0e", fontWeight:700, marginTop:1, fontStyle:"italic" }}>🌱 starts {mg._obStartDate}</div>
-                              : <div style={{ fontSize:9, color:"#BE185D", marginTop:1 }}>{mg.role === "SM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · 9:30–18:30"}</div>
+                              : branch === "Sandown"
+                                ? <div style={{ fontSize:9, color:"#BE185D", marginTop:1 }}>{mg.role === "SM" ? "Store Manager" : "Assistant Manager"}</div>
+                                : <div style={{ fontSize:9, color:"#BE185D", marginTop:1 }}>{mg.role === "SM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · 9:30–18:30"}</div>
                           }
                         </td>
                         {result.dates.map((dy, di) => {
