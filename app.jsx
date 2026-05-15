@@ -8719,6 +8719,53 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     });
   }, [managers, matRecs]);
 
+  // ── Manager Planner mirror ────────────────────────────────────────────
+  // The planner is a sandbox keyed off plannerMgrs. Without this effect, it
+  // got seeded once on first open and went stale: managers added via
+  // Locations / Staff list didn't show up, off-boarded or hard-deleted ones
+  // stayed, and on-maternity status didn't flow through (so they didn't
+  // grey out / weren't excluded from required-cover counts).
+  //
+  // Strategy: only run when the planner is already open (plannerMgrs !=
+  // null). Walk the live enriched list and reconcile:
+  //   • new managers added since last sync → appended to plannerMgrs,
+  //   • off-boarded managers (in offList) → dropped,
+  //   • hard-deleted managers (no longer in enrichedManagers) → dropped,
+  //   • existing entries → refreshed (name / role / onMat / pregnant /
+  //     etc.) while PRESERVING the planner's sandbox branch assignment so
+  //     pending drag-and-drop edits don't get clobbered.
+  useEffect(() => {
+    if (plannerMgrs == null) return;
+    const offEcs = new Set((offList || []).map(o => o && o.ec).filter(Boolean));
+    const liveById = new Map();
+    (enrichedManagers || []).forEach(m => {
+      if (!m || m._id == null) return;
+      if (m.ec && offEcs.has(m.ec)) return;        // skip off-boarded
+      liveById.set(m._id, m);
+    });
+    setPlannerMgrs(prev => {
+      const out = [];
+      const seen = new Set();
+      // Refresh existing planner rows, drop ones that no longer exist live.
+      (prev || []).forEach(p => {
+        if (!p || p._id == null) return;
+        const live = liveById.get(p._id);
+        if (!live) return;                          // deleted / off-boarded
+        seen.add(p._id);
+        // Preserve planner-sandbox branch (incl. __bench__) but refresh
+        // everything else from the live record.
+        out.push({ ...live, branch: p.branch });
+      });
+      // Append any newly-added managers that aren't in the planner yet.
+      liveById.forEach((live, id) => {
+        if (seen.has(id)) return;
+        out.push({ ...live });
+      });
+      return out;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enrichedManagers, offList]);
+
   // Filtered & sorted staff list — always sort by EC (B-number then T-number).
   // Departed staff (leftDate has passed) are pinned to the bottom for the 31-day
   // grace window so the active list stays clean.
@@ -12197,9 +12244,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* ── MANAGER PLANNER (nested) ── */}
         {mgrSubTab==="planner" && (() => {
-          // Initialise sandbox from live managers on first open
+          // Initialise sandbox from the enriched managers list on first
+          // open — same source the rest of the portal uses, so the planner
+          // gets onMat / pregnant flags (and renders greyed maternity rows)
+          // without further glue. Off-boarded managers are filtered out so
+          // they don't ghost-occupy a slot. The mirror useEffect above keeps
+          // this list in sync after subsequent edits.
           if (!plannerMgrs) {
-            setTimeout(() => setPlannerMgrs(managers.map(m=>({...m}))), 0);
+            const _offEcs = new Set((offList || []).map(o => o && o.ec).filter(Boolean));
+            const _seed = (enrichedManagers || []).filter(m => m && (!m.ec || !_offEcs.has(m.ec))).map(m => ({ ...m }));
+            setTimeout(() => setPlannerMgrs(_seed), 0);
             return <div style={{ padding:40, textAlign:"center", color:"#9ca3af" }}>Loading planner…</div>;
           }
 
