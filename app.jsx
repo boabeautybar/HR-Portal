@@ -8778,16 +8778,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // minus anyone who already has a maternity record (no double-up). Role
   // tag drives the chip in the picker results.
   const matPickerPool = useMemo(() => {
-    const seenEcs = new Set((matRecs || []).map(r => r && r.ec).filter(Boolean));
+    // Include EVERY portal-known person — techs and managers — without
+    // filtering against existing matRecs. The previous filter excluded
+    // anyone who already had a maternity row, which made:
+    //   • managers invisible whenever the seed import already gave them
+    //     a placeholder row (the reported 'Fatima Adams' case),
+    //   • new pregnancies on returned staff impossible to log without
+    //     deleting their old record first.
+    // The picker is now just a search index; the modal can flag any
+    // pre-existing rec inline if needed.
     const techs = (enriched || [])
       .filter(s => s && s.ec && !s.offHidden && !(s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft > 0))
-      .filter(s => !seenEcs.has(s.ec))
       .map(s => ({ ec: s.ec, name: s.name, branch: s.branch, role: "NT" }));
     const mgrs = (managers || [])
       .filter(m => m && m.ec)
-      .filter(m => !seenEcs.has(m.ec))
       .map(m => ({ ec: m.ec, name: m.name, branch: m.branch, role: m.role || "AM" }));
-    return [...mgrs, ...techs].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    const pool = [...mgrs, ...techs].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    try { console.log("[mat] picker pool size:", pool.length, "mgrs:", mgrs.length, "techs:", techs.length); } catch (_) {}
+    return pool;
   }, [enriched, managers, matRecs]);
 
   const stats = useMemo(() => {
@@ -8943,10 +8951,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }
   async function saveMat(f) {
     try {
+      console.log("[mat] saveMat input:", f);
       const saved = await window.BOA_DB.saveMat(f);
+      console.log("[mat] saveMat saved:", saved);
       setMatRecs(p => f._id !== undefined ? p.map(x => x._id === f._id ? saved : x) : [...p, saved]);
       setMatModal(null);
-    } catch (e) { alert("Could not save: " + (e.message || e)); }
+    } catch (e) {
+      console.error("[mat] saveMat failed:", e, "cause:", e && e.cause, "payload:", e && e._payload);
+      const detail =
+        (e && e.message) ? e.message :
+        (e && e.cause && e.cause.message) ? e.cause.message :
+        String(e);
+      alert("Could not save maternity record:\n\n" + detail + "\n\n(Full request payload is in the DevTools console.)");
+    }
   }
   // Sync the maternity record store with what the staff / manager edit
   // modal just saved. The form carries matStatus + matStart + matReturn +
