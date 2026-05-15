@@ -4659,7 +4659,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
   }
 
   return (
-    <div>
+    <div style={{ padding: "0 24px" }}>
       <div style={{ display:"flex", gap:12, alignItems:"center", flexWrap:"wrap", marginBottom:14 }}>
         <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, fontWeight:700, color:"#831843" }}>📅 Schedule Editor</div>
         <select value={branch} onChange={e=>{ if(dirty && !confirm("You have unsaved changes. Discard?")) return; setBranch(e.target.value); }}
@@ -9814,7 +9814,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* ── STAFF TAB ── */}
         {tab==="staff" && (
-          <>
+          <div style={{ padding: "0 24px" }}>
             <div style={{ background:"#FFFFFF", borderRadius:13, padding:"12px 15px", border:`1px solid ${bdr}`, marginBottom:14, display:"flex", flexWrap:"wrap", gap:8, alignItems:"center" }}>
               <input placeholder="🔍  Name or EC code…" value={search} onChange={e=>setSearch(e.target.value)}
                 style={{ flex:"1 1 150px", padding:"7px 12px", borderRadius:7, border:`1px solid ${bdr}`, fontFamily:"inherit", fontSize:13, background:cream }} />
@@ -9954,13 +9954,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </table>
               </div>
             </div>
-          </>
+          </div>
         )}
 
         {/* ── SCHEDULES TAB (Phase 2a — manual editor) ── */}
         {/* ── SCHEDULING (parent tab with sub-tabs: nail tech / manager) ── */}
         {tab==="scheduling" && (
-          <div style={{ display:"flex", gap:0, marginBottom:24, padding:6, background:"#FCE7F3", borderRadius:14, border:"1px solid #FBCFE8", maxWidth:680 }}>
+          <div style={{ padding: "0 24px" }}><div style={{ display:"flex", gap:0, marginBottom:24, padding:6, background:"#FCE7F3", borderRadius:14, border:"1px solid #FBCFE8", maxWidth:680 }}>
             {[
               { k:"techs",    label:"💅 Nail Tech Schedule" },
               { k:"managers", label:"👔 Manager Schedule" }
@@ -9973,7 +9973,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </button>
               );
             })}
-          </div>
+          </div></div>
         )}
         {tab==="scheduling" && schedSubTab==="techs" && (
           <Schedule
@@ -10016,7 +10016,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const filteredVacancies = filteredSalonData.reduce((a, s) =>
             a + Math.max(0, (s.targetCapacity || s.capacity) - s.active.length), 0);
           return (
-          <>
+          <div style={{ padding: "0 24px" }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
               <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:"#831843" }}>📍 Locations</div>
               <button
@@ -10625,7 +10625,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               </div>
             )}
-          </>
+          </div>
           );
         })()}
 
@@ -10643,7 +10643,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           };
           const visibleMatRecs = matRecs.filter(r => r && r.ec && !_hasLeft(r.ec));
           return (
-          <>
+          <div style={{ padding: "0 24px" }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
               <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, color:"#8E5570" }}>Maternity Tracker · {visibleMatRecs.length} records</div>
               <button onClick={()=>setMatModal({ ec:"", name:"", branch:"Sea Point", matStatus:"on_mat", matStart:"", matEnd:"", returnDate:"", notes:"" })}
@@ -10785,7 +10785,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               );
             })}
-          </>
+          </div>
           );
         })()}
 
@@ -10813,7 +10813,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             .sort((a, b) => a._dEnd - b._dEnd);
 
           return (
-            <>
+            <div style={{ padding: "0 24px" }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
                 <div>
                   <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:"#92400e" }}>⏸️ Unpaid Leave (Legal Status) · {records.length} records</div>
@@ -10920,7 +10920,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   No unpaid-legal-leave records yet. Click <b>+ Add Record</b> to log one.
                 </div>
               )}
-            </>
+            </div>
           );
         })()}
 
@@ -11125,7 +11125,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           ];
 
           return (
-            <>
+            <div style={{ padding: "0 24px" }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
                 <div>
                   <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:"#831843" }}>📋 Compliance</div>
@@ -11483,7 +11483,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </div>
                 );
               })()}
-            </>
+            </div>
           );
         })()}
 
@@ -11580,7 +11580,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             ...SALONS.filter(sl=>enriched.filter(s=>s.branch===sl.name&&!s.onMat).length===0).map(sl=>({ type:"critical", msg:`${sl.name} — NO active staff assigned`, s:null })),
           ];
           return (
-            <div>
+            <div style={{ padding: "0 24px" }}>
               <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, marginBottom:16, color:"#111827" }}>Action Required · {alertItems.length} items</div>
               {alertItems.length===0 && <div style={{ textAlign:"center", padding:60, color:"#BE185D", fontSize:16, fontWeight:700 }}>✅ All clear!</div>}
               {["critical","warning","info"].map(type=>{
@@ -11613,7 +11613,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* ── RECRUITMENT TAB (parent) ── */}
         {tab==="recruitment" && (
-          <div>
+          <div style={{ padding: "0 24px" }}>
             {/* Sub-nav: Nail Tech vs Manager Recruitment — large, prominent toggle */}
             {(() => {
               // Manager vacancy total: sum of missing SMs (min 1/branch) + missing AMs (min 2/branch),
@@ -12224,7 +12224,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const lbl = { display:"block", fontSize:10, fontWeight:700, color:"#BE185D", letterSpacing:"0.08em", marginBottom:4, textTransform:"uppercase" };
 
           return (
-            <div style={{ fontFamily:"'DM Sans', sans-serif", padding:"0 0 40px 0" }}>
+            <div style={{ fontFamily:"'DM Sans', sans-serif", padding:"0 24px 40px 24px" }}>
               {/* Header */}
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:24 }}>
                 <div>
@@ -12559,7 +12559,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const lbl = { display:"block", fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.06em", marginBottom:6, textTransform:"uppercase" };
 
           return (
-            <div>
+            <div style={{ padding: "0 24px" }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:18 }}>
                 <div>
                   <div style={{ fontFamily:"'Playfair Display',serif", fontSize:28, color:"#831843", fontWeight:700, marginBottom:4, letterSpacing:"0.02em" }}>🌱 Onboarding Registration</div>
@@ -12800,7 +12800,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           ].slice().sort((a,b) => (a.branch||"").localeCompare(b.branch||"") || (a.name||"").localeCompare(b.name||""));
 
           return (
-            <div>
+            <div style={{ padding: "0 24px" }}>
               <div style={{ fontFamily:"'Playfair Display',serif", fontSize:26, color:"#831843", fontWeight:700, marginBottom:6, letterSpacing:"0.02em" }}>👋 Off-board Staff</div>
 
               {/* Pending Terminations banner */}
@@ -14208,7 +14208,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           };
 
           return (
-            <div>
+            <div style={{ padding: "0 24px" }}>
               <div style={{ marginBottom:14 }}>
                 <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>📕 Attendance & Payroll</div>
                 <div style={{ fontSize:12, color:"#F472B6" }}>Daily attendance log per store. Statuses auto-suggested from the schedule — confirm or override each day. Totals feed payroll.</div>
@@ -14683,7 +14683,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const overviewLoading = payrollOverview && payrollOverview.loading;
           const triggerLoad = () => loadPayrollOverviewForCycle(ym);
           return (
-            <div style={{ padding:"24px 26px" }}>
+            <div style={{ padding:"0 24px" }}>
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14, gap:12, flexWrap:"wrap" }}>
                 <div>
                   <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>📊 Payroll Progress</div>
@@ -14954,7 +14954,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const aA = "#FDEEF5"; const Y = "#F9A8D4";
 
           return (
-            <div>
+            <div style={{ padding: "0 24px" }}>
               <div style={{ marginBottom:14 }}>
                 <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>🌴 Leave Planner</div>
                 <div style={{ fontSize:12, color:"#F472B6" }}>Plan annual leave per store. 20% per-day cap enforced. Peak season (1 Oct – 31 Mar) blocked except for emergency leave with proof.</div>
@@ -15193,7 +15193,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString("en-ZA", { hour:"2-digit", minute:"2-digit" }) : "—";
           const todayStr = new Date().toISOString().slice(0, 10);
           return (
-            <div style={{ padding:"24px 26px" }}>
+            <div style={{ padding:"0 24px" }}>
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14, gap:12, flexWrap:"wrap" }}>
                 <div>
                   <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>🔓 Store Openings</div>
@@ -15283,7 +15283,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           };
 
           return (
-            <>
+            <div style={{ padding: "0 24px" }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
                 <div>
                   <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:"#831843" }}>🔀 Today's Movements</div>
@@ -15404,7 +15404,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   })}
                 </div>
               )}
-            </>
+            </div>
           );
         })()}
 
@@ -16749,7 +16749,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             return { bg:"#fce7f3", fg:"#831843" };
           };
           return (
-            <div>
+            <div style={{ padding: "0 24px" }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end", marginBottom:14, flexWrap:"wrap", gap:10 }}>
                 <div>
                   <div style={{ fontFamily:"'Playfair Display',serif", fontSize:26, color:"#831843", fontWeight:700, letterSpacing:"0.02em" }}>📜 Activity Log</div>
@@ -16833,7 +16833,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         {tab==="kioskPins" && (() => {
           const PINK = { ink:"#831843", accent:"#BE185D", soft:"#FBCFE8", softer:"#FCE7F3" };
           return (
-            <>
+            <div style={{ padding: "0 24px" }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
                 <div>
                   <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:PINK.ink }}>🔑 Kiosk PINs</div>
@@ -16899,7 +16899,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </tbody>
                 </table>
               </div>
-            </>
+            </div>
           );
         })()}
 
@@ -16924,7 +16924,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (unassigned.length > 0) byBranch.push({ branch: "Unassigned", region: null, mgrs: unassigned });
           const withPin = activeMgrs.filter(m => mgrPins[m.ec]).length;
           return (
-            <>
+            <div style={{ padding: "0 24px" }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
                 <div>
                   <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:PINK.ink }}>🆔 Manager PINs</div>
@@ -17022,7 +17022,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   })}
                 </div>
               )}
-            </>
+            </div>
           );
         })()}
 
@@ -17132,7 +17132,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
 
           return (
-            <div>
+            <div style={{ padding: "0 24px" }}>
               <div style={{ marginBottom:14 }}>
                 <div style={{ fontFamily:"'Outfit',system-ui,sans-serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>📲 Nail Tech Check-ins</div>
                 <div style={{ fontSize:12, color:"#F472B6" }}>Nail-tech check-ins from the manager check-in app. Used to confirm attendance alongside the Fresha import.</div>
@@ -17303,7 +17303,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const rangeOpts = [{v:1, l:"Today"},{v:3, l:"Last 3 days"},{v:7, l:"Last 7 days"},{v:14, l:"Last 14 days"},{v:30, l:"Last 30 days"}];
 
           return (
-            <div>
+            <div style={{ padding: "0 24px" }}>
               <div style={{ marginBottom:14 }}>
                 <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, color:"#831843", fontWeight:700, marginBottom:4 }}>🕐 Manager Check-ins</div>
                 <div style={{ fontSize:12, color:"#F472B6" }}>Spot-check manager attendance. Each row shows the selfie, GPS distance from store, and timestamp. Auto-out (red) means they forgot to clock out — talk to them.</div>
@@ -17455,11 +17455,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         })()}
 
       {tab === "settings" && currentUser?.isOwner && (
-        <SettingsAdmin
+        <div style={{ padding: "0 24px" }}><SettingsAdmin
           appUsers={appUsers}
           onUsersUpdate={onUsersUpdate}
           currentUser={currentUser}
-        />
+        /></div>
       )}
 
       {tab === "storeAllocation" && (() => {
@@ -17475,27 +17475,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           );
         }
         return (
-          <StoreAllocationAdmin
+          <div style={{ padding: "0 24px" }}><StoreAllocationAdmin
             appUsers={appUsers}
             onUsersUpdate={onUsersUpdate}
             currentUser={currentUser}
             readOnly={currentTabIsReadOnly}
-          />
+          /></div>
         );
       })()}
 
       {tab === "dailyTasks" && (
-        <DailyTasksAdmin
+        <div style={{ padding: "0 24px" }}><DailyTasksAdmin
           tasks={dailyTasks}
           onSave={persistDailyTasks}
           appUsers={appUsers}
           currentUser={currentUser}
           readOnly={currentTabIsReadOnly}
-        />
+        /></div>
       )}
 
       {tab === "hrLibrary" && (currentUser?.role === "Master Admin" || currentUser?.isOwner) && (
-        window.EmployeeDataLibrary ? React.createElement(window.EmployeeDataLibrary, { staff: staff, currentUser: currentUser, managers: managers, obList: obList, offList: offList }) : <div style={{padding:24}}>Loading Employee Files...</div>
+        <div style={{ padding: "0 24px" }}>{window.EmployeeDataLibrary ? React.createElement(window.EmployeeDataLibrary, { staff: staff, currentUser: currentUser, managers: managers, obList: obList, offList: offList }) : <div style={{padding:24}}>Loading Employee Files...</div>}</div>
       )}
 
       {/* Proof image modal — shared between Daily Check-ins and Attendance.
