@@ -14191,7 +14191,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const nextMeta = { freshaWorked: {}, reviewedWarnings: {}, freshaCoverage: null, mirrorSuppressed: true };
             setAttGrid(nextGrid);
             setAttMeta(nextMeta);
+            // The 'left-early' sidecar (boa_early_<branch>_<ym>) paints
+            // cells orange whenever the kiosk records a short-day. Clear
+            // it locally + in storage so the colour goes too — user only
+            // wants left-early to show after a fresh Import Check-ins.
+            setAttEarly({});
             setAttCheckinSnapshot(null);
+            const _resetErrors = [];
             try {
               await window.BOA_DB.saveAttendance(attBranch, attYM, nextGrid, {
                 freshaWorked: {},
@@ -14200,8 +14206,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 mirrorSuppressed: true
               });
             } catch (e) { alert("Could not total-reset: " + (e.message || e)); return; }
-            logActivity("Total reset (cycle display)", attBranch + " · " + cycLabel, "Grid + sidecars cleared, mirror suppressed; schedule + clockins + kiosk log preserved", "Bulk");
-            alert("✓ Total reset done for " + attBranch + " — " + cycLabel + ".\n\nThe grid is blank but your schedule, clock-ins and kiosk log are still safe. Run Auto-fill or Import Check-ins to repopulate.");
+            if (window.BOA_DB.deleteEarlyLeaves) {
+              try { await window.BOA_DB.deleteEarlyLeaves(attBranch, attYM); }
+              catch (e) { _resetErrors.push("early-leaves: " + (e.message || e)); }
+            }
+            logActivity("Total reset (cycle display)", attBranch + " · " + cycLabel, "Grid + sidecars + left-early cleared, mirror suppressed; schedule + clockins + kiosk log preserved" + (_resetErrors.length ? " (errors: " + _resetErrors.join(", ") + ")" : ""), "Bulk");
+            if (_resetErrors.length) {
+              alert("✓ Reset done — with one small issue:\n\n" + _resetErrors.join("\n") + "\n\nGrid is cleared and your raw data (schedule, clock-ins, kiosk log) is safe.");
+            } else {
+              alert("✓ Total reset done for " + attBranch + " — " + cycLabel + ".\n\nThe grid is blank but your schedule, clock-ins and kiosk log are still safe. Run Auto-fill or Import Check-ins to repopulate.");
+            }
           };
 
           // Auto-fill empty cells from the schedule (writes "~hint" — italic, unconfirmed)
@@ -14837,7 +14851,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // the cell orange and replace the body label with
                             // "-Xh" so the admin sees the deduction at a glance
                             // instead of just "On Time" with a small corner chip.
-                            const earlyForCell = attEarly && attEarly[dy.d] && attEarly[dy.d][s.ec];
+                            // Read the kiosk's left-early record for this cell. Also
+                            // gated by mirrorSuppressed so a Total Reset hides the
+                            // orange overlay until the next Import Check-ins refresh
+                            // (matches the rule the user spelled out: 'I only want to
+                            // see left-early after I import the check-ins').
+                            const earlyForCell = !mirrorSuppressed && attEarly && attEarly[dy.d] && attEarly[dy.d][s.ec];
                             const earlyHours   = earlyForCell && typeof earlyForCell.hours === "number" ? earlyForCell.hours : 0;
                             if (earlyHours > 0) {
                               const mins = Math.round(earlyHours * 60);
