@@ -14168,30 +14168,82 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // approvers) is preserved so the admin can re-import it anytime.
           // The schedule itself stays untouched.
           const totalResetCycle = async () => {
-            const step1 = "⚠ TOTAL reset for " + attBranch + " — " + cycLabel + "?\n\n"
-              + "Clears the attendance grid + reviewed marks + Fresha sidecar AND hides the schedule mirror — the grid reads as blank.\n\n"
-              + "Kept: kiosk check-ins, uploaded proofs, schedule. Re-import the kiosk anytime to repopulate.\n\n"
+            const step1 = "⚠ TOTAL RESET for " + attBranch + " — " + cycLabel + "?\n\n"
+              + "This is a HARD reset. The following will be permanently DELETED for this branch + cycle:\n"
+              + "  • Attendance grid (all cells)\n"
+              + "  • Fresha import + reviewed-warning sidecars\n"
+              + "  • Manager + nail-tech clock-ins (clockins table, in this cycle's date range)\n"
+              + "  • Kiosk audit log (boa_kiosk_log row)\n"
+              + "  • Saved schedules — both nail-tech and manager — for this branch + cycle\n\n"
+              + "All colours / fills on the attendance grid will be cleared. Start truly fresh.\n\n"
               + "Continue?";
             if (!confirm(step1)) return;
             const step2 = window.prompt("Enter the Total Reset PIN to confirm.");
             if (step2 === null) return;
             if ((step2 || "").trim() !== "2002") { alert("Cancelled — incorrect PIN."); return; }
             pushUndo("Total Reset");
+            // Compute the cycle date range from attYM so we can delete clockins
+            // in that window. ym '2026-05' means 25 Apr 2026 → 24 May 2026.
+            const ymP = (attYM || "").split("-").map(Number);
+            const pp = z => String(z).padStart(2, "0");
+            const _cycStart = new Date(ymP[0], (ymP[1] || 1) - 2, 25);   // start of cycle
+            const _cycEnd   = new Date(ymP[0], (ymP[1] || 1) - 1, 24);   // end of cycle
+            const _fromIso  = _cycStart.toISOString();
+            const _toIso    = new Date(_cycEnd.getFullYear(), _cycEnd.getMonth(), _cycEnd.getDate(), 23, 59, 59, 999).toISOString();
             const nextGrid = {};
-            const nextMeta = { freshaWorked: {}, reviewedWarnings: {}, freshaCoverage: null, mirrorSuppressed: true };
+            const nextMeta = { freshaWorked: {}, reviewedWarnings: {}, freshaCoverage: null, mirrorSuppressed: false };
             setAttGrid(nextGrid);
             setAttMeta(nextMeta);
             setAttCheckinSnapshot(null);
+            const errors = [];
             try {
               await window.BOA_DB.saveAttendance(attBranch, attYM, nextGrid, {
                 freshaWorked: {},
                 reviewedWarnings: {},
                 freshaCoverage: null,
-                mirrorSuppressed: true
+                mirrorSuppressed: false
               });
-            } catch (e) { alert("Could not total-reset: " + (e.message || e)); return; }
-            logActivity("Total reset (cycle display)", attBranch + " · " + cycLabel, "Grid + sidecars cleared, schedule mirror suppressed, kiosk data preserved", "Bulk");
-            alert("✓ Total reset done for " + attBranch + " — " + cycLabel + ". Run Auto-fill or Import Check-ins to repopulate.");
+            } catch (e) { errors.push("attendance: " + (e.message || e)); }
+            // Kiosk audit log — drop the row entirely.
+            if (window.BOA_DB.deleteKioskLog) {
+              try { await window.BOA_DB.deleteKioskLog(attBranch, attYM); }
+              catch (e) { errors.push("kiosk log: " + (e.message || e)); }
+            }
+            // Manager + tech clockins for staff at this branch in the cycle.
+            if (window.BOA_DB.deleteClockinsInRange) {
+              try { await window.BOA_DB.deleteClockinsInRange(attBranch, _fromIso, _toIso); }
+              catch (e) { errors.push("clockins: " + (e.message || e)); }
+            }
+            // Saved schedules — both tech and manager keys. Tech schedule keys
+            // on the END-month ym, manager on the START-month ym. attYM here
+            // IS the start-month, so the tech ym is attYM+1, manager is attYM.
+            if (window.BOA_DB.deleteSchedule) {
+              const _ym = attYM;
+              const ymShifted = (() => {
+                const p = _ym.split("-").map(Number);
+                let y = p[0], m = p[1] + 1;
+                if (m > 12) { m = 1; y++; }
+                return y + "-" + pp(m);
+              })();
+              try { await window.BOA_DB.deleteSchedule(attBranch, ymShifted, false); }
+              catch (e) { errors.push("tech schedule: " + (e.message || e)); }
+              try { await window.BOA_DB.deleteSchedule(attBranch, _ym, true); }
+              catch (e) { errors.push("manager schedule: " + (e.message || e)); }
+            }
+            // Refresh the kiosk check-in rows in memory so the grid stops
+            // mirroring already-deleted check-ins from the local cache.
+            setAttCheckinRows(rows => (rows || []).filter(r => r && r.branch !== attBranch));
+            logActivity(
+              "Total reset (HARD)",
+              attBranch + " · " + cycLabel,
+              "Grid + sidecars + kiosk log + clockins (" + _fromIso.slice(0,10) + "→" + _toIso.slice(0,10) + ") + schedules deleted" + (errors.length ? " · with errors: " + errors.join(", ") : ""),
+              "Bulk"
+            );
+            if (errors.length) {
+              alert("⚠ Total reset finished with some errors:\n\n" + errors.join("\n") + "\n\nSee DevTools console for details.");
+            } else {
+              alert("✓ HARD total reset done for " + attBranch + " — " + cycLabel + ".\n\nGrid, kiosk log, clockins and saved schedules for this cycle have been deleted. Start fresh.");
+            }
           };
 
           // Auto-fill empty cells from the schedule (writes "~hint" — italic, unconfirmed)

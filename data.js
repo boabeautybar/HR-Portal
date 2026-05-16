@@ -597,6 +597,36 @@
     // tab can surface them as diagnostics. Only manager-tagged rows are dropped.
     return (res.data || []).filter(function (r) { return !r.staff || r.staff.role_type !== "manager"; });
   }
+
+  // Total-reset helpers for the Attendance tab's "⚠ Total Reset" button.
+  // Both are destructive — gated behind the 2002 PIN in the UI.
+
+  // Delete the per-branch + per-cycle kiosk audit log row.
+  async function deleteKioskLog(branchName, ym) {
+    var key = "boa_kiosk_log_" + branchName + "_" + ym;
+    var r = await sb.from("app_state").delete().eq("key", key);
+    if (r.error) { console.error("deleteKioskLog:", r.error, "key:", key); throw r.error; }
+    return true;
+  }
+
+  // Delete every clockins row for staff at `branchName` whose ts falls between
+  // fromIso (inclusive) and toIso (inclusive). Both manager and tech rows are
+  // removed so the Attendance grid reads as truly fresh.
+  async function deleteClockinsInRange(branchName, fromIso, toIso) {
+    var c = sb;
+    // Resolve staff IDs at this branch (techs + managers — anyone who could
+    // have clocked in here, including off-boarded so we don't leave orphans).
+    var staffRes = await c.from("staff").select("id").eq("branch", branchName);
+    if (staffRes.error) { console.error("deleteClockinsInRange staff:", staffRes.error); throw staffRes.error; }
+    var staffIds = (staffRes.data || []).map(function (r) { return r.id; });
+    if (staffIds.length === 0) return 0;
+    var r = await c.from("clockins").delete()
+      .in("staff_id", staffIds)
+      .gte("ts", fromIso)
+      .lte("ts", toIso);
+    if (r.error) { console.error("deleteClockinsInRange:", r.error); throw r.error; }
+    return staffIds.length;
+  }
   // Lazily fetch a single proof image from app_state. The kiosk app stores
   // proof-of-sickness/FRL pictures as data URLs at boa_proof_<branch>_<ym>_<ec>_<day>
   // wrapped in {__raw: <dataUrl>}. Used by the Daily Check-ins tab when the user
@@ -1127,6 +1157,8 @@
     // Manager clock-ins viewer
     listRecentManagerClockins: listRecentManagerClockins,
     listRecentTechClockins:    listRecentTechClockins,
+    deleteKioskLog:            deleteKioskLog,
+    deleteClockinsInRange:     deleteClockinsInRange,
     listRecentAttendanceCheckins: listRecentAttendanceCheckins,
     listRecentKioskCheckins:      listRecentKioskCheckins,
     listStoreOpenings:            listStoreOpenings,
