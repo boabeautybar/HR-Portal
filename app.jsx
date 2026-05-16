@@ -14168,9 +14168,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // approvers) is preserved so the admin can re-import it anytime.
           // The schedule itself stays untouched.
           const totalResetCycle = async () => {
-            const step1 = "⚠ TOTAL reset for " + attBranch + " — " + cycLabel + "?\n\n"
-              + "Clears the attendance grid + reviewed marks + Fresha sidecar AND hides the schedule mirror — the grid reads as blank.\n\n"
-              + "Kept: kiosk check-ins, uploaded proofs, schedule. Re-import the kiosk anytime to repopulate.\n\n"
+            const step1 = "⚠ TOTAL RESET for " + attBranch + " — " + cycLabel + "?\n\n"
+              + "DISPLAY-ONLY reset. Clears every cell + colour on the attendance grid for this branch + cycle.\n\n"
+              + "CLEARED:\n"
+              + "  • Attendance grid cells\n"
+              + "  • Fresha import sidecar (F strips disappear)\n"
+              + "  • Reviewed-warning marks\n"
+              + "  • Schedule / kiosk / Fresha mirror overlays (suppressed until you re-import)\n\n"
+              + "KEPT (raw data, nothing destroyed):\n"
+              + "  • The saved schedule on the Scheduling tab\n"
+              + "  • Every clock-in row from the kiosk\n"
+              + "  • Manager check-in audit log + uploaded proofs\n"
+              + "  • Schedule version history and approved versions\n\n"
+              + "Re-import Check-ins or Auto-fill to repopulate the grid.\n\n"
               + "Continue?";
             if (!confirm(step1)) return;
             const step2 = window.prompt("Enter the Total Reset PIN to confirm.");
@@ -14190,8 +14200,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 mirrorSuppressed: true
               });
             } catch (e) { alert("Could not total-reset: " + (e.message || e)); return; }
-            logActivity("Total reset (cycle display)", attBranch + " · " + cycLabel, "Grid + sidecars cleared, schedule mirror suppressed, kiosk data preserved", "Bulk");
-            alert("✓ Total reset done for " + attBranch + " — " + cycLabel + ". Run Auto-fill or Import Check-ins to repopulate.");
+            logActivity("Total reset (cycle display)", attBranch + " · " + cycLabel, "Grid + sidecars cleared, mirror suppressed; schedule + clockins + kiosk log preserved", "Bulk");
+            alert("✓ Total reset done for " + attBranch + " — " + cycLabel + ".\n\nThe grid is blank but your schedule, clock-ins and kiosk log are still safe. Run Auto-fill or Import Check-ins to repopulate.");
           };
 
           // Auto-fill empty cells from the schedule (writes "~hint" — italic, unconfirmed)
