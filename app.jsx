@@ -16089,10 +16089,89 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               }
             });
           };
+          // Riverlands has its own shape — different store-hours, no
+          // WM tier, but a 4-managers-or-more boost where one extra AM
+          // takes a second early shift Mon-Fri. Saturday is a single
+          // 9-18 shift; Sunday a single 8-17 shift.
+          //
+          //   Mon-Fri (store closes 19:00):
+          //     SM working → WE (08:00-17:00)
+          //     No SM      → 1 AM = WE (09:00-18:00, the AM-opener time)
+          //     Remaining AMs → WL (10:00-19:00)
+          //     4+ working → one additional AM also gets WE (08:00-17:00
+          //       extra opener). Labelled WE; banner explains the times.
+          //   Saturday: every working manager → WE (09:00-18:00 single shift).
+          //   Sunday:   every working manager → WE (08:00-17:00 single shift).
+          const _applyRiverlandsShifts = (grid, dates, managers) => {
+            if (!grid) return;
+            const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
+            const _earlyCount = {};        // rotation for AM-opener (no-SM Mon-Fri)
+            const _extraEarlyCount = {};   // rotation for the 4+ bonus early-AM
+            (managers || []).forEach(m => { _earlyCount[m.ec] = 0; _extraEarlyCount[m.ec] = 0; });
+            const _pickLowest = (list, counter) => {
+              const sorted = list.slice().sort((a, b) =>
+                ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
+                (a.ec || "").localeCompare(b.ec || "")
+              );
+              const winner = sorted[0];
+              counter[winner.ec] = (counter[winner.ec] || 0) + 1;
+              return winner;
+            };
+            (dates || []).forEach(dy => {
+              const workers = (managers || []).filter(m =>
+                m && m.ec && grid[m.ec] && (
+                  grid[m.ec][dy.d] === "W" ||
+                  grid[m.ec][dy.d] === "WE" ||
+                  grid[m.ec][dy.d] === "WM" ||
+                  grid[m.ec][dy.d] === "WL"
+                )
+              );
+              if (workers.length === 0) return;
+              workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
+              const isMonFri = dy.dow >= 1 && dy.dow <= 5;
+              const isSat    = dy.dow === 6;
+              const isSun    = dy.dow === 0;
+              // Sat / Sun: single-shift days — everyone goes WE.
+              if (isSat || isSun) {
+                workers.forEach(m => { grid[m.ec][dy.d] = "WE"; });
+                return;
+              }
+              if (!isMonFri) {
+                workers.forEach(m => { grid[m.ec][dy.d] = "WE"; });
+                return;
+              }
+              // Mon-Fri: WE/WL split with optional extra-early on 4+.
+              const sm  = workers.find(_isSM);
+              const ams = workers.filter(m => !_isSM(m));
+              if (sm) {
+                grid[sm.ec][dy.d] = "WE";
+                // 4+ on duty → one extra AM also gets the early shift.
+                if (workers.length >= 4 && ams.length >= 1) {
+                  const extra = _pickLowest(ams, _extraEarlyCount);
+                  grid[extra.ec][dy.d] = "WE";
+                  ams.filter(m => m.ec !== extra.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+                } else {
+                  ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+                }
+              } else if (ams.length > 0) {
+                const opener = _pickLowest(ams, _earlyCount);
+                grid[opener.ec][dy.d] = "WE";
+                const rest = ams.filter(m => m.ec !== opener.ec);
+                if (workers.length >= 4 && rest.length >= 1) {
+                  const extra = _pickLowest(rest, _extraEarlyCount);
+                  grid[extra.ec][dy.d] = "WE";
+                  rest.filter(m => m.ec !== extra.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+                } else {
+                  rest.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+                }
+              }
+            });
+          };
           const _applyBranchShiftRules = (grid, dates, managers) => {
             if (!grid) return;
-            if (branch === "Sandown")   return _applyMgrShiftSplit(grid, dates, managers, new Set([1,2,3,4,5]));
-            if (branch === "Table Bay") return _applyMgrShiftSplit(grid, dates, managers, new Set([1,2,3,4,5,6]));
+            if (branch === "Sandown")    return _applyMgrShiftSplit(grid, dates, managers, new Set([1,2,3,4,5]));
+            if (branch === "Table Bay")  return _applyMgrShiftSplit(grid, dates, managers, new Set([1,2,3,4,5,6]));
+            if (branch === "Riverlands") return _applyRiverlandsShifts(grid, dates, managers);
           };
           // Apply to the freshly-generated grid (covers the no-draft path).
           _applyBranchShiftRules(result.grid, result.dates, result.managers);
@@ -16475,7 +16554,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // Sandown + Table Bay use per-shift hours (WE/WM/WL on the
               // cells + a banner above the grid), so the row subtitle drops
               // the generic 8–17 / 9:30–18:30 fallback for those stores.
-              const _hideHours = branch === "Sandown" || branch === "Table Bay";
+              const _hideHours = branch === "Sandown" || branch === "Table Bay" || branch === "Riverlands";
               const sub = mg._offGhost
                 ? "Left " + mg._offLeftDate + (mg._offReason ? " · " + mg._offReason : "")
                 : mg._obStarting
@@ -17006,6 +17085,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <span><strong>Sunday</strong> · WE 08:00–17:00 · WL 09:00–18:00</span>
                 </div>
               )}
+              {mgrSchedDraft && branch === "Riverlands" && (
+                <div style={{ background:"#ecfdf5", border:"1px solid #a7f3d0", borderRadius:10, padding:"10px 14px", marginBottom:10, fontSize:12, color:"#065f46", display:"flex", flexWrap:"wrap", gap:14, alignItems:"center" }}>
+                  <span style={{ fontSize:11, fontWeight:800, color:"#065f46", letterSpacing:"0.08em", textTransform:"uppercase" }}>🕐 Riverlands manager shifts</span>
+                  <span><strong>Mon–Fri</strong> · WE = SM 08:00–17:00 or AM 09:00–18:00 · WL 10:00–19:00 · <span style={{ color:"#0f766e" }}>4+ on duty → 1 extra AM at 08:00–17:00 (also WE)</span></span>
+                  <span><strong>Saturday</strong> · single shift 09:00–18:00 (WE)</span>
+                  <span><strong>Sunday</strong> · single shift 08:00–17:00 (WE)</span>
+                </div>
+              )}
 
               {/* Schedule grid */}
               {mgrSchedDraft && <div style={{ background:"#FFFFFF", borderRadius:11, border:"1px solid #FBCFE8", overflow:"auto" }}>
@@ -17036,7 +17123,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             ? <div style={{ fontSize:9, color:"#9ca3af", fontStyle:"italic", marginTop:1 }}>Left {mg._offLeftDate}{mg._offReason ? " · " + mg._offReason : ""}</div>
                             : mg._obStarting
                               ? <div style={{ fontSize:9, color:"#854d0e", fontWeight:700, marginTop:1, fontStyle:"italic" }}>🌱 starts {mg._obStartDate}</div>
-                              : (branch === "Sandown" || branch === "Table Bay")
+                              : (branch === "Sandown" || branch === "Table Bay" || branch === "Riverlands")
                                 ? <div style={{ fontSize:9, color:"#BE185D", marginTop:1 }}>{mg.role === "SM" ? "Store Manager" : mg.role === "SSM" ? "Senior Store Manager" : "Assistant Manager"}</div>
                                 : <div style={{ fontSize:9, color:"#BE185D", marginTop:1 }}>{mg.role === "SM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · 9:30–18:30"}</div>
                           }
