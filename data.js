@@ -683,6 +683,16 @@
     if (res.error) { console.error("loadEarlyLeaves:", res.error); return {}; }
     return (res.data && res.data.value) || {};
   }
+  // Delete the boa_early_<branch>_<ym> sidecar entirely. Called by the
+  // Attendance Total Reset so the 'left early' orange overlay clears
+  // along with the rest of the display state. The next Import Check-ins
+  // recreates the sidecar from the kiosk early-leave entries.
+  async function deleteEarlyLeaves(branch, ym) {
+    var key = "boa_early_" + branch + "_" + ym;
+    var r = await sb.from("app_state").delete().eq("key", key);
+    if (r.error) { console.error("deleteEarlyLeaves:", r.error, "key:", key); throw r.error; }
+    return true;
+  }
 
   // ---------- Store-opening status ----------
   // The kiosk's "open the store" button writes one row per (branch, ymd) to
@@ -1131,6 +1141,7 @@
     listRecentKioskCheckins:      listRecentKioskCheckins,
     listStoreOpenings:            listStoreOpenings,
     loadEarlyLeaves:              loadEarlyLeaves,
+    deleteEarlyLeaves:            deleteEarlyLeaves,
     loadKioskProof:               loadKioskProof,
     probeRecentClockinsRaw:    probeRecentClockinsRaw,
     probeAttendanceGrid:       probeAttendanceGrid,
