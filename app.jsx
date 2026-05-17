@@ -8008,7 +8008,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const cellShowsAbsent = kioskMarkedAbsent || (override && !!bareV && !isWorking && !isLate);
               const extDayRecorded  = (override && bareV === "ext") || (!!kioskAbs && kioskAbs.status === "ext");
               const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
-              const presentNoApptWarn = checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
+              // Fires when the cell is asserting presence — via kiosk check-in OR
+              // the cell value itself reading 'on' / 'late' (manual entry or
+              // a schedule-mirror fill) — but Fresha has no appointment for that
+              // day. Previously only triggered on kiosk records, which missed
+              // every manual / mirrored 'On Time' cell.
+              const presentNoApptWarn = (checkinHasIn || isWorking || isLate) && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
               const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
               const missingCheckin    = !checkinHasIn && freshaWorkedCell;
               const proofPending      = (bareV === "sick_n" || bareV === "frl");
@@ -14511,7 +14516,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const cellShowsAbsent = kioskMarkedAbsent || (override && !!bareV && !isWorking && !isLate);
                 const extDayRecorded = (override && bareV === "ext") || (!!kioskAbs && kioskAbs.status === "ext");
                 const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
-                const presentNoApptWarn = checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
+                // Fires when the cell is asserting presence — via kiosk check-in OR
+              // the cell value itself reading 'on' / 'late' (manual entry or
+              // a schedule-mirror fill) — but Fresha has no appointment for that
+              // day. Previously only triggered on kiosk records, which missed
+              // every manual / mirrored 'On Time' cell.
+              const presentNoApptWarn = (checkinHasIn || isWorking || isLate) && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
                 const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
                 const missingCheckin    = !checkinHasIn && freshaWorkedCell;
                 const proofPending      = (bareV === "sick_n" || bareV === "frl");
@@ -14900,7 +14910,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // a presence status. If the kiosk later marked the tech absent
                             // (sick / no-show / etc.), that absence supersedes the earlier
                             // clock-in and the "all 3 agree absent" merge wins instead.
-                            const presentNoApptWarn    = s.role === "NT" && checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
+                            // See comment on the matching tally — fires whenever
+                            // the cell asserts presence (kiosk record OR cell value
+                            // says 'on'/'late'), not just on kiosk records.
+                            const presentNoApptWarn    = s.role === "NT" && (checkinHasIn || isWorking || isLate) && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
                             // extDayNoApptWarn — ext day was recorded but Fresha shows no
                             // completed appointment. Either the ext-day mark is wrong or the
                             // tech showed up and did no service — manager should investigate.
