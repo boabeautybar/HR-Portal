@@ -14984,8 +14984,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             );
 
                             // Build the structured tooltip body.
+                            // "Cell" is only shown when it ADDS information — i.e. an
+                            // admin/kiosk override that disagrees with the schedule
+                            // mirror. When the cell just mirrors the schedule the line
+                            // would just repeat the Schedule row, so we drop it.
                             const lbl = (k) => (STAT[k] && STAT[k].lbl) || (k || "—");
-                            const cellLine = (st.lbl || "—") + (!override && v ? "  (mirrored from schedule)" : "") + (deviation ? "  (deviation from schedule)" : "") + (isFutureSwap ? "  (future placeholder)" : "");
+                            const showCellLine = !!v && (override || isFutureSwap) && (!hint || bareV !== hint);
+                            const cellLine = (st.lbl || "—") + (deviation ? "  (deviation from schedule)" : "") + (isFutureSwap ? "  (future placeholder)" : "");
                             const schedLine = hint ? lbl(hint) : "—";
                             let kioskLine;
                             if (s.role !== "NT") {
@@ -15013,7 +15018,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
                             const tipLines = [dy.ymd];
                             tipLines.push("─────────────────────────");
-                            tipLines.push("Cell:     " + cellLine);
+                            if (showCellLine) tipLines.push("Cell:     " + cellLine);
                             tipLines.push("Schedule: " + schedLine);
                             if (kioskLine != null) tipLines.push("Kiosk:    " + kioskLine);
                             if (freshaLine != null) tipLines.push("Fresha:   " + freshaLine);
@@ -15136,7 +15141,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                     }
                                     return null;
                                   })()}
-                                  {v && (
+                                  {/* Body label only renders when it ADDS information beyond
+                                      the S/F strips: real overrides, left-early -Xh, worked
+                                      holidays auto-promoted to PH, future-swap placeholders.
+                                      Plain mirrored-from-schedule cells stay clean because
+                                      the green/grey S strip already shows that. */}
+                                  {v && (override || isFutureSwap || earlyHours > 0 || phAuto) && (
                                     <div style={{ position:"absolute", top:6, bottom: s.role === "NT" ? 6 : 0, left:0, right:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:1, fontSize:9, fontStyle: (override && !isFutureSwap) ? "normal" : "italic", fontWeight: (override && !isFutureSwap) ? 700 : 400, color: isFutureSwap ? "#9ca3af" : (override ? st.fg : (hintFg + "70")), pointerEvents:"none", letterSpacing:"0.02em" }}>
                                       <span>{st.lbl || hintLbl || ""}</span>
                                       {/* Loan-day badge — only renders when a real status was
