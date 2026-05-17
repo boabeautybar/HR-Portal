@@ -8014,7 +8014,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const proofPending      = (bareV === "sick_n" || bareV === "frl");
               const trustedAbsence    = (bareV === "sick" || bareV === "no") && scheduleSaysWork && kioskMarkedAbsent && !freshaWorkedCell;
               const absentNeedsReview = ((bareV === "sick" || bareV === "no") && !trustedAbsence) || bareV === "absent";
-              if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending || missingCheckin || absentNeedsReview) {
+              // Scheduled to work but no evidence of presence — admin needs to
+              // confirm the day. Off-day with evidence of work — possible
+              // unrecorded extra day.
+              const unaccountedScheduledDay = scheduleSaysWork && !checkinHasIn && !freshaWorkedCell && !cellShowsAbsent && freshaCoversThisDay && !bareV;
+              const workedOnOffDay          = (hint === "off" || hint === "al") && (checkinHasIn || freshaWorkedCell) && !cellShowsAbsent && bareV !== "ext" && bareV !== "on" && bareV !== "late";
+              if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending || missingCheckin || absentNeedsReview || unaccountedScheduledDay || workedOnOffDay) {
                 total++;
                 const rev = (bReview[s.ec] || {})[dy.d];
                 if (rev && rev.valueAtReview === (rawV || "")) reviewed++;
@@ -14521,7 +14526,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 // has nothing left to verify. Absent always needs review.
                 const trustedAbsence    = (bareV === "sick" || bareV === "no") && scheduleSaysWork && kioskMarkedAbsent && !freshaWorkedCell;
                 const absentNeedsReview = ((bareV === "sick" || bareV === "no") && !trustedAbsence) || bareV === "absent";
-                if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending || missingCheckin || absentNeedsReview) {
+                // Scheduled to work but neither check-in nor Fresha — was the
+                // tech actually here? Only fires once Fresha has been imported
+                // (freshaCoversThisDay) so we don't spam blanks before data.
+                const unaccountedScheduledDay = scheduleSaysWork && !checkinHasIn && !freshaWorkedCell && !cellShowsAbsent && freshaCoversThisDay && !bareV;
+                // Off-day but evidence of work (kiosk check-in or Fresha appt).
+                // Could be an unrecorded extra day — admin confirms.
+                const workedOnOffDay = (hint === "off" || hint === "al") && (checkinHasIn || freshaWorkedCell) && !cellShowsAbsent && !isWorking && !isLate;
+                if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending || missingCheckin || absentNeedsReview || unaccountedScheduledDay || workedOnOffDay) {
                   total++;
                   const review = (reviewedMap[s.ec] || {})[dy.d];
                   if (review && review.valueAtReview === (v || "")) reviewed++;
@@ -14905,6 +14917,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // completed appointment. Either the ext-day mark is wrong or the
                             // tech showed up and did no service — manager should investigate.
                             const extDayNoApptWarn     = s.role === "NT" && extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
+                            // Scheduled to work but zero evidence — no check-in and no
+                            // Fresha appointment. Once Fresha has been imported we treat
+                            // these as a 'did the tech actually come in?' question for
+                            // the admin. Gated on freshaCoversThisDay so we don't fire
+                            // on every blank cell before the import has been done.
+                            const unaccountedScheduledDay = s.role === "NT" && scheduleSaysWork && !checkinHasIn && !freshaWorkedCell && !cellShowsAbsent && freshaCoversThisDay && !bareV && isPastOrToday;
+                            // Off-day but evidence of work (kiosk check-in or Fresha appt).
+                            // Could be an unrecorded extra day — admin confirms.
+                            const workedOnOffDay          = s.role === "NT" && (hint === "off" || hint === "al") && (checkinHasIn || freshaWorkedCell) && !cellShowsAbsent && bareV !== "ext" && bareV !== "on" && bareV !== "late" && isPastOrToday;
                             // Future swap-back day — until the date arrives the cell is just a
                             // placeholder reminding the manager to fill in the proper status.
                             const isFutureSwap = !isPastOrToday && (bareV === "swap_o" || bareV === "swap_i");
@@ -15025,16 +15046,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                     // render as one solid absent-colour band via allAgreeAbsent).
                                     const trustedAbsenceCell = (bareV === "sick" || bareV === "no") && scheduleSaysWork && kioskMarkedAbsent && !freshaWorkedCell;
                                     const absentNeedsReview = ((bareV === "sick" || bareV === "no") && !trustedAbsenceCell) || bareV === "absent";
-                                    const warning  = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || missingCheckin || absentNeedsReview;
+                                    const warning  = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || missingCheckin || absentNeedsReview || unaccountedScheduledDay || workedOnOffDay;
                                     const review   = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
                                     const reviewed = !!review && review.valueAtReview === (v || "");
                                     // Cell with active warning + not yet reviewed → red ⚠
                                     if (warning && !reviewed) {
-                                      const warnTitle = apptVsKioskAbsentWarn ? "⚠ Kiosk marked tech absent but Fresha has a completed appointment that day"
-                                                      : extDayNoApptWarn      ? "⚠ Extra day recorded but Fresha shows no appointments — did they actually do any service?"
-                                                      : absentNeedsReview      ? ("⚠ Absent day — admin must confirm " + ((STAT[bareV] || {}).lbl || bareV) + " for payroll")
-                                                      : missingCheckin         ? "⚠ Fresha shows appointments + scheduled to work, but no kiosk check-in recorded"
-                                                                              : "⚠ Tech checked in and was scheduled to work, but Fresha shows no appointments";
+                                      const warnTitle = apptVsKioskAbsentWarn   ? "⚠ Kiosk marked tech absent but Fresha has a completed appointment that day"
+                                                      : extDayNoApptWarn        ? "⚠ Extra day recorded but Fresha shows no appointments — did they actually do any service?"
+                                                      : absentNeedsReview       ? ("⚠ Absent day — admin must confirm " + ((STAT[bareV] || {}).lbl || bareV) + " for payroll")
+                                                      : missingCheckin          ? "⚠ Fresha shows appointments + scheduled to work, but no kiosk check-in recorded"
+                                                      : workedOnOffDay          ? ("⚠ Scheduled OFF but " + (checkinHasIn && freshaWorkedCell ? "kiosk check-in + Fresha appointments" : checkinHasIn ? "kiosk check-in" : "Fresha appointments") + " recorded — confirm if this should be Extra Day or correct the schedule")
+                                                      : unaccountedScheduledDay ? "⚠ Scheduled to work but NO kiosk check-in AND NO Fresha appointments — was the tech actually here? Confirm absence reason (sick / no-show / left early / etc.)"
+                                                                                : "⚠ Tech checked in and was scheduled to work, but Fresha shows no appointments";
                                       return (
                                         <span title={warnTitle + "\n\n(Click to mark as reviewed for payroll)"}
                                               onClick={(e) => { e.stopPropagation(); markCellReviewed(s.ec, dy.d, v); }}
