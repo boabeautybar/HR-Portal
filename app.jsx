@@ -8020,7 +8020,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const unaccountedScheduledDay = scheduleSaysWork && !cellSaysPresent && !cellShowsAbsent && !freshaWorkedCell && freshaCoversThisDay && !bareV;
               const offButFreshaWorked     = scheduleSaysOff && !cellSaysPresent && freshaWorkedCell;
               const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
-              const missingCheckin    = !checkinHasIn && freshaWorkedCell;
+              const missingCheckin    = !checkinHasIn && freshaWorkedCell && scheduleSaysWork;
               const proofPending      = (bareV === "sick_n" || bareV === "frl");
               const trustedAbsence    = (bareV === "sick" || bareV === "no") && scheduleSaysWork && kioskMarkedAbsent && !freshaWorkedCell;
               const absentNeedsReview = ((bareV === "sick" || bareV === "no") && !trustedAbsence) || bareV === "absent";
@@ -14554,7 +14554,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const unaccountedScheduledDay = scheduleSaysWork && !cellSaysPresent && !cellShowsAbsent && !freshaWorkedCell && freshaCoversThisDay && !bareV;
                 const offButFreshaWorked      = scheduleSaysOff && !cellSaysPresent && freshaWorkedCell;
                 const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
-                const missingCheckin    = !checkinHasIn && freshaWorkedCell;
+                const missingCheckin    = !checkinHasIn && freshaWorkedCell && scheduleSaysWork;
                 const proofPending      = (bareV === "sick_n" || bareV === "frl");
                 // Sick NO note / NO SHOW only need review when something disagrees —
                 // if the schedule said work + kiosk recorded the absence + Fresha
@@ -14858,7 +14858,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // kiosk overwrites the grid (e.g. sick / no-show) and we don't want
                             // that to erase the Fresha appointment signal.
                             const freshaWorkedCell    = !mirrorSuppressed && !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
-                            const missingCheckin  = !checkinHasIn && freshaWorkedCell && isPastOrToday; // Fresha confirmed work but no check-in
+                            const missingCheckin  = !checkinHasIn && freshaWorkedCell && isPastOrToday && scheduleSaysWork; // Fresha confirmed work but no check-in
                             const scheduleSaysWork    = hint === "on" || hint === "ext";
                             const kioskAbsentScheduled = !!kioskAbs && scheduleSaysWork && !/^[^a-z]*(?:left|early)/i.test(kioskAbs.status || "");
                             // Map the kiosk audit-log status to a STAT entry. The recordAbsence
@@ -14999,7 +14999,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             : workedOnOffDay             ? "Scheduled OFF/Annual/Public Holiday/Maternity but the tech checked in or the cell shows present — confirm if this should be Extra Day or correct the schedule."
                             : unaccountedScheduledDay    ? "Scheduled to work but NO kiosk check-in, NO Fresha appointments and no absence recorded — confirm what happened (sick / no-show / left early / etc.)."
                             : offButFreshaWorked         ? "Scheduled OFF but Fresha has completed appointments — probably an unrecorded Extra Day."
-                            : "Tech checked in and was scheduled to work, but Fresha shows no appointments."
+                            : presentNoApptWarn          ? (checkinHasIn
+                                  ? "Tech checked in and was scheduled to work, but Fresha shows no appointments."
+                                  : "Scheduled to work but no kiosk check-in was recorded AND Fresha shows no appointments — confirm what happened (sick / no-show / left early / etc.).")
+                            : "Cell needs review — admin should verify the day's status."
                             );
 
                             // Build the structured tooltip body.
