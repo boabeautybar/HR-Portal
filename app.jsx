@@ -15160,6 +15160,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   {!v && showKioskReason && (
                                     <div style={{ position:"absolute", top:6, bottom: s.role === "NT" ? 6 : 0, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle:"italic", fontWeight:600, color: kStat.fg || "#9ca3af", pointerEvents:"none", letterSpacing:"0.02em" }}>{kStat.lbl}</div>
                                   )}
+                                  {/* All-match OFF — schedule says off + no check-in + no
+                                      Fresha appointments. Cell is one clean grey band; we
+                                      label it 'OFF' so the user doesn't have to hover to
+                                      know what the grey means. */}
+                                  {allMatchOff && (
+                                    <div style={{ position:"absolute", top:6, bottom: s.role === "NT" ? 6 : 0, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontWeight:700, color:"#475569", pointerEvents:"none", letterSpacing:"0.08em" }}>OFF</div>
+                                  )}
                                   <select value="" onChange={e=>onCellChange(s, dy, e.target.value)} title={cellTooltip}
                                     style={{ position:"absolute", top:6, bottom: s.role === "NT" ? 6 : 0, left:0, right:0, width:"100%", border:"none", background: "transparent", color:"transparent", fontSize:9, fontWeight:400, opacity:1, textAlign:"center", cursor:"pointer", padding:"0 1px", fontFamily:"inherit", outline:"none", appearance:"none" }}>
                                     <option value="" style={{ color:"#000", background:"#fff" }}>—</option>
