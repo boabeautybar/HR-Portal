@@ -13532,15 +13532,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const dayObj = days.find(x => x.d === d);
             if (dayObj && isPostLeftDate(ec, dayObj.ymd)) return "term";
 
+            // Maternity staff: the entire row is maternity regardless of
+            // anything in attGrid or attSched. Legacy schedules saved
+            // 'L'/'al' for them before maternity was tracked separately —
+            // those stale values must NOT bleed through as 'Annual'.
+            // Checked before attGrid so any pre-mat overrides are ignored
+            // once the staff record is flagged onMat.
+            if (onMatEcs.has(ec)) return "mat";
+
             const v = attGrid[ec] && attGrid[ec][d];
             if (v) return v.indexOf("~") === 0 ? v.slice(1) : v;
             // After a Total Reset the schedule mirror is suppressed so the
             // grid reads as truly empty until the admin runs Auto-fill.
             if (mirrorSuppressed) return "";
-            // Maternity staff: entire row is maternity regardless of what
-            // the schedule grid has for them (legacy 'L' codes shouldn't
-            // bleed through as 'Annual').
-            if (onMatEcs.has(ec)) return "mat";
             // Fall back to schedule hint
             const sv = attSched[ec] && attSched[ec][d];
             if (sv === "O" || sv === "R") return "off";
