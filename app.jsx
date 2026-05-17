@@ -13488,12 +13488,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           });
 
           const attStaff = [
-            ...enriched.filter(s => s.branch === attBranch && stillInCycle(s.ec)).map(s => ({ ec:s.ec, name:s.name, role:"NT" })),
-            ...managers.filter(m => m.branch === attBranch && stillInCycle(m.ec)).map(m => ({ ec:m.ec, name:m.name, role:m.role || "AM" }))
+            ...enriched.filter(s => s.branch === attBranch && stillInCycle(s.ec)).map(s => ({ ec:s.ec, name:s.name, role:"NT", onMat: !!s.onMat })),
+            ...managers.filter(m => m.branch === attBranch && stillInCycle(m.ec)).map(m => ({ ec:m.ec, name:m.name, role:m.role || "AM", onMat: !!m.onMat }))
           ].sort((a, b) => {
+            // Maternity-leave staff go to the very bottom of the grid so the
+            // active roster stays at the top. Within each group, sort by
+            // SM → AM → NT then alphabetically.
+            if (a.onMat !== b.onMat) return a.onMat ? 1 : -1;
             const order = { SM:0, AM:1, NT:2 };
             return (order[a.role] ?? 9) - (order[b.role] ?? 9) || a.name.localeCompare(b.name);
           });
+          // Lookup for the schedule/status helpers below: every day for an
+          // on-maternity staff member mirrors as 'mat' regardless of what's
+          // in the saved schedule grid (which may still have legacy 'L'
+          // codes for them).
+          const onMatEcs = new Set(attStaff.filter(s => s.onMat).map(s => s.ec));
           // For a given (ec, ymd), is this day strictly AFTER their last day?
           const isPostLeftDate = (ec, ymd) => {
             const ld = offByEc[ec];
@@ -13522,6 +13531,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // what's in the attendance or schedule grid.
             const dayObj = days.find(x => x.d === d);
             if (dayObj && isPostLeftDate(ec, dayObj.ymd)) return "term";
+
+            // Maternity staff: the entire row is maternity regardless of
+            // anything in attGrid or attSched. Legacy schedules saved
+            // 'L'/'al' for them before maternity was tracked separately —
+            // those stale values must NOT bleed through as 'Annual'.
+            // Checked before attGrid so any pre-mat overrides are ignored
+            // once the staff record is flagged onMat.
+            if (onMatEcs.has(ec)) return "mat";
 
             const v = attGrid[ec] && attGrid[ec][d];
             if (v) return v.indexOf("~") === 0 ? v.slice(1) : v;
@@ -13552,6 +13569,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           };
           const schedHint = (ec, d) => {
             if (mirrorSuppressed) return null;        // hide schedule signal after a Total Reset
+            if (onMatEcs.has(ec)) return "mat";       // maternity row — every day mirrors as 'mat'
             const sv = attSched[ec] && attSched[ec][d];
             if (!sv) return null;
             if (sv === "W" || sv === "WE" || sv === "WL") return "on";
@@ -14242,6 +14260,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // is the explicit "rebuild from schedule" action so we read the
             // schedule directly here, bypassing the suppressed schedHint.
             const rawHintFor = (ec, d) => {
+              if (onMatEcs.has(ec)) return "mat";
               const sv = attSched[ec] && attSched[ec][d];
               if (!sv) return null;
               if (sv === "W" || sv === "WE" || sv === "WL") return "on";
@@ -15144,11 +15163,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   {/* Body label only renders when it ADDS information beyond
                                       the S/F strips: real overrides, left-early -Xh, worked
                                       holidays auto-promoted to PH, future-swap placeholders.
-                                      Plain mirrored-from-schedule cells stay clean because
-                                      the green/grey S strip already shows that. */}
-                                  {v && (override || isFutureSwap || earlyHours > 0 || phAuto) && (
+                                      Mirrored maternity (ML) and annual-leave (Annual) cells
+                                      also render in cursive so the user can see at a glance
+                                      which leave type the day is, without hovering.
+                                      Plain on/off mirrored cells stay clean because the green
+                                      /grey S strip already shows that. */}
+                                  {v && (override || isFutureSwap || earlyHours > 0 || phAuto || bareV === "mat" || bareV === "al") && (
                                     <div style={{ position:"absolute", top:6, bottom: s.role === "NT" ? 6 : 0, left:0, right:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:1, fontSize:9, fontStyle: (override && !isFutureSwap) ? "normal" : "italic", fontWeight: (override && !isFutureSwap) ? 700 : 400, color: isFutureSwap ? "#9ca3af" : (override ? st.fg : (hintFg + "70")), pointerEvents:"none", letterSpacing:"0.02em" }}>
-                                      <span>{st.lbl || hintLbl || ""}</span>
+                                      <span>{!override && bareV === "mat" ? "ML" : !override && bareV === "al" ? "Annual" : (st.lbl || hintLbl || "")}</span>
                                       {/* Loan-day badge — only renders when a real status was
                                           mirrored from the receiving branch (i.e. v !== loan_out,
                                           which already shows '→ Bree' as the main label). */}
