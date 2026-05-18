@@ -2619,6 +2619,10 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     return f.year + "-" + String(f.monthIdx + 1).padStart(2, "0") + "-" + String(f.d).padStart(2, "0");
   }, [ym]);
   const techs = useMemo(() => {
+    // Regular techs at this branch. Records currently transferring OUT
+    // stay here — their post-transferDate cells are greyed at render
+    // time so the manager can still see what they're scheduled for up
+    // to the move date.
     const regularTechs = allStaff
       .filter(s => s.branch === branch && !s.isShadow)
       // Off-boarding visibility rule: a tech with a leftDate stays on the
@@ -2627,8 +2631,28 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       // onward — once their leftDate falls strictly before the period
       // start — they vanish from the schedule entirely.
       .filter(s => !s.leftDate || !_periodStartYmdForTechs || s.leftDate >= _periodStartYmdForTechs);
+    // Arriving techs — derived from any real record whose transferring
+    // flag points HERE. Derivation (rather than relying on the local
+    // shadow record handleTransfer creates) means the arriving row
+    // survives a page refresh: shadows live in React state only, but
+    // the underlying transferring/transferTo/transferDate fields are
+    // persisted on the source record so we can recompute the shadow.
+    const seenArrivingEcs = new Set();
+    const arrivingTechs = allStaff
+      .filter(s => !s.isShadow && s.transferring && s.transferTo === branch && s.transferDate)
+      .filter(s => !seenArrivingEcs.has(s.ec) && (seenArrivingEcs.add(s.ec), true))
+      .map(s => ({
+        ...s,
+        _id: "shadow-" + s.ec,
+        branch,
+        transferFrom: s.branch,
+        transferTo: branch,
+        isShadow: true,
+      }));
 
-    return regularTechs.sort((a, b) => {
+    return [...regularTechs, ...arrivingTechs].sort((a, b) => {
+      // Arriving shadows render below all real techs.
+      if (!!a.isShadow !== !!b.isShadow) return a.isShadow ? 1 : -1;
       const am = a.onMat ? 1 : 0;
       const bm = b.onMat ? 1 : 0;
       if (am !== bm) return am - bm;                       // active before on-mat
@@ -5346,10 +5370,14 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                 return (
                   <tr key={s.ec} style={{ opacity: rowOpacity }}>
                     <td style={{ position:"sticky", left:0, background:nameBg, padding:"6px 10px", borderBottom:"1px solid #FCE7F3", color:nameColor, fontWeight:600, fontSize:12 }}>
-                      <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
                         <span>{s.name}</span>
                         {onMat && <span style={{ background:"#e5e7eb", color:"#374151", padding:"1px 6px", borderRadius:4, fontSize:9, fontWeight:700, letterSpacing:"0.04em" }}>🤱 ON MAT</span>}
                         {!onMat && isLeaving && <span style={{ background:"#fee2e2", color:"#991b1b", padding:"1px 6px", borderRadius:4, fontSize:9, fontWeight:700, letterSpacing:"0.04em" }}>👋 LEFT {s.leftDate}</span>}
+                        {/* Transfer chips — surface mid-month moves so the
+                            manager sees the cross-over at a glance. */}
+                        {s.isShadow && s.transferFrom && <span style={{ background:"#dbeafe", color:"#1e40af", padding:"1px 6px", borderRadius:4, fontSize:9, fontWeight:700, letterSpacing:"0.04em" }}>🔄 FROM {s.transferFrom}{s.transferDate ? " · " + new Date(s.transferDate).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"}) : ""}</span>}
+                        {!s.isShadow && s.transferring && s.transferTo && <span style={{ background:"#fef3c7", color:"#92400e", padding:"1px 6px", borderRadius:4, fontSize:9, fontWeight:700, letterSpacing:"0.04em" }}>🔄 → {s.transferTo}{s.transferDate ? " · " + new Date(s.transferDate).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"}) : ""}</span>}
                       </div>
                       <div style={{ fontSize:10, color:"#9CA3AF", marginTop:1, letterSpacing:"0.04em" }}>{s.ec}</div>
                     </td>
@@ -5366,7 +5394,23 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                       // sync pass to stamp X.
                       const dYmd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
                       const isPastLeft = isLeaving && dYmd > s.leftDate;
-                      const cellLocked = onMat || isPastLeft;
+                      // Transfer-edge: for a mid-month branch move, cells
+                      // on the wrong side of transferDate render as locked,
+                      // greyed placeholders showing where they're moving
+                      // to (original record) or coming from (shadow).
+                      //   • original record (transferring=true) at the
+                      //     source branch → days >= transferDate are 'out'
+                      //   • shadow (isShadow=true) at the destination
+                      //     branch → days <  transferDate are 'in'
+                      const _xferDate = s.transferDate || null;
+                      const transferEdge = !_xferDate ? null
+                        : (s.isShadow && dYmd < _xferDate) ? "in"
+                        : (!s.isShadow && s.transferring && dYmd >= _xferDate) ? "out"
+                        : null;
+                      const transferOtherBranch = transferEdge === "in"  ? (s.transferFrom || "")
+                                                : transferEdge === "out" ? (s.transferTo   || "")
+                                                : null;
+                      const cellLocked = onMat || isPastLeft || !!transferEdge;
                       // Cross-store loan: if this tech has a same-day loan FROM
                       // this branch, the cell is tinted teal and shows the
                       // destination store (e.g. Betty's first-Sunday Bree/GP
@@ -5384,7 +5428,11 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                         ? { background:"#ede9fe", color:"#6b21a8" }
                         : isPastLeft
                           ? { background:"#e5e7eb", color:"#9ca3af" }
-                          : _loanCell || cellStyle(v);
+                          : transferEdge === "out"
+                            ? { background:"#fef3c7", color:"#92400e" }   // amber — moving out
+                            : transferEdge === "in"
+                              ? { background:"#dbeafe", color:"#1e40af" }   // blue — coming in
+                              : _loanCell || cellStyle(v);
                       // Drag-drop visual states
                       const isSrc        = dragSource && dragSource.ec === s.ec && dragSource.day === d.d;
                       const isValidDrop  = !cellLocked && isValidDropTarget(s.ec, d.d);
@@ -5397,9 +5445,13 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                         ? `${s.name} · on maternity leave`
                         : isPastLeft
                           ? `${s.name} · left ${s.leftDate} — no longer scheduled`
-                          : _loanCell
-                            ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · working at ${_outgoingLoan.toBranch} (cross-store)`
-                            : `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · click to cycle, drag to swap within the week${requested ? ' · 📝 day-off requested' + (requestUnapplied ? ' (not yet on grid)' : '') : ''}`;
+                          : transferEdge === "out"
+                            ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · transferring to ${transferOtherBranch} on ${_xferDate} — fill remaining days on the destination schedule`
+                            : transferEdge === "in"
+                              ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · arriving from ${transferOtherBranch} on ${_xferDate} — pre-transfer days are still on the source schedule`
+                              : _loanCell
+                                ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · working at ${_outgoingLoan.toBranch} (cross-store)`
+                                : `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · click to cycle, drag to swap within the week${requested ? ' · 📝 day-off requested' + (requestUnapplied ? ' (not yet on grid)' : '') : ''}`;
                       return (
                         <td key={s.ec+'-'+d.d}
                             draggable={!cellLocked && !!v}
@@ -5410,11 +5462,24 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                             onClick={cellLocked ? undefined : () => cycleCell(s.ec, d.d)}
                             title={cellTitle}
                             style={{ ...matCell, padding:0, height:30, textAlign:"center", borderBottom:"1px solid #FCE7F3", borderLeft:"1px solid #FCE7F3", borderRight: weekEnd ? "3px solid #BE185D" : "none", cursor: dragCursor, fontSize:11, fontWeight:700, userSelect:"none", outline: dropOutline, outlineOffset:-1, opacity: isSrc ? 0.4 : undefined, position:"relative" }}>
-                          {onMat ? "ML" : isPastLeft ? "—" : _loanCell ? (
-                            <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: "0.04em" }}>
-                              →{_outgoingLoan.toBranch === "Green Point" ? "GP" : _outgoingLoan.toBranch.slice(0, 4)}
-                            </span>
-                          ) : v}
+                          {onMat ? "ML"
+                            : isPastLeft ? "—"
+                            : transferEdge === "out" ? (
+                                <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: "0.04em" }}>
+                                  →{transferOtherBranch === "Green Point" ? "GP" : transferOtherBranch.slice(0, 4)}
+                                </span>
+                              )
+                            : transferEdge === "in" ? (
+                                <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: "0.04em" }}>
+                                  ←{transferOtherBranch === "Green Point" ? "GP" : transferOtherBranch.slice(0, 4)}
+                                </span>
+                              )
+                            : _loanCell ? (
+                                <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: "0.04em" }}>
+                                  →{_outgoingLoan.toBranch === "Green Point" ? "GP" : _outgoingLoan.toBranch.slice(0, 4)}
+                                </span>
+                              )
+                            : v}
                           {requestUnapplied && !cellLocked && (
                             <span style={{ position:"absolute", top:1, right:2, fontSize:8, lineHeight:1, color:"#BE185D", pointerEvents:"none" }}>📝</span>
                           )}
@@ -16205,22 +16270,49 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const base = off ? { ...m, leftDate: off.leftDate, offRec: off } : { ...m };
             return flag ? { ...base, _onMat: true } : base;
           });
+          // Arriving managers — derive a shadow row at the destination
+          // branch from any real manager record whose transferring flag
+          // points HERE. Derivation (rather than relying on the local
+          // shadow handleTransfer creates) means the arriving row
+          // survives a page refresh, since the transfer fields are
+          // persisted on the source record.
+          const _shadowMgrs = managers
+            .filter(m => m && !m.isShadow && m.transferring && m.transferTo === branch && m.transferDate)
+            .map(m => ({
+              ...m,
+              _id: "shadow-" + m.ec,
+              branch,
+              transferFrom: m.branch,
+              transferTo: branch,
+              isShadow: true,
+            }));
+          // Mix shadows into the working pool so mgrSched sees them at
+          // the destination branch (mgrSched filters by branch).
+          mgrsWithOff.push(..._shadowMgrs);
           // Dedupe so a manager who lives in BOTH the live managers list AND
           // the onboarding list (the trial record can survive after they
           // convert to a full employee) doesn't render twice on the schedule.
           // Order of preference: live manager record wins. As a safety net we
           // also drop any duplicate-EC entries inside the manager list itself.
-          const _seenMgrEcs = new Set();
-          const _dedupedMgrs = [];
+          // Keyed by ec+branch so a transferring manager (original at the
+          // source branch + derived shadow at the destination) survives as
+          // TWO rows — one per branch — instead of having the shadow eaten
+          // by the original's EC dedupe.
+          const _seenMgrKeys   = new Set();
+          const _seenMgrEcSet  = new Set();
+          const _dedupedMgrs   = [];
           for (const m of mgrsWithOff) {
-            const key = m && m.ec ? String(m.ec).trim() : "";
-            if (!key || _seenMgrEcs.has(key)) continue;
-            _seenMgrEcs.add(key);
+            const ec = m && m.ec ? String(m.ec).trim() : "";
+            if (!ec) continue;
+            const key = ec + "|" + (m.branch || "");
+            if (_seenMgrKeys.has(key)) continue;
+            _seenMgrKeys.add(key);
+            _seenMgrEcSet.add(ec);
             _dedupedMgrs.push(m);
           }
           const _dedupedObMgrs = obMgrs.filter(o => {
             const key = o && o.ec ? String(o.ec).trim() : "";
-            return key && !_seenMgrEcs.has(key);
+            return key && !_seenMgrEcSet.has(key);
           });
           const allMgrs = [..._dedupedMgrs, ..._dedupedObMgrs];
           const mgrLeaves = (leaveRecs || []).filter(L => allMgrs.some(m => m.ec === L.ec));
@@ -17462,15 +17554,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     )}
                     {sortedMgrs.map(mg => (
                       <tr key={mg.ec}>
-                        <td style={{ position:"sticky", left:0, background: mg._offGhost ? "#f9fafb" : (mg._onMat ? "#f5e1ed" : (mg._obStarting ? "#fefce8" : "#fff")), padding:"6px 10px", borderBottom:"1px solid #FCE7F3", borderRight:"2px solid #FBCFE8", zIndex:2, minWidth:200, opacity: mg._offGhost || mg._onMat ? 0.55 : 1 }}>
+                        <td style={{ position:"sticky", left:0, background: mg._offGhost ? "#f9fafb" : (mg._onMat ? "#f5e1ed" : (mg.isShadow ? "#eff6ff" : (mg.transferring ? "#fffbeb" : (mg._obStarting ? "#fefce8" : "#fff")))), padding:"6px 10px", borderBottom:"1px solid #FCE7F3", borderRight:"2px solid #FBCFE8", zIndex:2, minWidth:200, opacity: mg._offGhost || mg._onMat ? 0.55 : 1 }}>
                           <div style={{ fontSize:12, fontWeight:700, color: mg._offGhost ? "#9ca3af" : mg._onMat ? "#7A4258" : "#831843", textDecoration: mg._offGhost ? "line-through" : "none", fontStyle: (mg._offGhost || mg._onMat) ? "italic" : "normal" }}>{mg._onMat ? "🤱 " : ""}{mg.name}</div>
+                          {mg.isShadow && mg.transferFrom && (
+                            <div style={{ fontSize:9, color:"#1e40af", fontWeight:700, marginTop:1 }}>🔄 FROM {mg.transferFrom}{mg.transferDate ? " · " + new Date(mg.transferDate).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"}) : ""}</div>
+                          )}
+                          {!mg.isShadow && mg.transferring && mg.transferTo && (
+                            <div style={{ fontSize:9, color:"#92400e", fontWeight:700, marginTop:1 }}>🔄 → {mg.transferTo}{mg.transferDate ? " · " + new Date(mg.transferDate).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"}) : ""}</div>
+                          )}
                           {mg._offGhost
                             ? <div style={{ fontSize:9, color:"#9ca3af", fontStyle:"italic", marginTop:1 }}>Left {mg._offLeftDate}{mg._offReason ? " · " + mg._offReason : ""}</div>
                             : mg._obStarting
                               ? <div style={{ fontSize:9, color:"#854d0e", fontWeight:700, marginTop:1, fontStyle:"italic" }}>🌱 starts {mg._obStartDate}</div>
-                              : (branch === "Sandown" || branch === "Table Bay" || branch === "Riverlands" || branch === "Ballito")
-                                ? <div style={{ fontSize:9, color:"#BE185D", marginTop:1 }}>{mg.role === "SM" ? "Store Manager" : mg.role === "SSM" ? "Senior Store Manager" : "Assistant Manager"}</div>
-                                : <div style={{ fontSize:9, color:"#BE185D", marginTop:1 }}>{mg.role === "SM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · 9:30–18:30"}</div>
+                              : (mg.isShadow || mg.transferring)
+                                ? null
+                                : (branch === "Sandown" || branch === "Table Bay" || branch === "Riverlands" || branch === "Ballito")
+                                  ? <div style={{ fontSize:9, color:"#BE185D", marginTop:1 }}>{mg.role === "SM" ? "Store Manager" : mg.role === "SSM" ? "Senior Store Manager" : "Assistant Manager"}</div>
+                                  : <div style={{ fontSize:9, color:"#BE185D", marginTop:1 }}>{mg.role === "SM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · 9:30–18:30"}</div>
                           }
                         </td>
                         {result.dates.map((dy, di) => {
@@ -17479,14 +17579,31 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // blank when mgrSched didn't write a value.
                           const rawV = (result.grid[mg.ec] && result.grid[mg.ec][dy.d]) || "";
                           const v = mg._onMat ? "ML" : rawV;
-                          const bg = cellBg[v] || "#fff";
-                          const fg = cellColor[v] || "#9ca3af";
-                          const txt = cellTxt[v] || "";
+                          // Transfer-edge: same logic as the tech schedule —
+                          // cells on the wrong side of transferDate render
+                          // greyed with a '→ X' / '← Y' badge and are not
+                          // draggable. Manager fills the active range manually.
+                          const _xferDate = mg.transferDate || null;
+                          const xferEdge = !_xferDate ? null
+                            : (mg.isShadow && dy.d < _xferDate) ? "in"
+                            : (!mg.isShadow && mg.transferring && dy.d >= _xferDate) ? "out"
+                            : null;
+                          const xferOther = xferEdge === "in"  ? (mg.transferFrom || "")
+                                          : xferEdge === "out" ? (mg.transferTo   || "")
+                                          : null;
+                          const bg = xferEdge === "out" ? "#fef3c7"
+                                   : xferEdge === "in"  ? "#dbeafe"
+                                   : (cellBg[v] || "#fff");
+                          const fg = xferEdge === "out" ? "#92400e"
+                                   : xferEdge === "in"  ? "#1e40af"
+                                   : (cellColor[v] || "#9ca3af");
+                          const txt = xferEdge ? null : (cellTxt[v] || "");
                           const isMon = dy.dow === 1;
                           // WE / WM / WL (Sandown early / middle / late) are
                           // working cells just like W, so they're draggable
                           // for the same-week swap. R stays included from PR #105.
-                          const draggable = (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "O" || v === "E" || v === "R");
+                          // Transfer-locked cells aren't draggable.
+                          const draggable = !xferEdge && (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "O" || v === "E" || v === "R");
                           return (
                             <td key={dy.d}
                               draggable={draggable}
@@ -17499,10 +17616,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   if (data.ec === mg.ec && data.d !== dy.d) dragSwap(mg.ec, data.d, dy.d);
                                 } catch (_) {}
                               }}
-                              onDoubleClick={() => toggleReq(mg.ec, dy.d)}
-                              title={dy.d + ": " + (txt || "—") + (draggable ? " · drag to swap, double-click OFF→REQ→EXT" : "")}
+                              onDoubleClick={xferEdge ? undefined : () => toggleReq(mg.ec, dy.d)}
+                              title={xferEdge === "out" ? `${mg.name} · ${dy.d} · transferring to ${xferOther} on ${_xferDate} — fill remaining days on the destination schedule`
+                                : xferEdge === "in"  ? `${mg.name} · ${dy.d} · arriving from ${xferOther} on ${_xferDate} — pre-transfer days are still on the source schedule`
+                                : dy.d + ": " + (txt || "—") + (draggable ? " · drag to swap, double-click OFF→REQ→EXT" : "")}
                               style={{ padding:"4px 0", textAlign:"center", borderBottom:"1px solid #FCE7F3", borderLeft: isMon ? "3px solid #E84B9B" : "1px solid #FCE7F3", background: bg, color: fg, fontSize:10, fontWeight:700, cursor: draggable ? "grab" : "default", userSelect:"none" }}>
-                              {txt}
+                              {xferEdge === "out" ? <span style={{ fontSize:9, fontWeight:800 }}>→{xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0,4)}</span>
+                                : xferEdge === "in" ? <span style={{ fontSize:9, fontWeight:800 }}>←{xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0,4)}</span>
+                                : txt}
                             </td>
                           );
                         })}
