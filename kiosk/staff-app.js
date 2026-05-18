@@ -691,7 +691,8 @@
       window.APP_DATA.getSwaps(ym),
       window.APP_DATA.getExtras(ym),
       window.APP_DATA.getAbsences(ym),
-      window.APP_DATA.getEarlyLeaves(ym)
+      window.APP_DATA.getEarlyLeaves(ym),
+      window.APP_DATA.listTrialCandidates()
     ]);
     var cats         = loaded[0];
     var staff        = cats.active;
@@ -705,6 +706,7 @@
     var extras       = loaded[5];
     var absences     = loaded[6];
     var earlyLeaves  = loaded[7] || {};
+    var trialCand    = loaded[8] || [];
     var grid       = (sched && sched.grid) || {};
     // Day is locked once signed off — only proof-uploads (sick → sick+note,
     // absent → sick+note / FRL+proof) are allowed afterwards.
@@ -843,7 +845,12 @@
     var progEl  = document.getElementById("dly-progress");
     var badgeEl = document.getElementById("dly-status-badge");
 
-    if (scheduled.length === 0) {
+    var myBranch = cfg.branchName || "";
+    var myTrialCand = trialCand.filter(function(c) {
+      return c.branch === myBranch && c.status && c.status.indexOf("trial") === 0;
+    });
+
+    if (scheduled.length === 0 && myTrialCand.length === 0) {
       headEl.textContent  = "";
       progEl.innerHTML    = "";
       badgeEl.textContent = "";
@@ -901,6 +908,39 @@
       { code: "no",     label: "NO SHOW"       },
       { code: "frl",    label: "FRL + proof"   }
     ];
+
+    var trialHtml = "";
+    if (myTrialCand.length > 0) {
+      var today = window.APP_DATA.todayStr();
+      trialHtml = '<div class="dly-section-head" style="margin-top:20px">📍 Trial Candidates</div>' +
+        myTrialCand.map(function(c) {
+          var checkinMap = c.checkins || {};
+          var workedDays = Object.values(checkinMap).filter(function(st) { return st === "on" || st === "late"; }).length;
+          var currentStatus = checkinMap[today];
+          
+          var buttonsHtml = statusButtons.map(function(b) {
+            var isActive = currentStatus === b.code;
+            return '<button type="button" class="trial-act dly-act-' + b.code +
+                   (isActive ? ' dly-act-active' : '') +
+                   '" style="padding:6px 10px;border-radius:6px;font-size:11px;font-weight:700;border:1px solid #e5e7eb;background:' + (isActive ? '#BE185D' : '#fff') + ';color:' + (isActive ? '#fff' : '#374151') + ';cursor:pointer" ' +
+                   'data-id="' + esc(c._id) + '" data-status="' + b.code + '">' + b.label + '</button>';
+          }).join("");
+          
+          return '<div class="dly-row" style="display:flex;flex-direction:column;gap:8px;padding:10px 14px;background:#fff;border:1px solid #FBCFE8;border-radius:12px;margin-bottom:8px">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center">' +
+              '<div>' +
+                '<div style="font-weight:700;color:#BE185D;font-size:14px">' + esc(c.name || "(no name)") + '</div>' +
+                '<div style="font-size:11px;color:var(--gray-500);margin-top:2px">' +
+                  'Status: ' + esc(c.status) + ' · Worked Days: ' + workedDays + '/5' +
+                '</div>' +
+              '</div>' +
+            '</div>' +
+            '<div style="display:flex;gap:6px;flex-wrap:wrap">' +
+              buttonsHtml +
+            '</div>' +
+          '</div>';
+        }).join("");
+    }
 
     listEl.innerHTML = scheduled.map(function (r) {
       var s         = r.staff;
@@ -1077,7 +1117,7 @@
         '<div class="dly-actions">' + rowActionsHtml + '</div>' +
         rowSwapHtml +
       '</div>';
-    }).join("");
+    }).join("") + trialHtml;
 
     // Optimistic UI helpers — paint the row immediately on click so the
     // manager doesn't wait for the round-trip before seeing feedback.
@@ -1108,6 +1148,26 @@
     // For absent, prompt for a reason. After signoff the disabled buttons
     // are skipped (browser blocks the click) and the dedicated `data-convert`
     // buttons take over for the two allowed transitions.
+    Array.prototype.forEach.call(listEl.querySelectorAll(".trial-act"), function (btn) {
+      btn.onclick = async function () {
+        if (btn.disabled) return;
+        var candidateId = btn.dataset.id;
+        var status = btn.dataset.status;
+        
+        var row = btn.closest(".dly-row");
+        var acts = row.querySelectorAll(".trial-act");
+        Array.prototype.forEach.call(acts, function (el) { el.disabled = true; });
+        
+        try {
+          await window.APP_DATA.recordTrialCheckin(candidateId, status);
+          await renderDay();
+        } catch (e) {
+          alert("Could not record check-in: " + (e.message || e));
+          Array.prototype.forEach.call(acts, function (el) { el.disabled = false; });
+        }
+      };
+    });
+
     Array.prototype.forEach.call(listEl.querySelectorAll(".dly-act"), function (btn) {
       btn.onclick = async function () {
         if (btn.disabled) return;

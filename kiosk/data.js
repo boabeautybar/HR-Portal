@@ -1153,12 +1153,44 @@
     if (mgrNext.length !== mgrExisting.length) await _saveAllMgrRequests(mgrNext);
   }
 
+  async function listTrialCandidates() {
+    var c = client(); if (!c) return [];
+    var res = await c.from("app_state").select("value").eq("key", "boa_trial_period_v1").maybeSingle();
+    if (res.error) { console.error("listTrialCandidates:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+
+  async function recordTrialCheckin(candidateId, status) {
+    var c = client(); if (!c) throw new Error("Supabase not configured");
+    var res = await c.from("app_state").select("value").eq("key", "boa_trial_period_v1").maybeSingle();
+    if (res.error) throw res.error;
+    var v = res.data && res.data.value;
+    var list = Array.isArray(v) ? v : [];
+    
+    var candidate = list.find(function(item) { return String(item._id) === String(candidateId); });
+    if (!candidate) throw new Error("Candidate not found");
+    
+    var today = todayStr();
+    if (!candidate.checkins || Array.isArray(candidate.checkins)) candidate.checkins = {};
+    
+    candidate.checkins[today] = status;
+    candidate.updatedAt = new Date().toISOString();
+    
+    var up = await c.from("app_state").upsert({ key: "boa_trial_period_v1", value: list });
+    if (up.error) throw up.error;
+    
+    return candidate;
+  }
+
   window.APP_DATA = {
     isConfigured: isConfigured,
     branch: branch, branchDisplay: branchDisplay, todayStr: todayStr,
     listStaff: listStaff, listMaternity: listMaternity, listLeaveRecords: listLeaveRecords, loadOffboarding: loadOffboarding,
     listTechLoans: listTechLoans, saveTechLoan: saveTechLoan, listStaffAllBranches: listStaffAllBranches,
     listKioskReminders: listKioskReminders,
+    listTrialCandidates: listTrialCandidates,
+    recordTrialCheckin: recordTrialCheckin,
     markKioskReminderDone: markKioskReminderDone,
     markKioskReminderUndone: markKioskReminderUndone,
     categorizeStaff: categorizeStaff, addStaff: addStaff, updateStaff: updateStaff,
