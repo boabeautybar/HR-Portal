@@ -8790,6 +8790,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const filtered = useMemo(() => {
     let list = enriched.filter(s => {
       if (s.offHidden) return false;          // hide off-boarded staff after the 31-day display window
+      
+      const isTerm = s.status === "terminated" || s.active === "false" || s.active === false;
+      if (fShow === "terminated" && !isTerm) return false;
+      if (fShow !== "terminated" && isTerm) return false; // Hide from 'all', 'active', 'on_mat' views
+      
       if (fShow==="on_mat" && !s.onMat) return false;
       if (fShow==="active_only" && s.onMat) return false;
       if (fBranch!=="All" && s.branch!==fBranch) return false;
@@ -8819,6 +8824,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const q = (search || "").toLowerCase();
     const list = (enrichedManagers || []).filter(m => {
       if (!m) return false;
+      
+      const isTerm = m.status === "terminated" || m.active === "false" || m.active === false;
+      if (fShow === "terminated" && !isTerm) return false;
+      if (fShow !== "terminated" && isTerm) return false;
+      
       if (fShow==="on_mat" && !m.onMat) return false;
       if (fShow==="active_only" && m.onMat) return false;
       if (fBranch!=="All" && m.branch!==fBranch) return false;
@@ -10141,6 +10151,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <option value="all">All Staff</option>
                 <option value="active_only">Active Only (excl. maternity)</option>
                 <option value="on_mat">On Maternity Leave Only</option>
+                <option value="terminated">Terminated (Archive)</option>
               </select>
               <select value={fBranch} onChange={e=>setFBranch(e.target.value)} style={{ padding:"7px 11px", borderRadius:7, border:`1px solid ${bdr}`, fontFamily:"inherit", fontSize:13, background:cream }}>
                 <option value="All">All Branches</option>{SALONS.map(s=><option key={s.name}>{s.name}</option>)}
@@ -10223,14 +10234,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
                     {filtered.map(s => {
                       const dBack = s.matRec?.returnDate ? daysDiff(s.matRec.returnDate) : null;
+                      const terminated = s.status === "terminated" || s.active === "false" || s.active === false;
                       const departed = s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft >= 0;
-                      const rowBg = departed ? "#f3f4f6" : s.onMat ? "#fdf4ff" : s.pregnant ? "#fffbeb" : s.permit==="z_na" ? "#FAEEF1" : "#fff";
-                      const rowOpacity = departed ? 0.5 : s.onMat ? 0.6 : 1;
+                      const rowBg = terminated ? "#f3f4f6" : departed ? "#f3f4f6" : s.onMat ? "#fdf4ff" : s.pregnant ? "#fffbeb" : s.permit==="z_na" ? "#FAEEF1" : "#fff";
+                      const rowOpacity = (departed || terminated) ? 0.5 : s.onMat ? 0.6 : 1;
                       return (
                         <tr key={s._id} style={{ background:rowBg, borderTop:`1px solid ${bdr}`, opacity:rowOpacity }}>
-                          <td style={{ padding:"10px 12px", fontFamily:"monospace", fontSize:11, color:"#8E5570", fontWeight:700, textDecoration: departed ? "line-through" : "none" }}>{s.ec}</td>
-                          <td style={{ padding:"10px 12px", fontWeight:700, color: departed ? "#6b7280" : s.onMat?"#7A4258":s.transferring?"#0369a1":"#111827", whiteSpace:"nowrap", fontStyle:s.onMat?"italic":"normal", textDecoration: departed ? "line-through" : "none" }}>
-                            {departed?"👋 ":s.onMat?"🤱 ":s.pregnant?"🤰 ":s.isShadow?"🔄 Arriving · ":s.transferring&&!s.isShadow?"🔄 Transferring · ":""}{s.name}
+                          <td style={{ padding:"10px 12px", fontFamily:"monospace", fontSize:11, color:"#8E5570", fontWeight:700, textDecoration: (departed || terminated) ? "line-through" : "none" }}>{s.ec}</td>
+                          <td style={{ padding:"10px 12px", fontWeight:700, color: (departed || terminated) ? "#6b7280" : s.onMat?"#7A4258":s.transferring?"#0369a1":"#111827", whiteSpace:"nowrap", fontStyle:s.onMat?"italic":"normal", textDecoration: (departed && !terminated) ? "line-through" : "none" }}>
+                            {terminated?"🛑 Archived · ":departed?"👋 ":s.onMat?"🤱 ":s.pregnant?"🤰 ":s.isShadow?"🔄 Arriving · ":s.transferring&&!s.isShadow?"🔄 Transferring · ":""}{s.name}
                             {s.transferring&&!s.isShadow&&<span style={{ fontSize:10, marginLeft:5, background:"#FBCFE8", color:"#BE185D", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>→ {s.transferTo} on {s.transferDate?new Date(s.transferDate).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"}):""}</span>}
                             {s.isShadow&&<span style={{ fontSize:10, marginLeft:5, background:"#FBCFE8", color:"#BE185D", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>from {s.transferFrom} on {s.transferDate?new Date(s.transferDate).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"}):""}</span>}
                           </td>
@@ -14858,8 +14870,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // kiosk overwrites the grid (e.g. sick / no-show) and we don't want
                             // that to erase the Fresha appointment signal.
                             const freshaWorkedCell    = !mirrorSuppressed && !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
-                            const missingCheckin  = !checkinHasIn && freshaWorkedCell && isPastOrToday && scheduleSaysWork; // Fresha confirmed work but no check-in
                             const scheduleSaysWork    = hint === "on" || hint === "ext";
+                            const missingCheckin  = !checkinHasIn && freshaWorkedCell && isPastOrToday && scheduleSaysWork; // Fresha confirmed work but no check-in
                             const kioskAbsentScheduled = !!kioskAbs && scheduleSaysWork && !/^[^a-z]*(?:left|early)/i.test(kioskAbs.status || "");
                             // Map the kiosk audit-log status to a STAT entry. The recordAbsence
                             // wrapper writes status="absent" with the reason in the note —
