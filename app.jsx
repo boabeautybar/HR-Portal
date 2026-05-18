@@ -5297,7 +5297,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
           </div>
         )}
         <div style={{ overflowX:"auto", border:"1px solid #FBCFE8", borderRadius:10, background:"#fff" }}>
-          <table style={{ borderCollapse:"collapse", minWidth:"100%", fontSize:11 }}>
+          <table style={{ borderCollapse:"separate", borderSpacing:0, minWidth:"100%", fontSize:11 }}>
             <thead>
               <tr>
                 <th style={{ position:"sticky", left:0, background:"#FCE7F3", padding:"8px 10px", textAlign:"left", borderBottom:"1px solid #FBCFE8", color:"#831843", minWidth:180, zIndex:2 }}>Staff</th>
@@ -5345,7 +5345,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                 const nameColor  = onMat ? "#6b7280" : (isLeaving ? "#6b7280" : "#831843");
                 return (
                   <tr key={s.ec} style={{ opacity: rowOpacity }}>
-                    <td style={{ position:"sticky", left:0, background:nameBg, padding:"6px 10px", borderBottom:"1px solid #FCE7F3", color:nameColor, fontWeight:600, fontSize:12 }}>
+                    <td style={{ position:"sticky", left:0, background:nameBg, padding:"6px 10px", borderBottom:"1px solid #FCE7F3", color:nameColor, fontWeight:600, fontSize:12, zIndex:1 }}>
                       <div style={{ display:"flex", alignItems:"center", gap:6 }}>
                         <span>{s.name}</span>
                         {onMat && <span style={{ background:"#e5e7eb", color:"#374151", padding:"1px 6px", borderRadius:4, fontSize:9, fontWeight:700, letterSpacing:"0.04em" }}>🤱 ON MAT</span>}
@@ -7312,6 +7312,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   const [tab, setTab] = useState("dashboard");
 
+  const [securityLogs, setSecurityLogs] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!window.BOA_DB || !window.BOA_DB.loadKioskSecurityLogs) return;
+      try {
+        const logs = await window.BOA_DB.loadKioskSecurityLogs();
+        if (!cancelled) setSecurityLogs(logs);
+      } catch (e) { console.warn("Failed to load security logs:", e); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   // Custom-locations bootstrap. SALONS is a top-level const array which we
   // mutate in place — adding entries via .push() so every component reading
   // SALONS picks them up. _customSalonsTick is bumped after each load/add so
@@ -7422,6 +7435,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [kioskPinsLoaded, setKioskPinsLoaded] = useState(false);
   const [kioskPinReveal, setKioskPinReveal] = useState({}); // branchName -> bool
   const [kioskPinSaving, setKioskPinSaving] = useState(null); // branchName currently being saved
+  const [kioskDevices, setKioskDevices] = useState({});
 
   // Manager personal clock-in PINs (6-digit). State lives in mgrPins already
   // (loaded as part of loadAll); these are just UI-side toggles for the
@@ -7467,8 +7481,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     (async () => {
       try {
         const map = await window.BOA_DB.loadKioskPins();
-        if (!cancelled) { setKioskPins(map || {}); setKioskPinsLoaded(true); }
-      } catch (e) { console.error("loadKioskPins:", e); }
+        const devices = await window.BOA_DB.loadByKey("boa_kiosk_devices_v1") || {};
+        if (!cancelled) { 
+          setKioskPins(map || {}); 
+          setKioskPinsLoaded(true); 
+          setKioskDevices(devices);
+        }
+      } catch (e) { console.error("loadKioskPins/Devices:", e); }
     })();
     return () => { cancelled = true; };
   }, [tab]);
@@ -7787,6 +7806,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [obList, setObList] = useState([]);           // joiner records (3-month contract signers)
   const [obFilter, setObFilter] = useState("recent"); // "recent" = last 31 days, "all" = every onboarded record
   const [trialList, setTrialList] = useState([]);     // trial period candidates (pre-contract)
+  const [expandedTrialCards, setExpandedTrialCards] = useState(new Set()); // tracking expanded state for trial cards
   const [hrTasks, setHrTasks] = useState([]);         // HR Tasks (mocked for now)
   const [offList, setOffList] = useState([]);         // leaver records
   // Controlled value for the "Mark a staff member as off-boarded" StaffPicker;
@@ -8941,12 +8961,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const onUnpaidLegal = all.filter(s=>s.onUnpaidLegal);    // greyed at the bottom
     const offboarded = all.filter(s=>s.offboarded);          // greyed in UI, only those within the 31-day window
     const arriving = all.filter(s=>s.isShadow);              // pending incoming transfers — shown but not counted
+    
+    // Trial candidates assigned to this branch and not yet passed/failed
+    const trial = trialList.filter(c => c.branch === salon.name && c.status !== "passed" && c.status !== "failed");
+    
     // Use targetCapacity for low-demand stores (e.g. Betty), full capacity otherwise
     const goal = salon.targetCapacity || salon.capacity;
     const fillRate = active.length / goal;
     const urgency = active.length===0?"critical":fillRate<0.5?"high":fillRate<1?"low":"full";
-    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, urgency, goal };
-  }), [enriched]);
+    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, trial, urgency, goal };
+  }), [enriched, trialList]);
 
   const uColor = { critical:"#dc2626", high:"#f97316", low:"#eab308", full:"#16a34a" };
   const uLabel = { critical:"UNSTAFFED", high:"UNDERSTAFFED", low:"NEEDS STAFF", full:"AT CAPACITY" };
@@ -9829,6 +9853,48 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 );
               })()}
 
+              {/* ── SECTION: SECURITY ALERTS ── */}
+              {securityLogs && securityLogs.length > 0 && (
+                <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 14, padding: "16px", marginBottom: 18, boxShadow: "0 1px 4px rgba(220,38,38,0.06)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                    <span style={{ fontSize: 20 }}>🚨</span>
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 800, color: "#b91c1c", letterSpacing: "0.18em", textTransform: "uppercase", fontFamily: "'Outfit',system-ui,sans-serif" }}>Security Alerts</div>
+                      <div style={{ fontSize: 16, fontWeight: 700, color: "#7f1d1d", fontFamily: "'Outfit',system-ui,sans-serif" }}>Blocked Kiosk Attempts</div>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {securityLogs.slice(0, 5).map((log, idx) => (
+                      <div key={idx} style={{ background: "#fff", padding: "10px", borderRadius: 8, fontSize: 12, border: "1px solid #fee2e2" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
+                          <span style={{ fontWeight: 700, color: "#111827" }}>📍 {log.branch}</span>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <span style={{ color: "#6b7280", fontSize: 11 }}>{new Date(log.timestamp).toLocaleString("en-ZA")}</span>
+                            <button onClick={async () => {
+                              if (!window.confirm(`Authorize this device for ${log.branch}?`)) return;
+                              try {
+                                const res = await window.BOA_DB.sb.from("app_state").select("value").eq("key", "boa_kiosk_devices_v1").maybeSingle();
+                                const current = (res && res.data && res.data.value) || {};
+                                current[log.branch] = log.device_id;
+                                await window.BOA_DB.saveKioskDevices(current);
+                                setKioskDevices(current);
+                                alert("Device authorized! Refresh the kiosk to access.");
+                              } catch (e) { alert("Failed to authorize: " + (e.message || e)); }
+                            }} style={{ background: "#10b981", color: "#fff", border: "none", borderRadius: 6, padding: "4px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Authorize</button>
+                          </div>
+                        </div>
+                        <div style={{ color: "#4b5563", marginTop: 4, fontSize: 11 }}>
+                          <strong>Device:</strong> <span style={{ fontFamily: "monospace", background: "#f3f4f6", padding: "1px 4px", borderRadius: 4 }}>{log.device_id}</span>
+                        </div>
+                        <div style={{ color: "#4b5563", marginTop: 2, fontSize: 11 }}>
+                          <strong>IP:</strong> {log.ip} | <strong>Agent:</strong> {log.ua ? (log.ua.length > 50 ? log.ua.slice(0, 50) + "..." : log.ua) : "N/A"}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* ── SECTION: TODAY ── */}
               <div style={sectionTitle}>
                 <span>✨ Today at a glance</span>
@@ -10482,7 +10548,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         })()}
                       </div>
                       <div style={{ fontSize:9, fontWeight:800, color:uColor[salon.urgency], letterSpacing:"0.07em", marginTop:1 }}>{uLabel[salon.urgency]}</div>
-                      <div style={{ fontSize:10, color:"#9ca3af", marginTop:2 }}>Mani {salon.mani} · Pedi {salon.pedi} · Max {salon.capacity}{salon.lowDemand && <span style={{ marginLeft:6, background:"#FFFFFF", color:"#BE185D", border:"1px solid #86efac", borderRadius:20, padding:"1px 7px", fontWeight:700, fontSize:9 }}>✦ LOW DEMAND · TARGET {salon.targetCapacity}</span>}</div>
+                      <div style={{ fontSize:10, color:"#9ca3af", marginTop:2 }}>
+                        Mani {salon.mani} · Pedi {salon.pedi} · Max {salon.capacity}
+                        {salon.trial && salon.trial.length > 0 && ` · Trial ${salon.trial.length}`}
+                        {salon.lowDemand && <span style={{ marginLeft:6, background:"#FFFFFF", color:"#BE185D", border:"1px solid #86efac", borderRadius:20, padding:"1px 7px", fontWeight:700, fontSize:9 }}>✦ LOW DEMAND · TARGET {salon.targetCapacity}</span>}
+                      </div>
                     </div>
                     <div style={{ display:"flex", gap:6, alignItems:"center" }}>
                       <button onClick={()=>setStaffModal({ ec:"", name:"", branch:salon.name, contract:"Permanent", permit:"sa_citizen", level:"" })}
@@ -10550,6 +10620,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <div style={{ height:1, background:"#e5e7eb", marginBottom:8 }} />
                         </div>
                       )}
+                      
                       <div style={{ display:"flex", flexDirection:"column", gap:5, maxHeight:220, overflowY:"auto" }}>
                         {/* Active + maternity + legal-leave — editable */}
                         {[...salon.active, ...salon.onMat, ...salon.onUnpaidLegal].sort(ecSort).map(m=>(
@@ -10695,7 +10766,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       </div>
                     );
                   })()}
-                  <div style={{ marginBottom:10 }}><Meter current={salon.active.length} capacity={salon.capacity} goal={salon.goal} lowDemand={salon.lowDemand} /></div>
+                  <div style={{ marginBottom:10 }}><Meter current={salon.active.length + (salon.trial ? salon.trial.length : 0)} capacity={salon.capacity} goal={salon.goal} lowDemand={salon.lowDemand} /></div>
                   <div style={{ display:"flex", flexDirection:"column", gap:4, maxHeight:270, overflowY:"auto" }}>
                     {/* Active staff */}
                     {salon.active.map(m=>(
@@ -10786,8 +10857,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         </div>
                       );
                     })}
-                    {/* Vacant seats */}
-                    {Array.from({ length:Math.max(0, salon.capacity - salon.active.length - salon.offboarded.length) }).map((_,i)=>(
+                    {/* Trial Candidates occupying vacant seats */}
+                    {salon.trial && salon.trial.map(m => (
+                      <div key={m._id} style={{ padding:"5px 7px", borderRadius:7, background:"#FFFBEB", border:"1px dashed #FCD34D", display:"flex", alignItems:"center", gap:6 }}>
+                        <span style={{ fontSize:12 }}>⏳</span>
+                        <span style={{ flex:1, fontSize:11, fontWeight:600, color:"#111827" }}>{m.name}</span>
+                        <span style={{ fontSize:9, background:"#FCD34D", color:"#78350f", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>{m.status}</span>
+                      </div>
+                    ))}
+                    
+                    {/* Remaining Vacant seats */}
+                    {Array.from({ length:Math.max(0, salon.capacity - salon.active.length - salon.offboarded.length - (salon.trial ? salon.trial.length : 0)) }).map((_,i)=>(
                       <div key={i} style={{ padding:"5px 7px", borderRadius:7, border:"1.5px dashed #d1d5db", display:"flex", alignItems:"center", gap:6 }}>
                         <span style={{ fontSize:12, opacity:0.25 }}>👤</span>
                         <span style={{ fontSize:10, color:"#d1d5db", fontStyle:"italic" }}>Vacant seat</span>
@@ -12599,6 +12679,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const advanceStage = (id) => {
             const rec = trialList.find(r => r._id === id);
             if (!rec) return;
+            
+            // Auto-validation: check for 5 check-ins
+            const checkins = rec.checkins || {};
+            const workedDays = typeof checkins === "object" && !Array.isArray(checkins) 
+              ? Object.values(checkins).filter(st => st === "on" || st === "late").length 
+              : 0;
+            if (workedDays < 5) {
+              if (!confirm("This candidate has only completed " + workedDays + " out of 5 required days. Are you sure you want to advance them?")) {
+                return;
+              }
+            }
+
             const role = rec.role || "nt";
             const order = role === "am"
               ? ["trial_w1","pending_mid_review","trial_w2","pending_final_review","passed"]
@@ -12805,6 +12897,73 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:10 }}>
                                   <span style={{ background: isStale?"#fee2e2":stage.bg, color:isStale?"#991b1b":stage.color, fontSize:10, fontWeight:700, padding:"2px 7px", borderRadius:99 }}>{isStale?"⚠ ":""}{ds}d in stage</span>
                                 </div>
+                                <div style={{ display:"flex", gap:4, alignItems:"center", marginBottom:10 }}>
+                                  <span style={{ fontSize:11, color:"#6b7280" }}>Attendance:</span>
+                                  {(() => {
+                                    const checkins = r.checkins || {};
+                                    const workedDays = typeof checkins === "object" && !Array.isArray(checkins) 
+                                      ? Object.values(checkins).filter(st => st === "on" || st === "late").length 
+                                      : 0;
+                                    
+                                    // Week 2 stages get 10 days goal
+                                    const totalRequired = (r.status === "trial_w2" || r.status === "pending_final_review") ? 10 : 5;
+                                    
+                                    const dots = [];
+                                    for (let i = 0; i < totalRequired; i++) {
+                                      dots.push(
+                                        <div key={i} style={{ width:8, height:8, borderRadius:"50%", background: i < workedDays ? "#16a34a" : "#e5e7eb" }} />
+                                      );
+                                    }
+                                    return (
+                                      <>
+                                        <div style={{ display:"flex", gap:3, flexWrap:"wrap", maxWidth:120 }}>{dots}</div>
+                                        <span style={{ fontSize:11, color:"#6b7280", marginLeft:4 }}>{workedDays}/{totalRequired}</span>
+                                      </>
+                                    );
+                                  })()}
+                                </div>
+                                
+                                {/* Toggle Button for Expanded View */}
+                                <div style={{ marginBottom:10 }}>
+                                  <button onClick={() => {
+                                    const next = new Set(expandedTrialCards);
+                                    if (next.has(r._id)) next.delete(r._id);
+                                    else next.add(r._id);
+                                    setExpandedTrialCards(next);
+                                  }} style={{ background:"none", border:"none", cursor:"pointer", color:"#be185d", fontSize:11, fontWeight:700, padding:0 }}>
+                                    {expandedTrialCards.has(r._id) ? "Show less" : "Show more"}
+                                  </button>
+                                </div>
+
+                                {/* Expanded View: Attendance History */}
+                                {expandedTrialCards.has(r._id) && (
+                                  <div style={{ marginTop:10, borderTop:"1px solid #e5e7eb", paddingTop:10, maxHeight:150, overflowY:"auto" }}>
+                                    <div style={{ fontSize:11, fontWeight:700, color:"#111827", marginBottom:6 }}>Attendance History</div>
+                                    {Object.entries(r.checkins || {}).sort((a,b) => b[0].localeCompare(a[0])).map(([date, status]) => {
+                                      const statusLabels = {
+                                        "on": "On Time",
+                                        "late": "Late",
+                                        "sick_n": "Sick + note",
+                                        "sick": "Sick NO note",
+                                        "absent": "Absent",
+                                        "no": "No Show",
+                                        "frl": "FRL + proof"
+                                      };
+                                      const isPositive = status === "on" || status === "late";
+                                      return (
+                                        <div key={date} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:11, marginBottom:4 }}>
+                                          <span style={{ color:"#6b7280" }}>{fmtDate(date)}</span>
+                                          <span style={{ background: isPositive ? "#def7ec" : "#fde8e8", color: isPositive ? "#03543f" : "#9b1c1c", padding:"1px 6px", borderRadius:4, fontWeight:700, fontSize:10 }}>
+                                            {statusLabels[status] || status}
+                                          </span>
+                                        </div>
+                                      );
+                                    })}
+                                    {Object.keys(r.checkins || {}).length === 0 && (
+                                      <div style={{ fontSize:11, color:"#9ca3af", textAlign:"center" }}>No records found</div>
+                                    )}
+                                  </div>
+                                )}
                                 {/* Mock Eval card for review stages */}
                                 {(r.status === "pending_mid_review" || r.status === "pending_final_review") && (
                                   <div style={{ background:"#fef9f0", border:"1px solid #fbbf24", borderRadius:8, padding:"8px 10px", marginBottom:8, fontSize:11 }}>
@@ -14893,8 +15052,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       const showSection = idx === 0 || isMgr !== prevIsMgr;
                       const sectionRow = showSection ? (
                         <tr key={"section-" + (isMgr ? "mgr" : "tech")}>
-                          <td colSpan={days.length + 10} style={{ background: isMgr ? "#FCE7F3" : "#FDEEF5", padding:"8px 14px", borderTop:"2px solid #FBCFE8", borderBottom:"1px solid #FBCFE8", fontSize:11, fontWeight:800, color:"#831843", letterSpacing:"0.12em", textTransform:"uppercase" }}>
-                            {isMgr ? "👑 Managers" : "💅 Nail Techs"}
+                          <td colSpan={days.length + 10} style={{ background: isMgr ? "#FCE7F3" : "#FDEEF5", padding:0, borderTop:"2px solid #FBCFE8", borderBottom:"1px solid #FBCFE8" }}>
+                            <div style={{ position: "sticky", left: 0, padding: "8px 14px", fontSize: 11, fontWeight: 800, color: "#831843", letterSpacing: "0.12em", textTransform: "uppercase", background: isMgr ? "#FCE7F3" : "#FDEEF5", width: "max-content" }}>
+                              {isMgr ? "👑 Managers" : "💅 Nail Techs"}
+                            </div>
                           </td>
                         </tr>
                       ) : null;
@@ -15216,7 +15377,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                                     : "transparent";
                             return (
                               <td key={dy.d} style={{ padding:0, borderBottom:"1px solid #FCE7F3", borderLeft: allMatchEdge, background: allMatchBg || cellBaseBg, position:"relative" }}>
-                                <div style={{ position:"relative", height:36 }}>
+                                <div style={{ position:"relative", height:36, width:"100%" }}>
                                   <div title={cellTooltip} style={{ position:"absolute", top:0, left:0, right:0, height:6, background: schedStripeColor === "transparent" ? "#f9fafb" : schedStripeColor, borderBottom: cleanFill ? "none" : "1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
                                     {!cleanFill && <span style={{ fontSize:7, fontWeight:800, color:"rgba(0,0,0,0.45)", letterSpacing:"0.05em" }}>S</span>}
                                   </div>
@@ -15252,7 +15413,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       return (
                                         <span title={cellTooltip}
                                               onClick={openProofModal}
-                                              style={{ position:"absolute", top:6, right:1, fontSize:12, lineHeight:1, color:"#dc2626", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:3 }}>⚠</span>
+                                              style={{ position:"absolute", top:6, right:1, fontSize:12, lineHeight:1, color:"#dc2626", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:1 }}>⚠</span>
                                       );
                                     }
                                     // Cell with active warning + not yet reviewed → red ⚠
@@ -15260,14 +15421,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       return (
                                         <span title={cellTooltip}
                                               onClick={(e) => { e.stopPropagation(); markCellReviewed(s.ec, dy.d, v); }}
-                                              style={{ position:"absolute", top:6, right:1, fontSize:12, lineHeight:1, color:"#dc2626", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:3 }}>⚠</span>
+                                              style={{ position:"absolute", top:6, right:1, fontSize:12, lineHeight:1, color:"#dc2626", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:1 }}>⚠</span>
                                       );
                                     }
                                     // Reviewed cell (warning resolved OR a plain admin-entered value) → small green ✓
                                     if (reviewed && v) {
                                       return (
                                         <span title={cellTooltip} onClick={(e) => { e.stopPropagation(); markCellReviewed(s.ec, dy.d, v); }}
-                                              style={{ position:"absolute", top:6, right:1, fontSize:10, lineHeight:1, color:"#16a34a", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:3 }}>✓</span>
+                                              style={{ position:"absolute", top:6, right:1, fontSize:10, lineHeight:1, color:"#16a34a", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:1 }}>✓</span>
                                       );
                                     }
                                     return null;
@@ -15701,9 +15862,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               </div>
 
-              <div style={{ background:"#FFFFFF", borderRadius:11, border:"1px solid " + Y, marginBottom:14, overflow:"auto" }}>
+              <div style={{ background:"#FFFFFF", borderRadius:11, border:"1px solid " + Y, marginBottom:14 }}>
                 <div style={{ padding:"12px 16px", fontWeight:700, color:"#831843", fontSize:13, borderBottom:"1px solid " + Y }}>Calendar Overview</div>
-                <table style={{ borderCollapse:"collapse", fontSize:10, fontFamily:"inherit" }}>
+                <div style={{ overflow:"auto" }}>
+                  <table style={{ borderCollapse:"separate", borderSpacing:0, fontSize:10, fontFamily:"inherit" }}>
                   <thead>
                     <tr>
                       <th style={{ padding:"6px 8px", textAlign:"left", position:"sticky", left:0, background:aA, zIndex:2, minWidth:160, fontSize:9, color:"#F472B6", borderBottom:"1px solid " + Y, borderRight:"2px solid " + Y }}>{isTechMode ? "NAIL TECH" : "MANAGER"}</th>
@@ -15773,6 +15935,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </tr>
                   </tbody>
                 </table>
+                </div>
               </div>
 
               <div style={{ background:"#FFFFFF", borderRadius:11, border:"1px solid " + Y, padding:"10px 16px", fontSize:11, display:"flex", gap:14, flexWrap:"wrap", color:"#831843", marginBottom:14, alignItems:"center" }}>
@@ -17883,6 +18046,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <th style={{ textAlign:"left", padding:"10px 14px" }}>Branch</th>
                       <th style={{ textAlign:"left", padding:"10px 14px" }}>Region</th>
                       <th style={{ textAlign:"left", padding:"10px 14px" }}>PIN</th>
+                      <th style={{ textAlign:"left", padding:"10px 14px" }}>Device ID</th>
                       <th style={{ textAlign:"left", padding:"10px 14px" }}>Status</th>
                       <th style={{ textAlign:"right", padding:"10px 14px" }}>Actions</th>
                     </tr>
@@ -17894,6 +18058,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       const reveal  = !!kioskPinReveal[s.name];
                       const saving  = kioskPinSaving === s.name;
                       const r       = REGIONS.find(x => x.key === s.region);
+                      const deviceId = kioskDevices[s.name] || "";
                       return (
                         <tr key={s.name} style={{ borderTop:`1px solid ${PINK.soft}` }}>
                           <td style={{ padding:"10px 14px", fontWeight:600, color:"#111827" }}>{s.name}</td>
@@ -17902,6 +18067,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           </td>
                           <td style={{ padding:"10px 14px", fontFamily:"'Outfit',monospace", fontSize:16, fontWeight:700, color:hasPin ? "#111827" : "#9ca3af", letterSpacing:"0.18em" }}>
                             {hasPin ? (reveal ? pin : "••••") : <span style={{ fontSize:11, fontStyle:"italic", color:"#9ca3af" }}>using fallback</span>}
+                          </td>
+                          <td style={{ padding:"10px 14px", fontFamily:"monospace", fontSize:11, color:deviceId ? "#111827" : "#9ca3af" }}>
+                            {deviceId || <span style={{ fontStyle:"italic" }}>none</span>}
                           </td>
                           <td style={{ padding:"10px 14px" }}>
                             {hasPin
