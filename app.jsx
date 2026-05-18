@@ -8728,14 +8728,38 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // adds onMat / pregnant flags. Used by the Locations card, Manage panel
   // and any list that needs to grey out / exclude maternity managers.
   const enrichedManagers = useMemo(() => {
+    const today = new Date();
+    const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
     return (managers || []).map(m => {
       if (!m) return m;
       const matRec = (matRecs || []).find(r => r && r.ec && m.ec && r.ec === m.ec) || null;
       const onMat    = !!matRec && (matRec.matStatus === "on_mat" || matRec.matStatus === "dates_tbc");
       const pregnant = !!matRec && matRec.matStatus === "pregnant";
-      return { ...m, onMat: onMat || !!m.onMat, pregnant: pregnant || !!m.pregnant, matRec };
+      // Off-boarding parity with techs: join the manager record with the
+      // offList so the Locations card can show 'Left X' / 'Resigned' /
+      // 'Notice period' chips and exclude departed managers from active
+      // counts. Same 31-day visibility rule as techs.
+      const off = m.ec ? offboardedMap[m.ec.trim()] : null;
+      let offDaysSinceLeft = null;
+      let offHidden = false;
+      if (off && off.leftDate) {
+        const ld = new Date(off.leftDate + "T00:00:00");
+        offDaysSinceLeft = Math.floor((t0 - ld) / 86400000);
+        offHidden = offDaysSinceLeft > 31;
+      }
+      return {
+        ...m,
+        onMat: onMat || !!m.onMat,
+        pregnant: pregnant || !!m.pregnant,
+        matRec,
+        offboarded: !!off,
+        offRec: off || null,
+        leftDate: (off && off.leftDate) || m.leftDate || null,
+        offDaysSinceLeft,
+        offHidden,
+      };
     });
-  }, [managers, matRecs]);
+  }, [managers, matRecs, offboardedMap]);
 
   // ── Manager Planner mirror ────────────────────────────────────────────
   // The planner is a sandbox keyed off plannerMgrs. Without this effect, it
@@ -8983,23 +9007,33 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     } catch (e) { alert("Could not delete staff: " + (e.message || e)); }
   }
 
-  function handleTransfer({ staff, toBranch, transferDate, note, isPending }) {
-    setStaff(p => {
-      // Remove any existing shadow record for this person first (in case of re-edit)
+  // handleTransfer works for both nail techs and managers. The TransferModal
+  // is reused as-is; we detect which collection the record belongs to by
+  // looking up its _id and route the save through saveStaff / saveManager
+  // accordingly. Persistence was previously missing for both — now the new
+  // branch / transfer flags survive a page refresh.
+  async function handleTransfer({ staff, toBranch, transferDate, note, isPending }) {
+    const isMgr = !!(managers || []).find(m => m._id === staff._id);
+    const setList = isMgr ? setManagers : setStaff;
+    const saveFn  = isMgr ? window.BOA_DB.saveManager : window.BOA_DB.saveStaff;
+    const fields  = isPending
+      ? { transferring:true,  transferTo:toBranch, transferDate, transferNote:note }
+      : { branch:toBranch, transferring:false, transferTo:null, transferDate:null, transferNote:note };
+    const payload = { ...staff, ...fields, id: staff.id || staff._id };
+    let saved;
+    try {
+      saved = await saveFn(payload);
+    } catch (e) {
+      alert("Could not save transfer: " + (e.message || e));
+      return;
+    }
+    setList(p => {
+      // Drop any existing shadow record so re-edits don't duplicate it.
       let list = p.filter(x => !(x.isShadow && x.ec === staff.ec));
-      list = list.map(x => {
-        if (x._id !== staff._id) return x;
-        if (isPending) {
-          return { ...x, transferring:true, transferTo:toBranch, transferDate, transferNote:note };
-        } else {
-          // Immediate move — clean all transfer flags
-          return { ...x, branch:toBranch, transferring:false, transferTo:null, transferDate:null, transferNote:note };
-        }
-      });
+      list = list.map(x => x._id !== staff._id ? x : { ...x, ...saved });
       if (isPending) {
-        // Add fresh shadow on destination branch
         list = [...list, {
-          ...staff, _id:++seed,
+          ...saved, _id:++seed,
           branch:toBranch,
           transferring:true,
           transferFrom:staff.branch,
@@ -9012,7 +9046,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     });
     setTransferModal(null);
     logActivity(
-      isPending ? "Scheduled transfer" : "Transferred staff",
+      isPending ? "Scheduled transfer" : ("Transferred " + (isMgr ? "manager" : "staff")),
       (staff.name || "") + (staff.ec ? " (" + staff.ec + ")" : ""),
       (staff.branch || "—") + " → " + (toBranch || "—") +
         (transferDate ? " on " + transferDate : "") +
@@ -9020,14 +9054,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     );
   }
 
-  function cancelTransfer(staff) {
-    setStaff(p => {
-      // Remove shadow record
+  async function cancelTransfer(staff) {
+    const isMgr = !!(managers || []).find(m => m._id === staff._id);
+    const setList = isMgr ? setManagers : setStaff;
+    const saveFn  = isMgr ? window.BOA_DB.saveManager : window.BOA_DB.saveStaff;
+    const payload = { ...staff, transferring:false, transferTo:null, transferDate:null, transferNote:null, id: staff.id || staff._id };
+    let saved;
+    try {
+      saved = await saveFn(payload);
+    } catch (e) {
+      alert("Could not cancel transfer: " + (e.message || e));
+      return;
+    }
+    setList(p => {
+      // Remove shadow record + clear flags on original.
       let list = p.filter(x => !(x.isShadow && x.ec === staff.ec));
-      // Clear transfer flags on original record
-      list = list.map(x => x._id !== staff._id ? x
-        : { ...x, transferring:false, transferTo:null, transferDate:null, transferNote:null }
-      );
+      list = list.map(x => x._id !== staff._id ? x : { ...x, ...saved });
       return list;
     });
     setTransferModal(null);
@@ -10460,21 +10502,46 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       {enrichedManagers.filter(m=>m.branch===salon.name).length>0 && (
                         <div style={{ marginBottom:8 }}>
                           <div style={{ fontSize:9, fontWeight:800, color:"#BE185D", letterSpacing:"0.08em", marginBottom:5 }}>MANAGEMENT</div>
-                          {enrichedManagers.filter(m=>m.branch===salon.name).sort((a,b)=>{
+                          {enrichedManagers.filter(m=>m.branch===salon.name && !m.offHidden).sort((a,b)=>{
                             const rank = (r)=> r==="SSM"?0 : r==="SM"?1 : 2;
+                            // Off-boarded managers sink to the bottom inside their tier so the active roster stays at the top.
+                            if ((!!a.offboarded) !== (!!b.offboarded)) return a.offboarded ? 1 : -1;
                             return rank(a.role) - rank(b.role);
                           }).map(m=>{
                             const _icon = m.role==="SSM"?"💎":m.role==="SM"?"👑":"⭐";
                             const _bg   = m.role==="SSM"?"#92400e":m.role==="SM"?"#7c3aed":"#0369a1";
                             return (
-                            <div key={m._id} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 10px", borderRadius:8, background: m.onMat ? "#f3f4f6" : "#F9A8D4", border:"1px solid #FBCFE8", marginBottom:4, opacity: m.onMat ? 0.55 : 1 }}>
-                              <span style={{ fontSize:11 }}>{m.onMat ? "🤱" : _icon}</span>
-                              <span style={{ flex:1, fontSize:12, fontWeight:600, color: m.onMat ? "#7A4258" : "#831843", fontStyle: m.onMat ? "italic" : "normal" }}>{m.name}</span>
-                              <span style={{ fontSize:9, background:_bg, color:"#fff", borderRadius:4, padding:"1px 6px", fontWeight:700, opacity: m.onMat ? 0.7 : 1 }}>{m.role}</span>
-                              {m.onMat&&<span style={{ fontSize:9, background:"#FBCFE8", color:"#8E5570", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>🤱 mat.</span>}
-                              {m.pregnant&&!m.onMat&&<span style={{ fontSize:9, background:"#FCE7F3", color:"#8E5570", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>🤰 pregnant</span>}
-                              <button onClick={()=>{ setMgrModal(m); setManagePanel(null); }}
-                                style={{ background:"#e2e8f0", border:"none", borderRadius:6, padding:"4px 10px", cursor:"pointer", fontSize:11, fontWeight:700, color:"#831843" }}>✏️ Edit</button>
+                            <div key={m._id} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 10px", borderRadius:8, background: m.offboarded ? "#f9fafb" : m.onMat ? "#f3f4f6" : m.transferring ? "#eff6ff" : "#F9A8D4", border: m.offboarded ? "1px dashed #d1d5db" : (m.transferring ? "1.5px solid #bfdbfe" : "1px solid #FBCFE8"), marginBottom:4, opacity: m.offboarded ? 0.65 : (m.onMat ? 0.55 : 1) }}>
+                              <span style={{ fontSize:11 }}>{m.offboarded ? "👋" : m.onMat ? "🤱" : m.transferring ? "🔄" : _icon}</span>
+                              <span style={{ flex:1, fontSize:12, fontWeight:600, color: m.offboarded ? "#6b7280" : m.onMat ? "#7A4258" : m.transferring ? "#1d4ed8" : "#831843", fontStyle: m.onMat ? "italic" : "normal", textDecoration: m.offboarded ? "line-through" : "none" }}>
+                                {m.name}
+                                {m.transferring && !m.offboarded && <span style={{ fontSize:9, marginLeft:5, color:"#BE185D", fontWeight:600 }}>→ {m.transferTo}{m.transferDate ? " · " + new Date(m.transferDate).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"}) : ""}</span>}
+                              </span>
+                              <span style={{ fontSize:9, background:_bg, color:"#fff", borderRadius:4, padding:"1px 6px", fontWeight:700, opacity: m.offboarded ? 0.5 : m.onMat ? 0.7 : 1 }}>{m.role}</span>
+                              {m.offboarded && (() => {
+                                const r = (m.offRec && m.offRec.reason) || "Off-boarded";
+                                const pillBg = r === "Terminated" ? "#fee2e2" : r === "Resigned" ? "#dbeafe" : "#fef3c7";
+                                const pillFg = r === "Terminated" ? "#991b1b" : r === "Resigned" ? "#1e3a8a" : "#92400e";
+                                return <span style={{ fontSize:9, fontWeight:800, padding:"1px 6px", borderRadius:99, background: pillBg, color: pillFg, letterSpacing:"0.04em" }} title={(m.offRec && m.offRec.notes) || ""}>{r.toUpperCase()}</span>;
+                              })()}
+                              {m.offboarded && m.offRec && m.offRec.leftDate && (() => {
+                                const ld = new Date(m.offRec.leftDate + "T00:00:00");
+                                const today = new Date(); const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+                                const isFuture = ld >= t0;
+                                return <span style={{ fontSize:9, color:"#9ca3af" }}>{isFuture ? "notice until " : "left "}{ld.toLocaleDateString("en-ZA",{day:"2-digit",month:"short"})}</span>;
+                              })()}
+                              {m.onMat&&!m.offboarded&&<span style={{ fontSize:9, background:"#FBCFE8", color:"#8E5570", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>🤱 mat.</span>}
+                              {m.pregnant&&!m.onMat&&!m.offboarded&&<span style={{ fontSize:9, background:"#FCE7F3", color:"#8E5570", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>🤰 pregnant</span>}
+                              {!m.offboarded && (
+                                <button onClick={()=>{ setMgrModal(m); setManagePanel(null); }}
+                                  style={{ background:"#e2e8f0", border:"none", borderRadius:6, padding:"4px 10px", cursor:"pointer", fontSize:11, fontWeight:700, color:"#831843" }}>✏️ Edit</button>
+                              )}
+                              {!m.offboarded && !m.onMat && (
+                                <button onClick={()=>{ setTransferModal(m); setManagePanel(null); }}
+                                  style={{ background: m.transferring ? "#bfdbfe" : "#e0f2fe", border:"none", borderRadius:6, padding:"4px 10px", cursor:"pointer", fontSize:11, fontWeight:700, color:"#BE185D" }}>
+                                  🔄 {m.transferring ? "Edit Transfer" : "Transfer"}
+                                </button>
+                              )}
                             </div>
                             );
                           })}
@@ -10532,12 +10599,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       Senior Store Manager (💎) → Store Manager (👑) →
                       Assistant Manager (⭐). */}
                   {(() => {
-                    const allMgrs = enrichedManagers.filter(m=>m.branch===salon.name);
-                    // Split active vs on-mat - active mgrs grouped by tier
-                    // first (SSM > SM > AM), maternity mgrs pinned at the
-                    // bottom so the working roster is what you see first.
-                    const mgrs    = allMgrs.filter(m => !m.onMat);
-                    const onMatBl = allMgrs.filter(m =>  m.onMat);
+                    const allMgrs = enrichedManagers.filter(m=>m.branch===salon.name && !m.offHidden);
+                    // Split active vs on-mat vs offboarded — active mgrs
+                    // grouped by tier first (SSM > SM > AM), then offboarded
+                    // (with reason chip) and maternity at the bottom so the
+                    // working roster is what you see first.
+                    const offBl   = allMgrs.filter(m =>  m.offboarded);
+                    const mgrs    = allMgrs.filter(m => !m.onMat && !m.offboarded);
+                    const onMatBl = allMgrs.filter(m =>  m.onMat   && !m.offboarded);
                     const ssm  = mgrs.filter(m=>m.role==="SSM");
                     const sm   = mgrs.filter(m=>m.role==="SM");
                     const am   = mgrs.filter(m=>m.role==="AM");
@@ -10575,6 +10644,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               <span style={{ fontSize:9, background:"#FBCFE8", color:"#BE185D", border:"1px solid #bae6fd", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>AM</span>
                             </div>
                           ))}
+                          {/* Off-boarded block — managers in the 31-day
+                              departure window. Stays visible so the HR team
+                              can see who's leaving / on notice, with the
+                              reason chip (Resigned / Terminated / etc.) and
+                              the last day worked. */}
+                          {offBl.length > 0 && (
+                            <div style={{ marginTop:6, paddingTop:6, borderTop:"1px dashed #FBCFE8" }}>
+                              <div style={{ fontSize:9, fontWeight:800, color:"#6b7280", letterSpacing:"0.08em", marginBottom:4 }}>👋 LEAVING · {offBl.length}</div>
+                              {offBl.map(m => {
+                                const o = m.offRec || {};
+                                const ld = o.leftDate ? new Date(o.leftDate + "T00:00:00") : null;
+                                const today = new Date(); const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+                                const isFuture = ld && ld >= t0;
+                                const reason = (o.reason || "Off-boarded");
+                                const pillBg = reason === "Terminated" ? "#fee2e2" : reason === "Resigned" ? "#dbeafe" : "#fef3c7";
+                                const pillFg = reason === "Terminated" ? "#991b1b" : reason === "Resigned" ? "#1e3a8a" : "#92400e";
+                                return (
+                                  <div key={m._id} style={{ display:"flex", alignItems:"center", gap:6, opacity:0.7 }} title={(o.notes ? o.notes + "\n" : "") + reason + " · " + (isFuture ? "last day " : "left ") + (ld ? ld.toLocaleDateString("en-ZA",{day:"2-digit",month:"short",year:"numeric"}) : "—")}>
+                                    <span style={{ fontSize:13 }}>👋</span>
+                                    <span style={{ fontSize:11, fontWeight:600, color:"#6b7280", textDecoration:"line-through", flex:1, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{m.name}</span>
+                                    <span style={{ fontSize:9, fontWeight:800, padding:"1px 6px", borderRadius:99, background: pillBg, color: pillFg, letterSpacing:"0.04em" }}>{reason.toUpperCase()}</span>
+                                    {ld && <span style={{ fontSize:9, color:"#9ca3af", whiteSpace:"nowrap" }}>{isFuture ? "notice " : "left "}{ld.toLocaleDateString("en-ZA",{day:"2-digit",month:"short"})}</span>}
+                                    <span style={{ fontSize:9, background:m.role==="SSM"?"#FEF3C7":"#FBCFE8", color:m.role==="SSM"?"#92400e":"#BE185D", border:`1px solid ${m.role==="SSM"?"#FDE68A":"#E8C9D2"}`, borderRadius:4, padding:"1px 6px", fontWeight:700, opacity:0.55 }}>{m.role || "—"}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
                           {/* On-maternity block sits at the bottom and is
                               tagged with the role badge + return date if known. */}
                           {onMatBl.length > 0 && (
@@ -11959,7 +12056,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // excluding Regional managers and active maternity leave.
               const MIN_SM = 1, MIN_AM = 2;
               const mgrVacancies = SALONS.reduce((a, sl) => {
-                const mgrs = enrichedManagers.filter(m => m.branch === sl.name && !m.onMat);
+                const mgrs = enrichedManagers.filter(m => m.branch === sl.name && !m.onMat && !m.offboarded);
                 const sms = mgrs.filter(m => m.role === "SM").length;
                 const ams = mgrs.filter(m => m.role === "AM").length;
                 return a + Math.max(0, MIN_SM - sms) + Math.max(0, MIN_AM - ams);
@@ -12117,9 +12214,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const gapBranches   = branchStats.filter(b => !b.ok).length;
           // 'Store Managers' folds SSM + SM together (both are store-tier
           // managers - SSM is just the senior bracket). AM stays separate.
-          const totalActiveSM = enrichedManagers.filter(m=>(m.role==="SM"||m.role==="SSM")&&!m.onMat&&m.branch!=="Regional").length;
-          const totalActiveAM = enrichedManagers.filter(m=>m.role==="AM"&&!m.onMat&&m.branch!=="Regional").length;
-          const totalPregnant = enrichedManagers.filter(m=>m.pregnant&&!m.onMat).length;
+          const totalActiveSM = enrichedManagers.filter(m=>(m.role==="SM"||m.role==="SSM")&&!m.onMat&&!m.offboarded&&m.branch!=="Regional").length;
+          const totalActiveAM = enrichedManagers.filter(m=>m.role==="AM"&&!m.onMat&&!m.offboarded&&m.branch!=="Regional").length;
+          const totalPregnant = enrichedManagers.filter(m=>m.pregnant&&!m.onMat&&!m.offboarded).length;
           const totalOnMat    = managers.filter(m=>m.onMat).length;
           return (
             <div>
@@ -12131,7 +12228,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { l:"Asst. Managers",      v:totalActiveAM,  i:"⭐", c:"#0369a1", bg:"#e0f2fe", note:"active in store" },
                   { l:"Pregnant (upcoming)", v:totalPregnant,  i:"🤰", c:"#92400e", bg:"#fef3c7", note:"still working" },
                   { l:"On Maternity Leave",  v:totalOnMat,     i:"🤱", c:"#7A4258", bg:"#fce7f3", note:"not counted" },
-                  { l:"Regional Managers",   v:enrichedManagers.filter(m=>m.branch==="Regional"&&!m.onMat).length, i:"🌍", c:"#475569", bg:"#f1f5f9", note:"not store-based" },
+                  { l:"Regional Managers",   v:enrichedManagers.filter(m=>m.branch==="Regional"&&!m.onMat&&!m.offboarded).length, i:"🌍", c:"#475569", bg:"#f1f5f9", note:"not store-based" },
                   { l:"Fully Covered Stores",v:SALONS.length-gapBranches, i:"✅", c:"#065f46", bg:"#d1fae5", note:`of ${SALONS.length} stores` },
                 ].map(c=>(
                   <div key={c.l} style={{ background:c.bg, borderRadius:13, padding:"12px 14px" }}>
