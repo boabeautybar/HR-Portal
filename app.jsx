@@ -371,6 +371,7 @@ function exportSchedulePdf(opts) {
     // ── Cell palette: vivid working / off / leave / etc. ──
     + 'td.c{font-weight:800;font-size:11px;letter-spacing:0.02em}'
     + 'td.c-W,.legend .c-W,.guide .c-W{background:#22c55e !important;color:#052e16 !important}'   // working — vivid green
+    + 'td.c-WE,.legend .c-WE,.guide .c-WE{background:#4ade80 !important;color:#052e16 !important}'// working early — bright green
     + 'td.c-WL,.legend .c-WL,.guide .c-WL{background:#15803d !important;color:#f0fdf4 !important}'// working late — deeper green
     + 'td.c-O,.legend .c-O,.guide .c-O{background:#fda4af !important;color:#7f1d1d !important}'  // off — soft pink
     + 'td.c-R,.legend .c-R,.guide .c-R{background:#ef4444 !important;color:#fff !important}'      // requested off — vivid red
@@ -910,7 +911,7 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
       let run = 0, rs = -1, maxRun = 0, maxRs = -1, maxRe = -1;
       for (let i = 0; i < dates.length; i++) {
         const v = grid[h.ec][dates[i].d];
-        if (v === "W") {
+        if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL") {
           if (run === 0) rs = i;
           run++;
           if (run > maxRun) { maxRun = run; maxRs = rs; maxRe = i; }
@@ -946,7 +947,7 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
           grid[h.ec][dates[ix].d]  = "O";
           let nr = 0, nm = 0;
           for (let j = 0; j < dates.length; j++) {
-            if (grid[h.ec][dates[j].d] === "W") { nr++; if (nr > nm) nm = nr; } else nr = 0;
+            { const _vv = grid[h.ec][dates[j].d]; if (_vv === "W" || _vv === "WE" || _vv === "WB" || _vv === "WM" || _vv === "WL") { nr++; if (nr > nm) nm = nr; } else nr = 0; }
           }
           grid[h.ec][dates[src].d] = oldSrc;
           grid[h.ec][dates[ix].d]  = oldTgt;
@@ -984,7 +985,7 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
     let run = 0, mx = 0;
     for (const x of dates) {
       const v = grid[ec][x.d];
-      if (v === "W" || v === "E") { run++; if (run > mx) mx = run; }
+      if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") { run++; if (run > mx) mx = run; }
       else if (v === null || v === undefined) { run++; if (run > mx) mx = run; }
       else run = 0;
     }
@@ -1057,7 +1058,7 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
       let run = 0, rs = -1, maxRun = 0, maxRs = -1, maxRe = -1;
       for (let i = 0; i < dates.length; i++) {
         const v = grid[h.ec][dates[i].d];
-        if (v === "W" || v === "E") {
+        if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") {
           if (run === 0) rs = i;
           run++;
           if (run > maxRun) { maxRun = run; maxRs = rs; maxRe = i; }
@@ -1097,7 +1098,7 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
           let nr = 0, nm = 0;
           for (let j = 0; j < dates.length; j++) {
             const v2 = grid[h.ec][dates[j].d];
-            if (v2 === "W" || v2 === "E") { nr++; if (nr > nm) nm = nr; } else nr = 0;
+            if (v2 === "W" || v2 === "WE" || v2 === "WB" || v2 === "WM" || v2 === "WL" || v2 === "E") { nr++; if (nr > nm) nm = nr; } else nr = 0;
           }
           grid[h.ec][dates[src].d] = oS;
           grid[h.ec][dates[ix].d]  = oT;
@@ -1141,7 +1142,8 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
     let w = 0, o = 0, l = 0, r = 0;
     for (const h of f) {
       const v = grid[h.ec][x.d];
-      if (v === "W")      w++;
+      // WE / WL are working states too (Sandown early/late split).
+      if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL") w++;
       else if (v === "O") o++;
       else if (v === "L") l++;
       else if (v === "R") { r++; o++; }
@@ -1185,7 +1187,8 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
     }
     let run = 0, seen7 = false;
     for (const x of dates) {
-      if (grid[h.ec][x.d] === "W") {
+      const _v = grid[h.ec][x.d];
+      if (_v === "W" || _v === "WE" || _v === "WB" || _v === "WM" || _v === "WL") {
         run++;
         if (run >= 7 && !seen7) { conflicts.push({ type:"consecutive", msg: h.name + " " + run + "+ consecutive working days", severity:"high", ec: h.ec }); seen7 = true; }
       } else { run = 0; seen7 = false; }
@@ -2649,9 +2652,10 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     return out;
   }, [techRequests, branch, days]);
 
-  const cycle = ["W","WL","O","R","L","E","X","trial",""];
+  const cycle = ["W","WE","WL","O","R","L","E","X","trial",""];
   const cellStyle = (z) => {
     if (z === "W")  return { background:"#dcfce7", color:"#14532d" };
+    if (z === "WE") return { background:"#a7f3d0", color:"#064e3b" };
     if (z === "WL") return { background:"#86efac", color:"#14532d" };
     if (z === "O")  return { background:"#fee2e2", color:"#991b1b" };
     if (z === "R")  return { background:"#fca5a5", color:"#7f1d1d" };
@@ -2966,7 +2970,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         let cu = 0, rs = -1, maxRun = 0, maxRs = -1, maxRe = -1;
         for (let i = 0; i < allDays.length; i++) {
           const v = g[ec] && g[ec][allDays[i].d];
-          if (v === "W" || v === "WL" || v === "E") {
+          if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") {
             if (cu === 0) rs = i;
             cu++;
             if (cu > maxRun) { maxRun = cu; maxRs = rs; maxRe = i; }
@@ -2984,7 +2988,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       };
       const dayWorking = (d) => ecList.reduce((n, e2) => {
         const v = g[e2] && g[e2][d.d];
-        return n + ((v === "W" || v === "WL" || v === "E") ? 1 : 0);
+        return n + ((v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") ? 1 : 0);
       }, 0);
 
       ecList.forEach(ec => {
@@ -3050,7 +3054,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
           for (let ix = maxRs; ix <= maxRe; ix++) {
             const tgt = allDays[ix];
             if (tgt.dow === 0) continue;
-            if (g[ec][tgt.d] !== "W" && g[ec][tgt.d] !== "WL") continue;
+            if (g[ec][tgt.d] !== "W" && g[ec][tgt.d] !== "WE" && g[ec][tgt.d] !== "WL") continue;
             const wIdx = dayToWk.get(tgt.d);
             if (wIdx == null) continue;
             const wk = weekChunks[wIdx];
@@ -3158,6 +3162,13 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     weeks.forEach((week, wIdx) => {
       const sundayDay = week.find(d => d.dow === 0);
       if (!sundayDay) return;
+      // Skip the Sunday rotation entirely on closed Sundays — the
+      // closedDow pre-seed has already stamped everyone O on every
+      // Sunday EXCEPT the first one (which is the cross-store loan day
+      // and must stay W for all techs). Running the rotation here
+      // would otherwise mark half the team Sun=O on the first Sunday,
+      // contradicting the loan-day rule.
+      if (_closedDow.indexOf(0) !== -1) return;
       const sundayOffGroup = sundayDateParity(sundayDay);
       sortedTechs.forEach(s => {
         if (sundayGroup[s.ec] === sundayOffGroup) {
@@ -3337,7 +3348,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
           let run = 0, viol = false;
           for (const dd of days) {
             const v = newGrid[cand.ec][dd.d];
-            if (v === "W" || v === "WL" || v === "E") {
+            if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") {
               run++;
               if (run >= 7) { viol = true; break; }
             } else run = 0;
@@ -3375,7 +3386,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     const techWkOffs = (ec, wkIdx) => {
       const wk = weekChunks[wkIdx]; if (!wk) return 0;
       const inWk = wk.reduce((n, d) => {
-        const v = newGrid[ec][d.d]; return n + ((v && v !== "W" && v !== "WL" && v !== "E") ? 1 : 0);
+        const v = newGrid[ec][d.d]; return n + ((v && v !== "W" && v !== "WE" && v !== "WB" && v !== "WM" && v !== "WL" && v !== "E") ? 1 : 0);
       }, 0);
       return inWk + _carryFor(ec, wkIdx);
     };
@@ -3385,7 +3396,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       let cnt = 0, start = null, end = null;
       for (const d of days) {
         const v = newGrid[ec][d.d];
-        if (v === "W" || v === "WL" || v === "E") {
+        if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") {
           if (cnt === 0) start = d.d;
           cnt++; end = d.d;
           if (cnt >= 7) return { start, end };
@@ -3569,7 +3580,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         let cu = 0, rs = -1, maxRun = 0, maxRs = -1, maxRe = -1;
         for (let i = 0; i < days.length; i++) {
           const v = newGrid[ec][days[i].d];
-          if (v === "W" || v === "WL" || v === "E") {
+          if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") {
             if (cu === 0) rs = i;
             cu++;
             if (cu > maxRun) { maxRun = cu; maxRs = rs; maxRe = i; }
@@ -3600,7 +3611,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
             let nr = 0, nm = 0;
             for (const dd of days) {
               const v = newGrid[ec][dd.d];
-              if (v === "W" || v === "WL" || v === "E") { nr++; if (nr > nm) nm = nr; } else nr = 0;
+              if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") { nr++; if (nr > nm) nm = nr; } else nr = 0;
             }
             newGrid[ec][days[src].d] = "O";
             newGrid[ec][days[ix].d] = "W";
@@ -3656,7 +3667,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
           let ok = true, run = 0;
           for (const d of days) {
             const v = newGrid[tech.ec][d.d];
-            if (v === "W" || v === "WL" || v === "E") { run++; if (run >= 7) { ok = false; break; } } else run = 0;
+            if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") { run++; if (run >= 7) { ok = false; break; } } else run = 0;
           }
           if (!ok) {
             newGrid[tech.ec][heavy.d] = "O"; newGrid[tech.ec][light.d] = "W";
@@ -3694,7 +3705,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         const runs = [];
         for (let i = 0; i < days.length; i++) {
           const v = newGrid[ec][days[i].d];
-          if (v === "W" || v === "WL" || v === "E") {
+          if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") {
             if (run === 0) runStart = i;
             run++;
           } else {
@@ -3718,7 +3729,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
               let ok = true, r2 = 0;
               for (const dd2 of days) {
                 const v = newGrid[ec][dd2.d];
-                if (v === "W" || v === "WL" || v === "E") { r2++; if (r2 >= 7) { ok = false; break; } } else r2 = 0;
+                if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") { r2++; if (r2 >= 7) { ok = false; break; } } else r2 = 0;
               }
               // Cross-month strict 2-cap: if newOffD lands in a partial
               // week with cross-month carry (leading or trailing) and
@@ -3741,10 +3752,16 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       if (!fixedAny) break;
     }
 
-    // PHASE 17 — Table Bay late-shift WL assignment.
-    // For each non-Sunday day at Table Bay, designate up to 3 working techs
-    // as "WL" (work late). Distributed evenly using a per-tech counter so
-    // no single tech is always on late shift.
+    // PHASE 17 — Late-shift assignment per store.
+    //   Table Bay: designate up to 3 working techs per non-Sunday as "WL"
+    //              (work late). Existing rule, unchanged.
+    //   Sandown:   split working techs 50/50 each non-Sunday between
+    //              "WE" (work early, 08:00–17:15) and "WL" (work late,
+    //              11:00–20:00). Both cells render green; the WE/WL text
+    //              labels who is on which shift. With an odd headcount,
+    //              WE gets the extra (more morning coverage).
+    // Distribution uses a per-tech `lateShiftCount` so the same techs
+    // don't always end up on the late shift.
     const lateShiftCount = {};
     if (branch === "Table Bay") {
       sortedTechs.forEach(s => { lateShiftCount[s.ec] = 0; });
@@ -3759,6 +3776,24 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         for (let i = 0; i < need; i++) {
           newGrid[workers[i].ec][dy.d] = "WL";
           lateShiftCount[workers[i].ec]++;
+        }
+      });
+    } else if (branch === "Sandown") {
+      sortedTechs.forEach(s => { lateShiftCount[s.ec] = 0; });
+      days.forEach(dy => {
+        if (dy.dow === 0) return;
+        const workers = sortedTechs.filter(s => newGrid[s.ec][dy.d] === "W");
+        // Sort so techs who've been on late shift least often go to WL
+        // first — keeps the late shift fairly rotated across the cycle.
+        workers.sort((a, b) =>
+          (lateShiftCount[a.ec] - lateShiftCount[b.ec]) ||
+          a.ec.localeCompare(b.ec)
+        );
+        const lateCount = Math.floor(workers.length / 2);
+        for (let i = 0; i < workers.length; i++) {
+          const code = i < lateCount ? "WL" : "WE";
+          newGrid[workers[i].ec][dy.d] = code;
+          if (code === "WL") lateShiftCount[workers[i].ec]++;
         }
       });
     }
@@ -3829,13 +3864,13 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       let run = 0;
       for (const dd of days) {
         const v = newGrid[ec][dd.d];
-        if (v === "W" || v === "WL" || v === "E") { run++; if (run >= 7) return true; }
+        if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") { run++; if (run >= 7) return true; }
         else run = 0;
       }
       return false;
     };
     const dayWorking = (dnum) => sortedTechs.reduce((n, s) => {
-      const v = newGrid[s.ec][dnum]; return n + ((v === "W" || v === "WL" || v === "E") ? 1 : 0);
+      const v = newGrid[s.ec][dnum]; return n + ((v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") ? 1 : 0);
     }, 0);
     unhonouredList.forEach(u => {
       // Only attempt rescue for the week-cap reason; other reasons (leave,
@@ -3852,7 +3887,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       if (!dDay) { stillUnhonoured.push(u); return; }
       // Min-coverage on the request day after R: working drops by 1.
       const reqDayMin = minWorkingFor(dDay);
-      const reqDayWorkingAfter = dayWorking(u.dayNum) - ((newGrid[ec][u.dayNum] === "W" || newGrid[ec][u.dayNum] === "WL" || newGrid[ec][u.dayNum] === "E") ? 1 : 0);
+      const reqDayWorkingAfter = dayWorking(u.dayNum) - ((newGrid[ec][u.dayNum] === "W" || newGrid[ec][u.dayNum] === "WE" || newGrid[ec][u.dayNum] === "WL" || newGrid[ec][u.dayNum] === "E") ? 1 : 0);
       if (reqDayWorkingAfter < reqDayMin) {
         u.reason = "would drop coverage on " + (u.date || u.dayNum) + " below the minimum (" + reqDayWorkingAfter + " < " + reqDayMin + ")";
         stillUnhonoured.push(u); return;
@@ -3887,6 +3922,24 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         stillUnhonoured.push(u);
       }
     });
+
+    // ── Closed-day branches: enforce the "off-days ONLY on closed DOWs" rule
+    // User rule for Betty (closedDow: [0, 1]): nail-tech off-days can ONLY
+    // fall on Sun or Mon — never Tue-Sat. The various autoFill phases above
+    // place O on other weekdays when they think a tech needs more rest or
+    // when coverage exceeds capacity. Sweep those back to W so the final
+    // schedule respects the rule, regardless of which phase placed them.
+    // Sunday cells stay untouched (the first-Sunday week intentionally
+    // leaves Sun blank → loaned out → set to W here).
+    if (_closedDow.length > 0) {
+      const _closedDowSetFinal = new Set(_closedDow);
+      for (const ec of Object.keys(newGrid)) {
+        for (const d of days) {
+          if (_closedDowSetFinal.has(d.dow)) continue;
+          if (newGrid[ec][d.d] === "O") newGrid[ec][d.d] = "W";
+        }
+      }
+    }
 
     setGrid(newGrid);
     setDirty(true);
@@ -3946,6 +3999,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     const dowAbbr   = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
     const cellInfo = {
       W:  { text:"W",   bg:"#dcfce7", fg:"#14532d" },
+      WE: { text:"WE",  bg:"#a7f3d0", fg:"#064e3b" },
       WL: { text:"WL",  bg:"#86efac", fg:"#14532d" },
       O:  { text:"OFF", bg:"#fee2e2", fg:"#991b1b" },
       R:  { text:"REQ", bg:"#fca5a5", fg:"#7f1d1d" },
@@ -3981,7 +4035,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       let w = 0;
       techs.forEach(t => {
         const v = (grid[t.ec] || {})[c.day];
-        if (v === "W" || v === "WL" || v === "E") w++;
+        if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") w++;
       });
       return { key: c.key, value: w };
     });
@@ -3989,7 +4043,8 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     Object.keys(cellInfo).forEach(k => { codeStyles[k] = { bg: cellInfo[k].bg, fg: cellInfo[k].fg }; });
     const legend = [
       { code:"W",  text:"W",   label:"Working" },
-      { code:"WL", text:"WL",  label:"Working late" },
+      { code:"WE", text:"WE",  label:"Working early shift" },
+      { code:"WL", text:"WL",  label:"Working late shift" },
       { code:"O",  text:"OFF", label:"Off" },
       { code:"R",  text:"REQ", label:"Requested off" },
       { code:"L",  text:"LV",  label:"Leave" },
@@ -4188,7 +4243,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     let w = 0, off = 0;
     days.forEach(d => {
       const v = row[d.d];
-      if (v === "W" || v === "WL" || v === "E") w++;
+      if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") w++;
       if (v === "O" || v === "R" || v === "L")  off++;
     });
     return { w, off };
@@ -4297,7 +4352,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       let streak = 0, startIdx = -1;
       for (let i = 0; i < days.length; i++) {
         const v = (grid[s.ec] || {})[days[i].d];
-        if (v === "W" || v === "WL" || v === "E") {
+        if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") {
           if (streak === 0) startIdx = i;
           streak++;
         } else {
@@ -4466,7 +4521,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       Object.keys(existingGrid).forEach(otherEc => {
         if (otherEc === ec) return;
         const v = existingGrid[otherEc] && existingGrid[otherEc][dnum];
-        if (v === "W" || v === "WL" || v === "E") n++;
+        if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") n++;
       });
       return n;
     };
@@ -4479,6 +4534,27 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       const avail = wk.filter(d => row[d.d] !== "X");
       if (avail.length === 0) return;
 
+      // Per-week off-target.
+      //  - Default branches: 2 off-days (Mon-Sun rotation).
+      //  - Closed-day branches (e.g. Betty closes Sun+Mon): the only
+      //    off-days are the pre-seeded closed-DOW cells. So the target
+      //    is exactly the count of closed-DOW days in this chunk that
+      //    were pre-seeded as O. That gives:
+      //      • 2 for a normal full week (Sun=O + Mon=O),
+      //      • 1 for the first-Sunday week (only Mon=O; Sun is left
+      //        blank because techs are loaned to Bree / Green Point),
+      //      • 0 for a leading partial that doesn't include Monday
+      //        (the labour week's Monday-off lives in the prior cycle).
+      //    User rule: Betty staff can ONLY ever be off on Sun or Mon —
+      //    deriving the target from the pre-seed stops autoFill from
+      //    adding a Tue-Sat off-day under any week shape.
+      const _closedDowForRow = Array.isArray(salonForBranch.closedDow) ? salonForBranch.closedDow.map(Number) : [];
+      const _closedDowSet = new Set(_closedDowForRow);
+      const _isClosedBranch = _closedDowSet.size > 0;
+      const offTarget = _isClosedBranch
+        ? wk.filter(d => _closedDowSet.has(d.dow) && row[d.d] === "O").length
+        : 2;
+
       // Sunday rotation — date-anchored so the alternation continues
       // correctly across cycle boundaries.
       const sundayDay = avail.find(d => d.dow === 0);
@@ -4486,7 +4562,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         row[sundayDay.d] = "O";
       }
 
-      // Apply requested off-days first, with the 2-cap
+      // Apply requested off-days first, with the per-week cap
       const reqDays = avail.filter(d => myReqs.has(d.d));
       for (const reqD of reqDays) {
         const meta = reqMeta[reqD.d] || {};
@@ -4503,19 +4579,19 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         if (cur === "O") { row[reqD.d] = "R"; continue; }
         if (cur === "R") continue;
         const off = weekOffCount(wk);
-        if (off >= 2) {
-          unhonored.push({ ec, name: tech.name, date: dt, dayNum: reqD.d, reason: "would put 3 off-days in that Mon-Sun labour week (max 2 allowed)", source: meta.source, note: meta.note });
+        if (off >= offTarget) {
+          unhonored.push({ ec, name: tech.name, date: dt, dayNum: reqD.d, reason: "would put " + (offTarget + 1) + " off-days in that Mon-Sun labour week (max " + offTarget + " allowed)", source: meta.source, note: meta.note });
           continue;
         }
         row[reqD.d] = "R";
       }
 
-      // Top up to 2 offs (full weeks only). Prefer Mon→Tue→Wed and days
-      // where the existing schedule is already at capacity (so this tech
-      // being off relieves the pressure rather than creating excess).
+      // Top up to per-week off-target (full weeks only). Prefer Mon→Tue→Wed
+      // and days where the existing schedule is already at capacity (so this
+      // tech being off relieves the pressure rather than creating excess).
       if (avail.length >= 7) {
         let safety = 0;
-        while (weekOffCount(wk) < 2 && safety++ < 10) {
+        while (weekOffCount(wk) < offTarget && safety++ < 10) {
           const candidates = avail.filter(d => !row[d.d] && d.dow !== 0);
           if (candidates.length === 0) break;
           candidates.sort((a, b) => {
@@ -4536,11 +4612,11 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       }
 
       // Fill remaining cells. If a day is already at capacity in the
-      // existing schedule, mark this tech off there (within 2-cap); else
-      // mark them as W.
+      // existing schedule, mark this tech off there (within per-week
+      // cap); else mark them as W.
       avail.forEach(d => {
         if (row[d.d]) return;
-        if (d.dow !== 0 && dayWorkingExisting(d.d) >= capacity && weekOffCount(wk) < 2) {
+        if (d.dow !== 0 && dayWorkingExisting(d.d) >= capacity && weekOffCount(wk) < offTarget) {
           row[d.d] = "O";
         } else {
           row[d.d] = "W";
@@ -4549,13 +4625,16 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     });
 
     // Max-6-consecutive: try to insert an off inside any 7+ streak,
-    // respecting the 2-cap per week. Bail when no valid insertion exists.
+    // respecting the per-week off-cap. Bail when no valid insertion exists.
+    const _closedDowForStreak = Array.isArray(salonForBranch.closedDow) ? salonForBranch.closedDow.map(Number) : [];
+    const _closedDowSetStreak  = new Set(_closedDowForStreak);
+    const _isClosedBranchStreak = _closedDowSetStreak.size > 0;
     for (let attempt = 0; attempt < 10; attempt++) {
       let run = 0, runStart = -1;
       let longestRun = 0, longestStart = -1, longestEnd = -1;
       for (let i = 0; i < days.length; i++) {
         const v = row[days[i].d];
-        if (v === "W" || v === "WL" || v === "E") {
+        if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") {
           if (run === 0) runStart = i;
           run++;
           if (run > longestRun) { longestRun = run; longestStart = runStart; longestEnd = i; }
@@ -4566,10 +4645,23 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       for (let ix = longestStart + 1; ix < longestEnd; ix++) {
         const d = days[ix];
         if (d.dow === 0) continue;
-        if (row[d.d] !== "W" && row[d.d] !== "WL") continue;
+        if (row[d.d] !== "W" && row[d.d] !== "WE" && row[d.d] !== "WL") continue;
         const wIdx = weekChunks.findIndex(wk => wk.some(x => x.d === d.d));
         if (wIdx < 0) continue;
-        if (weekOffCount(weekChunks[wIdx]) >= 2) continue;
+        // Respect the per-week off-target. Closed-day branches cap at
+        // the number of closed-DOW cells in that chunk (1 in the
+        // first-Sunday week, 2 in normal weeks, 0 in some partials);
+        // everyone else caps at 2.
+        const _wkForStreak = weekChunks[wIdx];
+        const targetForThisWeek = _isClosedBranchStreak
+          ? _wkForStreak.filter(d => _closedDowSetStreak.has(d.dow) && row[d.d] === "O").length
+          : 2;
+        if (weekOffCount(_wkForStreak) >= targetForThisWeek) continue;
+        // For closed-day branches, the insertion must land on a closed
+        // DOW (Sun/Mon for Betty) — never Tue-Sat. The cell is currently
+        // a W (we only inserted if it's W/WL), so this guard prevents
+        // adding an out-of-policy mid-week off when breaking a streak.
+        if (_isClosedBranchStreak && !_closedDowSetStreak.has(d.dow)) continue;
         row[d.d] = "O";
         inserted = true;
         break;
@@ -4816,7 +4908,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                   style={{ padding:"7px 14px", background:"#FFFFFF", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:600 }}>
                   🔍 Diagnose
                 </button>
-                <button onClick={() => setTechReqModal({ ec:(techsActive[0] && techsActive[0].ec) || "", date: (days && days[0] ? (days[0].year + "-" + String(days[0].monthIdx+1).padStart(2,"0") + "-" + String(days[0].d).padStart(2,"0")) : ""), note:"" })}
+                <button onClick={() => setTechReqModal({ ec:(techsActive[0] && techsActive[0].ec) || "", dates: [], date: (days && days[0] ? (days[0].year + "-" + String(days[0].monthIdx+1).padStart(2,"0") + "-" + String(days[0].d).padStart(2,"0")) : ""), note:"" })}
                   disabled={techsActive.length === 0}
                   style={{ padding:"7px 14px", background: techsActive.length ? "#BE185D" : "#FBCFE8", color: techsActive.length ? "#fff" : "#9F1A4F", border:"none", borderRadius:8, cursor: techsActive.length ? "pointer" : "not-allowed", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
                   + Request day off
@@ -4908,10 +5000,33 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                 />
               </label>
               <label style={{ display:"flex", flexDirection:"column", gap:4 }}>
-                <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>DATE</span>
-                <input type="date" value={techReqModal.date}
-                  onChange={(e) => setTechReqModal({ ...techReqModal, date: e.target.value })}
-                  style={{ padding:"7px 10px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13 }} />
+                <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>DATES <span style={{ fontWeight:600, color:"#9F1A4F" }}>(pick one or more)</span></span>
+                <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap" }}>
+                  <input type="date" value={techReqModal.date || ""}
+                    onChange={(e) => setTechReqModal({ ...techReqModal, date: e.target.value })}
+                    style={{ padding:"7px 10px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, flex:"1 1 160px" }} />
+                  <button type="button"
+                    onClick={() => {
+                      const dt = (techReqModal.date || "").trim();
+                      if (!dt) return;
+                      const cur = Array.isArray(techReqModal.dates) ? techReqModal.dates : [];
+                      if (cur.includes(dt)) return;
+                      setTechReqModal({ ...techReqModal, dates: [...cur, dt].sort(), date: "" });
+                    }}
+                    style={{ padding:"7px 12px", background:"#FCE7F3", color:"#BE185D", border:"1px solid #FBCFE8", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>+ Add</button>
+                </div>
+                {Array.isArray(techReqModal.dates) && techReqModal.dates.length > 0 && (
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginTop:4 }}>
+                    {techReqModal.dates.map(d => (
+                      <span key={d} style={{ display:"inline-flex", alignItems:"center", gap:4, background:"#FCE7F3", color:"#831843", border:"1px solid #FBCFE8", borderRadius:999, padding:"3px 9px", fontSize:11, fontWeight:700 }}>
+                        {new Date(d + "T00:00:00").toLocaleDateString("en-ZA", { weekday:"short", day:"2-digit", month:"short" })}
+                        <button type="button"
+                          onClick={() => setTechReqModal({ ...techReqModal, dates: techReqModal.dates.filter(x => x !== d) })}
+                          style={{ background:"transparent", border:"none", color:"#9F1A4F", cursor:"pointer", fontWeight:800, padding:0, lineHeight:1, fontSize:13 }}>×</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
               </label>
               <label style={{ display:"flex", flexDirection:"column", gap:4 }}>
                 <span style={{ fontSize:11, fontWeight:700, color:"#BE185D", letterSpacing:"0.04em" }}>NOTE (optional)</span>
@@ -4925,22 +5040,34 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
               <button onClick={() => setTechReqModal(null)}
                 style={{ padding:"8px 14px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:13 }}>Cancel</button>
               <button onClick={async () => {
-                if (!techReqModal.ec || !techReqModal.date) { alert("Pick a tech and a date."); return; }
-                if ((techRequests || []).some(r => r.ec === techReqModal.ec && r.date === techReqModal.date)) {
-                  alert("That tech already has a request on that date."); return;
+                if (!techReqModal.ec) { alert("Pick a nail tech."); return; }
+                // Combine the dates-chip list with the lone date input so a
+                // user who just typed one date and clicked Save (without
+                // pressing + Add) still gets it captured.
+                const dateList = Array.isArray(techReqModal.dates) ? techReqModal.dates.slice() : [];
+                const single = (techReqModal.date || "").trim();
+                if (single && !dateList.includes(single)) dateList.push(single);
+                if (dateList.length === 0) { alert("Pick at least one date."); return; }
+                const dupes = dateList.filter(d => (techRequests || []).some(r => r.ec === techReqModal.ec && r.date === d));
+                if (dupes.length > 0) {
+                  if (!confirm(dupes.length + " of those date(s) are already requested for this tech. Skip the duplicates and save the rest?")) return;
                 }
+                const datesToSave = dateList.filter(d => !dupes.includes(d));
+                if (datesToSave.length === 0) { setTechReqModal(null); return; }
                 const tx = techs.find(t => t.ec === techReqModal.ec);
-                const newReq = {
-                  id: "tr_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+                const stamp = new Date().toISOString();
+                const note = techReqModal.note || "";
+                const newReqs = datesToSave.map(d => ({
+                  id: "tr_" + Date.now().toString(36) + "_" + d.replace(/-/g, "") + "_" + Math.random().toString(36).slice(2, 5),
                   ec: techReqModal.ec,
                   name: (tx && tx.name) || "",
                   branch,
-                  date: techReqModal.date,
-                  note: techReqModal.note || "",
-                  addedAt: new Date().toISOString(),
+                  date: d,
+                  note,
+                  addedAt: stamp,
                   source: "portal"
-                };
-                const next = [...(techRequests || []), newReq];
+                }));
+                const next = [...(techRequests || []), ...newReqs];
                 try {
                   await window.BOA_DB.saveTechRequests(next);
                   if (onTechRequestsChange) onTechRequestsChange(next);
@@ -4981,7 +5108,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                   if (v.grid) {
                     Object.values(v.grid).forEach(row => Object.values(row || {}).forEach(cell => {
                       if (cell === "O" || cell === "R" || cell === "L") offCount++;
-                      else if (cell === "W" || cell === "WL" || cell === "E") workCount++;
+                      else if (cell === "W" || cell === "WE" || cell === "WB" || cell === "WM" || cell === "WL" || cell === "E") workCount++;
                     }));
                   }
                   return (
@@ -5151,6 +5278,24 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       ) : loading ? (
         <div style={{ padding:24, color:"#831843", fontStyle:"italic" }}>Loading schedule…</div>
       ) : (
+        <>
+        {/* Per-store shift-time info banners — display the exact start/end
+            times that the WE / WL cells correspond to. The schedule grid
+            only carries the WE/WL label; the actual hours live here. */}
+        {branch === "Sandown" && (
+          <div style={{ background:"#ecfdf5", border:"1px solid #a7f3d0", borderRadius:10, padding:"10px 14px", marginBottom:10, fontSize:12, color:"#065f46", display:"flex", flexWrap:"wrap", gap:14, alignItems:"center" }}>
+            <span style={{ fontSize:11, fontWeight:800, color:"#065f46", letterSpacing:"0.08em", textTransform:"uppercase" }}>🕐 Sandown shift times</span>
+            <span><strong>Mon–Fri</strong> · WE 08:00–17:15 · WL 11:00–20:00</span>
+            <span><strong>Saturday</strong> · WE 08:15–17:15 · WL 10:00–19:00</span>
+            <span><strong>Sunday</strong> · all shifts 09:00–18:00 (no early/late split)</span>
+          </div>
+        )}
+        {branch === "Table Bay" && (
+          <div style={{ background:"#ecfdf5", border:"1px solid #a7f3d0", borderRadius:10, padding:"10px 14px", marginBottom:10, fontSize:12, color:"#065f46", display:"flex", flexWrap:"wrap", gap:14, alignItems:"center" }}>
+            <span style={{ fontSize:11, fontWeight:800, color:"#065f46", letterSpacing:"0.08em", textTransform:"uppercase" }}>🕐 Table Bay shift times</span>
+            <span>Up to 3 nail techs per day on the late shift (WL).</span>
+          </div>
+        )}
         <div style={{ overflowX:"auto", border:"1px solid #FBCFE8", borderRadius:10, background:"#fff" }}>
           <table style={{ borderCollapse:"collapse", minWidth:"100%", fontSize:11 }}>
             <thead>
@@ -5288,7 +5433,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                 {(() => { const activeTechs = techs.filter(t => !t.onMat); return days.map(d => {
                   const working = activeTechs.filter(s => {
                     const v = (grid[s.ec] || {})[d.d];
-                    return v === "W" || v === "WL" || v === "E";
+                    return v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E";
                   }).length;
                   const needed = minWorkingFor(d, activeTechs.length);
                   const ok = working >= needed;
@@ -5313,14 +5458,15 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
             </tfoot>
           </table>
         </div>
+        </>
       )}
 
       <div style={{ display:"flex", gap:14, flexWrap:"wrap", marginTop:14, fontSize:11, color:"#831843", alignItems:"center" }}>
         <strong>Legend:</strong>
-        {["W","WL","O","R","L","ML","E","X"].map(c => (
+        {["W","WE","WL","O","R","L","ML","E","X"].map(c => (
           <span key={c} style={{ display:"inline-flex", alignItems:"center", gap:6 }}>
             <span style={{ ...(c === "ML" ? { background:"#ede9fe", color:"#6b21a8" } : cellStyle(c)), padding:"2px 7px", borderRadius:4, fontWeight:700, minWidth:22, textAlign:"center" }}>{c}</span>
-            {c==="W"?"Work":c==="WL"?"Work late":c==="O"?"Off":c==="R"?"Requested off":c==="L"?"Leave":c==="ML"?"Maternity leave":c==="E"?"Extra cover":"Pre-start"}
+            {c==="W"?"Work":c==="WE"?"Work early":c==="WL"?"Work late":c==="O"?"Off":c==="R"?"Requested off":c==="L"?"Leave":c==="ML"?"Maternity leave":c==="E"?"Extra cover":"Pre-start"}
           </span>
         ))}
         <span style={{ display:"inline-flex", alignItems:"center", gap:6, marginLeft:8 }}>
@@ -5424,7 +5570,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                     sundaysInPeriod.forEach(d => {
                       const v = row[d.d];
                       if (v === "O" || v === "R" || v === "L") sundaysOff++;
-                      else if (v === "W" || v === "WL" || v === "E") sundaysWorked++;
+                      else if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") sundaysWorked++;
                     });
                     return (
                       <tr key={s.ec} style={{ borderBottom:"1px solid #FCE7F3" }}>
@@ -7486,6 +7632,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [fBranch, setFBranch] = useState("All");
   const [fPermit, setFPermit] = useState("All");
   const [fContract, setFContract] = useState("All");
+  // Role filter. Values:
+  //   "All"   — show everyone (techs + managers).
+  //   "Tech"  — nail techs only.
+  //   "SM"    — Store Managers (treats SSM separately).
+  //   "SSM"   — Senior Store Managers.
+  //   "AM"    — Assistant Managers.
+  //   "Mgr"   — every manager tier (SM + SSM + AM).
+  const [fRole, setFRole] = useState("All");
   const [fShow, setFShow] = useState("all"); // all | on_mat | active_only
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
@@ -7631,6 +7785,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // ── Onboarding / Off-boarding state ────────────────────────────────
   const [obList, setObList] = useState([]);           // joiner records (3-month contract signers)
+  const [obFilter, setObFilter] = useState("recent"); // "recent" = last 31 days, "all" = every onboarded record
   const [trialList, setTrialList] = useState([]);     // trial period candidates (pre-contract)
   const [hrTasks, setHrTasks] = useState([]);         // HR Tasks (mocked for now)
   const [offList, setOffList] = useState([]);         // leaver records
@@ -7825,9 +7980,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const getHint = (ec, d) => {
             const sv = bSched[ec] && bSched[ec][d];
             if (!sv) return null;
-            if (sv === "W" || sv === "WL") return "on";
+            if (sv === "W" || sv === "WE" || sv === "WL") return "on";
             if (sv === "O" || sv === "R")  return "off";
             if (sv === "L") return "al";
+            if (sv === "ML") return "mat";
             if (sv === "X") return "term";
             if (sv === "E") return "ext";
             return null;
@@ -7853,13 +8009,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const cellShowsAbsent = kioskMarkedAbsent || (override && !!bareV && !isWorking && !isLate);
               const extDayRecorded  = (override && bareV === "ext") || (!!kioskAbs && kioskAbs.status === "ext");
               const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
-              const presentNoApptWarn = checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
+              // Comprehensive mismatch detection. A cell CORRESPONDS when:
+              //   (scheduled work + presence + Fresha) OR (scheduled off + no
+              //   presence + no Fresha). Anything else flags a ⚠.
+              const cellSaysPresent  = isWorking || isLate || checkinHasIn;
+              const scheduleSaysOff  = hint === "off" || hint === "al" || hint === "ph" || hint === "mat";
+              const isExtraDayCell   = bareV === "ext";
+              const presentNoApptWarn      = cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
+              const workedOnOffDay         = scheduleSaysOff && cellSaysPresent && !cellShowsAbsent && !isExtraDayCell;
+              const unaccountedScheduledDay = scheduleSaysWork && !cellSaysPresent && !cellShowsAbsent && !freshaWorkedCell && freshaCoversThisDay && !bareV;
+              const offButFreshaWorked     = scheduleSaysOff && !cellSaysPresent && freshaWorkedCell;
               const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
-              const missingCheckin    = !checkinHasIn && freshaWorkedCell;
+              const missingCheckin    = !checkinHasIn && freshaWorkedCell && scheduleSaysWork;
               const proofPending      = (bareV === "sick_n" || bareV === "frl");
               const trustedAbsence    = (bareV === "sick" || bareV === "no") && scheduleSaysWork && kioskMarkedAbsent && !freshaWorkedCell;
               const absentNeedsReview = ((bareV === "sick" || bareV === "no") && !trustedAbsence) || bareV === "absent";
-              if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending || missingCheckin || absentNeedsReview) {
+              if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending || missingCheckin || absentNeedsReview || workedOnOffDay || unaccountedScheduledDay || offButFreshaWorked) {
                 total++;
                 const rev = (bReview[s.ec] || {})[dy.d];
                 if (rev && rev.valueAtReview === (rawV || "")) reviewed++;
@@ -7993,7 +8158,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       ]);
       const techGrid = (tech && tech.grid) || {};
       const mgrGrid  = (mgr  && mgr.grid)  || {};
-      const isWorking = (v) => v === "W" || v === "WL" || v === "E";
+      const isWorking = (v) => v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E";
       let count = 0;
       const mgrsScheduled = [];
       for (const ec in techGrid) {
@@ -8572,6 +8737,53 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     });
   }, [managers, matRecs]);
 
+  // ── Manager Planner mirror ────────────────────────────────────────────
+  // The planner is a sandbox keyed off plannerMgrs. Without this effect, it
+  // got seeded once on first open and went stale: managers added via
+  // Locations / Staff list didn't show up, off-boarded or hard-deleted ones
+  // stayed, and on-maternity status didn't flow through (so they didn't
+  // grey out / weren't excluded from required-cover counts).
+  //
+  // Strategy: only run when the planner is already open (plannerMgrs !=
+  // null). Walk the live enriched list and reconcile:
+  //   • new managers added since last sync → appended to plannerMgrs,
+  //   • off-boarded managers (in offList) → dropped,
+  //   • hard-deleted managers (no longer in enrichedManagers) → dropped,
+  //   • existing entries → refreshed (name / role / onMat / pregnant /
+  //     etc.) while PRESERVING the planner's sandbox branch assignment so
+  //     pending drag-and-drop edits don't get clobbered.
+  useEffect(() => {
+    if (plannerMgrs == null) return;
+    const offEcs = new Set((offList || []).map(o => o && o.ec).filter(Boolean));
+    const liveById = new Map();
+    (enrichedManagers || []).forEach(m => {
+      if (!m || m._id == null) return;
+      if (m.ec && offEcs.has(m.ec)) return;        // skip off-boarded
+      liveById.set(m._id, m);
+    });
+    setPlannerMgrs(prev => {
+      const out = [];
+      const seen = new Set();
+      // Refresh existing planner rows, drop ones that no longer exist live.
+      (prev || []).forEach(p => {
+        if (!p || p._id == null) return;
+        const live = liveById.get(p._id);
+        if (!live) return;                          // deleted / off-boarded
+        seen.add(p._id);
+        // Preserve planner-sandbox branch (incl. __bench__) but refresh
+        // everything else from the live record.
+        out.push({ ...live, branch: p.branch });
+      });
+      // Append any newly-added managers that aren't in the planner yet.
+      liveById.forEach((live, id) => {
+        if (seen.has(id)) return;
+        out.push({ ...live });
+      });
+      return out;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enrichedManagers, offList]);
+
   // Filtered & sorted staff list — always sort by EC (B-number then T-number).
   // Departed staff (leftDate has passed) are pinned to the bottom for the 31-day
   // grace window so the active list stays clean.
@@ -8583,6 +8795,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (fBranch!=="All" && s.branch!==fBranch) return false;
       if (fPermit!=="All" && s.permit!==fPermit) return false;
       if (fContract!=="All" && s.contract!==fContract) return false;
+      // Role filter: techs are dropped from the visible list for any role
+      // value other than 'All' or 'Tech'. The manager-side filter below
+      // handles SM / SSM / AM / Mgr.
+      if (fRole !== "All" && fRole !== "Tech") return false;
       if (search && !s.name.toLowerCase().includes(search.toLowerCase()) && !s.ec.toLowerCase().includes(search.toLowerCase())) return false;
       return true;
     });
@@ -8593,7 +8809,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (ad !== bd) return ad - bd;          // active first, departed last
       return ecSort(a, b);
     });
-  }, [enriched, fShow, fBranch, fPermit, fContract, search]);
+  }, [enriched, fShow, fBranch, fPermit, fContract, fRole, search]);
 
   // Managers shown on the Staff List with the same filter set as techs.
   // Sorted SSM → SM → AM, then by name. Off-mat managers always at the top
@@ -8607,6 +8823,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (fShow==="active_only" && m.onMat) return false;
       if (fBranch!=="All" && m.branch!==fBranch) return false;
       if (fContract!=="All" && (m.contract||"")!==fContract) return false;
+      // Role filter:
+      //   'Tech'          → hide all managers
+      //   'SM' / 'SSM' / 'AM' → keep only that tier
+      //   'Mgr'           → keep every manager tier
+      //   'All'           → no filter
+      if (fRole === "Tech") return false;
+      if (fRole === "SM"  && m.role !== "SM")  return false;
+      if (fRole === "SSM" && m.role !== "SSM") return false;
+      if (fRole === "AM"  && m.role !== "AM")  return false;
       // Compliance filter is a permit field; managers may not have one — skip
       // filtering if user picked a specific permit AND the manager has none,
       // otherwise compare.
@@ -8625,22 +8850,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (rd !== 0) return rd;                                       // SSM → SM → AM
       return (a.name || "").localeCompare(b.name || "");
     });
-  }, [enrichedManagers, fShow, fBranch, fPermit, fContract, search]);
+  }, [enrichedManagers, fShow, fBranch, fPermit, fContract, fRole, search]);
 
   // Pool for the Maternity modal lookup: every active tech + every manager,
   // minus anyone who already has a maternity record (no double-up). Role
   // tag drives the chip in the picker results.
   const matPickerPool = useMemo(() => {
-    const seenEcs = new Set((matRecs || []).map(r => r && r.ec).filter(Boolean));
+    // Include EVERY portal-known person — techs and managers — without
+    // filtering against existing matRecs. The previous filter excluded
+    // anyone who already had a maternity row, which made:
+    //   • managers invisible whenever the seed import already gave them
+    //     a placeholder row (the reported 'Fatima Adams' case),
+    //   • new pregnancies on returned staff impossible to log without
+    //     deleting their old record first.
+    // The picker is now just a search index; the modal can flag any
+    // pre-existing rec inline if needed.
     const techs = (enriched || [])
       .filter(s => s && s.ec && !s.offHidden && !(s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft > 0))
-      .filter(s => !seenEcs.has(s.ec))
       .map(s => ({ ec: s.ec, name: s.name, branch: s.branch, role: "NT" }));
     const mgrs = (managers || [])
       .filter(m => m && m.ec)
-      .filter(m => !seenEcs.has(m.ec))
       .map(m => ({ ec: m.ec, name: m.name, branch: m.branch, role: m.role || "AM" }));
-    return [...mgrs, ...techs].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    const pool = [...mgrs, ...techs].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    try { console.log("[mat] picker pool size:", pool.length, "mgrs:", mgrs.length, "techs:", techs.length); } catch (_) {}
+    return pool;
   }, [enriched, managers, matRecs]);
 
   const stats = useMemo(() => {
@@ -8690,6 +8923,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const saved = await window.BOA_DB.saveStaff(f);
       setStaff(p => isEdit ? p.map(x => x._id === f._id ? saved : x) : [...p, saved]);
       setStaffModal(null);
+      // Carry the maternity-section fields from the form onto the saved
+      // record (they're not persisted on the staff row itself, but the
+      // sync helper needs them) and reconcile with matRecs.
+      await syncMatFromStaffEdit({
+        ec:        saved.ec || f.ec,
+        name:      saved.name || f.name,
+        branch:    saved.branch || f.branch,
+        matStatus: f.matStatus,
+        matStart:  f.matStart,
+        matEnd:    f.matEnd,
+        matReturn: f.matReturn,
+        matNotes:  f.matNotes
+      });
       logActivity(
         isEdit ? "Edited staff" : "Added staff",
         (saved.name || "") + (saved.ec ? " (" + saved.ec + ")" : ""),
@@ -8783,10 +9029,70 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }
   async function saveMat(f) {
     try {
+      console.log("[mat] saveMat input:", f);
       const saved = await window.BOA_DB.saveMat(f);
+      console.log("[mat] saveMat saved:", saved);
       setMatRecs(p => f._id !== undefined ? p.map(x => x._id === f._id ? saved : x) : [...p, saved]);
       setMatModal(null);
-    } catch (e) { alert("Could not save: " + (e.message || e)); }
+    } catch (e) {
+      console.error("[mat] saveMat failed:", e, "cause:", e && e.cause, "payload:", e && e._payload);
+      const detail =
+        (e && e.message) ? e.message :
+        (e && e.cause && e.cause.message) ? e.cause.message :
+        String(e);
+      alert("Could not save maternity record:\n\n" + detail + "\n\n(Full request payload is in the DevTools console.)");
+    }
+  }
+  // Sync the maternity record store with what the staff / manager edit
+  // modal just saved. The form carries matStatus + matStart + matReturn +
+  // matNotes (plus the existing ec / name / branch). Mapping rules:
+  //   - matStatus 'active'  → delete any existing mat record for this ec
+  //                            so the person stops being treated as on-mat /
+  //                            pregnant by every grid that reads matRecs.
+  //   - any other status    → upsert a mat record keyed by ec (replacing
+  //                            an existing one rather than duplicating).
+  // Best-effort: errors are surfaced but don't block the underlying
+  // staff/manager save, which has already succeeded by the time we run.
+  async function syncMatFromStaffEdit(savedPerson) {
+    if (!savedPerson || !savedPerson.ec) return;
+    const ec     = savedPerson.ec;
+    const status = (savedPerson.matStatus || "active").trim() || "active";
+    const list   = matRecs || [];
+    const existing = list.find(r => r && r.ec && r.ec.trim() === ec.trim());
+    try {
+      if (status === "active") {
+        if (existing && existing._id != null) {
+          await window.BOA_DB.deleteMat(existing._id);
+          setMatRecs(p => p.filter(x => x._id !== existing._id));
+        }
+        return;
+      }
+      const rec = {
+        // saveMat() in data.js dispatches on `m.id` to decide update-vs-
+        // insert. The matRec store carries both `_id` and `id` (rowToMat
+        // populates both), so pass both — earlier versions of this helper
+        // only set `_id`, which caused the sync to INSERT a duplicate row
+        // instead of updating the existing maternity record.
+        _id:        existing ? existing._id : undefined,
+        id:         existing ? (existing.id != null ? existing.id : existing._id) : undefined,
+        ec,
+        name:       savedPerson.name   || (existing && existing.name)   || "",
+        branch:     savedPerson.branch || (existing && existing.branch) || "",
+        matStatus:  status,
+        matStart:   savedPerson.matStart  || (existing && existing.matStart)  || null,
+        matEnd:     savedPerson.matEnd    || (existing && existing.matEnd)    || null,
+        returnDate: savedPerson.matReturn || (existing && existing.returnDate) || null,
+        notes:      savedPerson.matNotes  || (existing && existing.notes) || ""
+      };
+      const saved = await window.BOA_DB.saveMat(rec);
+      setMatRecs(p => existing
+        ? p.map(x => x._id === existing._id ? saved : x)
+        : [...p, saved]
+      );
+    } catch (e) {
+      console.warn("syncMatFromStaffEdit:", e);
+      alert("Saved, but the maternity record didn't update: " + ((e && e.message) || e));
+    }
   }
   async function delMat(id) {
     const rec = matRecs.find(r => r._id === id);
@@ -8813,6 +9119,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         catch (pe) { alert("Manager saved but PIN could not be saved: " + (pe.message || pe)); }
       }
       setMgrModal(null);
+      // Same maternity reconciliation as for nail techs — flipping
+      // matStatus on the manager edit modal now propagates to matRecs.
+      await syncMatFromStaffEdit({
+        ec:        saved.ec || f.ec,
+        name:      saved.name || f.name,
+        branch:    saved.branch || f.branch,
+        matStatus: f.matStatus,
+        matStart:  f.matStart,
+        matEnd:    f.matEnd,
+        matReturn: f.matReturn,
+        matNotes:  f.matNotes
+      });
       logActivity(
         isEdit ? "Edited manager" : "Added manager",
         (saved.name || "") + (saved.ec ? " (" + saved.ec + ")" : ""),
@@ -9832,6 +10150,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </select>
               <select value={fContract} onChange={e=>setFContract(e.target.value)} style={{ padding:"7px 11px", borderRadius:7, border:`1px solid ${bdr}`, fontFamily:"inherit", fontSize:13, background:cream }}>
                 <option value="All">All Contracts</option>{["Permanent","Fixed Term","NO CONTRACT","2 Weeks","Induction"].map(c=><option key={c}>{c}</option>)}
+              </select>
+              <select value={fRole} onChange={e=>setFRole(e.target.value)} style={{ padding:"7px 11px", borderRadius:7, border:`1px solid ${bdr}`, fontFamily:"inherit", fontSize:13, background:cream }} title="Filter by role">
+                <option value="All">All Roles</option>
+                <option value="Tech">💅 Nail Techs</option>
+                <option value="Mgr">👔 All Managers</option>
+                <option value="SSM">💎 Senior Store Manager</option>
+                <option value="SM">👑 Store Manager</option>
+                <option value="AM">⭐ Assistant Manager</option>
               </select>
               <span style={{ marginLeft:"auto", fontSize:11, color:"#BE185D", fontWeight:700 }}>{filteredMgrs.length + filtered.length} shown {filteredMgrs.length > 0 ? "(" + filteredMgrs.length + " mgrs · " + filtered.length + " techs)" : "(sorted by EC)"}</span>
               <button onClick={()=>setStaffModal({ ec:"", name:"", branch:"Sea Point", contract:"Permanent", permit:"sa_citizen", level:"" })}
@@ -11939,10 +12265,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
                     {managers.filter(m=>m.branch==="Regional").sort((a,b)=>a.role===b.role?0:a.role==="SM"?-1:1).map(m=>(
                       <div key={m._id} style={{ display:"flex", alignItems:"center", gap:6, background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:8, padding:"6px 12px", opacity:m.onMat?0.55:1 }}>
-                        <span style={{ fontSize:13 }}>{m.onMat?"🤱":m.pregnant?"🤰":m.role==="SM"?"👑":"⭐"}</span>
+                        <span style={{ fontSize:13 }}>{m.onMat?"🤱":m.pregnant?"🤰":isSMRole(m.role)?"👑":"⭐"}</span>
                         <span style={{ fontSize:12, fontWeight:600, color:m.onMat?"#7A4258":"#374151" }}>{m.name}</span>
                         {m.notes&&<span style={{ fontSize:10, color:"#BE185D", fontStyle:"italic" }}>— {m.notes}</span>}
-                        <span style={{ fontSize:9, background:m.role==="SM"?"#ede9fe":"#e0f2fe", color:m.role==="SM"?"#7c3aed":"#0369a1", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>{m.role}</span>
+                        <span style={{ fontSize:9, background:isSMRole(m.role)?"#ede9fe":"#e0f2fe", color:isSMRole(m.role)?"#7c3aed":"#0369a1", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>{m.role}</span>
                         {m.onMat&&<span style={{ fontSize:9, color:"#8E5570", background:"#FBCFE8", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>mat.</span>}
                         {m.pregnant&&!m.onMat&&<span style={{ fontSize:9, color:"#8E5570", background:"#FCE7F3", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>🤰</span>}
                       </div>
@@ -11957,16 +12283,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* ── MANAGER PLANNER (nested) ── */}
         {mgrSubTab==="planner" && (() => {
-          // Initialise sandbox from live managers on first open
+          // Initialise sandbox from the enriched managers list on first
+          // open — same source the rest of the portal uses, so the planner
+          // gets onMat / pregnant flags (and renders greyed maternity rows)
+          // without further glue. Off-boarded managers are filtered out so
+          // they don't ghost-occupy a slot. The mirror useEffect above keeps
+          // this list in sync after subsequent edits.
           if (!plannerMgrs) {
-            setTimeout(() => setPlannerMgrs(managers.map(m=>({...m}))), 0);
+            const _offEcs = new Set((offList || []).map(o => o && o.ec).filter(Boolean));
+            const _seed = (enrichedManagers || []).filter(m => m && (!m.ec || !_offEcs.has(m.ec))).map(m => ({ ...m }));
+            setTimeout(() => setPlannerMgrs(_seed), 0);
             return <div style={{ padding:40, textAlign:"center", color:"#9ca3af" }}>Loading planner…</div>;
           }
 
           const MIN_SM = 1, MIN_AM = 2;
 
           const branchMgrs = salon => plannerMgrs.filter(m => m.branch === salon && m.branch !== 'Regional');
-          const smCount  = salon => branchMgrs(salon).filter(m=>(m.role==="SM"||m.role==="SSM")&&!m.onMat).length;
+          // 'Store Manager' covers both SM and SSM (Senior Store Manager) —
+          // an SSM still occupies the store-manager slot, gets the crown
+          // icon, and counts toward the SM cover requirement. Without
+          // this match the SM render filter (==="SM") let an SSM count
+          // for cover but never render, so the slot showed empty.
+          const isSMRole = (r) => r === "SM" || r === "SSM";
+          const smCount  = salon => branchMgrs(salon).filter(m=>isSMRole(m.role)&&!m.onMat).length;
           const amCount  = salon => branchMgrs(salon).filter(m=>m.role==="AM"&&!m.onMat).length;
           const gapColor = salon => {
             if (smCount(salon) < MIN_SM) return "#dc2626";
@@ -12035,8 +12374,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <div key={m._id} draggable
                       onDragStart={()=>setDragMgr(m)}
                       style={{ display:"flex", alignItems:"center", gap:6, background:"#FFFFFF", border:"1px solid #FBCFE8", borderRadius:8, padding:"5px 10px", cursor:"grab", fontSize:12, fontWeight:600, color:"#831843" }}>
-                      {m.role==="SM"?"👑":"⭐"} {m.name}
-                      <span style={{ fontSize:9, background:m.role==="SM"?"#ede9fe":"#e0f2fe", color:m.role==="SM"?"#7c3aed":"#0369a1", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>{m.role}</span>
+                      {isSMRole(m.role)?"👑":"⭐"} {m.name}
+                      <span style={{ fontSize:9, background:isSMRole(m.role)?"#ede9fe":"#e0f2fe", color:isSMRole(m.role)?"#7c3aed":"#0369a1", borderRadius:4, padding:"1px 5px", fontWeight:700 }}>{m.role}</span>
                     </div>
                   ))}
                   {plannerMgrs.filter(m=>m.branch==="__bench__").length===0&&<span style={{ color:"#cbd5e1", fontSize:12, fontStyle:"italic" }}>Empty — drag a manager here to bench them</span>}
@@ -12047,8 +12386,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))", gap:12 }}>
                 {SALONS.map(salon=>{
                   const mgrs = branchMgrs(salon.name);
-                  const sms = mgrs.filter(m=>m.role==="SM");
-                  const ams = mgrs.filter(m=>m.role==="AM");
+                  // SM bucket includes SSM (Senior Store Manager); AM bucket
+                  // includes anyone who isn't an SM-tier role — that catches
+                  // legacy 'Manager', 'AAM', etc. role labels too, so a
+                  // manager with a typo'd role still surfaces somewhere.
+                  const sms = mgrs.filter(m=>isSMRole(m.role));
+                  const ams = mgrs.filter(m=>!isSMRole(m.role));
                   const missSM = Math.max(0, MIN_SM - sms.length);
                   const missAM = Math.max(0, MIN_AM - ams.length);
                   const col = gapColor(salon.name);
@@ -12069,7 +12412,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         {/* SM slots */}
                         <div style={{ marginBottom:6 }}>
                           <div style={{ fontSize:9, fontWeight:800, color:"#BE185D", marginBottom:4 }}>STORE MANAGER</div>
-                          {plannerMgrs.filter(m=>m.branch===salon.name&&m.role==="SM").map(m=>(
+                          {plannerMgrs.filter(m=>m.branch===salon.name&&isSMRole(m.role)).map(m=>(
                             <div key={m._id} draggable={!m.onMat} onDragStart={()=>!m.onMat&&setDragMgr(m)}
                               style={{ display:"flex", alignItems:"center", gap:6, background:m.onMat?"#fdf4ff":"#faf5ff", border:`1px solid ${m.onMat?"#fbcfe8":"#e9d5ff"}`, borderRadius:7, padding:"4px 8px", marginBottom:3, cursor:m.onMat?"default":"grab", fontSize:11, fontWeight:600, opacity:m.onMat?0.55:1 }}>
                               {m.onMat?"🤱":"👑"} <span style={{ flex:1, fontStyle:m.onMat?"italic":"normal", color:m.onMat?"#7A4258":"inherit" }}>{m.name}</span>
@@ -12086,7 +12429,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         {/* AM slots */}
                         <div>
                           <div style={{ fontSize:9, fontWeight:800, color:"#BE185D", marginBottom:4 }}>ASSISTANT MANAGERS ({ams.length}/{MIN_AM} min)</div>
-                          {plannerMgrs.filter(m=>m.branch===salon.name&&m.role==="AM").map(m=>(
+                          {plannerMgrs.filter(m=>m.branch===salon.name&&!isSMRole(m.role)).map(m=>(
                             <div key={m._id} draggable={!m.onMat} onDragStart={()=>!m.onMat&&setDragMgr(m)}
                               style={{ display:"flex", alignItems:"center", gap:6, background:m.onMat?"#fdf4ff":"#f0f9ff", border:`1px solid ${m.onMat?"#fbcfe8":"#bae6fd"}`, borderRadius:7, padding:"4px 8px", marginBottom:3, cursor:m.onMat?"default":"grab", fontSize:11, fontWeight:500, opacity:m.onMat?0.55:1 }}>
                               {m.onMat?"🤱":"⭐"} <span style={{ flex:1, color:m.onMat?"#7A4258":"#475569", fontStyle:m.onMat?"italic":"normal" }}>{m.name}</span>
@@ -12439,11 +12782,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
           const fmt = ymd => ymd ? new Date(ymd+"T00:00:00").toLocaleDateString("en-ZA",{day:"2-digit",month:"short",year:"numeric"}) : "";
           const daysFrom = ymd => Math.floor((t0 - new Date(ymd+"T00:00:00")) / 86400000);
-          
-          const active = obList.filter(r => r.startDate && daysFrom(r.startDate) <= 31);
-          const last30 = active.length;
+
+          const recentActive = obList.filter(r => r.startDate && daysFrom(r.startDate) <= 31);
+          const last30 = recentActive.length;
           const future = obList.filter(r => r.startDate && daysFrom(r.startDate) < 0).length;
-          
+          // Active list = what the grid below renders. Defaults to the
+          // "last 31 days" view so HR sees who they're actively chasing;
+          // flip to All to see every onboarded employee on record
+          // (including older starters that the recent filter hides — the
+          // reason Total Onboarded > 0 but the grid was empty).
+          const active = obFilter === "all" ? obList.slice() : recentActive;
+
           const grp = { "Nail Tech":[], "Manager":[], "Head Office":[], "Other":[] };
           for (const r of active) {
             if (r.branch === "Head Office")                                  grp["Head Office"].push(r);
@@ -12721,8 +13070,33 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 ))}
               </div>
 
+              {/* Filter chips: "Recent" (the chasable arrivals) vs "All"
+                  (every onboarded record). The Recent default keeps the
+                  view focused on the people HR still has open actions on;
+                  All is for browsing the full history. */}
+              <div style={{ display:"flex", gap:6, marginBottom:12, alignItems:"center" }}>
+                <span style={{ fontSize:10, fontWeight:800, color:"#831843", letterSpacing:"0.08em", textTransform:"uppercase", marginRight:4 }}>Show</span>
+                {[
+                  { v:"recent", l:"Recent (≤31 days)", n:last30 },
+                  { v:"all",    l:"All onboarded",      n:obList.length }
+                ].map(o => {
+                  const on = obFilter === o.v;
+                  return (
+                    <button key={o.v} onClick={() => setObFilter(o.v)}
+                      style={{ padding:"6px 12px", borderRadius:8, border: on ? "1px solid #BE185D" : "1px solid #FBCFE8", background: on ? "#BE185D" : "#fff", color: on ? "#fff" : "#831843", cursor:"pointer", fontSize:11, fontWeight:700, fontFamily:"inherit", display:"flex", alignItems:"center", gap:6 }}>
+                      {o.l}
+                      <span style={{ background: on ? "rgba(255,255,255,0.22)" : "#FCE7F3", color: on ? "#fff" : "#BE185D", padding:"1px 6px", borderRadius:999, fontSize:10, fontWeight:700 }}>{o.n}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
               {active.length === 0 ? (
-                <div style={{ fontSize:13, color:"#9ca3af", padding:"30px 4px", textAlign:"center", border:"1px dashed #FBCFE8", borderRadius:11 }}>No new starters in the last 31 days yet.</div>
+                <div style={{ fontSize:13, color:"#9ca3af", padding:"30px 4px", textAlign:"center", border:"1px dashed #FBCFE8", borderRadius:11 }}>
+                  {obFilter === "recent" && obList.length > 0
+                    ? "No new starters in the last 31 days — but you have " + obList.length + " older onboarded employee" + (obList.length === 1 ? "" : "s") + ". Switch to ‘All onboarded’ to see them."
+                    : "No onboarded employees yet."}
+                </div>
               ) : (
                 [
                   { t:"Nail Tech",   l:"💅 Nail Techs",        c:"#F472B6" },
@@ -13014,7 +13388,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             frl:    { lbl:"FRL + proof",     bg:"#fed7aa", fg:"#7c2d12", cat:"paid" },
             al:     { lbl:"Annual",          bg:"#bfdbfe", fg:"#1e40af", cat:"paid" },
             ph:     { lbl:"Public Holiday",  bg:"#86efac", fg:"#14532d", cat:"paid" },
-            mat:    { lbl:"Maternity",       bg:"#d6c2a8", fg:"#7c2d12", cat:"paid" },
+            mat:    { lbl:"Maternity",       bg:"#d6c2a8", fg:"#7c2d12", cat:"unpaid" },
             no:     { lbl:"NO SHOW",         bg:"#e9d5ff", fg:"#581c87", cat:"unpaid" },
             absent: { lbl:"Absent",          bg:"#fca5a5", fg:"#7f1d1d", cat:"unpaid" },
             unpaid: { lbl:"Unpaid",          bg:"#e9d5ff", fg:"#581c87", cat:"unpaid" },
@@ -13114,12 +13488,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           });
 
           const attStaff = [
-            ...enriched.filter(s => s.branch === attBranch && stillInCycle(s.ec)).map(s => ({ ec:s.ec, name:s.name, role:"NT" })),
-            ...managers.filter(m => m.branch === attBranch && stillInCycle(m.ec)).map(m => ({ ec:m.ec, name:m.name, role:m.role || "AM" }))
+            ...enriched.filter(s => s.branch === attBranch && stillInCycle(s.ec)).map(s => ({ ec:s.ec, name:s.name, role:"NT", onMat: !!s.onMat })),
+            ...managers.filter(m => m.branch === attBranch && stillInCycle(m.ec)).map(m => ({ ec:m.ec, name:m.name, role:m.role || "AM", onMat: !!m.onMat }))
           ].sort((a, b) => {
+            // Maternity-leave staff go to the very bottom of the grid so the
+            // active roster stays at the top. Within each group, sort by
+            // SM → AM → NT then alphabetically.
+            if (a.onMat !== b.onMat) return a.onMat ? 1 : -1;
             const order = { SM:0, AM:1, NT:2 };
             return (order[a.role] ?? 9) - (order[b.role] ?? 9) || a.name.localeCompare(b.name);
           });
+          // Lookup for the schedule/status helpers below: every day for an
+          // on-maternity staff member mirrors as 'mat' regardless of what's
+          // in the saved schedule grid (which may still have legacy 'L'
+          // codes for them).
+          const onMatEcs = new Set(attStaff.filter(s => s.onMat).map(s => s.ec));
           // For a given (ec, ymd), is this day strictly AFTER their last day?
           const isPostLeftDate = (ec, ymd) => {
             const ld = offByEc[ec];
@@ -13149,6 +13532,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const dayObj = days.find(x => x.d === d);
             if (dayObj && isPostLeftDate(ec, dayObj.ymd)) return "term";
 
+            // Maternity staff: the entire row is maternity regardless of
+            // anything in attGrid or attSched. Legacy schedules saved
+            // 'L'/'al' for them before maternity was tracked separately —
+            // those stale values must NOT bleed through as 'Annual'.
+            // Checked before attGrid so any pre-mat overrides are ignored
+            // once the staff record is flagged onMat.
+            if (onMatEcs.has(ec)) return "mat";
+
             const v = attGrid[ec] && attGrid[ec][d];
             if (v) return v.indexOf("~") === 0 ? v.slice(1) : v;
             // After a Total Reset the schedule mirror is suppressed so the
@@ -13158,9 +13549,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const sv = attSched[ec] && attSched[ec][d];
             if (sv === "O" || sv === "R") return "off";
             if (sv === "L") return "al";
+            if (sv === "ML") return "mat";
             if (sv === "X") return "term";
             if (sv === "E") return "ext";
-            if (sv === "W" || sv === "WL") return "on";
+            if (sv === "W" || sv === "WE" || sv === "WL") return "on";
             return "";
           };
           const hasOverride = (ec, d) => {
@@ -13177,11 +13569,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           };
           const schedHint = (ec, d) => {
             if (mirrorSuppressed) return null;        // hide schedule signal after a Total Reset
+            if (onMatEcs.has(ec)) return "mat";       // maternity row — every day mirrors as 'mat'
             const sv = attSched[ec] && attSched[ec][d];
             if (!sv) return null;
-            if (sv === "W" || sv === "WL") return "on";
+            if (sv === "W" || sv === "WE" || sv === "WL") return "on";
             if (sv === "O" || sv === "R")  return "off";
             if (sv === "L") return "al";
+            if (sv === "ML") return "mat";
             if (sv === "X") return "term";
             if (sv === "E") return "ext";
             return null;
@@ -13804,9 +14198,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // approvers) is preserved so the admin can re-import it anytime.
           // The schedule itself stays untouched.
           const totalResetCycle = async () => {
-            const step1 = "⚠ TOTAL reset for " + attBranch + " — " + cycLabel + "?\n\n"
-              + "Clears the attendance grid + reviewed marks + Fresha sidecar AND hides the schedule mirror — the grid reads as blank.\n\n"
-              + "Kept: kiosk check-ins, uploaded proofs, schedule. Re-import the kiosk anytime to repopulate.\n\n"
+            const step1 = "⚠ TOTAL RESET for " + attBranch + " — " + cycLabel + "?\n\n"
+              + "DISPLAY-ONLY reset. Clears every cell + colour on the attendance grid for this branch + cycle.\n\n"
+              + "CLEARED:\n"
+              + "  • Attendance grid cells\n"
+              + "  • Fresha import sidecar (F strips disappear)\n"
+              + "  • Reviewed-warning marks\n"
+              + "  • Schedule / kiosk / Fresha mirror overlays (suppressed until you re-import)\n\n"
+              + "KEPT (raw data, nothing destroyed):\n"
+              + "  • The saved schedule on the Scheduling tab\n"
+              + "  • Every clock-in row from the kiosk\n"
+              + "  • Manager check-in audit log + uploaded proofs\n"
+              + "  • Schedule version history and approved versions\n\n"
+              + "Re-import Check-ins or Auto-fill to repopulate the grid.\n\n"
               + "Continue?";
             if (!confirm(step1)) return;
             const step2 = window.prompt("Enter the Total Reset PIN to confirm.");
@@ -13817,7 +14221,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const nextMeta = { freshaWorked: {}, reviewedWarnings: {}, freshaCoverage: null, mirrorSuppressed: true };
             setAttGrid(nextGrid);
             setAttMeta(nextMeta);
+            // The 'left-early' sidecar (boa_early_<branch>_<ym>) paints
+            // cells orange whenever the kiosk records a short-day. Clear
+            // it locally + in storage so the colour goes too — user only
+            // wants left-early to show after a fresh Import Check-ins.
+            setAttEarly({});
             setAttCheckinSnapshot(null);
+            const _resetErrors = [];
             try {
               await window.BOA_DB.saveAttendance(attBranch, attYM, nextGrid, {
                 freshaWorked: {},
@@ -13826,8 +14236,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 mirrorSuppressed: true
               });
             } catch (e) { alert("Could not total-reset: " + (e.message || e)); return; }
-            logActivity("Total reset (cycle display)", attBranch + " · " + cycLabel, "Grid + sidecars cleared, schedule mirror suppressed, kiosk data preserved", "Bulk");
-            alert("✓ Total reset done for " + attBranch + " — " + cycLabel + ". Run Auto-fill or Import Check-ins to repopulate.");
+            if (window.BOA_DB.deleteEarlyLeaves) {
+              try { await window.BOA_DB.deleteEarlyLeaves(attBranch, attYM); }
+              catch (e) { _resetErrors.push("early-leaves: " + (e.message || e)); }
+            }
+            logActivity("Total reset (cycle display)", attBranch + " · " + cycLabel, "Grid + sidecars + left-early cleared, mirror suppressed; schedule + clockins + kiosk log preserved" + (_resetErrors.length ? " (errors: " + _resetErrors.join(", ") + ")" : ""), "Bulk");
+            if (_resetErrors.length) {
+              alert("✓ Reset done — with one small issue:\n\n" + _resetErrors.join("\n") + "\n\nGrid is cleared and your raw data (schedule, clock-ins, kiosk log) is safe.");
+            } else {
+              alert("✓ Total reset done for " + attBranch + " — " + cycLabel + ".\n\nThe grid is blank but your schedule, clock-ins and kiosk log are still safe. Run Auto-fill or Import Check-ins to repopulate.");
+            }
           };
 
           // Auto-fill empty cells from the schedule (writes "~hint" — italic, unconfirmed)
@@ -13842,11 +14260,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // is the explicit "rebuild from schedule" action so we read the
             // schedule directly here, bypassing the suppressed schedHint.
             const rawHintFor = (ec, d) => {
+              if (onMatEcs.has(ec)) return "mat";
               const sv = attSched[ec] && attSched[ec][d];
               if (!sv) return null;
-              if (sv === "W" || sv === "WL") return "on";
+              if (sv === "W" || sv === "WE" || sv === "WL") return "on";
               if (sv === "O" || sv === "R")  return "off";
               if (sv === "L") return "al";
+              if (sv === "ML") return "mat";
               if (sv === "X") return "term";
               if (sv === "E") return "ext";
               return null;
@@ -14018,7 +14438,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               else if (v === "sick_n") t.sickNote++;
               else if (v === "frl")    t.frl++;
               else if (v === "ph")     t.ph++;        // explicit PH always counts
-              else if (v === "mat")    t.mat++;
+              else if (v === "mat")    { t.mat++; t.unpaid++; }
               else if (v === "no" || v === "unpaid" || v === "absent") t.unpaid++;
               else if (v === "ext")    { t.ext++; if (phOk) t.ph++; }
               else if (v === "late")   { t.late++; if (phOk) t.ph++; }
@@ -14123,9 +14543,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const cellShowsAbsent = kioskMarkedAbsent || (override && !!bareV && !isWorking && !isLate);
                 const extDayRecorded = (override && bareV === "ext") || (!!kioskAbs && kioskAbs.status === "ext");
                 const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
-                const presentNoApptWarn = checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
+                // Comprehensive mismatch detection — match the payroll tally
+                // above. Cell CORRESPONDS only when scheduled-work + presence
+                // + Fresha agree, or scheduled-off + no presence + no Fresha.
+                const cellSaysPresent  = isWorking || isLate || checkinHasIn;
+                const scheduleSaysOff  = hint === "off" || hint === "al" || hint === "ph" || hint === "mat";
+                const isExtraDayCell   = bareV === "ext";
+                const presentNoApptWarn       = cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
+                const workedOnOffDay          = scheduleSaysOff && cellSaysPresent && !cellShowsAbsent && !isExtraDayCell;
+                const unaccountedScheduledDay = scheduleSaysWork && !cellSaysPresent && !cellShowsAbsent && !freshaWorkedCell && freshaCoversThisDay && !bareV;
+                const offButFreshaWorked      = scheduleSaysOff && !cellSaysPresent && freshaWorkedCell;
                 const extDayNoApptWarn  = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
-                const missingCheckin    = !checkinHasIn && freshaWorkedCell;
+                const missingCheckin    = !checkinHasIn && freshaWorkedCell && scheduleSaysWork;
                 const proofPending      = (bareV === "sick_n" || bareV === "frl");
                 // Sick NO note / NO SHOW only need review when something disagrees —
                 // if the schedule said work + kiosk recorded the absence + Fresha
@@ -14133,7 +14562,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 // has nothing left to verify. Absent always needs review.
                 const trustedAbsence    = (bareV === "sick" || bareV === "no") && scheduleSaysWork && kioskMarkedAbsent && !freshaWorkedCell;
                 const absentNeedsReview = ((bareV === "sick" || bareV === "no") && !trustedAbsence) || bareV === "absent";
-                if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending || missingCheckin || absentNeedsReview) {
+                if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending || missingCheckin || absentNeedsReview || workedOnOffDay || unaccountedScheduledDay || offButFreshaWorked) {
                   total++;
                   const review = (reviewedMap[s.ec] || {})[dy.d];
                   if (review && review.valueAtReview === (v || "")) reviewed++;
@@ -14429,7 +14858,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // kiosk overwrites the grid (e.g. sick / no-show) and we don't want
                             // that to erase the Fresha appointment signal.
                             const freshaWorkedCell    = !mirrorSuppressed && !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
-                            const missingCheckin  = !checkinHasIn && freshaWorkedCell && isPastOrToday; // Fresha confirmed work but no check-in
+                            const missingCheckin  = !checkinHasIn && freshaWorkedCell && isPastOrToday && scheduleSaysWork; // Fresha confirmed work but no check-in
                             const scheduleSaysWork    = hint === "on" || hint === "ext";
                             const kioskAbsentScheduled = !!kioskAbs && scheduleSaysWork && !/^[^a-z]*(?:left|early)/i.test(kioskAbs.status || "");
                             // Map the kiosk audit-log status to a STAT entry. The recordAbsence
@@ -14463,7 +14892,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // the cell orange and replace the body label with
                             // "-Xh" so the admin sees the deduction at a glance
                             // instead of just "On Time" with a small corner chip.
-                            const earlyForCell = attEarly && attEarly[dy.d] && attEarly[dy.d][s.ec];
+                            // Read the kiosk's left-early record for this cell. Also
+                            // gated by mirrorSuppressed so a Total Reset hides the
+                            // orange overlay until the next Import Check-ins refresh
+                            // (matches the rule the user spelled out: 'I only want to
+                            // see left-early after I import the check-ins').
+                            const earlyForCell = !mirrorSuppressed && attEarly && attEarly[dy.d] && attEarly[dy.d][s.ec];
                             const earlyHours   = earlyForCell && typeof earlyForCell.hours === "number" ? earlyForCell.hours : 0;
                             if (earlyHours > 0) {
                               const mins = Math.round(earlyHours * 60);
@@ -14503,11 +14937,36 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const extDayRecorded   = (override && bareV === "ext") || (!!kioskAbs && kioskAbs.status === "ext");
                             const allAgreeAbsent       = s.role === "NT" && scheduleSaysWork && cellShowsAbsent && !freshaWorkedCell;
                             const apptVsKioskAbsentWarn = s.role === "NT" && cellShowsAbsent && freshaWorkedCell;
-                            // presentNoApptWarn — only fires when the cell is actually showing
-                            // a presence status. If the kiosk later marked the tech absent
-                            // (sick / no-show / etc.), that absence supersedes the earlier
-                            // clock-in and the "all 3 agree absent" merge wins instead.
-                            const presentNoApptWarn    = s.role === "NT" && checkinHasIn && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
+                            // Comprehensive mismatch detection — fires whenever the
+                            // schedule × cell-value × kiosk × Fresha tuple doesn't
+                            // collapse to one of the two CORRESPONDS cases:
+                            //   • scheduled work + presence + Fresha appointment
+                            //   • scheduled off  + no presence + no Fresha appointment
+                            const cellSaysPresent  = isWorking || isLate || checkinHasIn;
+                            // Wider than the existing scheduleSaysOff (which
+                            // matches only hint==='off') — also treats Annual
+                            // and Public-Holiday as 'shouldn't be here today'
+                            // for the mismatch rules.
+                            const scheduleOffish   = hint === "off" || hint === "al" || hint === "ph" || hint === "mat";
+                            const isExtraDayCell   = bareV === "ext";
+                            // presentNoApptWarn — schedule wants work, the cell or
+                            // kiosk says present, but Fresha has no appointment.
+                            const presentNoApptWarn       = s.role === "NT" && cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
+                            // workedOnOffDay — schedule wants off but the cell
+                            // or kiosk says present (and the cell isn't already
+                            // marked Extra Day). Fires regardless of Fresha so a
+                            // 'Late' stamped on an OFF/Annual day always warns.
+                            const workedOnOffDay          = s.role === "NT" && scheduleOffish && cellSaysPresent && !cellShowsAbsent && !isExtraDayCell && isPastOrToday;
+                            // unaccountedScheduledDay — schedule wants work but
+                            // there's no evidence (no cell value, no check-in,
+                            // no Fresha, no absence). Fires once Fresha covers
+                            // that day so blank pre-import cells stay quiet.
+                            const unaccountedScheduledDay = s.role === "NT" && scheduleSaysWork && !cellSaysPresent && !cellShowsAbsent && !freshaWorkedCell && freshaCoversThisDay && !bareV && isPastOrToday;
+                            // offButFreshaWorked — schedule wants off, nobody
+                            // checked in or marked the cell present, but Fresha
+                            // shows completed appointments. Probably a missed
+                            // Extra Day stamp.
+                            const offButFreshaWorked      = s.role === "NT" && scheduleOffish && !cellSaysPresent && freshaWorkedCell && isPastOrToday;
                             // extDayNoApptWarn — ext day was recorded but Fresha shows no
                             // completed appointment. Either the ext-day mark is wrong or the
                             // tech showed up and did no service — manager should investigate.
@@ -14515,29 +14974,100 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // Future swap-back day — until the date arrives the cell is just a
                             // placeholder reminding the manager to fill in the proper status.
                             const isFutureSwap = !isPastOrToday && (bareV === "swap_o" || bareV === "swap_i");
-                            const ttl =
-                              dy.ymd + ": " + (st.lbl || "—") +
-                              (hint ? " — schedule: " + ((STAT[hint] || {}).lbl || "—") : "") +
-                              (deviation ? " (deviation)" : "") +
-                              (!override ? " (mirrored from schedule)" : "") +
-                              ((outgoingLoanMap[s.ec] && outgoingLoanMap[s.ec][dy.d])
-                                ? "\n🔀 Loaned out — working at " + outgoingLoanMap[s.ec][dy.d] + " today" + (v === "loan_out" ? " (receiving branch hasn't recorded a status yet)" : " · status recorded by " + outgoingLoanMap[s.ec][dy.d] + "'s kiosk")
-                                : "") +
-                              (bareV === "swap_o" ? "\n💡 Owes — tech took today off because she worked on her off day on a previous date for a colleague. Counts as off." : "") +
-                              (bareV === "swap_i" ? "\n💡 Owed — tech came in today because she took off on a previous day when a colleague filled in for her." : "") +
-                              (isFutureSwap ? "\n(Future swap — placeholder only; fill in the actual status on the day.)" : "") +
-                              (checkin ? "\nChecked in" + (checkin.firstInTs ? " at " + checkin.firstInTs.toLocaleTimeString("en-ZA", { hour:"2-digit", minute:"2-digit" }) : "") + (checkin.autoOut ? " · auto-out" : "") : "") +
-                              (checkinMismatch ? "\n⚠ Discrepancy: tech checked in but day marked " + bareV : "") +
-                              (missingCheckin  ? "\n⚠ Missing check-in: Fresha shows worked, no check-in record" : "") +
-                              (kioskAbs ? "\n📲 Kiosk: marked " + ((STAT[kioskAbs.status] || {}).lbl || kioskAbs.status) + (kioskAbs.markedBy ? " by " + kioskAbs.markedBy : "") + (kioskAbs.note ? " · " + kioskAbs.note : "") : "") +
-                              (kioskAbsentScheduled ? "\n⚠ Schedule mismatch: scheduled to work but kiosk marked " + ((STAT[kioskAbs.status] || {}).lbl || kioskAbs.status) : "") +
-                              (() => {
-                                const er = attEarly && attEarly[dy.d] && attEarly[dy.d][s.ec];
-                                if (!er || !(er.hours > 0)) return "";
-                                return "\n🏃 Left work early — " + er.hours + "h (counts as " + (er.hours / 8).toFixed(2) + " unpaid day" + (er.hours/8 === 1 ? "" : "s") + ")"
-                                     + (er.recordedBy ? " · recorded by " + er.recordedBy : "");
-                              })() +
-                              (isLate && checkin ? "\n(Late — counts as worked, no discrepancy)" : "");
+
+                            // ── Unified hover tooltip ─────────────────────────────────────
+                            // ONE tooltip used by every hover-target inside the cell
+                            // (top schedule strip, bottom Fresha strip, the <select> body,
+                            // the ⚠ warning icon and the ✓ reviewed icon). The user asked
+                            // for consistent info no matter where they hover, with a clear
+                            // breakdown of what each source says and where the mismatch is.
+                            const trustedAbsenceCell = (bareV === "sick" || bareV === "no") && scheduleSaysWork && kioskMarkedAbsent && !freshaWorkedCell;
+                            const absentNeedsReview  = ((bareV === "sick" || bareV === "no") && !trustedAbsenceCell) || bareV === "absent";
+                            const proofPendingCell   = (bareV === "sick_n" || bareV === "frl");
+                            const warning  = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || missingCheckin || absentNeedsReview || workedOnOffDay || unaccountedScheduledDay || offButFreshaWorked;
+                            const reviewRec = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
+                            const reviewed  = !!reviewRec && reviewRec.valueAtReview === (v || "");
+                            // Plain English description of the single primary mismatch
+                            // (same priority order the ⚠ uses below). The verdict block
+                            // at the bottom of the tooltip shows this so the user can
+                            // see "where is the mismatch" without scanning four lines.
+                            const mismatchReason = (
+                              apptVsKioskAbsentWarn      ? "Kiosk marked the tech absent but Fresha has a completed appointment that day."
+                            : extDayNoApptWarn           ? "Extra Day recorded but Fresha shows no appointments — did they actually do any service?"
+                            : absentNeedsReview          ? ("Absent day — admin must confirm " + ((STAT[bareV] || {}).lbl || bareV) + " for payroll.")
+                            : missingCheckin             ? "Fresha shows appointments and tech was scheduled to work, but no kiosk check-in was recorded."
+                            : workedOnOffDay             ? "Scheduled OFF/Annual/Public Holiday/Maternity but the tech checked in or the cell shows present — confirm if this should be Extra Day or correct the schedule."
+                            : unaccountedScheduledDay    ? "Scheduled to work but NO kiosk check-in, NO Fresha appointments and no absence recorded — confirm what happened (sick / no-show / left early / etc.)."
+                            : offButFreshaWorked         ? "Scheduled OFF but Fresha has completed appointments — probably an unrecorded Extra Day."
+                            : presentNoApptWarn          ? (checkinHasIn
+                                  ? "Tech checked in and was scheduled to work, but Fresha shows no appointments."
+                                  : "Scheduled to work but no kiosk check-in was recorded AND Fresha shows no appointments — confirm what happened (sick / no-show / left early / etc.).")
+                            : "Cell needs review — admin should verify the day's status."
+                            );
+
+                            // Build the structured tooltip body.
+                            // "Cell" is only shown when it ADDS information — i.e. an
+                            // admin/kiosk override that disagrees with the schedule
+                            // mirror. When the cell just mirrors the schedule the line
+                            // would just repeat the Schedule row, so we drop it.
+                            const lbl = (k) => (STAT[k] && STAT[k].lbl) || (k || "—");
+                            const showCellLine = !!v && (override || isFutureSwap) && (!hint || bareV !== hint);
+                            const cellLine = (st.lbl || "—") + (deviation ? "  (deviation from schedule)" : "") + (isFutureSwap ? "  (future placeholder)" : "");
+                            const schedLine = hint ? lbl(hint) : "—";
+                            let kioskLine;
+                            if (s.role !== "NT") {
+                              kioskLine = null; // managers: no kiosk
+                            } else if (kioskAbs) {
+                              kioskLine = "Marked " + lbl(kioskAbs.status) + (kioskAbs.markedBy ? " (by " + kioskAbs.markedBy + ")" : "") + (kioskAbs.note ? " — " + kioskAbs.note : "");
+                            } else if (checkinHasIn) {
+                              const tm = checkin && checkin.firstInTs ? checkin.firstInTs.toLocaleTimeString("en-ZA", { hour:"2-digit", minute:"2-digit" }) : null;
+                              kioskLine = "Checked in" + (tm ? " at " + tm : "") + (checkin && checkin.autoOut ? " (auto-out)" : "");
+                            } else if (!isPastOrToday) {
+                              kioskLine = "—";
+                            } else {
+                              kioskLine = "No check-in recorded";
+                            }
+                            let freshaLine = null;
+                            if (s.role === "NT") {
+                              freshaLine = freshaWorkedCell ? "Appointments imported"
+                                         : freshaCoversThisDay ? "No appointments this day"
+                                         : "No data for this day yet";
+                            }
+                            const earlyRec = attEarly && attEarly[dy.d] && attEarly[dy.d][s.ec];
+                            const earlyHrs = earlyRec && typeof earlyRec.hours === "number" ? earlyRec.hours : 0;
+
+                            const loanTo = outgoingLoanMap[s.ec] && outgoingLoanMap[s.ec][dy.d];
+
+                            const tipLines = [dy.ymd];
+                            tipLines.push("─────────────────────────");
+                            if (showCellLine) tipLines.push("Cell:     " + cellLine);
+                            tipLines.push("Schedule: " + schedLine);
+                            if (kioskLine != null) tipLines.push("Kiosk:    " + kioskLine);
+                            if (freshaLine != null) tipLines.push("Fresha:   " + freshaLine);
+                            if (loanTo) tipLines.push("🔀 Loaned out to " + loanTo + (v === "loan_out" ? " (receiving branch hasn't recorded a status yet)" : ""));
+                            if (bareV === "swap_o") tipLines.push("💡 Owes — tech took today off because she worked on a previous off day for a colleague.");
+                            if (bareV === "swap_i") tipLines.push("💡 Owed — tech came in today because she took off on a previous day when a colleague filled in for her.");
+                            if (earlyHrs > 0) tipLines.push("🏃 Left work early — " + earlyHrs + "h (" + (earlyHrs/8).toFixed(2) + " unpaid day" + (earlyHrs/8 === 1 ? "" : "s") + ")");
+                            // Verdict line(s) — same priority the ⚠ uses.
+                            tipLines.push("");
+                            if (allMatchWork) {
+                              tipLines.push("✓ All match — schedule + kiosk + Fresha agree the tech worked.");
+                            } else if (allMatchOff) {
+                              tipLines.push("✓ All match OFF — scheduled off, no check-in, no Fresha appointment.");
+                            } else if (allAgreeAbsent && !absentNeedsReview && !proofPendingCell) {
+                              tipLines.push("✓ Confirmed absent — schedule × kiosk × Fresha all agree.");
+                            } else if (proofPendingCell && !reviewed) {
+                              tipLines.push("⚠ " + (bareV === "sick_n" ? "Sick note" : "FRL proof") + " uploaded — click the ⚠ icon to review the proof and confirm for payroll.");
+                            } else if (warning && !reviewed) {
+                              tipLines.push("⚠ Mismatch — " + mismatchReason);
+                              tipLines.push("(Click the ⚠ icon to mark as reviewed for payroll.)");
+                            } else if (reviewed && reviewRec) {
+                              tipLines.push("✓ Reviewed by " + (reviewRec.reviewer || "admin") + " · " + new Date(reviewRec.ts).toLocaleString("en-ZA"));
+                              if (reviewRec.note) tipLines.push("   \"" + reviewRec.note + "\"");
+                            } else if (isFutureSwap) {
+                              tipLines.push("(Future swap — placeholder only; fill in the actual status on the day.)");
+                            }
+                            const cellTooltip = tipLines.join("\n");
                             // Simplified presence palette — every source (schedule / kiosk /
                             // Fresha) maps to "work" (green) or "off" (slate) when it represents
                             // a presence status, so all-agree cells naturally render as one
@@ -14566,10 +15096,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const stripeMergeBg = cleanFill ? cellBaseBg : null;
                             const allMatchBg     = null;
                             const allMatchEdge   = "1px solid #FCE7F3";
-                            const allMatchTxt    = null;
-                            const allMatchTip    = allMatchWork ? "\n✓ All match — Fresha + schedule + check-in agree"
-                                                  : allMatchOff ? "\n✓ All match OFF — scheduled off, no Fresha appointment, no check-in"
-                                                  : "";
                             const schedStripeColor = stripeMergeBg ? stripeMergeBg
                                                     : scheduleSaysWork ? C_WORK
                                                     : (hint === "off" || hint === "al" || hint === "ph" || hint === "mat" || hint === "term") ? C_OFF
@@ -14579,17 +15105,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                                     : freshaWorkedCell ? C_WORK
                                                     : freshaCoversThisDay ? C_OFF
                                                     : "transparent";
-                            const freshaTip = freshaWorkedCell ? "Fresha: worked (appointments imported)"
-                                            : freshaCoversThisDay ? "Fresha: no appointments this day"
-                                            : "Fresha: no data for this day yet";
                             return (
                               <td key={dy.d} style={{ padding:0, borderBottom:"1px solid #FCE7F3", borderLeft: allMatchEdge, background: allMatchBg || cellBaseBg, position:"relative" }}>
                                 <div style={{ position:"relative", height:36 }}>
-                                  <div title={"Schedule: " + (hintLbl || "—")} style={{ position:"absolute", top:0, left:0, right:0, height:6, background: schedStripeColor === "transparent" ? "#f9fafb" : schedStripeColor, borderBottom: cleanFill ? "none" : "1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
+                                  <div title={cellTooltip} style={{ position:"absolute", top:0, left:0, right:0, height:6, background: schedStripeColor === "transparent" ? "#f9fafb" : schedStripeColor, borderBottom: cleanFill ? "none" : "1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
                                     {!cleanFill && <span style={{ fontSize:7, fontWeight:800, color:"rgba(0,0,0,0.45)", letterSpacing:"0.05em" }}>S</span>}
                                   </div>
                                   {s.role === "NT" && (
-                                    <div title={freshaTip} style={{ position:"absolute", bottom:0, left:0, right:0, height:6, background: freshaStripeColor === "transparent" ? "#f9fafb" : freshaStripeColor, borderTop: cleanFill ? "none" : "1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
+                                    <div title={cellTooltip} style={{ position:"absolute", bottom:0, left:0, right:0, height:6, background: freshaStripeColor === "transparent" ? "#f9fafb" : freshaStripeColor, borderTop: cleanFill ? "none" : "1px solid rgba(0,0,0,0.05)", pointerEvents:"none", display:"flex", alignItems:"center", justifyContent:"flex-start", paddingLeft:2 }}>
                                       {!cleanFill && <span style={{ fontSize:7, fontWeight:800, color:"rgba(0,0,0,0.45)", letterSpacing:"0.05em" }}>F</span>}
                                     </div>
                                   )}
@@ -14598,10 +15121,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                     // open the proof image, verify the date matches the cell day,
                                     // and only then click Confirm to record the review.
                                     const isProofStatus = bareV === "sick_n" || bareV === "frl";
-                                    const reviewForProof = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
-                                    const proofReviewed  = !!reviewForProof && reviewForProof.valueAtReview === (v || "");
                                     const kioskProofKey  = kioskAbs && kioskAbs.proofKey;
-                                    if (isProofStatus && !proofReviewed && s.role === "NT") {
+                                    if (isProofStatus && !reviewed && s.role === "NT") {
                                       const openProofModal = (e) => {
                                         e.stopPropagation();
                                         const proofKey = kioskProofKey || ("boa_proof_" + attBranch + "_" + attYM + "_" + s.ec + "_" + dy.d);
@@ -14620,50 +15141,39 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                         }
                                       };
                                       return (
-                                        <span title={"⚠ Review proof + confirm before payroll — click to open the uploaded " + (bareV === "sick_n" ? "sick note" : "FRL proof")}
+                                        <span title={cellTooltip}
                                               onClick={openProofModal}
                                               style={{ position:"absolute", top:6, right:1, fontSize:12, lineHeight:1, color:"#dc2626", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:3 }}>⚠</span>
                                       );
                                     }
-                                    // Sick NO note / NO SHOW only require review when the three
-                                    // sources disagree. When schedule said work, kiosk recorded
-                                    // the absence and Fresha has no appointment, all three line
-                                    // up — no admin verification needed (the cell will already
-                                    // render as one solid absent-colour band via allAgreeAbsent).
-                                    const trustedAbsenceCell = (bareV === "sick" || bareV === "no") && scheduleSaysWork && kioskMarkedAbsent && !freshaWorkedCell;
-                                    const absentNeedsReview = ((bareV === "sick" || bareV === "no") && !trustedAbsenceCell) || bareV === "absent";
-                                    const warning  = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || missingCheckin || absentNeedsReview;
-                                    const review   = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
-                                    const reviewed = !!review && review.valueAtReview === (v || "");
                                     // Cell with active warning + not yet reviewed → red ⚠
                                     if (warning && !reviewed) {
-                                      const warnTitle = apptVsKioskAbsentWarn ? "⚠ Kiosk marked tech absent but Fresha has a completed appointment that day"
-                                                      : extDayNoApptWarn      ? "⚠ Extra day recorded but Fresha shows no appointments — did they actually do any service?"
-                                                      : absentNeedsReview      ? ("⚠ Absent day — admin must confirm " + ((STAT[bareV] || {}).lbl || bareV) + " for payroll")
-                                                      : missingCheckin         ? "⚠ Fresha shows appointments + scheduled to work, but no kiosk check-in recorded"
-                                                                              : "⚠ Tech checked in and was scheduled to work, but Fresha shows no appointments";
                                       return (
-                                        <span title={warnTitle + "\n\n(Click to mark as reviewed for payroll)"}
+                                        <span title={cellTooltip}
                                               onClick={(e) => { e.stopPropagation(); markCellReviewed(s.ec, dy.d, v); }}
                                               style={{ position:"absolute", top:6, right:1, fontSize:12, lineHeight:1, color:"#dc2626", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:3 }}>⚠</span>
                                       );
                                     }
                                     // Reviewed cell (warning resolved OR a plain admin-entered value) → small green ✓
                                     if (reviewed && v) {
-                                      const reviewTitle = "✓ Reviewed by " + (review.reviewer || "admin") +
-                                                        "\n  " + new Date(review.ts).toLocaleString("en-ZA") +
-                                                        (review.note ? "\n  \"" + review.note + "\"" : "") +
-                                                        "\n\n(Click to clear the reviewed mark)";
                                       return (
-                                        <span title={reviewTitle} onClick={(e) => { e.stopPropagation(); markCellReviewed(s.ec, dy.d, v); }}
+                                        <span title={cellTooltip} onClick={(e) => { e.stopPropagation(); markCellReviewed(s.ec, dy.d, v); }}
                                               style={{ position:"absolute", top:6, right:1, fontSize:10, lineHeight:1, color:"#16a34a", fontWeight:900, cursor:"pointer", textShadow:"0 0 2px white, 0 0 2px white", zIndex:3 }}>✓</span>
                                       );
                                     }
                                     return null;
                                   })()}
-                                  {v && (
+                                  {/* Body label only renders when it ADDS information beyond
+                                      the S/F strips: real overrides, left-early -Xh, worked
+                                      holidays auto-promoted to PH, future-swap placeholders.
+                                      Mirrored maternity (ML) and annual-leave (Annual) cells
+                                      also render in cursive so the user can see at a glance
+                                      which leave type the day is, without hovering.
+                                      Plain on/off mirrored cells stay clean because the green
+                                      /grey S strip already shows that. */}
+                                  {v && (override || isFutureSwap || earlyHours > 0 || phAuto || bareV === "mat" || bareV === "al") && (
                                     <div style={{ position:"absolute", top:6, bottom: s.role === "NT" ? 6 : 0, left:0, right:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:1, fontSize:9, fontStyle: (override && !isFutureSwap) ? "normal" : "italic", fontWeight: (override && !isFutureSwap) ? 700 : 400, color: isFutureSwap ? "#9ca3af" : (override ? st.fg : (hintFg + "70")), pointerEvents:"none", letterSpacing:"0.02em" }}>
-                                      <span>{st.lbl || hintLbl || ""}</span>
+                                      <span>{!override && bareV === "mat" ? "ML" : !override && bareV === "al" ? "Annual" : (st.lbl || hintLbl || "")}</span>
                                       {/* Loan-day badge — only renders when a real status was
                                           mirrored from the receiving branch (i.e. v !== loan_out,
                                           which already shows '→ Bree' as the main label). */}
@@ -14675,7 +15185,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   {!v && showKioskReason && (
                                     <div style={{ position:"absolute", top:6, bottom: s.role === "NT" ? 6 : 0, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontStyle:"italic", fontWeight:600, color: kStat.fg || "#9ca3af", pointerEvents:"none", letterSpacing:"0.02em" }}>{kStat.lbl}</div>
                                   )}
-                                  <select value="" onChange={e=>onCellChange(s, dy, e.target.value)} title={ttl + "\nSchedule: " + (hintLbl || "—") + (s.role === "NT" ? "\n" + freshaTip : "")}
+                                  {/* All-match OFF — schedule says off + no check-in + no
+                                      Fresha appointments. Cell is one clean grey band; we
+                                      label it 'OFF' so the user doesn't have to hover to
+                                      know what the grey means. */}
+                                  {allMatchOff && (
+                                    <div style={{ position:"absolute", top:6, bottom: s.role === "NT" ? 6 : 0, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontWeight:700, color:"#475569", pointerEvents:"none", letterSpacing:"0.08em" }}>OFF</div>
+                                  )}
+                                  <select value="" onChange={e=>onCellChange(s, dy, e.target.value)} title={cellTooltip}
                                     style={{ position:"absolute", top:6, bottom: s.role === "NT" ? 6 : 0, left:0, right:0, width:"100%", border:"none", background: "transparent", color:"transparent", fontSize:9, fontWeight:400, opacity:1, textAlign:"center", cursor:"pointer", padding:"0 1px", fontFamily:"inherit", outline:"none", appearance:"none" }}>
                                     <option value="" style={{ color:"#000", background:"#fff" }}>—</option>
                                     {Object.entries(STAT).filter(([k]) => k !== "ph" || isHol).map(([k, vv]) => (
@@ -15579,7 +16096,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const base = off ? { ...m, leftDate: off.leftDate, offRec: off } : { ...m };
             return flag ? { ...base, _onMat: true } : base;
           });
-          const allMgrs = [...mgrsWithOff, ...obMgrs];
+          // Dedupe so a manager who lives in BOTH the live managers list AND
+          // the onboarding list (the trial record can survive after they
+          // convert to a full employee) doesn't render twice on the schedule.
+          // Order of preference: live manager record wins. As a safety net we
+          // also drop any duplicate-EC entries inside the manager list itself.
+          const _seenMgrEcs = new Set();
+          const _dedupedMgrs = [];
+          for (const m of mgrsWithOff) {
+            const key = m && m.ec ? String(m.ec).trim() : "";
+            if (!key || _seenMgrEcs.has(key)) continue;
+            _seenMgrEcs.add(key);
+            _dedupedMgrs.push(m);
+          }
+          const _dedupedObMgrs = obMgrs.filter(o => {
+            const key = o && o.ec ? String(o.ec).trim() : "";
+            return key && !_seenMgrEcs.has(key);
+          });
+          const allMgrs = [..._dedupedMgrs, ..._dedupedObMgrs];
           const mgrLeaves = (leaveRecs || []).filter(L => allMgrs.some(m => m.ec === L.ec));
           // Synthetic full-cycle leaves for on-mat managers - mgrSched
           // treats these as 'L' cells so the on-mat manager doesn't get
@@ -15626,6 +16160,245 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               });
             });
           }
+          // Sandown WE / WL stamper. Applied to the FINAL merged grid
+          // (after the haveDraft branch runs) so it can't be overwritten
+          // by a re-load of the saved draft. Re-run-safe: works whether
+          // the input cells are W, WE or WL.
+          // SM is always WE 08:00–17:00 every working day (incl. Sunday).
+          // When SM is on, every working AM that day is WL.
+          // When no SM is on, exactly one AM (the one with the fewest WE
+          // shifts so far) is WE, the rest are WL.
+          // Manager shift-split helper. Walks each day, identifies who's
+          // working that day on the grid, and re-stamps WE / WM / WL based
+          // on store-specific rules:
+          //   - SM / SSM always gets WE (the early shift). The role they
+          //     occupy never changes regardless of how many people are on.
+          //   - AMs split: when SM is on, AMs default to WL; when no SM is
+          //     on, one AM gets WE (opener) and the rest go WL.
+          //   - WM (middle shift) is a tie-breaker for when 3+ managers
+          //     are working a WM-eligible day-of-week. The wmDows set
+          //     decides which DOWs that applies to:
+          //       Sandown:   Mon-Fri only      → {1,2,3,4,5}
+          //       Table Bay: Mon-Sat           → {1,2,3,4,5,6}
+          //     If we'd be assigning a WM, we always keep at least one WL,
+          //     because both stores require an opener AND a closer on the
+          //     floor.
+          // Per-AM earlyCount / middleCount keep both rotations even
+          // across the cycle so the same AM doesn't always open or always
+          // get the middle shift.
+          const _applyMgrShiftSplit = (grid, dates, managers, wmDows) => {
+            if (!grid) return;
+            const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
+            const _earlyCount  = {};
+            const _middleCount = {};
+            (managers || []).forEach(m => { _earlyCount[m.ec] = 0; _middleCount[m.ec] = 0; });
+            const _pickLowest = (list, counter) => {
+              const sorted = list.slice().sort((a, b) =>
+                ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
+                (a.ec || "").localeCompare(b.ec || "")
+              );
+              const winner = sorted[0];
+              counter[winner.ec] = (counter[winner.ec] || 0) + 1;
+              return winner;
+            };
+            (dates || []).forEach(dy => {
+              const workers = (managers || []).filter(m =>
+                m && m.ec && grid[m.ec] && (
+                  grid[m.ec][dy.d] === "W" ||
+                  grid[m.ec][dy.d] === "WE" ||
+                  grid[m.ec][dy.d] === "WM" ||
+                  grid[m.ec][dy.d] === "WL"
+                )
+              );
+              if (workers.length === 0) return;
+              // Reset to W so a re-run lands on the right labels (re-run-safe).
+              workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
+              const wmAllowedToday = wmDows && wmDows.has(dy.dow);
+              const sm  = workers.find(_isSM);
+              const ams = workers.filter(m => !_isSM(m));
+              if (sm) {
+                grid[sm.ec][dy.d] = "WE";
+                // SM + 2+ AMs on a WM-eligible day → 1 middle shift, rest late.
+                if (wmAllowedToday && ams.length >= 2) {
+                  const mid = _pickLowest(ams, _middleCount);
+                  grid[mid.ec][dy.d] = "WM";
+                  ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+                } else {
+                  ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+                }
+              } else if (ams.length > 0) {
+                const opener = _pickLowest(ams, _earlyCount);
+                grid[opener.ec][dy.d] = "WE";
+                const rest = ams.filter(m => m.ec !== opener.ec);
+                // No-SM + 3+ AMs on a WM-eligible day → 1 early + 1 middle + rest late.
+                // (Need at least 2 non-opener AMs to spawn a WM so a WL still exists.)
+                if (wmAllowedToday && rest.length >= 2) {
+                  const mid = _pickLowest(rest, _middleCount);
+                  grid[mid.ec][dy.d] = "WM";
+                  rest.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+                } else {
+                  rest.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+                }
+              }
+            });
+          };
+          // Riverlands has its own shape — different store-hours, no
+          // WM tier, but a 4-managers-or-more boost where one extra AM
+          // takes a second early shift Mon-Fri. Saturday is a single
+          // 9-18 shift; Sunday a single 8-17 shift.
+          //
+          //   Mon-Fri (store closes 19:00):
+          //     SM working → WE (08:00-17:00)
+          //     No SM      → 1 AM = WE (09:00-18:00, the AM-opener time)
+          //     Remaining AMs → WL (10:00-19:00)
+          //     4+ working → one additional AM also gets WE (08:00-17:00
+          //       extra opener). Labelled WE; banner explains the times.
+          //   Saturday: every working manager → WE (09:00-18:00 single shift).
+          //   Sunday:   every working manager → WE (08:00-17:00 single shift).
+          const _applyRiverlandsShifts = (grid, dates, managers) => {
+            if (!grid) return;
+            const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
+            const _earlyCount = {};        // rotation for AM-opener (no-SM Mon-Fri)
+            const _extraEarlyCount = {};   // rotation for the 4+ bonus early-AM
+            (managers || []).forEach(m => { _earlyCount[m.ec] = 0; _extraEarlyCount[m.ec] = 0; });
+            const _pickLowest = (list, counter) => {
+              const sorted = list.slice().sort((a, b) =>
+                ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
+                (a.ec || "").localeCompare(b.ec || "")
+              );
+              const winner = sorted[0];
+              counter[winner.ec] = (counter[winner.ec] || 0) + 1;
+              return winner;
+            };
+            (dates || []).forEach(dy => {
+              const workers = (managers || []).filter(m =>
+                m && m.ec && grid[m.ec] && (
+                  grid[m.ec][dy.d] === "W" ||
+                  grid[m.ec][dy.d] === "WE" ||
+                  grid[m.ec][dy.d] === "WB" ||
+                  grid[m.ec][dy.d] === "WM" ||
+                  grid[m.ec][dy.d] === "WL"
+                )
+              );
+              if (workers.length === 0) return;
+              workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
+              const isMonFri = dy.dow >= 1 && dy.dow <= 5;
+              const isSat    = dy.dow === 6;
+              const isSun    = dy.dow === 0;
+              // Sat / Sun: single-shift days — everyone goes WE.
+              if (isSat || isSun) {
+                workers.forEach(m => { grid[m.ec][dy.d] = "WE"; });
+                return;
+              }
+              if (!isMonFri) {
+                workers.forEach(m => { grid[m.ec][dy.d] = "WE"; });
+                return;
+              }
+              // Mon-Fri: WE/WL split with optional extra-early on 4+.
+              const sm  = workers.find(_isSM);
+              const ams = workers.filter(m => !_isSM(m));
+              if (sm) {
+                grid[sm.ec][dy.d] = "WE";
+                // 4+ on duty → one extra AM also gets an early shift, but
+                // labelled WB (Work Boost) so HR can pick out at a glance
+                // who's doing the extra 08:00–17:00 alongside the SM.
+                if (workers.length >= 4 && ams.length >= 1) {
+                  const extra = _pickLowest(ams, _extraEarlyCount);
+                  grid[extra.ec][dy.d] = "WB";
+                  ams.filter(m => m.ec !== extra.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+                } else {
+                  ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+                }
+              } else if (ams.length > 0) {
+                const opener = _pickLowest(ams, _earlyCount);
+                grid[opener.ec][dy.d] = "WE";
+                const rest = ams.filter(m => m.ec !== opener.ec);
+                if (workers.length >= 4 && rest.length >= 1) {
+                  // Bonus AM-only path: regular opener is WE 09:00–18:00;
+                  // bonus AM is WB 08:00–17:00. Two visually different
+                  // 'early' people on the floor, which is the point.
+                  const extra = _pickLowest(rest, _extraEarlyCount);
+                  grid[extra.ec][dy.d] = "WB";
+                  rest.filter(m => m.ec !== extra.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+                } else {
+                  rest.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+                }
+              }
+            });
+          };
+          // Ballito has its own shape too — store closes 19:00 Mon-Sat, but
+          // AMs ONLY work 09:00-18:00 (WM) or 10:00-19:00 (WL); the 08:00-
+          // 17:00 WE slot is SM-only. So when there's no SM on a Mon-Sat
+          // day the AMs split into WM/WL instead of WE/WL like Sandown.
+          //
+          //   Mon-Sat:
+          //     SM working → WE (08:00-17:00)
+          //     2+ AMs     → 1 AM = WM (09:00-18:00, the opener), rest WL
+          //                  (10:00-19:00, the closer). Rotated fairly.
+          //     1 AM only  → WL (closer). 9-10am window not covered; HR
+          //                  schedules a 2nd manager to fix.
+          //   Sunday: every working manager → WE (08:00-17:00 single shift).
+          const _applyBallitoShifts = (grid, dates, managers) => {
+            if (!grid) return;
+            const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
+            const _middleCount = {};
+            (managers || []).forEach(m => { _middleCount[m.ec] = 0; });
+            const _pickLowest = (list, counter) => {
+              const sorted = list.slice().sort((a, b) =>
+                ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
+                (a.ec || "").localeCompare(b.ec || "")
+              );
+              const winner = sorted[0];
+              counter[winner.ec] = (counter[winner.ec] || 0) + 1;
+              return winner;
+            };
+            (dates || []).forEach(dy => {
+              const workers = (managers || []).filter(m =>
+                m && m.ec && grid[m.ec] && (
+                  grid[m.ec][dy.d] === "W" ||
+                  grid[m.ec][dy.d] === "WE" ||
+                  grid[m.ec][dy.d] === "WB" ||
+                  grid[m.ec][dy.d] === "WM" ||
+                  grid[m.ec][dy.d] === "WL"
+                )
+              );
+              if (workers.length === 0) return;
+              workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
+              const isMonSat = dy.dow >= 1 && dy.dow <= 6;
+              if (!isMonSat) {
+                // Sunday (and any other day): single-shift 08:00-17:00.
+                workers.forEach(m => { grid[m.ec][dy.d] = "WE"; });
+                return;
+              }
+              const sm  = workers.find(_isSM);
+              const ams = workers.filter(m => !_isSM(m));
+              if (sm) {
+                grid[sm.ec][dy.d] = "WE";
+                if (ams.length >= 2) {
+                  const mid = _pickLowest(ams, _middleCount);
+                  grid[mid.ec][dy.d] = "WM";
+                  ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+                } else {
+                  ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+                }
+              } else if (ams.length === 1) {
+                grid[ams[0].ec][dy.d] = "WL";
+              } else if (ams.length > 0) {
+                const mid = _pickLowest(ams, _middleCount);
+                grid[mid.ec][dy.d] = "WM";
+                ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+              }
+            });
+          };
+          const _applyBranchShiftRules = (grid, dates, managers) => {
+            if (!grid) return;
+            if (branch === "Sandown")    return _applyMgrShiftSplit(grid, dates, managers, new Set([1,2,3,4,5]));
+            if (branch === "Table Bay")  return _applyMgrShiftSplit(grid, dates, managers, new Set([1,2,3,4,5,6]));
+            if (branch === "Riverlands") return _applyRiverlandsShifts(grid, dates, managers);
+            if (branch === "Ballito")    return _applyBallitoShifts(grid, dates, managers);
+          };
+          // Apply to the freshly-generated grid (covers the no-draft path).
+          _applyBranchShiftRules(result.grid, result.dates, result.managers);
           const haveDraft = !!mgrSchedDraft;
           if (haveDraft) {
             const newGrid = JSON.parse(JSON.stringify(mgrSchedDraft));
@@ -15651,7 +16424,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               if (m._onMat) continue;
               for (const x of result.dates) {
                 const v = newGrid[m.ec] && newGrid[m.ec][x.d];
-                if (v === "W" || v === "E") newDT[x.d].working++;
+                if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") newDT[x.d].working++;
                 else if (v === "O" || v === "R") newDT[x.d].off++;
                 else if (v === "L") newDT[x.d].leave++;
               }
@@ -15674,7 +16447,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               let run = 0, rs = -1;
               for (let i = 0; i < result.dates.length; i++) {
                 const v = newGrid[m.ec] && newGrid[m.ec][result.dates[i].d];
-                if (v === "W" || v === "E") { if (run === 0) rs = i; run++; if (run >= 7) { newConflicts.push({ type:"consecutive", msg: m.name + ": 7+ consecutive working days starting " + result.dates[rs].d, severity:"high" }); break; } } else run = 0;
+                if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") { if (run === 0) rs = i; run++; if (run >= 7) { newConflicts.push({ type:"consecutive", msg: m.name + ": 7+ consecutive working days starting " + result.dates[rs].d, severity:"high" }); break; } } else run = 0;
               }
             }
             // Cross-month rollover re-check on the merged grid
@@ -15717,6 +16490,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               }
             }
             result.conflicts = newConflicts;
+            // Re-apply Sandown WE / WL after merging the saved draft so
+            // the labels survive a reload. The merge above stomps the
+            // earlier stamps with the draft's plain W cells.
+            _applyBranchShiftRules(result.grid, result.dates, result.managers);
           } else {
             // No draft yet — show an empty grid + Generate CTA. We keep the
             // structural fields (dates, managers, weeksMap, weekOrder) but
@@ -15795,7 +16572,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               let w = 0;
               for (const m of result.managers) {
                 const v = (m.ec === ec) ? (newGrid[m.ec] && newGrid[m.ec][d]) : (result.grid[m.ec] && result.grid[m.ec][d]);
-                if (v === "W" || v === "E") w++;
+                if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") w++;
               }
               return w;
             };
@@ -15998,18 +16775,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const info = cellInfo[code];
                 cells[c.key] = { code, text: info ? info.text : "" };
               });
+              // Sandown + Table Bay use per-shift hours (WE/WM/WL on the
+              // cells + a banner above the grid), so the row subtitle drops
+              // the generic 8–17 / 9:30–18:30 fallback for those stores.
+              const _hideHours = branch === "Sandown" || branch === "Table Bay" || branch === "Riverlands" || branch === "Ballito";
               const sub = mg._offGhost
                 ? "Left " + mg._offLeftDate + (mg._offReason ? " · " + mg._offReason : "")
                 : mg._obStarting
                   ? "Starts " + mg._obStartDate
-                  : (mg.role === "SM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · 9:30–18:30");
+                  : _hideHours
+                    ? (mg.role === "SM" ? "Store Manager" : mg.role === "SSM" ? "Senior Store Manager" : "Assistant Manager")
+                    : (mg.role === "SM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · 9:30–18:30");
               return { ec: mg.ec, name: mg.name, sub, cells };
             });
             const totals = columns.map(c => {
               let w = 0;
               sortedMgrs.forEach(mg => {
                 const v = (sourceGrid[mg.ec] || {})[c.key];
-                if (v === "W" || v === "E") w++;
+                if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") w++;
               });
               return { key: c.key, value: w };
             });
@@ -16176,9 +16959,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           };
 
           // Visual constants
-          const cellBg    = { W:"#dcfce7", O:"#FCE7F3", L:"#fde68a", R:"#fbcfe8", X:"#f3f4f6", E:"#6ee7b7", ML:"#ede9fe" };
-          const cellTxt   = { W:"W",       O:"OFF",     L:"LV",      R:"REQ",     X:"—",       E:"EXT",   ML:"ML"      };
-          const cellColor = { W:"#15803d", O:"#831843", L:"#92400e", R:"#831843", X:"#9ca3af", E:"#064e3b", ML:"#6b21a8" };
+          // WB = Work Boost — Riverlands-only bonus 08:00–17:00 AM shift
+          // when 4+ managers are on duty Mon-Fri. Same green family as WE
+          // so it still reads as a working day, but with a distinct shade
+          // and label so HR can spot at a glance who's on the extra early.
+          const cellBg    = { W:"#dcfce7", WE:"#a7f3d0", WB:"#67e8f9", WM:"#5eead4", WL:"#86efac", O:"#FCE7F3", L:"#fde68a", R:"#fbcfe8", X:"#f3f4f6", E:"#6ee7b7", ML:"#ede9fe" };
+          const cellTxt   = { W:"W",       WE:"WE",      WB:"WB",      WM:"WM",      WL:"WL",      O:"OFF",     L:"LV",      R:"REQ",     X:"—",       E:"EXT",   ML:"ML"      };
+          const cellColor = { W:"#15803d", WE:"#064e3b", WB:"#155e75", WM:"#134e4a", WL:"#14532d", O:"#831843", L:"#92400e", R:"#831843", X:"#9ca3af", E:"#064e3b", ML:"#6b21a8" };
           const dowsAbbr  = ["Su","Mo","Tu","We","Th","Fr","Sa"];
           const moNames   = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
           const csObj = new Date(cycleStart + "T00:00:00");
@@ -16418,7 +17205,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       style={{ padding:"7px 14px", background:"#FFFFFF", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:600 }}>
                       🔍 Diagnose
                     </button>
-                    <button onClick={() => setMgrReqModal({ ec: (sortedMgrs[0] && sortedMgrs[0].ec) || "", date: cycleStart, note: "" })}
+                    <button onClick={() => setMgrReqModal({ ec: (sortedMgrs[0] && sortedMgrs[0].ec) || "", dates: [], date: cycleStart, note: "" })}
                             disabled={sortedMgrs.length === 0}
                             style={{ padding:"7px 14px", background: sortedMgrs.length ? "#BE185D" : "#FBCFE8", color: sortedMgrs.length ? "#fff" : "#9F1A4F", border:"none", borderRadius:8, cursor: sortedMgrs.length ? "pointer" : "not-allowed", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>
                       + Request day off
@@ -16506,6 +17293,43 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               )}
 
+              {/* Sandown manager shift-time banner — surfaces the three
+                  time profiles since the WE / WL cell label alone doesn't
+                  carry hours. SM always 08:00–17:00 on every working day. */}
+              {mgrSchedDraft && branch === "Sandown" && (
+                <div style={{ background:"#ecfdf5", border:"1px solid #a7f3d0", borderRadius:10, padding:"10px 14px", marginBottom:10, fontSize:12, color:"#065f46", display:"flex", flexWrap:"wrap", gap:14, alignItems:"center" }}>
+                  <span style={{ fontSize:11, fontWeight:800, color:"#065f46", letterSpacing:"0.08em", textTransform:"uppercase" }}>🕐 Sandown manager shifts</span>
+                  <span><strong>SM (every day)</strong> · 08:00–17:00</span>
+                  <span><strong>Mon–Fri</strong> · WE 08:00–17:00 · <span style={{ color:"#0f766e" }}>WM 09:00–18:00 (only with 3+ on duty)</span> · WL 11:00–20:00</span>
+                  <span><strong>Saturday</strong> · WE 08:00–17:00 · WL 10:00–19:00</span>
+                  <span><strong>Sunday</strong> · WE 08:00–17:00 · WL 09:00–18:00</span>
+                </div>
+              )}
+              {mgrSchedDraft && branch === "Table Bay" && (
+                <div style={{ background:"#ecfdf5", border:"1px solid #a7f3d0", borderRadius:10, padding:"10px 14px", marginBottom:10, fontSize:12, color:"#065f46", display:"flex", flexWrap:"wrap", gap:14, alignItems:"center" }}>
+                  <span style={{ fontSize:11, fontWeight:800, color:"#065f46", letterSpacing:"0.08em", textTransform:"uppercase" }}>🕐 Table Bay manager shifts</span>
+                  <span><strong>SM / SSM (every day)</strong> · 08:00–17:00</span>
+                  <span><strong>Mon–Sat</strong> · WE 08:00–17:00 · <span style={{ color:"#0f766e" }}>WM 09:00–18:00 (only with 3+ on duty)</span> · WL 11:00–20:00</span>
+                  <span><strong>Sunday</strong> · WE 08:00–17:00 · WL 09:00–18:00</span>
+                </div>
+              )}
+              {mgrSchedDraft && branch === "Riverlands" && (
+                <div style={{ background:"#ecfdf5", border:"1px solid #a7f3d0", borderRadius:10, padding:"10px 14px", marginBottom:10, fontSize:12, color:"#065f46", display:"flex", flexWrap:"wrap", gap:14, alignItems:"center" }}>
+                  <span style={{ fontSize:11, fontWeight:800, color:"#065f46", letterSpacing:"0.08em", textTransform:"uppercase" }}>🕐 Riverlands manager shifts</span>
+                  <span><strong>Mon–Fri</strong> · WE = SM 08:00–17:00 or AM 09:00–18:00 · WL 10:00–19:00 · <span style={{ color:"#0f766e" }}>WB = 4+ on duty bonus 08:00–17:00 AM (rotated fairly)</span></span>
+                  <span><strong>Saturday</strong> · single shift 09:00–18:00 (WE)</span>
+                  <span><strong>Sunday</strong> · single shift 08:00–17:00 (WE)</span>
+                </div>
+              )}
+              {mgrSchedDraft && branch === "Ballito" && (
+                <div style={{ background:"#ecfdf5", border:"1px solid #a7f3d0", borderRadius:10, padding:"10px 14px", marginBottom:10, fontSize:12, color:"#065f46", display:"flex", flexWrap:"wrap", gap:14, alignItems:"center" }}>
+                  <span style={{ fontSize:11, fontWeight:800, color:"#065f46", letterSpacing:"0.08em", textTransform:"uppercase" }}>🕐 Ballito manager shifts</span>
+                  <span><strong>SM (every day)</strong> · 08:00–17:00</span>
+                  <span><strong>Mon–Sat</strong> · WE 08:00–17:00 (SM only) · WM 09:00–18:00 · WL 10:00–19:00 — store covered 9-7pm minimum</span>
+                  <span><strong>Sunday</strong> · single shift 08:00–17:00 (WE)</span>
+                </div>
+              )}
+
               {/* Schedule grid */}
               {mgrSchedDraft && <div style={{ background:"#FFFFFF", borderRadius:11, border:"1px solid #FBCFE8", overflow:"auto" }}>
                 <table style={{ borderCollapse:"separate", borderSpacing:0, minWidth:"100%", fontSize:11 }}>
@@ -16535,7 +17359,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             ? <div style={{ fontSize:9, color:"#9ca3af", fontStyle:"italic", marginTop:1 }}>Left {mg._offLeftDate}{mg._offReason ? " · " + mg._offReason : ""}</div>
                             : mg._obStarting
                               ? <div style={{ fontSize:9, color:"#854d0e", fontWeight:700, marginTop:1, fontStyle:"italic" }}>🌱 starts {mg._obStartDate}</div>
-                              : <div style={{ fontSize:9, color:"#BE185D", marginTop:1 }}>{mg.role === "SM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · 9:30–18:30"}</div>
+                              : (branch === "Sandown" || branch === "Table Bay" || branch === "Riverlands" || branch === "Ballito")
+                                ? <div style={{ fontSize:9, color:"#BE185D", marginTop:1 }}>{mg.role === "SM" ? "Store Manager" : mg.role === "SSM" ? "Senior Store Manager" : "Assistant Manager"}</div>
+                                : <div style={{ fontSize:9, color:"#BE185D", marginTop:1 }}>{mg.role === "SM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · 9:30–18:30"}</div>
                           }
                         </td>
                         {result.dates.map((dy, di) => {
@@ -16548,7 +17374,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const fg = cellColor[v] || "#9ca3af";
                           const txt = cellTxt[v] || "";
                           const isMon = dy.dow === 1;
-                          const draggable = (v === "W" || v === "O" || v === "E");
+                          // WE / WM / WL (Sandown early / middle / late) are
+                          // working cells just like W, so they're draggable
+                          // for the same-week swap. R stays included from PR #105.
+                          const draggable = (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "O" || v === "E" || v === "R");
                           return (
                             <td key={dy.d}
                               draggable={draggable}
@@ -16621,11 +17450,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       />
                     </div>
 
-                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#831843", letterSpacing:"0.04em", marginBottom:4 }}>DATE</label>
-                    <input type="date" value={mgrReqModal.date}
-                           min={cycleStart} max={cycleEndStr}
-                           onChange={(e) => setMgrReqModal({ ...mgrReqModal, date: e.target.value })}
-                           style={{ width:"100%", padding:"9px 11px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, background:"#fff", marginBottom:12, fontFamily:"inherit" }} />
+                    <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#831843", letterSpacing:"0.04em", marginBottom:4 }}>DATES <span style={{ fontWeight:600, color:"#9ca3af" }}>(pick one or more)</span></label>
+                    <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap", marginBottom: (mgrReqModal.dates && mgrReqModal.dates.length > 0) ? 6 : 12 }}>
+                      <input type="date" value={mgrReqModal.date || ""}
+                             min={cycleStart} max={cycleEndStr}
+                             onChange={(e) => setMgrReqModal({ ...mgrReqModal, date: e.target.value })}
+                             style={{ flex:"1 1 160px", padding:"9px 11px", borderRadius:8, border:"1px solid #FBCFE8", fontSize:13, background:"#fff", fontFamily:"inherit" }} />
+                      <button type="button"
+                        onClick={() => {
+                          const dt = (mgrReqModal.date || "").trim();
+                          if (!dt) return;
+                          if (dt < cycleStart || dt > cycleEndStr) { alert("Date must fall within the current cycle."); return; }
+                          const cur = Array.isArray(mgrReqModal.dates) ? mgrReqModal.dates : [];
+                          if (cur.includes(dt)) return;
+                          setMgrReqModal({ ...mgrReqModal, dates: [...cur, dt].sort(), date: "" });
+                        }}
+                        style={{ padding:"9px 13px", background:"#FCE7F3", color:"#BE185D", border:"1px solid #FBCFE8", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>+ Add</button>
+                    </div>
+                    {Array.isArray(mgrReqModal.dates) && mgrReqModal.dates.length > 0 && (
+                      <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginBottom:12 }}>
+                        {mgrReqModal.dates.map(d => (
+                          <span key={d} style={{ display:"inline-flex", alignItems:"center", gap:4, background:"#FCE7F3", color:"#831843", border:"1px solid #FBCFE8", borderRadius:999, padding:"3px 9px", fontSize:11, fontWeight:700 }}>
+                            {new Date(d + "T00:00:00").toLocaleDateString("en-ZA", { weekday:"short", day:"2-digit", month:"short" })}
+                            <button type="button"
+                              onClick={() => setMgrReqModal({ ...mgrReqModal, dates: mgrReqModal.dates.filter(x => x !== d) })}
+                              style={{ background:"transparent", border:"none", color:"#9F1A4F", cursor:"pointer", fontWeight:800, padding:0, lineHeight:1, fontSize:13 }}>×</button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
 
                     <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#831843", letterSpacing:"0.04em", marginBottom:4 }}>NOTE (OPTIONAL)</label>
                     <input type="text" value={mgrReqModal.note} placeholder="e.g. doctor's appointment"
@@ -16637,14 +17490,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               style={{ padding:"8px 16px", background:"#fff", color:"#831843", border:"1px solid #FBCFE8", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:600 }}>Cancel</button>
                       <button
                         onClick={async () => {
-                          if (!mgrReqModal.ec || !mgrReqModal.date) { alert("Pick a manager and a date."); return; }
-                          if (mgrReqModal.date < cycleStart || mgrReqModal.date > cycleEndStr) { alert("Date must fall within the current cycle."); return; }
-                          // Block duplicates (same ec + date already requested)
-                          if ((mgrRequests || []).some(r => r.ec === mgrReqModal.ec && r.date === mgrReqModal.date)) {
-                            alert("That manager already has a request for that date.");
-                            return;
+                          if (!mgrReqModal.ec) { alert("Pick a manager."); return; }
+                          // Combine the dates chip-list with the lone date
+                          // input so a user who typed one date and clicked
+                          // Save (without pressing + Add) still gets it.
+                          const dateList = Array.isArray(mgrReqModal.dates) ? mgrReqModal.dates.slice() : [];
+                          const single = (mgrReqModal.date || "").trim();
+                          if (single && !dateList.includes(single)) dateList.push(single);
+                          if (dateList.length === 0) { alert("Pick at least one date."); return; }
+                          const outOfCycle = dateList.filter(d => d < cycleStart || d > cycleEndStr);
+                          if (outOfCycle.length > 0) { alert("Some dates fall outside the current cycle:\n" + outOfCycle.join("\n")); return; }
+                          const dupes = dateList.filter(d => (mgrRequests || []).some(r => r.ec === mgrReqModal.ec && r.date === d));
+                          if (dupes.length === dateList.length) {
+                            alert("All of those dates are already requested for this manager."); return;
                           }
-                          // HARD cap check: combined offs in target ISO week (incl. existing requests, leaves, and any saved schedule cells) must allow another off.
+                          if (dupes.length > 0) {
+                            if (!confirm(dupes.length + " of those date(s) are already requested. Skip the duplicates and save the rest?")) return;
+                          }
+                          const datesToSave = dateList.filter(d => !dupes.includes(d));
+                          // HARD per-week cap. Compute on a running snapshot so
+                          // multiple dates in the same week stack correctly.
                           const wkOf = (ymd) => {
                             const x = new Date(ymd + "T00:00:00");
                             const dn = (x.getDay()+6) % 7;
@@ -16655,33 +17520,52 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const wk = 1 + Math.round((x - ff) / (7*86400000));
                             return x.getFullYear() + "-W" + String(wk).padStart(2,"0");
                           };
-                          const targetWk = wkOf(mgrReqModal.date);
-                          const sameWkRequests = (mgrRequests || []).filter(r => r.ec === mgrReqModal.ec && wkOf(r.date) === targetWk).length;
-                          // Count leave + saved-schedule offs already in this week for this manager
-                          let savedOffs = 0;
+                          const baseSavedOffByWk = {};
                           if (mgrSchedDraft && mgrSchedDraft[mgrReqModal.ec]) {
                             for (const day of Object.keys(mgrSchedDraft[mgrReqModal.ec])) {
-                              if (wkOf(day) !== targetWk) continue;
                               const v = mgrSchedDraft[mgrReqModal.ec][day];
-                              if (v === "L") savedOffs++;
+                              if (v === "L") baseSavedOffByWk[wkOf(day)] = (baseSavedOffByWk[wkOf(day)] || 0) + 1;
                             }
                           }
-                          if (sameWkRequests + savedOffs >= 2) {
-                            alert("Blocked — that manager already has " + (sameWkRequests + savedOffs) + " off-day(s) in that week. The 2-offs-per-week cap is hard.");
-                            return;
+                          const baseReqByWk = {};
+                          (mgrRequests || []).forEach(r => {
+                            if (r.ec !== mgrReqModal.ec) return;
+                            baseReqByWk[wkOf(r.date)] = (baseReqByWk[wkOf(r.date)] || 0) + 1;
+                          });
+                          const addedByWk = {};
+                          const blocked = [];
+                          const goodDates = [];
+                          for (const d of datesToSave) {
+                            const w = wkOf(d);
+                            const total = (baseSavedOffByWk[w] || 0) + (baseReqByWk[w] || 0) + (addedByWk[w] || 0);
+                            if (total >= 2) { blocked.push(d); continue; }
+                            addedByWk[w] = (addedByWk[w] || 0) + 1;
+                            goodDates.push(d);
                           }
+                          if (blocked.length > 0) {
+                            const proceed = goodDates.length > 0
+                              ? confirm(blocked.length + " date(s) would push this manager past the 2-offs-per-week cap and will be skipped:\n" + blocked.join("\n") + "\n\nSave the remaining " + goodDates.length + "?")
+                              : false;
+                            if (!proceed) {
+                              if (goodDates.length === 0) alert("Blocked — every date would exceed the 2-offs-per-week cap.");
+                              return;
+                            }
+                          }
+                          if (goodDates.length === 0) { setMgrReqModal(null); return; }
                           const mg = sortedMgrs.find(m => m.ec === mgrReqModal.ec);
-                          const newReq = {
-                            id: "req_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2,7),
+                          const stamp = new Date().toISOString();
+                          const note = mgrReqModal.note || "";
+                          const newReqs = goodDates.map(d => ({
+                            id: "req_" + Date.now().toString(36) + "_" + d.replace(/-/g, "") + "_" + Math.random().toString(36).slice(2,5),
                             ec: mgrReqModal.ec,
                             name: mg ? mg.name : "",
                             branch,
-                            date: mgrReqModal.date,
-                            note: mgrReqModal.note || "",
-                            addedAt: new Date().toISOString()
-                          };
+                            date: d,
+                            note,
+                            addedAt: stamp
+                          }));
                           try {
-                            const next = [...(mgrRequests || []), newReq];
+                            const next = [...(mgrRequests || []), ...newReqs];
                             await window.BOA_DB.saveMgrRequests(next);
                             setMgrRequests(next);
                             setMgrReqModal(null);

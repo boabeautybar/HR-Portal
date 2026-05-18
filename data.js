@@ -683,6 +683,16 @@
     if (res.error) { console.error("loadEarlyLeaves:", res.error); return {}; }
     return (res.data && res.data.value) || {};
   }
+  // Delete the boa_early_<branch>_<ym> sidecar entirely. Called by the
+  // Attendance Total Reset so the 'left early' orange overlay clears
+  // along with the rest of the display state. The next Import Check-ins
+  // recreates the sidecar from the kiosk early-leave entries.
+  async function deleteEarlyLeaves(branch, ym) {
+    var key = "boa_early_" + branch + "_" + ym;
+    var r = await sb.from("app_state").delete().eq("key", key);
+    if (r.error) { console.error("deleteEarlyLeaves:", r.error, "key:", key); throw r.error; }
+    return true;
+  }
 
   // ---------- Store-opening status ----------
   // The kiosk's "open the store" button writes one row per (branch, ymd) to
@@ -1031,14 +1041,37 @@
   // ---------- Maternity CRUD ----------
   async function saveMat(m) {
     var row = matToRow(m);
-    if (m.id) {
-      var u = await sb.from("maternity").update(row).eq("id", m.id).select().single();
-      if (u.error) throw u.error;
-      return rowToMat(u.data);
+    // Accept either `id` or `_id` — rowToMat exposes both and some app
+    // code paths only carry `_id`. Without this fallback an existing-
+    // record update would silently degrade to an INSERT and either
+    // duplicate the row or trip a unique constraint.
+    var existingId = (m && (m.id != null ? m.id : m._id));
+    // Decorate any thrown error with the request payload + a mode tag so
+    // the UI alert is actually useful instead of an opaque 'Could not save'.
+    function decorate(err, mode) {
+      try {
+        var msg = (err && (err.message || err.hint || err.details))
+          || (err && JSON.stringify(err))
+          || "unknown error";
+        var e = new Error("[mat " + mode + "] " + msg + (err && err.code ? " (code " + err.code + ")" : ""));
+        e.cause = err;
+        e._payload = row;
+        e._id      = existingId;
+        return e;
+      } catch (_) { return err; }
     }
-    var i = await sb.from("maternity").insert(row).select().single();
-    if (i.error) throw i.error;
-    return rowToMat(i.data);
+    if (existingId != null) {
+      // .maybeSingle() instead of .single() — if RLS lets the UPDATE
+      // through but blocks the SELECT-after-update we still don't want
+      // the call to look like a failure. Reconstruct the saved object
+      // from the input row when no row comes back.
+      var u = await sb.from("maternity").update(row).eq("id", existingId).select().maybeSingle();
+      if (u.error) { console.error("[BOA DB] saveMat update:", u.error, "payload:", row, "id:", existingId); throw decorate(u.error, "update"); }
+      return rowToMat(u.data || Object.assign({ id: existingId }, row));
+    }
+    var i = await sb.from("maternity").insert(row).select().maybeSingle();
+    if (i.error) { console.error("[BOA DB] saveMat insert:", i.error, "payload:", row); throw decorate(i.error, "insert"); }
+    return rowToMat(i.data || row);
   }
   async function deleteMat(id) {
     var r = await sb.from("maternity").delete().eq("id", id);
@@ -1108,6 +1141,7 @@
     listRecentKioskCheckins:      listRecentKioskCheckins,
     listStoreOpenings:            listStoreOpenings,
     loadEarlyLeaves:              loadEarlyLeaves,
+    deleteEarlyLeaves:            deleteEarlyLeaves,
     loadKioskProof:               loadKioskProof,
     probeRecentClockinsRaw:    probeRecentClockinsRaw,
     probeAttendanceGrid:       probeAttendanceGrid,
