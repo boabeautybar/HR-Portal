@@ -7433,6 +7433,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // from another browser are picked up.
   const [kioskPins, setKioskPins] = useState({});
   const [kioskPinsLoaded, setKioskPinsLoaded] = useState(false);
+  const [kioskSecurityConfig, setKioskSecurityConfig] = useState({ disableDeviceVerification: false });
   const [kioskPinReveal, setKioskPinReveal] = useState({}); // branchName -> bool
   const [kioskPinSaving, setKioskPinSaving] = useState(null); // branchName currently being saved
   const [kioskDevices, setKioskDevices] = useState({});
@@ -7482,10 +7483,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       try {
         const map = await window.BOA_DB.loadKioskPins();
         const devices = await window.BOA_DB.loadByKey("boa_kiosk_devices_v1") || {};
+        const config = await window.BOA_DB.loadByKey("boa_kiosk_security_config_v1") || { disableDeviceVerification: false };
         if (!cancelled) { 
           setKioskPins(map || {}); 
           setKioskPinsLoaded(true); 
           setKioskDevices(devices);
+          setKioskSecurityConfig(config);
         }
       } catch (e) { console.error("loadKioskPins/Devices:", e); }
     })();
@@ -18032,7 +18035,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:PINK.ink }}>🔑 Kiosk PINs</div>
                   <div style={{ fontSize:12, color:"#6b7280", marginTop:2 }}>4-digit PINs that unlock the manager dashboard on the check-in tablet. Staff PIN is shared and managed separately.</div>
                 </div>
-                <div style={{ fontSize:11, color:"#9ca3af" }}>{kioskPinsLoaded ? Object.keys(kioskPins).length + " custom · " + SALONS.length + " branches total" : "Loading…"}</div>
+                <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                  <button onClick={async () => {
+                    const next = { ...kioskSecurityConfig, disableDeviceVerification: !kioskSecurityConfig.disableDeviceVerification };
+                    setKioskSecurityConfig(next);
+                    if (window.BOA_DB && window.BOA_DB.sb) {
+                      await window.BOA_DB.sb.from("app_state").upsert({ key: "boa_kiosk_security_config_v1", value: next });
+                    }
+                  }} style={{ background: kioskSecurityConfig.disableDeviceVerification ? "#fee2e2" : "#e0f2fe", border:"none", borderRadius:6, padding:"6px 12px", cursor:"pointer", fontSize:11, fontWeight:700, color: kioskSecurityConfig.disableDeviceVerification ? "#991b1b" : "#0369a1" }}>
+                    {kioskSecurityConfig.disableDeviceVerification ? "🔴 Device Verification Disabled" : "🟢 Device Verification Enabled"}
+                  </button>
+                  <div style={{ fontSize:11, color:"#9ca3af" }}>{kioskPinsLoaded ? Object.keys(kioskPins).length + " custom · " + SALONS.length + " branches total" : "Loading…"}</div>
+                </div>
               </div>
 
               <div style={{ background:"#fef9c3", border:"1px solid #fde68a", borderRadius:10, padding:"10px 14px", fontSize:12, color:"#78350f", marginBottom:14 }}>
