@@ -10386,11 +10386,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {filtered.length===0 && filteredMgrs.length===0 && <tr><td colSpan={10} style={{ textAlign:"center", padding:40, color:"#9ca3af" }}>No results.</td></tr>}
+                    {filtered.length===0 && filteredMgrs.length===0 && <tr><td colSpan={11} style={{ textAlign:"center", padding:40, color:"#9ca3af" }}>No results.</td></tr>}
 
                     {/* Managers section header */}
                     {filteredMgrs.length > 0 && (
-                      <tr><td colSpan={10} style={{ background:"#FDEEF5", padding:"8px 14px", fontSize:11, fontWeight:800, letterSpacing:"0.12em", color:"#831843", textTransform:"uppercase", borderTop:"2px solid #FBCFE8", borderBottom:"1px solid #FBCFE8" }}>
+                      <tr><td colSpan={11} style={{ background:"#FDEEF5", padding:"8px 14px", fontSize:11, fontWeight:800, letterSpacing:"0.12em", color:"#831843", textTransform:"uppercase", borderTop:"2px solid #FBCFE8", borderBottom:"1px solid #FBCFE8" }}>
                         👑 Managers · {filteredMgrs.length}
                       </td></tr>
                     )}
@@ -10430,7 +10430,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
                     {/* Nail Techs section header */}
                     {filteredMgrs.length > 0 && filtered.length > 0 && (
-                      <tr><td colSpan={10} style={{ background:"#FDEEF5", padding:"8px 14px", fontSize:11, fontWeight:800, letterSpacing:"0.12em", color:"#831843", textTransform:"uppercase", borderTop:"2px solid #FBCFE8", borderBottom:"1px solid #FBCFE8" }}>
+                      <tr><td colSpan={11} style={{ background:"#FDEEF5", padding:"8px 14px", fontSize:11, fontWeight:800, letterSpacing:"0.12em", color:"#831843", textTransform:"uppercase", borderTop:"2px solid #FBCFE8", borderBottom:"1px solid #FBCFE8" }}>
                         💅 Nail Techs · {filtered.length}
                       </td></tr>
                     )}
