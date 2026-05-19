@@ -33,7 +33,6 @@ console.log("Parsing Consolidated_Staff_Data.csv...");
 fs.createReadStream(csvPath)
   .pipe(csv())
   .on('data', (row) => {
-    // Clean empty fields to null for robust database compatibility
     const cleanRow = {};
     for (const [key, value] of Object.entries(row)) {
       const trimmed = value ? value.trim() : '';
@@ -47,6 +46,30 @@ fs.createReadStream(csvPath)
         cleanRow[key] = trimmed;
       }
     }
+
+    // Proactively fill defaults for columns with NOT NULL constraints in your Supabase table schema
+    if (cleanRow.branch === null) {
+      cleanRow.branch = "Unassigned";
+    }
+    if (cleanRow.contract === null) {
+      cleanRow.contract = "NO CONTRACT";
+    }
+    if (cleanRow.role_type === null) {
+      cleanRow.role_type = "tech";
+    }
+    if (cleanRow.role === null) {
+      cleanRow.role = "Nail Tech";
+    }
+    if (cleanRow.permit === null) {
+      cleanRow.permit = "sa_citizen"; // safe standard default
+    }
+    if (cleanRow.active === null) {
+      cleanRow.active = cleanRow.left_date ? false : true;
+    }
+    if (cleanRow.is_shadow === null) {
+      cleanRow.is_shadow = false;
+    }
+
     rows.push(cleanRow);
   })
   .on('end', async () => {
@@ -55,6 +78,7 @@ fs.createReadStream(csvPath)
     // Upload in chunks of 50 to avoid PostgreSQL timeouts and payload limits
     const chunkSize = 50;
     let successfulCount = 0;
+    let failedChunks = 0;
     
     for (let i = 0; i < rows.length; i += chunkSize) {
       const chunk = rows.slice(i, i + chunkSize);
@@ -74,14 +98,22 @@ fs.createReadStream(csvPath)
         if (!response.ok) {
           const errMsg = await response.text();
           console.error(`\n❌ Error uploading chunk starting at index ${i}:`, errMsg);
+          failedChunks++;
         } else {
           successfulCount += chunk.length;
           process.stdout.write(`\r🚀 Seeding progress: ${successfulCount} / ${rows.length} rows inserted...`);
         }
       } catch (err) {
         console.error(`\n❌ Network error uploading chunk at index ${i}:`, err.message);
+        failedChunks++;
       }
     }
     
-    console.log(`\n\n🎉 Seeding finished! Successfully loaded ${successfulCount} of ${rows.length} records into "Consolodated Staff List".`);
+    console.log(`\n\n🎉 Seeding finished!`);
+    console.log(`✅ Successfully loaded: ${successfulCount} / ${rows.length} profiles.`);
+    if (failedChunks > 0) {
+      console.log(`⚠️  Warning: ${failedChunks} chunk(s) failed. See logs above for exact database constraints violated.`);
+    } else {
+      console.log(`😎 Clean sweep! All records successfully imported.`);
+    }
   });
