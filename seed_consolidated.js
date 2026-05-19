@@ -47,7 +47,30 @@ fs.createReadStream(csvPath)
       }
     }
 
-    // Proactively fill defaults for columns with NOT NULL constraints in your Supabase table schema
+    // --- Proactively handle NOT NULL constraints in your Supabase schema ---
+
+    // 1. Resolve missing first_name & surname (common in Supabase-only records)
+    if (cleanRow.first_name === null) {
+      if (cleanRow.name) {
+        cleanRow.first_name = cleanRow.name.split(' ')[0] || "Staff";
+      } else {
+        cleanRow.first_name = "Staff";
+      }
+    }
+    if (cleanRow.surname === null) {
+      if (cleanRow.name) {
+        cleanRow.surname = cleanRow.name.split(' ').slice(1).join(' ') || "Member";
+      } else {
+        cleanRow.surname = "Member";
+      }
+    }
+
+    // 2. Resolve missing start_date
+    if (cleanRow.start_date === null) {
+      cleanRow.start_date = "2026-01-01"; // Fallback safe start date
+    }
+
+    // 3. Resolve other constrained columns
     if (cleanRow.branch === null) {
       cleanRow.branch = "Unassigned";
     }
@@ -61,7 +84,7 @@ fs.createReadStream(csvPath)
       cleanRow.role = "Nail Tech";
     }
     if (cleanRow.permit === null) {
-      cleanRow.permit = "sa_citizen"; // safe standard default
+      cleanRow.permit = "sa_citizen";
     }
     if (cleanRow.active === null) {
       cleanRow.active = cleanRow.left_date ? false : true;
