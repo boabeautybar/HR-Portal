@@ -870,10 +870,15 @@ const EmployeeDataLibrary = ({ staff = [], currentUser, managers = [], obList = 
           >
             <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 16 }}>
               <div style={{ width: 56, height: 56, borderRadius: "50%", background: "linear-gradient(135deg, #FDEEF5 0%, #FBCFE8 100%)", color: "#BE185D", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, fontWeight: 800 }}>
-                {emp.name ? emp.name.charAt(0).toUpperCase() : "?"}
+                {(() => {
+                   const dName = emp.name || `${emp.firstName || ""} ${emp.surname || ""}`.trim();
+                   return dName ? dName.charAt(0).toUpperCase() : "?";
+                })()}
               </div>
               <div>
-                <div style={{ fontSize: 18, fontWeight: 800, color: "#111827", marginBottom: 4, fontFamily: "'Outfit', sans-serif" }}>{emp.name}</div>
+                <div style={{ fontSize: 18, fontWeight: 800, color: "#111827", marginBottom: 4, fontFamily: "'Outfit', sans-serif" }}>
+                  {emp.name || `${emp.firstName || ""} ${emp.surname || ""}`.trim() || "Unknown Staff"}
+                </div>
                 <div style={{ fontSize: 13, color: "#6b7280", fontWeight: 600 }}>{emp.position || emp.role || "Nail Tech"}</div>
               </div>
             </div>
