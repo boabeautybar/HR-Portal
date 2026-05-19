@@ -17,13 +17,28 @@
   });
 
   // ---------- Row ↔ React-shape transforms ----------
+  function getRoleType(ec, existingRole) {
+    if (!ec) return existingRole || "tech";
+    const code = ec.toUpperCase();
+    if (code.endsWith("-M")) return "manager";
+    if (code.endsWith("-W")) return "warehouse";
+    if (code.endsWith("-F")) return "maintenance";
+    if (code.endsWith("-CC")) return "call_centre";
+    if (code.endsWith("-C")) return "cleaner";
+    return existingRole || "tech";
+  }
+
   function rowToStaff(r) {
     return {
       _id:           r.id,
       id:            r.id,
       ec:            r.employee_code,
+      firstName:     r.first_name     || "",
+      surname:       r.surname        || "",
       name:          r.name           || "",
       branch:        r.branch         || "",
+      role:          r.role           || "",
+      roleType:      getRoleType(r.employee_code, r.role_type),
       contract:      r.contract       || null,
       permit:        r.permit         || null,
       permitExpiry:  r.permit_expiry  || null,
@@ -35,12 +50,22 @@
       transferNote:  r.transfer_note  || null,
       leftDate:      r.left_date      || null,
       startDate:     r.start_date     || null,
-      level:         r.level          || null
+      level:         r.level          || null,
+      cellNumber:    r.cell_number    || "",
+      email:         r.email          || "",
+      address:       r.address        || r.home_address || "",
+      idNumber:      r.id_number      || "",
+      passport:      r.passport       || r.passport_number || "",
+      taxNumber:     r.tax_number     || "",
+      gender:        r.gender         || "",
+      active:        r.active !== undefined ? (typeof r.active === 'string' ? r.active.toUpperCase() === 'TRUE' : !!r.active) : !r.left_date
     };
   }
   function staffToRow(s) {
     return {
       employee_code: s.ec,
+      first_name:    s.firstName || null,
+      surname:       s.surname   || null,
       name:          s.name || "",
       branch:        s.branch || "",
       contract:      s.contract || null,
@@ -55,8 +80,14 @@
       left_date:     s.leftDate || null,
       start_date:    s.startDate || null,
       level:         s.level || null,
-      role_type:     "tech",
-      active:        !s.leftDate
+      role_type:     getRoleType(s.ec, s.roleType),
+      active:        s.active !== undefined ? s.active : !s.leftDate,
+      cell_number:   s.cellNumber || null,
+      email:         s.email || null,
+      address:       s.address || null,
+      id_number:     s.idNumber || null,
+      tax_number:    s.taxNumber || null,
+      gender:        s.gender || null
     };
   }
 
@@ -65,9 +96,12 @@
       _id:    r.id,
       id:     r.id,
       ec:     r.employee_code,
+      firstName:     r.first_name     || "",
+      surname:       r.surname        || "",
       name:   r.name   || "",
       branch: r.branch || "",
       role:   r.role   || "",
+      roleType: getRoleType(r.employee_code, r.role_type),
       notes:  r.notes  || "",
       contract:     r.contract      || null,
       permit:       r.permit        || null,
@@ -76,12 +110,23 @@
       transferTo:   r.transfer_to   || null,
       transferDate: r.transfer_date || null,
       transferNote: r.transfer_note || null,
-      startDate:    r.start_date    || null
+      startDate:    r.start_date    || null,
+      leftDate:     r.left_date     || null,
+      cellNumber:   r.cell_number   || "",
+      email:        r.email         || "",
+      address:      r.address       || r.home_address || "",
+      idNumber:     r.id_number     || "",
+      passport:     r.passport      || r.passport_number || "",
+      taxNumber:    r.tax_number    || "",
+      gender:       r.gender        || "",
+      active:       r.active !== undefined ? (typeof r.active === 'string' ? r.active.toUpperCase() === 'TRUE' : !!r.active) : !r.left_date
     };
   }
   function managerToRow(m) {
     return {
       employee_code: m.ec,
+      first_name:    m.firstName || null,
+      surname:       m.surname   || null,
       name:          m.name || "",
       branch:        m.branch || "",
       role:          m.role || null,
@@ -94,8 +139,15 @@
       transfer_date: m.transferDate || null,
       transfer_note: m.transferNote || null,
       start_date:    m.startDate || null,
-      role_type:     "manager",
-      active:        true
+      left_date:     m.leftDate || null,
+      role_type:     m.roleType || "manager",
+      active:        m.active !== undefined ? m.active : !m.leftDate,
+      cell_number:   m.cellNumber || null,
+      email:         m.email || null,
+      address:       m.address || null,
+      id_number:     m.idNumber || null,
+      tax_number:    m.taxNumber || null,
+      gender:        m.gender || null
     };
   }
 
@@ -128,18 +180,24 @@
 
   // ---------- Initial load ----------
   async function loadAll() {
-    var [techs, mgrs, mat] = await Promise.all([
-      sb.from("staff").select("*").eq("role_type", "tech").order("employee_code"),
-      sb.from("staff").select("*").eq("role_type", "manager").order("employee_code"),
+    var [allRows, mat] = await Promise.all([
+      sb.from("Consolodated Staff List").select("*").order("employee_code"),
       sb.from("maternity").select("*")
     ]);
-    if (techs.error) console.error("[BOA DB] staff:",     techs.error);
-    if (mgrs.error)  console.error("[BOA DB] managers:",  mgrs.error);
-    if (mat.error)   console.error("[BOA DB] maternity:", mat.error);
+    if (allRows.error) console.error("[BOA DB] staff list load error:", allRows.error);
+    if (mat.error)     console.error("[BOA DB] maternity load error:", mat.error);
+
+    var data = allRows.data || [];
+    // Separate into techs and managers
+    // Managers are those with role_type === 'manager'
+    // Techs are everyone else (role_type !== 'manager', including empty/null role_types)
+    var techs = data.filter(function (r) { return r.role_type !== "manager"; }).map(rowToStaff);
+    var mgrs  = data.filter(function (r) { return r.role_type === "manager"; }).map(rowToManager);
+
     return {
-      staff:    (techs.data || []).map(rowToStaff),
-      managers: (mgrs.data  || []).map(rowToManager),
-      matRecs:  (mat.data   || []).map(rowToMat)
+      staff:    techs,
+      managers: mgrs,
+      matRecs:  (mat.data || []).map(rowToMat)
     };
   }
 
@@ -147,16 +205,16 @@
   async function saveStaff(s) {
     var row = staffToRow(s);
     if (s.id) {
-      var u = await sb.from("staff").update(row).eq("id", s.id).select().single();
+      var u = await sb.from("Consolodated Staff List").update(row).eq("id", s.id).select().single();
       if (u.error) throw u.error;
       return rowToStaff(u.data);
     }
-    var i = await sb.from("staff").insert(row).select().single();
+    var i = await sb.from("Consolodated Staff List").insert(row).select().single();
     if (i.error) throw i.error;
     return rowToStaff(i.data);
   }
   async function deleteStaff(id) {
-    var r = await sb.from("staff").delete().eq("id", id);
+    var r = await sb.from("Consolodated Staff List").delete().eq("id", id);
     if (r.error) throw r.error;
   }
 
@@ -164,16 +222,16 @@
   async function saveManager(m) {
     var row = managerToRow(m);
     if (m.id) {
-      var u = await sb.from("staff").update(row).eq("id", m.id).select().single();
+      var u = await sb.from("Consolodated Staff List").update(row).eq("id", m.id).select().single();
       if (u.error) throw u.error;
       return rowToManager(u.data);
     }
-    var i = await sb.from("staff").insert(row).select().single();
+    var i = await sb.from("Consolodated Staff List").insert(row).select().single();
     if (i.error) throw i.error;
     return rowToManager(i.data);
   }
   async function deleteManager(id) {
-    var r = await sb.from("staff").delete().eq("id", id);
+    var r = await sb.from("Consolodated Staff List").delete().eq("id", id);
     if (r.error) throw r.error;
   }
 
@@ -864,7 +922,7 @@
     var ids = Array.from(new Set(rows.map(function (r) { return r.staff_id; }).filter(Boolean)));
     var staffById = {};
     if (ids.length) {
-      var sres = await sb.from("staff").select("id, name, employee_code, role_type, branch").in("id", ids);
+      var sres = await sb.from("Consolodated Staff List").select("id, name, employee_code, role_type, branch").in("id", ids);
       if (!sres.error) (sres.data || []).forEach(function (s) { staffById[s.id] = s; });
     }
     return { rows: rows, count: rows.length, staffById: staffById, sinceIso: since.toISOString() };
