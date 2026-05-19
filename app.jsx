@@ -9028,7 +9028,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const onMat    = all.filter(s=>s.onMat);
     const onUnpaidLegal = all.filter(s=>s.onUnpaidLegal);    // greyed at the bottom
     const offboarded = all.filter(s=>s.offboarded);          // greyed in UI, only those within the 31-day window
-    const arriving = all.filter(s=>s.isShadow);              // pending incoming transfers — shown but not counted
+    // Pending incoming transfers — derived live from any real record
+    // whose transferring flag points HERE. Shown but not counted.
+    // Derived (rather than read from in-state shadow records) so the
+    // arriving row survives a page refresh and so it doesn't pollute
+    // the staff / manager lists with an undeletable duplicate row.
+    const arriving = enriched
+      .filter(s => !s.isShadow && s.transferring && s.transferTo === salon.name && s.transferDate)
+      .map(s => ({ ...s, _id: "shadow-" + s.ec, branch: salon.name, transferFrom: s.branch, isShadow: true }));
     
     // Trial candidates assigned to this branch and not yet passed/failed
     const trial = trialList.filter(c => c.branch === salon.name && c.status !== "passed" && c.status !== "failed");
@@ -9044,6 +9051,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const uLabel = { critical:"UNSTAFFED", high:"UNDERSTAFFED", low:"NEEDS STAFF", full:"AT CAPACITY" };
 
   async function saveStaff(f) {
+    // Shadow records are derived UI rows — closing the edit modal on one
+    // is a no-op, not a DB write. (The real record at the source branch
+    // is what carries the transfer; edit that one instead.)
+    if (f && f.isShadow) { setStaffModal(null); return; }
     try {
       const isEdit = f._id !== undefined;
       const saved = await window.BOA_DB.saveStaff(f);
@@ -9076,6 +9087,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   async function hardDeleteStaff(rec) {
     if (!currentUser?.isOwner) { alert("Only the owner can hard-delete staff."); return; }
     if (!rec || !rec._id) return;
+    // Shadow records are derived UI rows, not real DB entries — clearing
+    // one just means dropping it from local state.
+    if (rec.isShadow) {
+      setStaff(p => p.filter(x => x._id !== rec._id));
+      setStaffModal(null);
+      return;
+    }
     const label = (rec.name || "") + (rec.ec ? " (" + rec.ec + ")" : "");
     if (!window.confirm("PERMANENTLY DELETE " + label + "?\n\nThis removes the staff record from the database and any off-boarding entry. The person will vanish from every view, including the Off-boarding tab. This can't be undone.\n\nFor normal departures use Off-board instead.")) return;
     try {
@@ -9120,20 +9138,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       return;
     }
     setList(p => {
-      // Drop any existing shadow record so re-edits don't duplicate it.
+      // Drop any pre-existing shadow record (legacy state from before
+      // shadows were derive-only) so the list doesn't duplicate the row.
       let list = p.filter(x => !(x.isShadow && x.ec === staff.ec));
       list = list.map(x => x._id !== staff._id ? x : { ...x, ...saved });
-      if (isPending) {
-        list = [...list, {
-          ...saved, _id:++seed,
-          branch:toBranch,
-          transferring:true,
-          transferFrom:staff.branch,
-          transferDate,
-          transferNote:note,
-          isShadow:true,
-        }];
-      }
       return list;
     });
     setTransferModal(null);
@@ -9248,6 +9256,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     } catch (e) { alert("Could not delete: " + (e.message || e)); }
   }
   async function saveMgr(f, newPin) {
+    // Shadow records are derived UI rows — closing the edit modal on one
+    // is a no-op, not a DB write. (Edit the real record at the source
+    // branch to change transfer details.)
+    if (f && f.isShadow) { setMgrModal(null); return; }
     try {
       const isEdit = f._id !== undefined;
       const saved = await window.BOA_DB.saveManager(f);
@@ -9284,6 +9296,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }
   async function delMgr(id) {
     const target = managers.find(x => x._id === id);
+    // Shadow records are derived UI rows, not real DB entries — clearing
+    // them just means dropping them from local state. (Legacy state from
+    // before shadows were derive-only may still carry a synthetic _id
+    // like "shadow-EC" or a small integer that's not a valid UUID; the
+    // DB call below would 400 on those.)
+    if (target && target.isShadow) {
+      setManagers(p => p.filter(x => x._id !== id));
+      setMgrModal(null);
+      return;
+    }
     try {
       await window.BOA_DB.deleteManager(id);
       setManagers(p => p.filter(x => x._id !== id));
