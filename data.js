@@ -169,18 +169,24 @@
 
   // ---------- Initial load ----------
   async function loadAll() {
-    var [techs, mgrs, mat] = await Promise.all([
-      sb.from("Consolodated Staff List").select("*").eq("role_type", "tech").order("employee_code"),
-      sb.from("Consolodated Staff List").select("*").eq("role_type", "manager").order("employee_code"),
+    var [allRows, mat] = await Promise.all([
+      sb.from("Consolodated Staff List").select("*").order("employee_code"),
       sb.from("maternity").select("*")
     ]);
-    if (techs.error) console.error("[BOA DB] staff:",     techs.error);
-    if (mgrs.error)  console.error("[BOA DB] managers:",  mgrs.error);
-    if (mat.error)   console.error("[BOA DB] maternity:", mat.error);
+    if (allRows.error) console.error("[BOA DB] staff list load error:", allRows.error);
+    if (mat.error)     console.error("[BOA DB] maternity load error:", mat.error);
+
+    var data = allRows.data || [];
+    // Separate into techs and managers
+    // Managers are those with role_type === 'manager'
+    // Techs are everyone else (role_type !== 'manager', including empty/null role_types)
+    var techs = data.filter(function (r) { return r.role_type !== "manager"; }).map(rowToStaff);
+    var mgrs  = data.filter(function (r) { return r.role_type === "manager"; }).map(rowToManager);
+
     return {
-      staff:    (techs.data || []).map(rowToStaff),
-      managers: (mgrs.data  || []).map(rowToManager),
-      matRecs:  (mat.data   || []).map(rowToMat)
+      staff:    techs,
+      managers: mgrs,
+      matRecs:  (mat.data || []).map(rowToMat)
     };
   }
 
