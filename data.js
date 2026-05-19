@@ -1167,7 +1167,9 @@
     loadComplianceActions:  loadComplianceActions,
     saveComplianceActions:  saveComplianceActions,
     loadUnpaidLegalRecords: loadUnpaidLegalRecords,
-    saveUnpaidLegalRecords: saveUnpaidLegalRecords
+    saveUnpaidLegalRecords: saveUnpaidLegalRecords,
+    loadKioskSecurityLogs:  loadKioskSecurityLogs,
+    saveKioskDevices:       saveKioskDevices
   };
 
   // ── Custom locations ─────────────────────────────────────────────────
@@ -1201,6 +1203,21 @@
   async function saveKioskPins(map) {
     var res = await sb.from("app_state").upsert({ key: "boa_kiosk_pins_v1", value: map || {} });
     if (res.error) { console.error("saveKioskPins:", res.error); throw res.error; }
+    return map;
+  }
+
+  // ── Kiosk Security Logs ──────────────────────────────────────────────
+  async function loadKioskSecurityLogs() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_kiosk_security_logs_v1").maybeSingle();
+    if (res.error) { console.error("loadKioskSecurityLogs:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+
+  // ── Kiosk Devices ────────────────────────────────────────────────────
+  async function saveKioskDevices(map) {
+    var res = await sb.from("app_state").upsert({ key: "boa_kiosk_devices_v1", value: map || {} });
+    if (res.error) { console.error("saveKioskDevices:", res.error); throw res.error; }
     return map;
   }
 })();
