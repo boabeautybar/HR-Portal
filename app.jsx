@@ -10293,7 +10293,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5 }}>
                   <thead>
                     <tr style={{ background:"#831843", color:"#FFFFFF" }}>
-                      {["EC ↑","Name","Branch","Level","Contract","Compliance","Start Date","Status","Return Date",""].map(h=>(
+                      {["EC ↑","First Name","Surname","Branch","Level","Role","Compliance","Start Date","Status","Return Date",""].map(h=>(
                         <th key={h} style={{ padding:"11px 12px", textAlign:"left", fontWeight:600, fontSize:9.5, letterSpacing:"0.07em", whiteSpace:"nowrap" }}>{h.toUpperCase()}</th>
                       ))}
                     </tr>
@@ -10316,19 +10316,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <tr key={"mgr-" + (m._id || m.ec)} style={{ background:rowBg, borderTop:`1px solid ${bdr}`, opacity:rowOpacity }}>
                           <td style={{ padding:"10px 12px", fontFamily:"monospace", fontSize:11, color:"#8E5570", fontWeight:700 }}>{m.ec}</td>
                           <td style={{ padding:"10px 12px", fontWeight:700, color: m.onMat ? "#7A4258" : "#111827", whiteSpace:"nowrap", fontStyle: m.onMat?"italic":"normal" }}>
-                            {m.onMat ? "🤱 " : m.pregnant ? "🤰 " : ""}{icon} {m.name}
+                            {m.onMat ? "🤱 " : m.pregnant ? "🤰 " : ""}{icon} {m.firstName || m.name?.split(' ')[0] || ""}
                             {m.transferring && <span style={{ fontSize:10, marginLeft:5, background:"#FBCFE8", color:"#BE185D", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>→ {m.transferTo} on {m.transferDate ? new Date(m.transferDate).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"}) : ""}</span>}
+                          </td>
+                          <td style={{ padding:"10px 12px", fontWeight:700, color: m.onMat ? "#7A4258" : "#111827", whiteSpace:"nowrap", fontStyle: m.onMat?"italic":"normal" }}>
+                            {m.surname || m.name?.split(' ').slice(1).join(' ') || ""}
                           </td>
                           <td style={{ padding:"10px 12px", color:"#475569", fontSize:12, whiteSpace:"nowrap" }}>📍 {m.branch || "—"}</td>
                           <td style={{ padding:"10px 12px", color:"#9ca3af" }}>—</td>
-                          <td style={{ padding:"10px 12px", color:"#475569", fontSize:12, whiteSpace:"nowrap" }}>{m.contract || "—"}</td>
-                          <td style={{ padding:"10px 12px" }}>{m.permit ? <Chip {...(COMPLIANCE[m.permit] || { icon:"❔", color:"#6b7280", bg:"#f3f4f6", border:"#d1d5db", label:m.permit })}>{(COMPLIANCE[m.permit] || {}).label || m.permit}</Chip> : <span style={{ color:"#9ca3af" }}>—</span>}</td>
-                          <td style={{ padding:"10px 12px", fontSize:11, color:"#831843", fontWeight:600, whiteSpace:"nowrap" }}>{m.startDate ? new Date(m.startDate + "T00:00:00").toLocaleDateString("en-ZA",{day:"2-digit",month:"short",year:"numeric"}) : <span style={{ color:"#d1d5db" }}>—</span>}</td>
                           <td style={{ padding:"10px 12px" }}>
-                            <span style={{ fontSize:10, fontWeight:800, background:roleBg, color:"#fff", padding:"3px 8px", borderRadius:6, letterSpacing:"0.04em" }}>{m.role || "—"}</span>
+                            <span style={{ fontSize:10, fontWeight:800, background:roleBg, color:"#fff", padding:"3px 8px", borderRadius:6, letterSpacing:"0.04em" }}>{m.role || m.roleType || "Manager"}</span>
+                          </td>
+                          <td style={{ padding:"10px 12px" }}>{m.permit ? <Chip {...(COMPLIANCE[m.permit] || { icon:"❔", color:"#6b7280", bg:"#f3f4f6", border:"#d1d5db", label:m.permit })}>{(COMPLIANCE[m.permit] || {}).label || m.permit}</Chip> : <span style={{ color:"#9ca3af" }}>—</span>}</td>
+                          <td style={{ padding:"10px 12px", fontSize:11, color:"#831843", fontWeight:600, whiteSpace:"nowrap" }}>{m.startDate ? new Date(m.startDate.replace(/\//g, "-") + "T00:00:00").toLocaleDateString("en-ZA",{day:"2-digit",month:"short",year:"numeric"}) : <span style={{ color:"#d1d5db" }}>—</span>}</td>
+                          <td style={{ padding:"10px 12px" }}>
+                            <span style={{ fontSize:10, fontWeight:800, background:roleBg, color:"#fff", padding:"3px 8px", borderRadius:6, letterSpacing:"0.04em" }}>{m.active ? "Active" : "Archived"}</span>
                             {m.onMat && <span style={{ marginLeft:6, fontSize:10, background:"#FBCFE8", color:"#8E5570", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>🤱 mat.</span>}
                           </td>
-                          <td style={{ padding:"10px 12px", fontSize:11, color:"#831843" }}>{m.matRec && m.matRec.returnDate ? new Date(m.matRec.returnDate + "T00:00:00").toLocaleDateString("en-ZA",{day:"2-digit",month:"short"}) : <span style={{ color:"#d1d5db" }}>—</span>}</td>
+                          <td style={{ padding:"10px 12px", fontSize:11, color:"#831843" }}>{m.matRec && m.matRec.returnDate ? new Date(m.matRec.returnDate.replace(/\//g, "-") + "T00:00:00").toLocaleDateString("en-ZA",{day:"2-digit",month:"short"}) : <span style={{ color:"#d1d5db" }}>—</span>}</td>
                           <td style={{ padding:"10px 12px", textAlign:"right" }}>
                             <button onClick={()=>setMgrModal(m)} style={{ background:"#e2e8f0", border:"none", borderRadius:6, padding:"5px 11px", cursor:"pointer", fontSize:11, fontWeight:700, color:"#831843" }}>✏️ Edit</button>
                           </td>
@@ -10353,17 +10358,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <tr key={s._id} style={{ background:rowBg, borderTop:`1px solid ${bdr}`, opacity:rowOpacity }}>
                           <td style={{ padding:"10px 12px", fontFamily:"monospace", fontSize:11, color:"#8E5570", fontWeight:700, textDecoration: (departed || terminated) ? "line-through" : "none" }}>{s.ec}</td>
                           <td style={{ padding:"10px 12px", fontWeight:700, color: (departed || terminated) ? "#6b7280" : s.onMat?"#7A4258":s.transferring?"#0369a1":"#111827", whiteSpace:"nowrap", fontStyle:s.onMat?"italic":"normal", textDecoration: (departed && !terminated) ? "line-through" : "none" }}>
-                            {terminated?"🛑 Archived · ":departed?"👋 ":s.onMat?"🤱 ":s.pregnant?"🤰 ":s.isShadow?"🔄 Arriving · ":s.transferring&&!s.isShadow?"🔄 Transferring · ":""}{s.name}
-                            {s.transferring&&!s.isShadow&&<span style={{ fontSize:10, marginLeft:5, background:"#FBCFE8", color:"#BE185D", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>→ {s.transferTo} on {s.transferDate?new Date(s.transferDate).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"}):""}</span>}
-                            {s.isShadow&&<span style={{ fontSize:10, marginLeft:5, background:"#FBCFE8", color:"#BE185D", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>from {s.transferFrom} on {s.transferDate?new Date(s.transferDate).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"}):""}</span>}
+                            {terminated?"🛑 Archived · ":departed?"👋 ":s.onMat?"🤱 ":s.pregnant?"🤰 ":s.isShadow?"🔄 Arriving · ":s.transferring&&!s.isShadow?"🔄 Transferring · ":""}{s.firstName || s.name?.split(' ')[0] || ""}
+                            {s.transferring&&!s.isShadow&&<span style={{ fontSize:10, marginLeft:5, background:"#FBCFE8", color:"#BE185D", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>→ {s.transferTo} on {s.transferDate?new Date(s.transferDate.replace(/\//g, "-")).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"}):""}</span>}
+                            {s.isShadow&&<span style={{ fontSize:10, marginLeft:5, background:"#FBCFE8", color:"#BE185D", borderRadius:4, padding:"1px 6px", fontWeight:700 }}>from {s.transferFrom} on {s.transferDate?new Date(s.transferDate.replace(/\//g, "-")).toLocaleDateString("en-ZA",{day:"2-digit",month:"short"}):""}</span>}
+                          </td>
+                          <td style={{ padding:"10px 12px", fontWeight:700, color: (departed || terminated) ? "#6b7280" : s.onMat?"#7A4258":s.transferring?"#0369a1":"#111827", whiteSpace:"nowrap", fontStyle:s.onMat?"italic":"normal", textDecoration: (departed && !terminated) ? "line-through" : "none" }}>
+                            {s.surname || s.name?.split(' ').slice(1).join(' ') || ""}
                           </td>
                           <td style={{ padding:"10px 12px", fontSize:11, color:"#831843", whiteSpace:"nowrap" }}>📍 {s.branch}</td>
                           <td style={{ padding:"10px 12px" }}><LevelBadge level={s.level} /></td>
-                          <td style={{ padding:"10px 12px", fontSize:11 }}>{s.contract}</td>
+                          <td style={{ padding:"10px 12px", fontSize:11, fontWeight:600 }}>{s.role || s.roleType || "Nail Tech"}</td>
                           <td style={{ padding:"10px 12px" }}><CompBadge permit={s.permit} /></td>
                           <td style={{ padding:"10px 12px", fontSize:11, whiteSpace:"nowrap" }}>
                             {s.startDate ? (() => {
-                              const d = new Date(s.startDate + "T00:00:00");
+                              const d = new Date(s.startDate.replace(/\//g, "-") + "T00:00:00");
+                              if (isNaN(d)) return <span style={{ color:"#d1d5db" }}>Invalid</span>;
                               const days = Math.floor((Date.now() - d) / 86400000);
                               const dStr = d.toLocaleDateString("en-ZA", { day:"2-digit", month:"short", year:"numeric" });
                               const tenure = days < 365 ? days + "d" : (days/365).toFixed(1) + "y";
@@ -10382,7 +10391,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 ? <Chip bg="#fce7f3" color="#7A4258" border="#fbcfe8">🤱 On Maternity</Chip>
                                 : s.pregnant
                                   ? <Chip bg="#fef3c7" color="#92400e" border="#fde68a">🤰 Pregnant – In Store</Chip>
-                                  : <span style={{ color:"#d1d5db", fontSize:11 }}>—</span>}
+                                  : <span style={{ color:"#d1d5db", fontSize:11 }}>Active</span>}
                           </td>
                           <td style={{ padding:"10px 12px", fontSize:11 }}>
                             {s.onMat && s.matRec?.returnDate

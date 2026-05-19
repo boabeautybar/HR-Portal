@@ -17,6 +17,16 @@
   });
 
   // ---------- Row ↔ React-shape transforms ----------
+  function getRoleType(ec, existingRole) {
+    if (!ec) return existingRole || "tech";
+    const code = ec.toUpperCase();
+    if (code.endsWith("-M")) return "manager";
+    if (code.endsWith("-W")) return "warehouse";
+    if (code.endsWith("-F")) return "maintenance";
+    if (code.endsWith("-CC")) return "call_centre";
+    return existingRole || "tech";
+  }
+
   function rowToStaff(r) {
     return {
       _id:           r.id,
@@ -27,7 +37,7 @@
       name:          r.name           || "",
       branch:        r.branch         || "",
       role:          r.role           || "",
-      roleType:      r.role_type      || "tech",
+      roleType:      getRoleType(r.employee_code, r.role_type),
       contract:      r.contract       || null,
       permit:        r.permit         || null,
       permitExpiry:  r.permit_expiry  || null,
@@ -69,7 +79,7 @@
       left_date:     s.leftDate || null,
       start_date:    s.startDate || null,
       level:         s.level || null,
-      role_type:     s.roleType || "tech",
+      role_type:     getRoleType(s.ec, s.roleType),
       active:        s.active !== undefined ? s.active : !s.leftDate,
       cell_number:   s.cellNumber || null,
       email:         s.email || null,
@@ -90,7 +100,7 @@
       name:   r.name   || "",
       branch: r.branch || "",
       role:   r.role   || "",
-      roleType: r.role_type || "manager",
+      roleType: getRoleType(r.employee_code, r.role_type),
       notes:  r.notes  || "",
       contract:     r.contract      || null,
       permit:       r.permit        || null,
