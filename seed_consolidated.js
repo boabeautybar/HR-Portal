@@ -77,7 +77,22 @@ fs.createReadStream(csvPath)
     if (cleanRow.contract === null) {
       cleanRow.contract = "NO CONTRACT";
     }
-    if (cleanRow.role_type === null) {
+    if (cleanRow.employee_code) {
+      const code = cleanRow.employee_code.toUpperCase();
+      if (code.endsWith("-M")) {
+        cleanRow.role_type = "manager";
+      } else if (code.endsWith("-W")) {
+        cleanRow.role_type = "warehouse";
+      } else if (code.endsWith("-F")) {
+        cleanRow.role_type = "maintenance";
+      } else if (code.endsWith("-CC")) {
+        cleanRow.role_type = "call_centre";
+      } else if (code.endsWith("-C")) {
+        cleanRow.role_type = "cleaner";
+      } else if (cleanRow.role_type === null) {
+        cleanRow.role_type = "tech";
+      }
+    } else if (cleanRow.role_type === null) {
       cleanRow.role_type = "tech";
     }
     if (cleanRow.role === null) {

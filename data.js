@@ -24,6 +24,7 @@
     if (code.endsWith("-W")) return "warehouse";
     if (code.endsWith("-F")) return "maintenance";
     if (code.endsWith("-CC")) return "call_centre";
+    if (code.endsWith("-C")) return "cleaner";
     return existingRole || "tech";
   }
 
