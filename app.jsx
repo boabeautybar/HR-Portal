@@ -9064,6 +9064,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const arriving = enriched
       .filter(s => !s.isShadow && s.transferring && s.transferTo === salon.name && s.transferDate)
       .map(s => ({ ...s, _id: "shadow-" + s.ec, branch: salon.name, transferFrom: s.branch, isShadow: true }));
+    // Same idea for managers — incoming SM/SSM/AM appear on the
+    // destination card with an 'arriving from X on <date>' chip.
+    const arrivingMgrs = (managers || [])
+      .filter(m => m && !m.isShadow && m.transferring && m.transferTo === salon.name && m.transferDate)
+      .map(m => ({ ...m, _id: "shadow-" + m.ec, branch: salon.name, transferFrom: m.branch, isShadow: true }));
 
     // Trial candidates assigned to this branch and not yet passed/failed
     const trial = trialList.filter(c => c.branch === salon.name && c.status !== "passed" && c.status !== "failed");
@@ -9072,8 +9077,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const goal = salon.targetCapacity || salon.capacity;
     const fillRate = active.length / goal;
     const urgency = active.length === 0 ? "critical" : fillRate < 0.5 ? "high" : fillRate < 1 ? "low" : "full";
-    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, trial, urgency, goal };
-  }), [enriched, trialList]);
+    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, arrivingMgrs, trial, urgency, goal };
+  }), [enriched, managers, trialList]);
 
   const uColor = { critical: "#dc2626", high: "#f97316", low: "#eab308", full: "#16a34a" };
   const uLabel = { critical: "UNSTAFFED", high: "UNDERSTAFFED", low: "NEEDS STAFF", full: "AT CAPACITY" };
@@ -10945,6 +10950,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   {m.pregnant && <span style={{ fontSize: 9, color: "#8E5570", background: "#FCE7F3", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🤰 pregnant{m.matStart ? ` · leaves ${new Date(m.matStart).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                                   {!m.pregnant && m.notes && <span style={{ fontSize: 9, color: "#BE185D", fontStyle: "italic", maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.notes}>⚑</span>}
                                   <span style={{ fontSize: 9, background: "#FBCFE8", color: "#BE185D", border: "1px solid #bae6fd", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>AM</span>
+                                </div>
+                              ))}
+                              {/* Arriving (pending incoming transfer) — managers
+                              from another branch with transferTo === this salon.
+                              Shows the source store + expected start date. Same
+                              styling language as the tech 'arriving' block so the
+                              dashed-blue treatment is consistent across the card. */}
+                              {(salon.arrivingMgrs || []).map(m => (
+                                <div key={m._id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 7px", borderRadius: 7, background: "#FCE7F3", border: "1.5px dashed #93c5fd" }}>
+                                  <span style={{ fontSize: 13 }}>🔄</span>
+                                  <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: "#1d4ed8", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                    {m.name}
+                                    <span style={{ fontSize: 9, marginLeft: 5, color: "#2563eb", fontWeight: 400 }}>arriving from {m.transferFrom}{m.transferDate ? " on " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : ""}</span>
+                                  </span>
+                                  <span style={{ fontSize: 9, background: "#F9A8D4", color: "#1e40af", borderRadius: 4, padding: "1px 6px", fontWeight: 700, whiteSpace: "nowrap" }}>
+                                    {m.transferDate ? `${daysDiff(m.transferDate)}d` : "pending"}
+                                  </span>
+                                  <span style={{ fontSize: 9, background: m.role === "SSM" ? "#FEF3C7" : "#FBCFE8", color: m.role === "SSM" ? "#92400e" : "#BE185D", border: `1px solid ${m.role === "SSM" ? "#FDE68A" : "#E8C9D2"}`, borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{m.role || "—"}</span>
                                 </div>
                               ))}
                               {/* Off-boarded block — managers in the 31-day
