@@ -16908,12 +16908,120 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }
           });
         };
+        // Fourways — store hours 09:00–20:00 Mon-Sat, 09:00–19:00 Sun.
+        //
+        //   Mon-Sat (closer 11:00–20:00, optional opener 10:00–19:00):
+        //     1 SM working  → WE (08:00-17:00)
+        //     2+ SMs        → 1 SM opens (WE), the rest close (WL).
+        //                     Opener rotated fairly so the same SM doesn't
+        //                     always do the open.
+        //     AMs (regardless of SM count):
+        //       1   → WL (11:00-20:00)
+        //       2+  → 1 WM (10:00-19:00, rotated) + rest WL (11:00-20:00)
+        //   Sunday (one early 08:00-17:00 + one late 10:00-19:00):
+        //     1 SM  → WE; AMs → WL (10:00-19:00)
+        //     2+ SMs → 1 WE + rest WL (the second SM does the close).
+        //     No SM, 1 AM → WE (08:00-17:00, opener priority — covers
+        //                   store-open; 17-19 needs a tech)
+        //     No SM, 2+ AMs → 1 WE (rotated) + rest WL (10:00-19:00)
+        const _applyFourwaysShifts = (grid, dates, managers) => {
+          if (!grid) return;
+          const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
+          const _middleCount   = {};   // rotation for Mon-Sat WM (AMs, 10-19 opener)
+          const _earlyCount    = {};   // rotation for Sunday WE when no SM (AMs)
+          const _smEarlyCount  = {};   // rotation for SM opener vs closer when 2+ SMs
+          (managers || []).forEach(m => {
+            _middleCount[m.ec]   = 0;
+            _earlyCount[m.ec]    = 0;
+            _smEarlyCount[m.ec]  = 0;
+          });
+          const _pickLowest = (list, counter) => {
+            const sorted = list.slice().sort((a, b) =>
+              ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
+              (a.ec || "").localeCompare(b.ec || "")
+            );
+            const winner = sorted[0];
+            counter[winner.ec] = (counter[winner.ec] || 0) + 1;
+            return winner;
+          };
+          (dates || []).forEach(dy => {
+            const workers = (managers || []).filter(m =>
+              m && m.ec && grid[m.ec] && (
+                grid[m.ec][dy.d] === "W" ||
+                grid[m.ec][dy.d] === "WE" ||
+                grid[m.ec][dy.d] === "WB" ||
+                grid[m.ec][dy.d] === "WM" ||
+                grid[m.ec][dy.d] === "WL"
+              )
+            );
+            if (workers.length === 0) return;
+            // Reset to W so a re-run lands on the right labels.
+            workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
+            const sms = workers.filter(_isSM);
+            const ams = workers.filter(m => !_isSM(m));
+            // SM placement (shared for Sun + Mon-Sat): 1 SM always opens,
+            // any extra SMs take the closer slot so the store has a
+            // manager all the way to close.
+            if (sms.length === 1) {
+              grid[sms[0].ec][dy.d] = "WE";
+            } else if (sms.length >= 2) {
+              // SSM has opener priority — they take WE whenever they're on.
+              // 1 SSM   → SSM opens; SMs close.
+              // 2+ SSMs → rotate the opener among the SSMs.
+              // 0 SSMs  → rotate among the SMs (existing behaviour).
+              const ssms = sms.filter(m => /^SSM$/i.test((m && m.role) || ""));
+              const opener = ssms.length === 1 ? ssms[0]
+                           : ssms.length >= 2 ? _pickLowest(ssms, _smEarlyCount)
+                           :                    _pickLowest(sms,  _smEarlyCount);
+              grid[opener.ec][dy.d] = "WE";
+              sms.filter(m => m.ec !== opener.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+            }
+            const isSun = dy.dow === 0;
+            if (isSun) {
+              if (sms.length >= 1) {
+                // SM(s) already placed above; remaining AMs all close.
+                ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+              } else if (ams.length === 1) {
+                // Opener priority — store opens 09:00 so the lone AM
+                // takes the 08:00-17:00 shift even though it leaves
+                // 17-19 uncovered (HR can patch with a tech).
+                grid[ams[0].ec][dy.d] = "WE";
+              } else if (ams.length > 0) {
+                const opener = _pickLowest(ams, _earlyCount);
+                grid[opener.ec][dy.d] = "WE";
+                ams.filter(m => m.ec !== opener.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+              }
+              return;
+            }
+            // Mon-Sat — SM(s) already placed; AMs follow standard rule.
+            if (ams.length === 0) {
+              // pure SM day — already handled above
+            } else if (sms.length >= 1) {
+              // With an SM opener already locked in, AMs use the
+              // normal 1=WL / 2+=WM+WL split.
+              if (ams.length >= 2) {
+                const mid = _pickLowest(ams, _middleCount);
+                grid[mid.ec][dy.d] = "WM";
+                ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+              } else {
+                ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+              }
+            } else if (ams.length === 1) {
+              grid[ams[0].ec][dy.d] = "WL";
+            } else {
+              const mid = _pickLowest(ams, _middleCount);
+              grid[mid.ec][dy.d] = "WM";
+              ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+            }
+          });
+        };
         const _applyBranchShiftRules = (grid, dates, managers) => {
           if (!grid) return;
           if (branch === "Sandown") return _applyMgrShiftSplit(grid, dates, managers, new Set([1, 2, 3, 4, 5]));
           if (branch === "Table Bay") return _applyMgrShiftSplit(grid, dates, managers, new Set([1, 2, 3, 4, 5, 6]));
           if (branch === "Riverlands") return _applyRiverlandsShifts(grid, dates, managers);
           if (branch === "Ballito") return _applyBallitoShifts(grid, dates, managers);
+          if (branch === "Fourways") return _applyFourwaysShifts(grid, dates, managers);
         };
         // Apply to the freshly-generated grid (covers the no-draft path).
         _applyBranchShiftRules(result.grid, result.dates, result.managers);
@@ -17296,7 +17404,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // Sandown + Table Bay use per-shift hours (WE/WM/WL on the
             // cells + a banner above the grid), so the row subtitle drops
             // the generic 8–17 / 9:30–18:30 fallback for those stores.
-            const _hideHours = branch === "Sandown" || branch === "Table Bay" || branch === "Riverlands" || branch === "Ballito";
+            const _hideHours = branch === "Sandown" || branch === "Table Bay" || branch === "Riverlands" || branch === "Ballito" || branch === "Fourways";
             const sub = mg._offGhost
               ? "Left " + mg._offLeftDate + (mg._offReason ? " · " + mg._offReason : "")
               : mg._obStarting
@@ -17847,6 +17955,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <span><strong>Sunday</strong> · single shift 08:00–17:00 (WE)</span>
               </div>
             )}
+            {mgrSchedDraft && branch === "Fourways" && (
+              <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 14px", marginBottom: 10, fontSize: 12, color: "#065f46", display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center" }}>
+                <span style={{ fontSize: 11, fontWeight: 800, color: "#065f46", letterSpacing: "0.08em", textTransform: "uppercase" }}>🕐 Fourways manager shifts</span>
+                <span><strong>SM / SSM</strong> · 1 on duty → WE 08:00–17:00; <span style={{ color: "#0f766e" }}>2+ on duty → 1 WE opener + the rest WL closer (SSM gets opener priority; SMs rotate fairly)</span></span>
+                <span><strong>Mon–Sat</strong> (store 09:00–20:00) · <span style={{ color: "#0f766e" }}>WM 10:00–19:00 (only with 2+ AMs on duty, rotated)</span> · WL 11:00–20:00</span>
+                <span><strong>Sunday</strong> (store 09:00–19:00) · WE 08:00–17:00 · WL 10:00–19:00</span>
+              </div>
+            )}
 
             {/* Schedule grid */}
             {mgrSchedDraft && <div style={{ background: "#FFFFFF", borderRadius: 11, border: "1px solid #FBCFE8", overflow: "auto" }}>
@@ -17885,7 +18001,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             ? <div style={{ fontSize: 9, color: "#854d0e", fontWeight: 700, marginTop: 1, fontStyle: "italic" }}>🌱 starts {mg._obStartDate}</div>
                             : (mg.isShadow || mg.transferring)
                               ? null
-                              : (branch === "Sandown" || branch === "Table Bay" || branch === "Riverlands" || branch === "Ballito")
+                              : (branch === "Sandown" || branch === "Table Bay" || branch === "Riverlands" || branch === "Ballito" || branch === "Fourways")
                                 ? <div style={{ fontSize: 9, color: "#BE185D", marginTop: 1 }}>{mg.role === "SM" ? "Store Manager" : mg.role === "SSM" ? "Senior Store Manager" : "Assistant Manager"}</div>
                                 : <div style={{ fontSize: 9, color: "#BE185D", marginTop: 1 }}>{mg.role === "SM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · 9:30–18:30"}</div>
                         }
