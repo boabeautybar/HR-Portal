@@ -28,6 +28,25 @@
     return existingRole || "tech";
   }
 
+  // Drop keys whose value is null, undefined, or an empty string before
+  // sending to Supabase. PostgREST rejects the whole request if the
+  // payload references a column that isn't in its schema cache (or
+  // doesn't exist on the table at all). For routine writes like a branch
+  // transfer we only set transfer_* / branch — every other optional
+  // field comes through as null because the in-memory record was built
+  // by row-to-X with `r.field || ""`. Stripping those nulls lets the
+  // write succeed against deployments whose `staff` table doesn't have
+  // every column yet.
+  function _prune(row) {
+    var out = {};
+    for (var k in row) {
+      var v = row[k];
+      if (v === null || v === undefined || v === "") continue;
+      out[k] = v;
+    }
+    return out;
+  }
+
   function rowToStaff(r) {
     return {
       _id: r.id,
@@ -203,7 +222,7 @@
 
   // ---------- Staff CRUD ----------
   async function saveStaff(s) {
-    var row = staffToRow(s);
+    var row = _prune(staffToRow(s));
     if (s.id) {
       var u = await sb.from("staff").update(row).eq("id", s.id).select().single();
       if (u.error) throw u.error;
@@ -220,7 +239,7 @@
 
   // ---------- Manager CRUD ----------
   async function saveManager(m) {
-    var row = managerToRow(m);
+    var row = _prune(managerToRow(m));
     if (m.id) {
       var u = await sb.from("staff").update(row).eq("id", m.id).select().single();
       if (u.error) throw u.error;
