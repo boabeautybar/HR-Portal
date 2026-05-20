@@ -30,174 +30,174 @@
 
   function rowToStaff(r) {
     return {
-      _id:           r.id,
-      id:            r.id,
-      ec:            r.employee_code,
-      firstName:     r.first_name     || "",
-      surname:       r.surname        || "",
-      name:          r.name           || "",
-      branch:        r.branch         || "",
-      role:          r.role           || "",
-      roleType:      getRoleType(r.employee_code, r.role_type),
-      contract:      r.contract       || null,
-      permit:        r.permit         || null,
-      permitExpiry:  r.permit_expiry  || null,
-      notes:         r.notes          || "",
-      isShadow:      !!r.is_shadow,
-      transferring:  !!r.transferring,
-      transferTo:    r.transfer_to    || null,
-      transferDate:  r.transfer_date  || null,
-      transferNote:  r.transfer_note  || null,
-      leftDate:      r.left_date      || null,
-      startDate:     r.start_date     || null,
-      level:         r.level          || null,
-      cellNumber:    r.cell_number    || "",
-      email:         r.email          || "",
-      address:       r.address        || r.home_address || "",
-      idNumber:      r.id_number      || "",
-      passport:      r.passport       || r.passport_number || "",
-      taxNumber:     r.tax_number     || "",
-      gender:        r.gender         || "",
-      active:        r.active !== undefined ? (typeof r.active === 'string' ? r.active.toUpperCase() === 'TRUE' : !!r.active) : !r.left_date
+      _id: r.id,
+      id: r.id,
+      ec: r.employee_code,
+      firstName: r.first_name || "",
+      surname: r.surname || "",
+      name: r.name || "",
+      branch: r.branch || "",
+      role: r.role || "",
+      roleType: getRoleType(r.employee_code, r.role_type),
+      contract: r.contract || null,
+      permit: r.permit || null,
+      permitExpiry: r.permit_expiry || null,
+      notes: r.notes || "",
+      isShadow: !!r.is_shadow,
+      transferring: !!r.transferring,
+      transferTo: r.transfer_to || null,
+      transferDate: r.transfer_date || null,
+      transferNote: r.transfer_note || null,
+      leftDate: r.left_date || null,
+      startDate: r.start_date || null,
+      level: r.level || null,
+      cellNumber: r.cell_number || "",
+      email: r.email || "",
+      address: r.address || r.home_address || "",
+      idNumber: r.id_number || "",
+      passport: r.passport || r.passport_number || "",
+      taxNumber: r.tax_number || "",
+      gender: r.gender || "",
+      active: r.active !== undefined ? (typeof r.active === 'string' ? r.active.toUpperCase() === 'TRUE' : !!r.active) : !r.left_date
     };
   }
   function staffToRow(s) {
     return {
       employee_code: s.ec,
-      first_name:    s.firstName || null,
-      surname:       s.surname   || null,
-      name:          s.name || "",
-      branch:        s.branch || "",
-      contract:      s.contract || null,
-      permit:        s.permit   || null,
+      first_name: s.firstName || null,
+      surname: s.surname || null,
+      name: s.name || "",
+      branch: s.branch || "",
+      contract: s.contract || null,
+      permit: s.permit || null,
       permit_expiry: s.permitExpiry || null,
-      notes:         s.notes    || null,
-      is_shadow:     !!s.isShadow,
-      transferring:  !!s.transferring,
-      transfer_to:   s.transferTo   || null,
+      notes: s.notes || null,
+      is_shadow: !!s.isShadow,
+      transferring: !!s.transferring,
+      transfer_to: s.transferTo || null,
       transfer_date: s.transferDate || null,
       transfer_note: s.transferNote || null,
-      left_date:     s.leftDate || null,
-      start_date:    s.startDate || null,
-      level:         s.level || null,
-      role_type:     getRoleType(s.ec, s.roleType),
-      active:        s.active !== undefined ? s.active : !s.leftDate,
-      cell_number:   s.cellNumber || null,
-      email:         s.email || null,
-      address:       s.address || null,
-      id_number:     s.idNumber || null,
-      tax_number:    s.taxNumber || null,
-      gender:        s.gender || null
+      left_date: s.leftDate || null,
+      start_date: s.startDate || null,
+      level: s.level || null,
+      role_type: getRoleType(s.ec, s.roleType),
+      active: s.active !== undefined ? s.active : !s.leftDate,
+      cell_number: s.cellNumber || null,
+      email: s.email || null,
+      address: s.address || null,
+      id_number: s.idNumber || null,
+      tax_number: s.taxNumber || null,
+      gender: s.gender || null
     };
   }
 
   function rowToManager(r) {
     return {
-      _id:    r.id,
-      id:     r.id,
-      ec:     r.employee_code,
-      firstName:     r.first_name     || "",
-      surname:       r.surname        || "",
-      name:   r.name   || "",
+      _id: r.id,
+      id: r.id,
+      ec: r.employee_code,
+      firstName: r.first_name || "",
+      surname: r.surname || "",
+      name: r.name || "",
       branch: r.branch || "",
-      role:   r.role   || "",
+      role: r.role || "",
       roleType: getRoleType(r.employee_code, r.role_type),
-      notes:  r.notes  || "",
-      contract:     r.contract      || null,
-      permit:       r.permit        || null,
+      notes: r.notes || "",
+      contract: r.contract || null,
+      permit: r.permit || null,
       permitExpiry: r.permit_expiry || null,
       transferring: !!r.transferring,
-      transferTo:   r.transfer_to   || null,
+      transferTo: r.transfer_to || null,
       transferDate: r.transfer_date || null,
       transferNote: r.transfer_note || null,
-      startDate:    r.start_date    || null,
-      leftDate:     r.left_date     || null,
-      cellNumber:   r.cell_number   || "",
-      email:        r.email         || "",
-      address:      r.address       || r.home_address || "",
-      idNumber:     r.id_number     || "",
-      passport:     r.passport      || r.passport_number || "",
-      taxNumber:    r.tax_number    || "",
-      gender:       r.gender        || "",
-      active:       r.active !== undefined ? (typeof r.active === 'string' ? r.active.toUpperCase() === 'TRUE' : !!r.active) : !r.left_date
+      startDate: r.start_date || null,
+      leftDate: r.left_date || null,
+      cellNumber: r.cell_number || "",
+      email: r.email || "",
+      address: r.address || r.home_address || "",
+      idNumber: r.id_number || "",
+      passport: r.passport || r.passport_number || "",
+      taxNumber: r.tax_number || "",
+      gender: r.gender || "",
+      active: r.active !== undefined ? (typeof r.active === 'string' ? r.active.toUpperCase() === 'TRUE' : !!r.active) : !r.left_date
     };
   }
   function managerToRow(m) {
     return {
       employee_code: m.ec,
-      first_name:    m.firstName || null,
-      surname:       m.surname   || null,
-      name:          m.name || "",
-      branch:        m.branch || "",
-      role:          m.role || null,
-      notes:         m.notes || null,
-      contract:      m.contract || null,
-      permit:        m.permit   || null,
+      first_name: m.firstName || null,
+      surname: m.surname || null,
+      name: m.name || "",
+      branch: m.branch || "",
+      role: m.role || null,
+      notes: m.notes || null,
+      contract: m.contract || null,
+      permit: m.permit || null,
       permit_expiry: m.permitExpiry || null,
-      transferring:  !!m.transferring,
-      transfer_to:   m.transferTo   || null,
+      transferring: !!m.transferring,
+      transfer_to: m.transferTo || null,
       transfer_date: m.transferDate || null,
       transfer_note: m.transferNote || null,
-      start_date:    m.startDate || null,
-      left_date:     m.leftDate || null,
-      role_type:     m.roleType || "manager",
-      active:        m.active !== undefined ? m.active : !m.leftDate,
-      cell_number:   m.cellNumber || null,
-      email:         m.email || null,
-      address:       m.address || null,
-      id_number:     m.idNumber || null,
-      tax_number:    m.taxNumber || null,
-      gender:        m.gender || null
+      start_date: m.startDate || null,
+      left_date: m.leftDate || null,
+      role_type: m.roleType || "manager",
+      active: m.active !== undefined ? m.active : !m.leftDate,
+      cell_number: m.cellNumber || null,
+      email: m.email || null,
+      address: m.address || null,
+      id_number: m.idNumber || null,
+      tax_number: m.taxNumber || null,
+      gender: m.gender || null
     };
   }
 
   function rowToMat(r) {
     return {
-      _id:        r.id,
-      id:         r.id,
-      ec:         r.employee_code,
-      name:       r.name || "",
-      branch:     r.branch || "",
-      matStatus:  r.mat_status,
-      matStart:   r.mat_start   || null,
-      matEnd:     r.mat_end     || null,
+      _id: r.id,
+      id: r.id,
+      ec: r.employee_code,
+      name: r.name || "",
+      branch: r.branch || "",
+      matStatus: r.mat_status,
+      matStart: r.mat_start || null,
+      matEnd: r.mat_end || null,
       returnDate: r.return_date || null,
-      notes:      r.notes || ""
+      notes: r.notes || ""
     };
   }
   function matToRow(m) {
     return {
       employee_code: m.ec,
-      name:          m.name || "",
-      branch:        m.branch || "",
-      mat_status:    m.matStatus,
-      mat_start:     m.matStart   || null,
-      mat_end:       m.matEnd     || null,
-      return_date:   m.returnDate || null,
-      notes:         m.notes || null
+      name: m.name || "",
+      branch: m.branch || "",
+      mat_status: m.matStatus,
+      mat_start: m.matStart || null,
+      mat_end: m.matEnd || null,
+      return_date: m.returnDate || null,
+      notes: m.notes || null
     };
   }
 
   // ---------- Initial load ----------
   async function loadAll() {
     var [allRows, mat] = await Promise.all([
-      sb.from("Consolodated Staff List").select("*").order("employee_code"),
+      sb.from("staff").select("*").order("employee_code"),
       sb.from("maternity").select("*")
     ]);
     if (allRows.error) console.error("[BOA DB] staff list load error:", allRows.error);
-    if (mat.error)     console.error("[BOA DB] maternity load error:", mat.error);
+    if (mat.error) console.error("[BOA DB] maternity load error:", mat.error);
 
     var data = allRows.data || [];
     // Separate into techs and managers
     // Managers are those with role_type === 'manager'
     // Techs are everyone else (role_type !== 'manager', including empty/null role_types)
     var techs = data.filter(function (r) { return r.role_type !== "manager"; }).map(rowToStaff);
-    var mgrs  = data.filter(function (r) { return r.role_type === "manager"; }).map(rowToManager);
+    var mgrs = data.filter(function (r) { return r.role_type === "manager"; }).map(rowToManager);
 
     return {
-      staff:    techs,
+      staff: techs,
       managers: mgrs,
-      matRecs:  (mat.data || []).map(rowToMat)
+      matRecs: (mat.data || []).map(rowToMat)
     };
   }
 
@@ -205,16 +205,16 @@
   async function saveStaff(s) {
     var row = staffToRow(s);
     if (s.id) {
-      var u = await sb.from("Consolodated Staff List").update(row).eq("id", s.id).select().single();
+      var u = await sb.from("staff").update(row).eq("id", s.id).select().single();
       if (u.error) throw u.error;
       return rowToStaff(u.data);
     }
-    var i = await sb.from("Consolodated Staff List").insert(row).select().single();
+    var i = await sb.from("staff").insert(row).select().single();
     if (i.error) throw i.error;
     return rowToStaff(i.data);
   }
   async function deleteStaff(id) {
-    var r = await sb.from("Consolodated Staff List").delete().eq("id", id);
+    var r = await sb.from("staff").delete().eq("id", id);
     if (r.error) throw r.error;
   }
 
@@ -222,17 +222,23 @@
   async function saveManager(m) {
     var row = managerToRow(m);
     if (m.id) {
-      var u = await sb.from("Consolodated Staff List").update(row).eq("id", m.id).select().single();
+      var u = await sb.from("staff").update(row).eq("id", m.id).select().single();
       if (u.error) throw u.error;
       return rowToManager(u.data);
     }
-    var i = await sb.from("Consolodated Staff List").insert(row).select().single();
+    var i = await sb.from("staff").insert(row).select().single();
     if (i.error) throw i.error;
     return rowToManager(i.data);
   }
   async function deleteManager(id) {
-    var r = await sb.from("Consolodated Staff List").delete().eq("id", id);
+    var r = await sb.from("staff").delete().eq("id", id);
     if (r.error) throw r.error;
+  }
+  
+  async function loadConsolidatedStaff() {
+    var res = await sb.from("Consolodated Staff List").select("*").order("employee_code");
+    if (res.error) { console.error("[BOA DB] loadConsolidatedStaff error:", res.error); return []; }
+    return res.data || [];
   }
 
   // ---------- Schedule (boa_sched_<branch>_<ym>) ----------
@@ -279,14 +285,14 @@
     if (!entry || !entry.grid) return null;
     var existing = await loadApprovedSchedules(branch, ym, isManager);
     var rec = {
-      id:         "ap_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7),
-      name:       (entry.name || "Untitled").toString().slice(0, 80),
-      grid:       entry.grid,
-      madeBy:     (entry.madeBy || "").toString().slice(0, 80),
+      id: "ap_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7),
+      name: (entry.name || "Untitled").toString().slice(0, 80),
+      grid: entry.grid,
+      madeBy: (entry.madeBy || "").toString().slice(0, 80),
       approvedBy: (entry.approvedBy || "").toString().slice(0, 80),
-      note:       (entry.note || "").toString().slice(0, 500),
-      savedAt:    new Date().toISOString(),
-      savedBy:    (entry.savedBy || "").toString().slice(0, 80)
+      note: (entry.note || "").toString().slice(0, 500),
+      savedAt: new Date().toISOString(),
+      savedBy: (entry.savedBy || "").toString().slice(0, 80)
     };
     var next = [rec].concat(existing).slice(0, SCHED_APPROVED_LIMIT);
     var res = await sb.from("app_state").upsert({ key: schedApprovedKey(branch, ym, isManager), value: next });
@@ -315,9 +321,9 @@
         // Prepend prior version (newest-first), drop oldest beyond limit
         var snapshot = {
           savedAt: priorVal.savedAt || new Date().toISOString(),
-          grid:    priorVal.grid,
-          branch:  priorVal.branch || branch,
-          ym:      priorVal.ym || ym
+          grid: priorVal.grid,
+          branch: priorVal.branch || branch,
+          ym: priorVal.ym || ym
         };
         var updated = [snapshot].concat(existing).slice(0, SCHED_HISTORY_LIMIT);
         await sb.from("app_state").upsert({ key: schedHistKey(branch, ym, isManager), value: updated });
@@ -375,11 +381,11 @@
     }
     var now = new Date();
     var entry = {
-      id:        _trashId(),
-      kind:      isManager ? "manager" : "tech",
-      branch:    branch,
-      ym:        ym,
-      grid:      liveVal.grid,
+      id: _trashId(),
+      kind: isManager ? "manager" : "tech",
+      branch: branch,
+      ym: ym,
+      grid: liveVal.grid,
       deletedAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + SCHED_TRASH_TTL_DAYS * 86400000).toISOString()
     };
@@ -400,7 +406,7 @@
     // Persist pruned list back so storage doesn't grow forever.
     _trashWrite(arr).catch(function (e) { console.warn("trash prune persist:", e); });
     if (opts && opts.branch) arr = arr.filter(function (e) { return e.branch === opts.branch; });
-    if (opts && opts.kind)   arr = arr.filter(function (e) { return e.kind === opts.kind; });
+    if (opts && opts.kind) arr = arr.filter(function (e) { return e.kind === opts.kind; });
     return arr;
   }
 
@@ -546,15 +552,15 @@
     return out;
   }
   function periodLabel(ym) {
-    var months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+    var months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
     var p = ym.split("-"), y = +p[0], m = +p[1];
     var sm = m === 1 ? 12 : m - 1, sy = m === 1 ? y - 1 : y;
-    return months[sm-1] + " 25" + (sy !== y ? ", " + sy : "") + " — " + months[m-1] + " 24, " + y;
+    return months[sm - 1] + " 25" + (sy !== y ? ", " + sy : "") + " — " + months[m - 1] + " 24, " + y;
   }
   function shiftYm(ym, delta) {
     var p = ym.split("-"), y = +p[0], m = +p[1] + delta;
     while (m > 12) { m -= 12; y += 1; }
-    while (m < 1)  { m += 12; y -= 1; }
+    while (m < 1) { m += 12; y -= 1; }
     return y + "-" + String(m).padStart(2, "0");
   }
 
@@ -678,7 +684,7 @@
     var now = new Date();
     var ymKeys = [];
     var startCycle = (now.getDate() <= 24) ? new Date(now.getFullYear(), now.getMonth() - 1, 1)
-                                            : new Date(now.getFullYear(), now.getMonth(),     1);
+      : new Date(now.getFullYear(), now.getMonth(), 1);
     var cyclesNeeded = Math.max(2, Math.ceil(d / 30) + 1);
     for (var i = 0; i < cyclesNeeded; i++) {
       var c = new Date(startCycle.getFullYear(), startCycle.getMonth() - i, 1);
@@ -709,19 +715,19 @@
         var ts = new Date(e.ts);
         if (isNaN(ts) || ts < since) return;
         out.push({
-          id:        "kiosk_" + rowBranch + "_" + e.ts + "_" + (e.ec || ""),
-          ts:        e.ts,
-          dayKey:    e.dayKey,
-          ymd:       e.ymd || null,
-          type:      "att",
-          status:    e.status,
-          note:      e.note || null,
-          hasProof:  !!e.hasProof,
-          proofKey:  e.proofKey || null,
-          markedBy:  e.markedBy || e.manager || e.by || null,        // which manager submitted this
-          ec:        e.ec,
-          branch:    rowBranch,
-          source:    "kiosk_log"
+          id: "kiosk_" + rowBranch + "_" + e.ts + "_" + (e.ec || ""),
+          ts: e.ts,
+          dayKey: e.dayKey,
+          ymd: e.ymd || null,
+          type: "att",
+          status: e.status,
+          note: e.note || null,
+          hasProof: !!e.hasProof,
+          proofKey: e.proofKey || null,
+          markedBy: e.markedBy || e.manager || e.by || null,        // which manager submitted this
+          ec: e.ec,
+          branch: rowBranch,
+          source: "kiosk_log"
         });
       });
     });
@@ -761,7 +767,7 @@
   async function listStoreOpenings(ymd) {
     if (!ymd) {
       var today = new Date();
-      ymd = today.getFullYear() + "-" + String(today.getMonth()+1).padStart(2, "0") + "-" + String(today.getDate()).padStart(2, "0");
+      ymd = today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0") + "-" + String(today.getDate()).padStart(2, "0");
     }
     var like = "boa_store_open_%_" + ymd;
     var res = await sb.from("app_state").select("key,value").like("key", like);
@@ -773,8 +779,8 @@
       if (!m) return;
       var val = row.value || {};
       out.push({
-        branch:   val.branch || m[1],
-        ymd:      val.ymd || m[2],
+        branch: val.branch || m[1],
+        ymd: val.ymd || m[2],
         openedAt: val.openedAt || null,
         openedBy: val.openedBy || null
       });
@@ -794,7 +800,7 @@
     var now = new Date();
     var ymKeys = [];
     var startCycle = (now.getDate() <= 24) ? new Date(now.getFullYear(), now.getMonth() - 1, 1)
-                                            : new Date(now.getFullYear(), now.getMonth(),     1);
+      : new Date(now.getFullYear(), now.getMonth(), 1);
     var cyclesNeeded = Math.max(2, Math.ceil(d / 30) + 1);
     for (var i = 0; i < cyclesNeeded; i++) {
       var c = new Date(startCycle.getFullYear(), startCycle.getMonth() - i, 1);
@@ -922,7 +928,7 @@
     var ids = Array.from(new Set(rows.map(function (r) { return r.staff_id; }).filter(Boolean)));
     var staffById = {};
     if (ids.length) {
-      var sres = await sb.from("Consolodated Staff List").select("id, name, employee_code, role_type, branch").in("id", ids);
+      var sres = await sb.from("staff").select("id, name, employee_code, role_type, branch").in("id", ids);
       if (!sres.error) (sres.data || []).forEach(function (s) { staffById[s.id] = s; });
     }
     return { rows: rows, count: rows.length, staffById: staffById, sinceIso: since.toISOString() };
@@ -1081,14 +1087,14 @@
     if (!entry || !entry.action) return null;
     var existing = await loadActivity();
     var rec = {
-      id:       "act_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7),
-      when:     new Date().toISOString(),
-      who:      entry.who      || "Unknown",
-      role:     entry.role     || "",
+      id: "act_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7),
+      when: new Date().toISOString(),
+      who: entry.who || "Unknown",
+      role: entry.role || "",
       category: entry.category || "",
-      action:   entry.action   || "",
-      target:   entry.target   || "",
-      details:  entry.details  || ""
+      action: entry.action || "",
+      target: entry.target || "",
+      details: entry.details || ""
     };
     var next = [rec].concat(existing).slice(0, ACTIVITY_LIMIT);
     var res = await sb.from("app_state").upsert({ key: ACTIVITY_KEY, value: next });
@@ -1114,7 +1120,7 @@
         var e = new Error("[mat " + mode + "] " + msg + (err && err.code ? " (code " + err.code + ")" : ""));
         e.cause = err;
         e._payload = row;
-        e._id      = existingId;
+        e._id = existingId;
         return e;
       } catch (_) { return err; }
     }
@@ -1140,94 +1146,96 @@
     isReady:       true,
     sb:            sb,
     loadAll:       loadAll,
+    loadConsolidatedStaff: loadConsolidatedStaff,
     saveStaff:     saveStaff,    deleteStaff:   deleteStaff,
     saveManager:   saveManager,  deleteManager: deleteManager,
     saveMat:       saveMat,      deleteMat:     deleteMat,
 
     // Schedules
-    loadSchedule:           loadSchedule,
-    saveSchedule:           saveSchedule,
-    loadScheduleHistory:    loadScheduleHistory,
-    loadApprovedSchedules:  loadApprovedSchedules,
-    saveApprovedSchedule:   saveApprovedSchedule,
+    loadSchedule: loadSchedule,
+    saveSchedule: saveSchedule,
+    loadScheduleHistory: loadScheduleHistory,
+    loadApprovedSchedules: loadApprovedSchedules,
+    saveApprovedSchedule: saveApprovedSchedule,
     deleteApprovedSchedule: deleteApprovedSchedule,
-    deleteSchedule:         deleteSchedule,
-    listDeletedSchedules:   listDeletedSchedules,
-    restoreSchedule:        restoreSchedule,
-    purgeDeletedSchedule:   purgeDeletedSchedule,
-    loadMgrRequests:        loadMgrRequests,
-    saveMgrRequests:        saveMgrRequests,
-    loadTechRequests:       loadTechRequests,
-    saveTechRequests:       saveTechRequests,
-    listRequestKeys:        listRequestKeys,
-    probeRequestTables:     probeRequestTables,
-    loadByKey:              loadByKey,
-    currentSchedYm:         currentSchedYm,
-    currentAttYm:           currentAttYm,
-    periodDays:             periodDays,
-    periodLabel:            periodLabel,
-    shiftYm:                shiftYm,
+    deleteSchedule: deleteSchedule,
+    listDeletedSchedules: listDeletedSchedules,
+    restoreSchedule: restoreSchedule,
+    purgeDeletedSchedule: purgeDeletedSchedule,
+    loadMgrRequests: loadMgrRequests,
+    saveMgrRequests: saveMgrRequests,
+    loadTechRequests: loadTechRequests,
+    saveTechRequests: saveTechRequests,
+    listRequestKeys: listRequestKeys,
+    probeRequestTables: probeRequestTables,
+    loadByKey: loadByKey,
+    currentSchedYm: currentSchedYm,
+    currentAttYm: currentAttYm,
+    periodDays: periodDays,
+    periodLabel: periodLabel,
+    shiftYm: shiftYm,
 
     // HR Tasks
-    loadHRTasks:       loadHRTasks,
-    saveHRTasks:       saveHRTasks,
+    loadHRTasks: loadHRTasks,
+    saveHRTasks: saveHRTasks,
 
     // Onboarding, Trial Period & Off-boarding
-    loadOnboarding:    loadOnboarding,
-    saveOnboarding:    saveOnboarding,
-    loadTrialPeriod:   loadTrialPeriod,
-    saveTrialPeriod:   saveTrialPeriod,
-    loadOffboarding:   loadOffboarding,
-    saveOffboarding:   saveOffboarding,
+    loadOnboarding: loadOnboarding,
+    saveOnboarding: saveOnboarding,
+    loadTrialPeriod: loadTrialPeriod,
+    saveTrialPeriod: saveTrialPeriod,
+    loadOffboarding: loadOffboarding,
+    saveOffboarding: saveOffboarding,
 
     // Attendance
-    loadAttendance:    loadAttendance,
-    saveAttendance:        saveAttendance,
+    loadAttendance: loadAttendance,
+    saveAttendance: saveAttendance,
 
     // Leave Planner
-    loadLeaveRecords:  loadLeaveRecords,
-    saveLeaveRecords:  saveLeaveRecords,
+    loadLeaveRecords: loadLeaveRecords,
+    saveLeaveRecords: saveLeaveRecords,
 
     // Manager personal PINs
-    loadManagerPins:   loadManagerPins,
-    saveManagerPins:   saveManagerPins,
+    loadManagerPins: loadManagerPins,
+    saveManagerPins: saveManagerPins,
 
     // Manager clock-ins viewer
     listRecentManagerClockins: listRecentManagerClockins,
-    listRecentTechClockins:    listRecentTechClockins,
+    listRecentTechClockins: listRecentTechClockins,
     listRecentAttendanceCheckins: listRecentAttendanceCheckins,
-    listRecentKioskCheckins:      listRecentKioskCheckins,
-    listStoreOpenings:            listStoreOpenings,
-    loadEarlyLeaves:              loadEarlyLeaves,
-    deleteEarlyLeaves:            deleteEarlyLeaves,
-    loadKioskProof:               loadKioskProof,
-    probeRecentClockinsRaw:    probeRecentClockinsRaw,
-    probeAttendanceGrid:       probeAttendanceGrid,
-    loadClockinMeta:           loadClockinMeta,
+    listRecentKioskCheckins: listRecentKioskCheckins,
+    listStoreOpenings: listStoreOpenings,
+    loadEarlyLeaves: loadEarlyLeaves,
+    deleteEarlyLeaves: deleteEarlyLeaves,
+    loadKioskProof: loadKioskProof,
+    probeRecentClockinsRaw: probeRecentClockinsRaw,
+    probeAttendanceGrid: probeAttendanceGrid,
+    loadClockinMeta: loadClockinMeta,
 
     // Activity log
-    loadActivity:    loadActivity,
-    appendActivity:  appendActivity,
+    loadActivity: loadActivity,
+    appendActivity: appendActivity,
 
     // Custom locations (branches added after launch)
-    loadCustomSalons:  loadCustomSalons,
-    saveCustomSalons:  saveCustomSalons,
+    loadCustomSalons: loadCustomSalons,
+    saveCustomSalons: saveCustomSalons,
 
     // Kiosk PINs (manager-dashboard 4-digit PINs, keyed by branch name)
-    loadKioskPins:     loadKioskPins,
-    saveKioskPins:     saveKioskPins,
+    loadKioskPins: loadKioskPins,
+    saveKioskPins: saveKioskPins,
 
     // Unpaid legal-status leave
-    loadTechLoans:          loadTechLoans,
-    saveTechLoans:          saveTechLoans,
-    loadDailyTasks:         loadDailyTasks,
-    saveDailyTasks:         saveDailyTasks,
-    loadComplianceActions:  loadComplianceActions,
-    saveComplianceActions:  saveComplianceActions,
+    loadTechLoans: loadTechLoans,
+    saveTechLoans: saveTechLoans,
+    loadDailyTasks: loadDailyTasks,
+    saveDailyTasks: saveDailyTasks,
+    loadComplianceActions: loadComplianceActions,
+    saveComplianceActions: saveComplianceActions,
     loadUnpaidLegalRecords: loadUnpaidLegalRecords,
     saveUnpaidLegalRecords: saveUnpaidLegalRecords,
-    loadKioskSecurityLogs:  loadKioskSecurityLogs,
-    saveKioskDevices:       saveKioskDevices
+    loadKioskSecurityLogs: loadKioskSecurityLogs,
+    saveKioskSecurityLogs: saveKioskSecurityLogs,
+    saveKioskDevices: saveKioskDevices
   };
 
   // ── Custom locations ─────────────────────────────────────────────────
@@ -1270,6 +1278,11 @@
     if (res.error) { console.error("loadKioskSecurityLogs:", res.error); return []; }
     var v = res.data && res.data.value;
     return Array.isArray(v) ? v : [];
+  }
+  async function saveKioskSecurityLogs(logs) {
+    var res = await sb.from("app_state").upsert({ key: "boa_kiosk_security_logs_v1", value: logs || [] });
+    if (res.error) { console.error("saveKioskSecurityLogs:", res.error); throw res.error; }
+    return logs;
   }
 
   // ── Kiosk Devices ────────────────────────────────────────────────────

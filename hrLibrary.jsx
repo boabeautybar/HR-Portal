@@ -177,7 +177,8 @@ const EmployeeDataLibrary = ({ staff = [], currentUser, managers = [], obList = 
       }
 
       const ec = employee.ec ? employee.ec.trim().toLowerCase() : "";
-      const name = employee.name ? employee.name.trim().toLowerCase() : "";
+      const fName = employee.firstName ? employee.firstName.trim().toLowerCase() : "";
+      const sName = employee.surname ? employee.surname.trim().toLowerCase() : "";
       
       let foundFolder = null;
       let newCache = { ...subfolderCache };
@@ -206,29 +207,46 @@ const EmployeeDataLibrary = ({ staff = [], currentUser, managers = [], obList = 
               newCache[category.id] = categoryChildren;
           }
           
-          // 3. Pure JS Matching (Bypasses Google API quirks, guarantees 100% accuracy)
-          
-          // Strategy 1: Find by Employee ID
-          if (ec) {
-              foundFolder = categoryChildren.find(f => f.name.toLowerCase().includes(ec));
-          }
-          
-          // Strategy 2: Find by Exact Full Name
-          if (!foundFolder && name) {
-              foundFolder = categoryChildren.find(f => f.name.toLowerCase().includes(name));
-          }
-          
-          // Strategy 3: Find by First & Last Name Partial Match
-          if (!foundFolder && name) {
-              const parts = name.split(' ');
-              const first = parts[0];
-              const last = parts[parts.length - 1];
-              if (first && last && first !== last) {
-                  foundFolder = categoryChildren.find(f => {
-                      const fn = f.name.toLowerCase();
-                      return fn.includes(first) && fn.includes(last);
-                  });
+          // 3. Robust Scoring Algorithm (Bypasses Google API quirks, guarantees maximum accuracy)
+          let bestMatch = null;
+          let bestScore = 0;
+
+          for (const f of categoryChildren) {
+              const rawFn = f.name.toLowerCase();
+              let score = 0;
+              
+              // Normalize strings by replacing hyphens/underscores with spaces for robust name matching
+              const cleanStr = (str) => (str || "").replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim();
+              const cleanFn = cleanStr(rawFn);
+              const cleanF = cleanStr(fName);
+              const cleanS = cleanStr(sName);
+              const cleanFullName = `${cleanF} ${cleanS}`.trim();
+
+              const hasEc = ec && rawFn.includes(ec);
+              const hasExactName = cleanFullName && cleanFn.includes(cleanFullName);
+              const hasFirstName = cleanF && cleanFn.includes(cleanF);
+              const hasSurname = cleanS && cleanFn.includes(cleanS);
+
+              if (hasEc && hasExactName) {
+                  score = 100; // Perfect match (EC + Full Name)
+              } else if (hasEc && (hasFirstName || hasSurname)) {
+                  score = 80;  // EC matches + at least one name matches
+              } else if (hasExactName) {
+                  score = 70;  // Missing EC, but exact full name matches (e.g., "Justin Rule_OM_Payroll")
+              } else if (hasEc) {
+                  score = 50;  // ONLY EC matches. Risky if EC was recycled, but accepted if no better match exists.
+              } else if (hasFirstName && hasSurname) {
+                  score = 40;  // Both names appear but separated
               }
+
+              if (score > bestScore) {
+                  bestScore = score;
+                  bestMatch = f;
+              }
+          }
+          
+          if (bestScore > 0 && bestMatch) {
+              foundFolder = bestMatch;
           }
           
           // If we found the employee folder in this category, STOP searching!
