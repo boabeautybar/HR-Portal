@@ -7448,8 +7448,41 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         }
         const seen = new Set(SALONS.map(s => s.name));
         let added = 0;
+        let overridden = 0;
         for (const x of patched) {
-          if (!x || !x.name || seen.has(x.name)) continue;
+          if (!x || !x.name) continue;
+          if (seen.has(x.name)) {
+            // Override path: a customSalons row that matches a seeded
+            // branch tweaks its fields without changing identity. Keeps
+            // closedDow and other seeded-only flags intact.
+            const idx = SALONS.findIndex(s => s && s.name === x.name);
+            if (idx < 0) continue;
+            const base = SALONS[idx];
+            const merged = { ...base };
+            if (x.mani !== undefined && x.mani !== "") merged.mani = Number(x.mani) || 0;
+            if (x.pedi !== undefined && x.pedi !== "") merged.pedi = Number(x.pedi) || 0;
+            if (x.capacity !== undefined && x.capacity !== "") merged.capacity = Math.max(1, Number(x.capacity) || base.capacity);
+            if (REGIONS.some(r => r.key === x.region)) merged.region = x.region;
+            if (x.openingDate && /^\d{4}-\d{2}-\d{2}$/.test(x.openingDate)) {
+              merged.openingDate = x.openingDate;
+            } else if (Object.prototype.hasOwnProperty.call(x, "openingDate") && !x.openingDate) {
+              delete merged.openingDate;
+            }
+            if (x.lowDemand === true) {
+              merged.lowDemand = true;
+              merged.targetCapacity = Math.max(1, Number(x.targetCapacity) || base.targetCapacity || merged.capacity || base.capacity);
+            } else if (x.lowDemand === false) {
+              delete merged.lowDemand;
+              delete merged.targetCapacity;
+            }
+            // Preserve _custom if it was already custom; flag seeded
+            // overrides with _override so the Locations UI can show an
+            // "edited" hint without enabling delete.
+            if (!base._custom) merged._override = true;
+            SALONS[idx] = merged;
+            overridden++;
+            continue;
+          }
           SALONS.push({
             name: x.name,
             mani: Number(x.mani) || 0,
@@ -7463,7 +7496,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           seen.add(x.name);
           added++;
         }
-        if (added > 0) _setCustomSalonsTick(t => t + 1);
+        if (added > 0 || overridden > 0) _setCustomSalonsTick(t => t + 1);
       } catch (e) { console.error("loadCustomSalons:", e); }
     })();
     return () => { cancelled = true; };
@@ -7520,6 +7553,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Region filter for the Locations tab — "all" or one of the REGIONS keys.
   const [locFilterRegion, setLocFilterRegion] = useState("all");
   const [addLocationModal, setAddLocationModal] = useState(null); // null | { name, mani, pedi, capacity, lowDemand, targetCapacity, region, saving }
+  // Edit modal for tweaking an existing branch — capacity, region, opening
+  // date, low-demand target. Works for both seeded and custom salons; the
+  // change is stored as an override in the boa_custom_salons app_state row
+  // and reapplied on top of the in-memory entry at load.
+  const [editLocationModal, setEditLocationModal] = useState(null); // null | { name, mani, pedi, capacity, region, openingDate, lowDemand, targetCapacity, saving, error }
   // PIN-gated "delete location" modal. Only offered for _custom salons
   // (those added via the Add Location form). The seed list is immutable
   // — we don't want accidentally deleting Sea Point.
@@ -7652,6 +7690,66 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     } catch (e) {
       setAddLocationModal({ ...m, saving: false });
       alert("Could not save: " + (e.message || e));
+    }
+  };
+
+  // Save edits for an existing branch (seeded or custom). Persists the
+  // override as a customSalons row keyed by name; load merges it on top of
+  // the base entry. Renaming isn't supported here — staff/manager records
+  // reference the branch by name, and renaming would orphan them.
+  const submitEditLocation = async () => {
+    const m = editLocationModal;
+    if (!m || !m.name) return;
+    const idx = SALONS.findIndex(s => s && s.name === m.name);
+    if (idx < 0) {
+      setEditLocationModal({ ...m, error: "Branch not found." });
+      return;
+    }
+    const mani = Math.max(0, Number(m.mani) || 0);
+    const pedi = Math.max(0, Number(m.pedi) || 0);
+    const capacity = Math.max(1, Number(m.capacity) || (mani + pedi));
+    const region = REGIONS.some(r => r.key === m.region) ? m.region : "wc";
+    const lowDemand = !!m.lowDemand;
+    const targetCapacity = lowDemand ? Math.max(1, Number(m.targetCapacity) || capacity) : null;
+    const od = (m.openingDate || "").trim();
+    const openingDate = /^\d{4}-\d{2}-\d{2}$/.test(od) ? od : null;
+
+    const entry = {
+      name: m.name,
+      mani, pedi, capacity, region,
+      lowDemand,
+      ...(lowDemand ? { targetCapacity } : {}),
+      openingDate: openingDate || ""
+    };
+
+    try {
+      setEditLocationModal({ ...m, saving: true, error: null });
+      const existing = await window.BOA_DB.loadCustomSalons();
+      const arr = Array.isArray(existing) ? existing : [];
+      const next = arr.filter(r => r && r.name !== m.name).concat([entry]);
+      await window.BOA_DB.saveCustomSalons(next);
+
+      const base = SALONS[idx];
+      const merged = { ...base, mani, pedi, capacity, region };
+      if (openingDate) merged.openingDate = openingDate; else delete merged.openingDate;
+      if (lowDemand) {
+        merged.lowDemand = true;
+        merged.targetCapacity = targetCapacity;
+      } else {
+        delete merged.lowDemand;
+        delete merged.targetCapacity;
+      }
+      if (!base._custom) merged._override = true;
+      SALONS[idx] = merged;
+
+      _setCustomSalonsTick(t => t + 1);
+      setEditLocationModal(null);
+      if (window.BOA_LOG_ACTIVITY) {
+        const summary = `Mani ${mani} · Pedi ${pedi} · Cap ${capacity}` + (lowDemand ? ` · Low-demand target ${targetCapacity}` : "") + (openingDate ? ` · Opens ${openingDate}` : "");
+        window.BOA_LOG_ACTIVITY("Edited location", m.name, summary, "Settings");
+      }
+    } catch (e) {
+      setEditLocationModal({ ...m, saving: false, error: (e && e.message) || String(e) });
     }
   };
 
@@ -10922,6 +11020,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             style={{ background: managePanel === salon.name ? "#1e3a8a" : "#f3f4f6", color: managePanel === salon.name ? "#fff" : "#374151", border: "none", borderRadius: 7, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
                             {managePanel === salon.name ? "✕ Close" : "⚙ Manage"}
                           </button>
+                          <button title={`Edit ${salon.name} — capacity, region, low-demand target, opening date`}
+                            onClick={() => setEditLocationModal({
+                              name: salon.name,
+                              mani: String(salon.mani ?? ""),
+                              pedi: String(salon.pedi ?? ""),
+                              capacity: String(salon.capacity ?? ""),
+                              region: salon.region || "wc",
+                              openingDate: salon.openingDate || "",
+                              lowDemand: !!salon.lowDemand,
+                              targetCapacity: String(salon.targetCapacity ?? salon.capacity ?? ""),
+                              saving: false,
+                              error: null
+                            })}
+                            style={{ background: "#FCE7F3", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "5px 9px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>✏️</button>
                           {salon._custom && (
                             <button title={`Delete ${salon.name} (PIN required)`}
                               onClick={() => setDeleteLocationModal({ salon, pin: "", saving: false, error: null })}
@@ -11479,6 +11591,100 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <button onClick={submitNewLocation} disabled={addLocationModal.saving}
                         style={{ background: accent, color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: "pointer", fontSize: 12, fontWeight: 700, opacity: addLocationModal.saving ? 0.6 : 1 }}
                       >{addLocationModal.saving ? "Saving…" : "Add location"}</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ── EDIT LOCATION MODAL ── tweak capacity / region / low-demand target / opening date */}
+              {editLocationModal && (
+                <div
+                  onClick={() => { if (!editLocationModal.saving) setEditLocationModal(null); }}
+                  style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 120 }}
+                >
+                  <div
+                    onClick={e => e.stopPropagation()}
+                    style={{ background: "#fff", borderRadius: 16, padding: "22px 24px", width: "min(420px, 92vw)", boxShadow: "0 10px 40px rgba(0,0,0,0.25)" }}
+                  >
+                    <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: "#831843", marginBottom: 6 }}>✏️ Edit {editLocationModal.name}</div>
+                    <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 16 }}>Adjust capacity, region, opening date, or low-demand target. Renaming isn't supported — it would orphan staff records.</div>
+
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 14 }}>
+                      <div>
+                        <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Mani</label>
+                        <input type="number" min="0" value={editLocationModal.mani}
+                          onChange={e => setEditLocationModal({ ...editLocationModal, mani: e.target.value })}
+                          style={{ width: "100%", padding: "9px 11px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 14, fontFamily: "inherit" }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Pedi</label>
+                        <input type="number" min="0" value={editLocationModal.pedi}
+                          onChange={e => setEditLocationModal({ ...editLocationModal, pedi: e.target.value })}
+                          style={{ width: "100%", padding: "9px 11px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 14, fontFamily: "inherit" }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Capacity</label>
+                        <input type="number" min="1" value={editLocationModal.capacity}
+                          onChange={e => setEditLocationModal({ ...editLocationModal, capacity: e.target.value })}
+                          style={{ width: "100%", padding: "9px 11px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 14, fontFamily: "inherit" }}
+                        />
+                      </div>
+                    </div>
+
+                    <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Region</label>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+                      {REGIONS.map(r => {
+                        const active = (editLocationModal.region || "wc") === r.key;
+                        return (
+                          <button key={r.key} type="button"
+                            onClick={() => setEditLocationModal({ ...editLocationModal, region: r.key })}
+                            style={{ background: active ? r.color : r.bg, color: active ? "#fff" : r.color, border: `1px solid ${r.color}`, borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
+                          >{r.label}</button>
+                        );
+                      })}
+                    </div>
+
+                    <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Opening date (optional)</label>
+                    <input type="date" value={editLocationModal.openingDate || ""}
+                      onChange={e => setEditLocationModal({ ...editLocationModal, openingDate: e.target.value })}
+                      style={{ width: "100%", padding: "9px 11px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 14, marginBottom: 6, fontFamily: "inherit" }}
+                    />
+                    <div style={{ fontSize: 10, color: "#6b7280", marginBottom: 14, lineHeight: 1.4 }}>
+                      Clear to mark the store as already open. While in the future, the branch is excluded from the dashboard's "Stores open today" and schedule-progress counts.
+                    </div>
+
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#374151", marginBottom: 6, cursor: "pointer" }}>
+                      <input type="checkbox" checked={!!editLocationModal.lowDemand}
+                        onChange={e => setEditLocationModal({ ...editLocationModal, lowDemand: e.target.checked })}
+                      />
+                      Low-demand branch (use a softer target capacity for recruitment)
+                    </label>
+                    {editLocationModal.lowDemand && (
+                      <div style={{ marginBottom: 14 }}>
+                        <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Target capacity</label>
+                        <input type="number" min="1" value={editLocationModal.targetCapacity}
+                          onChange={e => setEditLocationModal({ ...editLocationModal, targetCapacity: e.target.value })}
+                          style={{ width: "100%", padding: "9px 11px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 14, fontFamily: "inherit" }}
+                        />
+                        <div style={{ fontSize: 10, color: "#6b7280", marginTop: 4, lineHeight: 1.4 }}>
+                          Vacancies, understaffed-branch counts, and the "needs staff" pill all use this number instead of the full capacity.
+                        </div>
+                      </div>
+                    )}
+
+                    {editLocationModal.error && (
+                      <div style={{ background: "#fee2e2", color: "#991b1b", borderRadius: 8, padding: "8px 12px", fontSize: 12, marginBottom: 10 }}>{editLocationModal.error}</div>
+                    )}
+
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
+                      <button onClick={() => setEditLocationModal(null)} disabled={editLocationModal.saving}
+                        style={{ background: "#f3f4f6", color: "#374151", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
+                      >Cancel</button>
+                      <button onClick={submitEditLocation} disabled={editLocationModal.saving}
+                        style={{ background: accent, color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: "pointer", fontSize: 12, fontWeight: 700, opacity: editLocationModal.saving ? 0.6 : 1 }}
+                      >{editLocationModal.saving ? "Saving…" : "Save changes"}</button>
                     </div>
                   </div>
                 </div>
