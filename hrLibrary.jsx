@@ -212,13 +212,20 @@ const EmployeeDataLibrary = ({ staff = [], currentUser, managers = [], obList = 
           let bestScore = 0;
 
           for (const f of categoryChildren) {
-              const fn = f.name.toLowerCase();
+              const rawFn = f.name.toLowerCase();
               let score = 0;
               
-              const hasEc = ec && fn.includes(ec);
-              const hasExactName = fName && sName && fn.includes(`${fName} ${sName}`);
-              const hasFirstName = fName && fn.includes(fName);
-              const hasSurname = sName && fn.includes(sName);
+              // Normalize strings by replacing hyphens/underscores with spaces for robust name matching
+              const cleanStr = (str) => (str || "").replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim();
+              const cleanFn = cleanStr(rawFn);
+              const cleanF = cleanStr(fName);
+              const cleanS = cleanStr(sName);
+              const cleanFullName = `${cleanF} ${cleanS}`.trim();
+
+              const hasEc = ec && rawFn.includes(ec);
+              const hasExactName = cleanFullName && cleanFn.includes(cleanFullName);
+              const hasFirstName = cleanF && cleanFn.includes(cleanF);
+              const hasSurname = cleanS && cleanFn.includes(cleanS);
 
               if (hasEc && hasExactName) {
                   score = 100; // Perfect match (EC + Full Name)
