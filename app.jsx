@@ -2043,8 +2043,6 @@ function StaffModal({ s, onClose, onSave, onTransfer, allStaff, isOwner, onHardD
     if (blockSave) return;
     const fullName = (f.firstName.trim() + " " + f.surname.trim()).trim();
     const out = { ...f, name: fullName, level: f.position };
-    delete out.firstName;
-    delete out.surname;
     onSave(out);
   };
 
@@ -2278,7 +2276,14 @@ function TransferModal({ s, onClose, onConfirm, onCancelTransfer }) {
 
 // ─── MANAGER MODAL ────────────────────────────────────────────────────────────────
 function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
-  const [f, setF] = useState(m);
+  const parseName = (t) => {
+    if (!t) return { firstName:"", surname:"" };
+    const i = t.indexOf(" ");
+    if (i < 0) return { firstName:t, surname:"" };
+    return { firstName:t.slice(0,i), surname:t.slice(i+1).trim() };
+  };
+  const initial = parseName(m.name);
+  const [f, setF] = useState({ ...m, firstName: m.firstName || initial.firstName, surname: m.surname || initial.surname });
   // Auto-generate a random 6-digit clock-in PIN for brand-new managers so
   // the owner doesn't have to think one up. Existing managers keep their
   // saved PIN. The PIN is still editable in the input below either way.
@@ -2302,8 +2307,12 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
         <div style={{ display:"grid", gap:13 }}>
           <div><label style={lbl}>EC Code</label>
             <input style={inp} value={f.ec} onChange={e=>set("ec",e.target.value)} placeholder="e.g. B185M" /></div>
-          <div><label style={lbl}>Full Name</label>
-            <input style={inp} value={f.name} onChange={e=>set("name",e.target.value)} /></div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+            <div><label style={lbl}>First Name</label>
+              <input style={inp} value={f.firstName || ""} onChange={e=>set("firstName",e.target.value)} placeholder="e.g. Thandi" /></div>
+            <div><label style={lbl}>Surname</label>
+              <input style={inp} value={f.surname || ""} onChange={e=>set("surname",e.target.value)} placeholder="e.g. Smith" /></div>
+          </div>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
             <div><label style={lbl}>Branch</label>
               <select style={inp} value={f.branch} onChange={e=>set("branch",e.target.value)}>
@@ -2454,13 +2463,16 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
           <div style={{ display:"flex", gap:10, marginLeft:"auto" }}>
             <button onClick={onClose} style={{ padding:"9px 18px", borderRadius:9, border:"1px solid #FBCFE8", background:"#FFFFFF", cursor:"pointer", fontFamily:"inherit", fontSize:13 }}>Cancel</button>
             <button onClick={()=>{
-              if (!f.name) return;
+              const hasName = (f.firstName || "").trim() || (f.surname || "").trim();
+              if (!hasName) return;
               if (pinInput && pinInput.length !== 6) { alert("Personal PIN must be exactly 6 digits, or left empty."); return; }
+              const fullName = ((f.firstName || "").trim() + " " + (f.surname || "").trim()).trim();
+              const out = { ...f, name: fullName };
               // Pass the PIN value (could be the same as before, a new one, or empty to clear)
-              onSave(f, pinInput);
+              onSave(out, pinInput);
             }}
-              disabled={!f.name}
-              style={{ padding:"9px 22px", borderRadius:9, border:"none", background:!f.name?"#d1d5db":"#1e293b", color:"#fff", cursor:!f.name?"not-allowed":"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>
+              disabled={!((f.firstName || "").trim() || (f.surname || "").trim())}
+              style={{ padding:"9px 22px", borderRadius:9, border:"none", background:!((f.firstName || "").trim() || (f.surname || "").trim())?"#d1d5db":"#1e293b", color:"#fff", cursor:!((f.firstName || "").trim() || (f.surname || "").trim())?"not-allowed":"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>
               {isNew?"Add Manager":"Save Changes"}
             </button>
           </div>
