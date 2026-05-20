@@ -16914,6 +16914,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (branch === "Table Bay") return _applyMgrShiftSplit(grid, dates, managers, new Set([1, 2, 3, 4, 5, 6]));
           if (branch === "Riverlands") return _applyRiverlandsShifts(grid, dates, managers);
           if (branch === "Ballito") return _applyBallitoShifts(grid, dates, managers);
+          if (branch === "Mall of the South") return _applyBallitoShifts(grid, dates, managers);
         };
         // Apply to the freshly-generated grid (covers the no-draft path).
         _applyBranchShiftRules(result.grid, result.dates, result.managers);
@@ -17296,7 +17297,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // Sandown + Table Bay use per-shift hours (WE/WM/WL on the
             // cells + a banner above the grid), so the row subtitle drops
             // the generic 8–17 / 9:30–18:30 fallback for those stores.
-            const _hideHours = branch === "Sandown" || branch === "Table Bay" || branch === "Riverlands" || branch === "Ballito";
+            const _hideHours = branch === "Sandown" || branch === "Table Bay" || branch === "Riverlands" || branch === "Ballito" || branch === "Mall of the South";
             const sub = mg._offGhost
               ? "Left " + mg._offLeftDate + (mg._offReason ? " · " + mg._offReason : "")
               : mg._obStarting
@@ -17847,6 +17848,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <span><strong>Sunday</strong> · single shift 08:00–17:00 (WE)</span>
               </div>
             )}
+            {mgrSchedDraft && branch === "Mall of the South" && (
+              <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 14px", marginBottom: 10, fontSize: 12, color: "#065f46", display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center" }}>
+                <span style={{ fontSize: 11, fontWeight: 800, color: "#065f46", letterSpacing: "0.08em", textTransform: "uppercase" }}>🕐 Mall of the South manager shifts</span>
+                <span><strong>SM (every day)</strong> · 08:00–17:00</span>
+                <span><strong>Mon–Sat</strong> · WE 08:00–17:00 (SM only) · WM 09:00–18:00 · WL 10:00–19:00 — store covered 9-7pm minimum</span>
+                <span><strong>Sunday</strong> · single shift 08:00–17:00 (WE)</span>
+              </div>
+            )}
 
             {/* Schedule grid */}
             {mgrSchedDraft && <div style={{ background: "#FFFFFF", borderRadius: 11, border: "1px solid #FBCFE8", overflow: "auto" }}>
@@ -17885,7 +17894,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             ? <div style={{ fontSize: 9, color: "#854d0e", fontWeight: 700, marginTop: 1, fontStyle: "italic" }}>🌱 starts {mg._obStartDate}</div>
                             : (mg.isShadow || mg.transferring)
                               ? null
-                              : (branch === "Sandown" || branch === "Table Bay" || branch === "Riverlands" || branch === "Ballito")
+                              : (branch === "Sandown" || branch === "Table Bay" || branch === "Riverlands" || branch === "Ballito" || branch === "Mall of the South")
                                 ? <div style={{ fontSize: 9, color: "#BE185D", marginTop: 1 }}>{mg.role === "SM" ? "Store Manager" : mg.role === "SSM" ? "Senior Store Manager" : "Assistant Manager"}</div>
                                 : <div style={{ fontSize: 9, color: "#BE185D", marginTop: 1 }}>{mg.role === "SM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · 9:30–18:30"}</div>
                         }
