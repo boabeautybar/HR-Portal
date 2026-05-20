@@ -9796,6 +9796,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // the filtered list; otherwise it's just SALONS unchanged.
           const scopedSalons = SALONS.filter(sl => inScope(sl.name));
           const scopedBranchSet = scopedSalonNames;
+          // Stores with an openingDate in the future aren't trading yet, so
+          // they must not inflate the "Stores Open Today" or schedule-progress
+          // denominators. openSalons is scopedSalons minus those pre-opening
+          // stores; cards that count operational branches use it instead.
+          const _dashToday0 = new Date();
+          const _dashTodayMid = new Date(_dashToday0.getFullYear(), _dashToday0.getMonth(), _dashToday0.getDate());
+          const openSalons = scopedSalons.filter(sl => {
+            if (!sl.openingDate) return true;
+            const od = new Date(sl.openingDate + "T00:00:00");
+            return !(od > _dashTodayMid);
+          });
           // Branch-scoped versions of the headline stats so the four stat
           // cards reflect "my stores" / "other stores" without re-fetching.
           const _scopedActive = enriched.filter(s => scopedBranchSet.has(s.branch) && !s.onMat && !s.onUnpaidLegal && !s.offboarded);
@@ -9855,9 +9866,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const showStoreCard = storeOpenYmd === todayYmd && storeOpenRows !== null;
           const openedBranchSet = new Set(showStoreCard ? (storeOpenRows || []).filter(r => scopedBranchSet.has(r.branch)).map(r => r.branch) : []);
           const stillClosedBranches = showStoreCard
-            ? scopedSalons.map(s => s.name).filter(n => !openedBranchSet.has(n))
+            ? openSalons.map(s => s.name).filter(n => !openedBranchSet.has(n))
             : [];
-          const storeOpenedCount = scopedSalons.length - stillClosedBranches.length;
+          const storeOpenedCount = openSalons.length - stillClosedBranches.length;
           const storeOpenSub = !showStoreCard
             ? "loading…"
             : stillClosedBranches.length === 0
@@ -9870,7 +9881,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Green when complete, amber while pending, red once past the
           // 15th-of-cycle-start-month deadline.
           const schedReady = !!(schedFinalStatus && schedFinalStatus.byBranch);
-          const schedTotal = scopedSalons.length;
+          const schedTotal = openSalons.length;
           const _todayMid = new Date();
           const _today0 = new Date(_todayMid.getFullYear(), _todayMid.getMonth(), _todayMid.getDate());
           const deadline15 = schedReady && schedFinalStatus.deadline ? new Date(schedFinalStatus.deadline) : new Date(_today0.getFullYear(), _today0.getMonth(), 15);
@@ -9878,14 +9889,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const cycSuffix = schedReady && schedFinalStatus.cycLabel ? " · " + schedFinalStatus.cycLabel : "";
           const _buildSchedCard = (kind /* "tech" | "mgr" */) => {
             const doneBranches = schedReady
-              ? scopedSalons.map(s => s.name).filter(n => {
+              ? openSalons.map(s => s.name).filter(n => {
                 const r = schedFinalStatus.byBranch[n] || { tech: false, mgr: false };
                 return r[kind];
               })
               : [];
             const done = doneBranches.length;
             const missing = schedReady
-              ? scopedSalons.map(s => s.name).filter(n => {
+              ? openSalons.map(s => s.name).filter(n => {
                 const r = schedFinalStatus.byBranch[n] || { tech: false, mgr: false };
                 return !r[kind];
               })
@@ -10239,7 +10250,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   const tiles = {
                     storesOpen: {
                       l: "Stores open today",
-                      v: showStoreCard ? (storeOpenedCount + " / " + scopedSalons.length) : "…",
+                      v: showStoreCard ? (storeOpenedCount + " / " + openSalons.length) : "…",
                       sub: storeOpenSub,
                       i: !showStoreCard ? "⚠" : (stillClosedBranches.length === 0 ? "🔓" : "🚨"),
                       c: !showStoreCard ? "#7c2d12" : (stillClosedBranches.length === 0 ? "#166534" : "#7f1d1d"),
