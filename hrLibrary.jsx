@@ -31,23 +31,33 @@ const EmployeeDataLibrary = ({ staff = [], currentUser, managers = [], obList = 
   const [topLevelFolders, setTopLevelFolders] = useState(null);
   const [subfolderCache, setSubfolderCache] = useState({});
 
-  // 1. Active Staff List (Nail techs and managers who have not offboarded)
+  // 1. Active Staff List (Currently active staff members from the database)
   const activeEmployees = useMemo(() => {
-    const activeStaff = staff.filter(e => !offList.some(o => o.ec && e.ec && o.ec.trim() === e.ec.trim()));
-    const activeMgrs = managers.filter(e => !offList.some(o => o.ec && e.ec && o.ec.trim() === e.ec.trim()));
-    return [...activeStaff, ...activeMgrs].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-  }, [staff, managers, offList]);
-
-  // 2. Archive Staff List (From offList leavers records)
-  const archiveEmployees = useMemo(() => {
-    return [...offList]
-      .map(o => ({
-        ...o,
-        role: o.reason ? `Archived (${o.reason})` : "Left / Archived",
-        isArchived: true
-      }))
+    const allStaff = [...staff, ...managers];
+    return allStaff
+      .filter(e => e.active === true)
       .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-  }, [offList]);
+  }, [staff, managers]);
+
+  // 2. Archive Staff List (From consolidated inactive database records + offList leavers fallback)
+  const archiveEmployees = useMemo(() => {
+    const allStaff = [...staff, ...managers];
+    const inactiveStaff = allStaff.filter(e => e.active === false);
+    
+    // Fallback: merge any offList leavers that might not be in the database yet
+    const archiveList = [...inactiveStaff];
+    offList.forEach(o => {
+      if (o.ec && !archiveList.some(a => a.ec && a.ec.trim() === o.ec.trim())) {
+        archiveList.push({
+          ...o,
+          role: o.reason ? `Archived (${o.reason})` : "Left / Archived",
+          isArchived: true,
+          active: false
+        });
+      }
+    });
+    return archiveList.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  }, [staff, managers, offList]);
 
   // 3. Trial Staff List (From obList onboarding records)
   const trialEmployees = useMemo(() => {
@@ -167,7 +177,8 @@ const EmployeeDataLibrary = ({ staff = [], currentUser, managers = [], obList = 
       }
 
       const ec = employee.ec ? employee.ec.trim().toLowerCase() : "";
-      const name = employee.name ? employee.name.trim().toLowerCase() : "";
+      const fName = employee.firstName ? employee.firstName.trim().toLowerCase() : "";
+      const sName = employee.surname ? employee.surname.trim().toLowerCase() : "";
       
       let foundFolder = null;
       let newCache = { ...subfolderCache };
@@ -196,29 +207,46 @@ const EmployeeDataLibrary = ({ staff = [], currentUser, managers = [], obList = 
               newCache[category.id] = categoryChildren;
           }
           
-          // 3. Pure JS Matching (Bypasses Google API quirks, guarantees 100% accuracy)
-          
-          // Strategy 1: Find by Employee ID
-          if (ec) {
-              foundFolder = categoryChildren.find(f => f.name.toLowerCase().includes(ec));
-          }
-          
-          // Strategy 2: Find by Exact Full Name
-          if (!foundFolder && name) {
-              foundFolder = categoryChildren.find(f => f.name.toLowerCase().includes(name));
-          }
-          
-          // Strategy 3: Find by First & Last Name Partial Match
-          if (!foundFolder && name) {
-              const parts = name.split(' ');
-              const first = parts[0];
-              const last = parts[parts.length - 1];
-              if (first && last && first !== last) {
-                  foundFolder = categoryChildren.find(f => {
-                      const fn = f.name.toLowerCase();
-                      return fn.includes(first) && fn.includes(last);
-                  });
+          // 3. Robust Scoring Algorithm (Bypasses Google API quirks, guarantees maximum accuracy)
+          let bestMatch = null;
+          let bestScore = 0;
+
+          for (const f of categoryChildren) {
+              const rawFn = f.name.toLowerCase();
+              let score = 0;
+              
+              // Normalize strings by replacing hyphens/underscores with spaces for robust name matching
+              const cleanStr = (str) => (str || "").replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim();
+              const cleanFn = cleanStr(rawFn);
+              const cleanF = cleanStr(fName);
+              const cleanS = cleanStr(sName);
+              const cleanFullName = `${cleanF} ${cleanS}`.trim();
+
+              const hasEc = ec && rawFn.includes(ec);
+              const hasExactName = cleanFullName && cleanFn.includes(cleanFullName);
+              const hasFirstName = cleanF && cleanFn.includes(cleanF);
+              const hasSurname = cleanS && cleanFn.includes(cleanS);
+
+              if (hasEc && hasExactName) {
+                  score = 100; // Perfect match (EC + Full Name)
+              } else if (hasEc && (hasFirstName || hasSurname)) {
+                  score = 80;  // EC matches + at least one name matches
+              } else if (hasExactName) {
+                  score = 70;  // Missing EC, but exact full name matches (e.g., "Justin Rule_OM_Payroll")
+              } else if (hasEc) {
+                  score = 50;  // ONLY EC matches. Risky if EC was recycled, but accepted if no better match exists.
+              } else if (hasFirstName && hasSurname) {
+                  score = 40;  // Both names appear but separated
               }
+
+              if (score > bestScore) {
+                  bestScore = score;
+                  bestMatch = f;
+              }
+          }
+          
+          if (bestScore > 0 && bestMatch) {
+              foundFolder = bestMatch;
           }
           
           // If we found the employee folder in this category, STOP searching!
@@ -454,34 +482,146 @@ const EmployeeDataLibrary = ({ staff = [], currentUser, managers = [], obList = 
             ← Back to {{ active: "Active Staff", archive: "Archive Staff", trial: "Trial Staff" }[selectedFolder] || "Folders"}
           </button>
 
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 32, borderBottom: "1px solid #f3f4f6", paddingBottom: 32 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
-              <div style={{ width: 88, height: 88, borderRadius: "50%", background: "linear-gradient(135deg, #FBCFE8 0%, #F472B6 100%)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 36, fontWeight: 800, boxShadow: "0 8px 16px rgba(244, 114, 182, 0.3)" }}>
-                {selectedEmployee.name ? selectedEmployee.name.charAt(0).toUpperCase() : "?"}
-              </div>
-              <div>
-                <h2 style={{ fontSize: 32, fontWeight: 800, color: "#831843", margin: "0 0 10px 0", fontFamily: "'Outfit', sans-serif", letterSpacing: "-0.02em" }}>{selectedEmployee.name}</h2>
-                <div style={{ display: "flex", gap: 32, color: "#4b5563", fontSize: 15, flexWrap: "wrap", marginTop: 8 }}>
-                  <div style={{ display: "flex", flexDirection: "column" }}><span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "#9ca3af", marginBottom: 2 }}>Employee ID</span><span style={{ fontWeight: 600, color: "#111827" }}>{selectedEmployee.ec || "N/A"}</span></div>
-                  <div style={{ display: "flex", flexDirection: "column" }}><span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "#9ca3af", marginBottom: 2 }}>Branch</span><span style={{ fontWeight: 600, color: "#111827" }}>{selectedEmployee.branch || "N/A"}</span></div>
-                  <div style={{ display: "flex", flexDirection: "column" }}><span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "#9ca3af", marginBottom: 2 }}>Role</span><span style={{ fontWeight: 600, color: "#111827" }}>{selectedEmployee.position || selectedEmployee.role || "N/A"}</span></div>
-                  <div style={{ display: "flex", flexDirection: "column" }}><span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "#9ca3af", marginBottom: 2 }}>Level</span><span style={{ fontWeight: 600, color: "#111827" }}>{selectedEmployee.level || "N/A"}</span></div>
-                  <div style={{ display: "flex", flexDirection: "column" }}><span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "#9ca3af", marginBottom: 2 }}>Contract</span><span style={{ fontWeight: 600, color: "#111827" }}>{selectedEmployee.contract || "N/A"}</span></div>
-                  <div style={{ display: "flex", flexDirection: "column" }}><span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "#9ca3af", marginBottom: 4 }}>Compliance</span>
-                    {(() => {
-                        const c = HR_LIBRARY_COMPLIANCE[selectedEmployee.permit] || { label: "N/A", icon: "❓", color: "#374151", bg: "#f3f4f6", border: "#d1d5db" };
-                        return (
-                           <span style={{ fontSize: 12, fontWeight: 700, color: c.color, background: c.bg, border: `1px solid ${c.border}`, padding: "2px 8px", borderRadius: 12, display: "inline-flex", alignItems: "center", gap: 4 }}>
-                             {c.icon} {c.label}
-                           </span>
-                        );
-                    })()}
+          {(() => {
+            const isActive = selectedEmployee.active !== false && !selectedEmployee.leftDate;
+            const c = HR_LIBRARY_COMPLIANCE[selectedEmployee.permit] || { label: selectedEmployee.permit || "N/A", icon: "❓", color: "#374151", bg: "#f3f4f6", border: "#d1d5db" };
+            return (
+              <>
+                {/* Header Info Panel */}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 32, borderBottom: "1px solid #f3f4f6", paddingBottom: 32 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
+                    <div style={{ width: 88, height: 88, borderRadius: "50%", background: isActive ? "linear-gradient(135deg, #FBCFE8 0%, #F472B6 100%)" : "linear-gradient(135deg, #E2E8F0 0%, #94A3B8 100%)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 36, fontWeight: 800, boxShadow: isActive ? "0 8px 16px rgba(244, 114, 182, 0.3)" : "0 8px 16px rgba(148, 163, 184, 0.3)" }}>
+                      {selectedEmployee.name ? selectedEmployee.name.charAt(0).toUpperCase() : "?"}
+                    </div>
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                        <h2 style={{ fontSize: 32, fontWeight: 800, color: "#831843", margin: 0, fontFamily: "'Outfit', sans-serif", letterSpacing: "-0.02em" }}>
+                          {selectedEmployee.name || `${selectedEmployee.firstName} ${selectedEmployee.surname}`}
+                        </h2>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: isActive ? "#15803d" : "#b91c1c", background: isActive ? "#dcfce7" : "#fee2e2", border: `1px solid ${isActive ? "#86efac" : "#fca5a5"}`, padding: "4px 10px", borderRadius: 12 }}>
+                          {isActive ? "Active Staff" : "Inactive / Archived"}
+                        </span>
+                      </div>
+                      <p style={{ color: "#6b7280", margin: "8px 0 0 0", fontSize: 15, fontWeight: 500 }}>
+                        {selectedEmployee.roleType === "manager" ? "Store Operations Manager" : "Professional Nail Technician"} — {selectedEmployee.branch || "Unassigned Branch"}
+                      </p>
+                    </div>
                   </div>
-                  <div style={{ display: "flex", flexDirection: "column" }}><span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "#9ca3af", marginBottom: 2 }}>Start Date</span><span style={{ fontWeight: 600, color: "#111827" }}>{selectedEmployee.startDate || "N/A"}</span></div>
                 </div>
-              </div>
-            </div>
-          </div>
+
+                {/* Detailed Credentials Grid */}
+                <div style={{ background: "#fcf8f9", border: "1px solid #fbcfe8", borderRadius: "20px", padding: "32px", marginBottom: "40px" }}>
+                  <h3 style={{ fontSize: "18px", fontWeight: "800", color: "#831843", margin: "0 0 24px 0", fontFamily: "'Outfit', sans-serif", letterSpacing: "-0.01em", display: "flex", alignItems: "center", gap: "8px" }}>
+                    <span>📋</span> Employee Credentials & Metadata
+                  </h3>
+                  
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "24px" }}>
+                    {/* Employee Code */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      <span style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.1em", color: "#9ca3af" }}>Employee Code</span>
+                      <span style={{ fontSize: "15px", fontWeight: "600", color: "#111827" }}>{selectedEmployee.ec || "N/A"}</span>
+                    </div>
+
+                    {/* First Name */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      <span style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.1em", color: "#9ca3af" }}>First Name</span>
+                      <span style={{ fontSize: "15px", fontWeight: "600", color: "#111827" }}>{selectedEmployee.firstName || (selectedEmployee.name ? selectedEmployee.name.split(" ")[0] : "N/A")}</span>
+                    </div>
+
+                    {/* Surname */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      <span style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.1em", color: "#9ca3af" }}>Surname</span>
+                      <span style={{ fontSize: "15px", fontWeight: "600", color: "#111827" }}>{selectedEmployee.surname || (selectedEmployee.name ? selectedEmployee.name.split(" ").slice(1).join(" ") : "N/A")}</span>
+                    </div>
+
+                    {/* Role Type */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      <span style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.1em", color: "#9ca3af" }}>Role Type</span>
+                      <span style={{ fontSize: "15px", fontWeight: "600", color: "#111827", textTransform: "capitalize" }}>{selectedEmployee.roleType || "Tech"}</span>
+                    </div>
+
+                    {/* Level */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      <span style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.1em", color: "#9ca3af" }}>Level</span>
+                      <span style={{ fontSize: "15px", fontWeight: "600", color: "#111827" }}>{selectedEmployee.level || "N/A"}</span>
+                    </div>
+
+                    {/* Start Date */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      <span style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.1em", color: "#9ca3af" }}>Start Date</span>
+                      <span style={{ fontSize: "15px", fontWeight: "600", color: "#111827" }}>{selectedEmployee.startDate || "N/A"}</span>
+                    </div>
+
+                    {/* End Date (Only show if Inactive) */}
+                    {!isActive && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                        <span style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.1em", color: "#b91c1c" }}>End Date (Left Date)</span>
+                        <span style={{ fontSize: "15px", fontWeight: "600", color: "#b91c1c" }}>{selectedEmployee.leftDate || "N/A"}</span>
+                      </div>
+                    )}
+
+                    {/* Contract */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      <span style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.1em", color: "#9ca3af" }}>Contract</span>
+                      <span style={{ fontSize: "15px", fontWeight: "600", color: "#111827" }}>{selectedEmployee.contract || "N/A"}</span>
+                    </div>
+
+                    {/* Compliance / Permit */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      <span style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.1em", color: "#9ca3af", marginBottom: 2 }}>Compliance Status</span>
+                      <div>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: c.color, background: c.bg, border: `1px solid ${c.border}`, padding: "4px 10px", borderRadius: 12, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                          {c.icon} {c.label}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Cell Number */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      <span style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.1em", color: "#9ca3af" }}>Cell Number</span>
+                      <span style={{ fontSize: "15px", fontWeight: "600", color: "#111827" }}>{selectedEmployee.cellNumber || "N/A"}</span>
+                    </div>
+
+                    {/* Email */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      <span style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.1em", color: "#9ca3af" }}>Email Address</span>
+                      <span style={{ fontSize: "15px", fontWeight: "600", color: "#111827" }}>{selectedEmployee.email || "N/A"}</span>
+                    </div>
+
+                    {/* Address */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      <span style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.1em", color: "#9ca3af" }}>Address</span>
+                      <span style={{ fontSize: "15px", fontWeight: "600", color: "#111827" }}>{selectedEmployee.address || "N/A"}</span>
+                    </div>
+
+                    {/* ID Number / Passport */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      <span style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.1em", color: "#9ca3af" }}>
+                        {selectedEmployee.idNumber ? "ID Number" : (selectedEmployee.passport ? "Passport Number" : "ID / Passport Number")}
+                      </span>
+                      <span style={{ fontSize: "15px", fontWeight: "600", color: "#111827" }}>
+                        {selectedEmployee.idNumber || selectedEmployee.passport || "N/A"}
+                      </span>
+                    </div>
+
+                    {/* Tax Number */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      <span style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.1em", color: "#9ca3af" }}>Tax Number</span>
+                      <span style={{ fontSize: "15px", fontWeight: "600", color: "#111827" }}>{selectedEmployee.taxNumber || "N/A"}</span>
+                    </div>
+
+                    {/* Gender */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      <span style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.1em", color: "#9ca3af" }}>Gender</span>
+                      <span style={{ fontSize: "15px", fontWeight: "600", color: "#111827" }}>
+                        {selectedEmployee.gender === "F" ? "Female 👩" : (selectedEmployee.gender === "M" ? "Male 👨" : selectedEmployee.gender || "N/A")}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </>
+            );
+          })()}
 
           {error && (
             <div style={{ background: "#fee2e2", borderLeft: "4px solid #ef4444", padding: 16, marginBottom: 24, borderRadius: 4, color: "#991b1b" }}>
@@ -748,10 +888,15 @@ const EmployeeDataLibrary = ({ staff = [], currentUser, managers = [], obList = 
           >
             <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 16 }}>
               <div style={{ width: 56, height: 56, borderRadius: "50%", background: "linear-gradient(135deg, #FDEEF5 0%, #FBCFE8 100%)", color: "#BE185D", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, fontWeight: 800 }}>
-                {emp.name ? emp.name.charAt(0).toUpperCase() : "?"}
+                {(() => {
+                   const dName = emp.name || `${emp.firstName || ""} ${emp.surname || ""}`.trim();
+                   return dName ? dName.charAt(0).toUpperCase() : "?";
+                })()}
               </div>
               <div>
-                <div style={{ fontSize: 18, fontWeight: 800, color: "#111827", marginBottom: 4, fontFamily: "'Outfit', sans-serif" }}>{emp.name}</div>
+                <div style={{ fontSize: 18, fontWeight: 800, color: "#111827", marginBottom: 4, fontFamily: "'Outfit', sans-serif" }}>
+                  {emp.name || `${emp.firstName || ""} ${emp.surname || ""}`.trim() || "Unknown Staff"}
+                </div>
                 <div style={{ fontSize: 13, color: "#6b7280", fontWeight: 600 }}>{emp.position || emp.role || "Nail Tech"}</div>
               </div>
             </div>

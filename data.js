@@ -17,127 +17,212 @@
   });
 
   // ---------- Row ↔ React-shape transforms ----------
+  function getRoleType(ec, existingRole) {
+    if (!ec) return existingRole || "tech";
+    const code = ec.toUpperCase();
+    if (code.endsWith("-M")) return "manager";
+    if (code.endsWith("-W")) return "warehouse";
+    if (code.endsWith("-F")) return "maintenance";
+    if (code.endsWith("-CC")) return "call_centre";
+    if (code.endsWith("-C")) return "cleaner";
+    return existingRole || "tech";
+  }
+
+  // Drop keys whose value is null, undefined, or an empty string before
+  // sending to Supabase. PostgREST rejects the whole request if the
+  // payload references a column that isn't in its schema cache (or
+  // doesn't exist on the table at all). For routine writes like a branch
+  // transfer we only set transfer_* / branch — every other optional
+  // field comes through as null because the in-memory record was built
+  // by row-to-X with `r.field || ""`. Stripping those nulls lets the
+  // write succeed against deployments whose `staff` table doesn't have
+  // every column yet.
+  function _prune(row) {
+    var out = {};
+    for (var k in row) {
+      var v = row[k];
+      if (v === null || v === undefined || v === "") continue;
+      out[k] = v;
+    }
+    return out;
+  }
+
   function rowToStaff(r) {
     return {
-      _id:           r.id,
-      id:            r.id,
-      ec:            r.employee_code,
-      name:          r.name           || "",
-      branch:        r.branch         || "",
-      contract:      r.contract       || null,
-      permit:        r.permit         || null,
-      notes:         r.notes          || "",
-      isShadow:      !!r.is_shadow,
-      transferring:  !!r.transferring,
-      transferTo:    r.transfer_to    || null,
-      transferDate:  r.transfer_date  || null,
-      transferNote:  r.transfer_note  || null,
-      leftDate:      r.left_date      || null,
-      startDate:     r.start_date     || null,
-      level:         r.level          || null
+      _id: r.id,
+      id: r.id,
+      ec: r.employee_code,
+      firstName: r.first_name || "",
+      surname: r.surname || "",
+      name: r.name || "",
+      branch: r.branch || "",
+      role: r.role || "",
+      roleType: getRoleType(r.employee_code, r.role_type),
+      contract: r.contract || null,
+      permit: r.permit || null,
+      permitExpiry: r.permit_expiry || null,
+      notes: r.notes || "",
+      isShadow: !!r.is_shadow,
+      transferring: !!r.transferring,
+      transferTo: r.transfer_to || null,
+      transferDate: r.transfer_date || null,
+      transferNote: r.transfer_note || null,
+      leftDate: r.left_date || null,
+      startDate: r.start_date || null,
+      level: r.level || null,
+      cellNumber: r.cell_number || "",
+      email: r.email || "",
+      address: r.address || r.home_address || "",
+      idNumber: r.id_number || "",
+      passport: r.passport || r.passport_number || "",
+      taxNumber: r.tax_number || "",
+      gender: r.gender || "",
+      active: r.active !== undefined ? (typeof r.active === 'string' ? r.active.toUpperCase() === 'TRUE' : !!r.active) : !r.left_date
     };
   }
   function staffToRow(s) {
     return {
       employee_code: s.ec,
-      name:          s.name || "",
-      branch:        s.branch || "",
-      contract:      s.contract || null,
-      permit:        s.permit   || null,
-      notes:         s.notes    || null,
-      is_shadow:     !!s.isShadow,
-      transferring:  !!s.transferring,
-      transfer_to:   s.transferTo   || null,
+      first_name: s.firstName || null,
+      surname: s.surname || null,
+      name: s.name || "",
+      branch: s.branch || "",
+      contract: s.contract || null,
+      permit: s.permit || null,
+      permit_expiry: s.permitExpiry || null,
+      notes: s.notes || null,
+      is_shadow: !!s.isShadow,
+      transferring: !!s.transferring,
+      transfer_to: s.transferTo || null,
       transfer_date: s.transferDate || null,
       transfer_note: s.transferNote || null,
-      left_date:     s.leftDate || null,
-      start_date:    s.startDate || null,
-      level:         s.level || null,
-      role_type:     "tech",
-      active:        !s.leftDate
+      left_date: s.leftDate || null,
+      start_date: s.startDate || null,
+      level: s.level || null,
+      role_type: getRoleType(s.ec, s.roleType),
+      active: s.active !== undefined ? s.active : !s.leftDate,
+      cell_number: s.cellNumber || null,
+      email: s.email || null,
+      address: s.address || null,
+      id_number: s.idNumber || null,
+      tax_number: s.taxNumber || null,
+      gender: s.gender || null
     };
   }
 
   function rowToManager(r) {
     return {
-      _id:    r.id,
-      id:     r.id,
-      ec:     r.employee_code,
-      name:   r.name   || "",
+      _id: r.id,
+      id: r.id,
+      ec: r.employee_code,
+      firstName: r.first_name || "",
+      surname: r.surname || "",
+      name: r.name || "",
       branch: r.branch || "",
-      role:   r.role   || "",
-      notes:  r.notes  || "",
+      role: r.role || "",
+      roleType: getRoleType(r.employee_code, r.role_type),
+      notes: r.notes || "",
+      contract: r.contract || null,
+      permit: r.permit || null,
+      permitExpiry: r.permit_expiry || null,
       transferring: !!r.transferring,
-      transferTo:   r.transfer_to   || null,
+      transferTo: r.transfer_to || null,
       transferDate: r.transfer_date || null,
       transferNote: r.transfer_note || null,
-      startDate:    r.start_date    || null
+      startDate: r.start_date || null,
+      leftDate: r.left_date || null,
+      cellNumber: r.cell_number || "",
+      email: r.email || "",
+      address: r.address || r.home_address || "",
+      idNumber: r.id_number || "",
+      passport: r.passport || r.passport_number || "",
+      taxNumber: r.tax_number || "",
+      gender: r.gender || "",
+      active: r.active !== undefined ? (typeof r.active === 'string' ? r.active.toUpperCase() === 'TRUE' : !!r.active) : !r.left_date
     };
   }
   function managerToRow(m) {
     return {
       employee_code: m.ec,
-      name:          m.name || "",
-      branch:        m.branch || "",
-      role:          m.role || null,
-      notes:         m.notes || null,
-      transferring:  !!m.transferring,
-      transfer_to:   m.transferTo   || null,
+      first_name: m.firstName || null,
+      surname: m.surname || null,
+      name: m.name || "",
+      branch: m.branch || "",
+      role: m.role || null,
+      notes: m.notes || null,
+      contract: m.contract || null,
+      permit: m.permit || null,
+      permit_expiry: m.permitExpiry || null,
+      transferring: !!m.transferring,
+      transfer_to: m.transferTo || null,
       transfer_date: m.transferDate || null,
       transfer_note: m.transferNote || null,
-      start_date:    m.startDate || null,
-      role_type:     "manager",
-      active:        true
+      start_date: m.startDate || null,
+      left_date: m.leftDate || null,
+      role_type: m.roleType || "manager",
+      active: m.active !== undefined ? m.active : !m.leftDate,
+      cell_number: m.cellNumber || null,
+      email: m.email || null,
+      address: m.address || null,
+      id_number: m.idNumber || null,
+      tax_number: m.taxNumber || null,
+      gender: m.gender || null
     };
   }
 
   function rowToMat(r) {
     return {
-      _id:        r.id,
-      id:         r.id,
-      ec:         r.employee_code,
-      name:       r.name || "",
-      branch:     r.branch || "",
-      matStatus:  r.mat_status,
-      matStart:   r.mat_start   || null,
-      matEnd:     r.mat_end     || null,
+      _id: r.id,
+      id: r.id,
+      ec: r.employee_code,
+      name: r.name || "",
+      branch: r.branch || "",
+      matStatus: r.mat_status,
+      matStart: r.mat_start || null,
+      matEnd: r.mat_end || null,
       returnDate: r.return_date || null,
-      notes:      r.notes || ""
+      notes: r.notes || ""
     };
   }
   function matToRow(m) {
     return {
       employee_code: m.ec,
-      name:          m.name || "",
-      branch:        m.branch || "",
-      mat_status:    m.matStatus,
-      mat_start:     m.matStart   || null,
-      mat_end:       m.matEnd     || null,
-      return_date:   m.returnDate || null,
-      notes:         m.notes || null
+      name: m.name || "",
+      branch: m.branch || "",
+      mat_status: m.matStatus,
+      mat_start: m.matStart || null,
+      mat_end: m.matEnd || null,
+      return_date: m.returnDate || null,
+      notes: m.notes || null
     };
   }
 
   // ---------- Initial load ----------
   async function loadAll() {
-    var [techs, mgrs, mat] = await Promise.all([
-      sb.from("staff").select("*").eq("role_type", "tech").order("employee_code"),
-      sb.from("staff").select("*").eq("role_type", "manager").order("employee_code"),
+    var [allRows, mat] = await Promise.all([
+      sb.from("staff").select("*").order("employee_code"),
       sb.from("maternity").select("*")
     ]);
-    if (techs.error) console.error("[BOA DB] staff:",     techs.error);
-    if (mgrs.error)  console.error("[BOA DB] managers:",  mgrs.error);
-    if (mat.error)   console.error("[BOA DB] maternity:", mat.error);
+    if (allRows.error) console.error("[BOA DB] staff list load error:", allRows.error);
+    if (mat.error) console.error("[BOA DB] maternity load error:", mat.error);
+
+    var data = allRows.data || [];
+    // Separate into techs and managers
+    // Managers are those with role_type === 'manager'
+    // Techs are everyone else (role_type !== 'manager', including empty/null role_types)
+    var techs = data.filter(function (r) { return r.role_type !== "manager"; }).map(rowToStaff);
+    var mgrs = data.filter(function (r) { return r.role_type === "manager"; }).map(rowToManager);
+
     return {
-      staff:    (techs.data || []).map(rowToStaff),
-      managers: (mgrs.data  || []).map(rowToManager),
-      matRecs:  (mat.data   || []).map(rowToMat)
+      staff: techs,
+      managers: mgrs,
+      matRecs: (mat.data || []).map(rowToMat)
     };
   }
 
   // ---------- Staff CRUD ----------
   async function saveStaff(s) {
-    var row = staffToRow(s);
+    var row = _prune(staffToRow(s));
     if (s.id) {
       var u = await sb.from("staff").update(row).eq("id", s.id).select().single();
       if (u.error) throw u.error;
@@ -154,7 +239,7 @@
 
   // ---------- Manager CRUD ----------
   async function saveManager(m) {
-    var row = managerToRow(m);
+    var row = _prune(managerToRow(m));
     if (m.id) {
       var u = await sb.from("staff").update(row).eq("id", m.id).select().single();
       if (u.error) throw u.error;
@@ -167,6 +252,12 @@
   async function deleteManager(id) {
     var r = await sb.from("staff").delete().eq("id", id);
     if (r.error) throw r.error;
+  }
+  
+  async function loadConsolidatedStaff() {
+    var res = await sb.from("Consolodated Staff List").select("*").order("employee_code");
+    if (res.error) { console.error("[BOA DB] loadConsolidatedStaff error:", res.error); return []; }
+    return res.data || [];
   }
 
   // ---------- Schedule (boa_sched_<branch>_<ym>) ----------
@@ -213,14 +304,14 @@
     if (!entry || !entry.grid) return null;
     var existing = await loadApprovedSchedules(branch, ym, isManager);
     var rec = {
-      id:         "ap_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7),
-      name:       (entry.name || "Untitled").toString().slice(0, 80),
-      grid:       entry.grid,
-      madeBy:     (entry.madeBy || "").toString().slice(0, 80),
+      id: "ap_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7),
+      name: (entry.name || "Untitled").toString().slice(0, 80),
+      grid: entry.grid,
+      madeBy: (entry.madeBy || "").toString().slice(0, 80),
       approvedBy: (entry.approvedBy || "").toString().slice(0, 80),
-      note:       (entry.note || "").toString().slice(0, 500),
-      savedAt:    new Date().toISOString(),
-      savedBy:    (entry.savedBy || "").toString().slice(0, 80)
+      note: (entry.note || "").toString().slice(0, 500),
+      savedAt: new Date().toISOString(),
+      savedBy: (entry.savedBy || "").toString().slice(0, 80)
     };
     var next = [rec].concat(existing).slice(0, SCHED_APPROVED_LIMIT);
     var res = await sb.from("app_state").upsert({ key: schedApprovedKey(branch, ym, isManager), value: next });
@@ -249,9 +340,9 @@
         // Prepend prior version (newest-first), drop oldest beyond limit
         var snapshot = {
           savedAt: priorVal.savedAt || new Date().toISOString(),
-          grid:    priorVal.grid,
-          branch:  priorVal.branch || branch,
-          ym:      priorVal.ym || ym
+          grid: priorVal.grid,
+          branch: priorVal.branch || branch,
+          ym: priorVal.ym || ym
         };
         var updated = [snapshot].concat(existing).slice(0, SCHED_HISTORY_LIMIT);
         await sb.from("app_state").upsert({ key: schedHistKey(branch, ym, isManager), value: updated });
@@ -309,11 +400,11 @@
     }
     var now = new Date();
     var entry = {
-      id:        _trashId(),
-      kind:      isManager ? "manager" : "tech",
-      branch:    branch,
-      ym:        ym,
-      grid:      liveVal.grid,
+      id: _trashId(),
+      kind: isManager ? "manager" : "tech",
+      branch: branch,
+      ym: ym,
+      grid: liveVal.grid,
       deletedAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + SCHED_TRASH_TTL_DAYS * 86400000).toISOString()
     };
@@ -334,7 +425,7 @@
     // Persist pruned list back so storage doesn't grow forever.
     _trashWrite(arr).catch(function (e) { console.warn("trash prune persist:", e); });
     if (opts && opts.branch) arr = arr.filter(function (e) { return e.branch === opts.branch; });
-    if (opts && opts.kind)   arr = arr.filter(function (e) { return e.kind === opts.kind; });
+    if (opts && opts.kind) arr = arr.filter(function (e) { return e.kind === opts.kind; });
     return arr;
   }
 
@@ -480,15 +571,15 @@
     return out;
   }
   function periodLabel(ym) {
-    var months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+    var months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
     var p = ym.split("-"), y = +p[0], m = +p[1];
     var sm = m === 1 ? 12 : m - 1, sy = m === 1 ? y - 1 : y;
-    return months[sm-1] + " 25" + (sy !== y ? ", " + sy : "") + " — " + months[m-1] + " 24, " + y;
+    return months[sm - 1] + " 25" + (sy !== y ? ", " + sy : "") + " — " + months[m - 1] + " 24, " + y;
   }
   function shiftYm(ym, delta) {
     var p = ym.split("-"), y = +p[0], m = +p[1] + delta;
     while (m > 12) { m -= 12; y += 1; }
-    while (m < 1)  { m += 12; y -= 1; }
+    while (m < 1) { m += 12; y -= 1; }
     return y + "-" + String(m).padStart(2, "0");
   }
 
@@ -612,7 +703,7 @@
     var now = new Date();
     var ymKeys = [];
     var startCycle = (now.getDate() <= 24) ? new Date(now.getFullYear(), now.getMonth() - 1, 1)
-                                            : new Date(now.getFullYear(), now.getMonth(),     1);
+      : new Date(now.getFullYear(), now.getMonth(), 1);
     var cyclesNeeded = Math.max(2, Math.ceil(d / 30) + 1);
     for (var i = 0; i < cyclesNeeded; i++) {
       var c = new Date(startCycle.getFullYear(), startCycle.getMonth() - i, 1);
@@ -643,19 +734,19 @@
         var ts = new Date(e.ts);
         if (isNaN(ts) || ts < since) return;
         out.push({
-          id:        "kiosk_" + rowBranch + "_" + e.ts + "_" + (e.ec || ""),
-          ts:        e.ts,
-          dayKey:    e.dayKey,
-          ymd:       e.ymd || null,
-          type:      "att",
-          status:    e.status,
-          note:      e.note || null,
-          hasProof:  !!e.hasProof,
-          proofKey:  e.proofKey || null,
-          markedBy:  e.markedBy || e.manager || e.by || null,        // which manager submitted this
-          ec:        e.ec,
-          branch:    rowBranch,
-          source:    "kiosk_log"
+          id: "kiosk_" + rowBranch + "_" + e.ts + "_" + (e.ec || ""),
+          ts: e.ts,
+          dayKey: e.dayKey,
+          ymd: e.ymd || null,
+          type: "att",
+          status: e.status,
+          note: e.note || null,
+          hasProof: !!e.hasProof,
+          proofKey: e.proofKey || null,
+          markedBy: e.markedBy || e.manager || e.by || null,        // which manager submitted this
+          ec: e.ec,
+          branch: rowBranch,
+          source: "kiosk_log"
         });
       });
     });
@@ -675,6 +766,16 @@
     if (res.error) { console.error("loadEarlyLeaves:", res.error); return {}; }
     return (res.data && res.data.value) || {};
   }
+  // Delete the boa_early_<branch>_<ym> sidecar entirely. Called by the
+  // Attendance Total Reset so the 'left early' orange overlay clears
+  // along with the rest of the display state. The next Import Check-ins
+  // recreates the sidecar from the kiosk early-leave entries.
+  async function deleteEarlyLeaves(branch, ym) {
+    var key = "boa_early_" + branch + "_" + ym;
+    var r = await sb.from("app_state").delete().eq("key", key);
+    if (r.error) { console.error("deleteEarlyLeaves:", r.error, "key:", key); throw r.error; }
+    return true;
+  }
 
   // ---------- Store-opening status ----------
   // The kiosk's "open the store" button writes one row per (branch, ymd) to
@@ -685,7 +786,7 @@
   async function listStoreOpenings(ymd) {
     if (!ymd) {
       var today = new Date();
-      ymd = today.getFullYear() + "-" + String(today.getMonth()+1).padStart(2, "0") + "-" + String(today.getDate()).padStart(2, "0");
+      ymd = today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0") + "-" + String(today.getDate()).padStart(2, "0");
     }
     var like = "boa_store_open_%_" + ymd;
     var res = await sb.from("app_state").select("key,value").like("key", like);
@@ -697,8 +798,8 @@
       if (!m) return;
       var val = row.value || {};
       out.push({
-        branch:   val.branch || m[1],
-        ymd:      val.ymd || m[2],
+        branch: val.branch || m[1],
+        ymd: val.ymd || m[2],
         openedAt: val.openedAt || null,
         openedBy: val.openedBy || null
       });
@@ -718,7 +819,7 @@
     var now = new Date();
     var ymKeys = [];
     var startCycle = (now.getDate() <= 24) ? new Date(now.getFullYear(), now.getMonth() - 1, 1)
-                                            : new Date(now.getFullYear(), now.getMonth(),     1);
+      : new Date(now.getFullYear(), now.getMonth(), 1);
     var cyclesNeeded = Math.max(2, Math.ceil(d / 30) + 1);
     for (var i = 0; i < cyclesNeeded; i++) {
       var c = new Date(startCycle.getFullYear(), startCycle.getMonth() - i, 1);
@@ -908,6 +1009,23 @@
     return records;
   }
 
+  // ---------- Compliance actions (boa_compliance_actions_v1) ----------
+  // Sidecar tracking per-staff compliance follow-ups. Shape:
+  //   { [ec]: { workPermitRequestedAt, workPermitRequestedBy,
+  //             workPermitDeadline, workPermitNotes, clearedAt, clearedBy } }
+  // Stored on app_state so we don't need a schema migration.
+  async function loadComplianceActions() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_compliance_actions_v1").maybeSingle();
+    if (res.error) { console.error("loadComplianceActions:", res.error); return {}; }
+    var v = res.data && res.data.value;
+    return (v && typeof v === "object" && !Array.isArray(v)) ? v : {};
+  }
+  async function saveComplianceActions(map) {
+    var res = await sb.from("app_state").upsert({ key: "boa_compliance_actions_v1", value: map || {} });
+    if (res.error) { console.error("saveComplianceActions:", res.error); throw res.error; }
+    return map;
+  }
+
   // ---------- Tech day-loans (boa_tech_loans_v1) ----------
   // One-day cross-branch borrowing of a nail tech. Stored as a JSON array on
   // app_state so we don't need a schema migration. Each record is:
@@ -924,6 +1042,24 @@
   async function saveTechLoans(records) {
     var res = await sb.from("app_state").upsert({ key: "boa_tech_loans_v1", value: records || [] });
     if (res.error) { console.error("saveTechLoans:", res.error); throw res.error; }
+    return records;
+  }
+
+  // ---------- Daily tasks (boa_daily_tasks_v1) ----------
+  // Per-user to-do items assigned by an admin. Records:
+  //   { _id, title, description, assigneePin, date (YYYY-MM-DD),
+  //     createdBy, createdAt, doneAt?, doneBy? }
+  // The HR portal dashboard reads only TODAY's tasks for the signed-in
+  // user; the admin "Daily Tasks" tab edits the whole list.
+  async function loadDailyTasks() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_daily_tasks_v1").maybeSingle();
+    if (res.error) { console.error("loadDailyTasks:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveDailyTasks(records) {
+    var res = await sb.from("app_state").upsert({ key: "boa_daily_tasks_v1", value: records || [] });
+    if (res.error) { console.error("saveDailyTasks:", res.error); throw res.error; }
     return records;
   }
 
@@ -970,14 +1106,14 @@
     if (!entry || !entry.action) return null;
     var existing = await loadActivity();
     var rec = {
-      id:       "act_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7),
-      when:     new Date().toISOString(),
-      who:      entry.who      || "Unknown",
-      role:     entry.role     || "",
+      id: "act_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7),
+      when: new Date().toISOString(),
+      who: entry.who || "Unknown",
+      role: entry.role || "",
       category: entry.category || "",
-      action:   entry.action   || "",
-      target:   entry.target   || "",
-      details:  entry.details  || ""
+      action: entry.action || "",
+      target: entry.target || "",
+      details: entry.details || ""
     };
     var next = [rec].concat(existing).slice(0, ACTIVITY_LIMIT);
     var res = await sb.from("app_state").upsert({ key: ACTIVITY_KEY, value: next });
@@ -988,14 +1124,37 @@
   // ---------- Maternity CRUD ----------
   async function saveMat(m) {
     var row = matToRow(m);
-    if (m.id) {
-      var u = await sb.from("maternity").update(row).eq("id", m.id).select().single();
-      if (u.error) throw u.error;
-      return rowToMat(u.data);
+    // Accept either `id` or `_id` — rowToMat exposes both and some app
+    // code paths only carry `_id`. Without this fallback an existing-
+    // record update would silently degrade to an INSERT and either
+    // duplicate the row or trip a unique constraint.
+    var existingId = (m && (m.id != null ? m.id : m._id));
+    // Decorate any thrown error with the request payload + a mode tag so
+    // the UI alert is actually useful instead of an opaque 'Could not save'.
+    function decorate(err, mode) {
+      try {
+        var msg = (err && (err.message || err.hint || err.details))
+          || (err && JSON.stringify(err))
+          || "unknown error";
+        var e = new Error("[mat " + mode + "] " + msg + (err && err.code ? " (code " + err.code + ")" : ""));
+        e.cause = err;
+        e._payload = row;
+        e._id = existingId;
+        return e;
+      } catch (_) { return err; }
     }
-    var i = await sb.from("maternity").insert(row).select().single();
-    if (i.error) throw i.error;
-    return rowToMat(i.data);
+    if (existingId != null) {
+      // .maybeSingle() instead of .single() — if RLS lets the UPDATE
+      // through but blocks the SELECT-after-update we still don't want
+      // the call to look like a failure. Reconstruct the saved object
+      // from the input row when no row comes back.
+      var u = await sb.from("maternity").update(row).eq("id", existingId).select().maybeSingle();
+      if (u.error) { console.error("[BOA DB] saveMat update:", u.error, "payload:", row, "id:", existingId); throw decorate(u.error, "update"); }
+      return rowToMat(u.data || Object.assign({ id: existingId }, row));
+    }
+    var i = await sb.from("maternity").insert(row).select().maybeSingle();
+    if (i.error) { console.error("[BOA DB] saveMat insert:", i.error, "payload:", row); throw decorate(i.error, "insert"); }
+    return rowToMat(i.data || row);
   }
   async function deleteMat(id) {
     var r = await sb.from("maternity").delete().eq("id", id);
@@ -1006,87 +1165,96 @@
     isReady:       true,
     sb:            sb,
     loadAll:       loadAll,
+    loadConsolidatedStaff: loadConsolidatedStaff,
     saveStaff:     saveStaff,    deleteStaff:   deleteStaff,
     saveManager:   saveManager,  deleteManager: deleteManager,
     saveMat:       saveMat,      deleteMat:     deleteMat,
 
     // Schedules
-    loadSchedule:           loadSchedule,
-    saveSchedule:           saveSchedule,
-    loadScheduleHistory:    loadScheduleHistory,
-    loadApprovedSchedules:  loadApprovedSchedules,
-    saveApprovedSchedule:   saveApprovedSchedule,
+    loadSchedule: loadSchedule,
+    saveSchedule: saveSchedule,
+    loadScheduleHistory: loadScheduleHistory,
+    loadApprovedSchedules: loadApprovedSchedules,
+    saveApprovedSchedule: saveApprovedSchedule,
     deleteApprovedSchedule: deleteApprovedSchedule,
-    deleteSchedule:         deleteSchedule,
-    listDeletedSchedules:   listDeletedSchedules,
-    restoreSchedule:        restoreSchedule,
-    purgeDeletedSchedule:   purgeDeletedSchedule,
-    loadMgrRequests:        loadMgrRequests,
-    saveMgrRequests:        saveMgrRequests,
-    loadTechRequests:       loadTechRequests,
-    saveTechRequests:       saveTechRequests,
-    listRequestKeys:        listRequestKeys,
-    probeRequestTables:     probeRequestTables,
-    loadByKey:              loadByKey,
-    currentSchedYm:         currentSchedYm,
-    currentAttYm:           currentAttYm,
-    periodDays:             periodDays,
-    periodLabel:            periodLabel,
-    shiftYm:                shiftYm,
+    deleteSchedule: deleteSchedule,
+    listDeletedSchedules: listDeletedSchedules,
+    restoreSchedule: restoreSchedule,
+    purgeDeletedSchedule: purgeDeletedSchedule,
+    loadMgrRequests: loadMgrRequests,
+    saveMgrRequests: saveMgrRequests,
+    loadTechRequests: loadTechRequests,
+    saveTechRequests: saveTechRequests,
+    listRequestKeys: listRequestKeys,
+    probeRequestTables: probeRequestTables,
+    loadByKey: loadByKey,
+    currentSchedYm: currentSchedYm,
+    currentAttYm: currentAttYm,
+    periodDays: periodDays,
+    periodLabel: periodLabel,
+    shiftYm: shiftYm,
 
     // HR Tasks
-    loadHRTasks:       loadHRTasks,
-    saveHRTasks:       saveHRTasks,
+    loadHRTasks: loadHRTasks,
+    saveHRTasks: saveHRTasks,
 
     // Onboarding, Trial Period & Off-boarding
-    loadOnboarding:    loadOnboarding,
-    saveOnboarding:    saveOnboarding,
-    loadTrialPeriod:   loadTrialPeriod,
-    saveTrialPeriod:   saveTrialPeriod,
-    loadOffboarding:   loadOffboarding,
-    saveOffboarding:   saveOffboarding,
+    loadOnboarding: loadOnboarding,
+    saveOnboarding: saveOnboarding,
+    loadTrialPeriod: loadTrialPeriod,
+    saveTrialPeriod: saveTrialPeriod,
+    loadOffboarding: loadOffboarding,
+    saveOffboarding: saveOffboarding,
 
     // Attendance
-    loadAttendance:    loadAttendance,
-    saveAttendance:        saveAttendance,
+    loadAttendance: loadAttendance,
+    saveAttendance: saveAttendance,
 
     // Leave Planner
-    loadLeaveRecords:  loadLeaveRecords,
-    saveLeaveRecords:  saveLeaveRecords,
+    loadLeaveRecords: loadLeaveRecords,
+    saveLeaveRecords: saveLeaveRecords,
 
     // Manager personal PINs
-    loadManagerPins:   loadManagerPins,
-    saveManagerPins:   saveManagerPins,
+    loadManagerPins: loadManagerPins,
+    saveManagerPins: saveManagerPins,
 
     // Manager clock-ins viewer
     listRecentManagerClockins: listRecentManagerClockins,
-    listRecentTechClockins:    listRecentTechClockins,
+    listRecentTechClockins: listRecentTechClockins,
     listRecentAttendanceCheckins: listRecentAttendanceCheckins,
-    listRecentKioskCheckins:      listRecentKioskCheckins,
-    listStoreOpenings:            listStoreOpenings,
-    loadEarlyLeaves:              loadEarlyLeaves,
-    loadKioskProof:               loadKioskProof,
-    probeRecentClockinsRaw:    probeRecentClockinsRaw,
-    probeAttendanceGrid:       probeAttendanceGrid,
-    loadClockinMeta:           loadClockinMeta,
+    listRecentKioskCheckins: listRecentKioskCheckins,
+    listStoreOpenings: listStoreOpenings,
+    loadEarlyLeaves: loadEarlyLeaves,
+    deleteEarlyLeaves: deleteEarlyLeaves,
+    loadKioskProof: loadKioskProof,
+    probeRecentClockinsRaw: probeRecentClockinsRaw,
+    probeAttendanceGrid: probeAttendanceGrid,
+    loadClockinMeta: loadClockinMeta,
 
     // Activity log
-    loadActivity:    loadActivity,
-    appendActivity:  appendActivity,
+    loadActivity: loadActivity,
+    appendActivity: appendActivity,
 
     // Custom locations (branches added after launch)
-    loadCustomSalons:  loadCustomSalons,
-    saveCustomSalons:  saveCustomSalons,
+    loadCustomSalons: loadCustomSalons,
+    saveCustomSalons: saveCustomSalons,
 
     // Kiosk PINs (manager-dashboard 4-digit PINs, keyed by branch name)
-    loadKioskPins:     loadKioskPins,
-    saveKioskPins:     saveKioskPins,
+    loadKioskPins: loadKioskPins,
+    saveKioskPins: saveKioskPins,
 
     // Unpaid legal-status leave
-    loadTechLoans:          loadTechLoans,
-    saveTechLoans:          saveTechLoans,
+    loadTechLoans: loadTechLoans,
+    saveTechLoans: saveTechLoans,
+    loadDailyTasks: loadDailyTasks,
+    saveDailyTasks: saveDailyTasks,
+    loadComplianceActions: loadComplianceActions,
+    saveComplianceActions: saveComplianceActions,
     loadUnpaidLegalRecords: loadUnpaidLegalRecords,
-    saveUnpaidLegalRecords: saveUnpaidLegalRecords
+    saveUnpaidLegalRecords: saveUnpaidLegalRecords,
+    loadKioskSecurityLogs: loadKioskSecurityLogs,
+    saveKioskSecurityLogs: saveKioskSecurityLogs,
+    saveKioskDevices: saveKioskDevices
   };
 
   // ── Custom locations ─────────────────────────────────────────────────
@@ -1120,6 +1288,26 @@
   async function saveKioskPins(map) {
     var res = await sb.from("app_state").upsert({ key: "boa_kiosk_pins_v1", value: map || {} });
     if (res.error) { console.error("saveKioskPins:", res.error); throw res.error; }
+    return map;
+  }
+
+  // ── Kiosk Security Logs ──────────────────────────────────────────────
+  async function loadKioskSecurityLogs() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_kiosk_security_logs_v1").maybeSingle();
+    if (res.error) { console.error("loadKioskSecurityLogs:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveKioskSecurityLogs(logs) {
+    var res = await sb.from("app_state").upsert({ key: "boa_kiosk_security_logs_v1", value: logs || [] });
+    if (res.error) { console.error("saveKioskSecurityLogs:", res.error); throw res.error; }
+    return logs;
+  }
+
+  // ── Kiosk Devices ────────────────────────────────────────────────────
+  async function saveKioskDevices(map) {
+    var res = await sb.from("app_state").upsert({ key: "boa_kiosk_devices_v1", value: map || {} });
+    if (res.error) { console.error("saveKioskDevices:", res.error); throw res.error; }
     return map;
   }
 })();
