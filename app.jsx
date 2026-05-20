@@ -7520,6 +7520,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Region filter for the Locations tab — "all" or one of the REGIONS keys.
   const [locFilterRegion, setLocFilterRegion] = useState("all");
   const [addLocationModal, setAddLocationModal] = useState(null); // null | { name, mani, pedi, capacity, lowDemand, targetCapacity, region, saving }
+  // PIN-gated "delete location" modal. Only offered for _custom salons
+  // (those added via the Add Location form). The seed list is immutable
+  // — we don't want accidentally deleting Sea Point.
+  const [deleteLocationModal, setDeleteLocationModal] = useState(null); // null | { salon, pin, saving, error }
 
   // Kiosk PINs admin tab. Map { branchName: "4-digit-pin" }. Branches with
   // no entry are using the kiosk's hard-coded fallback. Loaded once on
@@ -7648,6 +7652,37 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     } catch (e) {
       setAddLocationModal({ ...m, saving: false });
       alert("Could not save: " + (e.message || e));
+    }
+  };
+
+  // PIN-gated delete for custom locations. Removes the branch from the
+  // boa_custom_salons app_state row and splices it out of the in-memory
+  // SALONS array so the Locations grid re-renders without it. The PIN
+  // ("2002") is checked client-side; this is a soft guard against
+  // misclicks, not a security boundary.
+  const DELETE_LOCATION_PIN = "2002";
+  const submitDeleteLocation = async () => {
+    const m = deleteLocationModal;
+    if (!m || !m.salon) return;
+    if ((m.pin || "").trim() !== DELETE_LOCATION_PIN) {
+      setDeleteLocationModal({ ...m, error: "Incorrect PIN." });
+      return;
+    }
+    const target = m.salon.name;
+    try {
+      setDeleteLocationModal({ ...m, saving: true, error: null });
+      const existing = await window.BOA_DB.loadCustomSalons();
+      const next = (Array.isArray(existing) ? existing : []).filter(x => x && x.name !== target);
+      await window.BOA_DB.saveCustomSalons(next);
+      const idx = SALONS.findIndex(s => s && s.name === target);
+      if (idx >= 0) SALONS.splice(idx, 1);
+      _setCustomSalonsTick(t => t + 1);
+      setDeleteLocationModal(null);
+      if (window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY("Deleted location", target, "Custom branch removed", "Settings");
+      }
+    } catch (e) {
+      setDeleteLocationModal({ ...m, saving: false, error: (e && e.message) || String(e) });
     }
   };
 
@@ -10876,6 +10911,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             style={{ background: managePanel === salon.name ? "#1e3a8a" : "#f3f4f6", color: managePanel === salon.name ? "#fff" : "#374151", border: "none", borderRadius: 7, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
                             {managePanel === salon.name ? "✕ Close" : "⚙ Manage"}
                           </button>
+                          {salon._custom && (
+                            <button title={`Delete ${salon.name} (PIN required)`}
+                              onClick={() => setDeleteLocationModal({ salon, pin: "", saving: false, error: null })}
+                              style={{ background: "#fee2e2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 7, padding: "5px 9px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>🗑</button>
+                          )}
                         </div>
                       </div>
 
@@ -11428,6 +11468,41 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <button onClick={submitNewLocation} disabled={addLocationModal.saving}
                         style={{ background: accent, color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: "pointer", fontSize: 12, fontWeight: 700, opacity: addLocationModal.saving ? 0.6 : 1 }}
                       >{addLocationModal.saving ? "Saving…" : "Add location"}</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ── DELETE LOCATION MODAL ── PIN-gated confirm for custom branches */}
+              {deleteLocationModal && (
+                <div
+                  onClick={() => { if (!deleteLocationModal.saving) setDeleteLocationModal(null); }}
+                  style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 120 }}
+                >
+                  <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "22px 24px", width: "min(380px, 92vw)", boxShadow: "0 10px 40px rgba(0,0,0,0.25)" }}>
+                    <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: "#991b1b", marginBottom: 6 }}>🗑 Delete location</div>
+                    <div style={{ fontSize: 13, color: "#374151", marginBottom: 14, lineHeight: 1.5 }}>
+                      Remove <strong>{deleteLocationModal.salon && deleteLocationModal.salon.name}</strong> from the Locations grid?
+                      Any staff or managers currently assigned to this branch will still exist but their branch field will need to be reassigned.
+                    </div>
+
+                    <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>PIN to confirm</label>
+                    <input type="password" autoFocus value={deleteLocationModal.pin || ""}
+                      onChange={e => setDeleteLocationModal({ ...deleteLocationModal, pin: e.target.value, error: null })}
+                      onKeyDown={e => { if (e.key === "Enter" && !deleteLocationModal.saving) submitDeleteLocation(); }}
+                      placeholder="••••"
+                      style={{ width: "100%", padding: "9px 11px", border: `1px solid ${deleteLocationModal.error ? "#fca5a5" : "#e5e7eb"}`, borderRadius: 8, fontSize: 16, letterSpacing: "0.3em", marginBottom: 6, fontFamily: "monospace" }}
+                    />
+                    {deleteLocationModal.error && (
+                      <div style={{ fontSize: 11, color: "#991b1b", marginBottom: 6 }}>{deleteLocationModal.error}</div>
+                    )}
+
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+                      <button onClick={() => setDeleteLocationModal(null)} disabled={deleteLocationModal.saving}
+                        style={{ background: "#f3f4f6", color: "#374151", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Cancel</button>
+                      <button onClick={submitDeleteLocation} disabled={deleteLocationModal.saving}
+                        style={{ background: "#dc2626", color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: "pointer", fontSize: 12, fontWeight: 700, opacity: deleteLocationModal.saving ? 0.6 : 1 }}
+                      >{deleteLocationModal.saving ? "Deleting…" : "Delete location"}</button>
                     </div>
                   </div>
                 </div>
