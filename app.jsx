@@ -8938,6 +8938,51 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return m;
   }, [offList]);
 
+  // Maternity records indexed for fast lookup. We need two layers because
+  // production data has imported mat records whose EC doesn't match ANY
+  // staff or manager row — typically because the record was created
+  // against a now-stale EC, or against a tech EC before the person was
+  // promoted to manager (the reported Fatima Adams / Nomphelo Mooi /
+  // Aqilah Oosthuizen cases). Without the name fallback those records
+  // float — their owner shows as active on Locations AND lands in the
+  // wrong (tech vs mgr) bucket on the Maternity tab.
+  //
+  // EC stays primary so two staff with the same name can't be cross-
+  // contaminated; the name index ONLY holds records whose EC matches
+  // nothing in staff/managers.
+  const matRecByEc = useMemo(() => {
+    const m = new Map();
+    (matRecs || []).forEach(r => { if (r && r.ec) m.set(r.ec.trim(), r); });
+    return m;
+  }, [matRecs]);
+  const _knownEcs = useMemo(() => {
+    const s = new Set();
+    (staff || []).forEach(p => { if (p && p.ec) s.add(p.ec.trim()); });
+    (managers || []).forEach(p => { if (p && p.ec) s.add(p.ec.trim()); });
+    return s;
+  }, [staff, managers]);
+  const orphanMatByName = useMemo(() => {
+    const m = new Map();
+    (matRecs || []).forEach(r => {
+      if (!r || !r.name) return;
+      const ec = (r.ec || "").trim();
+      if (ec && _knownEcs.has(ec)) return;             // not orphan
+      const key = r.name.trim().toLowerCase();
+      if (!key) return;
+      // First write wins; multiple orphans with the same name is unusual
+      // enough that we'd rather flag than silently merge.
+      if (!m.has(key)) m.set(key, r);
+    });
+    return m;
+  }, [matRecs, _knownEcs]);
+  const findMatRec = useMemo(() => (ec, name) => {
+    const e = (ec || "").trim();
+    if (e && matRecByEc.has(e)) return matRecByEc.get(e);
+    const n = (name || "").trim().toLowerCase();
+    if (n && orphanMatByName.has(n)) return orphanMatByName.get(n);
+    return null;
+  }, [matRecByEc, orphanMatByName]);
+
   // Enrich staff
   const enriched = useMemo(() => {
     const today = new Date();
@@ -8955,10 +9000,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // (records persist in the Off-boarding tab as audit history).
         offHidden = offDaysSinceLeft > 31;
       }
+      // EC first, then name fallback for orphan mat records (see
+      // orphanMatByName note above). Without the fallback, managers /
+      // techs whose mat record was filed under a stale EC show as
+      // active on Locations even though they're on leave.
+      const _matRec = findMatRec(s.ec, s.name);
+      const _matStatus = _matRec ? _matRec.matStatus : null;
       return {
         ...s,
-        onMat: onMatEcs.has(s.ec.trim()),          // excluded from count
-        pregnant: pregnantEcs.has(s.ec.trim()),       // still in store
+        onMat: _matStatus === "on_mat" || _matStatus === "dates_tbc",
+        pregnant: _matStatus === "pregnant",
         onUnpaidLegal: onUnpaidLegalEcs.has(s.ec.trim()),  // excluded from count (legal-status leave)
         unpaidLegalRec: (unpaidLegalRecs || []).find(r => r && r.ec && r.ec.trim() === s.ec.trim() && r.status === "on_leave") || null,
         offboarded: !!off,                         // on the off-boarding list — vacancy now open
@@ -8972,10 +9023,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         leftDate: s.leftDate || (off && off.leftDate) || null,
         offDaysSinceLeft,                          // -ve / 0 / +ve days since leftDate
         offHidden,                                 // true when past 31-day display window
-        matRec: matRecs.find(r => r.ec.trim() === s.ec.trim()),
+        matRec: _matRec,
       };
     });
-  }, [staff, onMatEcs, pregnantEcs, onUnpaidLegalEcs, unpaidLegalRecs, offboardedMap, matRecs]);
+  }, [staff, findMatRec, onUnpaidLegalEcs, unpaidLegalRecs, offboardedMap]);
 
   // Managers don't go through enriched - their state is a flat array loaded
   // from Supabase. To keep the rest of the UI honest about maternity, expose
@@ -8987,15 +9038,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
     return (managers || []).map(m => {
       if (!m) return m;
-      // EC compare must be trim-normalized — production data has imported
-      // mat records and manager rows where one side carries trailing
-      // whitespace. A raw === miss made managers on maternity (e.g.
-      // Fatima Adams, Nomphelo Mooi, Aqilah Oosthuizen) render as active
-      // on the Locations management strip AND land in the nail-tech
-      // bucket on the Maternity tab because mgrEcs.has(r.ec) returned
-      // false too. The tech path at onMatEcs / enriched already trims.
-      const mEc = (m.ec || "").trim();
-      const matRec = mEc ? (matRecs || []).find(r => r && r.ec && r.ec.trim() === mEc) || null : null;
+      // EC first, then name fallback for orphan mat records. The
+      // reported Fatima Adams / Nomphelo Mooi / Aqilah Oosthuizen
+      // cases have mat records whose EC matches NEITHER the manager
+      // row nor any staff row — likely because the mat record was
+      // imported against a now-stale or tech-era EC. The name fallback
+      // (only fires when the EC matches nothing) catches them without
+      // risking cross-contamination between two same-named staff.
+      const matRec = findMatRec(m.ec, m.name);
       const onMat = !!matRec && (matRec.matStatus === "on_mat" || matRec.matStatus === "dates_tbc");
       const pregnant = !!matRec && matRec.matStatus === "pregnant";
       // Off-boarding parity with techs: join the manager record with the
@@ -9022,7 +9072,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         offHidden,
       };
     });
-  }, [managers, matRecs, offboardedMap]);
+  }, [managers, findMatRec, offboardedMap]);
 
   // ── Manager Planner mirror ────────────────────────────────────────────
   // The planner is a sandbox keyed off plannerMgrs. Without this effect, it
@@ -11864,11 +11914,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 if (!recs.length) return null;
                 const s = MAT_STATUS[status];
                 const isExcluded = status === "on_mat" || status === "dates_tbc";
-                // Trim both sides — see enrichedManagers note. Without
-                // this, mat records for managers whose EC was imported
-                // with trailing whitespace fall into the tech bucket.
+                // Classify each mat record as manager vs tech. EC match
+                // is authoritative; for orphan records whose EC matches
+                // neither table, fall back to a normalized name match
+                // (handles the Fatima Adams / Nomphelo Mooi / Aqilah
+                // Oosthuizen cases where the mat record's EC is stale).
                 const mgrEcs = new Set((managers || []).map(m => m && m.ec && m.ec.trim()).filter(Boolean));
-                const _isMgrRec = (r) => !!(r && r.ec && mgrEcs.has(r.ec.trim()));
+                const techEcs = new Set((staff || []).map(s => s && s.ec && s.ec.trim()).filter(Boolean));
+                const mgrNames = new Set((managers || []).map(m => m && m.name && m.name.trim().toLowerCase()).filter(Boolean));
+                const _isMgrRec = (r) => {
+                  if (!r) return false;
+                  const ec = (r.ec || "").trim();
+                  if (ec && mgrEcs.has(ec)) return true;
+                  if (ec && techEcs.has(ec)) return false;
+                  const nm = (r.name || "").trim().toLowerCase();
+                  return !!(nm && mgrNames.has(nm));
+                };
                 const mgrRecs = recs.filter(_isMgrRec);
                 const techRecs = recs.filter(r => !_isMgrRec(r));
                 const renderCard = (r) => {
@@ -17036,13 +17097,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // schedule but get _onMat = true so their row is greyed out and
         // every cell is rendered as 'ML' (matching the tech behaviour).
         // mgrSched honours _onMat by skipping shift assignment for them.
-        // Trim both sides so managers whose EC has stray whitespace
-        // still get _onMat = true and a leftDate ghost on the schedule.
-        const _onMatEcs = new Set((matRecs || []).filter(r => r && (r.matStatus === "on_mat" || r.matStatus === "dates_tbc") && r.ec).map(r => r.ec.trim()));
+        // EC first, name fallback for orphan mat records — mirrors the
+        // findMatRec logic used by enrichedManagers, so a manager whose
+        // mat record's EC is stale still gets _onMat = true (greyed
+        // row + ML markers on every day) on the manager schedule.
+        const _onMatRecs = (matRecs || []).filter(r => r && (r.matStatus === "on_mat" || r.matStatus === "dates_tbc"));
+        const _onMatEcs = new Set(_onMatRecs.filter(r => r.ec).map(r => r.ec.trim()));
+        const _onMatNames = new Set(_onMatRecs.filter(r => r.name).map(r => r.name.trim().toLowerCase()));
         const mgrsWithOff = managers.map(m => {
           const mEc = (m && m.ec || "").trim();
+          const mName = (m && m.name || "").trim().toLowerCase();
           const off = (offList || []).find(o => o && o.ec && o.ec.trim() === mEc);
-          const flag = mEc && _onMatEcs.has(mEc);
+          const flag = (mEc && _onMatEcs.has(mEc)) || (mName && _onMatNames.has(mName));
           const base = off ? { ...m, leftDate: off.leftDate, offRec: off } : { ...m };
           return flag ? { ...base, _onMat: true } : base;
         });
