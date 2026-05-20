@@ -9134,7 +9134,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       ? "preopen"
       : (active.length === 0 ? "critical" : fillRate < 0.5 ? "high" : fillRate < 1 ? "low" : "full");
     return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, arrivingMgrs, trial, urgency, goal, preOpen, daysToOpen };
-  }), [enriched, enrichedManagers, managers, trialList]);
+  }), [enriched, enrichedManagers, managers, trialList, _customSalonsTick]);
 
   const uColor = { critical: "#dc2626", high: "#f97316", low: "#eab308", full: "#16a34a", preopen: "#7c3aed" };
   const uLabel = { critical: "UNSTAFFED", high: "UNDERSTAFFED", low: "NEEDS STAFF", full: "AT CAPACITY", preopen: "PRE-OPENING" };
