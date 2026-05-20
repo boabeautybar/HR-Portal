@@ -177,7 +177,8 @@ const EmployeeDataLibrary = ({ staff = [], currentUser, managers = [], obList = 
       }
 
       const ec = employee.ec ? employee.ec.trim().toLowerCase() : "";
-      const name = employee.name ? employee.name.trim().toLowerCase() : "";
+      const fName = employee.firstName ? employee.firstName.trim().toLowerCase() : "";
+      const sName = employee.surname ? employee.surname.trim().toLowerCase() : "";
       
       let foundFolder = null;
       let newCache = { ...subfolderCache };
@@ -214,21 +215,17 @@ const EmployeeDataLibrary = ({ staff = [], currentUser, managers = [], obList = 
           }
           
           // Strategy 2: Find by Exact Full Name
-          if (!foundFolder && name) {
-              foundFolder = categoryChildren.find(f => f.name.toLowerCase().includes(name));
+          if (!foundFolder && fName && sName) {
+              const fullName = `${fName} ${sName}`;
+              foundFolder = categoryChildren.find(f => f.name.toLowerCase().includes(fullName));
           }
           
           // Strategy 3: Find by First & Last Name Partial Match
-          if (!foundFolder && name) {
-              const parts = name.split(' ');
-              const first = parts[0];
-              const last = parts[parts.length - 1];
-              if (first && last && first !== last) {
-                  foundFolder = categoryChildren.find(f => {
-                      const fn = f.name.toLowerCase();
-                      return fn.includes(first) && fn.includes(last);
-                  });
-              }
+          if (!foundFolder && fName && sName) {
+              foundFolder = categoryChildren.find(f => {
+                  const fn = f.name.toLowerCase();
+                  return fn.includes(fName) && fn.includes(sName);
+              });
           }
           
           // If we found the employee folder in this category, STOP searching!
