@@ -207,25 +207,39 @@ const EmployeeDataLibrary = ({ staff = [], currentUser, managers = [], obList = 
               newCache[category.id] = categoryChildren;
           }
           
-          // 3. Pure JS Matching (Bypasses Google API quirks, guarantees 100% accuracy)
-          
-          // Strategy 1: Find by Employee ID
-          if (ec) {
-              foundFolder = categoryChildren.find(f => f.name.toLowerCase().includes(ec));
+          // 3. Robust Scoring Algorithm (Bypasses Google API quirks, guarantees maximum accuracy)
+          let bestMatch = null;
+          let bestScore = 0;
+
+          for (const f of categoryChildren) {
+              const fn = f.name.toLowerCase();
+              let score = 0;
+              
+              const hasEc = ec && fn.includes(ec);
+              const hasExactName = fName && sName && fn.includes(`${fName} ${sName}`);
+              const hasFirstName = fName && fn.includes(fName);
+              const hasSurname = sName && fn.includes(sName);
+
+              if (hasEc && hasExactName) {
+                  score = 100; // Perfect match (EC + Full Name)
+              } else if (hasEc && (hasFirstName || hasSurname)) {
+                  score = 80;  // EC matches + at least one name matches
+              } else if (hasExactName) {
+                  score = 70;  // Missing EC, but exact full name matches (e.g., "Justin Rule_OM_Payroll")
+              } else if (hasEc) {
+                  score = 50;  // ONLY EC matches. Risky if EC was recycled, but accepted if no better match exists.
+              } else if (hasFirstName && hasSurname) {
+                  score = 40;  // Both names appear but separated
+              }
+
+              if (score > bestScore) {
+                  bestScore = score;
+                  bestMatch = f;
+              }
           }
           
-          // Strategy 2: Find by Exact Full Name
-          if (!foundFolder && fName && sName) {
-              const fullName = `${fName} ${sName}`;
-              foundFolder = categoryChildren.find(f => f.name.toLowerCase().includes(fullName));
-          }
-          
-          // Strategy 3: Find by First & Last Name Partial Match
-          if (!foundFolder && fName && sName) {
-              foundFolder = categoryChildren.find(f => {
-                  const fn = f.name.toLowerCase();
-                  return fn.includes(fName) && fn.includes(sName);
-              });
+          if (bestScore > 0 && bestMatch) {
+              foundFolder = bestMatch;
           }
           
           // If we found the employee folder in this category, STOP searching!
