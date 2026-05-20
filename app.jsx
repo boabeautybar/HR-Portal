@@ -9151,7 +9151,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // accordingly. Persistence was previously missing for both — now the new
   // branch / transfer flags survive a page refresh.
   async function handleTransfer({ staff, toBranch, transferDate, note, isPending }) {
-    const isMgr = !!(managers || []).find(m => m._id === staff._id);
+    // Detect whether this record lives in the managers list. _id can drift
+    // between staff and manager rows for the same person (e.g. a manager
+    // who was previously a tech keeps a staff row with a different UUID),
+    // so we fall back to matching on EC and on the role field — that's
+    // what tells the DB router whether to hit the staff or managers table.
+    const role = (staff && staff.role) || "";
+    const isMgr =
+         !!(managers || []).find(m => m && m._id === staff._id)
+      || !!(staff && staff.ec && (managers || []).find(m => m && m.ec === staff.ec))
+      || /^(SSM|SM|AM)$/i.test(role);
     const setList = isMgr ? setManagers : setStaff;
     const saveFn = isMgr ? window.BOA_DB.saveManager : window.BOA_DB.saveStaff;
     const fields = isPending
@@ -9183,7 +9192,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }
 
   async function cancelTransfer(staff) {
-    const isMgr = !!(managers || []).find(m => m._id === staff._id);
+    const role = (staff && staff.role) || "";
+    const isMgr =
+         !!(managers || []).find(m => m && m._id === staff._id)
+      || !!(staff && staff.ec && (managers || []).find(m => m && m.ec === staff.ec))
+      || /^(SSM|SM|AM)$/i.test(role);
     const setList = isMgr ? setManagers : setStaff;
     const saveFn = isMgr ? window.BOA_DB.saveManager : window.BOA_DB.saveStaff;
     const payload = { ...staff, transferring: false, transferTo: null, transferDate: null, transferNote: null, id: staff.id || staff._id };
