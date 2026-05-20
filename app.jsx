@@ -7457,6 +7457,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             capacity: Number(x.capacity) || ((Number(x.mani) || 0) + (Number(x.pedi) || 0)),
             region: REGIONS.some(r => r.key === x.region) ? x.region : "wc",
             ...(x.lowDemand ? { lowDemand: true, targetCapacity: Number(x.targetCapacity) || 0 } : {}),
+            ...(x.openingDate && /^\d{4}-\d{2}-\d{2}$/.test(x.openingDate) ? { openingDate: x.openingDate } : {}),
             _custom: true
           });
           seen.add(x.name);
@@ -7519,6 +7520,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Region filter for the Locations tab — "all" or one of the REGIONS keys.
   const [locFilterRegion, setLocFilterRegion] = useState("all");
   const [addLocationModal, setAddLocationModal] = useState(null); // null | { name, mani, pedi, capacity, lowDemand, targetCapacity, region, saving }
+  // PIN-gated "delete location" modal. Only offered for _custom salons
+  // (those added via the Add Location form). The seed list is immutable
+  // — we don't want accidentally deleting Sea Point.
+  const [deleteLocationModal, setDeleteLocationModal] = useState(null); // null | { salon, pin, saving, error }
 
   // Kiosk PINs admin tab. Map { branchName: "4-digit-pin" }. Branches with
   // no entry are using the kiosk's hard-coded fallback. Loaded once on
@@ -7628,6 +7633,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       entry.lowDemand = true;
       entry.targetCapacity = Math.max(1, Number(m.targetCapacity) || capacity);
     }
+    // Optional opening date (YYYY-MM-DD). Before this date the store is
+    // treated as "pre-opening" — excluded from vacancy / understaffed
+    // counts and tagged on the Locations card and dashboard reminder.
+    const od = (m.openingDate || "").trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(od)) entry.openingDate = od;
     try {
       setAddLocationModal({ ...m, saving: true });
       const existing = await window.BOA_DB.loadCustomSalons();
@@ -7642,6 +7652,37 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     } catch (e) {
       setAddLocationModal({ ...m, saving: false });
       alert("Could not save: " + (e.message || e));
+    }
+  };
+
+  // PIN-gated delete for custom locations. Removes the branch from the
+  // boa_custom_salons app_state row and splices it out of the in-memory
+  // SALONS array so the Locations grid re-renders without it. The PIN
+  // ("2002") is checked client-side; this is a soft guard against
+  // misclicks, not a security boundary.
+  const DELETE_LOCATION_PIN = "2002";
+  const submitDeleteLocation = async () => {
+    const m = deleteLocationModal;
+    if (!m || !m.salon) return;
+    if ((m.pin || "").trim() !== DELETE_LOCATION_PIN) {
+      setDeleteLocationModal({ ...m, error: "Incorrect PIN." });
+      return;
+    }
+    const target = m.salon.name;
+    try {
+      setDeleteLocationModal({ ...m, saving: true, error: null });
+      const existing = await window.BOA_DB.loadCustomSalons();
+      const next = (Array.isArray(existing) ? existing : []).filter(x => x && x.name !== target);
+      await window.BOA_DB.saveCustomSalons(next);
+      const idx = SALONS.findIndex(s => s && s.name === target);
+      if (idx >= 0) SALONS.splice(idx, 1);
+      _setCustomSalonsTick(t => t + 1);
+      setDeleteLocationModal(null);
+      if (window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY("Deleted location", target, "Custom branch removed", "Settings");
+      }
+    } catch (e) {
+      setDeleteLocationModal({ ...m, saving: false, error: (e && e.message) || String(e) });
     }
   };
 
@@ -9040,6 +9081,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       noContract: active.filter(s => s.contract === "NO CONTRACT").length,
       // Vacancies and understaffed treat off-boarded AND unpaid-legal staff as gone,
       // so they immediately surface as open positions in the Recruitment tab.
+      // Pre-opening stores are KEPT in these counts — those seats must be
+      // hired for before the store opens, so they need to drive recruitment.
       vacancies: SALONS.reduce((a, sl) => { const g = sl.targetCapacity || sl.capacity; const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length; return a + Math.max(0, g - act); }, 0),
       understaffed: SALONS.filter(sl => enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length < sl.capacity).length,
       returning60,
@@ -9066,9 +9109,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       .map(s => ({ ...s, _id: "shadow-" + s.ec, branch: salon.name, transferFrom: s.branch, isShadow: true }));
     // Same idea for managers — incoming SM/SSM/AM appear on the
     // destination card with an 'arriving from X on <date>' chip.
-    const arrivingMgrs = (managers || [])
-      .filter(m => m && !m.isShadow && m.transferring && m.transferTo === salon.name && m.transferDate)
-      .map(m => ({ ...m, _id: "shadow-" + m.ec, branch: salon.name, transferFrom: m.branch, isShadow: true }));
+    // Drives off enrichedManagers so off-boarded managers don't appear
+    // as arriving and so the shadow row picks up the same flags as the
+    // MANAGEMENT TEAM card.
+    const arrivingMgrs = (enrichedManagers || [])
+      .filter(m => m && !m.isShadow && m.transferring && m.transferTo === salon.name && m.transferDate && !m.offHidden)
+      .map(m => ({ ...m, _id: "shadow-mgr-" + (m.ec || m._id), branch: salon.name, transferFrom: m.branch, isShadow: true }));
 
     // Trial candidates assigned to this branch and not yet passed/failed
     const trial = trialList.filter(c => c.branch === salon.name && c.status !== "passed" && c.status !== "failed");
@@ -9076,12 +9122,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     // Use targetCapacity for low-demand stores (e.g. Betty), full capacity otherwise
     const goal = salon.targetCapacity || salon.capacity;
     const fillRate = active.length / goal;
-    const urgency = active.length === 0 ? "critical" : fillRate < 0.5 ? "high" : fillRate < 1 ? "low" : "full";
-    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, arrivingMgrs, trial, urgency, goal };
-  }), [enriched, managers, trialList]);
+    // Pre-opening: if the store has an openingDate in the future, suppress
+    // the staffing urgency (the store isn't actually trading yet) and
+    // surface a "PRE-OPENING · opens in Xd" label instead.
+    const _today = new Date();
+    const _t0 = new Date(_today.getFullYear(), _today.getMonth(), _today.getDate());
+    const od = salon.openingDate ? new Date(salon.openingDate + "T00:00:00") : null;
+    const preOpen = !!(od && od > _t0);
+    const daysToOpen = od ? Math.ceil((od - _t0) / 86400000) : null;
+    const urgency = preOpen
+      ? "preopen"
+      : (active.length === 0 ? "critical" : fillRate < 0.5 ? "high" : fillRate < 1 ? "low" : "full");
+    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, arrivingMgrs, trial, urgency, goal, preOpen, daysToOpen };
+  }), [enriched, enrichedManagers, managers, trialList, _customSalonsTick]);
 
-  const uColor = { critical: "#dc2626", high: "#f97316", low: "#eab308", full: "#16a34a" };
-  const uLabel = { critical: "UNSTAFFED", high: "UNDERSTAFFED", low: "NEEDS STAFF", full: "AT CAPACITY" };
+  const uColor = { critical: "#dc2626", high: "#f97316", low: "#eab308", full: "#16a34a", preopen: "#7c3aed" };
+  const uLabel = { critical: "UNSTAFFED", high: "UNDERSTAFFED", low: "NEEDS STAFF", full: "AT CAPACITY", preopen: "PRE-OPENING" };
 
   async function saveStaff(f) {
     // Shadow records are derived UI rows — closing the edit modal on one
@@ -10000,6 +10056,55 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 );
               })()}
 
+              {/* ── SECTION: UPCOMING STORE OPENINGS ──
+                  Only renders when at least one SALON has an openingDate
+                  that is still in the future. Sorted soonest first. */}
+              {(() => {
+                const today = new Date();
+                const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+                const upcoming = SALONS
+                  .filter(s => s && s.openingDate && /^\d{4}-\d{2}-\d{2}$/.test(s.openingDate))
+                  .map(s => {
+                    const od = new Date(s.openingDate + "T00:00:00");
+                    const days = Math.ceil((od - t0) / 86400000);
+                    return { ...s, _od: od, _days: days };
+                  })
+                  .filter(s => s._days >= 0)
+                  .sort((a, b) => a._od - b._od);
+                if (upcoming.length === 0) return null;
+                return (
+                  <div style={{ background: "linear-gradient(135deg,#ede9fe 0%,#FFFFFF 70%)", border: "2px solid #c4b5fd", borderRadius: 18, padding: "16px 20px", marginBottom: 22, boxShadow: "0 4px 18px rgba(124,58,237,0.10)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                      <span style={{ fontSize: 24 }}>🏗</span>
+                      <div>
+                        <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 800, color: "#7c3aed", letterSpacing: "0.18em", textTransform: "uppercase" }}>Upcoming Openings</div>
+                        <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 16, fontWeight: 700, color: "#4c1d95" }}>{upcoming.length} new store{upcoming.length === 1 ? "" : "s"} on the way</div>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {upcoming.map(s => {
+                        const lbl = s._days === 0 ? "opens TODAY" : "opening in " + s._days + " day" + (s._days === 1 ? "" : "s");
+                        const dateLabel = s._od.toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short", year: "numeric" });
+                        return (
+                          <div key={s.name} style={{ background: "#fff", border: "1px solid #ddd6fe", borderLeft: "6px solid #7c3aed", borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                              <span style={{ fontSize: 18 }}>📍</span>
+                              <div>
+                                <div style={{ fontSize: 14, fontWeight: 700, color: "#4c1d95" }}>{s.name} {lbl}</div>
+                                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>{dateLabel} · Capacity {s.capacity}</div>
+                              </div>
+                            </div>
+                            <div style={{ background: "#7c3aed", color: "#fff", padding: "5px 12px", borderRadius: 999, fontSize: 12, fontWeight: 800, letterSpacing: "0.04em" }}>
+                              {s._days === 0 ? "TODAY" : s._days + "d"}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* ── SECTION: SECURITY ALERTS ── */}
               {securityLogs && securityLogs.length > 0 && (
                 <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 14, padding: "16px", marginBottom: 18, boxShadow: "0 1px 4px rgba(220,38,38,0.06)" }}>
@@ -10704,7 +10809,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
                 <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, fontWeight: 700, color: "#831843" }}>📍 Locations</div>
                 <button
-                  onClick={() => setAddLocationModal({ name: "", mani: "", pedi: "", capacity: "", lowDemand: false, targetCapacity: "", region: "wc", saving: false })}
+                  onClick={() => setAddLocationModal({ name: "", mani: "", pedi: "", capacity: "", lowDemand: false, targetCapacity: "", region: "wc", openingDate: "", saving: false })}
                   style={{ background: accent, color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: "0.04em" }}
                 >+ Add new location</button>
               </div>
@@ -10784,7 +10889,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               return <span style={{ background: r.bg, color: r.color, fontSize: 9, fontWeight: 800, padding: "2px 7px", borderRadius: 999, letterSpacing: "0.06em" }}>{r.short.toUpperCase()}</span>;
                             })()}
                           </div>
-                          <div style={{ fontSize: 9, fontWeight: 800, color: uColor[salon.urgency], letterSpacing: "0.07em", marginTop: 1 }}>{uLabel[salon.urgency]}</div>
+                          <div style={{ fontSize: 9, fontWeight: 800, color: uColor[salon.urgency], letterSpacing: "0.07em", marginTop: 1 }}>
+                            {uLabel[salon.urgency]}
+                            {salon.preOpen && salon.openingDate && (
+                              <span style={{ marginLeft: 6, fontWeight: 700, letterSpacing: 0, textTransform: "none" }}>
+                                · opens {new Date(salon.openingDate + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" })}
+                                {salon.daysToOpen !== null && ` (in ${salon.daysToOpen}d)`}
+                              </span>
+                            )}
+                          </div>
                           <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 2 }}>
                             Mani {salon.mani} · Pedi {salon.pedi} · Max {salon.capacity}
                             {salon.trial && salon.trial.length > 0 && ` · Trial ${salon.trial.length}`}
@@ -10798,6 +10911,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             style={{ background: managePanel === salon.name ? "#1e3a8a" : "#f3f4f6", color: managePanel === salon.name ? "#fff" : "#374151", border: "none", borderRadius: 7, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
                             {managePanel === salon.name ? "✕ Close" : "⚙ Manage"}
                           </button>
+                          {salon._custom && (
+                            <button title={`Delete ${salon.name} (PIN required)`}
+                              onClick={() => setDeleteLocationModal({ salon, pin: "", saving: false, error: null })}
+                              style={{ background: "#fee2e2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 7, padding: "5px 9px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>🗑</button>
+                          )}
                         </div>
                       </div>
 
@@ -10806,7 +10924,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <div style={{ background: "#FCE7F3", border: "1px solid #FBCFE8", borderRadius: 10, padding: "12px 14px", marginBottom: 12 }}>
                           <div style={{ fontSize: 11, fontWeight: 700, color: "#831843", marginBottom: 8 }}>Select a staff member to edit or transfer:</div>
                           {/* Managers sub-section */}
-                          {enrichedManagers.filter(m => m.branch === salon.name).length > 0 && (
+                          {(enrichedManagers.filter(m => m.branch === salon.name).length > 0 || (salon.arrivingMgrs && salon.arrivingMgrs.length > 0)) && (
                             <div style={{ marginBottom: 8 }}>
                               <div style={{ fontSize: 9, fontWeight: 800, color: "#BE185D", letterSpacing: "0.08em", marginBottom: 5 }}>MANAGEMENT</div>
                               {enrichedManagers.filter(m => m.branch === salon.name && !m.offHidden).sort((a, b) => {
@@ -10847,6 +10965,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       <button onClick={() => { setTransferModal(m); setManagePanel(null); }}
                                         style={{ background: m.transferring ? "#bfdbfe" : "#e0f2fe", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#BE185D" }}>
                                         🔄 {m.transferring ? "Edit Transfer" : "Transfer"}
+                                      </button>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                              {/* Arriving managers — pending transfers
+                              pointing to this branch. Shown with an Edit
+                              Transfer button on the original record so the
+                              transfer can be amended/cancelled from the
+                              destination side. */}
+                              {salon.arrivingMgrs && salon.arrivingMgrs.map(m => {
+                                const original = managers.find(x => x && !x.isShadow && (x._id === m._id.replace(/^shadow-mgr-/, "") || x.ec === m.ec));
+                                return (
+                                  <div key={m._id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderRadius: 8, background: "#eff6ff", border: "1.5px dashed #93c5fd", marginBottom: 4 }}>
+                                    <span style={{ fontSize: 11 }}>🔄</span>
+                                    <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: "#1d4ed8" }}>
+                                      {m.name}
+                                      <span style={{ fontSize: 9, marginLeft: 5, color: "#2563eb", fontWeight: 500 }}>arriving from {m.transferFrom}{m.transferDate ? " · " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>
+                                    </span>
+                                    <span style={{ fontSize: 9, background: "#bfdbfe", color: "#1e40af", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{m.role || "—"}</span>
+                                    {original && (
+                                      <button onClick={() => { setTransferModal(original); setManagePanel(null); }}
+                                        style={{ background: "#bfdbfe", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#BE185D" }}>
+                                        🔄 Edit Transfer
                                       </button>
                                     )}
                                   </div>
@@ -10918,7 +11060,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         const ssm = mgrs.filter(m => m.role === "SSM");
                         const sm = mgrs.filter(m => m.role === "SM");
                         const am = mgrs.filter(m => m.role === "AM");
-                        if (allMgrs.length === 0) return null;
+                        if (allMgrs.length === 0 && (!salon.arrivingMgrs || salon.arrivingMgrs.length === 0)) return null;
                         return (
                           <div style={{ background: "#FCE7F3", border: "1px solid #FBCFE8", borderRadius: 10, padding: "9px 12px", marginBottom: 10 }}>
                             <div style={{ fontSize: 9, fontWeight: 800, color: "#BE185D", letterSpacing: "0.1em", marginBottom: 7 }}>MANAGEMENT TEAM</div>
@@ -10927,9 +11069,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 <div key={m._id} style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", opacity: m.onMat ? 0.5 : 1 }}>
                                   <span style={{ fontSize: 13 }}>{m.onMat ? "🤱" : "💎"}</span>
                                   <span style={{ fontSize: 11, fontWeight: 700, color: m.onMat ? "#7A4258" : "#92400e", fontStyle: m.onMat ? "italic" : "normal", flex: 1 }}>{m.name}</span>
+                                  {m.transferring && m.transferTo && <span style={{ fontSize: 9, color: "#1d4ed8", background: "#dbeafe", border: "1px solid #bfdbfe", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🔄 leaving → {m.transferTo}{m.transferDate ? ` · ${new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                                   {m.onMat && <span style={{ fontSize: 9, color: "#8E5570", background: "#FBCFE8", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>on leave{m.matReturn ? ` · ↩${new Date(m.matReturn).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                                   {m.pregnant && !m.onMat && <span style={{ fontSize: 9, color: "#8E5570", background: "#FCE7F3", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🤰 pregnant{m.matStart ? ` · leaves ${new Date(m.matStart).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
-                                  {!m.onMat && !m.pregnant && m.notes && <span style={{ fontSize: 9, color: "#8E5570", fontStyle: "italic", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.notes}>⚑ {m.notes}</span>}
+                                  {!m.onMat && !m.pregnant && !m.transferring && m.notes && <span style={{ fontSize: 9, color: "#8E5570", fontStyle: "italic", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.notes}>⚑ {m.notes}</span>}
                                   <span style={{ fontSize: 9, background: "#FEF3C7", color: "#92400e", border: "1px solid #FDE68A", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>SSM</span>
                                 </div>
                               ))}
@@ -10937,9 +11080,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 <div key={m._id} style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", opacity: m.onMat ? 0.5 : 1 }}>
                                   <span style={{ fontSize: 13 }}>{m.onMat ? "🤱" : "👑"}</span>
                                   <span style={{ fontSize: 11, fontWeight: 700, color: m.onMat ? "#7A4258" : "#1e293b", fontStyle: m.onMat ? "italic" : "normal", flex: 1 }}>{m.name}</span>
+                                  {m.transferring && m.transferTo && <span style={{ fontSize: 9, color: "#1d4ed8", background: "#dbeafe", border: "1px solid #bfdbfe", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🔄 leaving → {m.transferTo}{m.transferDate ? ` · ${new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                                   {m.onMat && <span style={{ fontSize: 9, color: "#8E5570", background: "#FBCFE8", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>on leave{m.matReturn ? ` · ↩${new Date(m.matReturn).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                                   {m.pregnant && !m.onMat && <span style={{ fontSize: 9, color: "#8E5570", background: "#FCE7F3", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🤰 pregnant{m.matStart ? ` · leaves ${new Date(m.matStart).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
-                                  {!m.onMat && !m.pregnant && m.notes && <span style={{ fontSize: 9, color: "#8E5570", fontStyle: "italic", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.notes}>⚑ {m.notes}</span>}
+                                  {!m.onMat && !m.pregnant && !m.transferring && m.notes && <span style={{ fontSize: 9, color: "#8E5570", fontStyle: "italic", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.notes}>⚑ {m.notes}</span>}
                                   <span style={{ fontSize: 9, background: "#FBCFE8", color: "#BE185D", border: "1px solid #E8C9D2", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>SM</span>
                                 </div>
                               ))}
@@ -10947,8 +11091,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 <div key={m._id} style={{ display: "flex", alignItems: "center", gap: 6, opacity: 1 }}>
                                   <span style={{ fontSize: 13 }}>⭐</span>
                                   <span style={{ fontSize: 11, fontWeight: 500, color: "#475569", flex: 1 }}>{m.name}</span>
+                                  {m.transferring && m.transferTo && <span style={{ fontSize: 9, color: "#1d4ed8", background: "#dbeafe", border: "1px solid #bfdbfe", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🔄 leaving → {m.transferTo}{m.transferDate ? ` · ${new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                                   {m.pregnant && <span style={{ fontSize: 9, color: "#8E5570", background: "#FCE7F3", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🤰 pregnant{m.matStart ? ` · leaves ${new Date(m.matStart).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
-                                  {!m.pregnant && m.notes && <span style={{ fontSize: 9, color: "#BE185D", fontStyle: "italic", maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.notes}>⚑</span>}
+                                  {!m.pregnant && !m.transferring && m.notes && <span style={{ fontSize: 9, color: "#BE185D", fontStyle: "italic", maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.notes}>⚑</span>}
                                   <span style={{ fontSize: 9, background: "#FBCFE8", color: "#BE185D", border: "1px solid #bae6fd", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>AM</span>
                                 </div>
                               ))}
@@ -11289,6 +11434,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       })}
                     </div>
 
+                    <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Opening date (optional)</label>
+                    <input type="date" value={addLocationModal.openingDate || ""}
+                      onChange={e => setAddLocationModal({ ...addLocationModal, openingDate: e.target.value })}
+                      style={{ width: "100%", padding: "9px 11px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 14, marginBottom: 6, fontFamily: "inherit" }}
+                    />
+                    <div style={{ fontSize: 10, color: "#6b7280", marginBottom: 14, lineHeight: 1.4 }}>
+                      Leave blank if the store is already open. If set, the
+                      store is flagged as pre-opening on the Locations card
+                      and a countdown shows on the dashboard until this date.
+                    </div>
+
                     <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#374151", marginBottom: 6, cursor: "pointer" }}>
                       <input type="checkbox" checked={!!addLocationModal.lowDemand}
                         onChange={e => setAddLocationModal({ ...addLocationModal, lowDemand: e.target.checked })}
@@ -11312,6 +11468,41 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <button onClick={submitNewLocation} disabled={addLocationModal.saving}
                         style={{ background: accent, color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: "pointer", fontSize: 12, fontWeight: 700, opacity: addLocationModal.saving ? 0.6 : 1 }}
                       >{addLocationModal.saving ? "Saving…" : "Add location"}</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ── DELETE LOCATION MODAL ── PIN-gated confirm for custom branches */}
+              {deleteLocationModal && (
+                <div
+                  onClick={() => { if (!deleteLocationModal.saving) setDeleteLocationModal(null); }}
+                  style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 120 }}
+                >
+                  <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "22px 24px", width: "min(380px, 92vw)", boxShadow: "0 10px 40px rgba(0,0,0,0.25)" }}>
+                    <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: "#991b1b", marginBottom: 6 }}>🗑 Delete location</div>
+                    <div style={{ fontSize: 13, color: "#374151", marginBottom: 14, lineHeight: 1.5 }}>
+                      Remove <strong>{deleteLocationModal.salon && deleteLocationModal.salon.name}</strong> from the Locations grid?
+                      Any staff or managers currently assigned to this branch will still exist but their branch field will need to be reassigned.
+                    </div>
+
+                    <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>PIN to confirm</label>
+                    <input type="password" autoFocus value={deleteLocationModal.pin || ""}
+                      onChange={e => setDeleteLocationModal({ ...deleteLocationModal, pin: e.target.value, error: null })}
+                      onKeyDown={e => { if (e.key === "Enter" && !deleteLocationModal.saving) submitDeleteLocation(); }}
+                      placeholder="••••"
+                      style={{ width: "100%", padding: "9px 11px", border: `1px solid ${deleteLocationModal.error ? "#fca5a5" : "#e5e7eb"}`, borderRadius: 8, fontSize: 16, letterSpacing: "0.3em", marginBottom: 6, fontFamily: "monospace" }}
+                    />
+                    {deleteLocationModal.error && (
+                      <div style={{ fontSize: 11, color: "#991b1b", marginBottom: 6 }}>{deleteLocationModal.error}</div>
+                    )}
+
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+                      <button onClick={() => setDeleteLocationModal(null)} disabled={deleteLocationModal.saving}
+                        style={{ background: "#f3f4f6", color: "#374151", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Cancel</button>
+                      <button onClick={submitDeleteLocation} disabled={deleteLocationModal.saving}
+                        style={{ background: "#dc2626", color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: "pointer", fontSize: 12, fontWeight: 700, opacity: deleteLocationModal.saving ? 0.6 : 1 }}
+                      >{deleteLocationModal.saving ? "Deleting…" : "Delete location"}</button>
                     </div>
                   </div>
                 </div>
