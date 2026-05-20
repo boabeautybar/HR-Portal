@@ -8987,7 +8987,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
     return (managers || []).map(m => {
       if (!m) return m;
-      const matRec = (matRecs || []).find(r => r && r.ec && m.ec && r.ec === m.ec) || null;
+      // EC compare must be trim-normalized — production data has imported
+      // mat records and manager rows where one side carries trailing
+      // whitespace. A raw === miss made managers on maternity (e.g.
+      // Fatima Adams, Nomphelo Mooi, Aqilah Oosthuizen) render as active
+      // on the Locations management strip AND land in the nail-tech
+      // bucket on the Maternity tab because mgrEcs.has(r.ec) returned
+      // false too. The tech path at onMatEcs / enriched already trims.
+      const mEc = (m.ec || "").trim();
+      const matRec = mEc ? (matRecs || []).find(r => r && r.ec && r.ec.trim() === mEc) || null : null;
       const onMat = !!matRec && (matRec.matStatus === "on_mat" || matRec.matStatus === "dates_tbc");
       const pregnant = !!matRec && matRec.matStatus === "pregnant";
       // Off-boarding parity with techs: join the manager record with the
@@ -11856,15 +11864,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 if (!recs.length) return null;
                 const s = MAT_STATUS[status];
                 const isExcluded = status === "on_mat" || status === "dates_tbc";
-                const mgrEcs = new Set((managers || []).map(m => m && m.ec).filter(Boolean));
-                const mgrRecs = recs.filter(r => mgrEcs.has(r.ec));
-                const techRecs = recs.filter(r => !mgrEcs.has(r.ec));
+                // Trim both sides — see enrichedManagers note. Without
+                // this, mat records for managers whose EC was imported
+                // with trailing whitespace fall into the tech bucket.
+                const mgrEcs = new Set((managers || []).map(m => m && m.ec && m.ec.trim()).filter(Boolean));
+                const _isMgrRec = (r) => !!(r && r.ec && mgrEcs.has(r.ec.trim()));
+                const mgrRecs = recs.filter(_isMgrRec);
+                const techRecs = recs.filter(r => !_isMgrRec(r));
                 const renderCard = (r) => {
                   const dBack = r.returnDate ? daysDiff(r.returnDate) : null;
                   const totalDays = r.matStart && r.matEnd ? Math.ceil((new Date(r.matEnd) - new Date(r.matStart)) / 86400000) : null;
                   const elapsed = r.matStart ? Math.ceil((TODAY - new Date(r.matStart)) / 86400000) : null;
                   const progress = totalDays && elapsed ? Math.min(Math.max(elapsed / totalDays, 0), 1) : null;
-                  const isMgr = mgrEcs.has(r.ec);
+                  const isMgr = _isMgrRec(r);
                   return (
                     <div key={r._id} style={{ background: "#FFFFFF", borderRadius: 14, border: `1.5px solid ${s.border}`, padding: "16px 18px" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
@@ -17024,10 +17036,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // schedule but get _onMat = true so their row is greyed out and
         // every cell is rendered as 'ML' (matching the tech behaviour).
         // mgrSched honours _onMat by skipping shift assignment for them.
-        const _onMatEcs = new Set((matRecs || []).filter(r => r && (r.matStatus === "on_mat" || r.matStatus === "dates_tbc") && r.ec).map(r => r.ec));
+        // Trim both sides so managers whose EC has stray whitespace
+        // still get _onMat = true and a leftDate ghost on the schedule.
+        const _onMatEcs = new Set((matRecs || []).filter(r => r && (r.matStatus === "on_mat" || r.matStatus === "dates_tbc") && r.ec).map(r => r.ec.trim()));
         const mgrsWithOff = managers.map(m => {
-          const off = (offList || []).find(o => o.ec === m.ec);
-          const flag = _onMatEcs.has(m.ec);
+          const mEc = (m && m.ec || "").trim();
+          const off = (offList || []).find(o => o && o.ec && o.ec.trim() === mEc);
+          const flag = mEc && _onMatEcs.has(mEc);
           const base = off ? { ...m, leftDate: off.leftDate, offRec: off } : { ...m };
           return flag ? { ...base, _onMat: true } : base;
         });
