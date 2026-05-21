@@ -13087,7 +13087,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
                             {/* Returning staff that will fill gaps */}
                             {(() => {
-                              const returning = matRecs.filter(r => r.matStatus === "on_mat" && r.branch === salon.name && r.returnDate && daysDiff(r.returnDate) !== null && daysDiff(r.returnDate) >= 0 && daysDiff(r.returnDate) <= 90);
+                              // Nail-tech recruitment view — exclude maternity records
+                              // belonging to managers. matRecs is a flat list for both
+                              // techs and managers, so without this filter a manager on
+                              // mat leave (e.g. an AM/SM returning from leave) would
+                              // surface as a tech vacancy filler.
+                              //
+                              // We match by EC first, then by name as a fallback —
+                              // some legacy mat records (Aqilah Oosthuizen, Fatima
+                              // Adams, Nomphelo Mooi) have ECs imported against a
+                              // stale tech-era ID that doesn't match the current
+                              // manager row. enrichedManagers uses the same EC →
+                              // name fallback (see findMatRec) for the very same
+                              // reason; without it those managers leak in here.
+                              const _mgrEcs = new Set((managers || []).filter(m => m && m.ec).map(m => m.ec.trim().toLowerCase()));
+                              const _mgrNames = new Set((managers || []).filter(m => m && m.name).map(m => m.name.trim().toLowerCase()));
+                              const isManagerRec = r => (
+                                (r.ec && _mgrEcs.has(r.ec.trim().toLowerCase())) ||
+                                (r.name && _mgrNames.has(r.name.trim().toLowerCase()))
+                              );
+                              const returning = matRecs.filter(r => r.matStatus === "on_mat" && r.branch === salon.name && r.returnDate && daysDiff(r.returnDate) !== null && daysDiff(r.returnDate) >= 0 && daysDiff(r.returnDate) <= 90 && !isManagerRec(r));
                               return returning.length > 0 && need > 0 ? (
                                 <div style={{ background: "#FBCFE8", border: "1px solid #6ee7b7", borderRadius: 8, padding: "7px 10px", marginBottom: 8 }}>
                                   <div style={{ fontSize: 10, fontWeight: 700, color: "#8E5570", marginBottom: 4 }}>🔜 Returning within 90 days — may fill {Math.min(returning.length, need)} position{returning.length > 1 ? "s" : ""}:</div>
