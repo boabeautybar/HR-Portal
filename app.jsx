@@ -3894,6 +3894,24 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
           lateShiftCount[workers[i].ec]++;
         }
       });
+    } else if (branch === "Riverlands") {
+      // Riverlands works a tighter cadence: 3 late workers per weekday
+      // (Mon–Fri only). Saturday and Sunday everyone stays on plain "W"
+      // — the store runs a single shift on weekends.
+      sortedTechs.forEach(s => { lateShiftCount[s.ec] = 0; });
+      days.forEach(dy => {
+        if (dy.dow === 0 || dy.dow === 6) return;
+        const workers = sortedTechs.filter(s => newGrid[s.ec][dy.d] === "W");
+        workers.sort((a, b) =>
+          (lateShiftCount[a.ec] - lateShiftCount[b.ec]) ||
+          a.ec.localeCompare(b.ec)
+        );
+        const need = Math.min(3, workers.length);
+        for (let i = 0; i < need; i++) {
+          newGrid[workers[i].ec][dy.d] = "WL";
+          lateShiftCount[workers[i].ec]++;
+        }
+      });
     }
 
     // PHASE 18 — Onboarding & offboarding ghost cells.
