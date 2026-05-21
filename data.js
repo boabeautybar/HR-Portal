@@ -48,13 +48,15 @@
   }
 
   function rowToStaff(r) {
+    var _nm = r.name || "";
+    var _sp = _nm.indexOf(" ");
     return {
       _id: r.id,
       id: r.id,
       ec: r.employee_code,
-      firstName: r.first_name || "",
-      surname: r.surname || "",
-      name: r.name || "",
+      firstName: r.first_name || (_sp >= 0 ? _nm.slice(0, _sp) : _nm),
+      surname: r.surname || (_sp >= 0 ? _nm.slice(_sp + 1).trim() : ""),
+      name: _nm,
       branch: r.branch || "",
       role: r.role || "",
       roleType: getRoleType(r.employee_code, r.role_type),
@@ -83,8 +85,6 @@
   function staffToRow(s) {
     return {
       employee_code: s.ec,
-      first_name: s.firstName || null,
-      surname: s.surname || null,
       name: s.name || "",
       branch: s.branch || "",
       contract: s.contract || null,
@@ -111,13 +111,15 @@
   }
 
   function rowToManager(r) {
+    var _nm = r.name || "";
+    var _sp = _nm.indexOf(" ");
     return {
       _id: r.id,
       id: r.id,
       ec: r.employee_code,
-      firstName: r.first_name || "",
-      surname: r.surname || "",
-      name: r.name || "",
+      firstName: r.first_name || (_sp >= 0 ? _nm.slice(0, _sp) : _nm),
+      surname: r.surname || (_sp >= 0 ? _nm.slice(_sp + 1).trim() : ""),
+      name: _nm,
       branch: r.branch || "",
       role: r.role || "",
       roleType: getRoleType(r.employee_code, r.role_type),
@@ -144,8 +146,6 @@
   function managerToRow(m) {
     return {
       employee_code: m.ec,
-      first_name: m.firstName || null,
-      surname: m.surname || null,
       name: m.name || "",
       branch: m.branch || "",
       role: m.role || null,
