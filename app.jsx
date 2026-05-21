@@ -17536,7 +17536,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const key = o && o.ec ? String(o.ec).trim() : "";
           return key && !_seenMgrEcSet.has(key);
         });
-        const allMgrs = [..._dedupedMgrs, ..._dedupedObMgrs];
+        const _allMgrsRaw = [..._dedupedMgrs, ..._dedupedObMgrs];
+        // AMs on an active 3-month SM trial are scheduled AS Store Managers
+        // for the duration of the trial — the manager-schedule solver and
+        // every branch-specific shift rule branches on `role`, so we rewrite
+        // it locally to "SM" here. The underlying manager record (and the
+        // rest of the UI) still shows them as AM via `_origRole`; once the
+        // trial passes the user can click Promote which flips the real
+        // role on the record. `_onSmTrial` is kept around so we can tag the
+        // schedule row with a small "SM trial" hint.
+        const _smTrialEcs = new Set((smTrialList || []).filter(t => t && t.status === "active" && t.ec).map(t => t.ec));
+        const allMgrs = _allMgrsRaw.map(m => {
+          if (m && m.role === "AM" && _smTrialEcs.has(m.ec)) {
+            return { ...m, role: "SM", _origRole: "AM", _onSmTrial: true };
+          }
+          return m;
+        });
         const mgrLeaves = (leaveRecs || []).filter(L => allMgrs.some(m => m.ec === L.ec));
         // Synthetic full-cycle leaves for on-mat managers - mgrSched
         // treats these as 'L' cells so the on-mat manager doesn't get
