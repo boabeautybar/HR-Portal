@@ -4160,24 +4160,49 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       year: d.year,
       monthIdx: d.monthIdx
     }));
-    const rows = techs.map(t => {
+    const rows = techs.filter(t => {
+      // Hide techs who have already transferred out of this branch
+      // before this period starts — they belong on the destination
+      // branch's PDF, not here. (The live `techs` list keeps them
+      // around until their branch field is flipped, so we filter
+      // again at PDF time to keep the printed roster honest.)
+      if (t.transferring && t.transferTo && t.transferDate && _periodStartYmdForTechs) {
+        if (t.transferDate < _periodStartYmdForTechs) return false;
+      }
+      return true;
+    }).map(t => {
       const cells = {};
       const row = sourceGrid[t.ec] || {};
+      // For techs who are mid-transfer (move date during this period),
+      // blank out cells on/after the transferDate — they're no longer at
+      // this branch from that day onward. Mirrors the greyed "out"
+      // rendering in the live schedule UI.
+      const xferDate = (t.transferring && t.transferDate) ? t.transferDate : null;
       columns.forEach(c => {
+        if (xferDate && c.key >= xferDate) {
+          cells[c.key] = { code: "", text: "" };
+          return;
+        }
         const code = row[c.day] || "";
         const info = cellInfo[code];
         cells[c.key] = { code, text: info ? info.text : "" };
       });
+      const _xferSub = xferDate ? ("Transferring to " + (t.transferTo || "—") + " on " + xferDate) : null;
       return {
         ec: t.ec,
         name: t.name,
-        sub: t.onMat ? "On maternity leave" : "Nail tech",
+        sub: _xferSub || (t.onMat ? "On maternity leave" : "Nail tech"),
         cells
       };
     });
+    // Totals should also respect partial transfers — a mid-period
+    // transfer-out tech only counts toward the days they're still
+    // here. Same row-filter and per-day blanking as the rows above.
     const totals = columns.map(c => {
       let w = 0;
       techs.forEach(t => {
+        if (t.transferring && t.transferTo && t.transferDate && _periodStartYmdForTechs && t.transferDate < _periodStartYmdForTechs) return;
+        if (t.transferring && t.transferDate && c.key >= t.transferDate) return;
         const v = (sourceGrid[t.ec] || {})[c.day];
         if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") w++;
       });
