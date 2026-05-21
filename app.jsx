@@ -2336,10 +2336,12 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, onStar
             </div>
           </div>
 
-          {/* SM trial tagger — only relevant for existing AMs. Hidden when the
-              record is brand new (no _id yet), when the role isn't AM, or when
-              this AM is already on an active trial (we just show a hint). */}
-          {!isNew && f.role === "AM" && typeof onStartSmTrial === "function" && (
+          {/* SM trial tagger — visible for existing AMs (to start a trial) or
+              for anyone who's already on an active trial (to surface the
+              hint). This lets HR see and correct stale records where the
+              manager was marked SM directly without going through the trial.
+              Hidden for brand-new records (no _id yet). */}
+          {!isNew && (f.role === "AM" || smTrialActive) && typeof onStartSmTrial === "function" && (
             <div style={{ background: smTrialActive ? "#f1f5f9" : "#FFF7ED", border: "1px solid " + (smTrialActive ? "#cbd5e1" : "#FED7AA"), borderRadius: 9, padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
               <div style={{ fontSize: 11, color: smTrialActive ? "#475569" : "#9A3412", lineHeight: 1.4 }}>
                 {smTrialActive
@@ -9098,14 +9100,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         offDaysSinceLeft = Math.floor((t0 - ld) / 86400000);
         offHidden = offDaysSinceLeft > 31;
       }
-      const onSmTrial = m.role === "AM" && m.ec && _smTrialEcs.has(m.ec);
+      // `onSmTrial` fires for ANY active trial record matching this EC —
+      // we don't require role === "AM" on the manager record, so legacy
+      // managers who were marked SM by mistake (and are now being
+      // corrected to AM-on-trial) still surface the badge. effectiveRole
+      // only flips AM → SM though; if they're already stored as SM we
+      // leave it alone so the schedule's existing AM/SM split is honoured.
+      const onSmTrial = !!(m.ec && _smTrialEcs.has(m.ec));
+      const effectiveRole = onSmTrial && m.role === "AM" ? "SM" : m.role;
       return {
         ...m,
-        // Underlying record's role is preserved so the Manager Modal still
-        // saves correctly. effectiveRole is what every UI / count / sort
-        // should read instead — falls back to the real role when there's
-        // no trial in play.
-        effectiveRole: onSmTrial ? "SM" : m.role,
+        effectiveRole,
         onSmTrial,
         onMat: onMat || !!m.onMat,
         pregnant: pregnant || !!m.pregnant,
@@ -11388,6 +11393,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   {m.pregnant && <span style={{ fontSize: 9, color: "#8E5570", background: "#FCE7F3", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🤰 pregnant{m.matStart ? ` · leaves ${new Date(m.matStart).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                                   {!m.pregnant && !m.transferring && m.notes && <span style={{ fontSize: 9, color: "#BE185D", fontStyle: "italic", maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.notes}>⚑</span>}
                                   <span style={{ fontSize: 9, background: "#FBCFE8", color: "#BE185D", border: "1px solid #bae6fd", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>AM</span>
+                                  {m.onSmTrial && (
+                                    <span title="On 3-month SM trial — see People → SM Trials"
+                                      style={{ fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 700, letterSpacing: "0.04em" }}>⭐ ON TRIAL</span>
+                                  )}
                                 </div>
                               ))}
                               {/* Arriving (pending incoming transfer) — managers
