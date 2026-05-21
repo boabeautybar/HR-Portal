@@ -5942,6 +5942,7 @@ const SETTINGS_TABS = [
   { t: "offboard", l: "Off-boarding", cat: "People", icon: "👋" },
   { t: "recruitment", l: "Recruitment", cat: "People", icon: "🎯" },
   { t: "maternity", l: "Maternity", cat: "People", icon: "🤱" },
+  { t: "smTrial", l: "SM Trials", cat: "People", icon: "⭐" },
   { t: "unpaidLegal", l: "Unpaid Leave (Legal)", cat: "People", icon: "⏸️" },
   { t: "compliance", l: "Compliance", cat: "People", icon: "📋" },
   { t: "scheduling", l: "Scheduling", cat: "Operations", icon: "📅" },
@@ -8003,7 +8004,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [navShowCategory, setNavShowCategory] = useState(false);
   // Map of tab → category name. Kept in sync with the groups list below.
   const NAV_TAB_TO_CATEGORY = {
-    onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People",
+    onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
     scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", storeOpenings: "Operations", movements: "Operations",
     attendance: "Payroll", payrollProgress: "Payroll",
     alerts: "Insights", activity: "Insights",
@@ -8044,6 +8045,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [expandedTrialCards, setExpandedTrialCards] = useState(new Set()); // tracking expanded state for trial cards
   const [hrTasks, setHrTasks] = useState([]);         // HR Tasks (mocked for now)
   const [offList, setOffList] = useState([]);         // leaver records
+  const [smTrialList, setSmTrialList] = useState([]); // AMs on 3-month Store Manager trial
+  const [smForm, setSmForm] = useState({ ec: "", startDate: "", notes: "" }); // SM Trial "start new" form
   // Controlled value for the "Mark a staff member as off-boarded" StaffPicker;
   // submitOff() now reads this state instead of an uncontrolled <select> DOM
   // node so the searchable picker can drive it cleanly.
@@ -8517,8 +8520,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadLeaveRecords(),
       window.BOA_DB.loadManagerPins(),
       window.BOA_DB.loadHRTasks(),
-      window.BOA_DB.loadTrialPeriod()
-    ]).then(([d, ob, off, lv, pins, tasks, trial]) => {
+      window.BOA_DB.loadTrialPeriod(),
+      window.BOA_DB.loadSmTrial ? window.BOA_DB.loadSmTrial() : Promise.resolve([])
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial]) => {
       setStaff(d.staff);
       setManagers(d.managers);
       setMatRecs(d.matRecs);
@@ -8528,6 +8532,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setMgrPins(pins && typeof pins === "object" ? pins : {});
       setHrTasks(Array.isArray(tasks) ? tasks : []);
       setTrialList(Array.isArray(trial) ? trial : []);
+      setSmTrialList(Array.isArray(smTrial) ? smTrial : []);
       setLoading(false);
     }).catch((err) => {
       setLoadError("Could not load data: " + (err.message || err));
@@ -9689,7 +9694,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               return ds <= 31;
             }).length;
             const activeTrialCount = trialList.filter(r => r.status !== "passed" && r.status !== "failed" && r.status !== "hired").length;
+            const activeSmTrialCount = (smTrialList || []).filter(r => r.status === "active").length;
             const trialLbl = "🧪 Trial Period" + (activeTrialCount > 0 ? " (" + activeTrialCount + ")" : "");
+            const smTrialLbl = "⭐ SM Trials" + (activeSmTrialCount > 0 ? " (" + activeSmTrialCount + ")" : "");
             const onboardLbl = "🌱 Onboarding" + (obCount > 0 ? " (" + obCount + ")" : "");
             const offboardLbl = "👋 Off-boarding" + (offList.length > 0 ? " (" + offList.length + ")" : "");
             const matLbl = "🤱 Maternity (" + matRecs.length + ")";
@@ -9700,6 +9707,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 items: [
                   { t: "onboard", l: onboardLbl },
                   { t: "trialPeriod", l: trialLbl },
+                  { t: "smTrial", l: smTrialLbl },
                   { t: "offboard", l: offboardLbl },
                   { t: "staff", l: "👥 Staff List" },
                   { t: "recruitment", l: "🎯 Recruitment" },
@@ -13776,6 +13784,337 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </div>
                   ))}
                 </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* ── SM TRIALS TAB ──
+          3-month Store Manager trials for existing AMs. Each record carries
+          a startDate plus three evaluation checkpoints (Month 1, Month 2,
+          Final). Overdue evals turn red so HR can see who needs a sit-down.
+          Persisted via window.BOA_DB.saveSmTrial. */}
+      {tab === "smTrial" && (() => {
+        const now = new Date();
+        const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const today = t0;
+        const _p2 = n => String(n).padStart(2, "0");
+        const _ymd = d => d.getFullYear() + "-" + _p2(d.getMonth() + 1) + "-" + _p2(d.getDate());
+        const _addDays = (d, n) => { const x = new Date(d.getTime()); x.setDate(x.getDate() + n); return x; };
+        const _fmtShort = d => d ? new Date(d + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : "—";
+
+        const EVAL_DEFS = [
+          { key: "m1", label: "Month 1 Check-in", dueOffset: 30 },
+          { key: "m2", label: "Month 2 Check-in", dueOffset: 60 },
+          { key: "final", label: "Final Evaluation", dueOffset: 90 }
+        ];
+        const TRIAL_DAYS = 90;
+
+        const persistSmTrial = async (next) => {
+          setSmTrialList(next);
+          try { await window.BOA_DB.saveSmTrial(next); }
+          catch (e) { alert("Could not save SM trial: " + (e.message || e)); }
+        };
+
+        // Eligible managers — AMs not already on an active trial.
+        const onTrialEcs = new Set((smTrialList || []).filter(r => r.status === "active").map(r => r.ec));
+        const eligibleAMs = (enrichedManagers || []).filter(m =>
+          m && m.role === "AM" && !m.onMat && !m.offboarded && !onTrialEcs.has(m.ec)
+        ).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+
+        const startTrial = (ec, startDate, notes) => {
+          if (!ec) { alert("Pick an AM to start a trial for."); return; }
+          if (!startDate) { alert("Pick a trial start date."); return; }
+          const mgr = (managers || []).find(m => m && m.ec === ec);
+          if (!mgr) { alert("Manager not found."); return; }
+          const rec = {
+            _id: Date.now(),
+            ec: mgr.ec,
+            name: mgr.name || ((mgr.firstName || "") + " " + (mgr.surname || "")).trim(),
+            branch: mgr.branch || "",
+            startDate,
+            trialDays: TRIAL_DAYS,
+            evaluations: EVAL_DEFS.map(e => ({ key: e.key, dueOffset: e.dueOffset, doneAt: null, notes: "" })),
+            status: "active",
+            notes: notes || "",
+            addedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          };
+          persistSmTrial([...(smTrialList || []), rec]);
+          logActivity("Started SM trial", rec.name + " (" + rec.ec + ")", "3-month trial from " + startDate);
+          setSmForm({ ec: "", startDate: _ymd(today), notes: "" });
+        };
+
+        const markEvalDone = (id, evalKey, doneNotes) => {
+          persistSmTrial((smTrialList || []).map(r =>
+            r._id === id
+              ? {
+                  ...r,
+                  evaluations: (r.evaluations || []).map(e =>
+                    e.key === evalKey
+                      ? { ...e, doneAt: new Date().toISOString(), notes: doneNotes || e.notes || "" }
+                      : e
+                  ),
+                  updatedAt: new Date().toISOString()
+                }
+              : r
+          ));
+        };
+        const reopenEval = (id, evalKey) => {
+          if (!confirm("Re-open this evaluation? It'll be marked as not done again.")) return;
+          persistSmTrial((smTrialList || []).map(r =>
+            r._id === id
+              ? {
+                  ...r,
+                  evaluations: (r.evaluations || []).map(e =>
+                    e.key === evalKey ? { ...e, doneAt: null } : e
+                  ),
+                  updatedAt: new Date().toISOString()
+                }
+              : r
+          ));
+        };
+
+        const promoteToSM = async (id) => {
+          const r = (smTrialList || []).find(x => x._id === id);
+          if (!r) return;
+          if (!confirm("Promote " + r.name + " to Store Manager (SM)?\n\nTheir role on the manager record will change from AM → SM and the trial will be archived as passed.")) return;
+          // Flip the underlying manager's role to SM.
+          const mgr = (managers || []).find(m => m && m.ec === r.ec);
+          if (mgr) {
+            try {
+              const saved = await window.BOA_DB.saveManager({ ...mgr, role: "SM" });
+              setManagers(p => p.map(x => x._id === mgr._id ? { ...x, ...saved } : x));
+            } catch (e) { alert("Could not update manager role: " + (e.message || e)); return; }
+          }
+          persistSmTrial((smTrialList || []).map(x =>
+            x._id === id ? { ...x, status: "passed", outcomeAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : x
+          ));
+          logActivity("Promoted to SM", r.name + " (" + r.ec + ")", "Trial passed · started " + r.startDate);
+        };
+        const revertToAM = (id) => {
+          const r = (smTrialList || []).find(x => x._id === id);
+          if (!r) return;
+          if (!confirm("End " + r.name + "'s SM trial without promotion?\n\nThey'll stay as AM and the trial will be archived as failed.")) return;
+          persistSmTrial((smTrialList || []).map(x =>
+            x._id === id ? { ...x, status: "failed", outcomeAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : x
+          ));
+          logActivity("Ended SM trial (no promotion)", r.name + " (" + r.ec + ")", "Stays as AM · started " + r.startDate);
+        };
+        const withdrawTrial = (id) => {
+          const r = (smTrialList || []).find(x => x._id === id);
+          if (!r) return;
+          if (!confirm("Withdraw " + r.name + "'s SM trial?\n\nUse this if the trial was started by mistake or paused. The record will be removed entirely (not archived).")) return;
+          persistSmTrial((smTrialList || []).filter(x => x._id !== id));
+          logActivity("Withdrew SM trial", r.name + " (" + r.ec + ")", "Trial removed");
+        };
+
+        const activeTrials = (smTrialList || []).filter(r => r.status === "active");
+        const passedTrials = (smTrialList || []).filter(r => r.status === "passed").sort((a, b) => (b.outcomeAt || "").localeCompare(a.outcomeAt || ""));
+        const failedTrials = (smTrialList || []).filter(r => r.status === "failed").sort((a, b) => (b.outcomeAt || "").localeCompare(a.outcomeAt || ""));
+
+        const inp = { padding: "8px 10px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: "#fff", width: "100%", boxSizing: "border-box" };
+        const lbl = { display: "block", fontSize: 10, fontWeight: 700, color: "#BE185D", letterSpacing: "0.08em", marginBottom: 4, textTransform: "uppercase" };
+
+        const renderTrialCard = (r, opts) => {
+          opts = opts || {};
+          const start = new Date(r.startDate + "T00:00:00");
+          const endDate = _addDays(start, r.trialDays || TRIAL_DAYS);
+          const daysIn = Math.floor((today - start) / 86400000);
+          const daysLeft = Math.ceil((endDate - today) / 86400000);
+          const isActive = r.status === "active";
+          const endingSoon = isActive && daysLeft >= 0 && daysLeft <= 14;
+          const overdueEnd = isActive && daysLeft < 0;
+          return (
+            <div key={r._id} style={{
+              background: "#fff",
+              border: "1px solid " + (overdueEnd ? "#fecaca" : endingSoon ? "#fde68a" : "#FBCFE8"),
+              borderLeft: "4px solid " + (r.status === "passed" ? "#16a34a" : r.status === "failed" ? "#9ca3af" : overdueEnd ? "#dc2626" : endingSoon ? "#d97706" : "#7c3aed"),
+              borderRadius: 12,
+              padding: "14px 16px",
+              marginBottom: 10
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+                <div style={{ minWidth: 0, flex: "1 1 280px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: "#111827" }}>⭐ {r.name}</div>
+                    <span style={{ fontSize: 10, fontWeight: 700, background: "#FCE7F3", color: "#831843", padding: "2px 8px", borderRadius: 999 }}>{r.ec}</span>
+                    <span style={{ fontSize: 10, fontWeight: 600, color: "#6b7280" }}>{r.branch || "—"}</span>
+                  </div>
+                  <div style={{ marginTop: 6, fontSize: 11, color: "#374151", display: "flex", gap: 12, flexWrap: "wrap" }}>
+                    <span>Started <strong>{_fmtShort(r.startDate)}</strong></span>
+                    <span>Ends <strong>{_fmtShort(_ymd(endDate))}</strong></span>
+                    {isActive && (
+                      <span style={{ fontWeight: 700, color: overdueEnd ? "#dc2626" : endingSoon ? "#92400e" : "#065f46" }}>
+                        {overdueEnd ? (Math.abs(daysLeft) + "d OVERDUE") : (daysLeft + "d left")}
+                      </span>
+                    )}
+                    {!isActive && r.outcomeAt && (
+                      <span style={{ fontWeight: 600, color: "#6b7280" }}>
+                        {r.status === "passed" ? "Promoted " : "Ended "} {_fmtShort(r.outcomeAt.slice(0, 10))}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                {isActive && (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <button onClick={() => promoteToSM(r._id)}
+                      style={{ padding: "6px 12px", borderRadius: 7, border: "none", background: "#16a34a", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>👑 Promote to SM</button>
+                    <button onClick={() => revertToAM(r._id)}
+                      style={{ padding: "6px 12px", borderRadius: 7, border: "1px solid #d1d5db", background: "#fff", color: "#374151", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>End — stay AM</button>
+                    <button onClick={() => withdrawTrial(r._id)}
+                      title="Remove this trial entirely (use if started by mistake)"
+                      style={{ padding: "6px 10px", borderRadius: 7, border: "1px solid #fecaca", background: "#fff", color: "#991b1b", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>Withdraw</button>
+                  </div>
+                )}
+              </div>
+
+              {/* Progress bar */}
+              {isActive && (
+                <div style={{ marginTop: 12, height: 8, background: "#f3f4f6", borderRadius: 4, overflow: "hidden", position: "relative" }}>
+                  <div style={{
+                    width: Math.max(0, Math.min(100, (daysIn / (r.trialDays || TRIAL_DAYS)) * 100)) + "%",
+                    height: "100%",
+                    background: overdueEnd ? "#dc2626" : endingSoon ? "#d97706" : "#7c3aed",
+                    transition: "width 0.3s"
+                  }} />
+                </div>
+              )}
+
+              {/* Evaluations */}
+              <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
+                {(r.evaluations || []).map(e => {
+                  const def = EVAL_DEFS.find(x => x.key === e.key) || { label: e.key, dueOffset: e.dueOffset };
+                  const dueDate = _addDays(start, e.dueOffset || def.dueOffset);
+                  const dueYmd = _ymd(dueDate);
+                  const isDone = !!e.doneAt;
+                  const dDue = Math.ceil((dueDate - today) / 86400000);
+                  const overdue = !isDone && dDue < 0;
+                  const dueSoon = !isDone && dDue >= 0 && dDue <= 7;
+                  const bg = isDone ? "#f0fdf4" : overdue ? "#fef2f2" : dueSoon ? "#fffbeb" : "#f9fafb";
+                  const bd = isDone ? "#86efac" : overdue ? "#fecaca" : dueSoon ? "#fde68a" : "#e5e7eb";
+                  const fg = isDone ? "#15803d" : overdue ? "#991b1b" : dueSoon ? "#92400e" : "#374151";
+                  return (
+                    <div key={e.key} style={{ background: bg, border: "1px solid " + bd, borderRadius: 9, padding: "10px 12px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: fg }}>
+                          {isDone ? "✅ " : overdue ? "⚠️ " : dueSoon ? "⏰ " : "📅 "}{def.label}
+                        </div>
+                        {isActive && isDone && (
+                          <button onClick={() => reopenEval(r._id, e.key)} style={{ background: "transparent", border: "none", color: "#6b7280", fontSize: 10, cursor: "pointer", padding: 0 }} title="Re-open this evaluation">undo</button>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 10, color: "#6b7280", marginTop: 3 }}>
+                        Due <strong>{_fmtShort(dueYmd)}</strong>
+                        {isDone
+                          ? <> · done {_fmtShort(e.doneAt.slice(0, 10))}</>
+                          : overdue
+                            ? <> · <span style={{ color: "#991b1b", fontWeight: 700 }}>{Math.abs(dDue)}d overdue</span></>
+                            : dDue === 0
+                              ? <> · <span style={{ color: "#92400e", fontWeight: 700 }}>due today</span></>
+                              : <> · in <strong>{dDue}d</strong></>}
+                      </div>
+                      {e.notes && (
+                        <div style={{ fontSize: 11, color: "#374151", marginTop: 6, fontStyle: "italic", whiteSpace: "pre-wrap" }}>{e.notes}</div>
+                      )}
+                      {isActive && !isDone && (
+                        <button onClick={() => {
+                          const noteText = prompt(def.label + " — notes (optional):", "");
+                          if (noteText === null) return;
+                          markEvalDone(r._id, e.key, noteText);
+                        }}
+                          style={{ marginTop: 8, padding: "5px 10px", borderRadius: 6, border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 10, fontWeight: 700 }}>✓ Mark done</button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {r.notes && (
+                <div style={{ marginTop: 10, fontSize: 11, color: "#6b7280", background: "#f9fafb", border: "1px dashed #e5e7eb", borderRadius: 7, padding: "8px 10px", fontStyle: "italic", whiteSpace: "pre-wrap" }}>
+                  📝 {r.notes}
+                </div>
+              )}
+            </div>
+          );
+        };
+
+        return (
+          <div style={{ padding: 24, maxWidth: 1100, margin: "0 auto" }}>
+            <div style={{ marginBottom: 18 }}>
+              <h1 style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 30, color: "#111827", margin: 0 }}>⭐ Store Manager Trials</h1>
+              <div style={{ fontSize: 13, color: "#6b7280", marginTop: 4 }}>
+                AMs on a 3-month trial to become Store Managers. Mark each monthly evaluation as done; on the final check, promote them to SM or end the trial.
+              </div>
+            </div>
+
+            {/* Start new trial */}
+            <div style={{ background: "#FCE7F3", border: "1px solid #FBCFE8", borderRadius: 14, padding: "16px 18px", marginBottom: 18 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 12 }}>🧪 Start a new SM trial</div>
+              {eligibleAMs.length === 0 ? (
+                <div style={{ fontSize: 12, color: "#831843", background: "#fff", borderRadius: 8, padding: "10px 12px" }}>
+                  No eligible AMs right now — all current AMs are either on an active trial, on maternity, or off-boarded. Add or restore an AM first.
+                </div>
+              ) : (
+                <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr auto", gap: 10, alignItems: "end" }}>
+                  <div>
+                    <label style={lbl}>Assistant Manager</label>
+                    <select style={inp} value={smForm.ec || ""} onChange={e => setSmForm({ ...smForm, ec: e.target.value })}>
+                      <option value="">— Select AM —</option>
+                      {eligibleAMs.map(m => (
+                        <option key={m.ec} value={m.ec}>{m.name} · {m.branch || "—"} ({m.ec})</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={lbl}>Trial Start</label>
+                    <input type="date" style={inp} value={smForm.startDate || _ymd(today)} onChange={e => setSmForm({ ...smForm, startDate: e.target.value })} />
+                  </div>
+                  <button onClick={() => startTrial(smForm.ec, smForm.startDate || _ymd(today), smForm.notes || "")}
+                    style={{ padding: "9px 22px", borderRadius: 9, border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700, whiteSpace: "nowrap" }}>⭐ Start Trial</button>
+                  <div style={{ gridColumn: "1/-1" }}>
+                    <label style={lbl}>Notes (optional)</label>
+                    <input style={inp} value={smForm.notes || ""} onChange={e => setSmForm({ ...smForm, notes: e.target.value })} placeholder="e.g. covering for Thandi while she's on maternity" />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Active trials */}
+            <div style={{ marginBottom: 24 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#831843", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>
+                Active Trials ({activeTrials.length})
+              </div>
+              {activeTrials.length === 0 ? (
+                <div style={{ background: "#f9fafb", border: "1px dashed #e5e7eb", borderRadius: 10, padding: "20px 16px", textAlign: "center", color: "#6b7280", fontSize: 12 }}>
+                  No active SM trials. Start one above to begin tracking.
+                </div>
+              ) : (
+                activeTrials
+                  .slice()
+                  .sort((a, b) => (a.startDate || "").localeCompare(b.startDate || ""))
+                  .map(r => renderTrialCard(r))
+              )}
+            </div>
+
+            {/* Passed history */}
+            {passedTrials.length > 0 && (
+              <div style={{ marginBottom: 18 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#065f46", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>
+                  ✅ Promoted to SM ({passedTrials.length})
+                </div>
+                {passedTrials.map(r => renderTrialCard(r))}
+              </div>
+            )}
+
+            {/* Failed history */}
+            {failedTrials.length > 0 && (
+              <div style={{ marginBottom: 18 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>
+                  ⏹ Ended — stayed AM ({failedTrials.length})
+                </div>
+                {failedTrials.map(r => renderTrialCard(r))}
               </div>
             )}
           </div>

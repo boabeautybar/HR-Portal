@@ -652,6 +652,34 @@
     return records;
   }
 
+  // ---------- SM (Store Manager) trial (boa_sm_trial_v1) ----------
+  // Existing AMs put on a 3-month trial to become Store Managers. Lives in
+  // its own list so the manager record stays clean (and a tagged AM can
+  // still be edited / moved exactly like any other manager). Each record:
+  // {
+  //   _id, ec, name, branch,
+  //   startDate (YYYY-MM-DD),                // when the trial began
+  //   trialDays (default 90),                // total trial length
+  //   evaluations: [                         // 3 evaluation checkpoints
+  //     {key:"m1", dueOffset:30, doneAt:null, notes:""},
+  //     {key:"m2", dueOffset:60, doneAt:null, notes:""},
+  //     {key:"final", dueOffset:90, doneAt:null, notes:""}
+  //   ],
+  //   status: "active" | "passed" | "failed" | "withdrawn",
+  //   outcomeAt, notes, addedAt, updatedAt
+  // }
+  async function loadSmTrial() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_sm_trial_v1").maybeSingle();
+    if (res.error) { console.error("loadSmTrial:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveSmTrial(records) {
+    var res = await sb.from("app_state").upsert({ key: "boa_sm_trial_v1", value: records || [] });
+    if (res.error) throw res.error;
+    return records;
+  }
+
   // ---------- Manager clock-ins viewer ----------
   // Recent manager clock-in rows (joined with staff name) for the HR
   // portal's spot-check viewer. Photo + GPS lives in app_state under
@@ -1205,6 +1233,8 @@
     saveTrialPeriod: saveTrialPeriod,
     loadOffboarding: loadOffboarding,
     saveOffboarding: saveOffboarding,
+    loadSmTrial:   loadSmTrial,
+    saveSmTrial:   saveSmTrial,
 
     // Attendance
     loadAttendance: loadAttendance,
