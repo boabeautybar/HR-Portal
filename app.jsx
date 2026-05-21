@@ -2283,7 +2283,7 @@ function TransferModal({ s, onClose, onConfirm, onCancelTransfer }) {
 }
 
 // ─── MANAGER MODAL ────────────────────────────────────────────────────────────────
-function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
+function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, onStartSmTrial }) {
   const parseName = (t) => {
     if (!t) return { firstName: "", surname: "" };
     const i = t.indexOf(" ");
@@ -2335,6 +2335,35 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
               </select>
             </div>
           </div>
+
+          {/* SM trial tagger — only relevant for existing AMs. Hidden when the
+              record is brand new (no _id yet), when the role isn't AM, or when
+              this AM is already on an active trial (we just show a hint). */}
+          {!isNew && f.role === "AM" && typeof onStartSmTrial === "function" && (
+            <div style={{ background: smTrialActive ? "#f1f5f9" : "#FFF7ED", border: "1px solid " + (smTrialActive ? "#cbd5e1" : "#FED7AA"), borderRadius: 9, padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 11, color: smTrialActive ? "#475569" : "#9A3412", lineHeight: 1.4 }}>
+                {smTrialActive
+                  ? <>⭐ <strong>Already on SM trial</strong> — view progress and evaluations in the SM Trials tab.</>
+                  : <><strong>⭐ Store Manager trial</strong><br/><span style={{ color: "#9A3412" }}>3-month trial with mid + final evaluations. Outcome auto-promotes to SM.</span></>}
+              </div>
+              {!smTrialActive && (
+                <button type="button"
+                  onClick={async () => {
+                    const _today = (() => { const d = new Date(); const p = n => String(n).padStart(2, "0"); return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()); })();
+                    const sd = prompt("Start the 3-month SM trial for " + (f.firstName || "") + " " + (f.surname || "") + ".\n\nTrial start date (YYYY-MM-DD):", _today);
+                    if (sd === null) return;
+                    const trimmed = (sd || "").trim();
+                    if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) { alert("Please enter the date as YYYY-MM-DD."); return; }
+                    const ok = await onStartSmTrial(f.ec, trimmed);
+                    if (ok) {
+                      alert("⭐ SM trial started. View it in People → SM Trials.");
+                      onClose();
+                    }
+                  }}
+                  style={{ padding: "7px 14px", borderRadius: 8, border: "none", background: "#EA580C", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>⭐ Start SM Trial</button>
+              )}
+            </div>
+          )}
           <div><label style={lbl}>Notes</label>
             <input style={inp} value={f.notes || ""} onChange={e => set("notes", e.target.value)} placeholder="e.g. Transfer from Sandown, Pregnant..." /></div>
 
@@ -8046,7 +8075,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [hrTasks, setHrTasks] = useState([]);         // HR Tasks (mocked for now)
   const [offList, setOffList] = useState([]);         // leaver records
   const [smTrialList, setSmTrialList] = useState([]); // AMs on 3-month Store Manager trial
-  const [smForm, setSmForm] = useState({ ec: "", startDate: "", notes: "" }); // SM Trial "start new" form
   // Controlled value for the "Mark a staff member as off-boarded" StaffPicker;
   // submitOff() now reads this state instead of an uncontrolled <select> DOM
   // node so the searchable picker can drive it cleanly.
@@ -9520,6 +9548,48 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (rec) logActivity("Deleted maternity record", rec.name || rec.ec, rec.matStatus || "", "Maternity");
     } catch (e) { alert("Could not delete: " + (e.message || e)); }
   }
+  // Start a new 3-month SM trial for the given AM. Called from the Manager
+  // modal's "Start SM Trial" button and from the SM Trials tab's picker.
+  // Returns true on success.
+  async function startSmTrialFor(ec, startDate, notes) {
+    if (!ec) return false;
+    const mgr = (managers || []).find(m => m && m.ec === ec);
+    if (!mgr) { alert("Manager not found."); return false; }
+    if ((smTrialList || []).some(r => r.ec === ec && r.status === "active")) {
+      alert(mgr.name + " is already on an active SM trial.");
+      return false;
+    }
+    const sd = startDate || (() => {
+      const d = new Date();
+      const p = n => String(n).padStart(2, "0");
+      return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+    })();
+    const rec = {
+      _id: Date.now(),
+      ec: mgr.ec,
+      name: mgr.name || ((mgr.firstName || "") + " " + (mgr.surname || "")).trim(),
+      branch: mgr.branch || "",
+      startDate: sd,
+      trialDays: 90,
+      // Mid + Final evaluations (per HR choice). Mid at ~6 weeks, final at the
+      // end of the 3-month trial.
+      evaluations: [
+        { key: "mid",   dueOffset: 45, doneAt: null, notes: "" },
+        { key: "final", dueOffset: 90, doneAt: null, notes: "" }
+      ],
+      status: "active",
+      notes: notes || "",
+      addedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    const next = [...(smTrialList || []), rec];
+    setSmTrialList(next);
+    try { await window.BOA_DB.saveSmTrial(next); }
+    catch (e) { alert("Could not save SM trial: " + (e.message || e)); return false; }
+    logActivity("Started SM trial", rec.name + " (" + rec.ec + ")", "3-month trial from " + sd);
+    return true;
+  }
+
   async function saveMgr(f, newPin) {
     // Shadow records are derived UI rows — closing the edit modal on one
     // is a no-op, not a DB write. (Edit the real record at the source
@@ -13804,10 +13874,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const _addDays = (d, n) => { const x = new Date(d.getTime()); x.setDate(x.getDate() + n); return x; };
         const _fmtShort = d => d ? new Date(d + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : "—";
 
+        // HR-chosen cadence: a mid-trial check-in around the 6-week mark and
+        // a final evaluation at the 3-month mark. Existing records with the
+        // older m1/m2/final keys still render via the fallback in the eval
+        // loop below (it uses each eval's own dueOffset and falls back to
+        // the def label only when matched).
         const EVAL_DEFS = [
-          { key: "m1", label: "Month 1 Check-in", dueOffset: 30 },
-          { key: "m2", label: "Month 2 Check-in", dueOffset: 60 },
-          { key: "final", label: "Final Evaluation", dueOffset: 90 }
+          { key: "mid",   label: "Mid-Trial Check-in",  dueOffset: 45 },
+          { key: "final", label: "Final Evaluation",    dueOffset: 90 }
         ];
         const TRIAL_DAYS = 90;
 
@@ -13815,35 +13889,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           setSmTrialList(next);
           try { await window.BOA_DB.saveSmTrial(next); }
           catch (e) { alert("Could not save SM trial: " + (e.message || e)); }
-        };
-
-        // Eligible managers — AMs not already on an active trial.
-        const onTrialEcs = new Set((smTrialList || []).filter(r => r.status === "active").map(r => r.ec));
-        const eligibleAMs = (enrichedManagers || []).filter(m =>
-          m && m.role === "AM" && !m.onMat && !m.offboarded && !onTrialEcs.has(m.ec)
-        ).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-
-        const startTrial = (ec, startDate, notes) => {
-          if (!ec) { alert("Pick an AM to start a trial for."); return; }
-          if (!startDate) { alert("Pick a trial start date."); return; }
-          const mgr = (managers || []).find(m => m && m.ec === ec);
-          if (!mgr) { alert("Manager not found."); return; }
-          const rec = {
-            _id: Date.now(),
-            ec: mgr.ec,
-            name: mgr.name || ((mgr.firstName || "") + " " + (mgr.surname || "")).trim(),
-            branch: mgr.branch || "",
-            startDate,
-            trialDays: TRIAL_DAYS,
-            evaluations: EVAL_DEFS.map(e => ({ key: e.key, dueOffset: e.dueOffset, doneAt: null, notes: "" })),
-            status: "active",
-            notes: notes || "",
-            addedAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          };
-          persistSmTrial([...(smTrialList || []), rec]);
-          logActivity("Started SM trial", rec.name + " (" + rec.ec + ")", "3-month trial from " + startDate);
-          setSmForm({ ec: "", startDate: _ymd(today), notes: "" });
         };
 
         const markEvalDone = (id, evalKey, doneNotes) => {
@@ -13985,7 +14030,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               {/* Evaluations */}
               <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
                 {(r.evaluations || []).map(e => {
-                  const def = EVAL_DEFS.find(x => x.key === e.key) || { label: e.key, dueOffset: e.dueOffset };
+                  const LEGACY_LBL = { m1: "Month 1 Check-in", m2: "Month 2 Check-in" };
+                  const def = EVAL_DEFS.find(x => x.key === e.key) || { label: LEGACY_LBL[e.key] || e.key, dueOffset: e.dueOffset };
                   const dueDate = _addDays(start, e.dueOffset || def.dueOffset);
                   const dueYmd = _ymd(dueDate);
                   const isDone = !!e.doneAt;
@@ -14049,36 +14095,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
             </div>
 
-            {/* Start new trial */}
-            <div style={{ background: "#FCE7F3", border: "1px solid #FBCFE8", borderRadius: 14, padding: "16px 18px", marginBottom: 18 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 12 }}>🧪 Start a new SM trial</div>
-              {eligibleAMs.length === 0 ? (
-                <div style={{ fontSize: 12, color: "#831843", background: "#fff", borderRadius: 8, padding: "10px 12px" }}>
-                  No eligible AMs right now — all current AMs are either on an active trial, on maternity, or off-boarded. Add or restore an AM first.
-                </div>
-              ) : (
-                <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr auto", gap: 10, alignItems: "end" }}>
-                  <div>
-                    <label style={lbl}>Assistant Manager</label>
-                    <select style={inp} value={smForm.ec || ""} onChange={e => setSmForm({ ...smForm, ec: e.target.value })}>
-                      <option value="">— Select AM —</option>
-                      {eligibleAMs.map(m => (
-                        <option key={m.ec} value={m.ec}>{m.name} · {m.branch || "—"} ({m.ec})</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label style={lbl}>Trial Start</label>
-                    <input type="date" style={inp} value={smForm.startDate || _ymd(today)} onChange={e => setSmForm({ ...smForm, startDate: e.target.value })} />
-                  </div>
-                  <button onClick={() => startTrial(smForm.ec, smForm.startDate || _ymd(today), smForm.notes || "")}
-                    style={{ padding: "9px 22px", borderRadius: 9, border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700, whiteSpace: "nowrap" }}>⭐ Start Trial</button>
-                  <div style={{ gridColumn: "1/-1" }}>
-                    <label style={lbl}>Notes (optional)</label>
-                    <input style={inp} value={smForm.notes || ""} onChange={e => setSmForm({ ...smForm, notes: e.target.value })} placeholder="e.g. covering for Thandi while she's on maternity" />
-                  </div>
-                </div>
-              )}
+            {/* How-to banner — trials are started from the Manager card now,
+                so this tab is a tracker only. Keeps a single source of truth
+                for who tags whom. */}
+            <div style={{ background: "#FCE7F3", border: "1px solid #FBCFE8", borderRadius: 14, padding: "12px 16px", marginBottom: 18, fontSize: 12, color: "#831843", display: "flex", alignItems: "center", gap: 8 }}>
+              <span>💡</span>
+              <span>To put an AM on trial, open their Manager card from Locations and click <strong>⭐ Start SM Trial</strong>. They'll appear here with their countdown and evaluation reminders.</span>
             </div>
 
             {/* Active trials */}
@@ -20035,7 +20057,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       )}
 
       {staffModal && <StaffModal s={(() => { const mr = (matRecs || []).find(r => r && r.ec && staffModal.ec && r.ec.trim() === staffModal.ec.trim()); return mr ? { ...staffModal, matStatus: staffModal.matStatus || mr.matStatus, matStart: staffModal.matStart || mr.matStart, matEnd: staffModal.matEnd || mr.matEnd, matReturn: staffModal.matReturn || mr.returnDate, matNotes: staffModal.matNotes || mr.notes } : staffModal; })()} onClose={() => setStaffModal(null)} onSave={saveStaff} onTransfer={(s) => setTransferModal(s)} allStaff={staff} isOwner={!!currentUser?.isOwner} onHardDelete={hardDeleteStaff} />}
-      {mgrModal && <ManagerModal m={(() => { const mr = (matRecs || []).find(r => r && r.ec && mgrModal.ec && r.ec.trim() === mgrModal.ec.trim()); return mr ? { ...mgrModal, matStatus: mgrModal.matStatus || mr.matStatus, matStart: mgrModal.matStart || mr.matStart, matEnd: mgrModal.matEnd || mr.matEnd, matReturn: mgrModal.matReturn || mr.returnDate, matNotes: mgrModal.matNotes || mr.notes } : mgrModal; })()} pin={mgrPins[mgrModal.ec] || ""} onClose={() => setMgrModal(null)} onSave={saveMgr} onDelete={delMgr} />}
+      {mgrModal && <ManagerModal m={(() => { const mr = (matRecs || []).find(r => r && r.ec && mgrModal.ec && r.ec.trim() === mgrModal.ec.trim()); return mr ? { ...mgrModal, matStatus: mgrModal.matStatus || mr.matStatus, matStart: mgrModal.matStart || mr.matStart, matEnd: mgrModal.matEnd || mr.matEnd, matReturn: mgrModal.matReturn || mr.returnDate, matNotes: mgrModal.matNotes || mr.notes } : mgrModal; })()} pin={mgrPins[mgrModal.ec] || ""} onClose={() => setMgrModal(null)} onSave={saveMgr} onDelete={delMgr} smTrialActive={!!(smTrialList || []).find(r => r.ec === mgrModal.ec && r.status === "active")} onStartSmTrial={startSmTrialFor} />}
       {transferModal && <TransferModal s={transferModal} onClose={() => setTransferModal(null)} onConfirm={handleTransfer} onCancelTransfer={cancelTransfer} />}
       {matModal && <MatModal rec={matModal} onClose={() => setMatModal(null)} onSave={saveMat} onDelete={delMat} people={matPickerPool} />}
     </div>
