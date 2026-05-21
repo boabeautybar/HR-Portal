@@ -2848,7 +2848,30 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         // Eligible: weeks where this tech WORKS the Sunday — Sunday parity
         // is anchored to the Sunday's calendar date so the rotation stays
         // consistent across cycle boundaries.
-        const eligible = allFullWeeks.filter(wIdx => weekSundayOffGroup(weeks[wIdx]) !== grp);
+        let eligible = allFullWeeks.filter(wIdx => weekSundayOffGroup(weeks[wIdx]) !== grp);
+        // Transfer-aware narrowing: a tech mid-transfer isn't actually at
+        // this branch for the whole cycle, so picking their +1 W week
+        // before/after they're here means the extra W lands on days they
+        // don't work here at all. Restrict eligible weeks to ones that
+        // overlap their active window on THIS branch.
+        if (s.transferDate) {
+          const _ymd = (dy) => dy.year + "-" + String(dy.monthIdx + 1).padStart(2, "0") + "-" + String(dy.d).padStart(2, "0");
+          if (s.isShadow && s.transferTo === branch) {
+            // Arriving: only weeks with at least one day on/after transferDate.
+            const _post = allFullWeeks.filter(wIdx =>
+              weeks[wIdx].some(dy => _ymd(dy) >= s.transferDate)
+              && (weekSundayOffGroup(weeks[wIdx]) !== grp)
+            );
+            if (_post.length > 0) eligible = _post;
+          } else if (!s.isShadow && s.transferring && s.transferTo && s.transferTo !== branch) {
+            // Outgoing: only weeks with at least one day before transferDate.
+            const _pre = allFullWeeks.filter(wIdx =>
+              weeks[wIdx].some(dy => _ymd(dy) < s.transferDate)
+              && (weekSundayOffGroup(weeks[wIdx]) !== grp)
+            );
+            if (_pre.length > 0) eligible = _pre;
+          }
+        }
         if (eligible.length === 0) return;                      // skip; no designation
         // Sort by busy-day-count DESC — busy weeks tried first
         const sorted = [...eligible].sort((a, b) => busyDayCount(b) - busyDayCount(a));
