@@ -4129,7 +4129,16 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     );
   }
   // Build the column / row payload shared by the CSV and PDF exports.
-  function buildExportPayload() {
+  function buildExportPayload(opts) {
+    opts = opts || {};
+    // sourceGrid lets callers print a different snapshot (e.g. the
+    // last approved/published version) without mutating editor state.
+    // Falls back to the live working grid.
+    const sourceGrid = opts.sourceGrid || grid;
+    const sourceSavedAt = opts.savedAt || savedAt;
+    const titleSuffix = opts.titleSuffix || "";
+    const subtitleSuffix = opts.subtitleSuffix || "";
+    const filenameSuffix = opts.filenameSuffix || "";
     const monthAbbr = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const dowAbbr = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     const cellInfo = {
@@ -4153,7 +4162,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     }));
     const rows = techs.map(t => {
       const cells = {};
-      const row = grid[t.ec] || {};
+      const row = sourceGrid[t.ec] || {};
       columns.forEach(c => {
         const code = row[c.day] || "";
         const info = cellInfo[code];
@@ -4169,7 +4178,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     const totals = columns.map(c => {
       let w = 0;
       techs.forEach(t => {
-        const v = (grid[t.ec] || {})[c.day];
+        const v = (sourceGrid[t.ec] || {})[c.day];
         if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") w++;
       });
       return { key: c.key, value: w };
@@ -4187,9 +4196,9 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       { code: "X", text: "—", label: "Not scheduled" }
     ];
     return {
-      title: "BOA Nail Tech Schedule — " + branch,
-      subtitle: periodLbl + (savedAt ? " · saved " + new Date(savedAt).toLocaleString("en-ZA") : ""),
-      filenameBase: "BOA_tech_schedule_" + branch + "_" + ym,
+      title: "BOA Nail Tech Schedule — " + branch + titleSuffix,
+      subtitle: periodLbl + (sourceSavedAt ? " · saved " + new Date(sourceSavedAt).toLocaleString("en-ZA") : "") + subtitleSuffix,
+      filenameBase: "BOA_tech_schedule_" + branch + "_" + ym + filenameSuffix,
       columns, rows, totals, legend, codeStyles
     };
   }
@@ -4202,14 +4211,45 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     }
     exportScheduleCsv(buildExportPayload());
   }
-  function downloadPdf() {
-    if (dirty) {
-      if (!confirm("You have unsaved changes — they won't appear in the saved version. Download the current view anyway?")) return;
-    } else if (!savedAt && Object.keys(grid).length === 0) {
-      alert("Nothing to download — generate or save a schedule first.");
+  // PDF always reflects the LAST APPROVED + PUBLISHED version of the
+  // schedule for this branch + period — never the live editor draft.
+  // Rationale: managers print PDFs to share with the team, and the
+  // "real" roster is what was approved, not whatever someone happens
+  // to be tweaking in the editor. If no approved version exists yet
+  // we surface that clearly and offer to fall back to the current
+  // working grid so they're not stuck.
+  async function downloadPdf() {
+    let approved = null;
+    try {
+      const list = await window.BOA_DB.loadApprovedSchedules(branch, ym, false);
+      approved = Array.isArray(list) && list.length > 0 ? list[0] : null;
+    } catch (e) {
+      alert("Could not load the approved schedule: " + (e.message || e));
       return;
     }
-    exportSchedulePdf(buildExportPayload());
+    if (!approved) {
+      if (!savedAt && Object.keys(grid).length === 0) {
+        alert("Nothing to download — no approved version has been published yet, and the editor is empty. Generate, save, then click 📌 Approve & Publish first.");
+        return;
+      }
+      const proceed = confirm("No approved version has been published yet for " + branch + " · " + periodLbl + ".\n\nClick OK to download the current editor view (marked as DRAFT), or Cancel to go back and Approve & Publish first.");
+      if (!proceed) return;
+      exportSchedulePdf(buildExportPayload({
+        titleSuffix: " (DRAFT)",
+        subtitleSuffix: " · DRAFT — not yet approved",
+        filenameSuffix: "_DRAFT"
+      }));
+      return;
+    }
+    const approvedLabel = (approved.name || "Approved") +
+      (approved.approvedBy ? " · approved by " + approved.approvedBy : "") +
+      (approved.savedAt ? " · " + new Date(approved.savedAt).toLocaleString("en-ZA") : "");
+    exportSchedulePdf(buildExportPayload({
+      sourceGrid: approved.grid || {},
+      savedAt: approved.savedAt,
+      subtitleSuffix: " · " + approvedLabel,
+      filenameSuffix: "_approved"
+    }));
   }
 
   async function save() {
@@ -18404,7 +18444,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Build the export payload from the current draft (post-save the
         // draft equals the saved version). Falls back to the saved version
         // if the draft is empty (e.g. just-loaded existing schedule).
-        const buildMgrExportPayload = () => {
+        const buildMgrExportPayload = (opts) => {
+          opts = opts || {};
           const moNamesL = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
           const dowsAbbrL = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
           const cellInfo = {
@@ -18415,9 +18456,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             E: { text: "EXT", bg: "#6ee7b7", fg: "#064e3b" },
             X: { text: "—", bg: "#f3f4f6", fg: "#9ca3af" }
           };
-          const sourceGrid = (mgrSchedDraft && Object.keys(mgrSchedDraft).length > 0)
-            ? mgrSchedDraft
-            : (mgrSchedSaved || {});
+          // Callers (PDF) can pass an explicit sourceGrid — e.g. the
+          // last approved/published version — without disturbing the
+          // editor. Falls back to draft → saved as before.
+          const sourceGrid = opts.sourceGrid || (
+            (mgrSchedDraft && Object.keys(mgrSchedDraft).length > 0)
+              ? mgrSchedDraft
+              : (mgrSchedSaved || {})
+          );
+          const sourceSavedAt = opts.savedAt || mgrSchedSavedAt;
+          const titleSuffix = opts.titleSuffix || "";
+          const subtitleSuffix = opts.subtitleSuffix || "";
+          const filenameSuffix = opts.filenameSuffix || "";
           const columns = result.dates.map(dy => {
             const dt = new Date(dy.d + "T00:00:00");
             return {
@@ -18470,9 +18520,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             { code: "X", text: "—", label: "Not scheduled" }
           ];
           return {
-            title: "BOA Manager Schedule — " + branch,
-            subtitle: cycleLabel + (mgrSchedSavedAt ? " · saved " + new Date(mgrSchedSavedAt).toLocaleString("en-ZA") : ""),
-            filenameBase: "BOA_manager_schedule_" + branch + "_" + ymKey,
+            title: "BOA Manager Schedule — " + branch + titleSuffix,
+            subtitle: cycleLabel + (sourceSavedAt ? " · saved " + new Date(sourceSavedAt).toLocaleString("en-ZA") : "") + subtitleSuffix,
+            filenameBase: "BOA_manager_schedule_" + branch + "_" + ymKey + filenameSuffix,
             columns, rows, totals, legend, codeStyles
           };
         };
@@ -18485,14 +18535,42 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
           exportScheduleCsv(buildMgrExportPayload());
         };
-        const downloadMgrPdf = () => {
-          if (mgrSchedDirty) {
-            if (!window.confirm("You have unsaved changes — they won't appear in the saved version. Download the current view anyway?")) return;
-          } else if (!mgrSchedSaved) {
-            alert("Nothing to download — generate and save a schedule first.");
+        // Manager PDF: same rule as the tech PDF — always print the
+        // LAST APPROVED + PUBLISHED version for this branch + cycle,
+        // never the live editor draft. Falls back to the working grid
+        // (clearly marked DRAFT) only if no approved version exists yet.
+        const downloadMgrPdf = async () => {
+          let approved = null;
+          try {
+            const list = await window.BOA_DB.loadApprovedSchedules(branch, ymKey, true);
+            approved = Array.isArray(list) && list.length > 0 ? list[0] : null;
+          } catch (e) {
+            alert("Could not load the approved schedule: " + (e.message || e));
             return;
           }
-          exportSchedulePdf(buildMgrExportPayload());
+          if (!approved) {
+            if (!mgrSchedSaved) {
+              alert("Nothing to download — no approved version has been published yet, and the editor is empty. Generate, save, then click 📌 Approve & Publish first.");
+              return;
+            }
+            const proceed = window.confirm("No approved version has been published yet for " + branch + " · " + cycleLabel + ".\n\nClick OK to download the current editor view (marked as DRAFT), or Cancel to go back and Approve & Publish first.");
+            if (!proceed) return;
+            exportSchedulePdf(buildMgrExportPayload({
+              titleSuffix: " (DRAFT)",
+              subtitleSuffix: " · DRAFT — not yet approved",
+              filenameSuffix: "_DRAFT"
+            }));
+            return;
+          }
+          const approvedLabel = (approved.name || "Approved") +
+            (approved.approvedBy ? " · approved by " + approved.approvedBy : "") +
+            (approved.savedAt ? " · " + new Date(approved.savedAt).toLocaleString("en-ZA") : "");
+          exportSchedulePdf(buildMgrExportPayload({
+            sourceGrid: approved.grid || {},
+            savedAt: approved.savedAt,
+            subtitleSuffix: " · " + approvedLabel,
+            filenameSuffix: "_approved"
+          }));
         };
 
         // Save the current draft to the DB.
