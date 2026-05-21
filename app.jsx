@@ -9272,8 +9272,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       .filter(m => m && !m.isShadow && m.transferring && m.transferTo === salon.name && m.transferDate && !m.offHidden)
       .map(m => ({ ...m, _id: "shadow-mgr-" + (m.ec || m._id), branch: salon.name, transferFrom: m.branch, isShadow: true }));
 
-    // Trial candidates assigned to this branch and not yet passed/failed
-    const trial = trialList.filter(c => c.branch === salon.name && c.status !== "passed" && c.status !== "failed");
+    // Trial candidates assigned to this branch and not yet passed/failed/hired.
+    // "hired" entries have already moved to Onboarding — they shouldn't linger
+    // on the branch's trial strip.
+    const trial = trialList.filter(c => c.branch === salon.name && c.status !== "passed" && c.status !== "failed" && c.status !== "hired");
 
     // Use targetCapacity for low-demand stores (e.g. Betty), full capacity otherwise
     const goal = salon.targetCapacity || salon.capacity;
@@ -9686,7 +9688,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const ds = Math.floor((t0 - sd) / 86400000);
               return ds <= 31;
             }).length;
-            const activeTrialCount = trialList.filter(r => r.status !== "passed" && r.status !== "failed").length;
+            const activeTrialCount = trialList.filter(r => r.status !== "passed" && r.status !== "failed" && r.status !== "hired").length;
             const trialLbl = "🧪 Trial Period" + (activeTrialCount > 0 ? " (" + activeTrialCount + ")" : "");
             const onboardLbl = "🌱 Onboarding" + (obCount > 0 ? " (" + obCount + ")" : "");
             const offboardLbl = "👋 Off-boarding" + (offList.length > 0 ? " (" + offList.length + ")" : "");
@@ -13505,7 +13507,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         };
 
         const currentList = trialList.filter(r => (r.role || "nt") === trialSubTab);
-        const activeTrials = currentList.filter(r => r.status !== "passed" && r.status !== "failed");
+        const activeTrials = currentList.filter(r => r.status !== "passed" && r.status !== "failed" && r.status !== "hired");
         const passedTrials = currentList.filter(r => r.status === "passed" && !r.promotedToOnboarding);
         const failedTrials = currentList.filter(r => r.status === "failed");
 
