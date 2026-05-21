@@ -3835,6 +3835,11 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     //              11:00–20:00). Both cells render green; the WE/WL text
     //              labels who is on which shift. With an odd headcount,
     //              WE gets the extra (more morning coverage).
+    //   Fourways / Mall of the South / Ballito:
+    //              designate up to 4 working techs per non-Sunday as "WL"
+    //              (aim for 4, accept 3 if only 3 are working). Sundays
+    //              are left as plain "W" so everyone works the same
+    //              single shift — per HR's request for these stores.
     // Distribution uses a per-tech `lateShiftCount` so the same techs
     // don't always end up on the late shift.
     const lateShiftCount = {};
@@ -3869,6 +3874,24 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
           const code = i < lateCount ? "WL" : "WE";
           newGrid[workers[i].ec][dy.d] = code;
           if (code === "WL") lateShiftCount[workers[i].ec]++;
+        }
+      });
+    } else if (branch === "Fourways" || branch === "Mall of the South" || branch === "Ballito") {
+      // Same rule for all three: aim for 4 late workers per non-Sunday,
+      // fall back to whatever's available if fewer techs are working.
+      // Sundays untouched → everyone stays on plain "W".
+      sortedTechs.forEach(s => { lateShiftCount[s.ec] = 0; });
+      days.forEach(dy => {
+        if (dy.dow === 0) return;
+        const workers = sortedTechs.filter(s => newGrid[s.ec][dy.d] === "W");
+        workers.sort((a, b) =>
+          (lateShiftCount[a.ec] - lateShiftCount[b.ec]) ||
+          a.ec.localeCompare(b.ec)
+        );
+        const need = Math.min(4, workers.length);
+        for (let i = 0; i < need; i++) {
+          newGrid[workers[i].ec][dy.d] = "WL";
+          lateShiftCount[workers[i].ec]++;
         }
       });
     }
