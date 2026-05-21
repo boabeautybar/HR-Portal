@@ -4211,13 +4211,13 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     }
     exportScheduleCsv(buildExportPayload());
   }
-  // PDF always reflects the LAST APPROVED + PUBLISHED version of the
-  // schedule for this branch + period — never the live editor draft.
-  // Rationale: managers print PDFs to share with the team, and the
-  // "real" roster is what was approved, not whatever someone happens
-  // to be tweaking in the editor. If no approved version exists yet
-  // we surface that clearly and offer to fall back to the current
-  // working grid so they're not stuck.
+  // PDF: roster = whatever is on the live schedule right now (so techs
+  // transferring in/out, new joiners and people leaving show up just
+  // like they do in the editor). Cell DATA prefers the last approved
+  // + published snapshot — that's the "official" schedule HR signed
+  // off on. For techs whose EC isn't in the approved snapshot (they
+  // joined / transferred in after approval), we fall back to their
+  // live cells so the row isn't blank.
   async function downloadPdf() {
     let approved = null;
     try {
@@ -4241,11 +4241,23 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       }));
       return;
     }
+    // Merge: approved cells win per EC; ECs only present in the live
+    // grid (e.g. a tech who transferred in after approval) keep their
+    // live cells so the PDF still shows them rostered.
+    const mergedGrid = {};
+    techs.forEach(t => {
+      const ec = t.ec;
+      if (approved.grid && approved.grid[ec] && Object.keys(approved.grid[ec]).length > 0) {
+        mergedGrid[ec] = approved.grid[ec];
+      } else {
+        mergedGrid[ec] = grid[ec] || {};
+      }
+    });
     const approvedLabel = (approved.name || "Approved") +
       (approved.approvedBy ? " · approved by " + approved.approvedBy : "") +
       (approved.savedAt ? " · " + new Date(approved.savedAt).toLocaleString("en-ZA") : "");
     exportSchedulePdf(buildExportPayload({
-      sourceGrid: approved.grid || {},
+      sourceGrid: mergedGrid,
       savedAt: approved.savedAt,
       subtitleSuffix: " · " + approvedLabel,
       filenameSuffix: "_approved"
@@ -18562,11 +18574,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }));
             return;
           }
+          // Same merge as the tech PDF — approved cells win per EC,
+          // managers added/transferred in after approval keep their
+          // live cells so they still appear on the roster.
+          const liveMgrGrid = (mgrSchedDraft && Object.keys(mgrSchedDraft).length > 0)
+            ? mgrSchedDraft
+            : (mgrSchedSaved || {});
+          const mergedMgrGrid = {};
+          sortedMgrs.forEach(mg => {
+            const ec = mg.ec;
+            if (approved.grid && approved.grid[ec] && Object.keys(approved.grid[ec]).length > 0) {
+              mergedMgrGrid[ec] = approved.grid[ec];
+            } else {
+              mergedMgrGrid[ec] = liveMgrGrid[ec] || {};
+            }
+          });
           const approvedLabel = (approved.name || "Approved") +
             (approved.approvedBy ? " · approved by " + approved.approvedBy : "") +
             (approved.savedAt ? " · " + new Date(approved.savedAt).toLocaleString("en-ZA") : "");
           exportSchedulePdf(buildMgrExportPayload({
-            sourceGrid: approved.grid || {},
+            sourceGrid: mergedMgrGrid,
             savedAt: approved.savedAt,
             subtitleSuffix: " · " + approvedLabel,
             filenameSuffix: "_approved"
