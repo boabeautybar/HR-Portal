@@ -9443,6 +9443,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const saved = await window.BOA_DB.saveMat(f);
       console.log("[mat] saveMat saved:", saved);
       setMatRecs(p => f._id !== undefined ? p.map(x => x._id === f._id ? saved : x) : [...p, saved]);
+      // Mirror the branch change onto the underlying staff / manager
+      // record. Without this, editing branch on the Maternity tab
+      // updated the mat record only — the Locations card reads
+      // manager.branch / staff.branch, so she stayed at the old store.
+      const ec = (saved.ec || "").trim();
+      const newBranch = (saved.branch || "").trim();
+      if (ec && newBranch) {
+        const mgr = (managers || []).find(m => m && m.ec && m.ec.trim() === ec);
+        if (mgr && mgr.branch !== newBranch) {
+          try {
+            const updated = await window.BOA_DB.saveManager({ ...mgr, branch: newBranch, id: mgr.id || mgr._id });
+            setManagers(p => p.map(x => x._id === mgr._id ? { ...x, ...updated } : x));
+          } catch (me) { console.warn("saveMat: manager branch sync failed:", me); }
+        } else {
+          const st = (staff || []).find(s => s && s.ec && s.ec.trim() === ec);
+          if (st && st.branch !== newBranch) {
+            try {
+              const updated = await window.BOA_DB.saveStaff({ ...st, branch: newBranch, id: st.id || st._id });
+              setStaff(p => p.map(x => x._id === st._id ? { ...x, ...updated } : x));
+            } catch (se) { console.warn("saveMat: staff branch sync failed:", se); }
+          }
+        }
+      }
       setMatModal(null);
     } catch (e) {
       console.error("[mat] saveMat failed:", e, "cause:", e && e.cause, "payload:", e && e._payload);
@@ -11142,7 +11165,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       <button onClick={() => { setMgrModal(m); setManagePanel(null); }}
                                         style={{ background: "#e2e8f0", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#831843" }}>✏️ Edit</button>
                                     )}
-                                    {!m.offboarded && !m.onMat && (
+                                    {!m.offboarded && (
                                       <button onClick={() => { setTransferModal(m); setManagePanel(null); }}
                                         style={{ background: m.transferring ? "#bfdbfe" : "#e0f2fe", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#BE185D" }}>
                                         🔄 {m.transferring ? "Edit Transfer" : "Transfer"}
@@ -11192,12 +11215,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 </span>
                                 <button onClick={() => { setStaffModal(m); setManagePanel(null); }}
                                   style={{ background: "#f3f4f6", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#831843" }}>✏️ Edit</button>
-                                {!m.onMat && (
-                                  <button onClick={() => { setTransferModal(m); setManagePanel(null); }}
-                                    style={{ background: m.transferring ? "#bfdbfe" : "#e0f2fe", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#BE185D" }}>
-                                    🔄 {m.transferring ? "Edit Transfer" : "Transfer"}
-                                  </button>
-                                )}
+                                <button onClick={() => { setTransferModal(m); setManagePanel(null); }}
+                                  style={{ background: m.transferring ? "#bfdbfe" : "#e0f2fe", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#BE185D" }}>
+                                  🔄 {m.transferring ? "Edit Transfer" : "Transfer"}
+                                </button>
                               </div>
                             ))}
                             {/* Arriving — show with edit transfer option */}
