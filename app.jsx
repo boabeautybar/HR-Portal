@@ -2848,7 +2848,30 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         // Eligible: weeks where this tech WORKS the Sunday — Sunday parity
         // is anchored to the Sunday's calendar date so the rotation stays
         // consistent across cycle boundaries.
-        const eligible = allFullWeeks.filter(wIdx => weekSundayOffGroup(weeks[wIdx]) !== grp);
+        let eligible = allFullWeeks.filter(wIdx => weekSundayOffGroup(weeks[wIdx]) !== grp);
+        // Transfer-aware narrowing: a tech mid-transfer isn't actually at
+        // this branch for the whole cycle, so picking their +1 W week
+        // before/after they're here means the extra W lands on days they
+        // don't work here at all. Restrict eligible weeks to ones that
+        // overlap their active window on THIS branch.
+        if (s.transferDate) {
+          const _ymd = (dy) => dy.year + "-" + String(dy.monthIdx + 1).padStart(2, "0") + "-" + String(dy.d).padStart(2, "0");
+          if (s.isShadow && s.transferTo === branch) {
+            // Arriving: only weeks with at least one day on/after transferDate.
+            const _post = allFullWeeks.filter(wIdx =>
+              weeks[wIdx].some(dy => _ymd(dy) >= s.transferDate)
+              && (weekSundayOffGroup(weeks[wIdx]) !== grp)
+            );
+            if (_post.length > 0) eligible = _post;
+          } else if (!s.isShadow && s.transferring && s.transferTo && s.transferTo !== branch) {
+            // Outgoing: only weeks with at least one day before transferDate.
+            const _pre = allFullWeeks.filter(wIdx =>
+              weeks[wIdx].some(dy => _ymd(dy) < s.transferDate)
+              && (weekSundayOffGroup(weeks[wIdx]) !== grp)
+            );
+            if (_pre.length > 0) eligible = _pre;
+          }
+        }
         if (eligible.length === 0) return;                      // skip; no designation
         // Sort by busy-day-count DESC — busy weeks tried first
         const sorted = [...eligible].sort((a, b) => busyDayCount(b) - busyDayCount(a));
@@ -4161,26 +4184,38 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       monthIdx: d.monthIdx
     }));
     const rows = techs.filter(t => {
-      // Hide techs who already transferred out before this period began
-      // — they belong on the destination branch's PDF, not here. The
-      // live `techs` list keeps them around until their `branch` field
-      // is manually flipped (transfer workflow doesn't auto-flip on
-      // date), so we filter again at PDF time to keep the printed
-      // roster honest.
-      if (t.transferring && t.transferTo && t.transferDate && _periodStartYmdForTechs) {
+      // Direction-aware transfer filter. Two cases on the source branch:
+      //   • OUTGOING (t.transferring && transferTo !== branch): tech is
+      //     leaving us. If transferDate is before this period's start,
+      //     they're already gone — hide from this branch's PDF.
+      //   • INCOMING (t.isShadow with transferFrom === some other store,
+      //     OR an arriving shadow whose transferTo === branch): they're
+      //     joining us. Always keep them on the destination PDF — the
+      //     transferDate filter from above would wrongly exclude
+      //     arrivals before the cycle start (they're already here).
+      if (t.transferring && t.transferTo && t.transferTo !== branch && t.transferDate && _periodStartYmdForTechs) {
         if (t.transferDate < _periodStartYmdForTechs) return false;
       }
       return true;
     }).map(t => {
       const cells = {};
       const row = sourceGrid[t.ec] || {};
-      // For mid-period transfers (move date falls inside this period),
-      // blank out cells on/after the transferDate — the tech is at the
-      // new branch from that day on. Mirrors the greyed "out" rendering
-      // in the live schedule editor.
-      const xferDate = (t.transferring && t.transferDate) ? t.transferDate : null;
+      // Direction-aware cell blanking, mirrors the schedule editor:
+      //   • Outgoing transfer (original record, transferTo !== branch):
+      //     cells on/after transferDate are blank — tech is at the new
+      //     branch from that day.
+      //   • Incoming transfer (shadow arrival, transferTo === branch):
+      //     cells BEFORE transferDate are blank — tech is at the
+      //     source branch up to that day.
+      const _xferDate = t.transferring && t.transferDate ? t.transferDate : null;
+      const _outgoing = !!_xferDate && !t.isShadow && t.transferTo && t.transferTo !== branch;
+      const _incoming = !!_xferDate && t.isShadow && t.transferTo === branch;
       columns.forEach(c => {
-        if (xferDate && c.key >= xferDate) {
+        if (_outgoing && c.key >= _xferDate) {
+          cells[c.key] = { code: "", text: "" };
+          return;
+        }
+        if (_incoming && c.key < _xferDate) {
           cells[c.key] = { code: "", text: "" };
           return;
         }
@@ -4188,7 +4223,11 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         const info = cellInfo[code];
         cells[c.key] = { code, text: info ? info.text : "" };
       });
-      const _xferSub = xferDate ? ("Transferring to " + (t.transferTo || "—") + " on " + xferDate) : null;
+      const _xferSub = _outgoing
+        ? ("Transferring to " + (t.transferTo || "—") + " on " + _xferDate)
+        : _incoming
+          ? ("Arriving from " + (t.transferFrom || "—") + " on " + _xferDate)
+          : null;
       return {
         ec: t.ec,
         name: t.name,
@@ -4196,13 +4235,18 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         cells
       };
     });
-    // Working-total counts honour the same transfer rules so the
-    // bottom row doesn't double-count anyone who's already gone.
+    // Working-total counts honour the same direction-aware rules so
+    // the bottom row reflects who is actually here on each day.
     const totals = columns.map(c => {
       let w = 0;
       techs.forEach(t => {
-        if (t.transferring && t.transferTo && t.transferDate && _periodStartYmdForTechs && t.transferDate < _periodStartYmdForTechs) return;
-        if (t.transferring && t.transferDate && c.key >= t.transferDate) return;
+        // Skip outgoing transfers fully gone before this period.
+        if (t.transferring && t.transferTo && t.transferTo !== branch && t.transferDate && _periodStartYmdForTechs && t.transferDate < _periodStartYmdForTechs) return;
+        const _xferDate = t.transferring && t.transferDate ? t.transferDate : null;
+        const _outgoing = !!_xferDate && !t.isShadow && t.transferTo && t.transferTo !== branch;
+        const _incoming = !!_xferDate && t.isShadow && t.transferTo === branch;
+        if (_outgoing && c.key >= _xferDate) return;
+        if (_incoming && c.key < _xferDate) return;
         const v = (sourceGrid[t.ec] || {})[c.day];
         if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") w++;
       });
