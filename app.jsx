@@ -14187,10 +14187,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           document.getElementById("_offDate").value = todayStr;
           document.getElementById("_offNotes").value = "";
         };
-        const undoOff = (ec) => {
+        const undoOff = async (ec) => {
           if (!confirm("Restore this person to active staff?")) return;
           const tgt = offList.find(o => o.ec === ec);
-          persistOff(offList.filter(o => o.ec !== ec));
+          await persistOff(offList.filter(o => o.ec !== ec));
+          // Removing the off-list record isn't always enough to put the
+          // person back on the schedule. If their staff row also has a
+          // leftDate set (legacy data, Edit Staff form, or active=false),
+          // the Schedule grid filter (`!s.leftDate`) keeps them hidden.
+          // Clear leftDate / re-activate the underlying row so they
+          // reappear on the schedule and Locations as fully active.
+          const techRec = (staff || []).find(s => s && s.ec === ec);
+          const mgrRec = !techRec ? (managers || []).find(m => m && m.ec === ec) : null;
+          try {
+            if (techRec && (techRec.leftDate || techRec.active === false || techRec.active === "false")) {
+              const saved = await window.BOA_DB.saveStaff({ ...techRec, leftDate: null, active: true });
+              setStaff(p => p.map(x => x._id === techRec._id ? saved : x));
+            } else if (mgrRec && (mgrRec.leftDate || mgrRec.active === false || mgrRec.active === "false")) {
+              const saved = await window.BOA_DB.saveManager({ ...mgrRec, leftDate: null, active: true });
+              setManagers(p => p.map(x => x._id === mgrRec._id ? saved : x));
+            }
+          } catch (e) { console.warn("Failed to clear leftDate on restore:", e); }
           if (tgt) logActivity("Restored from off-board", (tgt.name || "") + " (" + tgt.ec + ")", tgt.branch || "");
         };
         const submitQuickPick = () => {
