@@ -9069,6 +9069,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const enrichedManagers = useMemo(() => {
     const today = new Date();
     const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    // SM-trial lookup: any AM with an active trial gets effectiveRole "SM"
+    // and an onSmTrial flag, so every consumer (Locations tile, Compliance,
+    // Dashboard counts, etc.) can count and render them as SMs without
+    // changing the underlying manager record.
+    const _smTrialEcs = new Set((smTrialList || []).filter(t => t && t.status === "active" && t.ec).map(t => t.ec));
     return (managers || []).map(m => {
       if (!m) return m;
       // EC first, then name fallback for orphan mat records. The
@@ -9093,8 +9098,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         offDaysSinceLeft = Math.floor((t0 - ld) / 86400000);
         offHidden = offDaysSinceLeft > 31;
       }
+      const onSmTrial = m.role === "AM" && m.ec && _smTrialEcs.has(m.ec);
       return {
         ...m,
+        // Underlying record's role is preserved so the Manager Modal still
+        // saves correctly. effectiveRole is what every UI / count / sort
+        // should read instead — falls back to the real role when there's
+        // no trial in play.
+        effectiveRole: onSmTrial ? "SM" : m.role,
+        onSmTrial,
         onMat: onMat || !!m.onMat,
         pregnant: pregnant || !!m.pregnant,
         matRec,
@@ -9105,7 +9117,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         offHidden,
       };
     });
-  }, [managers, findMatRec, offboardedMap]);
+  }, [managers, findMatRec, offboardedMap, smTrialList]);
 
   // ── Manager Planner mirror ────────────────────────────────────────────
   // The planner is a sandbox keyed off plannerMgrs. Without this effect, it
@@ -10885,8 +10897,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       </td></tr>
                     )}
                     {filteredMgrs.map(m => {
-                      const icon = m.role === "SSM" ? "💎" : m.role === "SM" ? "👑" : "⭐";
-                      const roleBg = m.role === "SSM" ? "#92400e" : m.role === "SM" ? "#7c3aed" : "#0369a1";
+                      // SM-trial AMs render with the SM crown + an "SM trial"
+                      // badge so the staff list mirrors what the schedule does.
+                      const _effRole = m.effectiveRole || m.role;
+                      const icon = _effRole === "SSM" ? "💎" : _effRole === "SM" ? "👑" : "⭐";
+                      const roleBg = _effRole === "SSM" ? "#92400e" : _effRole === "SM" ? "#7c3aed" : "#0369a1";
                       const rowBg = m.onMat ? "#fdf4ff" : m.pregnant ? "#fffbeb" : "#fff";
                       const rowOpacity = m.onMat ? 0.6 : 1;
                       return (
@@ -10902,7 +10917,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <td style={{ padding: "10px 12px", color: "#475569", fontSize: 12, whiteSpace: "nowrap" }}>📍 {m.branch || "—"}</td>
                           <td style={{ padding: "10px 12px", color: "#9ca3af" }}>—</td>
                           <td style={{ padding: "10px 12px" }}>
-                            <span style={{ fontSize: 10, fontWeight: 800, background: roleBg, color: "#fff", padding: "3px 8px", borderRadius: 6, letterSpacing: "0.04em" }}>{m.role || m.roleType || "Manager"}</span>
+                            <span style={{ fontSize: 10, fontWeight: 800, background: roleBg, color: "#fff", padding: "3px 8px", borderRadius: 6, letterSpacing: "0.04em" }}>{_effRole || m.roleType || "Manager"}</span>
+                            {m.onSmTrial && (
+                              <span title="On 3-month SM trial — actual role is still AM"
+                                style={{ marginLeft: 6, fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 800, letterSpacing: "0.04em" }}>⭐ SM TRIAL</span>
+                            )}
                           </td>
                           <td style={{ padding: "10px 12px" }}>{m.permit ? <Chip {...(COMPLIANCE[m.permit] || { icon: "❔", color: "#6b7280", bg: "#f3f4f6", border: "#d1d5db", label: m.permit })}>{(COMPLIANCE[m.permit] || {}).label || m.permit}</Chip> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
                           <td style={{ padding: "10px 12px", fontSize: 11, color: "#831843", fontWeight: 600, whiteSpace: "nowrap" }}>{m.startDate ? new Date(m.startDate.replace(/\//g, "-") + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : <span style={{ color: "#d1d5db" }}>—</span>}</td>
@@ -11192,10 +11211,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 const rank = (r) => r === "SSM" ? 0 : r === "SM" ? 1 : 2;
                                 // Off-boarded managers sink to the bottom inside their tier so the active roster stays at the top.
                                 if ((!!a.offboarded) !== (!!b.offboarded)) return a.offboarded ? 1 : -1;
-                                return rank(a.role) - rank(b.role);
+                                // SM-trial AMs sort with SMs (effectiveRole === "SM").
+                                return rank(a.effectiveRole || a.role) - rank(b.effectiveRole || b.role);
                               }).map(m => {
-                                const _icon = m.role === "SSM" ? "💎" : m.role === "SM" ? "👑" : "⭐";
-                                const _bg = m.role === "SSM" ? "#92400e" : m.role === "SM" ? "#7c3aed" : "#0369a1";
+                                const _effRole = m.effectiveRole || m.role;
+                                const _icon = _effRole === "SSM" ? "💎" : _effRole === "SM" ? "👑" : "⭐";
+                                const _bg = _effRole === "SSM" ? "#92400e" : _effRole === "SM" ? "#7c3aed" : "#0369a1";
                                 return (
                                   <div key={m._id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderRadius: 8, background: m.offboarded ? "#f9fafb" : m.onMat ? "#f3f4f6" : m.transferring ? "#eff6ff" : "#F9A8D4", border: m.offboarded ? "1px dashed #d1d5db" : (m.transferring ? "1.5px solid #bfdbfe" : "1px solid #FBCFE8"), marginBottom: 4, opacity: m.offboarded ? 0.65 : (m.onMat ? 0.55 : 1) }}>
                                     <span style={{ fontSize: 11 }}>{m.offboarded ? "👋" : m.onMat ? "🤱" : m.transferring ? "🔄" : _icon}</span>
@@ -11203,7 +11224,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       {m.name}
                                       {m.transferring && !m.offboarded && <span style={{ fontSize: 9, marginLeft: 5, color: "#BE185D", fontWeight: 600 }}>→ {m.transferTo}{m.transferDate ? " · " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
                                     </span>
-                                    <span style={{ fontSize: 9, background: _bg, color: "#fff", borderRadius: 4, padding: "1px 6px", fontWeight: 700, opacity: m.offboarded ? 0.5 : m.onMat ? 0.7 : 1 }}>{m.role}</span>
+                                    <span style={{ fontSize: 9, background: _bg, color: "#fff", borderRadius: 4, padding: "1px 6px", fontWeight: 700, opacity: m.offboarded ? 0.5 : m.onMat ? 0.7 : 1 }}>{_effRole}</span>
+                                    {m.onSmTrial && !m.offboarded && (
+                                      <span title="On 3-month SM trial — see People → SM Trials"
+                                        style={{ fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 700, letterSpacing: "0.04em" }}>⭐ SM TRIAL</span>
+                                    )}
                                     {m.offboarded && (() => {
                                       const r = (m.offRec && m.offRec.reason) || "Off-boarded";
                                       const pillBg = r === "Terminated" ? "#fee2e2" : r === "Resigned" ? "#dbeafe" : "#fef3c7";
@@ -11318,9 +11343,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         const offBl = allMgrs.filter(m => m.offboarded);
                         const mgrs = allMgrs.filter(m => !m.onMat && !m.offboarded);
                         const onMatBl = allMgrs.filter(m => m.onMat && !m.offboarded);
-                        const ssm = mgrs.filter(m => m.role === "SSM");
-                        const sm = mgrs.filter(m => m.role === "SM");
-                        const am = mgrs.filter(m => m.role === "AM");
+                        // SM-trial AMs land in the SM block (they get 👑 + an
+                        // "SM trial" badge below). Real AMs stay in the AM
+                        // block. effectiveRole is "SM" for trial AMs.
+                        const ssm = mgrs.filter(m => (m.effectiveRole || m.role) === "SSM");
+                        const sm = mgrs.filter(m => (m.effectiveRole || m.role) === "SM");
+                        const am = mgrs.filter(m => (m.effectiveRole || m.role) === "AM");
                         if (allMgrs.length === 0 && (!salon.arrivingMgrs || salon.arrivingMgrs.length === 0)) return null;
                         return (
                           <div style={{ background: "#FCE7F3", border: "1px solid #FBCFE8", borderRadius: 10, padding: "9px 12px", marginBottom: 10 }}>
@@ -11346,6 +11374,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   {m.pregnant && !m.onMat && <span style={{ fontSize: 9, color: "#8E5570", background: "#FCE7F3", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🤰 pregnant{m.matStart ? ` · leaves ${new Date(m.matStart).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                                   {!m.onMat && !m.pregnant && !m.transferring && m.notes && <span style={{ fontSize: 9, color: "#8E5570", fontStyle: "italic", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.notes}>⚑ {m.notes}</span>}
                                   <span style={{ fontSize: 9, background: "#FBCFE8", color: "#BE185D", border: "1px solid #E8C9D2", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>SM</span>
+                                  {m.onSmTrial && (
+                                    <span title="On 3-month SM trial — actual role is still AM"
+                                      style={{ fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 700, letterSpacing: "0.04em" }}>⭐ ON TRIAL</span>
+                                  )}
                                 </div>
                               ))}
                               {am.map(m => (
@@ -12953,8 +12985,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const MIN_SM = 1, MIN_AM = 2;
             const mgrVacancies = SALONS.reduce((a, sl) => {
               const mgrs = enrichedManagers.filter(m => m.branch === sl.name && !m.onMat && !m.offboarded);
-              const sms = mgrs.filter(m => m.role === "SM").length;
-              const ams = mgrs.filter(m => m.role === "AM").length;
+              const sms = mgrs.filter(m => (m.effectiveRole || m.role) === "SM").length;
+              const ams = mgrs.filter(m => (m.effectiveRole || m.role) === "AM").length;
               return a + Math.max(0, MIN_SM - sms) + Math.max(0, MIN_AM - ams);
             }, 0);
             const counts = { nailTech: stats.vacancies, mgrRecruit: mgrVacancies };
@@ -13096,8 +13128,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const MIN_SM = 1, MIN_AM = 2;
                 const branchStats = SALONS.map(salon => { // Regional managers excluded from store coverage
                   const mgrs = enrichedManagers.filter(m => m.branch === salon.name);
-                  const sms = mgrs.filter(m => (m.role === "SM" || m.role === "SSM") && !m.onMat);
-                  const ams = mgrs.filter(m => m.role === "AM" && !m.onMat);
+                  // SM-trial AMs count toward SM coverage (effectiveRole === "SM")
+                  // and are excluded from the AM tally so coverage stats line up
+                  // with what the schedule actually does.
+                  const sms = mgrs.filter(m => ((m.effectiveRole || m.role) === "SM" || (m.effectiveRole || m.role) === "SSM") && !m.onMat);
+                  const ams = mgrs.filter(m => (m.effectiveRole || m.role) === "AM" && !m.onMat);
                   const onMatMgrs = mgrs.filter(m => m.onMat);
                   const missSM = Math.max(0, MIN_SM - sms.length);
                   const missAM = Math.max(0, MIN_AM - ams.length);
@@ -13110,8 +13145,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const gapBranches = branchStats.filter(b => !b.ok).length;
                 // 'Store Managers' folds SSM + SM together (both are store-tier
                 // managers - SSM is just the senior bracket). AM stays separate.
-                const totalActiveSM = enrichedManagers.filter(m => (m.role === "SM" || m.role === "SSM") && !m.onMat && !m.offboarded && m.branch !== "Regional").length;
-                const totalActiveAM = enrichedManagers.filter(m => m.role === "AM" && !m.onMat && !m.offboarded && m.branch !== "Regional").length;
+                const totalActiveSM = enrichedManagers.filter(m => ((m.effectiveRole || m.role) === "SM" || (m.effectiveRole || m.role) === "SSM") && !m.onMat && !m.offboarded && m.branch !== "Regional").length;
+                const totalActiveAM = enrichedManagers.filter(m => (m.effectiveRole || m.role) === "AM" && !m.onMat && !m.offboarded && m.branch !== "Regional").length;
                 const totalPregnant = enrichedManagers.filter(m => m.pregnant && !m.onMat && !m.offboarded).length;
                 const totalOnMat = managers.filter(m => m.onMat).length;
                 return (
@@ -13310,8 +13345,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 // this match the SM render filter (==="SM") let an SSM count
                 // for cover but never render, so the slot showed empty.
                 const isSMRole = (r) => r === "SM" || r === "SSM";
-                const smCount = salon => branchMgrs(salon).filter(m => isSMRole(m.role) && !m.onMat).length;
-                const amCount = salon => branchMgrs(salon).filter(m => m.role === "AM" && !m.onMat).length;
+                const smCount = salon => branchMgrs(salon).filter(m => isSMRole(m.effectiveRole || m.role) && !m.onMat).length;
+                const amCount = salon => branchMgrs(salon).filter(m => (m.effectiveRole || m.role) === "AM" && !m.onMat).length;
                 const gapColor = salon => {
                   if (smCount(salon) < MIN_SM) return "#dc2626";
                   if (amCount(salon) < MIN_AM) return "#d97706";
