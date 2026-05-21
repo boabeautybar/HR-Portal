@@ -3876,10 +3876,29 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
           if (code === "WL") lateShiftCount[workers[i].ec]++;
         }
       });
-    } else if (branch === "Fourways" || branch === "Mall of the South" || branch === "Ballito") {
-      // Same rule for all three: aim for 4 late workers per non-Sunday,
-      // fall back to whatever's available if fewer techs are working.
-      // Sundays untouched → everyone stays on plain "W".
+    } else if (branch === "Fourways") {
+      // Fourways: 4 late workers Mon–Sat, plus 3 late on Sundays
+      // (Sunday is still a trading day with extended hours per HR).
+      // Mall of the South and Ballito share the Mon–Sat-only variant
+      // below — Fourways is the outlier with a Sunday late shift.
+      sortedTechs.forEach(s => { lateShiftCount[s.ec] = 0; });
+      days.forEach(dy => {
+        const workers = sortedTechs.filter(s => newGrid[s.ec][dy.d] === "W");
+        workers.sort((a, b) =>
+          (lateShiftCount[a.ec] - lateShiftCount[b.ec]) ||
+          a.ec.localeCompare(b.ec)
+        );
+        const cap = dy.dow === 0 ? 3 : 4;
+        const need = Math.min(cap, workers.length);
+        for (let i = 0; i < need; i++) {
+          newGrid[workers[i].ec][dy.d] = "WL";
+          lateShiftCount[workers[i].ec]++;
+        }
+      });
+    } else if (branch === "Mall of the South" || branch === "Ballito") {
+      // 4 late workers per non-Sunday, fall back to whatever's available
+      // if fewer techs are working. Sundays untouched → everyone stays on
+      // plain "W" (single shift).
       sortedTechs.forEach(s => { lateShiftCount[s.ec] = 0; });
       days.forEach(dy => {
         if (dy.dow === 0) return;
