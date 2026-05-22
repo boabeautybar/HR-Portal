@@ -890,16 +890,33 @@
   }
 
   // kind: undefined  → combined tech + manager grids (legacy behaviour).
-  // kind: "tech"     → tech schedule only (boa_sched_<branch>_<ym>).
+  // kind: "tech"     → tech schedule only.
   // kind: "mgr"      → manager schedule only, with cells re-keyed from
-  //                    YYYY-MM-DD (mgrSched native format) to day-of-month
-  //                    so the kiosk's render code can read them just like
-  //                    the tech grid (`grid[ec][day]`).
+  //                    YYYY-MM-DD to day-of-month so the kiosk's render
+  //                    code can read them just like the tech grid.
+  //
+  // IMPORTANT: ym key convention mismatch between tech and manager.
+  // The HR portal saves these under DIFFERENT keys for the same cycle:
+  //   - tech schedule: end-month ym  (cycle 25 Apr → 24 May → "2026-05")
+  //   - mgr schedule:  start-month ym (same cycle → "2026-04")
+  //   - attendance:    start-month ym
+  // The kiosk's currentSchedYm() / _nextSchedYm() return end-month,
+  // matching the tech convention. For the manager view we have to
+  // translate the incoming ym back one month before looking it up;
+  // otherwise we load a row from the wrong cycle (or nothing at all).
+  function _toStartMonthYm(endYm) {
+    if (!endYm) return endYm;
+    var p = endYm.split("-"); var y = +p[0], m = +p[1] - 1;
+    if (m < 1) { m = 12; y -= 1; }
+    return y + "-" + String(m).padStart(2, "0");
+  }
   async function getSchedule(ym, kind) {
     var c = client(); if (!c) return { grid: {}, ym: ym, kind: kind || "combined" };
     var br = branch();
+    // Tech keeps end-month; manager re-maps to start-month.
+    var mgrYm = _toStartMonthYm(ym);
     var techKey = "boa_sched_"    + br + "_" + ym;
-    var mgrKey  = "boa_mgrsched_" + br + "_" + ym;
+    var mgrKey  = "boa_mgrsched_" + br + "_" + mgrYm;
     var keys;
     if (kind === "tech")      keys = [techKey];
     else if (kind === "mgr")  keys = [mgrKey];
