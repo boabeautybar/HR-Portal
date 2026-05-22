@@ -889,43 +889,81 @@
     return out;
   }
 
-  // kind: undefined  → combined tech + manager grids (legacy behaviour).
-  // kind: "tech"     → tech schedule only (boa_sched_<branch>_<ym>).
-  // kind: "mgr"      → manager schedule only, with cells re-keyed from
-  //                    YYYY-MM-DD (mgrSched native format) to day-of-month
-  //                    so the kiosk's render code can read them just like
-  //                    the tech grid (`grid[ec][day]`).
+  // kind: undefined  → combined tech + manager grids from the LIVE draft
+  //                    only (legacy behaviour — Borrow Tech and other
+  //                    "is X working right now?" callers need the latest
+  //                    saved state including unpublished edits).
+  // kind: "tech"     → tech schedule only, preferring the approved
+  //                    snapshot over the live draft.
+  // kind: "mgr"      → manager schedule only, preferring the approved
+  //                    snapshot, with cells re-keyed from YYYY-MM-DD
+  //                    (mgrSched native format) to day-of-month so the
+  //                    kiosk's render code can read them just like the
+  //                    tech grid (`grid[ec][day]`).
+  //
+  // The new kiosk Schedule view explicitly passes "tech" or "mgr" so it
+  // shows what HR formally signed off on (HR saves drafts often, but the
+  // kiosk shouldn't render those — only the last Approved & Published
+  // version). Falls back to the live draft when no approved version
+  // exists yet so a brand-new cycle still renders.
   async function getSchedule(ym, kind) {
     var c = client(); if (!c) return { grid: {}, ym: ym, kind: kind || "combined" };
     var br = branch();
-    var techKey = "boa_sched_"    + br + "_" + ym;
-    var mgrKey  = "boa_mgrsched_" + br + "_" + ym;
-    var keys;
-    if (kind === "tech")      keys = [techKey];
-    else if (kind === "mgr")  keys = [mgrKey];
-    else                       keys = [techKey, mgrKey];
+    var techLiveKey = "boa_sched_"            + br + "_" + ym;
+    var techApprKey = "boa_schedapproved_"    + br + "_" + ym;
+    var mgrLiveKey  = "boa_mgrsched_"         + br + "_" + ym;
+    var mgrApprKey  = "boa_mgrschedapproved_" + br + "_" + ym;
+    var wantTech = (kind !== "mgr");
+    var wantMgr  = (kind !== "tech");
+    var preferApproved = (kind === "tech" || kind === "mgr");
+
+    var keys = [];
+    if (wantTech) { keys.push(techLiveKey); if (preferApproved) keys.push(techApprKey); }
+    if (wantMgr)  { keys.push(mgrLiveKey);  if (preferApproved) keys.push(mgrApprKey);  }
+
     var res = await c.from("app_state").select("key,value").in("key", keys);
     if (res.error) { console.error("getSchedule:", res.error); return { grid: {}, ym: ym, kind: kind || "combined" }; }
-    var combined = {};
-    (res.data || []).forEach(function (row) {
-      var grid = (row.value && row.value.grid) || {};
-      var isMgr = row.key === mgrKey;
-      Object.keys(grid).forEach(function (ec) {
-        if (!isMgr) {
-          combined[ec] = grid[ec];
-          return;
+
+    var byKey = {};
+    (res.data || []).forEach(function (row) { byKey[row.key] = row.value; });
+
+    // Approved key holds an array of named snapshots (newest-first). Live
+    // key holds a single { grid, savedAt, ... } object. When preferApproved
+    // is true we try approved first; otherwise we read the live draft only.
+    function pickGrid(liveKey, apprKey) {
+      if (preferApproved) {
+        var appr = byKey[apprKey];
+        if (Array.isArray(appr) && appr.length > 0 && appr[0] && appr[0].grid) {
+          return appr[0].grid;
         }
-        // Re-key manager rows: { "2026-05-22": "W" } → { 22: "W" }
-        var row2 = grid[ec] || {};
+      }
+      var live = byKey[liveKey];
+      return (live && live.grid) || {};
+    }
+    function rekeyMgr(grid) {
+      var out = {};
+      Object.keys(grid || {}).forEach(function (ec) {
+        var row = grid[ec] || {};
         var conv = {};
-        Object.keys(row2).forEach(function (k) {
+        Object.keys(row).forEach(function (k) {
           var m = /^\d{4}-\d{2}-(\d{2})$/.exec(k);
-          if (m) conv[parseInt(m[1], 10)] = row2[k];
-          else conv[k] = row2[k];
+          if (m) conv[parseInt(m[1], 10)] = row[k];
+          else conv[k] = row[k];
         });
-        combined[ec] = conv;
+        out[ec] = conv;
       });
-    });
+      return out;
+    }
+
+    var combined = {};
+    if (wantTech) {
+      var tg = pickGrid(techLiveKey, techApprKey);
+      Object.keys(tg).forEach(function (ec) { combined[ec] = tg[ec]; });
+    }
+    if (wantMgr) {
+      var mg = rekeyMgr(pickGrid(mgrLiveKey, mgrApprKey));
+      Object.keys(mg).forEach(function (ec) { combined[ec] = mg[ec]; });
+    }
     return { grid: combined, ym: ym, kind: kind || "combined" };
   }
   // Batched cross-branch schedule load: { branchName -> merged grid }.
