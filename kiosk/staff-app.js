@@ -372,25 +372,61 @@
   }
 
   // Render one of the two schedule views (kind: "mgr" | "tech"). Pulled
+  // Bump a "YYYY-MM" period key forward by one cycle. BOA cycles run
+  // 25th → 24th of the next month, so the period key already represents
+  // the END-month — just add 1. (e.g. "2026-05" = 25 Apr → 24 May,
+  // "2026-06" = 25 May → 24 Jun.)
+  function _nextSchedYm(ym) {
+    if (!ym) return ym;
+    var p = ym.split("-"); var y = +p[0], m = +p[1];
+    m += 1; if (m > 12) { m = 1; y += 1; }
+    return y + "-" + String(m).padStart(2, "0");
+  }
+
   // out of renderSchedule so the picker can call it without re-running
   // the picker UI. Back button returns to the picker.
-  async function renderScheduleKind(kind) {
+  async function renderScheduleKind(kind, ym) {
     var isMgr = kind === "mgr";
     var label = isMgr ? "Manager Schedule" : "Nail Tech Schedule";
     var icon  = isMgr ? "👔" : "💅";
     setSublabel(label);
-    var ym = window.APP_DATA ? window.APP_DATA.currentSchedYm() : "";
+    var currentYm = window.APP_DATA ? window.APP_DATA.currentSchedYm() : "";
+    var nextYm    = _nextSchedYm(currentYm);
+    // Default to the current cycle; callers can pass the next-cycle key
+    // to render that one instead. Anything else falls back to current.
+    if (!ym || (ym !== currentYm && ym !== nextYm)) ym = currentYm;
+    var isNext = ym === nextYm;
     setMain(
       '<div class="panel">' +
         '<div class="panel-head">' +
           '<h2>' + icon + ' ' + esc(label) + '</h2>' +
           '<button class="link-btn link-btn-dark" id="back-sched-picker">← Schedule menu</button>' +
         '</div>' +
-        '<div class="sched-period">' + (ym ? esc(window.APP_DATA.periodLabel(ym)) + ' · View only' : '') + '</div>' +
+        // Cycle toggle — flip between the current cycle (e.g. 25 Apr →
+        // 24 May) and the next cycle (25 May → 24 Jun) without going
+        // back to the picker. Lets managers plan ahead from the kiosk.
+        '<div class="sched-cycle-toggle" role="tablist">' +
+          '<button type="button" role="tab" class="sched-cycle-tab' + (!isNext ? ' sched-cycle-tab-active' : '') + '" data-ym="' + esc(currentYm) + '">' +
+            'This cycle' +
+            '<span class="sched-cycle-sub">' + esc(window.APP_DATA.periodLabel(currentYm)) + '</span>' +
+          '</button>' +
+          '<button type="button" role="tab" class="sched-cycle-tab' + (isNext ? ' sched-cycle-tab-active' : '') + '" data-ym="' + esc(nextYm) + '">' +
+            'Next cycle' +
+            '<span class="sched-cycle-sub">' + esc(window.APP_DATA.periodLabel(nextYm)) + '</span>' +
+          '</button>' +
+        '</div>' +
+        '<div class="sched-period">' + esc(window.APP_DATA.periodLabel(ym)) + ' · View only · last approved version</div>' +
         '<div id="sched-body">Loading schedule…</div>' +
       '</div>'
     );
     document.getElementById("back-sched-picker").onclick = renderSchedule;
+    Array.prototype.forEach.call(document.querySelectorAll(".sched-cycle-tab"), function (tab) {
+      tab.onclick = function () {
+        var nextSel = tab.getAttribute("data-ym");
+        if (nextSel === ym) return; // already viewing
+        renderScheduleKind(kind, nextSel);
+      };
+    });
 
     if (!window.APP_DATA || !window.APP_DATA.isConfigured()) {
       document.getElementById("sched-body").innerHTML = configMissingHtml();
