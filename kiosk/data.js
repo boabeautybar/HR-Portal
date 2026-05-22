@@ -889,18 +889,44 @@
     return out;
   }
 
-  async function getSchedule(ym) {
-    var c = client(); if (!c) return { grid: {}, ym: ym };
+  // kind: undefined  → combined tech + manager grids (legacy behaviour).
+  // kind: "tech"     → tech schedule only (boa_sched_<branch>_<ym>).
+  // kind: "mgr"      → manager schedule only, with cells re-keyed from
+  //                    YYYY-MM-DD (mgrSched native format) to day-of-month
+  //                    so the kiosk's render code can read them just like
+  //                    the tech grid (`grid[ec][day]`).
+  async function getSchedule(ym, kind) {
+    var c = client(); if (!c) return { grid: {}, ym: ym, kind: kind || "combined" };
     var br = branch();
-    var keys = ["boa_sched_" + br + "_" + ym, "boa_mgrsched_" + br + "_" + ym];
+    var techKey = "boa_sched_"    + br + "_" + ym;
+    var mgrKey  = "boa_mgrsched_" + br + "_" + ym;
+    var keys;
+    if (kind === "tech")      keys = [techKey];
+    else if (kind === "mgr")  keys = [mgrKey];
+    else                       keys = [techKey, mgrKey];
     var res = await c.from("app_state").select("key,value").in("key", keys);
-    if (res.error) { console.error("getSchedule:", res.error); return { grid: {}, ym: ym }; }
+    if (res.error) { console.error("getSchedule:", res.error); return { grid: {}, ym: ym, kind: kind || "combined" }; }
     var combined = {};
     (res.data || []).forEach(function (row) {
       var grid = (row.value && row.value.grid) || {};
-      Object.keys(grid).forEach(function (ec) { combined[ec] = grid[ec]; });
+      var isMgr = row.key === mgrKey;
+      Object.keys(grid).forEach(function (ec) {
+        if (!isMgr) {
+          combined[ec] = grid[ec];
+          return;
+        }
+        // Re-key manager rows: { "2026-05-22": "W" } → { 22: "W" }
+        var row2 = grid[ec] || {};
+        var conv = {};
+        Object.keys(row2).forEach(function (k) {
+          var m = /^\d{4}-\d{2}-(\d{2})$/.exec(k);
+          if (m) conv[parseInt(m[1], 10)] = row2[k];
+          else conv[k] = row2[k];
+        });
+        combined[ec] = conv;
+      });
     });
-    return { grid: combined, ym: ym };
+    return { grid: combined, ym: ym, kind: kind || "combined" };
   }
   // Batched cross-branch schedule load: { branchName -> merged grid }.
   // Used by the manager "Borrow Tech" picker to filter the candidate pool
