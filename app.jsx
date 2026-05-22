@@ -9106,6 +9106,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return out;
   }, [attCheckinRows]);
 
+  // Separate "ever flagged as Extra Day" map — keyed by branch/ec/ymd.
+  // Needed because kioskAbsentByBranch keeps only the LATEST kiosk record
+  // per day, so an "ext" approval gets overwritten the moment the tech then
+  // clocks in as "on". Iterate every log row and remember if ANY of them
+  // was an "ext" approval. This is what the attendance sheet uses to know
+  // the cell should render as Extra Day even on top of a clean check-in.
+  const extraDayMarkedByBranch = useMemo(() => {
+    const out = {};
+    for (const r of attCheckinRows || []) {
+      if (!r || !r.ec || !r.branch || !r.ymd) continue;
+      if (r.status !== "ext") continue;
+      const br = r.branch, ec = r.ec, ymd = r.ymd;
+      if (!out[br]) out[br] = {};
+      if (!out[br][ec]) out[br][ec] = {};
+      out[br][ec][ymd] = true;
+    }
+    return out;
+  }, [attCheckinRows]);
+
   // Auto-detect pending terminations from attendance grids (current + 2 prior months)
   useEffect(() => {
     if (loading || !window.BOA_DB || !window.BOA_DB.isReady) return;
@@ -15183,16 +15202,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // check-in: the kiosk deliberately doesn't overwrite the cell
           // (so anomalies like late / sick / no-show remain visible),
           // but the attendance sheet was showing those staff as just
-          // "On time". Surface "ext" when the cell is empty or just
-          // "on" — but DON'T mask real anomalies (late, sick, absent,
-          // etc.) which we still want HR to see.
+          // "On time".
           //
-          // IMPORTANT: the kiosk stores extras keyed by day-of-month
-          // string (e.g. "15"), not by ymd — see recordExtraDay() in
-          // kiosk/staff-app.js where dayKey = String(date.getDate()).
-          // Use the same key shape here or every lookup misses.
+          // Two ways to detect an Extra Day approval:
+          //   (a) attExtras sidecar (boa_extras_<branch>_<ym>) — direct.
+          //   (b) extraDayMarkedByBranch — derived from the kiosk audit
+          //       log (boa_kiosk_log_*) which is already loaded into
+          //       attCheckinRows for the absences view. Safer because it
+          //       survives the user later clocking in as "on" (which
+          //       wouldn't appear in attExtras if the kiosk save flow
+          //       missed for any reason but DOES appear in the log).
+          //
+          // Either source is sufficient — we OR them.
           const _dKey = String(d);
-          const _extra = attExtras && attExtras[_dKey] && attExtras[_dKey][ec];
+          const _ymdKey = dayObj && dayObj.ymd;
+          const _extraSidecar = attExtras && attExtras[_dKey] && attExtras[_dKey][ec];
+          const _extraLog = _ymdKey && extraDayMarkedByBranch && extraDayMarkedByBranch[attBranch] && extraDayMarkedByBranch[attBranch][ec] && extraDayMarkedByBranch[attBranch][ec][_ymdKey];
+          const _extra = _extraSidecar || _extraLog;
           const v = attGrid[ec] && attGrid[ec][d];
           if (v) {
             const _vc = v.indexOf("~") === 0 ? v.slice(1) : v;
@@ -15202,15 +15228,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // After a Total Reset the schedule mirror is suppressed so the
           // grid reads as truly empty until the admin runs Auto-fill.
           if (mirrorSuppressed) {
-            // Even in suppressed-mirror mode, an extras-tagged day
-            // should still surface as "ext" so the kiosk action isn't
-            // silently dropped.
             if (_extra) return "ext";
             return "";
           }
-          // Extras override the schedule fallback too — if HR approved
-          // an extra day on top of an "OFF" / blank schedule cell, that
-          // approval is the more accurate status to show.
+          // Extras override the schedule fallback too.
           if (_extra) return "ext";
           // Fall back to schedule hint
           const sv = attSched[ec] && attSched[ec][d];
@@ -16215,10 +16236,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // + Fresha agree, or scheduled-off + no presence + no Fresha.
               const cellSaysPresent = isWorking || isLate || checkinHasIn;
               const scheduleSaysOff = hint === "off" || hint === "al" || hint === "ph" || hint === "mat";
-              // Extra Day = inline "ext" OR an approval in attExtras sidecar.
-              // The kiosk writes only to the sidecar, so this OR is essential.
+              // Extra Day signals (any one is enough):
+              //   • bareV === "ext" (inline override)
+              //   • attExtras sidecar entry for this day+ec
+              //   • a row in the kiosk audit log marked ext for this day
               const _extraSidecarHere = !!(attExtras && attExtras[String(dy.d)] && attExtras[String(dy.d)][s.ec]);
-              const isExtraDayCell = bareV === "ext" || _extraSidecarHere;
+              const _extraLogHere = !!(extraDayMarkedByBranch && extraDayMarkedByBranch[attBranch] && extraDayMarkedByBranch[attBranch][s.ec] && extraDayMarkedByBranch[attBranch][s.ec][dy.ymd]);
+              const isExtraDayCell = bareV === "ext" || _extraSidecarHere || _extraLogHere;
               const presentNoApptWarn = cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
               const workedOnOffDay = scheduleSaysOff && cellSaysPresent && !cellShowsAbsent && !isExtraDayCell;
               const unaccountedScheduledDay = scheduleSaysWork && !cellSaysPresent && !cellShowsAbsent && !freshaWorkedCell && freshaCoversThisDay && !bareV;
@@ -16620,14 +16644,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // and Public-Holiday as 'shouldn't be here today'
                           // for the mismatch rules.
                           const scheduleOffish = hint === "off" || hint === "al" || hint === "ph" || hint === "mat";
-                          // Extra Day is recorded EITHER inline (bareV === "ext")
-                          // OR — far more common, since the kiosk deliberately
-                          // doesn't overwrite the cell — as an approval in the
-                          // attExtras sidecar. Treat both as Extra Day so the
-                          // off-day mismatch warning doesn't fire on an
-                          // already-approved cover.
+                          // Extra Day signals (any one is enough): inline
+                          // "ext", attExtras sidecar entry, or a kiosk log
+                          // row tagged ext for this day+ec.
                           const _extraSidecarHere = !!(attExtras && attExtras[String(dy.d)] && attExtras[String(dy.d)][s.ec]);
-                          const isExtraDayCell = bareV === "ext" || _extraSidecarHere;
+                          const _extraLogHere = !!(extraDayMarkedByBranch && extraDayMarkedByBranch[attBranch] && extraDayMarkedByBranch[attBranch][s.ec] && extraDayMarkedByBranch[attBranch][s.ec][dy.ymd]);
+                          const isExtraDayCell = bareV === "ext" || _extraSidecarHere || _extraLogHere;
                           // presentNoApptWarn — schedule wants work, the cell or
                           // kiosk says present, but Fresha has no appointment.
                           const presentNoApptWarn = s.role === "NT" && cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
