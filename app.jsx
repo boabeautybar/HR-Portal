@@ -16215,7 +16215,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // + Fresha agree, or scheduled-off + no presence + no Fresha.
               const cellSaysPresent = isWorking || isLate || checkinHasIn;
               const scheduleSaysOff = hint === "off" || hint === "al" || hint === "ph" || hint === "mat";
-              const isExtraDayCell = bareV === "ext";
+              // Extra Day = inline "ext" OR an approval in attExtras sidecar.
+              // The kiosk writes only to the sidecar, so this OR is essential.
+              const _extraSidecarHere = !!(attExtras && attExtras[String(dy.d)] && attExtras[String(dy.d)][s.ec]);
+              const isExtraDayCell = bareV === "ext" || _extraSidecarHere;
               const presentNoApptWarn = cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
               const workedOnOffDay = scheduleSaysOff && cellSaysPresent && !cellShowsAbsent && !isExtraDayCell;
               const unaccountedScheduledDay = scheduleSaysWork && !cellSaysPresent && !cellShowsAbsent && !freshaWorkedCell && freshaCoversThisDay && !bareV;
@@ -16617,7 +16620,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // and Public-Holiday as 'shouldn't be here today'
                           // for the mismatch rules.
                           const scheduleOffish = hint === "off" || hint === "al" || hint === "ph" || hint === "mat";
-                          const isExtraDayCell = bareV === "ext";
+                          // Extra Day is recorded EITHER inline (bareV === "ext")
+                          // OR — far more common, since the kiosk deliberately
+                          // doesn't overwrite the cell — as an approval in the
+                          // attExtras sidecar. Treat both as Extra Day so the
+                          // off-day mismatch warning doesn't fire on an
+                          // already-approved cover.
+                          const _extraSidecarHere = !!(attExtras && attExtras[String(dy.d)] && attExtras[String(dy.d)][s.ec]);
+                          const isExtraDayCell = bareV === "ext" || _extraSidecarHere;
                           // presentNoApptWarn — schedule wants work, the cell or
                           // kiosk says present, but Fresha has no appointment.
                           const presentNoApptWarn = s.role === "NT" && cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
