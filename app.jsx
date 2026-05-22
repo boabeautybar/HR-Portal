@@ -8351,6 +8351,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // row and silently hide every kiosk check-in for the current cycle.
   const [attYM, setAttYM] = useState(window.BOA_DB ? (window.BOA_DB.currentAttYm ? window.BOA_DB.currentAttYm() : window.BOA_DB.currentSchedYm()) : "2026-04");
   const [attGrid, setAttGrid] = useState({});      // per-staff per-day status codes
+  // Kiosk-recorded "Extra Day" approvals — sidecar map { "YYYY-MM-DD": { ec: { approvedBy, approvedAt } } }.
+  // Stored separately from attGrid because the kiosk deliberately doesn't
+  // write "ext" into the attendance cells themselves (so the manager can
+  // still tag late / sick / etc. on top). The attendance sheet's getStatus
+  // cross-references this map and surfaces "ext" when there's no concrete
+  // anomaly to show instead.
+  const [attExtras, setAttExtras] = useState({});
   // Cross-branch attGrids loaded for receiving branches that have a tech-loan
   // landing in the currently-viewed cycle. Map { branchName -> attGrid }.
   // Used by getStatus to mirror the receiving branch's recorded status into
@@ -8547,14 +8554,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       safe(window.BOA_DB.loadAttendance(attBranch, attYM)),
       safe(window.BOA_DB.loadSchedule(attBranch, techYm, false)),
       safe(window.BOA_DB.loadSchedule(attBranch, attYM, true)),
-      window.BOA_DB.loadEarlyLeaves ? safe(window.BOA_DB.loadEarlyLeaves(attBranch, attYM)) : Promise.resolve({})
-    ]).then(([att, sch, mgrSch, early]) => {
+      window.BOA_DB.loadEarlyLeaves ? safe(window.BOA_DB.loadEarlyLeaves(attBranch, attYM)) : Promise.resolve({}),
+      // Kiosk extras sidecar — populated by the kiosk's "Mark Extra Day"
+      // button. Same { dayKey: { ec: {...} } } shape regardless of branch.
+      safe(window.BOA_DB.loadByKey("boa_extras_" + attBranch + "_" + attYM))
+    ]).then(([att, sch, mgrSch, early, extras]) => {
       setAttGrid((att && att.grid) || {});
       setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null, freshaWorked: att.freshaWorked || {}, reviewedWarnings: att.reviewedWarnings || {}, mirrorSuppressed: !!att.mirrorSuppressed } : { freshaWorked: {}, reviewedWarnings: {}, mirrorSuppressed: false });
       const techGrid = (sch && sch.grid) || {};
       const mgrGrid = ymdReKey((mgrSch && mgrSch.grid) || {});
       setAttSched({ ...techGrid, ...mgrGrid });
       setAttEarly(early || {});
+      setAttExtras((extras && typeof extras === "object") ? extras : {});
     }).catch(e => console.error("Attendance load:", e))
       .finally(() => setAttLoading(false));
   }, [tab, attBranch, attYM]);
@@ -15168,11 +15179,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // once the staff record is flagged onMat.
           if (onMatEcs.has(ec)) return "mat";
 
+          // Kiosk-marked Extra Day takes precedence over a clean
+          // check-in: the kiosk deliberately doesn't overwrite the cell
+          // (so anomalies like late / sick / no-show remain visible),
+          // but the attendance sheet was showing those staff as just
+          // "On time". Surface "ext" when the cell is empty or just
+          // "on" — but DON'T mask real anomalies (late, sick, absent,
+          // etc.) which we still want HR to see.
+          const _ymd = dayObj && dayObj.ymd;
+          const _extra = _ymd && attExtras && attExtras[_ymd] && attExtras[_ymd][ec];
           const v = attGrid[ec] && attGrid[ec][d];
-          if (v) return v.indexOf("~") === 0 ? v.slice(1) : v;
+          if (v) {
+            const _vc = v.indexOf("~") === 0 ? v.slice(1) : v;
+            if (_extra && (_vc === "on" || _vc === "")) return "ext";
+            return _vc;
+          }
           // After a Total Reset the schedule mirror is suppressed so the
           // grid reads as truly empty until the admin runs Auto-fill.
-          if (mirrorSuppressed) return "";
+          if (mirrorSuppressed) {
+            // Even in suppressed-mirror mode, an extras-tagged day
+            // should still surface as "ext" so the kiosk action isn't
+            // silently dropped.
+            if (_extra) return "ext";
+            return "";
+          }
+          // Extras override the schedule fallback too — if HR approved
+          // an extra day on top of an "OFF" / blank schedule cell, that
+          // approval is the more accurate status to show.
+          if (_extra) return "ext";
           // Fall back to schedule hint
           const sv = attSched[ec] && attSched[ec][d];
           if (sv === "O" || sv === "R") return "off";
