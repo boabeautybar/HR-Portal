@@ -339,20 +339,58 @@
   }
 
   // ---------------- Schedule (read-only view from HR portal) ----------------
+  // Top-level entry: show a picker so the manager chooses which roster to
+  // look at — managers vs. nail techs. Mixing them on one big table made
+  // the kiosk hard to scan, and the two groups follow different shift
+  // codes (managers have W only; techs have WE/WL/E too).
   async function renderSchedule() {
     setSublabel("Schedule");
-    var ym = window.APP_DATA ? window.APP_DATA.currentSchedYm() : "";
     setMain(
       '<div class="panel">' +
         '<div class="panel-head">' +
           '<h2>📅 Schedule</h2>' +
           '<button class="link-btn link-btn-dark" id="back-home">← Back</button>' +
         '</div>' +
+        '<div class="sched-picker">' +
+          '<button class="sched-picker-btn" data-kind="mgr" type="button">' +
+            '<span class="sched-picker-icon">👔</span>' +
+            '<span class="sched-picker-lbl">Manager Schedule</span>' +
+            '<span class="sched-picker-sub">SMs, AMs &amp; Senior SMs</span>' +
+          '</button>' +
+          '<button class="sched-picker-btn" data-kind="tech" type="button">' +
+            '<span class="sched-picker-icon">💅</span>' +
+            '<span class="sched-picker-lbl">Nail Tech Schedule</span>' +
+            '<span class="sched-picker-sub">All nail technicians</span>' +
+          '</button>' +
+        '</div>' +
+      '</div>'
+    );
+    document.getElementById("back-home").onclick = function () { _backHandler(); };
+    Array.prototype.forEach.call(document.querySelectorAll(".sched-picker-btn"), function (btn) {
+      btn.onclick = function () { renderScheduleKind(btn.getAttribute("data-kind")); };
+    });
+  }
+
+  // Render one of the two schedule views (kind: "mgr" | "tech"). Pulled
+  // out of renderSchedule so the picker can call it without re-running
+  // the picker UI. Back button returns to the picker.
+  async function renderScheduleKind(kind) {
+    var isMgr = kind === "mgr";
+    var label = isMgr ? "Manager Schedule" : "Nail Tech Schedule";
+    var icon  = isMgr ? "👔" : "💅";
+    setSublabel(label);
+    var ym = window.APP_DATA ? window.APP_DATA.currentSchedYm() : "";
+    setMain(
+      '<div class="panel">' +
+        '<div class="panel-head">' +
+          '<h2>' + icon + ' ' + esc(label) + '</h2>' +
+          '<button class="link-btn link-btn-dark" id="back-sched-picker">← Schedule menu</button>' +
+        '</div>' +
         '<div class="sched-period">' + (ym ? esc(window.APP_DATA.periodLabel(ym)) + ' · View only' : '') + '</div>' +
         '<div id="sched-body">Loading schedule…</div>' +
       '</div>'
     );
-    document.getElementById("back-home").onclick = function () { _backHandler(); };
+    document.getElementById("back-sched-picker").onclick = renderSchedule;
 
     if (!window.APP_DATA || !window.APP_DATA.isConfigured()) {
       document.getElementById("sched-body").innerHTML = configMissingHtml();
@@ -360,21 +398,26 @@
     }
 
     var staff = await window.APP_DATA.listStaff({ activeOnly: false });
-    var sched = await window.APP_DATA.getSchedule(ym);
+    var sched = await window.APP_DATA.getSchedule(ym, kind);
     var grid  = (sched && sched.grid) || {};
     var days  = window.APP_DATA.periodDays(ym);
     var monthAbbr = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
-    // Show staff who have employee_codes that match the schedule grid;
-    // those without a matching code can't be looked up so they stay hidden.
+    // Show staff who have employee_codes that match the schedule grid AND
+    // whose role_type lines up with the chosen view (managers vs. techs).
+    // The staff table stores managers with role_type === "manager"; everyone
+    // else is treated as a tech.
     var rows = staff.filter(function (s) {
-      return s.employee_code && grid[s.employee_code];
+      if (!s.employee_code || !grid[s.employee_code]) return false;
+      var rt = (s.role_type || "").toLowerCase();
+      if (isMgr) return rt === "manager";
+      return rt !== "manager";
     });
     rows.sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
 
     var body = document.getElementById("sched-body");
     if (rows.length === 0) {
-      body.innerHTML = '<div class="empty">No schedule has been posted for this period yet, or staff don\'t have employee codes matching the HR portal.</div>';
+      body.innerHTML = '<div class="empty">No ' + (isMgr ? "manager" : "nail tech") + ' schedule has been posted for this period yet, or ' + (isMgr ? "managers" : "techs") + " don't have employee codes matching the HR portal.</div>";
       return;
     }
 
@@ -408,8 +451,8 @@
 
     html += '<div class="sched-legend">' +
               '<span><span class="sched-st-W">W</span> Work</span>' +
-              '<span><span class="sched-st-WL">WL</span> Work late</span>' +
-              '<span><span class="sched-st-E">E</span> Extra (covering)</span>' +
+              (!isMgr ? '<span><span class="sched-st-WL">WL</span> Work late</span>' : '') +
+              (!isMgr ? '<span><span class="sched-st-E">E</span> Extra (covering)</span>' : '') +
               '<span><span class="sched-st-O">O</span> Off</span>' +
               '<span><span class="sched-st-R">R</span> Requested off</span>' +
               '<span><span class="sched-st-L">L</span> Leave</span>' +

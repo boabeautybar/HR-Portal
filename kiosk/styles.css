@@ -641,6 +641,22 @@ textarea.input { resize: vertical; min-height: 64px; }
 }
 
 /* ===== Schedule view ===== */
+/* Picker shown when "Schedule" is opened — lets the manager choose
+   the manager-roster view or the nail-tech-roster view instead of
+   showing them mixed on one big table. */
+.sched-picker { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 10px; }
+.sched-picker-btn {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px; padding: 28px 18px; min-height: 140px;
+  background: var(--pink-50); border: 1.5px solid var(--pink-100); border-radius: 14px;
+  cursor: pointer; font-family: inherit; color: var(--pink-700); transition: background .15s, transform .1s;
+}
+.sched-picker-btn:hover { background: var(--pink-100); }
+.sched-picker-btn:active { transform: scale(0.985); }
+.sched-picker-icon { font-size: 32px; line-height: 1; }
+.sched-picker-lbl { font-size: 17px; font-weight: 800; }
+.sched-picker-sub { font-size: 11px; color: var(--gray-500); font-weight: 600; }
+@media (max-width: 640px) { .sched-picker { grid-template-columns: 1fr; } }
 .sched-period { font-size: 13px; color: var(--gray-500); margin-bottom: 14px; font-weight: 600; }
 .sched-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid var(--pink-100); }
 .sched-table { width: 100%; border-collapse: collapse; font-size: 11px; }
