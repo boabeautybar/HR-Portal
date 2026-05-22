@@ -422,13 +422,25 @@
     }
 
     var dowAbbr = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+    // Week boundary: mark the start of every Mon–Sun work week so the
+    // table reads as discrete weeks at a glance. First column is never
+    // a boundary (nothing before it to separate from).
+    var weekStartAt = function (d, i) {
+      if (i === 0) return false;
+      var dt = new Date(d.year, d.monthIdx, d.day);
+      return dt.getDay() === 1; // Monday
+    };
     var html = '<div class="sched-wrap"><table class="sched-table">';
     html += '<thead><tr><th class="sched-name-h">Staff</th>';
-    days.forEach(function (d) {
+    days.forEach(function (d, i) {
       var dt = new Date(d.year, d.monthIdx, d.day);
       var dow = dowAbbr[dt.getDay()];
       var isWeekend = dt.getDay() === 0 || dt.getDay() === 6;
-      html += '<th class="' + (d.isToday ? 'sched-today' : '') + (isWeekend ? ' sched-weekend' : '') + '">' +
+      var classes = '';
+      if (d.isToday)       classes += ' sched-today';
+      if (isWeekend)       classes += ' sched-weekend';
+      if (weekStartAt(d, i)) classes += ' sched-week-start';
+      html += '<th class="' + classes.trim() + '">' +
                 '<div class="sched-day-num">' + d.day + '</div>' +
                 '<div class="sched-mon">' + monthAbbr[d.monthIdx] + '</div>' +
                 '<div class="sched-dow">' + dow + '</div>' +
@@ -437,12 +449,15 @@
     html += '</tr></thead><tbody>';
     rows.forEach(function (s) {
       html += '<tr><td class="sched-name" title="' + esc(s.name) + '">' + esc(s.name) + '</td>';
-      days.forEach(function (d) {
+      days.forEach(function (d, i) {
         var cell = grid[s.employee_code] && grid[s.employee_code][d.day];
+        var classes = '';
+        if (d.isToday) classes += ' sched-today';
+        if (weekStartAt(d, i)) classes += ' sched-week-start';
         if (cell) {
-          html += '<td class="sched-cell sched-st-' + cell + (d.isToday ? ' sched-today' : '') + '">' + cell + '</td>';
+          html += '<td class="sched-cell sched-st-' + cell + classes + '">' + cell + '</td>';
         } else {
-          html += '<td class="' + (d.isToday ? 'sched-today' : '') + '"></td>';
+          html += '<td class="' + classes.trim() + '"></td>';
         }
       });
       html += '</tr>';

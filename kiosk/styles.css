@@ -669,6 +669,12 @@ textarea.input { resize: vertical; min-height: 64px; }
 .sched-mon { font-size: 9px; font-weight: 500; color: var(--pink-500); line-height: 1.1; margin-top: 1px; }
 .sched-dow { font-size: 9px; font-weight: 700; color: var(--gray-500); line-height: 1.1; margin-top: 2px; letter-spacing: 0.04em; text-transform: uppercase; }
 .sched-weekend .sched-dow { color: var(--pink-700); }
+/* Vertical divider before the start of each Mon–Sun work week so the
+   table reads as discrete weeks. Drawn on the LEFT edge of every
+   Monday column (after the first column). The default cell border
+   stays for the rest of the grid. */
+.sched-table th.sched-week-start,
+.sched-table td.sched-week-start { border-left: 2px solid var(--pink-700); }
 .sched-name-h { text-align: left; min-width: 110px; padding: 6px 10px !important; }
 .sched-name { text-align: left; padding: 6px 10px !important; font-weight: 600; color: var(--pink-900); background: #fff; position: sticky; left: 0; }
 .sched-cell { font-weight: 800; }
