@@ -54,6 +54,7 @@
     card.style.width = "100%";
     card.style.boxShadow = "0 25px 50px -12px rgba(0, 0, 0, 0.25)";
     card.style.textAlign = "center";
+    card.style.position = "relative";
 
     card.innerHTML = 
       '<div style="font-size: 40px; margin-bottom: 20px;">🔒</div>' +
@@ -63,7 +64,21 @@
       '<p style="font-size: 12px; color: #6b7280;">Please provide this ID to the owner/admin to authorize this device.</p>';
 
     overlay.appendChild(card);
+    
+    var adminBtn = document.createElement("div");
+    adminBtn.id = "kiosk-admin-unlock-blocked";
+    adminBtn.style.position = "absolute";
+    adminBtn.style.top = "20px";
+    adminBtn.style.right = "24px";
+    adminBtn.style.fontSize = "24px";
+    adminBtn.style.cursor = "pointer";
+    adminBtn.style.userSelect = "none";
+    adminBtn.title = "Admin Login";
+    adminBtn.innerText = "🛡️";
+    overlay.appendChild(adminBtn);
+
     document.body.appendChild(overlay);
+    bindAdminBtnElement(adminBtn);
   }
 
   async function checkDevice() {
@@ -83,10 +98,16 @@
 
       var allowedId = authorizedDevices[branchName];
 
+      // Fetch authorized admin devices
+      var adminRes = await sb.from("app_state").select("value").eq("key", "boa_kiosk_admin_devices_v1").maybeSingle();
+      var adminDevices = (adminRes && adminRes.data && adminRes.data.value) || [];
+
       // If no device is registered for this branch yet, we might want to auto-register the first one
       // OR block it. The user said "Yes" to showing the blocked screen.
       
-      if (!allowedId || allowedId !== deviceId) {
+      var isAdmin = adminDevices.includes(deviceId);
+
+      if ((!allowedId || allowedId !== deviceId) && !isAdmin) {
         // Block access
         showBlockedScreen(deviceId);
 
@@ -136,6 +157,129 @@
     document.addEventListener("DOMContentLoaded", checkDevice);
   } else {
     checkDevice();
+  }
+
+  bindLandingAdminBtn();
+
+  function bindLandingAdminBtn() {
+    bindAdminBtnElement(document.getElementById("kiosk-admin-unlock"));
+  }
+
+  function bindAdminBtnElement(adminBtn) {
+    if (adminBtn) {
+      adminBtn.onclick = function () {
+        var overlay = document.createElement("div");
+        overlay.style.position = "fixed";
+        overlay.style.inset = "0";
+        overlay.style.zIndex = "9999999";
+        overlay.style.background = "rgba(0,0,0,0.4)";
+        overlay.style.backdropFilter = "blur(6px)";
+        overlay.style.display = "flex";
+        overlay.style.alignItems = "center";
+        overlay.style.justifyContent = "center";
+
+        var card = document.createElement("div");
+        card.className = "pin-card";
+        card.style.position = "relative";
+        
+        var closeBtn = document.createElement("div");
+        closeBtn.innerHTML = "×";
+        closeBtn.style.position = "absolute";
+        closeBtn.style.top = "12px";
+        closeBtn.style.right = "16px";
+        closeBtn.style.fontSize = "26px";
+        closeBtn.style.color = "#9ca3af";
+        closeBtn.style.cursor = "pointer";
+        closeBtn.onclick = function() { overlay.remove(); };
+        card.appendChild(closeBtn);
+
+        var title = document.createElement("div");
+        title.className = "pin-logo";
+        title.innerText = "Admin Auth";
+        card.appendChild(title);
+
+        var sub = document.createElement("div");
+        sub.className = "pin-sub";
+        sub.innerText = "AUTHORIZE DEVICE";
+        card.appendChild(sub);
+
+        var inputsWrap = document.createElement("div");
+        inputsWrap.className = "pin-inputs";
+        
+        var inputs = [];
+        for(let i=0; i<4; i++){
+            let inp = document.createElement("input");
+            inp.type = "password";
+            inp.inputMode = "numeric";
+            inp.maxLength = 1;
+            inp.className = "pin-digit";
+            inp.autocomplete = "off";
+            inputsWrap.appendChild(inp);
+            inputs.push(inp);
+        }
+        card.appendChild(inputsWrap);
+
+        var errEl = document.createElement("div");
+        errEl.className = "pin-error";
+        errEl.innerHTML = "&nbsp;";
+        card.appendChild(errEl);
+
+        overlay.appendChild(card);
+        document.body.appendChild(overlay);
+
+        setTimeout(() => inputs[0].focus(), 50);
+
+        async function tryPin() {
+          var pin = inputs.map(i => i.value).join("");
+          if (pin.length !== 4) return;
+
+          if (pin === "0864") {
+             try {
+               errEl.style.color = "#15803d";
+               errEl.innerText = "Authorizing...";
+               var adminRes = await sb.from("app_state").select("value").eq("key", "boa_kiosk_admin_devices_v1").maybeSingle();
+               var adminDevices = (adminRes && adminRes.data && adminRes.data.value) || [];
+               if (!adminDevices.includes(deviceId)) {
+                 adminDevices.push(deviceId);
+                 await sb.from("app_state").upsert({ key: "boa_kiosk_admin_devices_v1", value: adminDevices });
+               }
+               errEl.innerText = "Authorized! Reloading...";
+               setTimeout(() => location.reload(), 1000);
+             } catch(e) {
+               errEl.style.color = "";
+               errEl.innerText = "Error: " + e.message;
+               inputs.forEach(i => i.value="");
+               inputs[0].focus();
+             }
+          } else {
+             card.classList.add("pin-shake");
+             setTimeout(() => card.classList.remove("pin-shake"), 400);
+             errEl.innerText = "Incorrect PIN.";
+             inputs.forEach(i => i.value="");
+             inputs[0].focus();
+          }
+        }
+
+        inputs.forEach(function (input, idx) {
+          input.addEventListener("input", function (e) {
+            var v = e.target.value;
+            if (!/^[0-9]$/.test(v)) { e.target.value = ""; return; }
+            errEl.innerHTML = "&nbsp;";
+            if (idx < inputs.length - 1) inputs[idx + 1].focus();
+            else tryPin();
+          });
+          input.addEventListener("keydown", function (e) {
+            if (e.key === "Backspace" && !input.value && idx > 0) {
+              inputs[idx - 1].focus();
+            } else if (e.key === "Enter") {
+              tryPin();
+            } else if (e.key === "Escape") {
+              overlay.remove();
+            }
+          });
+        });
+      };
+    }
   }
 
 })();
