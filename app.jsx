@@ -19698,6 +19698,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             : <span style={{ background: "#fef3c7", color: "#7c2d12", fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, letterSpacing: "0.04em" }}>Fallback PIN</span>}
                         </td>
                         <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                          {deviceId && (
+                            <button onClick={async () => {
+                              if (!window.confirm(`Deregister device for ${s.name}?`)) return;
+                              try {
+                                const next = { ...kioskDevices };
+                                delete next[s.name];
+                                if (window.BOA_DB && window.BOA_DB.saveKioskDevices) {
+                                  await window.BOA_DB.saveKioskDevices(next);
+                                } else {
+                                  await window.BOA_DB.sb.from("app_state").upsert({ key: "boa_kiosk_devices_v1", value: next });
+                                }
+                                setKioskDevices(next);
+                              } catch (e) { alert("Error deregistering: " + e.message); }
+                            }} style={{ background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 7, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, marginRight: 6 }}>Deregister</button>
+                          )}
                           {hasPin && (
                             <button onClick={() => setKioskPinReveal(prev => ({ ...prev, [s.name]: !prev[s.name] }))}
                               style={{ background: "#f3f4f6", color: "#374151", border: "none", borderRadius: 7, padding: "6px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, marginRight: 6 }}
