@@ -657,6 +657,27 @@ textarea.input { resize: vertical; min-height: 64px; }
 .sched-picker-lbl { font-size: 17px; font-weight: 800; }
 .sched-picker-sub { font-size: 11px; color: var(--gray-500); font-weight: 600; }
 @media (max-width: 640px) { .sched-picker { grid-template-columns: 1fr; } }
+
+/* Cycle toggle — sits above the table and lets the manager flip
+   between the current cycle (e.g. 25 Apr → 24 May) and the next
+   cycle (25 May → 24 Jun) without leaving the view. */
+.sched-cycle-toggle {
+  display: inline-flex; gap: 4px; padding: 4px;
+  background: var(--pink-50); border: 1px solid var(--pink-100); border-radius: 999px;
+  margin: 4px 0 12px;
+}
+.sched-cycle-tab {
+  display: flex; flex-direction: column; align-items: center; gap: 1px;
+  padding: 8px 18px; border: none; border-radius: 999px;
+  background: transparent; color: var(--gray-500);
+  font-family: inherit; font-size: 12px; font-weight: 700; cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.sched-cycle-tab:hover { background: var(--pink-100); color: var(--pink-700); }
+.sched-cycle-tab-active { background: var(--pink-700); color: #fff; }
+.sched-cycle-tab-active:hover { background: var(--pink-700); color: #fff; }
+.sched-cycle-sub { font-size: 10px; font-weight: 600; opacity: 0.85; }
+
 .sched-period { font-size: 13px; color: var(--gray-500); margin-bottom: 14px; font-weight: 600; }
 .sched-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid var(--pink-100); }
 .sched-table { width: 100%; border-collapse: collapse; font-size: 11px; }
