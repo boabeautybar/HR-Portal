@@ -676,6 +676,28 @@ textarea.input { resize: vertical; min-height: 64px; }
 .sched-table th.sched-week-start,
 .sched-table td.sched-week-start { border-left: 2px solid var(--pink-700); }
 .sched-name-h { text-align: left; min-width: 110px; padding: 6px 10px !important; }
+
+/* Cycle toggle — sits above the table and lets the manager flip
+   between this month's and next month's schedule without leaving
+   the view. Visually like a pair of tabs sharing one rounded pill. */
+.sched-cycle-toggle {
+  display: inline-flex; gap: 4px; padding: 4px;
+  background: var(--pink-50); border: 1px solid var(--pink-100); border-radius: 999px;
+  margin: 4px 0 12px;
+}
+.sched-cycle-tab {
+  display: flex; flex-direction: column; align-items: center; gap: 1px;
+  padding: 8px 18px; border: none; border-radius: 999px;
+  background: transparent; color: var(--gray-500);
+  font-family: inherit; font-size: 12px; font-weight: 700; cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.sched-cycle-tab:hover { background: var(--pink-100); color: var(--pink-700); }
+.sched-cycle-tab-active {
+  background: var(--pink-700); color: #fff;
+}
+.sched-cycle-tab-active:hover { background: var(--pink-700); color: #fff; }
+.sched-cycle-sub { font-size: 10px; font-weight: 600; opacity: 0.85; }
 .sched-name { text-align: left; padding: 6px 10px !important; font-weight: 600; color: var(--pink-900); background: #fff; position: sticky; left: 0; }
 .sched-cell { font-weight: 800; }
 .sched-today { outline: 2px solid var(--pink-500); outline-offset: -2px; }
