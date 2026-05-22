@@ -15186,8 +15186,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // "On time". Surface "ext" when the cell is empty or just
           // "on" — but DON'T mask real anomalies (late, sick, absent,
           // etc.) which we still want HR to see.
-          const _ymd = dayObj && dayObj.ymd;
-          const _extra = _ymd && attExtras && attExtras[_ymd] && attExtras[_ymd][ec];
+          //
+          // IMPORTANT: the kiosk stores extras keyed by day-of-month
+          // string (e.g. "15"), not by ymd — see recordExtraDay() in
+          // kiosk/staff-app.js where dayKey = String(date.getDate()).
+          // Use the same key shape here or every lookup misses.
+          const _dKey = String(d);
+          const _extra = attExtras && attExtras[_dKey] && attExtras[_dKey][ec];
           const v = attGrid[ec] && attGrid[ec][d];
           if (v) {
             const _vc = v.indexOf("~") === 0 ? v.slice(1) : v;
