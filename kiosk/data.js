@@ -894,7 +894,13 @@
   // kind: "mgr"      → manager schedule only, with cells re-keyed from
   //                    YYYY-MM-DD (mgrSched native format) to day-of-month
   //                    so the kiosk's render code can read them just like
-  //                    the tech grid (`grid[ec][day]`).
+  //                    the tech grid (`grid[ec][day]`). Only cells whose
+  //                    date falls within the BOA cycle's actual range
+  //                    (prev-month-25 through curr-month-24) are kept —
+  //                    stray entries from adjacent cycles in the same
+  //                    Supabase row would otherwise collide on
+  //                    day-of-month and overwrite each other, producing
+  //                    the "random off days" symptom on the kiosk.
   async function getSchedule(ym, kind) {
     var c = client(); if (!c) return { grid: {}, ym: ym, kind: kind || "combined" };
     var br = branch();
@@ -906,6 +912,18 @@
     else                       keys = [techKey, mgrKey];
     var res = await c.from("app_state").select("key,value").in("key", keys);
     if (res.error) { console.error("getSchedule:", res.error); return { grid: {}, ym: ym, kind: kind || "combined" }; }
+
+    // Build the set of YYYY-MM-DD strings that belong to this cycle.
+    // BOA cycles run 25th-of-prev-month → 24th-of-this-month.
+    var p2 = function (n) { return String(n).padStart(2, "0"); };
+    var ymP = ym.split("-"); var cyY = +ymP[0], cyM = +ymP[1];
+    var prevY = cyY, prevM = cyM - 1;
+    if (prevM < 1) { prevM = 12; prevY -= 1; }
+    var prevLast = new Date(prevY, prevM, 0).getDate();
+    var validCycleDates = new Set();
+    for (var dd = 25; dd <= prevLast; dd++) validCycleDates.add(prevY + "-" + p2(prevM) + "-" + p2(dd));
+    for (var dd2 = 1; dd2 <= 24; dd2++)    validCycleDates.add(cyY    + "-" + p2(cyM)   + "-" + p2(dd2));
+
     var combined = {};
     (res.data || []).forEach(function (row) {
       var grid = (row.value && row.value.grid) || {};
@@ -915,13 +933,19 @@
           combined[ec] = grid[ec];
           return;
         }
-        // Re-key manager rows: { "2026-05-22": "W" } → { 22: "W" }
+        // Re-key manager rows: { "2026-05-22": "W" } → { 22: "W" }.
+        // Skip any cell outside this cycle's date range to avoid
+        // day-of-month collisions with stray cells from another month.
         var row2 = grid[ec] || {};
         var conv = {};
         Object.keys(row2).forEach(function (k) {
           var m = /^\d{4}-\d{2}-(\d{2})$/.exec(k);
-          if (m) conv[parseInt(m[1], 10)] = row2[k];
-          else conv[k] = row2[k];
+          if (m) {
+            if (!validCycleDates.has(k)) return;
+            conv[parseInt(m[1], 10)] = row2[k];
+          } else {
+            conv[k] = row2[k];
+          }
         });
         combined[ec] = conv;
       });
