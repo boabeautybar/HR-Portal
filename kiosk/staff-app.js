@@ -339,20 +339,94 @@
   }
 
   // ---------------- Schedule (read-only view from HR portal) ----------------
+  // Top-level entry: show a picker so the manager chooses which roster to
+  // look at — managers vs. nail techs. Mixing them on one big table made
+  // the kiosk hard to scan, and the two groups follow different shift
+  // codes (managers have W only; techs have WE/WL/E too).
   async function renderSchedule() {
     setSublabel("Schedule");
-    var ym = window.APP_DATA ? window.APP_DATA.currentSchedYm() : "";
     setMain(
       '<div class="panel">' +
         '<div class="panel-head">' +
           '<h2>📅 Schedule</h2>' +
           '<button class="link-btn link-btn-dark" id="back-home">← Back</button>' +
         '</div>' +
-        '<div class="sched-period">' + (ym ? esc(window.APP_DATA.periodLabel(ym)) + ' · View only' : '') + '</div>' +
-        '<div id="sched-body">Loading schedule…</div>' +
+        '<div class="sched-picker">' +
+          '<button class="sched-picker-btn" data-kind="mgr" type="button">' +
+            '<span class="sched-picker-icon">👔</span>' +
+            '<span class="sched-picker-lbl">Manager Schedule</span>' +
+            '<span class="sched-picker-sub">SMs, AMs &amp; Senior SMs</span>' +
+          '</button>' +
+          '<button class="sched-picker-btn" data-kind="tech" type="button">' +
+            '<span class="sched-picker-icon">💅</span>' +
+            '<span class="sched-picker-lbl">Nail Tech Schedule</span>' +
+            '<span class="sched-picker-sub">All nail technicians</span>' +
+          '</button>' +
+        '</div>' +
       '</div>'
     );
     document.getElementById("back-home").onclick = function () { _backHandler(); };
+    Array.prototype.forEach.call(document.querySelectorAll(".sched-picker-btn"), function (btn) {
+      btn.onclick = function () { renderScheduleKind(btn.getAttribute("data-kind")); };
+    });
+  }
+
+  // Render one of the two schedule views (kind: "mgr" | "tech"). Pulled
+  // Bump a "YYYY-MM" period key forward by one cycle. BOA cycles run
+  // 25th → 24th of the next month, so the period key already represents
+  // the END-month — just add 1. (e.g. "2026-05" = 25 Apr → 24 May,
+  // "2026-06" = 25 May → 24 Jun.)
+  function _nextSchedYm(ym) {
+    if (!ym) return ym;
+    var p = ym.split("-"); var y = +p[0], m = +p[1];
+    m += 1; if (m > 12) { m = 1; y += 1; }
+    return y + "-" + String(m).padStart(2, "0");
+  }
+
+  // out of renderSchedule so the picker can call it without re-running
+  // the picker UI. Back button returns to the picker.
+  async function renderScheduleKind(kind, ym) {
+    var isMgr = kind === "mgr";
+    var label = isMgr ? "Manager Schedule" : "Nail Tech Schedule";
+    var icon  = isMgr ? "👔" : "💅";
+    setSublabel(label);
+    var currentYm = window.APP_DATA ? window.APP_DATA.currentSchedYm() : "";
+    var nextYm    = _nextSchedYm(currentYm);
+    // Default to the current cycle; callers can pass the next-cycle key
+    // to render that one instead. Anything else falls back to current.
+    if (!ym || (ym !== currentYm && ym !== nextYm)) ym = currentYm;
+    var isNext = ym === nextYm;
+    setMain(
+      '<div class="panel">' +
+        '<div class="panel-head">' +
+          '<h2>' + icon + ' ' + esc(label) + '</h2>' +
+          '<button class="link-btn link-btn-dark" id="back-sched-picker">← Schedule menu</button>' +
+        '</div>' +
+        // Cycle toggle — flip between the current cycle (e.g. 25 Apr →
+        // 24 May) and the next cycle (25 May → 24 Jun) without going
+        // back to the picker. Lets managers plan ahead from the kiosk.
+        '<div class="sched-cycle-toggle" role="tablist">' +
+          '<button type="button" role="tab" class="sched-cycle-tab' + (!isNext ? ' sched-cycle-tab-active' : '') + '" data-ym="' + esc(currentYm) + '">' +
+            'This cycle' +
+            '<span class="sched-cycle-sub">' + esc(window.APP_DATA.periodLabel(currentYm)) + '</span>' +
+          '</button>' +
+          '<button type="button" role="tab" class="sched-cycle-tab' + (isNext ? ' sched-cycle-tab-active' : '') + '" data-ym="' + esc(nextYm) + '">' +
+            'Next cycle' +
+            '<span class="sched-cycle-sub">' + esc(window.APP_DATA.periodLabel(nextYm)) + '</span>' +
+          '</button>' +
+        '</div>' +
+        '<div class="sched-period">' + esc(window.APP_DATA.periodLabel(ym)) + ' · View only · last approved version</div>' +
+        '<div id="sched-body">Loading schedule…</div>' +
+      '</div>'
+    );
+    document.getElementById("back-sched-picker").onclick = renderSchedule;
+    Array.prototype.forEach.call(document.querySelectorAll(".sched-cycle-tab"), function (tab) {
+      tab.onclick = function () {
+        var nextSel = tab.getAttribute("data-ym");
+        if (nextSel === ym) return; // already viewing
+        renderScheduleKind(kind, nextSel);
+      };
+    });
 
     if (!window.APP_DATA || !window.APP_DATA.isConfigured()) {
       document.getElementById("sched-body").innerHTML = configMissingHtml();
@@ -360,32 +434,49 @@
     }
 
     var staff = await window.APP_DATA.listStaff({ activeOnly: false });
-    var sched = await window.APP_DATA.getSchedule(ym);
+    var sched = await window.APP_DATA.getSchedule(ym, kind);
     var grid  = (sched && sched.grid) || {};
     var days  = window.APP_DATA.periodDays(ym);
     var monthAbbr = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
-    // Show staff who have employee_codes that match the schedule grid;
-    // those without a matching code can't be looked up so they stay hidden.
+    // Show staff who have employee_codes that match the schedule grid AND
+    // whose role_type lines up with the chosen view (managers vs. techs).
+    // The staff table stores managers with role_type === "manager"; everyone
+    // else is treated as a tech.
     var rows = staff.filter(function (s) {
-      return s.employee_code && grid[s.employee_code];
+      if (!s.employee_code || !grid[s.employee_code]) return false;
+      var rt = (s.role_type || "").toLowerCase();
+      if (isMgr) return rt === "manager";
+      return rt !== "manager";
     });
     rows.sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
 
     var body = document.getElementById("sched-body");
     if (rows.length === 0) {
-      body.innerHTML = '<div class="empty">No schedule has been posted for this period yet, or staff don\'t have employee codes matching the HR portal.</div>';
+      body.innerHTML = '<div class="empty">No ' + (isMgr ? "manager" : "nail tech") + ' schedule has been posted for this period yet, or ' + (isMgr ? "managers" : "techs") + " don't have employee codes matching the HR portal.</div>";
       return;
     }
 
     var dowAbbr = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+    // Week boundary: mark the start of every Mon–Sun work week so the
+    // table reads as discrete weeks at a glance. First column is never
+    // a boundary (nothing before it to separate from).
+    var weekStartAt = function (d, i) {
+      if (i === 0) return false;
+      var dt = new Date(d.year, d.monthIdx, d.day);
+      return dt.getDay() === 1; // Monday
+    };
     var html = '<div class="sched-wrap"><table class="sched-table">';
     html += '<thead><tr><th class="sched-name-h">Staff</th>';
-    days.forEach(function (d) {
+    days.forEach(function (d, i) {
       var dt = new Date(d.year, d.monthIdx, d.day);
       var dow = dowAbbr[dt.getDay()];
       var isWeekend = dt.getDay() === 0 || dt.getDay() === 6;
-      html += '<th class="' + (d.isToday ? 'sched-today' : '') + (isWeekend ? ' sched-weekend' : '') + '">' +
+      var classes = '';
+      if (d.isToday)       classes += ' sched-today';
+      if (isWeekend)       classes += ' sched-weekend';
+      if (weekStartAt(d, i)) classes += ' sched-week-start';
+      html += '<th class="' + classes.trim() + '">' +
                 '<div class="sched-day-num">' + d.day + '</div>' +
                 '<div class="sched-mon">' + monthAbbr[d.monthIdx] + '</div>' +
                 '<div class="sched-dow">' + dow + '</div>' +
@@ -394,12 +485,15 @@
     html += '</tr></thead><tbody>';
     rows.forEach(function (s) {
       html += '<tr><td class="sched-name" title="' + esc(s.name) + '">' + esc(s.name) + '</td>';
-      days.forEach(function (d) {
+      days.forEach(function (d, i) {
         var cell = grid[s.employee_code] && grid[s.employee_code][d.day];
+        var classes = '';
+        if (d.isToday) classes += ' sched-today';
+        if (weekStartAt(d, i)) classes += ' sched-week-start';
         if (cell) {
-          html += '<td class="sched-cell sched-st-' + cell + (d.isToday ? ' sched-today' : '') + '">' + cell + '</td>';
+          html += '<td class="sched-cell sched-st-' + cell + classes + '">' + cell + '</td>';
         } else {
-          html += '<td class="' + (d.isToday ? 'sched-today' : '') + '"></td>';
+          html += '<td class="' + classes.trim() + '"></td>';
         }
       });
       html += '</tr>';
@@ -408,8 +502,8 @@
 
     html += '<div class="sched-legend">' +
               '<span><span class="sched-st-W">W</span> Work</span>' +
-              '<span><span class="sched-st-WL">WL</span> Work late</span>' +
-              '<span><span class="sched-st-E">E</span> Extra (covering)</span>' +
+              (!isMgr ? '<span><span class="sched-st-WL">WL</span> Work late</span>' : '') +
+              (!isMgr ? '<span><span class="sched-st-E">E</span> Extra (covering)</span>' : '') +
               '<span><span class="sched-st-O">O</span> Off</span>' +
               '<span><span class="sched-st-R">R</span> Requested off</span>' +
               '<span><span class="sched-st-L">L</span> Leave</span>' +

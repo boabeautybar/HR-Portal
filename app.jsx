@@ -2283,7 +2283,7 @@ function TransferModal({ s, onClose, onConfirm, onCancelTransfer }) {
 }
 
 // ─── MANAGER MODAL ────────────────────────────────────────────────────────────────
-function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
+function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, onStartSmTrial }) {
   const parseName = (t) => {
     if (!t) return { firstName: "", surname: "" };
     const i = t.indexOf(" ");
@@ -2335,6 +2335,37 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete }) {
               </select>
             </div>
           </div>
+
+          {/* SM trial tagger — visible for existing AMs (to start a trial) or
+              for anyone who's already on an active trial (to surface the
+              hint). This lets HR see and correct stale records where the
+              manager was marked SM directly without going through the trial.
+              Hidden for brand-new records (no _id yet). */}
+          {!isNew && (f.role === "AM" || smTrialActive) && typeof onStartSmTrial === "function" && (
+            <div style={{ background: smTrialActive ? "#f1f5f9" : "#FFF7ED", border: "1px solid " + (smTrialActive ? "#cbd5e1" : "#FED7AA"), borderRadius: 9, padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 11, color: smTrialActive ? "#475569" : "#9A3412", lineHeight: 1.4 }}>
+                {smTrialActive
+                  ? <>⭐ <strong>Already on SM trial</strong> — view progress and evaluations in the SM Trials tab.</>
+                  : <><strong>⭐ Store Manager trial</strong><br/><span style={{ color: "#9A3412" }}>3-month trial with mid + final evaluations. Outcome auto-promotes to SM.</span></>}
+              </div>
+              {!smTrialActive && (
+                <button type="button"
+                  onClick={async () => {
+                    const _today = (() => { const d = new Date(); const p = n => String(n).padStart(2, "0"); return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()); })();
+                    const sd = prompt("Start the 3-month SM trial for " + (f.firstName || "") + " " + (f.surname || "") + ".\n\nTrial start date (YYYY-MM-DD):", _today);
+                    if (sd === null) return;
+                    const trimmed = (sd || "").trim();
+                    if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) { alert("Please enter the date as YYYY-MM-DD."); return; }
+                    const ok = await onStartSmTrial(f.ec, trimmed);
+                    if (ok) {
+                      alert("⭐ SM trial started. View it in People → SM Trials.");
+                      onClose();
+                    }
+                  }}
+                  style={{ padding: "7px 14px", borderRadius: 8, border: "none", background: "#EA580C", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>⭐ Start SM Trial</button>
+              )}
+            </div>
+          )}
           <div><label style={lbl}>Notes</label>
             <input style={inp} value={f.notes || ""} onChange={e => set("notes", e.target.value)} placeholder="e.g. Transfer from Sandown, Pregnant..." /></div>
 
@@ -2817,7 +2848,30 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         // Eligible: weeks where this tech WORKS the Sunday — Sunday parity
         // is anchored to the Sunday's calendar date so the rotation stays
         // consistent across cycle boundaries.
-        const eligible = allFullWeeks.filter(wIdx => weekSundayOffGroup(weeks[wIdx]) !== grp);
+        let eligible = allFullWeeks.filter(wIdx => weekSundayOffGroup(weeks[wIdx]) !== grp);
+        // Transfer-aware narrowing: a tech mid-transfer isn't actually at
+        // this branch for the whole cycle, so picking their +1 W week
+        // before/after they're here means the extra W lands on days they
+        // don't work here at all. Restrict eligible weeks to ones that
+        // overlap their active window on THIS branch.
+        if (s.transferDate) {
+          const _ymd = (dy) => dy.year + "-" + String(dy.monthIdx + 1).padStart(2, "0") + "-" + String(dy.d).padStart(2, "0");
+          if (s.isShadow && s.transferTo === branch) {
+            // Arriving: only weeks with at least one day on/after transferDate.
+            const _post = allFullWeeks.filter(wIdx =>
+              weeks[wIdx].some(dy => _ymd(dy) >= s.transferDate)
+              && (weekSundayOffGroup(weeks[wIdx]) !== grp)
+            );
+            if (_post.length > 0) eligible = _post;
+          } else if (!s.isShadow && s.transferring && s.transferTo && s.transferTo !== branch) {
+            // Outgoing: only weeks with at least one day before transferDate.
+            const _pre = allFullWeeks.filter(wIdx =>
+              weeks[wIdx].some(dy => _ymd(dy) < s.transferDate)
+              && (weekSundayOffGroup(weeks[wIdx]) !== grp)
+            );
+            if (_pre.length > 0) eligible = _pre;
+          }
+        }
         if (eligible.length === 0) return;                      // skip; no designation
         // Sort by busy-day-count DESC — busy weeks tried first
         const sorted = [...eligible].sort((a, b) => busyDayCount(b) - busyDayCount(a));
@@ -3804,6 +3858,11 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     //              11:00–20:00). Both cells render green; the WE/WL text
     //              labels who is on which shift. With an odd headcount,
     //              WE gets the extra (more morning coverage).
+    //   Fourways / Mall of the South / Ballito:
+    //              designate up to 4 working techs per non-Sunday as "WL"
+    //              (aim for 4, accept 3 if only 3 are working). Sundays
+    //              are left as plain "W" so everyone works the same
+    //              single shift — per HR's request for these stores.
     // Distribution uses a per-tech `lateShiftCount` so the same techs
     // don't always end up on the late shift.
     const lateShiftCount = {};
@@ -3838,6 +3897,61 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
           const code = i < lateCount ? "WL" : "WE";
           newGrid[workers[i].ec][dy.d] = code;
           if (code === "WL") lateShiftCount[workers[i].ec]++;
+        }
+      });
+    } else if (branch === "Fourways") {
+      // Fourways: 4 late workers Mon–Sat, plus 3 late on Sundays
+      // (Sunday is still a trading day with extended hours per HR).
+      // Mall of the South and Ballito share the Mon–Sat-only variant
+      // below — Fourways is the outlier with a Sunday late shift.
+      sortedTechs.forEach(s => { lateShiftCount[s.ec] = 0; });
+      days.forEach(dy => {
+        const workers = sortedTechs.filter(s => newGrid[s.ec][dy.d] === "W");
+        workers.sort((a, b) =>
+          (lateShiftCount[a.ec] - lateShiftCount[b.ec]) ||
+          a.ec.localeCompare(b.ec)
+        );
+        const cap = dy.dow === 0 ? 3 : 4;
+        const need = Math.min(cap, workers.length);
+        for (let i = 0; i < need; i++) {
+          newGrid[workers[i].ec][dy.d] = "WL";
+          lateShiftCount[workers[i].ec]++;
+        }
+      });
+    } else if (branch === "Mall of the South" || branch === "Ballito") {
+      // 4 late workers per non-Sunday, fall back to whatever's available
+      // if fewer techs are working. Sundays untouched → everyone stays on
+      // plain "W" (single shift).
+      sortedTechs.forEach(s => { lateShiftCount[s.ec] = 0; });
+      days.forEach(dy => {
+        if (dy.dow === 0) return;
+        const workers = sortedTechs.filter(s => newGrid[s.ec][dy.d] === "W");
+        workers.sort((a, b) =>
+          (lateShiftCount[a.ec] - lateShiftCount[b.ec]) ||
+          a.ec.localeCompare(b.ec)
+        );
+        const need = Math.min(4, workers.length);
+        for (let i = 0; i < need; i++) {
+          newGrid[workers[i].ec][dy.d] = "WL";
+          lateShiftCount[workers[i].ec]++;
+        }
+      });
+    } else if (branch === "Riverlands") {
+      // Riverlands works a tighter cadence: 3 late workers per weekday
+      // (Mon–Fri only). Saturday and Sunday everyone stays on plain "W"
+      // — the store runs a single shift on weekends.
+      sortedTechs.forEach(s => { lateShiftCount[s.ec] = 0; });
+      days.forEach(dy => {
+        if (dy.dow === 0 || dy.dow === 6) return;
+        const workers = sortedTechs.filter(s => newGrid[s.ec][dy.d] === "W");
+        workers.sort((a, b) =>
+          (lateShiftCount[a.ec] - lateShiftCount[b.ec]) ||
+          a.ec.localeCompare(b.ec)
+        );
+        const need = Math.min(3, workers.length);
+        for (let i = 0; i < need; i++) {
+          newGrid[workers[i].ec][dy.d] = "WL";
+          lateShiftCount[workers[i].ec]++;
         }
       });
     }
@@ -4038,7 +4152,16 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     );
   }
   // Build the column / row payload shared by the CSV and PDF exports.
-  function buildExportPayload() {
+  function buildExportPayload(opts) {
+    opts = opts || {};
+    // sourceGrid lets callers print a different snapshot (e.g. the
+    // last approved/published version) without mutating editor state.
+    // Falls back to the live working grid.
+    const sourceGrid = opts.sourceGrid || grid;
+    const sourceSavedAt = opts.savedAt || savedAt;
+    const titleSuffix = opts.titleSuffix || "";
+    const subtitleSuffix = opts.subtitleSuffix || "";
+    const filenameSuffix = opts.filenameSuffix || "";
     const monthAbbr = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const dowAbbr = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     const cellInfo = {
@@ -4060,25 +4183,71 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       year: d.year,
       monthIdx: d.monthIdx
     }));
-    const rows = techs.map(t => {
+    const rows = techs.filter(t => {
+      // Direction-aware transfer filter. Two cases on the source branch:
+      //   • OUTGOING (t.transferring && transferTo !== branch): tech is
+      //     leaving us. If transferDate is before this period's start,
+      //     they're already gone — hide from this branch's PDF.
+      //   • INCOMING (t.isShadow with transferFrom === some other store,
+      //     OR an arriving shadow whose transferTo === branch): they're
+      //     joining us. Always keep them on the destination PDF — the
+      //     transferDate filter from above would wrongly exclude
+      //     arrivals before the cycle start (they're already here).
+      if (t.transferring && t.transferTo && t.transferTo !== branch && t.transferDate && _periodStartYmdForTechs) {
+        if (t.transferDate < _periodStartYmdForTechs) return false;
+      }
+      return true;
+    }).map(t => {
       const cells = {};
-      const row = grid[t.ec] || {};
+      const row = sourceGrid[t.ec] || {};
+      // Direction-aware cell blanking, mirrors the schedule editor:
+      //   • Outgoing transfer (original record, transferTo !== branch):
+      //     cells on/after transferDate are blank — tech is at the new
+      //     branch from that day.
+      //   • Incoming transfer (shadow arrival, transferTo === branch):
+      //     cells BEFORE transferDate are blank — tech is at the
+      //     source branch up to that day.
+      const _xferDate = t.transferring && t.transferDate ? t.transferDate : null;
+      const _outgoing = !!_xferDate && !t.isShadow && t.transferTo && t.transferTo !== branch;
+      const _incoming = !!_xferDate && t.isShadow && t.transferTo === branch;
       columns.forEach(c => {
+        if (_outgoing && c.key >= _xferDate) {
+          cells[c.key] = { code: "", text: "" };
+          return;
+        }
+        if (_incoming && c.key < _xferDate) {
+          cells[c.key] = { code: "", text: "" };
+          return;
+        }
         const code = row[c.day] || "";
         const info = cellInfo[code];
         cells[c.key] = { code, text: info ? info.text : "" };
       });
+      const _xferSub = _outgoing
+        ? ("Transferring to " + (t.transferTo || "—") + " on " + _xferDate)
+        : _incoming
+          ? ("Arriving from " + (t.transferFrom || "—") + " on " + _xferDate)
+          : null;
       return {
         ec: t.ec,
         name: t.name,
-        sub: t.onMat ? "On maternity leave" : "Nail tech",
+        sub: _xferSub || (t.onMat ? "On maternity leave" : "Nail tech"),
         cells
       };
     });
+    // Working-total counts honour the same direction-aware rules so
+    // the bottom row reflects who is actually here on each day.
     const totals = columns.map(c => {
       let w = 0;
       techs.forEach(t => {
-        const v = (grid[t.ec] || {})[c.day];
+        // Skip outgoing transfers fully gone before this period.
+        if (t.transferring && t.transferTo && t.transferTo !== branch && t.transferDate && _periodStartYmdForTechs && t.transferDate < _periodStartYmdForTechs) return;
+        const _xferDate = t.transferring && t.transferDate ? t.transferDate : null;
+        const _outgoing = !!_xferDate && !t.isShadow && t.transferTo && t.transferTo !== branch;
+        const _incoming = !!_xferDate && t.isShadow && t.transferTo === branch;
+        if (_outgoing && c.key >= _xferDate) return;
+        if (_incoming && c.key < _xferDate) return;
+        const v = (sourceGrid[t.ec] || {})[c.day];
         if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") w++;
       });
       return { key: c.key, value: w };
@@ -4096,9 +4265,9 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
       { code: "X", text: "—", label: "Not scheduled" }
     ];
     return {
-      title: "BOA Nail Tech Schedule — " + branch,
-      subtitle: periodLbl + (savedAt ? " · saved " + new Date(savedAt).toLocaleString("en-ZA") : ""),
-      filenameBase: "BOA_tech_schedule_" + branch + "_" + ym,
+      title: "BOA Nail Tech Schedule — " + branch + titleSuffix,
+      subtitle: periodLbl + (sourceSavedAt ? " · saved " + new Date(sourceSavedAt).toLocaleString("en-ZA") : "") + subtitleSuffix,
+      filenameBase: "BOA_tech_schedule_" + branch + "_" + ym + filenameSuffix,
       columns, rows, totals, legend, codeStyles
     };
   }
@@ -4111,14 +4280,57 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     }
     exportScheduleCsv(buildExportPayload());
   }
-  function downloadPdf() {
-    if (dirty) {
-      if (!confirm("You have unsaved changes — they won't appear in the saved version. Download the current view anyway?")) return;
-    } else if (!savedAt && Object.keys(grid).length === 0) {
-      alert("Nothing to download — generate or save a schedule first.");
+  // PDF: roster = whatever is on the live schedule right now (so techs
+  // transferring in/out, new joiners and people leaving show up just
+  // like they do in the editor). Cell DATA prefers the last approved
+  // + published snapshot — that's the "official" schedule HR signed
+  // off on. For techs whose EC isn't in the approved snapshot (they
+  // joined / transferred in after approval), we fall back to their
+  // live cells so the row isn't blank.
+  async function downloadPdf() {
+    let approved = null;
+    try {
+      const list = await window.BOA_DB.loadApprovedSchedules(branch, ym, false);
+      approved = Array.isArray(list) && list.length > 0 ? list[0] : null;
+    } catch (e) {
+      alert("Could not load the approved schedule: " + (e.message || e));
       return;
     }
-    exportSchedulePdf(buildExportPayload());
+    if (!approved) {
+      if (!savedAt && Object.keys(grid).length === 0) {
+        alert("Nothing to download — no approved version has been published yet, and the editor is empty. Generate, save, then click 📌 Approve & Publish first.");
+        return;
+      }
+      const proceed = confirm("No approved version has been published yet for " + branch + " · " + periodLbl + ".\n\nClick OK to download the current editor view (marked as DRAFT), or Cancel to go back and Approve & Publish first.");
+      if (!proceed) return;
+      exportSchedulePdf(buildExportPayload({
+        titleSuffix: " (DRAFT)",
+        subtitleSuffix: " · DRAFT — not yet approved",
+        filenameSuffix: "_DRAFT"
+      }));
+      return;
+    }
+    // Merge: approved cells win per EC; ECs only present in the live
+    // grid (e.g. a tech who transferred in after approval) keep their
+    // live cells so the PDF still shows them rostered.
+    const mergedGrid = {};
+    techs.forEach(t => {
+      const ec = t.ec;
+      if (approved.grid && approved.grid[ec] && Object.keys(approved.grid[ec]).length > 0) {
+        mergedGrid[ec] = approved.grid[ec];
+      } else {
+        mergedGrid[ec] = grid[ec] || {};
+      }
+    });
+    const approvedLabel = (approved.name || "Approved") +
+      (approved.approvedBy ? " · approved by " + approved.approvedBy : "") +
+      (approved.savedAt ? " · " + new Date(approved.savedAt).toLocaleString("en-ZA") : "");
+    exportSchedulePdf(buildExportPayload({
+      sourceGrid: mergedGrid,
+      savedAt: approved.savedAt,
+      subtitleSuffix: " · " + approvedLabel,
+      filenameSuffix: "_approved"
+    }));
   }
 
   async function save() {
@@ -5942,6 +6154,7 @@ const SETTINGS_TABS = [
   { t: "offboard", l: "Off-boarding", cat: "People", icon: "👋" },
   { t: "recruitment", l: "Recruitment", cat: "People", icon: "🎯" },
   { t: "maternity", l: "Maternity", cat: "People", icon: "🤱" },
+  { t: "smTrial", l: "SM Trials", cat: "People", icon: "⭐" },
   { t: "unpaidLegal", l: "Unpaid Leave (Legal)", cat: "People", icon: "⏸️" },
   { t: "compliance", l: "Compliance", cat: "People", icon: "📋" },
   { t: "scheduling", l: "Scheduling", cat: "Operations", icon: "📅" },
@@ -7448,8 +7661,41 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         }
         const seen = new Set(SALONS.map(s => s.name));
         let added = 0;
+        let overridden = 0;
         for (const x of patched) {
-          if (!x || !x.name || seen.has(x.name)) continue;
+          if (!x || !x.name) continue;
+          if (seen.has(x.name)) {
+            // Override path: a customSalons row that matches a seeded
+            // branch tweaks its fields without changing identity. Keeps
+            // closedDow and other seeded-only flags intact.
+            const idx = SALONS.findIndex(s => s && s.name === x.name);
+            if (idx < 0) continue;
+            const base = SALONS[idx];
+            const merged = { ...base };
+            if (x.mani !== undefined && x.mani !== "") merged.mani = Number(x.mani) || 0;
+            if (x.pedi !== undefined && x.pedi !== "") merged.pedi = Number(x.pedi) || 0;
+            if (x.capacity !== undefined && x.capacity !== "") merged.capacity = Math.max(1, Number(x.capacity) || base.capacity);
+            if (REGIONS.some(r => r.key === x.region)) merged.region = x.region;
+            if (x.openingDate && /^\d{4}-\d{2}-\d{2}$/.test(x.openingDate)) {
+              merged.openingDate = x.openingDate;
+            } else if (Object.prototype.hasOwnProperty.call(x, "openingDate") && !x.openingDate) {
+              delete merged.openingDate;
+            }
+            if (x.lowDemand === true) {
+              merged.lowDemand = true;
+              merged.targetCapacity = Math.max(1, Number(x.targetCapacity) || base.targetCapacity || merged.capacity || base.capacity);
+            } else if (x.lowDemand === false) {
+              delete merged.lowDemand;
+              delete merged.targetCapacity;
+            }
+            // Preserve _custom if it was already custom; flag seeded
+            // overrides with _override so the Locations UI can show an
+            // "edited" hint without enabling delete.
+            if (!base._custom) merged._override = true;
+            SALONS[idx] = merged;
+            overridden++;
+            continue;
+          }
           SALONS.push({
             name: x.name,
             mani: Number(x.mani) || 0,
@@ -7457,12 +7703,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             capacity: Number(x.capacity) || ((Number(x.mani) || 0) + (Number(x.pedi) || 0)),
             region: REGIONS.some(r => r.key === x.region) ? x.region : "wc",
             ...(x.lowDemand ? { lowDemand: true, targetCapacity: Number(x.targetCapacity) || 0 } : {}),
+            ...(x.openingDate && /^\d{4}-\d{2}-\d{2}$/.test(x.openingDate) ? { openingDate: x.openingDate } : {}),
             _custom: true
           });
           seen.add(x.name);
           added++;
         }
-        if (added > 0) _setCustomSalonsTick(t => t + 1);
+        if (added > 0 || overridden > 0) _setCustomSalonsTick(t => t + 1);
       } catch (e) { console.error("loadCustomSalons:", e); }
     })();
     return () => { cancelled = true; };
@@ -7519,6 +7766,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Region filter for the Locations tab — "all" or one of the REGIONS keys.
   const [locFilterRegion, setLocFilterRegion] = useState("all");
   const [addLocationModal, setAddLocationModal] = useState(null); // null | { name, mani, pedi, capacity, lowDemand, targetCapacity, region, saving }
+  // Edit modal for tweaking an existing branch — capacity, region, opening
+  // date, low-demand target. Works for both seeded and custom salons; the
+  // change is stored as an override in the boa_custom_salons app_state row
+  // and reapplied on top of the in-memory entry at load.
+  const [editLocationModal, setEditLocationModal] = useState(null); // null | { name, mani, pedi, capacity, region, openingDate, lowDemand, targetCapacity, saving, error }
+  // PIN-gated "delete location" modal. Only offered for _custom salons
+  // (those added via the Add Location form). The seed list is immutable
+  // — we don't want accidentally deleting Sea Point.
+  const [deleteLocationModal, setDeleteLocationModal] = useState(null); // null | { salon, pin, saving, error }
 
   // Kiosk PINs admin tab. Map { branchName: "4-digit-pin" }. Branches with
   // no entry are using the kiosk's hard-coded fallback. Loaded once on
@@ -7628,6 +7884,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       entry.lowDemand = true;
       entry.targetCapacity = Math.max(1, Number(m.targetCapacity) || capacity);
     }
+    // Optional opening date (YYYY-MM-DD). Before this date the store is
+    // treated as "pre-opening" — excluded from vacancy / understaffed
+    // counts and tagged on the Locations card and dashboard reminder.
+    const od = (m.openingDate || "").trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(od)) entry.openingDate = od;
     try {
       setAddLocationModal({ ...m, saving: true });
       const existing = await window.BOA_DB.loadCustomSalons();
@@ -7642,6 +7903,97 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     } catch (e) {
       setAddLocationModal({ ...m, saving: false });
       alert("Could not save: " + (e.message || e));
+    }
+  };
+
+  // Save edits for an existing branch (seeded or custom). Persists the
+  // override as a customSalons row keyed by name; load merges it on top of
+  // the base entry. Renaming isn't supported here — staff/manager records
+  // reference the branch by name, and renaming would orphan them.
+  const submitEditLocation = async () => {
+    const m = editLocationModal;
+    if (!m || !m.name) return;
+    const idx = SALONS.findIndex(s => s && s.name === m.name);
+    if (idx < 0) {
+      setEditLocationModal({ ...m, error: "Branch not found." });
+      return;
+    }
+    const mani = Math.max(0, Number(m.mani) || 0);
+    const pedi = Math.max(0, Number(m.pedi) || 0);
+    const capacity = Math.max(1, Number(m.capacity) || (mani + pedi));
+    const region = REGIONS.some(r => r.key === m.region) ? m.region : "wc";
+    const lowDemand = !!m.lowDemand;
+    const targetCapacity = lowDemand ? Math.max(1, Number(m.targetCapacity) || capacity) : null;
+    const od = (m.openingDate || "").trim();
+    const openingDate = /^\d{4}-\d{2}-\d{2}$/.test(od) ? od : null;
+
+    const entry = {
+      name: m.name,
+      mani, pedi, capacity, region,
+      lowDemand,
+      ...(lowDemand ? { targetCapacity } : {}),
+      openingDate: openingDate || ""
+    };
+
+    try {
+      setEditLocationModal({ ...m, saving: true, error: null });
+      const existing = await window.BOA_DB.loadCustomSalons();
+      const arr = Array.isArray(existing) ? existing : [];
+      const next = arr.filter(r => r && r.name !== m.name).concat([entry]);
+      await window.BOA_DB.saveCustomSalons(next);
+
+      const base = SALONS[idx];
+      const merged = { ...base, mani, pedi, capacity, region };
+      if (openingDate) merged.openingDate = openingDate; else delete merged.openingDate;
+      if (lowDemand) {
+        merged.lowDemand = true;
+        merged.targetCapacity = targetCapacity;
+      } else {
+        delete merged.lowDemand;
+        delete merged.targetCapacity;
+      }
+      if (!base._custom) merged._override = true;
+      SALONS[idx] = merged;
+
+      _setCustomSalonsTick(t => t + 1);
+      setEditLocationModal(null);
+      if (window.BOA_LOG_ACTIVITY) {
+        const summary = `Mani ${mani} · Pedi ${pedi} · Cap ${capacity}` + (lowDemand ? ` · Low-demand target ${targetCapacity}` : "") + (openingDate ? ` · Opens ${openingDate}` : "");
+        window.BOA_LOG_ACTIVITY("Edited location", m.name, summary, "Settings");
+      }
+    } catch (e) {
+      setEditLocationModal({ ...m, saving: false, error: (e && e.message) || String(e) });
+    }
+  };
+
+  // PIN-gated delete for custom locations. Removes the branch from the
+  // boa_custom_salons app_state row and splices it out of the in-memory
+  // SALONS array so the Locations grid re-renders without it. The PIN
+  // ("2002") is checked client-side; this is a soft guard against
+  // misclicks, not a security boundary.
+  const DELETE_LOCATION_PIN = "2002";
+  const submitDeleteLocation = async () => {
+    const m = deleteLocationModal;
+    if (!m || !m.salon) return;
+    if ((m.pin || "").trim() !== DELETE_LOCATION_PIN) {
+      setDeleteLocationModal({ ...m, error: "Incorrect PIN." });
+      return;
+    }
+    const target = m.salon.name;
+    try {
+      setDeleteLocationModal({ ...m, saving: true, error: null });
+      const existing = await window.BOA_DB.loadCustomSalons();
+      const next = (Array.isArray(existing) ? existing : []).filter(x => x && x.name !== target);
+      await window.BOA_DB.saveCustomSalons(next);
+      const idx = SALONS.findIndex(s => s && s.name === target);
+      if (idx >= 0) SALONS.splice(idx, 1);
+      _setCustomSalonsTick(t => t + 1);
+      setDeleteLocationModal(null);
+      if (window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY("Deleted location", target, "Custom branch removed", "Settings");
+      }
+    } catch (e) {
+      setDeleteLocationModal({ ...m, saving: false, error: (e && e.message) || String(e) });
     }
   };
 
@@ -7864,7 +8216,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [navShowCategory, setNavShowCategory] = useState(false);
   // Map of tab → category name. Kept in sync with the groups list below.
   const NAV_TAB_TO_CATEGORY = {
-    onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People",
+    onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
     scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", storeOpenings: "Operations", movements: "Operations",
     attendance: "Payroll", payrollProgress: "Payroll",
     alerts: "Insights", activity: "Insights",
@@ -7905,6 +8257,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [expandedTrialCards, setExpandedTrialCards] = useState(new Set()); // tracking expanded state for trial cards
   const [hrTasks, setHrTasks] = useState([]);         // HR Tasks (mocked for now)
   const [offList, setOffList] = useState([]);         // leaver records
+  const [smTrialList, setSmTrialList] = useState([]); // AMs on 3-month Store Manager trial
   // Controlled value for the "Mark a staff member as off-boarded" StaffPicker;
   // submitOff() now reads this state instead of an uncontrolled <select> DOM
   // node so the searchable picker can drive it cleanly.
@@ -8378,8 +8731,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadLeaveRecords(),
       window.BOA_DB.loadManagerPins(),
       window.BOA_DB.loadHRTasks(),
-      window.BOA_DB.loadTrialPeriod()
-    ]).then(([d, ob, off, lv, pins, tasks, trial]) => {
+      window.BOA_DB.loadTrialPeriod(),
+      window.BOA_DB.loadSmTrial ? window.BOA_DB.loadSmTrial() : Promise.resolve([])
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial]) => {
       setStaff(d.staff);
       setManagers(d.managers);
       setMatRecs(d.matRecs);
@@ -8389,6 +8743,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setMgrPins(pins && typeof pins === "object" ? pins : {});
       setHrTasks(Array.isArray(tasks) ? tasks : []);
       setTrialList(Array.isArray(trial) ? trial : []);
+      setSmTrialList(Array.isArray(smTrial) ? smTrial : []);
       setLoading(false);
     }).catch((err) => {
       setLoadError("Could not load data: " + (err.message || err));
@@ -8799,6 +9154,51 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return m;
   }, [offList]);
 
+  // Maternity records indexed for fast lookup. We need two layers because
+  // production data has imported mat records whose EC doesn't match ANY
+  // staff or manager row — typically because the record was created
+  // against a now-stale EC, or against a tech EC before the person was
+  // promoted to manager (the reported Fatima Adams / Nomphelo Mooi /
+  // Aqilah Oosthuizen cases). Without the name fallback those records
+  // float — their owner shows as active on Locations AND lands in the
+  // wrong (tech vs mgr) bucket on the Maternity tab.
+  //
+  // EC stays primary so two staff with the same name can't be cross-
+  // contaminated; the name index ONLY holds records whose EC matches
+  // nothing in staff/managers.
+  const matRecByEc = useMemo(() => {
+    const m = new Map();
+    (matRecs || []).forEach(r => { if (r && r.ec) m.set(r.ec.trim(), r); });
+    return m;
+  }, [matRecs]);
+  const _knownEcs = useMemo(() => {
+    const s = new Set();
+    (staff || []).forEach(p => { if (p && p.ec) s.add(p.ec.trim()); });
+    (managers || []).forEach(p => { if (p && p.ec) s.add(p.ec.trim()); });
+    return s;
+  }, [staff, managers]);
+  const orphanMatByName = useMemo(() => {
+    const m = new Map();
+    (matRecs || []).forEach(r => {
+      if (!r || !r.name) return;
+      const ec = (r.ec || "").trim();
+      if (ec && _knownEcs.has(ec)) return;             // not orphan
+      const key = r.name.trim().toLowerCase();
+      if (!key) return;
+      // First write wins; multiple orphans with the same name is unusual
+      // enough that we'd rather flag than silently merge.
+      if (!m.has(key)) m.set(key, r);
+    });
+    return m;
+  }, [matRecs, _knownEcs]);
+  const findMatRec = useMemo(() => (ec, name) => {
+    const e = (ec || "").trim();
+    if (e && matRecByEc.has(e)) return matRecByEc.get(e);
+    const n = (name || "").trim().toLowerCase();
+    if (n && orphanMatByName.has(n)) return orphanMatByName.get(n);
+    return null;
+  }, [matRecByEc, orphanMatByName]);
+
   // Enrich staff
   const enriched = useMemo(() => {
     const today = new Date();
@@ -8816,10 +9216,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // (records persist in the Off-boarding tab as audit history).
         offHidden = offDaysSinceLeft > 31;
       }
+      // EC first, then name fallback for orphan mat records (see
+      // orphanMatByName note above). Without the fallback, managers /
+      // techs whose mat record was filed under a stale EC show as
+      // active on Locations even though they're on leave.
+      const _matRec = findMatRec(s.ec, s.name);
+      const _matStatus = _matRec ? _matRec.matStatus : null;
       return {
         ...s,
-        onMat: onMatEcs.has(s.ec.trim()),          // excluded from count
-        pregnant: pregnantEcs.has(s.ec.trim()),       // still in store
+        onMat: _matStatus === "on_mat" || _matStatus === "dates_tbc",
+        pregnant: _matStatus === "pregnant",
         onUnpaidLegal: onUnpaidLegalEcs.has(s.ec.trim()),  // excluded from count (legal-status leave)
         unpaidLegalRec: (unpaidLegalRecs || []).find(r => r && r.ec && r.ec.trim() === s.ec.trim() && r.status === "on_leave") || null,
         offboarded: !!off,                         // on the off-boarding list — vacancy now open
@@ -8833,10 +9239,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         leftDate: s.leftDate || (off && off.leftDate) || null,
         offDaysSinceLeft,                          // -ve / 0 / +ve days since leftDate
         offHidden,                                 // true when past 31-day display window
-        matRec: matRecs.find(r => r.ec.trim() === s.ec.trim()),
+        matRec: _matRec,
       };
     });
-  }, [staff, onMatEcs, pregnantEcs, onUnpaidLegalEcs, unpaidLegalRecs, offboardedMap, matRecs]);
+  }, [staff, findMatRec, onUnpaidLegalEcs, unpaidLegalRecs, offboardedMap]);
 
   // Managers don't go through enriched - their state is a flat array loaded
   // from Supabase. To keep the rest of the UI honest about maternity, expose
@@ -8846,9 +9252,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const enrichedManagers = useMemo(() => {
     const today = new Date();
     const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    // SM-trial lookup: any AM with an active trial gets effectiveRole "SM"
+    // and an onSmTrial flag, so every consumer (Locations tile, Compliance,
+    // Dashboard counts, etc.) can count and render them as SMs without
+    // changing the underlying manager record.
+    const _smTrialEcs = new Set((smTrialList || []).filter(t => t && t.status === "active" && t.ec).map(t => t.ec));
     return (managers || []).map(m => {
       if (!m) return m;
-      const matRec = (matRecs || []).find(r => r && r.ec && m.ec && r.ec === m.ec) || null;
+      // EC first, then name fallback for orphan mat records. The
+      // reported Fatima Adams / Nomphelo Mooi / Aqilah Oosthuizen
+      // cases have mat records whose EC matches NEITHER the manager
+      // row nor any staff row — likely because the mat record was
+      // imported against a now-stale or tech-era EC. The name fallback
+      // (only fires when the EC matches nothing) catches them without
+      // risking cross-contamination between two same-named staff.
+      const matRec = findMatRec(m.ec, m.name);
       const onMat = !!matRec && (matRec.matStatus === "on_mat" || matRec.matStatus === "dates_tbc");
       const pregnant = !!matRec && matRec.matStatus === "pregnant";
       // Off-boarding parity with techs: join the manager record with the
@@ -8863,8 +9281,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         offDaysSinceLeft = Math.floor((t0 - ld) / 86400000);
         offHidden = offDaysSinceLeft > 31;
       }
+      // `onSmTrial` fires for ANY active trial record matching this EC —
+      // we don't require role === "AM" on the manager record, so legacy
+      // managers who were marked SM by mistake (and are now being
+      // corrected to AM-on-trial) still surface the badge. effectiveRole
+      // only flips AM → SM though; if they're already stored as SM we
+      // leave it alone so the schedule's existing AM/SM split is honoured.
+      const onSmTrial = !!(m.ec && _smTrialEcs.has(m.ec));
+      const effectiveRole = onSmTrial && m.role === "AM" ? "SM" : m.role;
       return {
         ...m,
+        effectiveRole,
+        onSmTrial,
         onMat: onMat || !!m.onMat,
         pregnant: pregnant || !!m.pregnant,
         matRec,
@@ -8875,7 +9303,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         offHidden,
       };
     });
-  }, [managers, matRecs, offboardedMap]);
+  }, [managers, findMatRec, offboardedMap, smTrialList]);
 
   // ── Manager Planner mirror ────────────────────────────────────────────
   // The planner is a sandbox keyed off plannerMgrs. Without this effect, it
@@ -9040,6 +9468,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       noContract: active.filter(s => s.contract === "NO CONTRACT").length,
       // Vacancies and understaffed treat off-boarded AND unpaid-legal staff as gone,
       // so they immediately surface as open positions in the Recruitment tab.
+      // Pre-opening stores are KEPT in these counts — those seats must be
+      // hired for before the store opens, so they need to drive recruitment.
       vacancies: SALONS.reduce((a, sl) => { const g = sl.targetCapacity || sl.capacity; const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length; return a + Math.max(0, g - act); }, 0),
       understaffed: SALONS.filter(sl => enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length < sl.capacity).length,
       returning60,
@@ -9066,22 +9496,37 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       .map(s => ({ ...s, _id: "shadow-" + s.ec, branch: salon.name, transferFrom: s.branch, isShadow: true }));
     // Same idea for managers — incoming SM/SSM/AM appear on the
     // destination card with an 'arriving from X on <date>' chip.
-    const arrivingMgrs = (managers || [])
-      .filter(m => m && !m.isShadow && m.transferring && m.transferTo === salon.name && m.transferDate)
-      .map(m => ({ ...m, _id: "shadow-" + m.ec, branch: salon.name, transferFrom: m.branch, isShadow: true }));
+    // Drives off enrichedManagers so off-boarded managers don't appear
+    // as arriving and so the shadow row picks up the same flags as the
+    // MANAGEMENT TEAM card.
+    const arrivingMgrs = (enrichedManagers || [])
+      .filter(m => m && !m.isShadow && m.transferring && m.transferTo === salon.name && m.transferDate && !m.offHidden)
+      .map(m => ({ ...m, _id: "shadow-mgr-" + (m.ec || m._id), branch: salon.name, transferFrom: m.branch, isShadow: true }));
 
-    // Trial candidates assigned to this branch and not yet passed/failed
-    const trial = trialList.filter(c => c.branch === salon.name && c.status !== "passed" && c.status !== "failed");
+    // Trial candidates assigned to this branch and not yet passed/failed/hired.
+    // "hired" entries have already moved to Onboarding — they shouldn't linger
+    // on the branch's trial strip.
+    const trial = trialList.filter(c => c.branch === salon.name && c.status !== "passed" && c.status !== "failed" && c.status !== "hired");
 
     // Use targetCapacity for low-demand stores (e.g. Betty), full capacity otherwise
     const goal = salon.targetCapacity || salon.capacity;
     const fillRate = active.length / goal;
-    const urgency = active.length === 0 ? "critical" : fillRate < 0.5 ? "high" : fillRate < 1 ? "low" : "full";
-    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, arrivingMgrs, trial, urgency, goal };
-  }), [enriched, managers, trialList]);
+    // Pre-opening: if the store has an openingDate in the future, suppress
+    // the staffing urgency (the store isn't actually trading yet) and
+    // surface a "PRE-OPENING · opens in Xd" label instead.
+    const _today = new Date();
+    const _t0 = new Date(_today.getFullYear(), _today.getMonth(), _today.getDate());
+    const od = salon.openingDate ? new Date(salon.openingDate + "T00:00:00") : null;
+    const preOpen = !!(od && od > _t0);
+    const daysToOpen = od ? Math.ceil((od - _t0) / 86400000) : null;
+    const urgency = preOpen
+      ? "preopen"
+      : (active.length === 0 ? "critical" : fillRate < 0.5 ? "high" : fillRate < 1 ? "low" : "full");
+    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, arrivingMgrs, trial, urgency, goal, preOpen, daysToOpen };
+  }), [enriched, enrichedManagers, managers, trialList, _customSalonsTick]);
 
-  const uColor = { critical: "#dc2626", high: "#f97316", low: "#eab308", full: "#16a34a" };
-  const uLabel = { critical: "UNSTAFFED", high: "UNDERSTAFFED", low: "NEEDS STAFF", full: "AT CAPACITY" };
+  const uColor = { critical: "#dc2626", high: "#f97316", low: "#eab308", full: "#16a34a", preopen: "#7c3aed" };
+  const uLabel = { critical: "UNSTAFFED", high: "UNDERSTAFFED", low: "NEEDS STAFF", full: "AT CAPACITY", preopen: "PRE-OPENING" };
 
   async function saveStaff(f) {
     // Shadow records are derived UI rows — closing the edit modal on one
@@ -9301,6 +9746,48 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (rec) logActivity("Deleted maternity record", rec.name || rec.ec, rec.matStatus || "", "Maternity");
     } catch (e) { alert("Could not delete: " + (e.message || e)); }
   }
+  // Start a new 3-month SM trial for the given AM. Called from the Manager
+  // modal's "Start SM Trial" button and from the SM Trials tab's picker.
+  // Returns true on success.
+  async function startSmTrialFor(ec, startDate, notes) {
+    if (!ec) return false;
+    const mgr = (managers || []).find(m => m && m.ec === ec);
+    if (!mgr) { alert("Manager not found."); return false; }
+    if ((smTrialList || []).some(r => r.ec === ec && r.status === "active")) {
+      alert(mgr.name + " is already on an active SM trial.");
+      return false;
+    }
+    const sd = startDate || (() => {
+      const d = new Date();
+      const p = n => String(n).padStart(2, "0");
+      return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+    })();
+    const rec = {
+      _id: Date.now(),
+      ec: mgr.ec,
+      name: mgr.name || ((mgr.firstName || "") + " " + (mgr.surname || "")).trim(),
+      branch: mgr.branch || "",
+      startDate: sd,
+      trialDays: 90,
+      // Mid + Final evaluations (per HR choice). Mid at ~6 weeks, final at the
+      // end of the 3-month trial.
+      evaluations: [
+        { key: "mid",   dueOffset: 45, doneAt: null, notes: "" },
+        { key: "final", dueOffset: 90, doneAt: null, notes: "" }
+      ],
+      status: "active",
+      notes: notes || "",
+      addedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    const next = [...(smTrialList || []), rec];
+    setSmTrialList(next);
+    try { await window.BOA_DB.saveSmTrial(next); }
+    catch (e) { alert("Could not save SM trial: " + (e.message || e)); return false; }
+    logActivity("Started SM trial", rec.name + " (" + rec.ec + ")", "3-month trial from " + sd);
+    return true;
+  }
+
   async function saveMgr(f, newPin) {
     // Shadow records are derived UI rows — closing the edit modal on one
     // is a no-op, not a DB write. (Edit the real record at the source
@@ -9474,8 +9961,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const ds = Math.floor((t0 - sd) / 86400000);
               return ds <= 31;
             }).length;
-            const activeTrialCount = trialList.filter(r => r.status !== "passed" && r.status !== "failed").length;
+            const activeTrialCount = trialList.filter(r => r.status !== "passed" && r.status !== "failed" && r.status !== "hired").length;
+            const activeSmTrialCount = (smTrialList || []).filter(r => r.status === "active").length;
             const trialLbl = "🧪 Trial Period" + (activeTrialCount > 0 ? " (" + activeTrialCount + ")" : "");
+            const smTrialLbl = "⭐ SM Trials" + (activeSmTrialCount > 0 ? " (" + activeSmTrialCount + ")" : "");
             const onboardLbl = "🌱 Onboarding" + (obCount > 0 ? " (" + obCount + ")" : "");
             const offboardLbl = "👋 Off-boarding" + (offList.length > 0 ? " (" + offList.length + ")" : "");
             const matLbl = "🤱 Maternity (" + matRecs.length + ")";
@@ -9486,6 +9975,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 items: [
                   { t: "onboard", l: onboardLbl },
                   { t: "trialPeriod", l: trialLbl },
+                  { t: "smTrial", l: smTrialLbl },
                   { t: "offboard", l: offboardLbl },
                   { t: "staff", l: "👥 Staff List" },
                   { t: "recruitment", l: "🎯 Recruitment" },
@@ -9740,6 +10230,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // the filtered list; otherwise it's just SALONS unchanged.
           const scopedSalons = SALONS.filter(sl => inScope(sl.name));
           const scopedBranchSet = scopedSalonNames;
+          // Stores with an openingDate in the future aren't trading yet, so
+          // they must not inflate the "Stores Open Today" or schedule-progress
+          // denominators. openSalons is scopedSalons minus those pre-opening
+          // stores; cards that count operational branches use it instead.
+          const _dashToday0 = new Date();
+          const _dashTodayMid = new Date(_dashToday0.getFullYear(), _dashToday0.getMonth(), _dashToday0.getDate());
+          const openSalons = scopedSalons.filter(sl => {
+            if (!sl.openingDate) return true;
+            const od = new Date(sl.openingDate + "T00:00:00");
+            return !(od > _dashTodayMid);
+          });
           // Branch-scoped versions of the headline stats so the four stat
           // cards reflect "my stores" / "other stores" without re-fetching.
           const _scopedActive = enriched.filter(s => scopedBranchSet.has(s.branch) && !s.onMat && !s.onUnpaidLegal && !s.offboarded);
@@ -9799,9 +10300,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const showStoreCard = storeOpenYmd === todayYmd && storeOpenRows !== null;
           const openedBranchSet = new Set(showStoreCard ? (storeOpenRows || []).filter(r => scopedBranchSet.has(r.branch)).map(r => r.branch) : []);
           const stillClosedBranches = showStoreCard
-            ? scopedSalons.map(s => s.name).filter(n => !openedBranchSet.has(n))
+            ? openSalons.map(s => s.name).filter(n => !openedBranchSet.has(n))
             : [];
-          const storeOpenedCount = scopedSalons.length - stillClosedBranches.length;
+          const storeOpenedCount = openSalons.length - stillClosedBranches.length;
           const storeOpenSub = !showStoreCard
             ? "loading…"
             : stillClosedBranches.length === 0
@@ -9814,7 +10315,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Green when complete, amber while pending, red once past the
           // 15th-of-cycle-start-month deadline.
           const schedReady = !!(schedFinalStatus && schedFinalStatus.byBranch);
-          const schedTotal = scopedSalons.length;
+          const schedTotal = openSalons.length;
           const _todayMid = new Date();
           const _today0 = new Date(_todayMid.getFullYear(), _todayMid.getMonth(), _todayMid.getDate());
           const deadline15 = schedReady && schedFinalStatus.deadline ? new Date(schedFinalStatus.deadline) : new Date(_today0.getFullYear(), _today0.getMonth(), 15);
@@ -9822,14 +10323,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const cycSuffix = schedReady && schedFinalStatus.cycLabel ? " · " + schedFinalStatus.cycLabel : "";
           const _buildSchedCard = (kind /* "tech" | "mgr" */) => {
             const doneBranches = schedReady
-              ? scopedSalons.map(s => s.name).filter(n => {
+              ? openSalons.map(s => s.name).filter(n => {
                 const r = schedFinalStatus.byBranch[n] || { tech: false, mgr: false };
                 return r[kind];
               })
               : [];
             const done = doneBranches.length;
             const missing = schedReady
-              ? scopedSalons.map(s => s.name).filter(n => {
+              ? openSalons.map(s => s.name).filter(n => {
                 const r = schedFinalStatus.byBranch[n] || { tech: false, mgr: false };
                 return !r[kind];
               })
@@ -10000,6 +10501,55 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 );
               })()}
 
+              {/* ── SECTION: UPCOMING STORE OPENINGS ──
+                  Only renders when at least one SALON has an openingDate
+                  that is still in the future. Sorted soonest first. */}
+              {(() => {
+                const today = new Date();
+                const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+                const upcoming = SALONS
+                  .filter(s => s && s.openingDate && /^\d{4}-\d{2}-\d{2}$/.test(s.openingDate))
+                  .map(s => {
+                    const od = new Date(s.openingDate + "T00:00:00");
+                    const days = Math.ceil((od - t0) / 86400000);
+                    return { ...s, _od: od, _days: days };
+                  })
+                  .filter(s => s._days >= 0)
+                  .sort((a, b) => a._od - b._od);
+                if (upcoming.length === 0) return null;
+                return (
+                  <div style={{ background: "linear-gradient(135deg,#ede9fe 0%,#FFFFFF 70%)", border: "2px solid #c4b5fd", borderRadius: 18, padding: "16px 20px", marginBottom: 22, boxShadow: "0 4px 18px rgba(124,58,237,0.10)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                      <span style={{ fontSize: 24 }}>🏗</span>
+                      <div>
+                        <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 800, color: "#7c3aed", letterSpacing: "0.18em", textTransform: "uppercase" }}>Upcoming Openings</div>
+                        <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 16, fontWeight: 700, color: "#4c1d95" }}>{upcoming.length} new store{upcoming.length === 1 ? "" : "s"} on the way</div>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {upcoming.map(s => {
+                        const lbl = s._days === 0 ? "opens TODAY" : "opening in " + s._days + " day" + (s._days === 1 ? "" : "s");
+                        const dateLabel = s._od.toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short", year: "numeric" });
+                        return (
+                          <div key={s.name} style={{ background: "#fff", border: "1px solid #ddd6fe", borderLeft: "6px solid #7c3aed", borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                              <span style={{ fontSize: 18 }}>📍</span>
+                              <div>
+                                <div style={{ fontSize: 14, fontWeight: 700, color: "#4c1d95" }}>{s.name} {lbl}</div>
+                                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>{dateLabel} · Capacity {s.capacity}</div>
+                              </div>
+                            </div>
+                            <div style={{ background: "#7c3aed", color: "#fff", padding: "5px 12px", borderRadius: 999, fontSize: 12, fontWeight: 800, letterSpacing: "0.04em" }}>
+                              {s._days === 0 ? "TODAY" : s._days + "d"}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* ── SECTION: SECURITY ALERTS ── */}
               {securityLogs && securityLogs.length > 0 && (
                 <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 14, padding: "16px", marginBottom: 18, boxShadow: "0 1px 4px rgba(220,38,38,0.06)" }}>
@@ -10134,7 +10684,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   const tiles = {
                     storesOpen: {
                       l: "Stores open today",
-                      v: showStoreCard ? (storeOpenedCount + " / " + scopedSalons.length) : "…",
+                      v: showStoreCard ? (storeOpenedCount + " / " + openSalons.length) : "…",
                       sub: storeOpenSub,
                       i: !showStoreCard ? "⚠" : (stillClosedBranches.length === 0 ? "🔓" : "🚨"),
                       c: !showStoreCard ? "#7c2d12" : (stillClosedBranches.length === 0 ? "#166534" : "#7f1d1d"),
@@ -10533,8 +11083,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       </td></tr>
                     )}
                     {filteredMgrs.map(m => {
-                      const icon = m.role === "SSM" ? "💎" : m.role === "SM" ? "👑" : "⭐";
-                      const roleBg = m.role === "SSM" ? "#92400e" : m.role === "SM" ? "#7c3aed" : "#0369a1";
+                      // SM-trial AMs render with the SM crown + an "SM trial"
+                      // badge so the staff list mirrors what the schedule does.
+                      const _effRole = m.effectiveRole || m.role;
+                      const icon = _effRole === "SSM" ? "💎" : _effRole === "SM" ? "👑" : "⭐";
+                      const roleBg = _effRole === "SSM" ? "#92400e" : _effRole === "SM" ? "#7c3aed" : "#0369a1";
                       const rowBg = m.onMat ? "#fdf4ff" : m.pregnant ? "#fffbeb" : "#fff";
                       const rowOpacity = m.onMat ? 0.6 : 1;
                       return (
@@ -10550,7 +11103,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <td style={{ padding: "10px 12px", color: "#475569", fontSize: 12, whiteSpace: "nowrap" }}>📍 {m.branch || "—"}</td>
                           <td style={{ padding: "10px 12px", color: "#9ca3af" }}>—</td>
                           <td style={{ padding: "10px 12px" }}>
-                            <span style={{ fontSize: 10, fontWeight: 800, background: roleBg, color: "#fff", padding: "3px 8px", borderRadius: 6, letterSpacing: "0.04em" }}>{m.role || m.roleType || "Manager"}</span>
+                            <span style={{ fontSize: 10, fontWeight: 800, background: roleBg, color: "#fff", padding: "3px 8px", borderRadius: 6, letterSpacing: "0.04em" }}>{_effRole || m.roleType || "Manager"}</span>
+                            {m.onSmTrial && (
+                              <span title="On 3-month SM trial — actual role is still AM"
+                                style={{ marginLeft: 6, fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 800, letterSpacing: "0.04em" }}>⭐ SM TRIAL</span>
+                            )}
                           </td>
                           <td style={{ padding: "10px 12px" }}>{m.permit ? <Chip {...(COMPLIANCE[m.permit] || { icon: "❔", color: "#6b7280", bg: "#f3f4f6", border: "#d1d5db", label: m.permit })}>{(COMPLIANCE[m.permit] || {}).label || m.permit}</Chip> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
                           <td style={{ padding: "10px 12px", fontSize: 11, color: "#831843", fontWeight: 600, whiteSpace: "nowrap" }}>{m.startDate ? new Date(m.startDate.replace(/\//g, "-") + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : <span style={{ color: "#d1d5db" }}>—</span>}</td>
@@ -10704,7 +11261,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
                 <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, fontWeight: 700, color: "#831843" }}>📍 Locations</div>
                 <button
-                  onClick={() => setAddLocationModal({ name: "", mani: "", pedi: "", capacity: "", lowDemand: false, targetCapacity: "", region: "wc", saving: false })}
+                  onClick={() => setAddLocationModal({ name: "", mani: "", pedi: "", capacity: "", lowDemand: false, targetCapacity: "", region: "wc", openingDate: "", saving: false })}
                   style={{ background: accent, color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: "0.04em" }}
                 >+ Add new location</button>
               </div>
@@ -10784,7 +11341,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               return <span style={{ background: r.bg, color: r.color, fontSize: 9, fontWeight: 800, padding: "2px 7px", borderRadius: 999, letterSpacing: "0.06em" }}>{r.short.toUpperCase()}</span>;
                             })()}
                           </div>
-                          <div style={{ fontSize: 9, fontWeight: 800, color: uColor[salon.urgency], letterSpacing: "0.07em", marginTop: 1 }}>{uLabel[salon.urgency]}</div>
+                          <div style={{ fontSize: 9, fontWeight: 800, color: uColor[salon.urgency], letterSpacing: "0.07em", marginTop: 1 }}>
+                            {uLabel[salon.urgency]}
+                            {salon.preOpen && salon.openingDate && (
+                              <span style={{ marginLeft: 6, fontWeight: 700, letterSpacing: 0, textTransform: "none" }}>
+                                · opens {new Date(salon.openingDate + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" })}
+                                {salon.daysToOpen !== null && ` (in ${salon.daysToOpen}d)`}
+                              </span>
+                            )}
+                          </div>
                           <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 2 }}>
                             Mani {salon.mani} · Pedi {salon.pedi} · Max {salon.capacity}
                             {salon.trial && salon.trial.length > 0 && ` · Trial ${salon.trial.length}`}
@@ -10798,6 +11363,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             style={{ background: managePanel === salon.name ? "#1e3a8a" : "#f3f4f6", color: managePanel === salon.name ? "#fff" : "#374151", border: "none", borderRadius: 7, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
                             {managePanel === salon.name ? "✕ Close" : "⚙ Manage"}
                           </button>
+                          <button title={`Edit ${salon.name} — capacity, region, low-demand target, opening date`}
+                            onClick={() => setEditLocationModal({
+                              name: salon.name,
+                              mani: String(salon.mani ?? ""),
+                              pedi: String(salon.pedi ?? ""),
+                              capacity: String(salon.capacity ?? ""),
+                              region: salon.region || "wc",
+                              openingDate: salon.openingDate || "",
+                              lowDemand: !!salon.lowDemand,
+                              targetCapacity: String(salon.targetCapacity ?? salon.capacity ?? ""),
+                              saving: false,
+                              error: null
+                            })}
+                            style={{ background: "#FCE7F3", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "5px 9px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>✏️</button>
+                          {salon._custom && (
+                            <button title={`Delete ${salon.name} (PIN required)`}
+                              onClick={() => setDeleteLocationModal({ salon, pin: "", saving: false, error: null })}
+                              style={{ background: "#fee2e2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 7, padding: "5px 9px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>🗑</button>
+                          )}
                         </div>
                       </div>
 
@@ -10806,17 +11390,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <div style={{ background: "#FCE7F3", border: "1px solid #FBCFE8", borderRadius: 10, padding: "12px 14px", marginBottom: 12 }}>
                           <div style={{ fontSize: 11, fontWeight: 700, color: "#831843", marginBottom: 8 }}>Select a staff member to edit or transfer:</div>
                           {/* Managers sub-section */}
-                          {enrichedManagers.filter(m => m.branch === salon.name).length > 0 && (
+                          {(enrichedManagers.filter(m => m.branch === salon.name).length > 0 || (salon.arrivingMgrs && salon.arrivingMgrs.length > 0)) && (
                             <div style={{ marginBottom: 8 }}>
                               <div style={{ fontSize: 9, fontWeight: 800, color: "#BE185D", letterSpacing: "0.08em", marginBottom: 5 }}>MANAGEMENT</div>
                               {enrichedManagers.filter(m => m.branch === salon.name && !m.offHidden).sort((a, b) => {
                                 const rank = (r) => r === "SSM" ? 0 : r === "SM" ? 1 : 2;
                                 // Off-boarded managers sink to the bottom inside their tier so the active roster stays at the top.
                                 if ((!!a.offboarded) !== (!!b.offboarded)) return a.offboarded ? 1 : -1;
-                                return rank(a.role) - rank(b.role);
+                                // SM-trial AMs sort with SMs (effectiveRole === "SM").
+                                return rank(a.effectiveRole || a.role) - rank(b.effectiveRole || b.role);
                               }).map(m => {
-                                const _icon = m.role === "SSM" ? "💎" : m.role === "SM" ? "👑" : "⭐";
-                                const _bg = m.role === "SSM" ? "#92400e" : m.role === "SM" ? "#7c3aed" : "#0369a1";
+                                const _effRole = m.effectiveRole || m.role;
+                                const _icon = _effRole === "SSM" ? "💎" : _effRole === "SM" ? "👑" : "⭐";
+                                const _bg = _effRole === "SSM" ? "#92400e" : _effRole === "SM" ? "#7c3aed" : "#0369a1";
                                 return (
                                   <div key={m._id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderRadius: 8, background: m.offboarded ? "#f9fafb" : m.onMat ? "#f3f4f6" : m.transferring ? "#eff6ff" : "#F9A8D4", border: m.offboarded ? "1px dashed #d1d5db" : (m.transferring ? "1.5px solid #bfdbfe" : "1px solid #FBCFE8"), marginBottom: 4, opacity: m.offboarded ? 0.65 : (m.onMat ? 0.55 : 1) }}>
                                     <span style={{ fontSize: 11 }}>{m.offboarded ? "👋" : m.onMat ? "🤱" : m.transferring ? "🔄" : _icon}</span>
@@ -10824,7 +11410,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       {m.name}
                                       {m.transferring && !m.offboarded && <span style={{ fontSize: 9, marginLeft: 5, color: "#BE185D", fontWeight: 600 }}>→ {m.transferTo}{m.transferDate ? " · " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
                                     </span>
-                                    <span style={{ fontSize: 9, background: _bg, color: "#fff", borderRadius: 4, padding: "1px 6px", fontWeight: 700, opacity: m.offboarded ? 0.5 : m.onMat ? 0.7 : 1 }}>{m.role}</span>
+                                    <span style={{ fontSize: 9, background: _bg, color: "#fff", borderRadius: 4, padding: "1px 6px", fontWeight: 700, opacity: m.offboarded ? 0.5 : m.onMat ? 0.7 : 1 }}>{_effRole}</span>
+                                    {m.onSmTrial && !m.offboarded && (
+                                      <span title="On 3-month SM trial — see People → SM Trials"
+                                        style={{ fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 700, letterSpacing: "0.04em" }}>⭐ SM TRIAL</span>
+                                    )}
                                     {m.offboarded && (() => {
                                       const r = (m.offRec && m.offRec.reason) || "Off-boarded";
                                       const pillBg = r === "Terminated" ? "#fee2e2" : r === "Resigned" ? "#dbeafe" : "#fef3c7";
@@ -10847,6 +11437,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       <button onClick={() => { setTransferModal(m); setManagePanel(null); }}
                                         style={{ background: m.transferring ? "#bfdbfe" : "#e0f2fe", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#BE185D" }}>
                                         🔄 {m.transferring ? "Edit Transfer" : "Transfer"}
+                                      </button>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                              {/* Arriving managers — pending transfers
+                              pointing to this branch. Shown with an Edit
+                              Transfer button on the original record so the
+                              transfer can be amended/cancelled from the
+                              destination side. */}
+                              {salon.arrivingMgrs && salon.arrivingMgrs.map(m => {
+                                const original = managers.find(x => x && !x.isShadow && (x._id === m._id.replace(/^shadow-mgr-/, "") || x.ec === m.ec));
+                                return (
+                                  <div key={m._id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderRadius: 8, background: "#eff6ff", border: "1.5px dashed #93c5fd", marginBottom: 4 }}>
+                                    <span style={{ fontSize: 11 }}>🔄</span>
+                                    <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: "#1d4ed8" }}>
+                                      {m.name}
+                                      <span style={{ fontSize: 9, marginLeft: 5, color: "#2563eb", fontWeight: 500 }}>arriving from {m.transferFrom}{m.transferDate ? " · " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>
+                                    </span>
+                                    <span style={{ fontSize: 9, background: "#bfdbfe", color: "#1e40af", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{m.role || "—"}</span>
+                                    {original && (
+                                      <button onClick={() => { setTransferModal(original); setManagePanel(null); }}
+                                        style={{ background: "#bfdbfe", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#BE185D" }}>
+                                        🔄 Edit Transfer
                                       </button>
                                     )}
                                   </div>
@@ -10915,10 +11529,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         const offBl = allMgrs.filter(m => m.offboarded);
                         const mgrs = allMgrs.filter(m => !m.onMat && !m.offboarded);
                         const onMatBl = allMgrs.filter(m => m.onMat && !m.offboarded);
-                        const ssm = mgrs.filter(m => m.role === "SSM");
-                        const sm = mgrs.filter(m => m.role === "SM");
-                        const am = mgrs.filter(m => m.role === "AM");
-                        if (allMgrs.length === 0) return null;
+                        // SM-trial AMs land in the SM block (they get 👑 + an
+                        // "SM trial" badge below). Real AMs stay in the AM
+                        // block. effectiveRole is "SM" for trial AMs.
+                        const ssm = mgrs.filter(m => (m.effectiveRole || m.role) === "SSM");
+                        const sm = mgrs.filter(m => (m.effectiveRole || m.role) === "SM");
+                        const am = mgrs.filter(m => (m.effectiveRole || m.role) === "AM");
+                        if (allMgrs.length === 0 && (!salon.arrivingMgrs || salon.arrivingMgrs.length === 0)) return null;
                         return (
                           <div style={{ background: "#FCE7F3", border: "1px solid #FBCFE8", borderRadius: 10, padding: "9px 12px", marginBottom: 10 }}>
                             <div style={{ fontSize: 9, fontWeight: 800, color: "#BE185D", letterSpacing: "0.1em", marginBottom: 7 }}>MANAGEMENT TEAM</div>
@@ -10927,9 +11544,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 <div key={m._id} style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", opacity: m.onMat ? 0.5 : 1 }}>
                                   <span style={{ fontSize: 13 }}>{m.onMat ? "🤱" : "💎"}</span>
                                   <span style={{ fontSize: 11, fontWeight: 700, color: m.onMat ? "#7A4258" : "#92400e", fontStyle: m.onMat ? "italic" : "normal", flex: 1 }}>{m.name}</span>
+                                  {m.transferring && m.transferTo && <span style={{ fontSize: 9, color: "#1d4ed8", background: "#dbeafe", border: "1px solid #bfdbfe", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🔄 leaving → {m.transferTo}{m.transferDate ? ` · ${new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                                   {m.onMat && <span style={{ fontSize: 9, color: "#8E5570", background: "#FBCFE8", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>on leave{m.matReturn ? ` · ↩${new Date(m.matReturn).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                                   {m.pregnant && !m.onMat && <span style={{ fontSize: 9, color: "#8E5570", background: "#FCE7F3", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🤰 pregnant{m.matStart ? ` · leaves ${new Date(m.matStart).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
-                                  {!m.onMat && !m.pregnant && m.notes && <span style={{ fontSize: 9, color: "#8E5570", fontStyle: "italic", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.notes}>⚑ {m.notes}</span>}
+                                  {!m.onMat && !m.pregnant && !m.transferring && m.notes && <span style={{ fontSize: 9, color: "#8E5570", fontStyle: "italic", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.notes}>⚑ {m.notes}</span>}
                                   <span style={{ fontSize: 9, background: "#FEF3C7", color: "#92400e", border: "1px solid #FDE68A", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>SSM</span>
                                 </div>
                               ))}
@@ -10937,19 +11555,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 <div key={m._id} style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", opacity: m.onMat ? 0.5 : 1 }}>
                                   <span style={{ fontSize: 13 }}>{m.onMat ? "🤱" : "👑"}</span>
                                   <span style={{ fontSize: 11, fontWeight: 700, color: m.onMat ? "#7A4258" : "#1e293b", fontStyle: m.onMat ? "italic" : "normal", flex: 1 }}>{m.name}</span>
+                                  {m.transferring && m.transferTo && <span style={{ fontSize: 9, color: "#1d4ed8", background: "#dbeafe", border: "1px solid #bfdbfe", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🔄 leaving → {m.transferTo}{m.transferDate ? ` · ${new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                                   {m.onMat && <span style={{ fontSize: 9, color: "#8E5570", background: "#FBCFE8", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>on leave{m.matReturn ? ` · ↩${new Date(m.matReturn).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                                   {m.pregnant && !m.onMat && <span style={{ fontSize: 9, color: "#8E5570", background: "#FCE7F3", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🤰 pregnant{m.matStart ? ` · leaves ${new Date(m.matStart).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
-                                  {!m.onMat && !m.pregnant && m.notes && <span style={{ fontSize: 9, color: "#8E5570", fontStyle: "italic", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.notes}>⚑ {m.notes}</span>}
+                                  {!m.onMat && !m.pregnant && !m.transferring && m.notes && <span style={{ fontSize: 9, color: "#8E5570", fontStyle: "italic", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.notes}>⚑ {m.notes}</span>}
                                   <span style={{ fontSize: 9, background: "#FBCFE8", color: "#BE185D", border: "1px solid #E8C9D2", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>SM</span>
+                                  {m.onSmTrial && (
+                                    <span title="On 3-month SM trial — actual role is still AM"
+                                      style={{ fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 700, letterSpacing: "0.04em" }}>⭐ ON TRIAL</span>
+                                  )}
                                 </div>
                               ))}
                               {am.map(m => (
                                 <div key={m._id} style={{ display: "flex", alignItems: "center", gap: 6, opacity: 1 }}>
                                   <span style={{ fontSize: 13 }}>⭐</span>
                                   <span style={{ fontSize: 11, fontWeight: 500, color: "#475569", flex: 1 }}>{m.name}</span>
+                                  {m.transferring && m.transferTo && <span style={{ fontSize: 9, color: "#1d4ed8", background: "#dbeafe", border: "1px solid #bfdbfe", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🔄 leaving → {m.transferTo}{m.transferDate ? ` · ${new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                                   {m.pregnant && <span style={{ fontSize: 9, color: "#8E5570", background: "#FCE7F3", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🤰 pregnant{m.matStart ? ` · leaves ${new Date(m.matStart).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
-                                  {!m.pregnant && m.notes && <span style={{ fontSize: 9, color: "#BE185D", fontStyle: "italic", maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.notes}>⚑</span>}
+                                  {!m.pregnant && !m.transferring && m.notes && <span style={{ fontSize: 9, color: "#BE185D", fontStyle: "italic", maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.notes}>⚑</span>}
                                   <span style={{ fontSize: 9, background: "#FBCFE8", color: "#BE185D", border: "1px solid #bae6fd", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>AM</span>
+                                  {m.onSmTrial && (
+                                    <span title="On 3-month SM trial — see People → SM Trials"
+                                      style={{ fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 700, letterSpacing: "0.04em" }}>⭐ ON TRIAL</span>
+                                  )}
                                 </div>
                               ))}
                               {/* Arriving (pending incoming transfer) — managers
@@ -11289,6 +11917,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       })}
                     </div>
 
+                    <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Opening date (optional)</label>
+                    <input type="date" value={addLocationModal.openingDate || ""}
+                      onChange={e => setAddLocationModal({ ...addLocationModal, openingDate: e.target.value })}
+                      style={{ width: "100%", padding: "9px 11px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 14, marginBottom: 6, fontFamily: "inherit" }}
+                    />
+                    <div style={{ fontSize: 10, color: "#6b7280", marginBottom: 14, lineHeight: 1.4 }}>
+                      Leave blank if the store is already open. If set, the
+                      store is flagged as pre-opening on the Locations card
+                      and a countdown shows on the dashboard until this date.
+                    </div>
+
                     <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#374151", marginBottom: 6, cursor: "pointer" }}>
                       <input type="checkbox" checked={!!addLocationModal.lowDemand}
                         onChange={e => setAddLocationModal({ ...addLocationModal, lowDemand: e.target.checked })}
@@ -11312,6 +11951,135 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <button onClick={submitNewLocation} disabled={addLocationModal.saving}
                         style={{ background: accent, color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: "pointer", fontSize: 12, fontWeight: 700, opacity: addLocationModal.saving ? 0.6 : 1 }}
                       >{addLocationModal.saving ? "Saving…" : "Add location"}</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ── EDIT LOCATION MODAL ── tweak capacity / region / low-demand target / opening date */}
+              {editLocationModal && (
+                <div
+                  onClick={() => { if (!editLocationModal.saving) setEditLocationModal(null); }}
+                  style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 120 }}
+                >
+                  <div
+                    onClick={e => e.stopPropagation()}
+                    style={{ background: "#fff", borderRadius: 16, padding: "22px 24px", width: "min(420px, 92vw)", boxShadow: "0 10px 40px rgba(0,0,0,0.25)" }}
+                  >
+                    <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: "#831843", marginBottom: 6 }}>✏️ Edit {editLocationModal.name}</div>
+                    <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 16 }}>Adjust capacity, region, opening date, or low-demand target. Renaming isn't supported — it would orphan staff records.</div>
+
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 14 }}>
+                      <div>
+                        <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Mani</label>
+                        <input type="number" min="0" value={editLocationModal.mani}
+                          onChange={e => setEditLocationModal({ ...editLocationModal, mani: e.target.value })}
+                          style={{ width: "100%", padding: "9px 11px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 14, fontFamily: "inherit" }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Pedi</label>
+                        <input type="number" min="0" value={editLocationModal.pedi}
+                          onChange={e => setEditLocationModal({ ...editLocationModal, pedi: e.target.value })}
+                          style={{ width: "100%", padding: "9px 11px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 14, fontFamily: "inherit" }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Capacity</label>
+                        <input type="number" min="1" value={editLocationModal.capacity}
+                          onChange={e => setEditLocationModal({ ...editLocationModal, capacity: e.target.value })}
+                          style={{ width: "100%", padding: "9px 11px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 14, fontFamily: "inherit" }}
+                        />
+                      </div>
+                    </div>
+
+                    <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Region</label>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+                      {REGIONS.map(r => {
+                        const active = (editLocationModal.region || "wc") === r.key;
+                        return (
+                          <button key={r.key} type="button"
+                            onClick={() => setEditLocationModal({ ...editLocationModal, region: r.key })}
+                            style={{ background: active ? r.color : r.bg, color: active ? "#fff" : r.color, border: `1px solid ${r.color}`, borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
+                          >{r.label}</button>
+                        );
+                      })}
+                    </div>
+
+                    <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Opening date (optional)</label>
+                    <input type="date" value={editLocationModal.openingDate || ""}
+                      onChange={e => setEditLocationModal({ ...editLocationModal, openingDate: e.target.value })}
+                      style={{ width: "100%", padding: "9px 11px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 14, marginBottom: 6, fontFamily: "inherit" }}
+                    />
+                    <div style={{ fontSize: 10, color: "#6b7280", marginBottom: 14, lineHeight: 1.4 }}>
+                      Clear to mark the store as already open. While in the future, the branch is excluded from the dashboard's "Stores open today" and schedule-progress counts.
+                    </div>
+
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#374151", marginBottom: 6, cursor: "pointer" }}>
+                      <input type="checkbox" checked={!!editLocationModal.lowDemand}
+                        onChange={e => setEditLocationModal({ ...editLocationModal, lowDemand: e.target.checked })}
+                      />
+                      Low-demand branch (use a softer target capacity for recruitment)
+                    </label>
+                    {editLocationModal.lowDemand && (
+                      <div style={{ marginBottom: 14 }}>
+                        <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Target capacity</label>
+                        <input type="number" min="1" value={editLocationModal.targetCapacity}
+                          onChange={e => setEditLocationModal({ ...editLocationModal, targetCapacity: e.target.value })}
+                          style={{ width: "100%", padding: "9px 11px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 14, fontFamily: "inherit" }}
+                        />
+                        <div style={{ fontSize: 10, color: "#6b7280", marginTop: 4, lineHeight: 1.4 }}>
+                          Vacancies, understaffed-branch counts, and the "needs staff" pill all use this number instead of the full capacity.
+                        </div>
+                      </div>
+                    )}
+
+                    {editLocationModal.error && (
+                      <div style={{ background: "#fee2e2", color: "#991b1b", borderRadius: 8, padding: "8px 12px", fontSize: 12, marginBottom: 10 }}>{editLocationModal.error}</div>
+                    )}
+
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
+                      <button onClick={() => setEditLocationModal(null)} disabled={editLocationModal.saving}
+                        style={{ background: "#f3f4f6", color: "#374151", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
+                      >Cancel</button>
+                      <button onClick={submitEditLocation} disabled={editLocationModal.saving}
+                        style={{ background: accent, color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: "pointer", fontSize: 12, fontWeight: 700, opacity: editLocationModal.saving ? 0.6 : 1 }}
+                      >{editLocationModal.saving ? "Saving…" : "Save changes"}</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ── DELETE LOCATION MODAL ── PIN-gated confirm for custom branches */}
+              {deleteLocationModal && (
+                <div
+                  onClick={() => { if (!deleteLocationModal.saving) setDeleteLocationModal(null); }}
+                  style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 120 }}
+                >
+                  <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "22px 24px", width: "min(380px, 92vw)", boxShadow: "0 10px 40px rgba(0,0,0,0.25)" }}>
+                    <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: "#991b1b", marginBottom: 6 }}>🗑 Delete location</div>
+                    <div style={{ fontSize: 13, color: "#374151", marginBottom: 14, lineHeight: 1.5 }}>
+                      Remove <strong>{deleteLocationModal.salon && deleteLocationModal.salon.name}</strong> from the Locations grid?
+                      Any staff or managers currently assigned to this branch will still exist but their branch field will need to be reassigned.
+                    </div>
+
+                    <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>PIN to confirm</label>
+                    <input type="password" autoFocus value={deleteLocationModal.pin || ""}
+                      onChange={e => setDeleteLocationModal({ ...deleteLocationModal, pin: e.target.value, error: null })}
+                      onKeyDown={e => { if (e.key === "Enter" && !deleteLocationModal.saving) submitDeleteLocation(); }}
+                      placeholder="••••"
+                      style={{ width: "100%", padding: "9px 11px", border: `1px solid ${deleteLocationModal.error ? "#fca5a5" : "#e5e7eb"}`, borderRadius: 8, fontSize: 16, letterSpacing: "0.3em", marginBottom: 6, fontFamily: "monospace" }}
+                    />
+                    {deleteLocationModal.error && (
+                      <div style={{ fontSize: 11, color: "#991b1b", marginBottom: 6 }}>{deleteLocationModal.error}</div>
+                    )}
+
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+                      <button onClick={() => setDeleteLocationModal(null)} disabled={deleteLocationModal.saving}
+                        style={{ background: "#f3f4f6", color: "#374151", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Cancel</button>
+                      <button onClick={submitDeleteLocation} disabled={deleteLocationModal.saving}
+                        style={{ background: "#dc2626", color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: "pointer", fontSize: 12, fontWeight: 700, opacity: deleteLocationModal.saving ? 0.6 : 1 }}
+                      >{deleteLocationModal.saving ? "Deleting…" : "Delete location"}</button>
                     </div>
                   </div>
                 </div>
@@ -11448,15 +12216,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 if (!recs.length) return null;
                 const s = MAT_STATUS[status];
                 const isExcluded = status === "on_mat" || status === "dates_tbc";
-                const mgrEcs = new Set((managers || []).map(m => m && m.ec).filter(Boolean));
-                const mgrRecs = recs.filter(r => mgrEcs.has(r.ec));
-                const techRecs = recs.filter(r => !mgrEcs.has(r.ec));
+                // Classify each mat record as manager vs tech. EC match
+                // is authoritative; for orphan records whose EC matches
+                // neither table, fall back to a normalized name match
+                // (handles the Fatima Adams / Nomphelo Mooi / Aqilah
+                // Oosthuizen cases where the mat record's EC is stale).
+                const mgrEcs = new Set((managers || []).map(m => m && m.ec && m.ec.trim()).filter(Boolean));
+                const techEcs = new Set((staff || []).map(s => s && s.ec && s.ec.trim()).filter(Boolean));
+                const mgrNames = new Set((managers || []).map(m => m && m.name && m.name.trim().toLowerCase()).filter(Boolean));
+                const _isMgrRec = (r) => {
+                  if (!r) return false;
+                  const ec = (r.ec || "").trim();
+                  if (ec && mgrEcs.has(ec)) return true;
+                  if (ec && techEcs.has(ec)) return false;
+                  const nm = (r.name || "").trim().toLowerCase();
+                  return !!(nm && mgrNames.has(nm));
+                };
+                const mgrRecs = recs.filter(_isMgrRec);
+                const techRecs = recs.filter(r => !_isMgrRec(r));
                 const renderCard = (r) => {
                   const dBack = r.returnDate ? daysDiff(r.returnDate) : null;
                   const totalDays = r.matStart && r.matEnd ? Math.ceil((new Date(r.matEnd) - new Date(r.matStart)) / 86400000) : null;
                   const elapsed = r.matStart ? Math.ceil((TODAY - new Date(r.matStart)) / 86400000) : null;
                   const progress = totalDays && elapsed ? Math.min(Math.max(elapsed / totalDays, 0), 1) : null;
-                  const isMgr = mgrEcs.has(r.ec);
+                  const isMgr = _isMgrRec(r);
                   return (
                     <div key={r._id} style={{ background: "#FFFFFF", borderRadius: 14, border: `1.5px solid ${s.border}`, padding: "16px 18px" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
@@ -12392,8 +13175,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const MIN_SM = 1, MIN_AM = 2;
             const mgrVacancies = SALONS.reduce((a, sl) => {
               const mgrs = enrichedManagers.filter(m => m.branch === sl.name && !m.onMat && !m.offboarded);
-              const sms = mgrs.filter(m => m.role === "SM").length;
-              const ams = mgrs.filter(m => m.role === "AM").length;
+              const sms = mgrs.filter(m => (m.effectiveRole || m.role) === "SM").length;
+              const ams = mgrs.filter(m => (m.effectiveRole || m.role) === "AM").length;
               return a + Math.max(0, MIN_SM - sms) + Math.max(0, MIN_AM - ams);
             }, 0);
             const counts = { nailTech: stats.vacancies, mgrRecruit: mgrVacancies };
@@ -12485,7 +13268,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
                             {/* Returning staff that will fill gaps */}
                             {(() => {
-                              const returning = matRecs.filter(r => r.matStatus === "on_mat" && r.branch === salon.name && r.returnDate && daysDiff(r.returnDate) !== null && daysDiff(r.returnDate) >= 0 && daysDiff(r.returnDate) <= 90);
+                              // Nail-tech recruitment view — exclude maternity records
+                              // belonging to managers. matRecs is a flat list for both
+                              // techs and managers, so without this filter a manager on
+                              // mat leave (e.g. an AM/SM returning from leave) would
+                              // surface as a tech vacancy filler.
+                              //
+                              // We match by EC first, then by name as a fallback —
+                              // some legacy mat records (Aqilah Oosthuizen, Fatima
+                              // Adams, Nomphelo Mooi) have ECs imported against a
+                              // stale tech-era ID that doesn't match the current
+                              // manager row. enrichedManagers uses the same EC →
+                              // name fallback (see findMatRec) for the very same
+                              // reason; without it those managers leak in here.
+                              const _mgrEcs = new Set((managers || []).filter(m => m && m.ec).map(m => m.ec.trim().toLowerCase()));
+                              const _mgrNames = new Set((managers || []).filter(m => m && m.name).map(m => m.name.trim().toLowerCase()));
+                              const isManagerRec = r => (
+                                (r.ec && _mgrEcs.has(r.ec.trim().toLowerCase())) ||
+                                (r.name && _mgrNames.has(r.name.trim().toLowerCase()))
+                              );
+                              const returning = matRecs.filter(r => r.matStatus === "on_mat" && r.branch === salon.name && r.returnDate && daysDiff(r.returnDate) !== null && daysDiff(r.returnDate) >= 0 && daysDiff(r.returnDate) <= 90 && !isManagerRec(r));
                               return returning.length > 0 && need > 0 ? (
                                 <div style={{ background: "#FBCFE8", border: "1px solid #6ee7b7", borderRadius: 8, padding: "7px 10px", marginBottom: 8 }}>
                                   <div style={{ fontSize: 10, fontWeight: 700, color: "#8E5570", marginBottom: 4 }}>🔜 Returning within 90 days — may fill {Math.min(returning.length, need)} position{returning.length > 1 ? "s" : ""}:</div>
@@ -12535,8 +13337,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const MIN_SM = 1, MIN_AM = 2;
                 const branchStats = SALONS.map(salon => { // Regional managers excluded from store coverage
                   const mgrs = enrichedManagers.filter(m => m.branch === salon.name);
-                  const sms = mgrs.filter(m => (m.role === "SM" || m.role === "SSM") && !m.onMat);
-                  const ams = mgrs.filter(m => m.role === "AM" && !m.onMat);
+                  // SM-trial AMs count toward SM coverage (effectiveRole === "SM")
+                  // and are excluded from the AM tally so coverage stats line up
+                  // with what the schedule actually does.
+                  const sms = mgrs.filter(m => ((m.effectiveRole || m.role) === "SM" || (m.effectiveRole || m.role) === "SSM") && !m.onMat);
+                  const ams = mgrs.filter(m => (m.effectiveRole || m.role) === "AM" && !m.onMat);
                   const onMatMgrs = mgrs.filter(m => m.onMat);
                   const missSM = Math.max(0, MIN_SM - sms.length);
                   const missAM = Math.max(0, MIN_AM - ams.length);
@@ -12549,8 +13354,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const gapBranches = branchStats.filter(b => !b.ok).length;
                 // 'Store Managers' folds SSM + SM together (both are store-tier
                 // managers - SSM is just the senior bracket). AM stays separate.
-                const totalActiveSM = enrichedManagers.filter(m => (m.role === "SM" || m.role === "SSM") && !m.onMat && !m.offboarded && m.branch !== "Regional").length;
-                const totalActiveAM = enrichedManagers.filter(m => m.role === "AM" && !m.onMat && !m.offboarded && m.branch !== "Regional").length;
+                const totalActiveSM = enrichedManagers.filter(m => ((m.effectiveRole || m.role) === "SM" || (m.effectiveRole || m.role) === "SSM") && !m.onMat && !m.offboarded && m.branch !== "Regional").length;
+                const totalActiveAM = enrichedManagers.filter(m => (m.effectiveRole || m.role) === "AM" && !m.onMat && !m.offboarded && m.branch !== "Regional").length;
                 const totalPregnant = enrichedManagers.filter(m => m.pregnant && !m.onMat && !m.offboarded).length;
                 const totalOnMat = managers.filter(m => m.onMat).length;
                 return (
@@ -12749,8 +13554,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 // this match the SM render filter (==="SM") let an SSM count
                 // for cover but never render, so the slot showed empty.
                 const isSMRole = (r) => r === "SM" || r === "SSM";
-                const smCount = salon => branchMgrs(salon).filter(m => isSMRole(m.role) && !m.onMat).length;
-                const amCount = salon => branchMgrs(salon).filter(m => m.role === "AM" && !m.onMat).length;
+                const smCount = salon => branchMgrs(salon).filter(m => isSMRole(m.effectiveRole || m.role) && !m.onMat).length;
+                const amCount = salon => branchMgrs(salon).filter(m => (m.effectiveRole || m.role) === "AM" && !m.onMat).length;
                 const gapColor = salon => {
                   if (smCount(salon) < MIN_SM) return "#dc2626";
                   if (amCount(salon) < MIN_AM) return "#d97706";
@@ -13024,7 +13829,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         };
 
         const currentList = trialList.filter(r => (r.role || "nt") === trialSubTab);
-        const activeTrials = currentList.filter(r => r.status !== "passed" && r.status !== "failed");
+        const activeTrials = currentList.filter(r => r.status !== "passed" && r.status !== "failed" && r.status !== "hired");
         const passedTrials = currentList.filter(r => r.status === "passed" && !r.promotedToOnboarding);
         const failedTrials = currentList.filter(r => r.status === "failed");
 
@@ -13293,6 +14098,289 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </div>
                   ))}
                 </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* ── SM TRIALS TAB ──
+          3-month Store Manager trials for existing AMs. Each record carries
+          a startDate plus three evaluation checkpoints (Month 1, Month 2,
+          Final). Overdue evals turn red so HR can see who needs a sit-down.
+          Persisted via window.BOA_DB.saveSmTrial. */}
+      {tab === "smTrial" && (() => {
+        const now = new Date();
+        const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const today = t0;
+        const _p2 = n => String(n).padStart(2, "0");
+        const _ymd = d => d.getFullYear() + "-" + _p2(d.getMonth() + 1) + "-" + _p2(d.getDate());
+        const _addDays = (d, n) => { const x = new Date(d.getTime()); x.setDate(x.getDate() + n); return x; };
+        const _fmtShort = d => d ? new Date(d + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : "—";
+
+        // HR-chosen cadence: a mid-trial check-in around the 6-week mark and
+        // a final evaluation at the 3-month mark. Existing records with the
+        // older m1/m2/final keys still render via the fallback in the eval
+        // loop below (it uses each eval's own dueOffset and falls back to
+        // the def label only when matched).
+        const EVAL_DEFS = [
+          { key: "mid",   label: "Mid-Trial Check-in",  dueOffset: 45 },
+          { key: "final", label: "Final Evaluation",    dueOffset: 90 }
+        ];
+        const TRIAL_DAYS = 90;
+
+        const persistSmTrial = async (next) => {
+          setSmTrialList(next);
+          try { await window.BOA_DB.saveSmTrial(next); }
+          catch (e) { alert("Could not save SM trial: " + (e.message || e)); }
+        };
+
+        const markEvalDone = (id, evalKey, doneNotes) => {
+          persistSmTrial((smTrialList || []).map(r =>
+            r._id === id
+              ? {
+                  ...r,
+                  evaluations: (r.evaluations || []).map(e =>
+                    e.key === evalKey
+                      ? { ...e, doneAt: new Date().toISOString(), notes: doneNotes || e.notes || "" }
+                      : e
+                  ),
+                  updatedAt: new Date().toISOString()
+                }
+              : r
+          ));
+        };
+        const reopenEval = (id, evalKey) => {
+          if (!confirm("Re-open this evaluation? It'll be marked as not done again.")) return;
+          persistSmTrial((smTrialList || []).map(r =>
+            r._id === id
+              ? {
+                  ...r,
+                  evaluations: (r.evaluations || []).map(e =>
+                    e.key === evalKey ? { ...e, doneAt: null } : e
+                  ),
+                  updatedAt: new Date().toISOString()
+                }
+              : r
+          ));
+        };
+
+        const promoteToSM = async (id) => {
+          const r = (smTrialList || []).find(x => x._id === id);
+          if (!r) return;
+          if (!confirm("Promote " + r.name + " to Store Manager (SM)?\n\nTheir role on the manager record will change from AM → SM and the trial will be archived as passed.")) return;
+          // Flip the underlying manager's role to SM.
+          const mgr = (managers || []).find(m => m && m.ec === r.ec);
+          if (mgr) {
+            try {
+              const saved = await window.BOA_DB.saveManager({ ...mgr, role: "SM" });
+              setManagers(p => p.map(x => x._id === mgr._id ? { ...x, ...saved } : x));
+            } catch (e) { alert("Could not update manager role: " + (e.message || e)); return; }
+          }
+          persistSmTrial((smTrialList || []).map(x =>
+            x._id === id ? { ...x, status: "passed", outcomeAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : x
+          ));
+          logActivity("Promoted to SM", r.name + " (" + r.ec + ")", "Trial passed · started " + r.startDate);
+        };
+        const revertToAM = (id) => {
+          const r = (smTrialList || []).find(x => x._id === id);
+          if (!r) return;
+          if (!confirm("End " + r.name + "'s SM trial without promotion?\n\nThey'll stay as AM and the trial will be archived as failed.")) return;
+          persistSmTrial((smTrialList || []).map(x =>
+            x._id === id ? { ...x, status: "failed", outcomeAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : x
+          ));
+          logActivity("Ended SM trial (no promotion)", r.name + " (" + r.ec + ")", "Stays as AM · started " + r.startDate);
+        };
+        const withdrawTrial = (id) => {
+          const r = (smTrialList || []).find(x => x._id === id);
+          if (!r) return;
+          if (!confirm("Withdraw " + r.name + "'s SM trial?\n\nUse this if the trial was started by mistake or paused. The record will be removed entirely (not archived).")) return;
+          persistSmTrial((smTrialList || []).filter(x => x._id !== id));
+          logActivity("Withdrew SM trial", r.name + " (" + r.ec + ")", "Trial removed");
+        };
+
+        const activeTrials = (smTrialList || []).filter(r => r.status === "active");
+        const passedTrials = (smTrialList || []).filter(r => r.status === "passed").sort((a, b) => (b.outcomeAt || "").localeCompare(a.outcomeAt || ""));
+        const failedTrials = (smTrialList || []).filter(r => r.status === "failed").sort((a, b) => (b.outcomeAt || "").localeCompare(a.outcomeAt || ""));
+
+        const inp = { padding: "8px 10px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: "#fff", width: "100%", boxSizing: "border-box" };
+        const lbl = { display: "block", fontSize: 10, fontWeight: 700, color: "#BE185D", letterSpacing: "0.08em", marginBottom: 4, textTransform: "uppercase" };
+
+        const renderTrialCard = (r, opts) => {
+          opts = opts || {};
+          const start = new Date(r.startDate + "T00:00:00");
+          const endDate = _addDays(start, r.trialDays || TRIAL_DAYS);
+          const daysIn = Math.floor((today - start) / 86400000);
+          const daysLeft = Math.ceil((endDate - today) / 86400000);
+          const isActive = r.status === "active";
+          const endingSoon = isActive && daysLeft >= 0 && daysLeft <= 14;
+          const overdueEnd = isActive && daysLeft < 0;
+          return (
+            <div key={r._id} style={{
+              background: "#fff",
+              border: "1px solid " + (overdueEnd ? "#fecaca" : endingSoon ? "#fde68a" : "#FBCFE8"),
+              borderLeft: "4px solid " + (r.status === "passed" ? "#16a34a" : r.status === "failed" ? "#9ca3af" : overdueEnd ? "#dc2626" : endingSoon ? "#d97706" : "#7c3aed"),
+              borderRadius: 12,
+              padding: "14px 16px",
+              marginBottom: 10
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+                <div style={{ minWidth: 0, flex: "1 1 280px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: "#111827" }}>⭐ {r.name}</div>
+                    <span style={{ fontSize: 10, fontWeight: 700, background: "#FCE7F3", color: "#831843", padding: "2px 8px", borderRadius: 999 }}>{r.ec}</span>
+                    <span style={{ fontSize: 10, fontWeight: 600, color: "#6b7280" }}>{r.branch || "—"}</span>
+                  </div>
+                  <div style={{ marginTop: 6, fontSize: 11, color: "#374151", display: "flex", gap: 12, flexWrap: "wrap" }}>
+                    <span>Started <strong>{_fmtShort(r.startDate)}</strong></span>
+                    <span>Ends <strong>{_fmtShort(_ymd(endDate))}</strong></span>
+                    {isActive && (
+                      <span style={{ fontWeight: 700, color: overdueEnd ? "#dc2626" : endingSoon ? "#92400e" : "#065f46" }}>
+                        {overdueEnd ? (Math.abs(daysLeft) + "d OVERDUE") : (daysLeft + "d left")}
+                      </span>
+                    )}
+                    {!isActive && r.outcomeAt && (
+                      <span style={{ fontWeight: 600, color: "#6b7280" }}>
+                        {r.status === "passed" ? "Promoted " : "Ended "} {_fmtShort(r.outcomeAt.slice(0, 10))}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                {isActive && (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <button onClick={() => promoteToSM(r._id)}
+                      style={{ padding: "6px 12px", borderRadius: 7, border: "none", background: "#16a34a", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>👑 Promote to SM</button>
+                    <button onClick={() => revertToAM(r._id)}
+                      style={{ padding: "6px 12px", borderRadius: 7, border: "1px solid #d1d5db", background: "#fff", color: "#374151", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>End — stay AM</button>
+                    <button onClick={() => withdrawTrial(r._id)}
+                      title="Remove this trial entirely (use if started by mistake)"
+                      style={{ padding: "6px 10px", borderRadius: 7, border: "1px solid #fecaca", background: "#fff", color: "#991b1b", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>Withdraw</button>
+                  </div>
+                )}
+              </div>
+
+              {/* Progress bar */}
+              {isActive && (
+                <div style={{ marginTop: 12, height: 8, background: "#f3f4f6", borderRadius: 4, overflow: "hidden", position: "relative" }}>
+                  <div style={{
+                    width: Math.max(0, Math.min(100, (daysIn / (r.trialDays || TRIAL_DAYS)) * 100)) + "%",
+                    height: "100%",
+                    background: overdueEnd ? "#dc2626" : endingSoon ? "#d97706" : "#7c3aed",
+                    transition: "width 0.3s"
+                  }} />
+                </div>
+              )}
+
+              {/* Evaluations */}
+              <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
+                {(r.evaluations || []).map(e => {
+                  const LEGACY_LBL = { m1: "Month 1 Check-in", m2: "Month 2 Check-in" };
+                  const def = EVAL_DEFS.find(x => x.key === e.key) || { label: LEGACY_LBL[e.key] || e.key, dueOffset: e.dueOffset };
+                  const dueDate = _addDays(start, e.dueOffset || def.dueOffset);
+                  const dueYmd = _ymd(dueDate);
+                  const isDone = !!e.doneAt;
+                  const dDue = Math.ceil((dueDate - today) / 86400000);
+                  const overdue = !isDone && dDue < 0;
+                  const dueSoon = !isDone && dDue >= 0 && dDue <= 7;
+                  const bg = isDone ? "#f0fdf4" : overdue ? "#fef2f2" : dueSoon ? "#fffbeb" : "#f9fafb";
+                  const bd = isDone ? "#86efac" : overdue ? "#fecaca" : dueSoon ? "#fde68a" : "#e5e7eb";
+                  const fg = isDone ? "#15803d" : overdue ? "#991b1b" : dueSoon ? "#92400e" : "#374151";
+                  return (
+                    <div key={e.key} style={{ background: bg, border: "1px solid " + bd, borderRadius: 9, padding: "10px 12px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: fg }}>
+                          {isDone ? "✅ " : overdue ? "⚠️ " : dueSoon ? "⏰ " : "📅 "}{def.label}
+                        </div>
+                        {isActive && isDone && (
+                          <button onClick={() => reopenEval(r._id, e.key)} style={{ background: "transparent", border: "none", color: "#6b7280", fontSize: 10, cursor: "pointer", padding: 0 }} title="Re-open this evaluation">undo</button>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 10, color: "#6b7280", marginTop: 3 }}>
+                        Due <strong>{_fmtShort(dueYmd)}</strong>
+                        {isDone
+                          ? <> · done {_fmtShort(e.doneAt.slice(0, 10))}</>
+                          : overdue
+                            ? <> · <span style={{ color: "#991b1b", fontWeight: 700 }}>{Math.abs(dDue)}d overdue</span></>
+                            : dDue === 0
+                              ? <> · <span style={{ color: "#92400e", fontWeight: 700 }}>due today</span></>
+                              : <> · in <strong>{dDue}d</strong></>}
+                      </div>
+                      {e.notes && (
+                        <div style={{ fontSize: 11, color: "#374151", marginTop: 6, fontStyle: "italic", whiteSpace: "pre-wrap" }}>{e.notes}</div>
+                      )}
+                      {isActive && !isDone && (
+                        <button onClick={() => {
+                          const noteText = prompt(def.label + " — notes (optional):", "");
+                          if (noteText === null) return;
+                          markEvalDone(r._id, e.key, noteText);
+                        }}
+                          style={{ marginTop: 8, padding: "5px 10px", borderRadius: 6, border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 10, fontWeight: 700 }}>✓ Mark done</button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {r.notes && (
+                <div style={{ marginTop: 10, fontSize: 11, color: "#6b7280", background: "#f9fafb", border: "1px dashed #e5e7eb", borderRadius: 7, padding: "8px 10px", fontStyle: "italic", whiteSpace: "pre-wrap" }}>
+                  📝 {r.notes}
+                </div>
+              )}
+            </div>
+          );
+        };
+
+        return (
+          <div style={{ padding: 24, maxWidth: 1100, margin: "0 auto" }}>
+            <div style={{ marginBottom: 18 }}>
+              <h1 style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 30, color: "#111827", margin: 0 }}>⭐ Store Manager Trials</h1>
+              <div style={{ fontSize: 13, color: "#6b7280", marginTop: 4 }}>
+                AMs on a 3-month trial to become Store Managers. Mark each monthly evaluation as done; on the final check, promote them to SM or end the trial.
+              </div>
+            </div>
+
+            {/* How-to banner — trials are started from the Manager card now,
+                so this tab is a tracker only. Keeps a single source of truth
+                for who tags whom. */}
+            <div style={{ background: "#FCE7F3", border: "1px solid #FBCFE8", borderRadius: 14, padding: "12px 16px", marginBottom: 18, fontSize: 12, color: "#831843", display: "flex", alignItems: "center", gap: 8 }}>
+              <span>💡</span>
+              <span>To put an AM on trial, open their Manager card from Locations and click <strong>⭐ Start SM Trial</strong>. They'll appear here with their countdown and evaluation reminders.</span>
+            </div>
+
+            {/* Active trials */}
+            <div style={{ marginBottom: 24 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#831843", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>
+                Active Trials ({activeTrials.length})
+              </div>
+              {activeTrials.length === 0 ? (
+                <div style={{ background: "#f9fafb", border: "1px dashed #e5e7eb", borderRadius: 10, padding: "20px 16px", textAlign: "center", color: "#6b7280", fontSize: 12 }}>
+                  No active SM trials. Start one above to begin tracking.
+                </div>
+              ) : (
+                activeTrials
+                  .slice()
+                  .sort((a, b) => (a.startDate || "").localeCompare(b.startDate || ""))
+                  .map(r => renderTrialCard(r))
+              )}
+            </div>
+
+            {/* Passed history */}
+            {passedTrials.length > 0 && (
+              <div style={{ marginBottom: 18 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#065f46", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>
+                  ✅ Promoted to SM ({passedTrials.length})
+                </div>
+                {passedTrials.map(r => renderTrialCard(r))}
+              </div>
+            )}
+
+            {/* Failed history */}
+            {failedTrials.length > 0 && (
+              <div style={{ marginBottom: 18 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>
+                  ⏹ Ended — stayed AM ({failedTrials.length})
+                </div>
+                {failedTrials.map(r => renderTrialCard(r))}
               </div>
             )}
           </div>
@@ -13704,10 +14792,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           document.getElementById("_offDate").value = todayStr;
           document.getElementById("_offNotes").value = "";
         };
-        const undoOff = (ec) => {
+        const undoOff = async (ec) => {
           if (!confirm("Restore this person to active staff?")) return;
           const tgt = offList.find(o => o.ec === ec);
-          persistOff(offList.filter(o => o.ec !== ec));
+          await persistOff(offList.filter(o => o.ec !== ec));
+          // Removing the off-list record isn't always enough to put the
+          // person back on the schedule. If their staff row also has a
+          // leftDate set (legacy data, Edit Staff form, or active=false),
+          // the Schedule grid filter (`!s.leftDate`) keeps them hidden.
+          // Clear leftDate / re-activate the underlying row so they
+          // reappear on the schedule and Locations as fully active.
+          const techRec = (staff || []).find(s => s && s.ec === ec);
+          const mgrRec = !techRec ? (managers || []).find(m => m && m.ec === ec) : null;
+          try {
+            if (techRec && (techRec.leftDate || techRec.active === false || techRec.active === "false")) {
+              const saved = await window.BOA_DB.saveStaff({ ...techRec, leftDate: null, active: true });
+              setStaff(p => p.map(x => x._id === techRec._id ? saved : x));
+            } else if (mgrRec && (mgrRec.leftDate || mgrRec.active === false || mgrRec.active === "false")) {
+              const saved = await window.BOA_DB.saveManager({ ...mgrRec, leftDate: null, active: true });
+              setManagers(p => p.map(x => x._id === mgrRec._id ? saved : x));
+            }
+          } catch (e) { console.warn("Failed to clear leftDate on restore:", e); }
           if (tgt) logActivity("Restored from off-board", (tgt.name || "") + " (" + tgt.ec + ")", tgt.branch || "");
         };
         const submitQuickPick = () => {
@@ -16616,10 +17721,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // schedule but get _onMat = true so their row is greyed out and
         // every cell is rendered as 'ML' (matching the tech behaviour).
         // mgrSched honours _onMat by skipping shift assignment for them.
-        const _onMatEcs = new Set((matRecs || []).filter(r => r && (r.matStatus === "on_mat" || r.matStatus === "dates_tbc") && r.ec).map(r => r.ec));
+        // EC first, name fallback for orphan mat records — mirrors the
+        // findMatRec logic used by enrichedManagers, so a manager whose
+        // mat record's EC is stale still gets _onMat = true (greyed
+        // row + ML markers on every day) on the manager schedule.
+        const _onMatRecs = (matRecs || []).filter(r => r && (r.matStatus === "on_mat" || r.matStatus === "dates_tbc"));
+        const _onMatEcs = new Set(_onMatRecs.filter(r => r.ec).map(r => r.ec.trim()));
+        const _onMatNames = new Set(_onMatRecs.filter(r => r.name).map(r => r.name.trim().toLowerCase()));
         const mgrsWithOff = managers.map(m => {
-          const off = (offList || []).find(o => o.ec === m.ec);
-          const flag = _onMatEcs.has(m.ec);
+          const mEc = (m && m.ec || "").trim();
+          const mName = (m && m.name || "").trim().toLowerCase();
+          const off = (offList || []).find(o => o && o.ec && o.ec.trim() === mEc);
+          const flag = (mEc && _onMatEcs.has(mEc)) || (mName && _onMatNames.has(mName));
           const base = off ? { ...m, leftDate: off.leftDate, offRec: off } : { ...m };
           return flag ? { ...base, _onMat: true } : base;
         });
@@ -16667,7 +17780,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const key = o && o.ec ? String(o.ec).trim() : "";
           return key && !_seenMgrEcSet.has(key);
         });
-        const allMgrs = [..._dedupedMgrs, ..._dedupedObMgrs];
+        const _allMgrsRaw = [..._dedupedMgrs, ..._dedupedObMgrs];
+        // AMs on an active 3-month SM trial are scheduled AS Store Managers
+        // for the duration of the trial — the manager-schedule solver and
+        // every branch-specific shift rule branches on `role`, so we rewrite
+        // it locally to "SM" here. The underlying manager record (and the
+        // rest of the UI) still shows them as AM via `_origRole`; once the
+        // trial passes the user can click Promote which flips the real
+        // role on the record. `_onSmTrial` is kept around so we can tag the
+        // schedule row with a small "SM trial" hint.
+        const _smTrialEcs = new Set((smTrialList || []).filter(t => t && t.status === "active" && t.ec).map(t => t.ec));
+        const allMgrs = _allMgrsRaw.map(m => {
+          if (m && m.role === "AM" && _smTrialEcs.has(m.ec)) {
+            return { ...m, role: "SM", _origRole: "AM", _onSmTrial: true };
+          }
+          return m;
+        });
         const mgrLeaves = (leaveRecs || []).filter(L => allMgrs.some(m => m.ec === L.ec));
         // Synthetic full-cycle leaves for on-mat managers - mgrSched
         // treats these as 'L' cells so the on-mat manager doesn't get
@@ -17397,7 +18525,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Build the export payload from the current draft (post-save the
         // draft equals the saved version). Falls back to the saved version
         // if the draft is empty (e.g. just-loaded existing schedule).
-        const buildMgrExportPayload = () => {
+        const buildMgrExportPayload = (opts) => {
+          opts = opts || {};
           const moNamesL = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
           const dowsAbbrL = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
           const cellInfo = {
@@ -17408,9 +18537,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             E: { text: "EXT", bg: "#6ee7b7", fg: "#064e3b" },
             X: { text: "—", bg: "#f3f4f6", fg: "#9ca3af" }
           };
-          const sourceGrid = (mgrSchedDraft && Object.keys(mgrSchedDraft).length > 0)
-            ? mgrSchedDraft
-            : (mgrSchedSaved || {});
+          // Callers (PDF) can pass an explicit sourceGrid — e.g. the
+          // last approved/published version — without disturbing the
+          // editor. Falls back to draft → saved as before.
+          const sourceGrid = opts.sourceGrid || (
+            (mgrSchedDraft && Object.keys(mgrSchedDraft).length > 0)
+              ? mgrSchedDraft
+              : (mgrSchedSaved || {})
+          );
+          const sourceSavedAt = opts.savedAt || mgrSchedSavedAt;
+          const titleSuffix = opts.titleSuffix || "";
+          const subtitleSuffix = opts.subtitleSuffix || "";
+          const filenameSuffix = opts.filenameSuffix || "";
           const columns = result.dates.map(dy => {
             const dt = new Date(dy.d + "T00:00:00");
             return {
@@ -17463,9 +18601,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             { code: "X", text: "—", label: "Not scheduled" }
           ];
           return {
-            title: "BOA Manager Schedule — " + branch,
-            subtitle: cycleLabel + (mgrSchedSavedAt ? " · saved " + new Date(mgrSchedSavedAt).toLocaleString("en-ZA") : ""),
-            filenameBase: "BOA_manager_schedule_" + branch + "_" + ymKey,
+            title: "BOA Manager Schedule — " + branch + titleSuffix,
+            subtitle: cycleLabel + (sourceSavedAt ? " · saved " + new Date(sourceSavedAt).toLocaleString("en-ZA") : "") + subtitleSuffix,
+            filenameBase: "BOA_manager_schedule_" + branch + "_" + ymKey + filenameSuffix,
             columns, rows, totals, legend, codeStyles
           };
         };
@@ -17478,14 +18616,57 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
           exportScheduleCsv(buildMgrExportPayload());
         };
-        const downloadMgrPdf = () => {
-          if (mgrSchedDirty) {
-            if (!window.confirm("You have unsaved changes — they won't appear in the saved version. Download the current view anyway?")) return;
-          } else if (!mgrSchedSaved) {
-            alert("Nothing to download — generate and save a schedule first.");
+        // Manager PDF: same rule as the tech PDF — always print the
+        // LAST APPROVED + PUBLISHED version for this branch + cycle,
+        // never the live editor draft. Falls back to the working grid
+        // (clearly marked DRAFT) only if no approved version exists yet.
+        const downloadMgrPdf = async () => {
+          let approved = null;
+          try {
+            const list = await window.BOA_DB.loadApprovedSchedules(branch, ymKey, true);
+            approved = Array.isArray(list) && list.length > 0 ? list[0] : null;
+          } catch (e) {
+            alert("Could not load the approved schedule: " + (e.message || e));
             return;
           }
-          exportSchedulePdf(buildMgrExportPayload());
+          if (!approved) {
+            if (!mgrSchedSaved) {
+              alert("Nothing to download — no approved version has been published yet, and the editor is empty. Generate, save, then click 📌 Approve & Publish first.");
+              return;
+            }
+            const proceed = window.confirm("No approved version has been published yet for " + branch + " · " + cycleLabel + ".\n\nClick OK to download the current editor view (marked as DRAFT), or Cancel to go back and Approve & Publish first.");
+            if (!proceed) return;
+            exportSchedulePdf(buildMgrExportPayload({
+              titleSuffix: " (DRAFT)",
+              subtitleSuffix: " · DRAFT — not yet approved",
+              filenameSuffix: "_DRAFT"
+            }));
+            return;
+          }
+          // Same merge as the tech PDF — approved cells win per EC,
+          // managers added/transferred in after approval keep their
+          // live cells so they still appear on the roster.
+          const liveMgrGrid = (mgrSchedDraft && Object.keys(mgrSchedDraft).length > 0)
+            ? mgrSchedDraft
+            : (mgrSchedSaved || {});
+          const mergedMgrGrid = {};
+          sortedMgrs.forEach(mg => {
+            const ec = mg.ec;
+            if (approved.grid && approved.grid[ec] && Object.keys(approved.grid[ec]).length > 0) {
+              mergedMgrGrid[ec] = approved.grid[ec];
+            } else {
+              mergedMgrGrid[ec] = liveMgrGrid[ec] || {};
+            }
+          });
+          const approvedLabel = (approved.name || "Approved") +
+            (approved.approvedBy ? " · approved by " + approved.approvedBy : "") +
+            (approved.savedAt ? " · " + new Date(approved.savedAt).toLocaleString("en-ZA") : "");
+          exportSchedulePdf(buildMgrExportPayload({
+            sourceGrid: mergedMgrGrid,
+            savedAt: approved.savedAt,
+            subtitleSuffix: " · " + approvedLabel,
+            filenameSuffix: "_approved"
+          }));
         };
 
         // Save the current draft to the DB.
@@ -18517,6 +19698,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             : <span style={{ background: "#fef3c7", color: "#7c2d12", fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, letterSpacing: "0.04em" }}>Fallback PIN</span>}
                         </td>
                         <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                          {deviceId && (
+                            <button onClick={async () => {
+                              if (!window.confirm(`Deregister device for ${s.name}?`)) return;
+                              try {
+                                const next = { ...kioskDevices };
+                                delete next[s.name];
+                                if (window.BOA_DB && window.BOA_DB.saveKioskDevices) {
+                                  await window.BOA_DB.saveKioskDevices(next);
+                                } else {
+                                  await window.BOA_DB.sb.from("app_state").upsert({ key: "boa_kiosk_devices_v1", value: next });
+                                }
+                                setKioskDevices(next);
+                              } catch (e) { alert("Error deregistering: " + e.message); }
+                            }} style={{ background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 7, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, marginRight: 6 }}>Deregister</button>
+                          )}
                           {hasPin && (
                             <button onClick={() => setKioskPinReveal(prev => ({ ...prev, [s.name]: !prev[s.name] }))}
                               style={{ background: "#f3f4f6", color: "#374151", border: "none", borderRadius: 7, padding: "6px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, marginRight: 6 }}
@@ -19188,7 +20384,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       )}
 
       {staffModal && <StaffModal s={(() => { const mr = (matRecs || []).find(r => r && r.ec && staffModal.ec && r.ec.trim() === staffModal.ec.trim()); return mr ? { ...staffModal, matStatus: staffModal.matStatus || mr.matStatus, matStart: staffModal.matStart || mr.matStart, matEnd: staffModal.matEnd || mr.matEnd, matReturn: staffModal.matReturn || mr.returnDate, matNotes: staffModal.matNotes || mr.notes } : staffModal; })()} onClose={() => setStaffModal(null)} onSave={saveStaff} onTransfer={(s) => setTransferModal(s)} allStaff={staff} isOwner={!!currentUser?.isOwner} onHardDelete={hardDeleteStaff} />}
-      {mgrModal && <ManagerModal m={(() => { const mr = (matRecs || []).find(r => r && r.ec && mgrModal.ec && r.ec.trim() === mgrModal.ec.trim()); return mr ? { ...mgrModal, matStatus: mgrModal.matStatus || mr.matStatus, matStart: mgrModal.matStart || mr.matStart, matEnd: mgrModal.matEnd || mr.matEnd, matReturn: mgrModal.matReturn || mr.returnDate, matNotes: mgrModal.matNotes || mr.notes } : mgrModal; })()} pin={mgrPins[mgrModal.ec] || ""} onClose={() => setMgrModal(null)} onSave={saveMgr} onDelete={delMgr} />}
+      {mgrModal && <ManagerModal m={(() => { const mr = (matRecs || []).find(r => r && r.ec && mgrModal.ec && r.ec.trim() === mgrModal.ec.trim()); return mr ? { ...mgrModal, matStatus: mgrModal.matStatus || mr.matStatus, matStart: mgrModal.matStart || mr.matStart, matEnd: mgrModal.matEnd || mr.matEnd, matReturn: mgrModal.matReturn || mr.returnDate, matNotes: mgrModal.matNotes || mr.notes } : mgrModal; })()} pin={mgrPins[mgrModal.ec] || ""} onClose={() => setMgrModal(null)} onSave={saveMgr} onDelete={delMgr} smTrialActive={!!(smTrialList || []).find(r => r.ec === mgrModal.ec && r.status === "active")} onStartSmTrial={startSmTrialFor} />}
       {transferModal && <TransferModal s={transferModal} onClose={() => setTransferModal(null)} onConfirm={handleTransfer} onCancelTransfer={cancelTransfer} />}
       {matModal && <MatModal rec={matModal} onClose={() => setMatModal(null)} onSave={saveMat} onDelete={delMat} people={matPickerPool} />}
     </div>

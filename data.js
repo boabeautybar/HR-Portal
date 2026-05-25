@@ -48,13 +48,15 @@
   }
 
   function rowToStaff(r) {
+    var _nm = r.name || "";
+    var _sp = _nm.indexOf(" ");
     return {
       _id: r.id,
       id: r.id,
       ec: r.employee_code,
-      firstName: r.first_name || "",
-      surname: r.surname || "",
-      name: r.name || "",
+      firstName: r.first_name || (_sp >= 0 ? _nm.slice(0, _sp) : _nm),
+      surname: r.surname || (_sp >= 0 ? _nm.slice(_sp + 1).trim() : ""),
+      name: _nm,
       branch: r.branch || "",
       role: r.role || "",
       roleType: getRoleType(r.employee_code, r.role_type),
@@ -83,8 +85,6 @@
   function staffToRow(s) {
     return {
       employee_code: s.ec,
-      first_name: s.firstName || null,
-      surname: s.surname || null,
       name: s.name || "",
       branch: s.branch || "",
       contract: s.contract || null,
@@ -111,13 +111,15 @@
   }
 
   function rowToManager(r) {
+    var _nm = r.name || "";
+    var _sp = _nm.indexOf(" ");
     return {
       _id: r.id,
       id: r.id,
       ec: r.employee_code,
-      firstName: r.first_name || "",
-      surname: r.surname || "",
-      name: r.name || "",
+      firstName: r.first_name || (_sp >= 0 ? _nm.slice(0, _sp) : _nm),
+      surname: r.surname || (_sp >= 0 ? _nm.slice(_sp + 1).trim() : ""),
+      name: _nm,
       branch: r.branch || "",
       role: r.role || "",
       roleType: getRoleType(r.employee_code, r.role_type),
@@ -144,8 +146,6 @@
   function managerToRow(m) {
     return {
       employee_code: m.ec,
-      first_name: m.firstName || null,
-      surname: m.surname || null,
       name: m.name || "",
       branch: m.branch || "",
       role: m.role || null,
@@ -648,6 +648,34 @@
   }
   async function saveOffboarding(records) {
     var res = await sb.from("app_state").upsert({ key: "boa_offboard_v1", value: records || [] });
+    if (res.error) throw res.error;
+    return records;
+  }
+
+  // ---------- SM (Store Manager) trial (boa_sm_trial_v1) ----------
+  // Existing AMs put on a 3-month trial to become Store Managers. Lives in
+  // its own list so the manager record stays clean (and a tagged AM can
+  // still be edited / moved exactly like any other manager). Each record:
+  // {
+  //   _id, ec, name, branch,
+  //   startDate (YYYY-MM-DD),                // when the trial began
+  //   trialDays (default 90),                // total trial length
+  //   evaluations: [                         // 3 evaluation checkpoints
+  //     {key:"m1", dueOffset:30, doneAt:null, notes:""},
+  //     {key:"m2", dueOffset:60, doneAt:null, notes:""},
+  //     {key:"final", dueOffset:90, doneAt:null, notes:""}
+  //   ],
+  //   status: "active" | "passed" | "failed" | "withdrawn",
+  //   outcomeAt, notes, addedAt, updatedAt
+  // }
+  async function loadSmTrial() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_sm_trial_v1").maybeSingle();
+    if (res.error) { console.error("loadSmTrial:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveSmTrial(records) {
+    var res = await sb.from("app_state").upsert({ key: "boa_sm_trial_v1", value: records || [] });
     if (res.error) throw res.error;
     return records;
   }
@@ -1205,6 +1233,8 @@
     saveTrialPeriod: saveTrialPeriod,
     loadOffboarding: loadOffboarding,
     saveOffboarding: saveOffboarding,
+    loadSmTrial:   loadSmTrial,
+    saveSmTrial:   saveSmTrial,
 
     // Attendance
     loadAttendance: loadAttendance,

@@ -889,18 +889,61 @@
     return out;
   }
 
-  async function getSchedule(ym) {
-    var c = client(); if (!c) return { grid: {}, ym: ym };
+  // kind: undefined  → combined tech + manager grids (legacy behaviour).
+  // kind: "tech"     → tech schedule only.
+  // kind: "mgr"      → manager schedule only, with cells re-keyed from
+  //                    YYYY-MM-DD to day-of-month so the kiosk's render
+  //                    code can read them just like the tech grid.
+  //
+  // IMPORTANT: ym key convention mismatch between tech and manager.
+  // The HR portal saves these under DIFFERENT keys for the same cycle:
+  //   - tech schedule: end-month ym  (cycle 25 Apr → 24 May → "2026-05")
+  //   - mgr schedule:  start-month ym (same cycle → "2026-04")
+  //   - attendance:    start-month ym
+  // The kiosk's currentSchedYm() / _nextSchedYm() return end-month,
+  // matching the tech convention. For the manager view we have to
+  // translate the incoming ym back one month before looking it up;
+  // otherwise we load a row from the wrong cycle (or nothing at all).
+  function _toStartMonthYm(endYm) {
+    if (!endYm) return endYm;
+    var p = endYm.split("-"); var y = +p[0], m = +p[1] - 1;
+    if (m < 1) { m = 12; y -= 1; }
+    return y + "-" + String(m).padStart(2, "0");
+  }
+  async function getSchedule(ym, kind) {
+    var c = client(); if (!c) return { grid: {}, ym: ym, kind: kind || "combined" };
     var br = branch();
-    var keys = ["boa_sched_" + br + "_" + ym, "boa_mgrsched_" + br + "_" + ym];
+    // Tech keeps end-month; manager re-maps to start-month.
+    var mgrYm = _toStartMonthYm(ym);
+    var techKey = "boa_sched_"    + br + "_" + ym;
+    var mgrKey  = "boa_mgrsched_" + br + "_" + mgrYm;
+    var keys;
+    if (kind === "tech")      keys = [techKey];
+    else if (kind === "mgr")  keys = [mgrKey];
+    else                       keys = [techKey, mgrKey];
     var res = await c.from("app_state").select("key,value").in("key", keys);
-    if (res.error) { console.error("getSchedule:", res.error); return { grid: {}, ym: ym }; }
+    if (res.error) { console.error("getSchedule:", res.error); return { grid: {}, ym: ym, kind: kind || "combined" }; }
     var combined = {};
     (res.data || []).forEach(function (row) {
       var grid = (row.value && row.value.grid) || {};
-      Object.keys(grid).forEach(function (ec) { combined[ec] = grid[ec]; });
+      var isMgr = row.key === mgrKey;
+      Object.keys(grid).forEach(function (ec) {
+        if (!isMgr) {
+          combined[ec] = grid[ec];
+          return;
+        }
+        // Re-key manager rows: { "2026-05-22": "W" } → { 22: "W" }
+        var row2 = grid[ec] || {};
+        var conv = {};
+        Object.keys(row2).forEach(function (k) {
+          var m = /^\d{4}-\d{2}-(\d{2})$/.exec(k);
+          if (m) conv[parseInt(m[1], 10)] = row2[k];
+          else conv[k] = row2[k];
+        });
+        combined[ec] = conv;
+      });
     });
-    return { grid: combined, ym: ym };
+    return { grid: combined, ym: ym, kind: kind || "combined" };
   }
   // Batched cross-branch schedule load: { branchName -> merged grid }.
   // Used by the manager "Borrow Tech" picker to filter the candidate pool
