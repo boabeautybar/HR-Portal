@@ -19,6 +19,15 @@
   var cfg = window.APP_CONFIG || {};
   if (cfg._picker) return;     // branch picker showing — skip bootstrapping
 
+  // PWA Install Prompt handling
+  var deferredInstallPrompt = null;
+  window.addEventListener('beforeinstallprompt', function (e) {
+    e.preventDefault();
+    deferredInstallPrompt = e;
+    var btn = document.getElementById("pwa-install-btn");
+    if (btn) btn.style.display = "inline-flex";
+  });
+
   document.addEventListener("app:authed", function (e) {
     if (e.detail.role !== "manager") return;
     boot();
@@ -52,6 +61,7 @@
           '<div class="gp-sublabel" id="gp-sublabel">MANAGER</div>' +
         '</div>' +
         '<div class="gp-actions">' +
+          '<button class="gp-btn" id="pwa-install-btn" style="display:none; background:#16a34a; border-color:#15803d; margin-right:12px;" type="button"><span>⬇️</span> Install to Device</button>' +
           '<button class="gp-btn"  data-action="home"     type="button"><span>🏠</span> Home</button>' +
           '<button class="gp-btn"  data-action="news"     type="button"><span>📰</span> News<span class="gp-badge" id="gp-news-count" style="display:none">0</span></button>' +
           '<button class="gp-btn"  data-action="schedule" type="button"><span>📅</span> Schedule</button>' +
@@ -78,6 +88,31 @@
       if (a === "today")    { renderCheckins(); return; }
       if (a === "cashlist") { renderCashups();  return; }
     });
+
+    // PWA Install Button Logic
+    var installBtn = document.getElementById("pwa-install-btn");
+    var isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+    var isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+    
+    if (installBtn && !isStandalone) {
+      // Show immediately on iOS (since it doesn't fire beforeinstallprompt) or if prompt is ready
+      if (isIos || deferredInstallPrompt) {
+        installBtn.style.display = "inline-flex";
+      }
+      
+      installBtn.addEventListener("click", async function() {
+        if (isIos) {
+          alert("To install this app on your iOS device:\n\n1. Tap the Share button (square with an up arrow)\n2. Select 'Add to Home Screen'");
+        } else if (deferredInstallPrompt) {
+          deferredInstallPrompt.prompt();
+          var choiceResult = await deferredInstallPrompt.userChoice;
+          if (choiceResult.outcome === 'accepted') {
+            installBtn.style.display = "none";
+          }
+          deferredInstallPrompt = null;
+        }
+      });
+    }
 
     if (window.BOA_FLOWS) {
       window.BOA_FLOWS.refreshNewsBadge();
