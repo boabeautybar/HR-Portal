@@ -95,10 +95,8 @@
     var isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
     
     if (installBtn && !isStandalone) {
-      // Show immediately on iOS (since it doesn't fire beforeinstallprompt) or if prompt is ready
-      if (isIos || deferredInstallPrompt) {
-        installBtn.style.display = "inline-flex";
-      }
+      // Always show the button unless already installed/standalone
+      installBtn.style.display = "inline-flex";
       
       installBtn.addEventListener("click", async function() {
         if (isIos) {
@@ -110,6 +108,9 @@
             installBtn.style.display = "none";
           }
           deferredInstallPrompt = null;
+        } else {
+          // Fallback if browser doesn't offer the programmatic prompt
+          alert("To install this app to your computer, look for the 'Install' icon in your browser's address bar (near the bookmark star) or use the browser menu.");
         }
       });
     }
