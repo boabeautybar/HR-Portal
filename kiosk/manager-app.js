@@ -19,18 +19,13 @@
   var cfg = window.APP_CONFIG || {};
   if (cfg._picker) return;     // branch picker showing — skip bootstrapping
 
-  // PWA Install Prompt handling
-  var deferredInstallPrompt = null;
-  window.addEventListener('beforeinstallprompt', function (e) {
-    e.preventDefault();
-    deferredInstallPrompt = e;
-  });
 
   // PWA Install Prompt handling
-  var deferredInstallPrompt = null;
+  var deferredInstallPrompt = window.globalDeferredPrompt || null;
   window.addEventListener('beforeinstallprompt', function (e) {
     e.preventDefault();
     deferredInstallPrompt = e;
+    window.globalDeferredPrompt = e;
     var btn = document.getElementById("pwa-install-btn");
     if (btn) btn.style.display = "inline-flex";
   });
@@ -102,19 +97,35 @@
     var isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
 
     if (installBtn && !isStandalone) {
-      // Always show the button unless already installed/standalone
-      installBtn.style.display = "inline-flex";
+      if ('onbeforeinstallprompt' in window) {
+        if (window.globalDeferredPrompt) {
+          installBtn.style.display = "inline-flex";
+        } else {
+          setTimeout(function() {
+            if (window.globalDeferredPrompt) installBtn.style.display = "inline-flex";
+            else installBtn.style.display = "none";
+          }, 800);
+        }
+      } else {
+        installBtn.style.display = "inline-flex";
+      }
+
+      window.addEventListener('appinstalled', function() {
+        installBtn.style.display = "none";
+      });
 
       installBtn.addEventListener("click", async function () {
         if (isIos) {
           alert("To install this app on your iOS device:\n\n1. Tap the Share button (square with an up arrow)\n2. Select 'Add to Home Screen'");
-        } else if (deferredInstallPrompt) {
-          deferredInstallPrompt.prompt();
-          var choiceResult = await deferredInstallPrompt.userChoice;
+        } else if (deferredInstallPrompt || window.globalDeferredPrompt) {
+          var pwaPrompt = deferredInstallPrompt || window.globalDeferredPrompt;
+          pwaPrompt.prompt();
+          var choiceResult = await pwaPrompt.userChoice;
           if (choiceResult.outcome === 'accepted') {
             installBtn.style.display = "none";
           }
           deferredInstallPrompt = null;
+          window.globalDeferredPrompt = null;
         } else {
           // Fallback if browser doesn't offer the programmatic prompt
           var ua = navigator.userAgent.toLowerCase();
