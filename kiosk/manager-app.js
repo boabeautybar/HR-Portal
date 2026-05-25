@@ -24,6 +24,13 @@
   window.addEventListener('beforeinstallprompt', function (e) {
     e.preventDefault();
     deferredInstallPrompt = e;
+  });
+
+  // PWA Install Prompt handling
+  var deferredInstallPrompt = null;
+  window.addEventListener('beforeinstallprompt', function (e) {
+    e.preventDefault();
+    deferredInstallPrompt = e;
     var btn = document.getElementById("pwa-install-btn");
     if (btn) btn.style.display = "inline-flex";
   });
@@ -110,7 +117,14 @@
           deferredInstallPrompt = null;
         } else {
           // Fallback if browser doesn't offer the programmatic prompt
-          alert("To install this app to your computer, look for the 'Install' icon in your browser's address bar (near the bookmark star) or use the browser menu.");
+          var ua = navigator.userAgent.toLowerCase();
+          if (ua.indexOf('firefox') > -1) {
+            alert("Firefox does not natively support installing web apps. Please open this page in Chrome, Safari, or Edge to install the Kiosk.");
+          } else if (ua.indexOf('safari') > -1 && ua.indexOf('chrome') === -1) {
+            alert("To install this app on Mac Safari:\n\n1. Click the Share button (square with an up arrow) at the top right\n2. Select 'Add to Dock'");
+          } else {
+            alert("To install this app to your computer, look for the 'Install' icon in your browser's address bar (near the bookmark star) or use the browser menu.");
+          }
         }
       });
     }
