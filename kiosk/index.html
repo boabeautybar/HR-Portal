@@ -8,6 +8,31 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Playfair+Display:wght@500;600;700&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="styles.css" />
+
+<!-- PWA Meta Tags -->
+<link rel="manifest" href="manifest.webmanifest" />
+<meta name="theme-color" content="#BE185D" />
+<link rel="apple-touch-icon" href="icon.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+<script>
+  window.globalDeferredPrompt = null;
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    window.globalDeferredPrompt = e;
+  });
+
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js').then(reg => {
+        console.log('Pass-through Service Worker registered.', reg);
+      }).catch(err => {
+        console.log('Service Worker registration failed:', err);
+      });
+    });
+  }
+</script>
 </head>
 <body>
 

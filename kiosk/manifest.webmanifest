@@ -1,0 +1,17 @@
+{
+  "name": "BOA Kiosk",
+  "short_name": "BOA Kiosk",
+  "description": "BOA HR Check-in Kiosk",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#FDF2F8",
+  "theme_color": "#BE185D",
+  "icons": [
+    {
+      "src": "icon.png",
+      "sizes": "192x192 512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
