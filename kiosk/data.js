@@ -1404,43 +1404,32 @@
     return map;
   }
 
-  // ---------- Voucher code lookup (Shopify → Fresha) ----------
-  // Clients buy Shopify gift vouchers (long codes); the store redeems them in
-  // Fresha using a matching Fresha voucher code. That mapping is sensitive —
-  // anyone holding the full list could mint free redemptions — so the kiosk
-  // NEVER pulls the whole table. A lookup is an exact, full-code match that
-  // returns at most ONE row, so codes can't be browsed or fished out.
+  // ---------- Voucher code lookup (Shopify last-4 → Fresha) ----------
+  // Shopify only reveals the LAST 4 of a gift-voucher code to the seller, so
+  // the store's sheet maps that last-4 (plus the voucher amount) to a Fresha
+  // voucher code. The manager is made to type the client's full code, but the
+  // match is on the last 4 only; when two vouchers share the same last 4 we
+  // return both with their amounts so the manager picks by amount.
   //
-  // SECURITY (recommended hardening): expose a Postgres RPC (security definer)
-  //   create function lookup_fresha_voucher(p_shopify_code text)
-  //   returns text language sql security definer as $$
-  //     select fresha_code from public.vouchers
-  //     where upper(btrim(shopify_code)) = upper(btrim(p_shopify_code)) limit 1
-  //   $$;
-  // grant execute to the anon role, and do NOT grant SELECT on `vouchers`.
-  // Then the kiosk can only ask "what's the Fresha code for THIS exact Shopify
-  // code" and can never dump the list. This helper uses that RPC when it
-  // exists and falls back to a direct exact-match query otherwise.
-  async function lookupFreshaVoucher(shopifyCode) {
+  // Data lives in a `vouchers` table: { last4 text, amount text, fresha_code
+  // text }. `last4` is NOT unique (collisions are expected — that's why amount
+  // is shown). Store last4 as TEXT so leading zeros (e.g. "0042") survive.
+  async function lookupFreshaVoucher(typed) {
     var c = client(); if (!c) throw new Error("Supabase not configured");
-    var code = String(shopifyCode || "").trim();
-    if (!code) return { found: false, fresha: null, code: code };
-    // 1) Preferred: server-side RPC (no table SELECT granted to the kiosk).
-    try {
-      var rpc = await c.rpc("lookup_fresha_voucher", { p_shopify_code: code });
-      if (!rpc.error) {
-        var d = rpc.data, viaRpc = null;
-        if (typeof d === "string") viaRpc = d || null;
-        else if (Array.isArray(d)) viaRpc = (d[0] && (d[0].fresha_code || d[0])) || null;
-        else if (d && typeof d === "object") viaRpc = d.fresha_code || null;
-        return { found: !!viaRpc, fresha: viaRpc, code: code };
-      }
-    } catch (e) { /* RPC not set up — fall through to the table query */ }
-    // 2) Fallback: exact-match query (still returns at most one row).
-    var res = await c.from("vouchers").select("fresha_code").eq("shopify_code", code).maybeSingle();
+    var full   = String(typed || "").replace(/\s+/g, "");
+    var minLen = (cfg.voucherMinChars != null) ? cfg.voucherMinChars : 8;
+    // Force a full-length entry — the manager must type the whole code, not
+    // just the 4 digits. Matching still only uses the last 4.
+    if (full.length < minLen) {
+      return { found: false, matches: [], last4: "", tooShort: true, minLen: minLen };
+    }
+    var last4 = full.slice(-4).toUpperCase();
+    var res = await c.from("vouchers").select("fresha_code, amount").eq("last4", last4);
     if (res.error) { console.error("lookupFreshaVoucher:", res.error); throw res.error; }
-    var fresha = (res.data && res.data.fresha_code) || null;
-    return { found: !!fresha, fresha: fresha, code: code };
+    var matches = (res.data || [])
+      .map(function (r) { return { fresha: r.fresha_code, amount: r.amount }; })
+      .filter(function (m) { return m.fresha; });
+    return { found: matches.length > 0, matches: matches, last4: last4, tooShort: false };
   }
   async function listAllManagers() {
     var c = client(); if (!c) return [];

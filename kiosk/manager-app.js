@@ -476,11 +476,22 @@
   }
 
   // ---------------- Voucher code lookup (Shopify → Fresha) ----------------
-  // A client buys a Shopify gift voucher (long code); the store needs the
-  // matching Fresha voucher code to redeem it. The manager must type the FULL
-  // Shopify code and press Find — there's no list, no partial / live search,
-  // and the lookup is an exact match returning at most one code, so the
-  // mapping can't be browsed or fished out.
+  // Shopify only shows the seller the LAST 4 of a gift-voucher code, so the
+  // store's sheet maps that last-4 (+ the voucher amount) to a Fresha code.
+  // The manager is required to type the client's FULL code — there's no list,
+  // no partial / live search — but the match is on the last 4 only. When two
+  // vouchers share the same last 4, every match is shown with its amount so
+  // the manager picks the one whose amount matches the client's voucher.
+  function _voucherCard(m) {
+    return '<div style="background:#dcfce7;border:1px solid #86efac;border-radius:12px;padding:14px 16px;margin-top:10px">' +
+      (m.amount ? '<div style="font-size:13px;font-weight:800;color:#14532d">Amount: ' + esc(String(m.amount)) + '</div>' : '') +
+      '<div style="font-size:11px;font-weight:700;color:#14532d;text-transform:uppercase;letter-spacing:0.06em;margin-top:' + (m.amount ? '6' : '0') + 'px">Fresha voucher code</div>' +
+      '<div style="display:flex;align-items:center;gap:12px;margin-top:4px;flex-wrap:wrap">' +
+        '<code style="font-size:22px;font-weight:800;color:#065f46;letter-spacing:0.04em">' + esc(m.fresha) + '</code>' +
+        '<button type="button" class="vc-copy" data-code="' + esc(m.fresha) + '" style="background:#fff;border:1px solid #86efac;color:#065f46;border-radius:8px;padding:6px 12px;font-weight:700;cursor:pointer">Copy</button>' +
+      '</div>' +
+    '</div>';
+  }
   async function renderVoucherLookup() {
     setSublabel("Voucher Code");
     if (configMissing()) { setMain(configMissingHtml()); return; }
@@ -491,11 +502,11 @@
           '<button class="link-btn link-btn-dark" id="back-home">← Back</button>' +
         '</div>' +
         '<div style="font-size:13px;color:#6b7280;margin-bottom:14px;line-height:1.5">' +
-          'Enter the client\'s <strong>full Shopify voucher code</strong> exactly as it appears, then press <strong>Find</strong>. ' +
-          'The matching Fresha code only appears for a complete, exact code — partial codes never match.' +
+          'Enter the client\'s <strong>full voucher code</strong> exactly as it appears on their voucher, then press <strong>Find</strong>. ' +
+          'The matching Fresha code only appears once the complete code is entered.' +
         '</div>' +
         '<form id="vc-form" autocomplete="off">' +
-          '<label class="lbl" for="vc-input">Shopify voucher code</label>' +
+          '<label class="lbl" for="vc-input">Full voucher code</label>' +
           '<input id="vc-input" class="input" type="text" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="Type or paste the full code…">' +
           '<div class="btn-row" style="margin-top:12px"><button class="btn btn-primary" id="vc-find" type="submit">Find Fresha code</button></div>' +
         '</form>' +
@@ -513,31 +524,38 @@
     // Fresha code is never left on screen against a different / partial entry.
     input.addEventListener("input", function () { resEl.innerHTML = ""; });
 
+    function wireCopies() {
+      Array.prototype.forEach.call(resEl.querySelectorAll(".vc-copy"), function (btn) {
+        btn.onclick = function () {
+          var code = btn.getAttribute("data-code") || "";
+          try {
+            navigator.clipboard.writeText(code).then(function () { btn.textContent = "Copied ✓"; }, function () { btn.textContent = "Copy failed"; });
+          } catch (_) { btn.textContent = "Copy failed"; }
+        };
+      });
+    }
+
     form.addEventListener("submit", async function (e) {
       e.preventDefault();
       var code = (input.value || "").trim();
-      if (!code) { resEl.innerHTML = '<div class="warn">Type the full Shopify code first.</div>'; return; }
+      if (!code) { resEl.innerHTML = '<div class="warn">Type the full voucher code first.</div>'; return; }
       findBtn.disabled = true; findBtn.textContent = "Searching…";
       try {
         var r = await window.APP_DATA.lookupFreshaVoucher(code);
-        if (r && r.found && r.fresha) {
-          resEl.innerHTML =
-            '<div style="background:#dcfce7;border:1px solid #86efac;border-radius:12px;padding:16px 18px">' +
-              '<div style="font-size:12px;font-weight:700;color:#14532d;text-transform:uppercase;letter-spacing:0.06em">Fresha voucher code</div>' +
-              '<div style="display:flex;align-items:center;gap:12px;margin-top:6px;flex-wrap:wrap">' +
-                '<code id="vc-fresha" style="font-size:24px;font-weight:800;color:#065f46;letter-spacing:0.04em">' + esc(r.fresha) + '</code>' +
-                '<button id="vc-copy" type="button" style="background:#fff;border:1px solid #86efac;color:#065f46;border-radius:8px;padding:6px 12px;font-weight:700;cursor:pointer">Copy</button>' +
-              '</div>' +
-            '</div>';
-          var copyBtn = document.getElementById("vc-copy");
-          if (copyBtn) copyBtn.onclick = function () {
-            try {
-              navigator.clipboard.writeText(r.fresha).then(function () { copyBtn.textContent = "Copied ✓"; }, function () { copyBtn.textContent = "Copy failed"; });
-            } catch (_) { copyBtn.textContent = "Copy failed"; }
-          };
+        if (r.tooShort) {
+          resEl.innerHTML = '<div class="warn">Enter the client\'s <strong>full</strong> voucher code (at least ' + r.minLen + ' characters).</div>';
+        } else if (!r.found) {
+          resEl.innerHTML = '<div class="warn">No matching Fresha voucher found. Double-check the full code was entered correctly.</div>';
+        } else if (r.matches.length === 1) {
+          resEl.innerHTML = _voucherCard(r.matches[0]);
+          wireCopies();
         } else {
           resEl.innerHTML =
-            '<div class="warn">No Fresha code matches that Shopify code. Check that you typed the <strong>complete</strong> code exactly, with no missing characters.</div>';
+            '<div class="warn" style="background:#fef3c7;border-color:#fde68a;color:#92400e">' +
+              '<strong>' + r.matches.length + ' vouchers end in those digits.</strong> Pick the one whose <strong>amount</strong> matches the client\'s voucher.' +
+            '</div>' +
+            r.matches.map(_voucherCard).join("");
+          wireCopies();
         }
       } catch (err) {
         resEl.innerHTML = '<div class="warn">Could not look that up: ' + esc((err && err.message) || err) + '</div>';
