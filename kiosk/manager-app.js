@@ -143,6 +143,8 @@
     if (window.BOA_FLOWS) {
       window.BOA_FLOWS.refreshNewsBadge();
       setInterval(window.BOA_FLOWS.refreshNewsBadge, 60 * 1000);
+      // Keep the "submit your check-in" warning live while the landing is open.
+      setInterval(window.BOA_FLOWS.refreshCheckinNag, 60 * 1000);
     }
 
     // ── Store-open gate ─────────────────────────────────────────
@@ -423,6 +425,9 @@
       '<div class="hero-brand">' + esc(cfg.branchDisplayName || cfg.branchName || "BOA Check-in") + ' · Manager</div>' +
       '<div class="hero-title">What would you like to do?</div>' +
       '</div>' +
+      // Big blinking warning when today's nail-tech check-in hasn't been
+      // submitted yet (and it's past 10:30) — populated async below.
+      '<div id="checkin-nag-slot"></div>' +
       // Reminders panel — populated async right after this innerHTML write.
       // Hidden by default; only flips visible when there's at least one
       // reminder firing today for this branch.
@@ -451,6 +456,7 @@
       '</div>'
     );
     loadKioskRemindersIntoPanel();
+    if (window.BOA_FLOWS) window.BOA_FLOWS.refreshCheckinNag();
     document.getElementById("tile-nailtech").onclick = function () {
       if (window.BOA_FLOWS) window.BOA_FLOWS.renderCheckin();
     };
