@@ -864,48 +864,81 @@
     }
     document.getElementById("mc-warn").innerHTML = warnHtml;
 
+    function mgrRowHtml(m) {
+      var ec = m.employee_code || "";
+      var has = !!pins[ec];
+      var last = byEc[ec];
+      var inDone = !!inTodayByEc[ec];   // already clocked in today → no second clock-in
+      // An AM on an active SM trial is shown as "SM · on trial", mirroring
+      // the HR portal's effective-role badge.
+      var onSmTrial = m.role === "AM" && !!(smTrialEcs && smTrialEcs[String(ec).trim()]);
+      var roleLabel = onSmTrial ? "SM · on trial" : m.role;
+      var rolePill = roleLabel
+        ? (onSmTrial
+            ? ' <span class="pill" style="background:#FFF7ED;color:#9A3412;border:1px solid #FED7AA">⭐ ' + esc(roleLabel) + '</span>'
+            : ' <span class="pill pill-mute">' + esc(roleLabel) + '</span>')
+        : "";
+      var lastLabel;
+      if (!last) lastLabel = '<span class="pill pill-mute">not clocked in</span>';
+      else if (last.type === "in") lastLabel = '<span class="pill pill-ok">IN ' + fmtTime(last.ts) + '</span>';
+      else if (last.type === "out_auto") lastLabel = '<span class="pill pill-warn">AUTO-OUT ' + fmtTime(last.ts) + '</span>';
+      else lastLabel = '<span class="pill pill-warn">OUT ' + fmtTime(last.ts) + '</span>';
+      if (inDone && last && last.type !== "in") {
+        lastLabel += ' <span class="pill pill-mute">clocked in ' + fmtTime(inTodayByEc[ec].ts) + '</span>';
+      }
+      var autoBadge = autoYesterday[ec] ? ' <span class="pill" style="background:#fee2e2;color:#7f1d1d">⚠ auto-out yesterday</span>' : "";
+      var rowCls = m.branch === thisBranch ? "" : " staff-inactive";
+      return '<div class="staff-row' + rowCls + '" data-id="' + m.id + '" data-ec="' + esc(ec) + '" data-name="' + esc(m.name) + '">' +
+        '<div class="staff-row-main">' +
+        '<div class="staff-name">' + esc(m.name) +
+        rolePill +
+        (m.branch !== thisBranch ? ' <span class="pill pill-mute">' + esc(m.branch || "—") + "</span>" : "") +
+        (has ? "" : ' <span class="pill pill-warn">NO PIN</span>') + autoBadge +
+        '</div>' +
+        '<div class="staff-code" style="margin-top:3px">' + lastLabel + '</div>' +
+        '</div>' +
+        '<div class="staff-row-actions">' +
+        '<button class="btn btn-primary" data-act="clockin"  ' + (has && !inDone ? "" : 'disabled') + (inDone ? ' title="Already clocked in today"' : '') + '>Clock In</button>' +
+        '<button class="link-btn"       data-act="clockout" ' + (has ? "" : 'disabled') + '>Clock Out</button>' +
+        '</div>' +
+        '</div>';
+    }
+
+    // Only THIS store's managers are shown by default. Managers based at other
+    // stores live behind a "Clock in other manager" button so the list isn't
+    // cluttered with every manager in the company.
+    var hereMgrs  = mgrs.filter(function (m) { return m.branch === thisBranch; });
+    var otherMgrs = mgrs.filter(function (m) { return m.branch !== thisBranch; });
+
     document.getElementById("mc-body").innerHTML =
       '<div class="staff-list">' +
-      mgrs.map(function (m) {
-        var ec = m.employee_code || "";
-        var has = !!pins[ec];
-        var last = byEc[ec];
-        var inDone = !!inTodayByEc[ec];   // already clocked in today → no second clock-in
-        // An AM on an active SM trial is shown as "SM · on trial", mirroring
-        // the HR portal's effective-role badge.
-        var onSmTrial = m.role === "AM" && !!(smTrialEcs && smTrialEcs[String(ec).trim()]);
-        var roleLabel = onSmTrial ? "SM · on trial" : m.role;
-        var rolePill = roleLabel
-          ? (onSmTrial
-              ? ' <span class="pill" style="background:#FFF7ED;color:#9A3412;border:1px solid #FED7AA">⭐ ' + esc(roleLabel) + '</span>'
-              : ' <span class="pill pill-mute">' + esc(roleLabel) + '</span>')
-          : "";
-        var lastLabel;
-        if (!last) lastLabel = '<span class="pill pill-mute">not clocked in</span>';
-        else if (last.type === "in") lastLabel = '<span class="pill pill-ok">IN ' + fmtTime(last.ts) + '</span>';
-        else if (last.type === "out_auto") lastLabel = '<span class="pill pill-warn">AUTO-OUT ' + fmtTime(last.ts) + '</span>';
-        else lastLabel = '<span class="pill pill-warn">OUT ' + fmtTime(last.ts) + '</span>';
-        if (inDone && last && last.type !== "in") {
-          lastLabel += ' <span class="pill pill-mute">clocked in ' + fmtTime(inTodayByEc[ec].ts) + '</span>';
-        }
-        var autoBadge = autoYesterday[ec] ? ' <span class="pill" style="background:#fee2e2;color:#7f1d1d">⚠ auto-out yesterday</span>' : "";
-        var rowCls = m.branch === thisBranch ? "" : " staff-inactive";
-        return '<div class="staff-row' + rowCls + '" data-id="' + m.id + '" data-ec="' + esc(ec) + '" data-name="' + esc(m.name) + '">' +
-          '<div class="staff-row-main">' +
-          '<div class="staff-name">' + esc(m.name) +
-          rolePill +
-          (m.branch !== thisBranch ? ' <span class="pill pill-mute">' + esc(m.branch || "—") + "</span>" : "") +
-          (has ? "" : ' <span class="pill pill-warn">NO PIN</span>') + autoBadge +
-          '</div>' +
-          '<div class="staff-code" style="margin-top:3px">' + lastLabel + '</div>' +
-          '</div>' +
-          '<div class="staff-row-actions">' +
-          '<button class="btn btn-primary" data-act="clockin"  ' + (has && !inDone ? "" : 'disabled') + (inDone ? ' title="Already clocked in today"' : '') + '>Clock In</button>' +
-          '<button class="link-btn"       data-act="clockout" ' + (has ? "" : 'disabled') + '>Clock Out</button>' +
-          '</div>' +
-          '</div>';
-      }).join("") +
-      '</div>';
+      (hereMgrs.length
+        ? hereMgrs.map(mgrRowHtml).join("")
+        : '<div class="empty">No managers are based at ' + esc(thisBranch || "this store") + ' yet.</div>') +
+      '</div>' +
+      (otherMgrs.length
+        ? '<button id="mc-show-others" type="button" ' +
+            'style="margin-top:14px;width:100%;background:#fff;color:var(--pink-700);border:2px solid var(--pink-200);border-radius:10px;padding:11px 14px;font-weight:700;font-size:14px;cursor:pointer">' +
+            '➕ Clock in other manager (' + otherMgrs.length + ' from other stores)' +
+          '</button>' +
+          '<div id="mc-others" style="display:none;margin-top:12px">' +
+            '<div style="font-size:12px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Managers from other stores</div>' +
+            '<div class="staff-list">' + otherMgrs.map(mgrRowHtml).join("") + '</div>' +
+          '</div>'
+        : "");
+
+    var showOthersBtn = document.getElementById("mc-show-others");
+    if (showOthersBtn) {
+      showOthersBtn.onclick = function () {
+        var box = document.getElementById("mc-others");
+        if (!box) return;
+        var willOpen = box.style.display === "none";
+        box.style.display = willOpen ? "" : "none";
+        showOthersBtn.innerHTML = willOpen
+          ? "▲ Hide other stores' managers"
+          : "➕ Clock in other manager (" + otherMgrs.length + " from other stores)";
+      };
+    }
 
     var rows = document.querySelectorAll('#mc-body .staff-row');
     Array.prototype.forEach.call(rows, function (row) {
