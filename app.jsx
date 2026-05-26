@@ -12640,6 +12640,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             app_state['boa_compliance_actions_v1'] so requests survive page
             reloads and other users. */}
         {tab === "compliance" && (() => {
+          // A transferred person belongs to their destination store once the
+          // transfer has taken effect (transfer_date reached) — same rule the
+          // schedule, check-in and Locations views use. Until then, and when
+          // there's no transfer, they stay on their current branch. Applied to
+          // every compliance pool below so a moved tech (e.g. Sea Point → Betty)
+          // is listed under the new store, not the old one.
+          const _todayYmd = new Date().toISOString().slice(0, 10);
+          const effBranch = (p) => (p && p.transferring && p.transferTo && p.transferDate && _todayYmd >= p.transferDate)
+            ? p.transferTo
+            : ((p && p.branch) || "");
           // Build the combined pool: active techs (exclude off-boarded /
           // on-mat for clarity - they're not the people to chase) + every
           // manager. Off-boarded folk who have already left are dropped
@@ -12647,9 +12657,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const pool = [
             ...enriched
               .filter(s => !s.offboarded || (s.offDaysSinceLeft != null && s.offDaysSinceLeft < 0))
-              .map(s => ({ ec: s.ec, name: s.name, branch: s.branch, permit: s.permit, role: "NT", onMat: s.onMat })),
+              .map(s => ({ ec: s.ec, name: s.name, branch: effBranch(s), permit: s.permit, role: "NT", onMat: s.onMat })),
             ...(managers || [])
-              .map(m => ({ ec: m.ec, name: m.name, branch: m.branch, permit: m.permit, role: m.role || "AM", onMat: !!m.onMat }))
+              .map(m => ({ ec: m.ec, name: m.name, branch: effBranch(m), permit: m.permit, role: m.role || "AM", onMat: !!m.onMat }))
           ].filter(p => p && p.ec);
 
           // Bucket by permit. Non-compliant = explicit z_na OR no permit set.
@@ -12721,11 +12731,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   ...(enriched || [])
                     .filter(s => s && s.ec && (!s.offboarded || (s.offDaysSinceLeft != null && s.offDaysSinceLeft < 0)))
                     .filter(s => (s.permit === "asylum" || s.permit === "work_permit") && s.permitExpiry)
-                    .map(s => ({ _id: s._id, ec: s.ec, name: s.name, branch: s.branch, permit: s.permit, permitExpiry: s.permitExpiry, role: "NT", onMat: s.onMat })),
+                    .map(s => ({ _id: s._id, ec: s.ec, name: s.name, branch: effBranch(s), permit: s.permit, permitExpiry: s.permitExpiry, role: "NT", onMat: s.onMat })),
                   ...(managers || [])
                     .filter(m => m && m.ec)
                     .filter(m => (m.permit === "asylum" || m.permit === "work_permit") && m.permitExpiry)
-                    .map(m => ({ _id: m._id, ec: m.ec, name: m.name, branch: m.branch, permit: m.permit, permitExpiry: m.permitExpiry, role: m.role || "AM", onMat: !!m.onMat }))
+                    .map(m => ({ _id: m._id, ec: m.ec, name: m.name, branch: effBranch(m), permit: m.permit, permitExpiry: m.permitExpiry, role: m.role || "AM", onMat: !!m.onMat }))
                 ];
                 // Within next 90 days OR already expired.
                 const flagged = expPool
@@ -12848,11 +12858,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   ...(enriched || [])
                     .filter(s => s && s.ec && (!s.offboarded || (s.offDaysSinceLeft != null && s.offDaysSinceLeft < 0)))
                     .filter(s => !s.permit || s.permit === "z_na")
-                    .map(s => ({ _id: s._id, ec: s.ec, name: s.name, branch: s.branch, permit: s.permit, role: "NT", onMat: s.onMat })),
+                    .map(s => ({ _id: s._id, ec: s.ec, name: s.name, branch: effBranch(s), permit: s.permit, role: "NT", onMat: s.onMat })),
                   ...(managers || [])
                     .filter(m => m && m.ec)
                     .filter(m => !m.permit || m.permit === "z_na")
-                    .map(m => ({ _id: m._id, ec: m.ec, name: m.name, branch: m.branch, permit: m.permit, role: m.role || "AM", onMat: !!m.onMat }))
+                    .map(m => ({ _id: m._id, ec: m.ec, name: m.name, branch: effBranch(m), permit: m.permit, role: m.role || "AM", onMat: !!m.onMat }))
                 ];
                 const q = (compSearch || "").trim().toLowerCase();
                 const filtered = dirPool.filter(p => {
