@@ -58,6 +58,9 @@
 
     refreshNewsBadge();
     setInterval(refreshNewsBadge, 60 * 1000);
+    // Re-check the submit-your-check-in nag each minute so it appears the
+    // moment the clock passes 10:30 and clears as soon as the day is signed off.
+    setInterval(refreshCheckinNag, 60 * 1000);
 
     renderLanding();
   }
@@ -82,6 +85,7 @@
         '<div class="hero-brand">' + esc(cfg.branchDisplayName || cfg.branchName || "BOA Check-in") + '</div>' +
         '<div class="hero-title">What would you like to do?</div>' +
       '</div>' +
+      '<div id="checkin-nag-slot"></div>' +
       '<div class="tile-grid tile-grid-4">' +
         '<button class="tile tile-big" id="tile-checkin" type="button">' +
           '<div class="tile-icon">✍️</div>' +
@@ -109,6 +113,7 @@
     document.getElementById("tile-schedule").onclick = renderSchedule;
     document.getElementById("tile-offreq").onclick   = renderOffRequests;
     document.getElementById("tile-cashup").onclick   = renderCashup;
+    refreshCheckinNag();
   }
 
   // ---------------- News (read-only viewer) ----------------
@@ -2200,6 +2205,60 @@
            '</div>';
   }
 
+  // ---------- "Submit today's check-in" home-screen nag ----------
+  // Submitting the daily nail-tech check-in is the store's duty. If it's past
+  // 10:30 and today still isn't signed off — while techs are scheduled to work
+  // — the home screen shows a big blinking warning until it's submitted.
+  var CHECKIN_NAG_AFTER_MIN = 10 * 60 + 30;   // 10:30 local time
+
+  async function shouldNagUnsubmittedCheckin() {
+    try {
+      if (!window.APP_DATA || !window.APP_DATA.isConfigured()) return false;
+      var now = new Date();
+      if (now.getHours() * 60 + now.getMinutes() < CHECKIN_NAG_AFTER_MIN) return false;
+      // Already submitted today? Then nothing to nag about.
+      var daily = await window.APP_DATA.getDailyRecord(now);
+      if (daily && daily.signedBy) return false;
+      // Only nag on days the store is actually operating — i.e. at least one
+      // nail tech is scheduled to work (W / WL / E) today. Manager-coded ECs
+      // are skipped: they clock in via the Manager Check-in tile, not here.
+      var sched = await window.APP_DATA.getSchedule(window.APP_DATA.ymForDate(now));
+      var grid  = (sched && sched.grid) || {};
+      var dayKey = String(now.getDate());
+      for (var ec in grid) {
+        var st = grid[ec] && grid[ec][dayKey];
+        if (st !== "W" && st !== "WL" && st !== "E") continue;
+        var code = String(ec).toUpperCase();
+        if (/\dM$/.test(code) || /^M\d/.test(code)) continue;   // manager code
+        return true;
+      }
+      return false;
+    } catch (e) {
+      console.warn("check-in nag check failed (non-fatal):", e);
+      return false;
+    }
+  }
+
+  function checkinNagHtml() {
+    return '<div class="checkin-nag" role="alert">' +
+             '<div class="checkin-nag-icon">⚠️</div>' +
+             '<div class="checkin-nag-text">' +
+               '<div class="checkin-nag-title">CHECK-IN NOT SUBMITTED</div>' +
+               '<div class="checkin-nag-sub">It\'s after 10:30 and today\'s nail tech check-in still hasn\'t been submitted. ' +
+                 'Open <strong>Daily Check-in</strong>, confirm everyone and sign off — it\'s the store\'s duty to submit it.</div>' +
+             '</div>' +
+           '</div>';
+  }
+
+  // Populate (or clear) the #checkin-nag-slot on whichever landing is showing.
+  // Safe to call when the slot isn't present (e.g. on a sub-screen) — no-ops.
+  async function refreshCheckinNag() {
+    var el = document.getElementById("checkin-nag-slot");
+    if (!el) return;
+    var nag = await shouldNagUnsubmittedCheckin();
+    el.innerHTML = nag ? checkinNagHtml() : "";
+  }
+
   // ---------- Shared flows (used by manager-app.js too) ----------
   // Manager dashboard reuses these so we don't duplicate ~600 lines of UI.
   // Call configure() once to redirect output to a different element and
@@ -2215,6 +2274,7 @@
     renderOffRequests:  function () { return renderOffRequests.apply(null, arguments); },
     renderSchedule:     function () { return renderSchedule.apply(null, arguments); },
     renderNews:         function () { return renderNews.apply(null, arguments); },
-    refreshNewsBadge:   function () { return refreshNewsBadge.apply(null, arguments); }
+    refreshNewsBadge:   function () { return refreshNewsBadge.apply(null, arguments); },
+    refreshCheckinNag:  function () { return refreshCheckinNag.apply(null, arguments); }
   };
 })();
