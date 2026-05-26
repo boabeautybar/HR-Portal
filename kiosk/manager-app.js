@@ -502,11 +502,11 @@
           '<button class="link-btn link-btn-dark" id="back-home">← Back</button>' +
         '</div>' +
         '<div style="font-size:13px;color:#6b7280;margin-bottom:14px;line-height:1.5">' +
-          'Enter the client\'s <strong>full voucher code</strong> exactly as it appears on their voucher, then press <strong>Find</strong>. ' +
+          'Enter the client\'s <strong>full 16-character Shopify voucher code</strong> exactly as it appears, then press <strong>Find</strong>. ' +
           'The matching Fresha code only appears once the complete code is entered.' +
         '</div>' +
         '<form id="vc-form" autocomplete="off">' +
-          '<label class="lbl" for="vc-input">Full voucher code</label>' +
+          '<label class="lbl" for="vc-input">Full Shopify voucher code (16 characters)</label>' +
           '<input id="vc-input" class="input" type="text" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="Type or paste the full code…">' +
           '<div class="btn-row" style="margin-top:12px"><button class="btn btn-primary" id="vc-find" type="submit">Find Fresha code</button></div>' +
         '</form>' +

@@ -1416,10 +1416,12 @@
   // is shown). Store last4 as TEXT so leading zeros (e.g. "0042") survive.
   async function lookupFreshaVoucher(typed) {
     var c = client(); if (!c) throw new Error("Supabase not configured");
-    var full   = String(typed || "").replace(/\s+/g, "");
-    var minLen = (cfg.voucherMinChars != null) ? cfg.voucherMinChars : 8;
-    // Force a full-length entry — the manager must type the whole code, not
-    // just the 4 digits. Matching still only uses the last 4.
+    // Strip spaces / dashes so a 16-char code pasted as "ABCD EFGH IJKL MNOP"
+    // still counts. Shopify codes are 16 chars; force the manager to enter the
+    // whole thing (configurable) so they can't shortcut to just the last 4 —
+    // even though the match itself only uses the last 4 characters.
+    var full   = String(typed || "").replace(/[^A-Za-z0-9]/g, "");
+    var minLen = (cfg.voucherMinChars != null) ? cfg.voucherMinChars : 16;
     if (full.length < minLen) {
       return { found: false, matches: [], last4: "", tooShort: true, minLen: minLen };
     }
