@@ -1312,6 +1312,7 @@
     listOffRequests: listOffRequests, addOffRequest: addOffRequest, deleteOffRequest: deleteOffRequest,
     getStoreOpenedToday: getStoreOpenedToday, markStoreOpened: markStoreOpened,
     loadManagerPins: loadManagerPins, saveManagerPins: saveManagerPins,
+    lookupFreshaVoucher: lookupFreshaVoucher,
     activeSmTrialEcs: activeSmTrialEcs,
     listAllManagers: listAllManagers, listTodayManagerClockins: listTodayManagerClockins,
     addManagerClockinWithMeta: addManagerClockinWithMeta,
@@ -1401,6 +1402,45 @@
     var res = await c.from("app_state").upsert({ key: "boa_mgr_pins_v1", value: map || {} });
     if (res.error) throw res.error;
     return map;
+  }
+
+  // ---------- Voucher code lookup (Shopify → Fresha) ----------
+  // Clients buy Shopify gift vouchers (long codes); the store redeems them in
+  // Fresha using a matching Fresha voucher code. That mapping is sensitive —
+  // anyone holding the full list could mint free redemptions — so the kiosk
+  // NEVER pulls the whole table. A lookup is an exact, full-code match that
+  // returns at most ONE row, so codes can't be browsed or fished out.
+  //
+  // SECURITY (recommended hardening): expose a Postgres RPC (security definer)
+  //   create function lookup_fresha_voucher(p_shopify_code text)
+  //   returns text language sql security definer as $$
+  //     select fresha_code from public.vouchers
+  //     where upper(btrim(shopify_code)) = upper(btrim(p_shopify_code)) limit 1
+  //   $$;
+  // grant execute to the anon role, and do NOT grant SELECT on `vouchers`.
+  // Then the kiosk can only ask "what's the Fresha code for THIS exact Shopify
+  // code" and can never dump the list. This helper uses that RPC when it
+  // exists and falls back to a direct exact-match query otherwise.
+  async function lookupFreshaVoucher(shopifyCode) {
+    var c = client(); if (!c) throw new Error("Supabase not configured");
+    var code = String(shopifyCode || "").trim();
+    if (!code) return { found: false, fresha: null, code: code };
+    // 1) Preferred: server-side RPC (no table SELECT granted to the kiosk).
+    try {
+      var rpc = await c.rpc("lookup_fresha_voucher", { p_shopify_code: code });
+      if (!rpc.error) {
+        var d = rpc.data, viaRpc = null;
+        if (typeof d === "string") viaRpc = d || null;
+        else if (Array.isArray(d)) viaRpc = (d[0] && (d[0].fresha_code || d[0])) || null;
+        else if (d && typeof d === "object") viaRpc = d.fresha_code || null;
+        return { found: !!viaRpc, fresha: viaRpc, code: code };
+      }
+    } catch (e) { /* RPC not set up — fall through to the table query */ }
+    // 2) Fallback: exact-match query (still returns at most one row).
+    var res = await c.from("vouchers").select("fresha_code").eq("shopify_code", code).maybeSingle();
+    if (res.error) { console.error("lookupFreshaVoucher:", res.error); throw res.error; }
+    var fresha = (res.data && res.data.fresha_code) || null;
+    return { found: !!fresha, fresha: fresha, code: code };
   }
   async function listAllManagers() {
     var c = client(); if (!c) return [];
