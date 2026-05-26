@@ -975,26 +975,38 @@
     // r.current (already pulled from attGrid during the roster build).
     // Looking up r.employee_code directly is a bug — that field lives on
     // r.staff.employee_code — and was previously freezing confirmed at 0.
-    var confirmed = 0, onTime = 0;
+    var confirmed = 0, onTime = 0, total = 0, loanedOutCount = 0;
     scheduled.forEach(function (r) {
+      // Loaned-out techs are working at another store today — their status is
+      // recorded by that store's kiosk and their home row is locked, so they
+      // must NOT count toward "needs a status" (otherwise the home manager can
+      // never reach all-confirmed and submit). They still show in the roster,
+      // chipped with their destination, for visibility.
+      if (r.staff && r.staff._loanedOut) { loanedOutCount++; return; }
+      total++;
       var st = r.current;
       if (isTagged(st)) confirmed++;
       if (st === "on") onTime++;
     });
-    var total = scheduled.length;
 
-    if (onTime === total)        { badgeEl.innerHTML = '✓ All ' + total + ' On Time'; badgeEl.className = 'dly-status-badge dly-status-good'; }
-    else if (confirmed === total){ badgeEl.innerHTML = '✓ All confirmed';              badgeEl.className = 'dly-status-badge dly-status-good'; }
-    else                         { badgeEl.innerHTML = (total - confirmed) + ' need a status'; badgeEl.className = 'dly-status-badge dly-status-pending'; }
+    var awaySuffix = loanedOutCount > 0 ? ' · ' + loanedOutCount + ' away' : '';
+    if (total === 0) {
+      badgeEl.innerHTML = loanedOutCount > 0 ? '✓ All techs loaned out today' : '';
+      badgeEl.className  = 'dly-status-badge' + (loanedOutCount > 0 ? ' dly-status-good' : '');
+    }
+    else if (onTime === total)   { badgeEl.innerHTML = '✓ All ' + total + ' On Time' + awaySuffix; badgeEl.className = 'dly-status-badge dly-status-good'; }
+    else if (confirmed === total){ badgeEl.innerHTML = '✓ All confirmed' + awaySuffix;             badgeEl.className = 'dly-status-badge dly-status-good'; }
+    else                         { badgeEl.innerHTML = (total - confirmed) + ' need a status' + awaySuffix; badgeEl.className = 'dly-status-badge dly-status-pending'; }
 
-    var pct = Math.round((confirmed / total) * 100);
+    var pct = total > 0 ? Math.round((confirmed / total) * 100) : 100;
     progEl.innerHTML =
       '<div class="dly-progress-text">Progress: <strong>' + confirmed + '/' + total + ' confirmed</strong>' +
         (confirmed < total ? ' — ' + (total - confirmed) + ' still need a status' : '') +
       '</div>' +
       '<div class="dly-progress-bar"><div class="dly-progress-fill" style="width:' + pct + '%"></div></div>';
 
-    headEl.innerHTML = '📍 Scheduled to work · ' + total + ' staff';
+    headEl.innerHTML = '📍 Scheduled to work · ' + total + ' staff' +
+      (loanedOutCount > 0 ? ' · ' + loanedOutCount + ' loaned out' : '');
 
     var statusButtons = [
       { code: "on",     label: "On Time"       },
@@ -1678,7 +1690,10 @@
       // place after the list
       listEl.parentNode.appendChild(signoffEl);
     }
-    var allConfirmed = (confirmed === total) && total > 0;
+    // Submittable once every PRESENT tech has a status. total>0 is the normal
+    // case; loanedOutCount>0 covers a day where every scheduled tech was
+    // loaned out (nothing to tag at home, but the day should still close).
+    var allConfirmed = (confirmed === total) && (total > 0 || loanedOutCount > 0);
 
     if (alreadySigned) {
       // Day is locked. No "Re-edit" — only the per-row proof-conversion
@@ -1723,7 +1738,9 @@
         '<div class="dly-signoff-head">📝 Confirm and sign off</div>' +
         '<div class="dly-signoff-info">' +
           (allConfirmed
-            ? 'All ' + total + ' staff confirmed. Sign off to finalise the day — totals on the HR portal\'s Attendance tab will update automatically.'
+            ? (total === 0
+                ? 'All techs are loaned out to other stores today. Sign off to finalise the day — totals on the HR portal\'s Attendance tab will update automatically.'
+                : 'All ' + total + ' staff confirmed' + (loanedOutCount > 0 ? ' (' + loanedOutCount + ' loaned out)' : '') + '. Sign off to finalise the day — totals on the HR portal\'s Attendance tab will update automatically.')
             : '<strong>' + (total - confirmed) + ' staff still need a status above</strong> before you can sign off.') +
         '</div>' +
         '<div class="dly-signoff-form">' +
