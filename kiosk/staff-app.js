@@ -194,8 +194,8 @@
         '<option value="">Choose person…</option>' +
         // Managers first, in BOA pink so they stand out at a glance
         (function () {
-          var mgrs  = staff.filter(function (s) { return s.role_type === "manager"; });
-          var techs = staff.filter(function (s) { return s.role_type !== "manager"; });
+          var mgrs  = staff.filter(function (s) { return isManagerStaff(s); });
+          var techs = staff.filter(function (s) { return !isManagerStaff(s); });
           var optHtml = "";
           if (mgrs.length > 0) {
             optHtml += '<optgroup label="👑 Managers">' +
@@ -440,14 +440,10 @@
     var monthAbbr = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
     // Show staff who have employee_codes that match the schedule grid AND
-    // whose role_type lines up with the chosen view (managers vs. techs).
-    // The staff table stores managers with role_type === "manager"; everyone
-    // else is treated as a tech.
+    // whose role lines up with the chosen view (managers vs. techs).
     var rows = staff.filter(function (s) {
       if (!s.employee_code || !grid[s.employee_code]) return false;
-      var rt = (s.role_type || "").toLowerCase();
-      if (isMgr) return rt === "manager";
-      return rt !== "manager";
+      return isMgr ? isManagerStaff(s) : !isManagerStaff(s);
     });
     rows.sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
 
@@ -890,6 +886,7 @@
     var rosterMap = {};
     staff.forEach(function (s) {
       if (!s.employee_code) return;
+      if (isManagerStaff(s)) return;   // managers check in via their own tile
       var schSt = grid[s.employee_code] && grid[s.employee_code][dayKey];
       var attSt = attGrid[s.employee_code] && attGrid[s.employee_code][dayKey];
       var isScheduled      = (schSt === "W" || schSt === "WL" || schSt === "E");
@@ -923,6 +920,7 @@
     // L (Leave) and X (Pre-start) are informational.
     var offTodayAll = staff.filter(function (s) {
       if (!s.employee_code) return false;
+      if (isManagerStaff(s)) return false;   // managers aren't part of the tech check-in
       if (rosterMap[s.id]) return false;
       var st = grid[s.employee_code] && grid[s.employee_code][dayKey];
       return st === "O" || st === "R" || st === "L" || st === "X";
@@ -2177,6 +2175,23 @@
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
     });
+  }
+  // A staff row is a manager if it's tagged as one in the DB, OR its employee
+  // code follows the manager convention. Branch managers use codes ending in
+  // "M" (e.g. B147M) and head-office managers use an "M###" prefix (e.g. M005);
+  // neither ends in the "-M" suffix the HR portal's role_type derivation looks
+  // for, so some manager rows land in the DB with role_type "tech". Checking
+  // the code pattern too keeps them out of the Nail Tech Check-in regardless
+  // of how their role_type was stored — managers clock in via their own tile.
+  // Defers to the shared data-layer predicate so the rule stays in one place.
+  function isManagerStaff(s) {
+    if (window.APP_DATA && typeof window.APP_DATA.isManagerRow === "function") {
+      return window.APP_DATA.isManagerRow(s);
+    }
+    if (!s) return false;
+    if (s.role_type === "manager") return true;
+    var code = (s.employee_code || "").toUpperCase().trim();
+    return !!code && (/\dM$/.test(code) || /^M\d/.test(code));
   }
   function configMissingHtml() {
     return '<div class="warn">' +
