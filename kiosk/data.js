@@ -32,6 +32,20 @@
   function branch()        { return cfg.branchName        || "Green Point"; }
   function branchDisplay() { return cfg.branchDisplayName || branch(); }
 
+  // A staff row is a manager if it's tagged as one in the DB, OR its employee
+  // code follows the manager convention. Branch managers use codes ending in
+  // "M" (e.g. B147M) and head-office managers use an "M###" prefix (e.g. M005);
+  // neither ends in the "-M" suffix the HR portal's role_type derivation looks
+  // for, so some manager rows land in the DB with role_type "tech". Matching
+  // the code pattern too keeps managers out of the tech lists and ensures they
+  // still surface in the Manager Clock-in regardless of how role_type stored.
+  function isManagerRow(s) {
+    if (!s) return false;
+    if (s.role_type === "manager") return true;
+    var code = (s.employee_code || "").toUpperCase().trim();
+    return !!code && (/\dM$/.test(code) || /^M\d/.test(code));
+  }
+
   function todayStr() {
     var d = new Date(), p = function (n) { return String(n).padStart(2, "0"); };
     return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
@@ -227,7 +241,7 @@
     var res = await c.from("staff").select("*").eq("active", true)
       .order("branch", { ascending: true }).order("name", { ascending: true });
     if (res.error) { console.error("listStaffAllBranches:", res.error); return []; }
-    return (res.data || []).filter(function (s) { return s.role_type !== "manager"; });
+    return (res.data || []).filter(function (s) { return !isManagerRow(s); });
   }
   async function _fetchStaffByEcs(ecs) {
     if (!ecs || !ecs.length) return [];
@@ -1228,6 +1242,7 @@
 
   window.APP_DATA = {
     isConfigured: isConfigured,
+    isManagerRow: isManagerRow,
     branch: branch, branchDisplay: branchDisplay, todayStr: todayStr,
     listStaff: listStaff, listMaternity: listMaternity, listLeaveRecords: listLeaveRecords, loadOffboarding: loadOffboarding,
     listTechLoans: listTechLoans, saveTechLoan: saveTechLoan, listStaffAllBranches: listStaffAllBranches,
@@ -1318,9 +1333,9 @@
   }
   async function listAllManagers() {
     var c = client(); if (!c) return [];
-    var res = await c.from("staff").select("*").eq("role_type", "manager").eq("active", true).order("name", { ascending: true });
+    var res = await c.from("staff").select("*").eq("active", true).order("name", { ascending: true });
     if (res.error) { console.error("listAllManagers:", res.error); return []; }
-    return res.data || [];
+    return (res.data || []).filter(isManagerRow);
   }
   async function listTodayManagerClockins() {
     var c = client(); if (!c) return [];

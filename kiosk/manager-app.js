@@ -556,9 +556,10 @@
     }
 
     // Split active and leavers further by role (managers vs nail techs)
-    // so each list is grouped in the kiosk view. role_type === "manager"
-    // is the canonical flag; everything else is treated as a nail tech.
-    function isManager(s) { return s && s.role_type === "manager"; }
+    // so each list is grouped in the kiosk view. isManagerRow treats both the
+    // role_type flag and the manager employee-code convention (e.g. B147M) as
+    // manager, so a mis-tagged manager still groups with managers here.
+    function isManager(s) { return window.APP_DATA.isManagerRow(s); }
     var techsActive = activeStaff.filter(function (s) { return !isManager(s); });
     var managersActive = activeStaff.filter(isManager);
     var techsLeft = leftStaff.filter(function (s) { return !isManager(s); });
