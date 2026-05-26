@@ -1030,9 +1030,16 @@
   var TECH_REQUESTS_KEY = "boa_tech_requests_v1";
   var MGR_REQUESTS_KEY  = "boa_mgr_requests_v1";
 
+  // The schedule month open for off-day requests. Requests for a schedule
+  // month close on the 20th of the month before it (a schedule month runs
+  // the 25th → 24th, so its end-month is the ym we return). Up to and
+  // including the 20th the open month is two months out; from the 21st that
+  // window has closed, so we open the following month. e.g. on 26 May the
+  // June window (closes 20 May) is shut, so July (25 Jun → 24 Jul) is open.
   function nextMonthYm() {
     var d = new Date(), y = d.getFullYear(), m = d.getMonth() + 2;
-    if (m > 12) { m -= 12; y += 1; }
+    if (d.getDate() > 20) m += 1;
+    while (m > 12) { m -= 12; y += 1; }
     return y + "-" + String(m).padStart(2, "0");
   }
   function nextMonthLabel() {
