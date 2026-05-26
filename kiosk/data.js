@@ -1312,6 +1312,7 @@
     listOffRequests: listOffRequests, addOffRequest: addOffRequest, deleteOffRequest: deleteOffRequest,
     getStoreOpenedToday: getStoreOpenedToday, markStoreOpened: markStoreOpened,
     loadManagerPins: loadManagerPins, saveManagerPins: saveManagerPins,
+    activeSmTrialEcs: activeSmTrialEcs,
     listAllManagers: listAllManagers, listTodayManagerClockins: listTodayManagerClockins,
     addManagerClockinWithMeta: addManagerClockinWithMeta,
     loadClockinMeta: loadClockinMeta, listRecentManagerClockins: listRecentManagerClockins
@@ -1379,6 +1380,21 @@
     if (res.error) { console.error("loadManagerPins:", res.error); return {}; }
     var v = res.data && res.data.value;
     return (v && typeof v === "object" && !Array.isArray(v)) ? v : {};
+  }
+  // Employee codes of AMs currently on an active Store-Manager trial. The HR
+  // portal writes these to app_state['boa_sm_trial_v1'] and treats a matching
+  // AM as an effective SM (badged "SM on trial"); the kiosk mirrors that.
+  async function activeSmTrialEcs() {
+    var c = client(); if (!c) return {};
+    var res = await c.from("app_state").select("value").eq("key", "boa_sm_trial_v1").maybeSingle();
+    if (res.error) { console.error("activeSmTrialEcs:", res.error); return {}; }
+    var v = res.data && res.data.value;
+    var arr = Array.isArray(v) ? v : [];
+    var out = {};
+    arr.forEach(function (r) {
+      if (r && r.ec && r.status === "active") out[String(r.ec).trim()] = true;
+    });
+    return out;
   }
   async function saveManagerPins(map) {
     var c = client(); if (!c) throw new Error("Supabase not configured");
