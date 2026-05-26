@@ -778,6 +778,29 @@
         });
       });
     });
+    // Tag each entry with whether its day was signed off in the kiosk — i.e.
+    // the manager tapped "Confirm and submit attendance", which writes
+    // boa_dly_<branch>_<ymd> with a signedBy. The Daily Check-ins tab uses
+    // this to surface ONLY submitted days, so a manager's live tagging
+    // (late → on time → …) doesn't show up as half-finished duplicates.
+    // Left as a per-row flag rather than a filter so other consumers of this
+    // data (attendance-grid marks, importer, Fresha discrepancies) keep their
+    // existing live behaviour.
+    var dlyKeySet = {};
+    out.forEach(function (r) { if (r.ymd) dlyKeySet["boa_dly_" + r.branch + "_" + r.ymd] = true; });
+    var dlyKeys = Object.keys(dlyKeySet);
+    var signedOff = {};
+    for (var dk = 0; dk < dlyKeys.length; dk += CHUNK) {
+      var dslice = dlyKeys.slice(dk, dk + CHUNK);
+      var dres = await sb.from("app_state").select("key, value").in("key", dslice);
+      if (dres.error) { console.error("listRecentKioskCheckins signoff:", dres.error); continue; }
+      (dres.data || []).forEach(function (row) {
+        if (row.value && row.value.signedBy) signedOff[row.key] = true;
+      });
+    }
+    out.forEach(function (r) {
+      r.signedOff = r.ymd ? !!signedOff["boa_dly_" + r.branch + "_" + r.ymd] : false;
+    });
     out.sort(function (a, b) { return b.ts.localeCompare(a.ts); });
     return out;
   }

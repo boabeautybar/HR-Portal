@@ -837,10 +837,12 @@
       var d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
     })();
     var byEc = {};
+    var inTodayByEc = {};   // earliest "in" record today per ec — only one clock-in/day allowed
     recent.forEach(function (r) {
       var ec = r.staff && r.staff.employee_code; if (!ec) return;
       if (dateKeyOf(r.ts) !== todayK) return;
       if (!byEc[ec] || r.ts > byEc[ec].ts) byEc[ec] = r;
+      if (r.type === "in" && (!inTodayByEc[ec] || r.ts < inTodayByEc[ec].ts)) inTodayByEc[ec] = r;
     });
 
     // Yesterday-auto-out summary banner
@@ -861,11 +863,15 @@
         var ec = m.employee_code || "";
         var has = !!pins[ec];
         var last = byEc[ec];
+        var inDone = !!inTodayByEc[ec];   // already clocked in today → no second clock-in
         var lastLabel;
         if (!last) lastLabel = '<span class="pill pill-mute">not clocked in</span>';
         else if (last.type === "in") lastLabel = '<span class="pill pill-ok">IN ' + fmtTime(last.ts) + '</span>';
         else if (last.type === "out_auto") lastLabel = '<span class="pill pill-warn">AUTO-OUT ' + fmtTime(last.ts) + '</span>';
         else lastLabel = '<span class="pill pill-warn">OUT ' + fmtTime(last.ts) + '</span>';
+        if (inDone && last && last.type !== "in") {
+          lastLabel += ' <span class="pill pill-mute">clocked in ' + fmtTime(inTodayByEc[ec].ts) + '</span>';
+        }
         var autoBadge = autoYesterday[ec] ? ' <span class="pill" style="background:#fee2e2;color:#7f1d1d">⚠ auto-out yesterday</span>' : "";
         var rowCls = m.branch === thisBranch ? "" : " staff-inactive";
         return '<div class="staff-row' + rowCls + '" data-id="' + m.id + '" data-ec="' + esc(ec) + '" data-name="' + esc(m.name) + '">' +
@@ -878,7 +884,7 @@
           '<div class="staff-code" style="margin-top:3px">' + lastLabel + '</div>' +
           '</div>' +
           '<div class="staff-row-actions">' +
-          '<button class="btn btn-primary" data-act="clockin"  ' + (has ? "" : 'disabled') + '>Clock In</button>' +
+          '<button class="btn btn-primary" data-act="clockin"  ' + (has && !inDone ? "" : 'disabled') + (inDone ? ' title="Already clocked in today"' : '') + '>Clock In</button>' +
           '<button class="link-btn"       data-act="clockout" ' + (has ? "" : 'disabled') + '>Clock Out</button>' +
           '</div>' +
           '</div>';
@@ -909,11 +915,15 @@
         entered = entered.trim();
         if (!/^\d{6}$/.test(entered)) { alert("PIN must be exactly 6 digits."); return; }
         if (entered !== pins[ec]) { alert("Wrong PIN."); return; }
-        // 3. Block double clock of same type today
+        // 3. One clock-in per day — hard-block a second clock-in (no override).
+        //    Clock-out can still be re-recorded with a confirm.
+        if (type === "in" && inTodayByEc[ec]) {
+          alert(name + " already clocked in today at " + fmtTime(inTodayByEc[ec].ts) + ".\n\nOnly one clock-in per day is allowed.");
+          return;
+        }
         var last = byEc[ec];
-        if (last && last.type === type) {
-          var lbl = type === "in" ? "in" : "out";
-          if (!confirm(name + " is already clocked " + lbl + " today (" + fmtTime(last.ts) + "). Record another clock-" + lbl + " anyway?")) return;
+        if (type === "out" && last && last.type === "out") {
+          if (!confirm(name + " is already clocked out today (" + fmtTime(last.ts) + "). Record another clock-out anyway?")) return;
         }
         // 4. Get GPS (best-effort — graceful if denied/unavailable)
         var gps = await getGPS();

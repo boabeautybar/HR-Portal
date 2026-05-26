@@ -19886,11 +19886,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           for (const m of (managers || [])) staffByEc[m.ec] = m;
           // Synthesize "clockin-shaped" rows from the kiosk attendance grid so
           // the existing table renderer can display them next to clockins rows.
-          const attShaped = (attCheckinRows || []).filter(r => {
-            if (checkinFilterBranch !== "All" && r.branch !== checkinFilterBranch) return false;
-            if (_hasStoreScope && r.branch && !scopedSalonNames.has(r.branch)) return false;
-            return new Date(r.ts) >= since;
-          }).map(r => {
+          // Only SUBMITTED check-ins are shown (manager tapped "Confirm and
+          // submit attendance"), collapsed to the final status per tech per
+          // day. The kiosk logs every live tag, so without this the feed shows
+          // half-finished duplicates (e.g. a tech as LATE and then ON TIME).
+          const attLatestByKey = {};
+          for (const r of (attCheckinRows || [])) {
+            if (!r.signedOff) continue;                          // day not submitted yet
+            if (r.status === "(cleared)") continue;              // tech was un-tagged before submit
+            if (checkinFilterBranch !== "All" && r.branch !== checkinFilterBranch) continue;
+            if (_hasStoreScope && r.branch && !scopedSalonNames.has(r.branch)) continue;
+            if (new Date(r.ts) < since) continue;
+            const k = r.branch + "|" + r.ec + "|" + (r.ymd || r.dayKey || r.ts);
+            const cur = attLatestByKey[k];
+            if (!cur || String(r.ts) > String(cur.ts)) attLatestByKey[k] = r;
+          }
+          const attShaped = Object.keys(attLatestByKey).map(key => {
+            const r = attLatestByKey[key];
             const sRec = staffByEc[r.ec] || null;
             return {
               id: r.id,

@@ -1289,6 +1289,18 @@
 
   async function addManagerClockinWithMeta(staffId, type, meta) {
     var c = client(); if (!c) throw new Error("Supabase not configured");
+    // One clock-in per manager per day. A second "in" is rejected outright so
+    // a manager can't rack up multiple clock-ins. The UI also hides the button
+    // once they're in, but this guards against a stale tablet view / double tap.
+    if (type === "in") {
+      var dup = await c.from("clockins").select("id")
+        .eq("staff_id", staffId).eq("type", "in")
+        .gte("ts", startOfTodayIso()).limit(1);
+      if (dup.error) { console.error("clock-in dup check:", dup.error); }
+      else if (dup.data && dup.data.length > 0) {
+        throw new Error("Already clocked in today — only one clock-in per day is allowed.");
+      }
+    }
     var row = { staff_id: staffId, branch: branch(), type: type };
     if (meta && meta.tsOverride) row.ts = meta.tsOverride;
     var ins = await c.from("clockins").insert(row).select().single();
