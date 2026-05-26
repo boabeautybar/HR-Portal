@@ -808,11 +808,12 @@
     document.getElementById("back-home").onclick = renderManagerLanding;
     document.getElementById("mc-refresh").onclick = renderMgrClockin;
 
-    var pins, mgrs, recent;
+    var pins, mgrs, recent, smTrialEcs;
     try {
       pins = await window.APP_DATA.loadManagerPins();
       mgrs = await window.APP_DATA.listAllManagers();
       recent = await window.APP_DATA.listRecentManagerClockins(7);
+      smTrialEcs = window.APP_DATA.activeSmTrialEcs ? await window.APP_DATA.activeSmTrialEcs() : {};
     } catch (e) {
       document.getElementById("mc-body").innerHTML =
         '<div class="warn">Could not load: ' + esc(e.message || e) + '</div>';
@@ -870,6 +871,15 @@
         var has = !!pins[ec];
         var last = byEc[ec];
         var inDone = !!inTodayByEc[ec];   // already clocked in today → no second clock-in
+        // An AM on an active SM trial is shown as "SM · on trial", mirroring
+        // the HR portal's effective-role badge.
+        var onSmTrial = m.role === "AM" && !!(smTrialEcs && smTrialEcs[String(ec).trim()]);
+        var roleLabel = onSmTrial ? "SM · on trial" : m.role;
+        var rolePill = roleLabel
+          ? (onSmTrial
+              ? ' <span class="pill" style="background:#FFF7ED;color:#9A3412;border:1px solid #FED7AA">⭐ ' + esc(roleLabel) + '</span>'
+              : ' <span class="pill pill-mute">' + esc(roleLabel) + '</span>')
+          : "";
         var lastLabel;
         if (!last) lastLabel = '<span class="pill pill-mute">not clocked in</span>';
         else if (last.type === "in") lastLabel = '<span class="pill pill-ok">IN ' + fmtTime(last.ts) + '</span>';
@@ -883,7 +893,7 @@
         return '<div class="staff-row' + rowCls + '" data-id="' + m.id + '" data-ec="' + esc(ec) + '" data-name="' + esc(m.name) + '">' +
           '<div class="staff-row-main">' +
           '<div class="staff-name">' + esc(m.name) +
-          (m.role ? ' <span class="pill pill-mute">' + esc(m.role) + "</span>" : "") +
+          rolePill +
           (m.branch !== thisBranch ? ' <span class="pill pill-mute">' + esc(m.branch || "—") + "</span>" : "") +
           (has ? "" : ' <span class="pill pill-warn">NO PIN</span>') + autoBadge +
           '</div>' +
