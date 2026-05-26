@@ -250,6 +250,18 @@
     if (res.error) { console.error("fetchStaffByEcs:", res.error); return []; }
     return res.data || [];
   }
+  // Active staff whose home record still lives at another branch but who have
+  // a pending/effective transfer INTO `toBranch`. The HR portal keeps the
+  // staff row on its original branch and records the move via
+  // transferring / transfer_to / transfer_date; the destination only "owns"
+  // them on and after transfer_date. Callers apply that date cutoff.
+  async function listTransfersInto(toBranch) {
+    var c = client(); if (!c) return [];
+    var res = await c.from("staff").select("*")
+      .eq("transferring", true).eq("transfer_to", toBranch).eq("active", true);
+    if (res.error) { console.error("listTransfersInto:", res.error); return []; }
+    return (res.data || []).filter(function (s) { return s && s.branch !== toBranch; });
+  }
 
   async function categorizeStaff(refDate, opts) {
     var refIso = isoDate(refDate || new Date());
@@ -269,9 +281,10 @@
       listMaternity(),
       listLeaveRecords(),
       listTechLoans(refIso),
-      loadOffboarding()
+      loadOffboarding(),
+      listTransfersInto(thisBranch)
     ]);
-    var staff = results[0], matRecs = results[1], leaveRecs = results[2], loansToday = results[3], offList = results[4];
+    var staff = results[0], matRecs = results[1], leaveRecs = results[2], loansToday = results[3], offList = results[4], transfersIn = results[5];
 
     // Off-boarding lookup: HR portal's dedicated tab writes leftDate into
     // boa_offboard_v1 (NOT the staff row's left_date column), so we have
@@ -315,6 +328,14 @@
       return (a.name || "").localeCompare(b.name || "");
     });
 
+    // Transfers OUT: a tech moving to another branch drops off THIS branch's
+    // roster on and after their transfer_date (the HR portal shows the same —
+    // they appear at the destination from that day). Before the date they stay.
+    staff = staff.filter(function (s) {
+      return !(s && s.transferring && s.transfer_to && s.transfer_to !== thisBranch
+               && s.transfer_date && refIso >= s.transfer_date);
+    });
+
     // Loans: ECs leaving us today (loaned out) stay on the home roster so
     // the manager knows where they are - tagged with _loanedOut / _awayAt
     // and rendered with a chip + locked actions. ECs arriving from another
@@ -346,6 +367,20 @@
         staff.push(g);
       });
     }
+
+    // Transfers IN: techs whose home record still lives at another branch but
+    // whose transfer to THIS branch has taken effect (refIso >= transfer_date).
+    // Their schedule for this branch is already stored under this branch's
+    // grid, so adding them to the roster lets the check-in pick them up. The
+    // home branch drops them via the "Transfers OUT" filter above.
+    (transfersIn || []).forEach(function (t) {
+      if (!t || !t.employee_code) return;
+      if (!t.transfer_date || refIso < t.transfer_date) return;   // not arrived yet
+      if (staff.some(function (s) { return s.id === t.id || s.employee_code === t.employee_code; })) return;
+      t._transferredIn = true;
+      t._homeBranch = t.branch || "";
+      staff.push(t);
+    });
 
     var matByEc = {};
     matRecs.forEach(function (m) {
@@ -1253,6 +1288,7 @@
     branch: branch, branchDisplay: branchDisplay, todayStr: todayStr,
     listStaff: listStaff, listMaternity: listMaternity, listLeaveRecords: listLeaveRecords, loadOffboarding: loadOffboarding,
     listTechLoans: listTechLoans, saveTechLoan: saveTechLoan, listStaffAllBranches: listStaffAllBranches,
+    listTransfersInto: listTransfersInto,
     listKioskReminders: listKioskReminders,
     listTrialCandidates: listTrialCandidates,
     recordTrialCheckin: recordTrialCheckin,

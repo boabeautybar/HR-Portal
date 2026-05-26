@@ -438,17 +438,45 @@
       return;
     }
 
+    var thisBranch = cfg.branchName || "";
     var staff = await window.APP_DATA.listStaff({ activeOnly: false });
+    // Merge in techs transferring INTO this branch — their home record still
+    // lives at another store, so listStaff (branch-filtered) misses them, but
+    // their shifts are stored under this branch's grid. Cells before the
+    // transfer_date are blanked below so the row only fills from arrival.
+    if (window.APP_DATA.listTransfersInto) {
+      var transfersIn = await window.APP_DATA.listTransfersInto(thisBranch);
+      (transfersIn || []).forEach(function (t) {
+        if (!t || !t.employee_code) return;
+        if (staff.some(function (s) { return s.employee_code === t.employee_code; })) return;
+        t._transferredIn = true;
+        staff.push(t);
+      });
+    }
     var sched = await window.APP_DATA.getSchedule(ym, kind);
     var grid  = (sched && sched.grid) || {};
     var days  = window.APP_DATA.periodDays(ym);
     var monthAbbr = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    var _pad2 = function (n) { return String(n).padStart(2, "0"); };
+    var _ymdOf = function (d) { return d.year + "-" + _pad2(d.monthIdx + 1) + "-" + _pad2(d.day); };
+
+    var cycStartYmd = days.length ? _ymdOf(days[0]) : null;
+    var cycEndYmd   = days.length ? _ymdOf(days[days.length - 1]) : null;
 
     // Show staff who have employee_codes that match the schedule grid AND
-    // whose role lines up with the chosen view (managers vs. techs).
+    // whose role lines up with the chosen view (managers vs. techs). Transfer
+    // rows that fall entirely outside their tenure at this branch are dropped:
+    // an outgoing tech gone before the cycle starts, or an incoming tech who
+    // only arrives after it ends.
     var rows = staff.filter(function (s) {
       if (!s.employee_code || !grid[s.employee_code]) return false;
-      return isMgr ? isManagerStaff(s) : !isManagerStaff(s);
+      if (isMgr ? !isManagerStaff(s) : isManagerStaff(s)) return false;
+      var xfer = (s.transferring && s.transfer_date) ? s.transfer_date : null;
+      if (xfer) {
+        if (s.transfer_to && s.transfer_to !== thisBranch && cycStartYmd && xfer <= cycStartYmd) return false;
+        if (s.transfer_to === thisBranch && s.branch !== thisBranch && cycEndYmd && xfer > cycEndYmd) return false;
+      }
+      return true;
     });
     rows.sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
 
@@ -485,9 +513,17 @@
     });
     html += '</tr></thead><tbody>';
     rows.forEach(function (s) {
+      // Direction-aware transfer blanking, mirroring the HR portal:
+      //   • outgoing (leaving this branch): cells on/after transfer_date blank
+      //   • incoming (arriving here):       cells before transfer_date blank
+      var _xfer = (s.transferring && s.transfer_date) ? s.transfer_date : null;
+      var _outgoing = !!_xfer && s.transfer_to && s.transfer_to !== thisBranch;
+      var _incoming = !!_xfer && s.transfer_to === thisBranch && s.branch !== thisBranch;
       html += '<tr><td class="sched-name" title="' + esc(s.name) + '">' + esc(s.name) + '</td>';
       days.forEach(function (d, i) {
-        var cell = grid[s.employee_code] && grid[s.employee_code][d.day];
+        var _ymd = _ymdOf(d);
+        var blanked = (_outgoing && _ymd >= _xfer) || (_incoming && _ymd < _xfer);
+        var cell = !blanked && grid[s.employee_code] && grid[s.employee_code][d.day];
         var classes = '';
         if (d.isToday) classes += ' sched-today';
         if (weekStartAt(d, i)) classes += ' sched-week-start';
