@@ -7464,17 +7464,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [loanModal, setLoanModal] = useState(null); // null | { _id?, ec, fromBranch, toBranch, date, note, _err? }
   const [loanSaving, setLoanSaving] = useState(false);
   const [movementsDate, setMovementsDate] = useState(() => new Date().toISOString().slice(0, 10));
-  useEffect(() => {
-    if (!window.BOA_DB || !window.BOA_DB.loadTechLoans) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const recs = await window.BOA_DB.loadTechLoans();
-        if (!cancelled) setTechLoans(Array.isArray(recs) ? recs : []);
-      } catch (e) { console.error("loadTechLoans:", e); }
-    })();
-    return () => { cancelled = true; };
-  }, []);
+  // Bumping this re-pulls tech loans (e.g. the Movements "Refresh" button).
+  // The loader effect itself lives just after `tab` is declared below so it
+  // can re-pull on tab changes without tripping over the const TDZ.
+  const [loansTick, setLoansTick] = useState(0);
 
   // ── Daily tasks — admin assigns per-user to-dos, dashboard renders
   // today's open items for the signed-in user. Stored as a flat array
@@ -7615,6 +7608,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   };
 
   const [tab, setTab] = useState("dashboard");
+
+  // Load tech loans on mount and re-pull on tab changes (so navigating to
+  // Today's Movements or the Attendance sheet picks up loans a kiosk created
+  // after the portal loaded) and whenever loansTick is bumped by a refresh.
+  useEffect(() => {
+    if (!window.BOA_DB || !window.BOA_DB.loadTechLoans) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const recs = await window.BOA_DB.loadTechLoans();
+        if (!cancelled) setTechLoans(Array.isArray(recs) ? recs : []);
+      } catch (e) { console.error("loadTechLoans:", e); }
+    })();
+    return () => { cancelled = true; };
+  }, [tab, loansTick]);
 
   const [securityLogs, setSecurityLogs] = useState([]);
   const [openDismissMenu, setOpenDismissMenu] = useState(null);
@@ -17522,6 +17530,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   title={isToday ? "Already viewing today" : "Jump back to today"}
                   style={{ background: isToday ? "#FCE7F3" : "#fff", color: "#831843", border: "1px solid " + (isToday ? "#FBCFE8" : "#FBCFE8"), borderRadius: 8, padding: "7px 12px", cursor: isToday ? "default" : "pointer", fontSize: 12, fontWeight: 700, opacity: isToday ? 0.6 : 1, marginLeft: 4 }}
                 >Today</button>
+                <button
+                  onClick={() => setLoansTick(t => t + 1)}
+                  title="Re-pull the latest borrows from the kiosks"
+                  style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700, marginLeft: 4 }}
+                >↻ Refresh</button>
                 <button onClick={() => setLoanModal({ _id: null, ec: "", name: "", fromBranch: "", toBranch: "", date: isToday ? date : new Date().toISOString().slice(0, 10), note: "" })}
                   style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: "0.04em", marginLeft: 4 }}>
                   + Log a borrow
