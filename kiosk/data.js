@@ -1312,6 +1312,7 @@
     listOffRequests: listOffRequests, addOffRequest: addOffRequest, deleteOffRequest: deleteOffRequest,
     getStoreOpenedToday: getStoreOpenedToday, markStoreOpened: markStoreOpened,
     loadManagerPins: loadManagerPins, saveManagerPins: saveManagerPins,
+    lookupFreshaVoucher: lookupFreshaVoucher,
     activeSmTrialEcs: activeSmTrialEcs,
     listAllManagers: listAllManagers, listTodayManagerClockins: listTodayManagerClockins,
     addManagerClockinWithMeta: addManagerClockinWithMeta,
@@ -1401,6 +1402,36 @@
     var res = await c.from("app_state").upsert({ key: "boa_mgr_pins_v1", value: map || {} });
     if (res.error) throw res.error;
     return map;
+  }
+
+  // ---------- Voucher code lookup (Shopify last-4 → Fresha) ----------
+  // Shopify only reveals the LAST 4 of a gift-voucher code to the seller, so
+  // the store's sheet maps that last-4 (plus the voucher amount) to a Fresha
+  // voucher code. The manager is made to type the client's full code, but the
+  // match is on the last 4 only; when two vouchers share the same last 4 we
+  // return both with their amounts so the manager picks by amount.
+  //
+  // Data lives in a `vouchers` table: { last4 text, amount text, fresha_code
+  // text }. `last4` is NOT unique (collisions are expected — that's why amount
+  // is shown). Store last4 as TEXT so leading zeros (e.g. "0042") survive.
+  async function lookupFreshaVoucher(typed) {
+    var c = client(); if (!c) throw new Error("Supabase not configured");
+    // Strip spaces / dashes so a 16-char code pasted as "ABCD EFGH IJKL MNOP"
+    // still counts. Shopify codes are 16 chars; force the manager to enter the
+    // whole thing (configurable) so they can't shortcut to just the last 4 —
+    // even though the match itself only uses the last 4 characters.
+    var full   = String(typed || "").replace(/[^A-Za-z0-9]/g, "");
+    var minLen = (cfg.voucherMinChars != null) ? cfg.voucherMinChars : 16;
+    if (full.length < minLen) {
+      return { found: false, matches: [], last4: "", tooShort: true, minLen: minLen };
+    }
+    var last4 = full.slice(-4).toUpperCase();
+    var res = await c.from("vouchers").select("fresha_code, amount").eq("last4", last4);
+    if (res.error) { console.error("lookupFreshaVoucher:", res.error); throw res.error; }
+    var matches = (res.data || [])
+      .map(function (r) { return { fresha: r.fresha_code, amount: r.amount }; })
+      .filter(function (m) { return m.fresha; });
+    return { found: matches.length > 0, matches: matches, last4: last4, tooShort: false };
   }
   async function listAllManagers() {
     var c = client(); if (!c) return [];
