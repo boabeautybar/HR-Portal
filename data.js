@@ -772,6 +772,7 @@
           hasProof: !!e.hasProof,
           proofKey: e.proofKey || null,
           markedBy: e.markedBy || e.manager || e.by || null,        // which manager submitted this
+          manual: !!e.manual,                                       // created from the HR portal, not the kiosk
           ec: e.ec,
           branch: rowBranch,
           source: "kiosk_log"
@@ -803,6 +804,61 @@
     });
     out.sort(function (a, b) { return b.ts.localeCompare(a.ts); });
     return out;
+  }
+
+  // Create a check-in manually from the HR portal. Writes an entry into the
+  // same boa_kiosk_log_<branch>_<ym> the kiosk uses (under the date's calendar
+  // month) tagged manual:true, so it shows in the Nail Tech Check-ins feed even
+  // for days the kiosk hasn't signed off, and is picked up by "Import Check-ins"
+  // like any kiosk submission. Re-adding for the same (ec, day) replaces it.
+  async function addManualKioskCheckin(branch, ec, ymd, status, note, markedBy) {
+    if (!branch || !ec || !ymd || !status) throw new Error("Need branch, tech, date and status.");
+    var ym = String(ymd).slice(0, 7);                 // YYYY-MM (calendar month)
+    var key = "boa_kiosk_log_" + branch + "_" + ym;
+    var dayKey = String(parseInt(String(ymd).slice(8, 10), 10));
+    var read = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
+    if (read.error) { console.error("addManualKioskCheckin read:", read.error); throw read.error; }
+    var arr = (read.data && Array.isArray(read.data.value)) ? read.data.value : [];
+    arr = arr.filter(function (e) { return !(e && e.manual && e.ec === ec && e.ymd === ymd); });
+    arr.push({
+      ec: ec, dayKey: dayKey, ymd: ymd, status: status,
+      note: note || null, manual: true,
+      markedBy: markedBy || "HR portal",
+      ts: new Date().toISOString()
+    });
+    var wr = await sb.from("app_state").upsert({ key: key, value: arr });
+    if (wr.error) { console.error("addManualKioskCheckin write:", wr.error); throw wr.error; }
+    // Also stamp the attendance grid (boa_att_<branch>_<cycleYm>) so it shows
+    // on the Attendance sheet straight away — mirroring what the kiosk does
+    // when a manager tags a status. Schedule cycles run the 25th → 24th, so a
+    // day after the 24th belongs to the NEXT calendar month's cycle. The grid
+    // is keyed by ec → day-of-month. Best-effort: a failure here never blocks
+    // the check-in (it still shows in the feed and is importable).
+    try {
+      var p = String(ymd).split("-").map(Number);
+      var ay = p[0], am = p[1];
+      if (p[2] > 24) { am = p[1] + 1; if (am > 12) { am = 1; ay = p[0] + 1; } }
+      var attYm = ay + "-" + String(am).padStart(2, "0");
+      var att = await loadAttendance(branch, attYm);
+      var grid = (att && att.grid && typeof att.grid === "object") ? JSON.parse(JSON.stringify(att.grid)) : {};
+      if (!grid[ec]) grid[ec] = {};
+      grid[ec][String(p[2])] = status;        // day-of-month key, plain (confirmed) status
+      await saveAttendance(branch, attYm, grid);
+    } catch (attErr) {
+      console.warn("addManualKioskCheckin: attendance-grid stamp failed (non-fatal):", attErr);
+    }
+    return true;
+  }
+
+  // Re-open (unlock) a store's daily check-in by removing the kiosk sign-off
+  // record boa_dly_<branch>_<ymd>. After this the kiosk no longer treats the
+  // day as locked, so a manager can tag the remaining techs and submit again.
+  async function reopenDailyCheckin(branch, ymd) {
+    if (!branch || !ymd) throw new Error("Need branch and date.");
+    var key = "boa_dly_" + branch + "_" + ymd;
+    var r = await sb.from("app_state").delete().eq("key", key);
+    if (r.error) { console.error("reopenDailyCheckin:", r.error); throw r.error; }
+    return true;
   }
 
   // ---------- Early-leave sidecar (kiosk) ----------
@@ -1276,6 +1332,8 @@
     listRecentTechClockins: listRecentTechClockins,
     listRecentAttendanceCheckins: listRecentAttendanceCheckins,
     listRecentKioskCheckins: listRecentKioskCheckins,
+    addManualKioskCheckin: addManualKioskCheckin,
+    reopenDailyCheckin: reopenDailyCheckin,
     listStoreOpenings: listStoreOpenings,
     loadEarlyLeaves: loadEarlyLeaves,
     deleteEarlyLeaves: deleteEarlyLeaves,
