@@ -20001,6 +20001,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }
           }
 
+          // Group the table per store (in SALONS order) rather than one long
+          // mixed list; within each store, newest check-in first.
+          const _branchOrder = {}; SALONS.forEach((s, i) => { _branchOrder[s.name] = i; });
+          const _branchOf = (r) => (r.staff && r.staff.branch) || "(no branch)";
+          const groupedRows = filtered.slice().sort((a, b) => {
+            const ba = _branchOf(a), bb = _branchOf(b);
+            const oa = (_branchOrder[ba] != null ? _branchOrder[ba] : 999);
+            const ob = (_branchOrder[bb] != null ? _branchOrder[bb] : 999);
+            if (oa !== ob) return oa - ob;
+            if (ba !== bb) return ba.localeCompare(bb);
+            return String(b.ts || "").localeCompare(String(a.ts || ""));
+          });
+          const _countByBranch = {};
+          groupedRows.forEach(r => { const b = _branchOf(r); _countByBranch[b] = (_countByBranch[b] || 0) + 1; });
+
           return (
             <div style={{ padding: "0 24px" }}>
               <div style={{ marginBottom: 14 }}>
@@ -20077,10 +20092,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {filtered.length === 0 && (
+                    {groupedRows.length === 0 && (
                       <tr><td colSpan={5} style={{ textAlign: "center", padding: 30, color: "#9ca3af", fontStyle: "italic" }}>No check-ins in this range.</td></tr>
                     )}
-                    {filtered.map(r => {
+                    {(() => {
+                      const rowsOut = [];
+                      let _lastBranch = null;
+                      groupedRows.forEach(r => {
+                      const _b = _branchOf(r);
+                      if (_b !== _lastBranch) {
+                        _lastBranch = _b;
+                        rowsOut.push(
+                          <tr key={"grp-" + _b} style={{ background: "#FCE7F3" }}>
+                            <td colSpan={5} style={{ padding: "9px 12px", fontWeight: 800, color: "#831843", fontSize: 12.5 }}>📍 {_b} · {_countByBranch[_b]} record{_countByBranch[_b] !== 1 ? "s" : ""}</td>
+                          </tr>
+                        );
+                      }
                       const STATUS_BADGE = {
                         on: { lbl: "ON TIME", bg: "#dcfce7", fg: "#14532d" },
                         late: { lbl: "LATE", bg: "#fef3c7", fg: "#92400e" },
@@ -20105,7 +20132,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             : r.type === "att" ? (STATUS_BADGE[r.status] || { lbl: String(r.status || "").toUpperCase(), bg: "#f3f4f6", fg: "#374151" })
                               : { lbl: r.type, bg: "#f3f4f6", fg: "#374151" };
                       const isOrphan = !r.staff;
-                      return (
+                      rowsOut.push(
                         <tr key={r.id} style={{ borderTop: "1px solid #FCE7F3", background: isOrphan ? "#fef2f2" : undefined }}>
                           <td style={{ padding: "8px 12px", whiteSpace: "nowrap", color: "#831843" }}>{fmtDateTime(r.ts)}</td>
                           <td style={{ padding: "8px 12px" }}>
@@ -20138,7 +20165,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <td style={{ padding: "8px 12px", color: isOrphan ? "#7f1d1d" : "#831843" }}>📍 {(r.staff && r.staff.branch) || "—"}</td>
                         </tr>
                       );
-                    })}
+                      });
+                      return rowsOut;
+                    })()}
                   </tbody>
                 </table>
               </div>
@@ -20172,6 +20201,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           return { lbl: t, bg: "#f3f4f6", fg: "#374151" };
         };
         const rangeOpts = [{ v: 1, l: "Today" }, { v: 3, l: "Last 3 days" }, { v: 7, l: "Last 7 days" }, { v: 14, l: "Last 14 days" }, { v: 30, l: "Last 30 days" }];
+        // Group the clock-in cards per store (SALONS order), newest first within each.
+        const _mgrBranchOrder = {}; SALONS.forEach((s, i) => { _mgrBranchOrder[s.name] = i; });
+        const _mgrBranchOf = (r) => (r.staff && r.staff.branch) || r.branch || "(no branch)";
+        const mgrGroups = (() => {
+          const by = {};
+          filtered.forEach(r => { const b = _mgrBranchOf(r); (by[b] = by[b] || []).push(r); });
+          return Object.keys(by)
+            .sort((a, b) => {
+              const oa = (_mgrBranchOrder[a] != null ? _mgrBranchOrder[a] : 999);
+              const ob = (_mgrBranchOrder[b] != null ? _mgrBranchOrder[b] : 999);
+              return oa !== ob ? oa - ob : a.localeCompare(b);
+            })
+            .map(b => ({ branch: b, rows: by[b].slice().sort((x, y) => String(y.ts || "").localeCompare(String(x.ts || ""))) }));
+        })();
 
         return (
           <div style={{ padding: "0 24px" }}>
@@ -20259,8 +20302,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             {filtered.length === 0 ? (
               <div style={{ background: "#FFFFFF", borderRadius: 11, border: "1px dashed #FBCFE8", padding: "30px 20px", textAlign: "center", color: "#9ca3af" }}>No manager clock-ins in this range.</div>
             ) : (
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
-                {filtered.map(r => {
+              mgrGroups.map(group => (
+                <div key={group.branch} style={{ marginBottom: 18 }}>
+                  <div style={{ background: "#FCE7F3", color: "#831843", fontWeight: 800, fontSize: 13, padding: "8px 12px", borderRadius: 9, marginBottom: 8 }}>📍 {group.branch} · {group.rows.length} clock-in{group.rows.length !== 1 ? "s" : ""}</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
+                {group.rows.map(r => {
                   const t = typeLabel(r.type);
                   const meta = mgrClockinMeta[r.id] || {};
                   const photo = meta.photo;
@@ -20298,7 +20344,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </div>
                   );
                 })}
-              </div>
+                  </div>
+                </div>
+              ))
             )}
 
             {/* Photo lightbox */}
