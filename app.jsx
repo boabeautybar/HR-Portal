@@ -8099,6 +8099,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     window.__BOA_RO_ACTIVE = !!currentTabIsReadOnly;
     return () => { window.__BOA_RO_ACTIVE = false; };
   }, [currentTabIsReadOnly]);
+  // Regional Ops Managers may read the Kiosk/Manager PIN directories but not
+  // change them, so every mutating control on those two tabs is hidden for
+  // them. The Owner keeps full edit rights.
+  const pinsViewOnly = isRomRole(currentUser?.role) && !currentUser?.isOwner;
   // Recruitment is now a parent tab with two children (Nail Tech / Manager).
   // The Manager child further nests Coverage and Planner.
   const [recruitSubTab, setRecruitSubTab] = useState("nailTech");   // "nailTech" | "mgrRecruit"
@@ -10100,8 +10104,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "activity", l: "📜 Activity Log" }
                 ]
               },
-              // Admin group. Kiosk PINs / Manager PINs / Settings are
-              // owner-only. Store Allocation is shown to the Owner and to
+              // Admin group. Settings stays owner-only. Kiosk PINs / Manager
+              // PINs are shown to the Owner (full edit) and to Regional Ops
+              // Managers (view-only — mutating controls hidden via
+              // pinsViewOnly). Store Allocation is shown to the Owner and to
               // anyone whose role looks like a National Ops Manager; the
               // standard hideTabs / readOnlyTabs grid still applies on top,
               // so the Owner can fine-tune visibility for any specific user.
@@ -10109,9 +10115,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const role = (currentUser?.role || "").toLowerCase();
                 const isNationalOps = role.includes("national ops") || role.includes("national operations");
                 const adminItems = [];
-                if (currentUser?.isOwner) {
+                if (currentUser?.isOwner || isRomRole(currentUser?.role)) {
                   adminItems.push({ t: "kioskPins", l: "🔑 Kiosk PINs" });
                   adminItems.push({ t: "managerPins", l: "🆔 Manager PINs" });
+                }
+                if (currentUser?.isOwner) {
                   adminItems.push({ t: "settings", l: "⚙️ Settings" });
                 }
                 if (currentUser?.isOwner || isNationalOps) {
@@ -19773,6 +19781,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </button>
                   );
                 })()}
+                {!pinsViewOnly && (
                 <button onClick={async () => {
                   const next = { ...kioskSecurityConfig, disableDeviceVerification: !kioskSecurityConfig.disableDeviceVerification };
                   setKioskSecurityConfig(next);
@@ -19782,6 +19791,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 }} style={{ background: kioskSecurityConfig.disableDeviceVerification ? "#fee2e2" : "#e0f2fe", border: "none", borderRadius: 6, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: kioskSecurityConfig.disableDeviceVerification ? "#991b1b" : "#0369a1" }}>
                   {kioskSecurityConfig.disableDeviceVerification ? "🔴 Device Verification Disabled" : "🟢 Device Verification Enabled"}
                 </button>
+                )}
                 <div style={{ fontSize: 11, color: "#9ca3af" }}>{kioskPinsLoaded ? Object.keys(kioskPins).length + " custom · " + SALONS.length + " branches total" : "Loading…"}</div>
               </div>
             </div>
@@ -19830,7 +19840,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             : <span style={{ background: "#fef3c7", color: "#7c2d12", fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, letterSpacing: "0.04em" }}>Default PIN</span>}
                         </td>
                         <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
-                          {deviceId && (
+                          {!pinsViewOnly && deviceId && (
                             <button onClick={async () => {
                               if (!window.confirm(`Deregister device for ${s.name}?`)) return;
                               try {
@@ -19855,9 +19865,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               style={{ background: "#f3f4f6", color: "#374151", border: "none", borderRadius: 7, padding: "6px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, marginRight: 6 }}
                             >Copy</button>
                           )}
+                          {!pinsViewOnly && (
                           <button onClick={() => resetKioskPin(s.name)} disabled={saving}
                             style={{ background: PINK.accent, color: "#fff", border: "none", borderRadius: 7, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700, opacity: saving ? 0.6 : 1 }}
                           >{saving ? "Saving…" : (hasPin ? "Reset" : "Set PIN")}</button>
+                          )}
                         </td>
                       </tr>
                     );
@@ -19974,9 +19986,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       style={{ background: "#f3f4f6", color: "#374151", border: "none", borderRadius: 7, padding: "6px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, marginRight: 6 }}
                                     >Copy</button>
                                   )}
+                                  {!pinsViewOnly && (
                                   <button onClick={() => resetMgrPin(m)} disabled={saving || !m.ec}
                                     style={{ background: PINK.accent, color: "#fff", border: "none", borderRadius: 7, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700, opacity: (saving || !m.ec) ? 0.6 : 1 }}
                                   >{saving ? "Saving…" : (hasPin ? "Reset" : "Set PIN")}</button>
+                                  )}
                                 </td>
                               </tr>
                             );
