@@ -20117,7 +20117,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div style={{ flex: 1 }} />
                 <button
                   onClick={() => setReopenModal({
-                    branch: checkinFilterBranch !== "All" ? checkinFilterBranch : (SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name))[0] || {}).name || "",
+                    branch: checkinFilterBranch !== "All" ? checkinFilterBranch : "",
                     ymd: checkinDay
                   })}
                   style={{ background: "#fff", color: "#9d174d", border: "1.5px solid #FBCFE8", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: "0.03em", alignSelf: "flex-end" }}>
@@ -20595,9 +20595,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           <div onClick={() => !m._saving && setReopenModal(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
             <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "20px 22px", width: "100%", maxWidth: 420, boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
               <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: "#831843" }}>🔓 Reopen a store's check-in</div>
-              <div style={{ fontSize: 12, color: "#6b7280", margin: "4px 0 6px" }}>Unlocks the day on the kiosk so the manager can add the techs they missed and submit again. Statuses already tagged on the kiosk are kept.</div>
-              <label style={lbl}>Store</label>
+              <div style={{ fontSize: 12, color: "#6b7280", margin: "4px 0 6px" }}>Reopens <strong>only the one store you choose</strong> for this date — no other store is affected. It unlocks the day on that store's kiosk so the manager can add the techs they missed and submit again. Statuses already tagged on the kiosk are kept.</div>
+              <label style={lbl}>Store to reopen</label>
               <select value={m.branch} onChange={e => setReopenModal(x => ({ ...x, branch: e.target.value }))} style={inp}>
+                <option value="">Choose a store…</option>
                 {SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name)).map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
               </select>
               <label style={lbl}>Date</label>
