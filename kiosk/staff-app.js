@@ -26,6 +26,14 @@
     return "Good night";
   }
 
+  // Shift codes that mean a tech is rostered to work that day. Mirrors the HR
+  // portal's "working" set (W, WE, WL, WB, WM, E) so the check-in shows every
+  // working tech regardless of shift — not just W / WL / E (which used to drop
+  // WE "work early" techs from the roster).
+  function isWorkingShift(code) {
+    return code === "W" || code === "WE" || code === "WL" || code === "WB" || code === "WM" || code === "E";
+  }
+
   function boot() {
     root = document.getElementById("app-root");
     if (!root) return;
@@ -58,6 +66,9 @@
 
     refreshNewsBadge();
     setInterval(refreshNewsBadge, 60 * 1000);
+    // Re-check the submit-your-check-in nag each minute so it appears the
+    // moment the clock passes 10:30 and clears as soon as the day is signed off.
+    setInterval(refreshCheckinNag, 60 * 1000);
 
     renderLanding();
   }
@@ -82,6 +93,7 @@
         '<div class="hero-brand">' + esc(cfg.branchDisplayName || cfg.branchName || "BOA Check-in") + '</div>' +
         '<div class="hero-title">What would you like to do?</div>' +
       '</div>' +
+      '<div id="checkin-nag-slot"></div>' +
       '<div class="tile-grid tile-grid-4">' +
         '<button class="tile tile-big" id="tile-checkin" type="button">' +
           '<div class="tile-icon">✍️</div>' +
@@ -109,6 +121,7 @@
     document.getElementById("tile-schedule").onclick = renderSchedule;
     document.getElementById("tile-offreq").onclick   = renderOffRequests;
     document.getElementById("tile-cashup").onclick   = renderCashup;
+    refreshCheckinNag();
   }
 
   // ---------------- News (read-only viewer) ----------------
@@ -194,8 +207,8 @@
         '<option value="">Choose person…</option>' +
         // Managers first, in BOA pink so they stand out at a glance
         (function () {
-          var mgrs  = staff.filter(function (s) { return s.role_type === "manager"; });
-          var techs = staff.filter(function (s) { return s.role_type !== "manager"; });
+          var mgrs  = staff.filter(function (s) { return isManagerStaff(s); });
+          var techs = staff.filter(function (s) { return !isManagerStaff(s); });
           var optHtml = "";
           if (mgrs.length > 0) {
             optHtml += '<optgroup label="👑 Managers">' +
@@ -433,21 +446,45 @@
       return;
     }
 
+    var thisBranch = cfg.branchName || "";
     var staff = await window.APP_DATA.listStaff({ activeOnly: false });
+    // Merge in techs transferring INTO this branch — their home record still
+    // lives at another store, so listStaff (branch-filtered) misses them, but
+    // their shifts are stored under this branch's grid. Cells before the
+    // transfer_date are blanked below so the row only fills from arrival.
+    if (window.APP_DATA.listTransfersInto) {
+      var transfersIn = await window.APP_DATA.listTransfersInto(thisBranch);
+      (transfersIn || []).forEach(function (t) {
+        if (!t || !t.employee_code) return;
+        if (staff.some(function (s) { return s.employee_code === t.employee_code; })) return;
+        t._transferredIn = true;
+        staff.push(t);
+      });
+    }
     var sched = await window.APP_DATA.getSchedule(ym, kind);
     var grid  = (sched && sched.grid) || {};
     var days  = window.APP_DATA.periodDays(ym);
     var monthAbbr = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    var _pad2 = function (n) { return String(n).padStart(2, "0"); };
+    var _ymdOf = function (d) { return d.year + "-" + _pad2(d.monthIdx + 1) + "-" + _pad2(d.day); };
+
+    var cycStartYmd = days.length ? _ymdOf(days[0]) : null;
+    var cycEndYmd   = days.length ? _ymdOf(days[days.length - 1]) : null;
 
     // Show staff who have employee_codes that match the schedule grid AND
-    // whose role_type lines up with the chosen view (managers vs. techs).
-    // The staff table stores managers with role_type === "manager"; everyone
-    // else is treated as a tech.
+    // whose role lines up with the chosen view (managers vs. techs). Transfer
+    // rows that fall entirely outside their tenure at this branch are dropped:
+    // an outgoing tech gone before the cycle starts, or an incoming tech who
+    // only arrives after it ends.
     var rows = staff.filter(function (s) {
       if (!s.employee_code || !grid[s.employee_code]) return false;
-      var rt = (s.role_type || "").toLowerCase();
-      if (isMgr) return rt === "manager";
-      return rt !== "manager";
+      if (isMgr ? !isManagerStaff(s) : isManagerStaff(s)) return false;
+      var xfer = (s.transferring && s.transfer_date) ? s.transfer_date : null;
+      if (xfer) {
+        if (s.transfer_to && s.transfer_to !== thisBranch && cycStartYmd && xfer <= cycStartYmd) return false;
+        if (s.transfer_to === thisBranch && s.branch !== thisBranch && cycEndYmd && xfer > cycEndYmd) return false;
+      }
+      return true;
     });
     rows.sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
 
@@ -484,9 +521,17 @@
     });
     html += '</tr></thead><tbody>';
     rows.forEach(function (s) {
+      // Direction-aware transfer blanking, mirroring the HR portal:
+      //   • outgoing (leaving this branch): cells on/after transfer_date blank
+      //   • incoming (arriving here):       cells before transfer_date blank
+      var _xfer = (s.transferring && s.transfer_date) ? s.transfer_date : null;
+      var _outgoing = !!_xfer && s.transfer_to && s.transfer_to !== thisBranch;
+      var _incoming = !!_xfer && s.transfer_to === thisBranch && s.branch !== thisBranch;
       html += '<tr><td class="sched-name" title="' + esc(s.name) + '">' + esc(s.name) + '</td>';
       days.forEach(function (d, i) {
-        var cell = grid[s.employee_code] && grid[s.employee_code][d.day];
+        var _ymd = _ymdOf(d);
+        var blanked = (_outgoing && _ymd >= _xfer) || (_incoming && _ymd < _xfer);
+        var cell = !blanked && grid[s.employee_code] && grid[s.employee_code][d.day];
         var classes = '';
         if (d.isToday) classes += ' sched-today';
         if (weekStartAt(d, i)) classes += ' sched-week-start';
@@ -502,6 +547,7 @@
 
     html += '<div class="sched-legend">' +
               '<span><span class="sched-st-W">W</span> Work</span>' +
+              (!isMgr ? '<span><span class="sched-st-WE">WE</span> Work early</span>' : '') +
               (!isMgr ? '<span><span class="sched-st-WL">WL</span> Work late</span>' : '') +
               (!isMgr ? '<span><span class="sched-st-E">E</span> Extra (covering)</span>' : '') +
               '<span><span class="sched-st-O">O</span> Off</span>' +
@@ -607,8 +653,8 @@
       var grid = schedByBranch[s.branch];
       if (!grid) return false;
       var v = grid[s.employee_code] && grid[s.employee_code][dayKey];
-      // W = working, WL = working late, E = extra day
-      return v === "W" || v === "WL" || v === "E";
+      // Any working shift (W / WE / WL / WB / WM / E) makes the tech borrowable.
+      return isWorkingShift(v);
     });
 
     var inp = document.getElementById("bt-search");
@@ -890,9 +936,10 @@
     var rosterMap = {};
     staff.forEach(function (s) {
       if (!s.employee_code) return;
+      if (isManagerStaff(s)) return;   // managers check in via their own tile
       var schSt = grid[s.employee_code] && grid[s.employee_code][dayKey];
       var attSt = attGrid[s.employee_code] && attGrid[s.employee_code][dayKey];
-      var isScheduled      = (schSt === "W" || schSt === "WL" || schSt === "E");
+      var isScheduled      = isWorkingShift(schSt);
       var isSameDayCoverer = (attSt === "swap_i" || hasExtraDayFor(s.employee_code));
       // Guests loaned in from another branch are unconditionally in today's
       // roster. Their schedule entry lives in their home branch's grid so
@@ -923,6 +970,7 @@
     // L (Leave) and X (Pre-start) are informational.
     var offTodayAll = staff.filter(function (s) {
       if (!s.employee_code) return false;
+      if (isManagerStaff(s)) return false;   // managers aren't part of the tech check-in
       if (rosterMap[s.id]) return false;
       var st = grid[s.employee_code] && grid[s.employee_code][dayKey];
       return st === "O" || st === "R" || st === "L" || st === "X";
@@ -972,26 +1020,38 @@
     // r.current (already pulled from attGrid during the roster build).
     // Looking up r.employee_code directly is a bug — that field lives on
     // r.staff.employee_code — and was previously freezing confirmed at 0.
-    var confirmed = 0, onTime = 0;
+    var confirmed = 0, onTime = 0, total = 0, loanedOutCount = 0;
     scheduled.forEach(function (r) {
+      // Loaned-out techs are working at another store today — their status is
+      // recorded by that store's kiosk and their home row is locked, so they
+      // must NOT count toward "needs a status" (otherwise the home manager can
+      // never reach all-confirmed and submit). They still show in the roster,
+      // chipped with their destination, for visibility.
+      if (r.staff && r.staff._loanedOut) { loanedOutCount++; return; }
+      total++;
       var st = r.current;
       if (isTagged(st)) confirmed++;
       if (st === "on") onTime++;
     });
-    var total = scheduled.length;
 
-    if (onTime === total)        { badgeEl.innerHTML = '✓ All ' + total + ' On Time'; badgeEl.className = 'dly-status-badge dly-status-good'; }
-    else if (confirmed === total){ badgeEl.innerHTML = '✓ All confirmed';              badgeEl.className = 'dly-status-badge dly-status-good'; }
-    else                         { badgeEl.innerHTML = (total - confirmed) + ' need a status'; badgeEl.className = 'dly-status-badge dly-status-pending'; }
+    var awaySuffix = loanedOutCount > 0 ? ' · ' + loanedOutCount + ' away' : '';
+    if (total === 0) {
+      badgeEl.innerHTML = loanedOutCount > 0 ? '✓ All techs loaned out today' : '';
+      badgeEl.className  = 'dly-status-badge' + (loanedOutCount > 0 ? ' dly-status-good' : '');
+    }
+    else if (onTime === total)   { badgeEl.innerHTML = '✓ All ' + total + ' On Time' + awaySuffix; badgeEl.className = 'dly-status-badge dly-status-good'; }
+    else if (confirmed === total){ badgeEl.innerHTML = '✓ All confirmed' + awaySuffix;             badgeEl.className = 'dly-status-badge dly-status-good'; }
+    else                         { badgeEl.innerHTML = (total - confirmed) + ' need a status' + awaySuffix; badgeEl.className = 'dly-status-badge dly-status-pending'; }
 
-    var pct = Math.round((confirmed / total) * 100);
+    var pct = total > 0 ? Math.round((confirmed / total) * 100) : 100;
     progEl.innerHTML =
       '<div class="dly-progress-text">Progress: <strong>' + confirmed + '/' + total + ' confirmed</strong>' +
         (confirmed < total ? ' — ' + (total - confirmed) + ' still need a status' : '') +
       '</div>' +
       '<div class="dly-progress-bar"><div class="dly-progress-fill" style="width:' + pct + '%"></div></div>';
 
-    headEl.innerHTML = '📍 Scheduled to work · ' + total + ' staff';
+    headEl.innerHTML = '📍 Scheduled to work · ' + total + ' staff' +
+      (loanedOutCount > 0 ? ' · ' + loanedOutCount + ' loaned out' : '');
 
     var statusButtons = [
       { code: "on",     label: "On Time"       },
@@ -1051,6 +1111,7 @@
       // Late on top.
       var rosterTag = "";
       if (schedSt === "WL")                       rosterTag = '<span class="row-tag row-tag-warn">WL · work late</span>';
+      else if (schedSt === "WE")                  rosterTag = '<span class="row-tag row-tag-info">WE · work early</span>';
       else if (schedSt === "E")                   rosterTag = '<span class="row-tag row-tag-info">E · extra cover</span>';
       else if (isExtraDay)                        rosterTag = '<span class="row-tag row-tag-info">Extra cover</span>';
       else if (!schedSt && current === "swap_i")  rosterTag = '<span class="row-tag row-tag-swap">Covering (swap-in)</span>';
@@ -1675,7 +1736,10 @@
       // place after the list
       listEl.parentNode.appendChild(signoffEl);
     }
-    var allConfirmed = (confirmed === total) && total > 0;
+    // Submittable once every PRESENT tech has a status. total>0 is the normal
+    // case; loanedOutCount>0 covers a day where every scheduled tech was
+    // loaned out (nothing to tag at home, but the day should still close).
+    var allConfirmed = (confirmed === total) && (total > 0 || loanedOutCount > 0);
 
     if (alreadySigned) {
       // Day is locked. No "Re-edit" — only the per-row proof-conversion
@@ -1720,7 +1784,9 @@
         '<div class="dly-signoff-head">📝 Confirm and sign off</div>' +
         '<div class="dly-signoff-info">' +
           (allConfirmed
-            ? 'All ' + total + ' staff confirmed. Sign off to finalise the day — totals on the HR portal\'s Attendance tab will update automatically.'
+            ? (total === 0
+                ? 'All techs are loaned out to other stores today. Sign off to finalise the day — totals on the HR portal\'s Attendance tab will update automatically.'
+                : 'All ' + total + ' staff confirmed' + (loanedOutCount > 0 ? ' (' + loanedOutCount + ' loaned out)' : '') + '. Sign off to finalise the day — totals on the HR portal\'s Attendance tab will update automatically.')
             : '<strong>' + (total - confirmed) + ' staff still need a status above</strong> before you can sign off.') +
         '</div>' +
         '<div class="dly-signoff-form">' +
@@ -2178,11 +2244,82 @@
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
     });
   }
+  // A staff row is a manager if it's tagged as one in the DB, OR its employee
+  // code follows the manager convention. Branch managers use codes ending in
+  // "M" (e.g. B147M) and head-office managers use an "M###" prefix (e.g. M005);
+  // neither ends in the "-M" suffix the HR portal's role_type derivation looks
+  // for, so some manager rows land in the DB with role_type "tech". Checking
+  // the code pattern too keeps them out of the Nail Tech Check-in regardless
+  // of how their role_type was stored — managers clock in via their own tile.
+  // Defers to the shared data-layer predicate so the rule stays in one place.
+  function isManagerStaff(s) {
+    if (window.APP_DATA && typeof window.APP_DATA.isManagerRow === "function") {
+      return window.APP_DATA.isManagerRow(s);
+    }
+    if (!s) return false;
+    if (s.role_type === "manager") return true;
+    var code = (s.employee_code || "").toUpperCase().trim();
+    return !!code && (/\dM$/.test(code) || /^M\d/.test(code));
+  }
   function configMissingHtml() {
     return '<div class="warn">' +
              '<strong>Supabase isn\'t connected yet.</strong><br>' +
              'Open <code>config.js</code> and fill in the URL and anon key, then reload.' +
            '</div>';
+  }
+
+  // ---------- "Submit today's check-in" home-screen nag ----------
+  // Submitting the daily nail-tech check-in is the store's duty. If it's past
+  // 10:30 and today still isn't signed off — while techs are scheduled to work
+  // — the home screen shows a big blinking warning until it's submitted.
+  var CHECKIN_NAG_AFTER_MIN = 10 * 60 + 30;   // 10:30 local time
+
+  async function shouldNagUnsubmittedCheckin() {
+    try {
+      if (!window.APP_DATA || !window.APP_DATA.isConfigured()) return false;
+      var now = new Date();
+      if (now.getHours() * 60 + now.getMinutes() < CHECKIN_NAG_AFTER_MIN) return false;
+      // Already submitted today? Then nothing to nag about.
+      var daily = await window.APP_DATA.getDailyRecord(now);
+      if (daily && daily.signedBy) return false;
+      // Only nag on days the store is actually operating — i.e. at least one
+      // nail tech is scheduled to work (W / WL / E) today. Manager-coded ECs
+      // are skipped: they clock in via the Manager Check-in tile, not here.
+      var sched = await window.APP_DATA.getSchedule(window.APP_DATA.ymForDate(now));
+      var grid  = (sched && sched.grid) || {};
+      var dayKey = String(now.getDate());
+      for (var ec in grid) {
+        var st = grid[ec] && grid[ec][dayKey];
+        if (!isWorkingShift(st)) continue;
+        var code = String(ec).toUpperCase();
+        if (/\dM$/.test(code) || /^M\d/.test(code)) continue;   // manager code
+        return true;
+      }
+      return false;
+    } catch (e) {
+      console.warn("check-in nag check failed (non-fatal):", e);
+      return false;
+    }
+  }
+
+  function checkinNagHtml() {
+    return '<div class="checkin-nag" role="alert">' +
+             '<div class="checkin-nag-icon">⚠️</div>' +
+             '<div class="checkin-nag-text">' +
+               '<div class="checkin-nag-title">CHECK-IN NOT SUBMITTED</div>' +
+               '<div class="checkin-nag-sub">It\'s after 10:30 and today\'s nail tech check-in still hasn\'t been submitted. ' +
+                 'Open <strong>Daily Check-in</strong>, confirm everyone and sign off — it\'s the store\'s duty to submit it.</div>' +
+             '</div>' +
+           '</div>';
+  }
+
+  // Populate (or clear) the #checkin-nag-slot on whichever landing is showing.
+  // Safe to call when the slot isn't present (e.g. on a sub-screen) — no-ops.
+  async function refreshCheckinNag() {
+    var el = document.getElementById("checkin-nag-slot");
+    if (!el) return;
+    var nag = await shouldNagUnsubmittedCheckin();
+    el.innerHTML = nag ? checkinNagHtml() : "";
   }
 
   // ---------- Shared flows (used by manager-app.js too) ----------
@@ -2200,6 +2337,7 @@
     renderOffRequests:  function () { return renderOffRequests.apply(null, arguments); },
     renderSchedule:     function () { return renderSchedule.apply(null, arguments); },
     renderNews:         function () { return renderNews.apply(null, arguments); },
-    refreshNewsBadge:   function () { return refreshNewsBadge.apply(null, arguments); }
+    refreshNewsBadge:   function () { return refreshNewsBadge.apply(null, arguments); },
+    refreshCheckinNag:  function () { return refreshCheckinNag.apply(null, arguments); }
   };
 })();
