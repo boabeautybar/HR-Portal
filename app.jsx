@@ -10425,24 +10425,45 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const _todayYmd = _t.getFullYear() + "-" + String(_t.getMonth() + 1).padStart(2, "0") + "-" + String(_t.getDate()).padStart(2, "0");
             const enrichedByEc = {};
             for (const s of (enriched || [])) if (s && s.ec) enrichedByEc[s.ec.trim()] = s;
-            // A leaver no longer counts once today is past their last working
-            // day — mirrors the schedule's post-departure ghost rule (today > leftDate).
-            const hasLeft = (er) => !!(er && er.leftDate && _todayYmd > er.leftDate);
-            // Collapse one row per EC so a tech mid-transfer (present in two
-            // branches' grids) is counted once. A real check-in / absent mark
-            // outranks a pending slot, so a transferred tech who checked in at
-            // their new branch isn't flagged "not checked in" at the old one.
+            // ECs whose leave record covers today — the live schedule shows these
+            // as L even when the stored grid the dashboard reads still has a work code.
+            const onLeaveEcs = new Set();
+            for (const lv of (leaveRecs || [])) {
+              if (lv && lv.ec && lv.startDate && lv.endDate && _todayYmd >= lv.startDate && _todayYmd <= lv.endDate) onLeaveEcs.add(lv.ec.trim());
+            }
+            const branchSet = new Set(Object.keys(dashTechByBranch));
+            // A tech isn't really working today — whatever a stale stored grid says
+            // — if they've left, are on maternity / unpaid-legal leave, or have an
+            // annual-leave record over today.
+            const isOffToday = (er, ecKey) =>
+              (!!(er && er.leftDate && _todayYmd > er.leftDate)) ||   // departed (today past last working day)
+              (!!(er && (er.onMat || er.onUnpaidLegal))) ||           // maternity / unpaid-legal leave
+              onLeaveEcs.has(ecKey);                                  // annual leave covering today
+            // Effective home branch today — follows a transfer once its date has
+            // passed. Lets us ignore stale work codes lingering in a branch the
+            // tech no longer (or doesn't yet) work at.
+            const effBranchOf = (er) => {
+              if (!er) return null;
+              if (er.transferring && er.transferTo && er.transferDate && _todayYmd >= String(er.transferDate).replace(/\//g, "-")) return er.transferTo;
+              return er.branch || null;
+            };
+            // Collapse to one row per EC. A real check-in / absent mark outranks a
+            // pending slot, so a transferred tech who checked in at their new
+            // branch isn't flagged "not checked in" at the old one.
             const rank = { in: 2, absent: 1, pending: 0 };
             const byEc = {};   // ec -> { status, branch }
             for (const b in dashTechByBranch) {
               if (_hasStoreScope && !scopedBranchSet.has(b)) continue;
               const tb = (dashTechByBranch[b] || {}).techByEc || {};
               for (const ec in tb) {
-                const er = enrichedByEc[(ec || "").trim()];
-                if (hasLeft(er)) continue;                       // resigned / terminated, already departed
+                const ecKey = (ec || "").trim();
+                const er = enrichedByEc[ecKey];
+                if (isOffToday(er, ecKey)) continue;
+                const eff = effBranchOf(er);
+                if (eff && branchSet.has(eff) && b !== eff) continue;   // stale / wrong-branch grid entry
                 const status = tb[ec];
                 const cur = byEc[ec];
-                if (!cur || rank[status] > rank[cur.status]) byEc[ec] = { status, branch: (er && er.branch) || b };
+                if (!cur || rank[status] > rank[cur.status]) byEc[ec] = { status, branch: eff || b };
               }
             }
             const a = { scheduled: 0, checkedIn: 0, notCheckedIn: 0, absent: 0, notCheckedInList: [] };
