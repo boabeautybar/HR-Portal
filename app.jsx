@@ -10905,20 +10905,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       click: () => tryChangeTab("storeOpenings")
                     },
                     mgrCheckin: {
-                      l: "Mgrs not checked in",
-                      v: mgrCheckinLoading ? "…" : (mgrSchedToday === 0 ? "—" : mgrMissing.length + " / " + mgrSchedToday),
-                      sub: mgrCheckinLoading
-                        ? "loading…"
-                        : (mgrSchedToday === 0
-                          ? "no managers scheduled"
-                          : (mgrMissing.length === 0
-                            ? "✓ all managers checked in"
-                            : mgrMissing.slice(0, 2).map(m => m.name + " · " + m.branch).join(", ") + (mgrMissing.length > 2 ? " +" + (mgrMissing.length - 2) + " more" : ""))),
-                      i: mgrCheckinLoading ? "⌛" : (mgrSchedToday === 0 ? "🕐" : (mgrMissing.length === 0 ? "✓" : "🚨")),
-                      c: mgrCheckinLoading ? "#7c2d12" : (mgrMissing.length === 0 ? "#166534" : "#7f1d1d"),
-                      bg: mgrCheckinLoading ? "#fef3c7" : (mgrMissing.length === 0 ? "#dcfce7" : "#fee2e2"),
+                      l: "Managers checked in",
+                      v: mgrCheckinLoading ? "…" : (mgrSchedToday === 0 ? "—" : ((mgrSchedToday - mgrMissing.length) + " / " + mgrSchedToday)),
+                      sub: mgrCheckinLoading ? "loading…" : (mgrSchedToday === 0 ? "no managers scheduled" : (mgrMissing.length + " not checked in yet")),
+                      i: "✅",
+                      c: "#14532d",
+                      bg: "#dcfce7",
                       click: () => tryChangeTab("mgrclockins"),
                       subClick: mgrMissing.length > 0 ? () => setNotCheckedInModal({ title: "Managers not checked in", role: "manager", list: mgrMissing.slice().sort((x, y) => (x.branch || "").localeCompare(y.branch || "") || (x.name || "").localeCompare(y.name || "")), tab: "mgrclockins", tabLabel: "Open Manager Clock-ins →" }) : null
+                    },
+                    mgrAbsent: {
+                      l: "Managers absent today",
+                      v: mgrCheckinLoading ? "…" : (mgrSchedToday === 0 ? "—" : mgrMissing.length),
+                      sub: mgrCheckinLoading ? "loading…" : (mgrSchedToday === 0 ? "no managers scheduled" : "haven't clocked in"),
+                      i: "🚫",
+                      c: "#7f1d1d",
+                      bg: "#fee2e2",
+                      click: () => tryChangeTab("mgrclockins"),
+                      subClick: mgrMissing.length > 0 ? () => setNotCheckedInModal({ title: "Managers absent today", role: "manager", list: mgrMissing.slice().sort((x, y) => (x.branch || "").localeCompare(y.branch || "") || (x.name || "").localeCompare(y.name || "")), tab: "mgrclockins", tabLabel: "Open Manager Clock-ins →" }) : null
                     },
                     scheduledToday: { l: "Scheduled today", v: dashScheduledToday == null ? "…" : (_hasStoreScope ? Object.keys(dashByBranch).filter(b => scopedBranchSet.has(b)).reduce((a, b) => a + (dashByBranch[b] || 0), 0) : dashScheduledToday), sub: _hasStoreScope ? ("scope: " + (dashScope === "mine" ? "my stores" : dashScope === "other" ? "peer stores" : "all branches")) : "across all branches", i: "📅", c: "#1e3a8a", bg: "#dbeafe" },
                     techsToday: { l: "Techs working today", v: techToday == null ? "…" : techToday.scheduled, sub: "must actively work today", i: "💅", c: "#0c4a6e", bg: "#e0f2fe" },
@@ -10929,8 +10933,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     vacancies: { l: "Positions to hire", v: scopedStats.vacancies, sub: "across " + scopedStats.understaffed + " branch" + (scopedStats.understaffed !== 1 ? "es" : ""), i: "🎯", c: "#7c3aed", bg: "#ede9fe", click: () => tryChangeTab("recruitment") }
                   };
                   const order = _hasStoreScope
-                    ? ["storesOpen", "mgrCheckin", "techsToday", "techsCheckedIn", "techsAbsent", "scheduledToday", "activeStaff", "vacancies", "onMaternity"]
-                    : ["storesOpen", "techsToday", "techsCheckedIn", "techsAbsent", "mgrCheckin", "scheduledToday", "activeStaff", "onMaternity", "vacancies"];
+                    ? ["storesOpen", "mgrCheckin", "mgrAbsent", "techsToday", "techsCheckedIn", "techsAbsent", "scheduledToday", "activeStaff", "vacancies", "onMaternity"]
+                    : ["storesOpen", "techsToday", "techsCheckedIn", "techsAbsent", "mgrCheckin", "mgrAbsent", "scheduledToday", "activeStaff", "onMaternity", "vacancies"];
                   return order.map(k => tiles[k]);
                 })().map(c => (
                   <div key={c.l} onClick={c.click} style={{ background: c.bg, borderRadius: 16, padding: "16px 18px", cursor: c.click ? "pointer" : "default", border: "1px solid rgba(255,255,255,0.6)" }}>
@@ -20822,7 +20826,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
                 <div>
                   <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: "#831843" }}>⏳ {data.title || "Not checked in yet"}</div>
-                  <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>{list.length} {noun}{list.length !== 1 ? "s" : ""} scheduled today {list.length !== 1 ? "haven't" : "hasn't"} checked in or been marked absent.</div>
+                  <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>{list.length} {noun}{list.length !== 1 ? "s" : ""} scheduled today {list.length !== 1 ? "haven't" : "hasn't"} {data.role === "manager" ? "clocked in" : "checked in or been marked absent"}.</div>
                 </div>
                 <button onClick={() => setNotCheckedInModal(null)} style={{ background: "transparent", border: "none", fontSize: 18, cursor: "pointer", color: "#6b7280", lineHeight: 1 }}>✕</button>
               </div>
