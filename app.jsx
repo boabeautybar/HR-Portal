@@ -8695,7 +8695,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const ABSENT = { absent: 1, no: 1, sick: 1, sick_n: 1, frl: 1 };
       let count = 0;
       let tScheduled = 0, tCheckedIn = 0, tAbsent = 0;
-      const notCheckedInEcs = [];
+      const techByEc = {};   // ec -> "in" | "absent" | "pending" (deduped & offboard-filtered at render)
       const mgrsScheduled = [];
       for (const ec in techGrid) {
         const v = techGrid[ec][todayDay];
@@ -8703,16 +8703,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         count++; tScheduled++;
         let st = attGrid[ec] && attGrid[ec][todayDay];
         if (st && st.indexOf("~") === 0) st = "";   // unconfirmed mirror ≠ a real check-in
-        if (st && PRESENT[st]) tCheckedIn++;
-        else if (st && ABSENT[st]) tAbsent++;
-        else notCheckedInEcs.push(ec);              // scheduled, neither present nor absent
+        if (st && PRESENT[st]) { tCheckedIn++; techByEc[ec] = "in"; }
+        else if (st && ABSENT[st]) { tAbsent++; techByEc[ec] = "absent"; }
+        else { techByEc[ec] = "pending"; }          // scheduled, neither present nor absent
       }
       for (const ec in mgrGrid) {
         // manager grid is keyed by YMD strings (mgrSched line 141)
         const v = mgrGrid[ec][ymd] || mgrGrid[ec][todayDay];
         if (isWorking(v)) { count++; mgrsScheduled.push(ec); }
       }
-      return [sl.name, count, mgrsScheduled, { scheduled: tScheduled, checkedIn: tCheckedIn, notCheckedIn: tScheduled - tCheckedIn - tAbsent, absent: tAbsent, notCheckedInEcs }];
+      return [sl.name, count, mgrsScheduled, { scheduled: tScheduled, checkedIn: tCheckedIn, notCheckedIn: tScheduled - tCheckedIn - tAbsent, absent: tAbsent, techByEc }];
     })).then(quads => {
       if (cancelled) return;
       const map = {};
@@ -10421,18 +10421,40 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // sick / FRL).
           const techToday = (() => {
             if (!dashTechByBranch) return null;
-            const a = { scheduled: 0, checkedIn: 0, notCheckedIn: 0, absent: 0, notCheckedInList: [] };
-            const nameByEc = {};
-            for (const s of (staff || [])) nameByEc[s.ec] = s.name;
+            const _t = new Date();
+            const _todayYmd = _t.getFullYear() + "-" + String(_t.getMonth() + 1).padStart(2, "0") + "-" + String(_t.getDate()).padStart(2, "0");
+            const enrichedByEc = {};
+            for (const s of (enriched || [])) if (s && s.ec) enrichedByEc[s.ec.trim()] = s;
+            // A leaver no longer counts once today is past their last working
+            // day — mirrors the schedule's post-departure ghost rule (today > leftDate).
+            const hasLeft = (er) => !!(er && er.leftDate && _todayYmd > er.leftDate);
+            // Collapse one row per EC so a tech mid-transfer (present in two
+            // branches' grids) is counted once. A real check-in / absent mark
+            // outranks a pending slot, so a transferred tech who checked in at
+            // their new branch isn't flagged "not checked in" at the old one.
+            const rank = { in: 2, absent: 1, pending: 0 };
+            const byEc = {};   // ec -> { status, branch }
             for (const b in dashTechByBranch) {
               if (_hasStoreScope && !scopedBranchSet.has(b)) continue;
-              const t = dashTechByBranch[b] || {};
-              a.scheduled += t.scheduled || 0;
-              a.checkedIn += t.checkedIn || 0;
-              a.notCheckedIn += t.notCheckedIn || 0;
-              a.absent += t.absent || 0;
-              for (const ec of (t.notCheckedInEcs || [])) {
-                a.notCheckedInList.push({ ec, name: nameByEc[ec] || ec, branch: b });
+              const tb = (dashTechByBranch[b] || {}).techByEc || {};
+              for (const ec in tb) {
+                const er = enrichedByEc[(ec || "").trim()];
+                if (hasLeft(er)) continue;                       // resigned / terminated, already departed
+                const status = tb[ec];
+                const cur = byEc[ec];
+                if (!cur || rank[status] > rank[cur.status]) byEc[ec] = { status, branch: (er && er.branch) || b };
+              }
+            }
+            const a = { scheduled: 0, checkedIn: 0, notCheckedIn: 0, absent: 0, notCheckedInList: [] };
+            for (const ec in byEc) {
+              const { status, branch } = byEc[ec];
+              a.scheduled++;
+              if (status === "in") a.checkedIn++;
+              else if (status === "absent") a.absent++;
+              else {
+                a.notCheckedIn++;
+                const er = enrichedByEc[(ec || "").trim()];
+                a.notCheckedInList.push({ ec, name: (er && er.name) || ec, branch });
               }
             }
             a.notCheckedInList.sort((x, y) =>
