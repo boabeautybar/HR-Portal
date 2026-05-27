@@ -6045,6 +6045,23 @@ function AppGate() {
           }
         });
         if (mutated) { try { await saveAppUsersToDb(dynamic); } catch (_) { } }
+
+        // One-time migration: hide new Home/Dashboard widgets for all non-owner
+        // users. Runs idempotently — once dashSecurityAlerts is already in a
+        // user's hideTabs the migration is skipped for that user.
+        const _dashWidgets = ["dashSecurityAlerts", "dashHrActions"];
+        let dashMigrated = false;
+        Object.keys(dynamic).forEach(pin => {
+          const u = dynamic[pin];
+          if (u.isOwner) return; // owners keep full access
+          const ht = Array.isArray(u.hideTabs) ? u.hideTabs : [];
+          const missing = _dashWidgets.filter(w => !ht.includes(w));
+          if (missing.length > 0) {
+            u.hideTabs = [...ht, ...missing];
+            dashMigrated = true;
+          }
+        });
+        if (dashMigrated) { try { await saveAppUsersToDb(dynamic); } catch (_) { } }
       }
       if (cancelled) return;
       window.__BOA_APP_USERS = dynamic;
@@ -6061,7 +6078,6 @@ function AppGate() {
               ...s,
               name: u.name, role: u.role,
               demo: !!u.demo, isOwner: !!u.isOwner,
-              canManageSecurityAlerts: u.isOwner ? true : !!u.canManageSecurityAlerts,
               hideCategories: u.hideCategories || [],
               hideTabs: u.hideTabs || [],
               readOnlyTabs: u.readOnlyTabs || [],
@@ -6093,7 +6109,6 @@ function AppGate() {
       const rec = {
         name: u.name, role: u.role,
         demo: !!u.demo, isOwner: !!u.isOwner,
-        canManageSecurityAlerts: u.isOwner ? true : !!u.canManageSecurityAlerts,
         hideCategories: u.hideCategories || [],
         hideTabs: u.hideTabs || [],
         readOnlyTabs: u.readOnlyTabs || []
@@ -6117,7 +6132,6 @@ function AppGate() {
         ...currentUser,
         name: u.name, role: u.role,
         demo: !!u.demo, isOwner: !!u.isOwner,
-        canManageSecurityAlerts: u.isOwner ? true : !!u.canManageSecurityAlerts,
         hideCategories: u.hideCategories || [],
         hideTabs: u.hideTabs || [],
         readOnlyTabs: u.readOnlyTabs || [],
@@ -6152,6 +6166,8 @@ function AppGate() {
 // All changes flow through `onUsersUpdate` (defined in AppGate) which
 // upserts the live user store into Supabase under APP_USERS_KEY.
 const SETTINGS_TABS = [
+  { t: "dashSecurityAlerts", l: "Security Alerts", cat: "Home/Dashboard", icon: "🚨" },
+  { t: "dashHrActions", l: "HR Actions & Tasks", cat: "Home/Dashboard", icon: "📝" },
   { t: "staff", l: "Staff List", cat: "People", icon: "👥" },
   { t: "onboard", l: "Onboarding", cat: "People", icon: "🌱" },
   { t: "offboard", l: "Off-boarding", cat: "People", icon: "👋" },
@@ -6176,7 +6192,7 @@ const SETTINGS_TABS = [
   { t: "managerPins", l: "Manager PINs", cat: "Admin", icon: "🆔" },
   { t: "storeAllocation", l: "Store Allocation", cat: "Admin", icon: "🏬" }
 ];
-const SETTINGS_CATS = ["People", "Operations", "Payroll", "Insights", "Admin"];
+const SETTINGS_CATS = ["Home/Dashboard", "People", "Operations", "Payroll", "Insights", "Admin"];
 
 // Convert a stored user record (hideCategories + hideTabs + readOnlyTabs)
 // into a per-tab matrix the editor can flip checkboxes against.
@@ -6209,7 +6225,6 @@ function permsToUser(base, perms, stores) {
     role: base.role || "",
     demo: !!base.demo,
     isOwner: !!base.isOwner,
-    canManageSecurityAlerts: base.isOwner ? true : !!base.canManageSecurityAlerts,
     hideCategories: [],     // superseded by hideTabs
     hideTabs,
     readOnlyTabs
@@ -6252,7 +6267,6 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
       role: "",
       demo: false,
       isOwner: false,
-      canManageSecurityAlerts: false,
       perms: blankPerms,
       stores: []
     });
@@ -6268,7 +6282,6 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
       role: u.role || "",
       demo: !!u.demo,
       isOwner: !!u.isOwner,
-      canManageSecurityAlerts: u.isOwner ? true : !!u.canManageSecurityAlerts,
       perms: userToPerms(u),
       stores: Array.isArray(u.stores) ? u.stores.slice() : []
     });
@@ -6298,8 +6311,7 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
       name: editing.name.trim(),
       role: editing.role.trim() || (editing.isOwner ? "Owner" : "Staff"),
       demo: editing.demo,
-      isOwner: editing.isOwner,
-      canManageSecurityAlerts: editing.isOwner ? true : editing.canManageSecurityAlerts
+      isOwner: editing.isOwner
     }, editing.perms, editing.stores);
     const next = { ...users };
     if (!editing.isNew && editing.originalPin && editing.originalPin !== pin) {
@@ -6413,8 +6425,7 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
                   <td style={{ padding: "10px 12px" }}>
                     {u.isOwner && <span style={{ display: "inline-block", marginRight: 4, fontSize: 10, fontWeight: 700, color: "#92400e", background: "#FEF3C7", border: "1px solid #FDE68A", padding: "1px 6px", borderRadius: 4 }}>OWNER</span>}
                     {u.demo && <span style={{ display: "inline-block", marginRight: 4, fontSize: 10, fontWeight: 700, color: "#78350f", background: "#fde047", border: "1px solid #ca8a04", padding: "1px 6px", borderRadius: 4 }}>DEMO</span>}
-                    {(u.isOwner || u.canManageSecurityAlerts) && <span style={{ display: "inline-block", marginRight: 4, fontSize: 10, fontWeight: 700, color: "#991b1b", background: "#fee2e2", border: "1px solid #fecaca", padding: "1px 6px", borderRadius: 4 }}>🚨 SECURITY</span>}
-                    {!u.isOwner && !u.demo && !u.canManageSecurityAlerts && <span style={{ color: "#9CA3AF" }}>—</span>}
+                    {!u.isOwner && !u.demo && <span style={{ color: "#9CA3AF" }}>—</span>}
                   </td>
                   <td style={{ padding: "10px 12px", color: "#374151" }}>
                     {visibleCount === totalCount
@@ -6498,10 +6509,6 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#831843", fontWeight: 600, cursor: "pointer" }}>
                 <input type="checkbox" checked={editing.demo} onChange={e => setEditing({ ...editing, demo: e.target.checked })} />
                 Training / demo — changes never save to Supabase
-              </label>
-              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#831843", fontWeight: 600, cursor: editing.isOwner ? "not-allowed" : "pointer", opacity: editing.isOwner ? 0.6 : 1 }}>
-                <input type="checkbox" checked={editing.isOwner ? true : !!editing.canManageSecurityAlerts} disabled={editing.isOwner} onChange={e => setEditing({ ...editing, canManageSecurityAlerts: e.target.checked })} />
-                🚨 Can view & manage Security Alerts {editing.isOwner && <span style={{ fontSize: 10, color: "#9CA3AF" }}>(always on for owners)</span>}
               </label>
             </div>
 
@@ -10563,8 +10570,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               })()}
 
               {/* ── SECTION: SECURITY ALERTS ── */}
-              {/* Only visible to users with canManageSecurityAlerts permission (owners always have it) */}
-              {(currentUser?.isOwner || currentUser?.canManageSecurityAlerts) && securityLogs && securityLogs.length > 0 && (
+              {/* Only visible to users who have the dashSecurityAlerts permission (not in hideTabs) */}
+              {!(new Set(currentUser?.hideTabs || []).has("dashSecurityAlerts")) && securityLogs && securityLogs.length > 0 && (
                 <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 14, padding: "16px", marginBottom: 18, boxShadow: "0 1px 4px rgba(220,38,38,0.06)" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -10740,8 +10747,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
               {/* ── SECTION: HR TASKS (Mocked Phase 3) ── hidden for ROM
                   users — onboarding trial-review actions are HR's job,
-                  not something a Regional Ops Manager would action. */}
-              {!_hasStoreScope && (() => {
+                  not something a Regional Ops Manager would action.
+                  Also gated by the dashHrActions permission. */}
+              {!_hasStoreScope && !(new Set(currentUser?.hideTabs || []).has("dashHrActions")) && (() => {
                 const pendingTasks = obList.filter(o =>
                   o.status === "Pending Trainer Review" ||
                   o.status === "Pending Trial 1 Review" ||
