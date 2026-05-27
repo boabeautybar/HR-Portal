@@ -13527,9 +13527,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
                   {/* Per-branch cards sorted by urgency */}
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 12 }}>
-                    {salonData.sort((a, b) => (b.goal - b.active.length) - (a.goal - a.active.length)).map(salon => {
-                      const need = Math.max(0, salon.goal - salon.active.length);
-                      const pct = Math.min(Math.round(salon.active.length / salon.goal * 100), 100);
+                    {salonData.sort((a, b) => (b.goal - b.active.length - b.trial.length) - (a.goal - a.active.length - a.trial.length)).map(salon => {
+                      const filled = salon.active.length + salon.trial.length;   // trial candidates occupy seats (as on Locations)
+                      const need = Math.max(0, salon.goal - filled);
+                      const pct = salon.goal > 0 ? Math.min(Math.round(filled / salon.goal * 100), 100) : 100;
                       const [col, bg, brd] = need === 0 ? ["#14532d", "#dcfce7", "#86efac"] : need >= 5 ? ["#7f1d1d", "#fee2e2", "#fca5a5"] : need >= 3 ? ["#9a3412", "#ffedd5", "#fcd34d"] : ["#78350f", "#fef9c3", "#fde68a"];
                       return (
                         <div key={salon.name} style={{ background: "#FFFFFF", borderRadius: 14, border: `2px solid ${brd}`, overflow: "hidden" }}>
@@ -13551,7 +13552,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             <div style={{ marginBottom: 10 }}>
                               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontWeight: 700, marginBottom: 4, color: need === 0 ? "#15803d" : "#9a3412" }}>
                                 <span>
-                                  {salon.active.length} of {salon.goal} staff {salon.lowDemand ? "(target)" : "(capacity)"}
+                                  {filled} of {salon.goal} staff {salon.lowDemand ? "(target)" : "(capacity)"}
+                                  {salon.trial.length > 0 && <span style={{ fontWeight: 400, color: "#9a3412" }}> · incl. {salon.trial.length} on trial</span>}
                                 </span>
                                 <span>{pct}% filled</span>
                               </div>
