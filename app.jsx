@@ -10397,20 +10397,39 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           let mgrSchedToday = 0;
           let mgrMissing = [];
           if (dashTodayMgrClockinEcs) {
+            const _t = new Date();
+            const _todayYmd = _t.getFullYear() + "-" + String(_t.getMonth() + 1).padStart(2, "0") + "-" + String(_t.getDate()).padStart(2, "0");
+            // Normalise EC codes on both sides so a manager who DID clock in isn't
+            // mis-counted as missing over a stray whitespace mismatch.
+            const clockedIn = new Set();
+            dashTodayMgrClockinEcs.forEach(e => clockedIn.add(String(e).trim()));
+            const onLeaveEcs = new Set();
+            for (const lv of (leaveRecs || [])) {
+              if (lv && lv.ec && lv.startDate && lv.endDate && _todayYmd >= lv.startDate && _todayYmd <= lv.endDate) onLeaveEcs.add(lv.ec.trim());
+            }
+            const mgrByEc = {};
+            for (const m of (enrichedManagers || [])) if (m && m.ec) mgrByEc[m.ec.trim()] = m;
+            // One row per manager EC — a manager scheduled across more than one
+            // branch's grid (coverage / mid-transfer) must only be counted once.
+            const seen = {};   // ec -> { checkedIn, name, branch }
             for (const branchName in dashSchedMgrsByBranch) {
               if (_hasStoreScope && !scopedBranchSet.has(branchName)) continue;
-              const ecs = dashSchedMgrsByBranch[branchName] || [];
-              for (const ec of ecs) {
-                // Only count managers genuinely working today: drop anyone on
-                // maternity / off-boarded even if a stale working cell lingers
-                // in the schedule grid.
-                const m = (enrichedManagers || []).find(x => x.ec === ec) || (managers || []).find(x => x.ec === ec);
-                if (m && (m.onMat || m.offboarded)) continue;
-                mgrSchedToday++;
-                if (!dashTodayMgrClockinEcs.has(ec)) {
-                  mgrMissing.push({ ec, name: (m && m.name) || ec, branch: branchName });
-                }
+              for (const ecRaw of (dashSchedMgrsByBranch[branchName] || [])) {
+                const ec = String(ecRaw).trim();
+                const m = mgrByEc[ec];
+                // Skip anyone not really working today even if a stale work cell
+                // lingers: maternity, off-boarded, departed, or on leave.
+                if (m && (m.onMat || m.offboarded || (m.leftDate && _todayYmd > m.leftDate))) continue;
+                if (onLeaveEcs.has(ec)) continue;
+                const checkedIn = clockedIn.has(ec);
+                const cur = seen[ec];
+                if (!cur) seen[ec] = { checkedIn, name: (m && m.name) || ec, branch: (m && m.branch) || branchName };
+                else if (checkedIn && !cur.checkedIn) cur.checkedIn = true;
               }
+            }
+            for (const ec in seen) {
+              mgrSchedToday++;
+              if (!seen[ec].checkedIn) mgrMissing.push({ ec, name: seen[ec].name, branch: seen[ec].branch });
             }
           }
           const mgrCheckinLoading = dashTodayMgrClockinEcs == null || dashScheduledToday == null;
