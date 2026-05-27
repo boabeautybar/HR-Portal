@@ -547,6 +547,7 @@
 
     html += '<div class="sched-legend">' +
               '<span><span class="sched-st-W">W</span> Work</span>' +
+              (!isMgr ? '<span><span class="sched-st-WE">WE</span> Work early</span>' : '') +
               (!isMgr ? '<span><span class="sched-st-WL">WL</span> Work late</span>' : '') +
               (!isMgr ? '<span><span class="sched-st-E">E</span> Extra (covering)</span>' : '') +
               '<span><span class="sched-st-O">O</span> Off</span>' +
