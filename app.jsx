@@ -6563,6 +6563,9 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
             <div style={{ background: "#FDF2F8", border: "1px solid #FBCFE8", borderRadius: 9, padding: "9px 13px", fontSize: 11, color: "#9F1A4F", marginBottom: 14 }}>
               🏬 <strong>Store allocation</strong> is now managed on the dedicated <strong>Store Allocation</strong> tab (under Admin), so a National Ops Manager can be granted edit rights to it without full Settings access.
             </div>
+            <div style={{ background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 9, padding: "9px 13px", fontSize: 11, color: "#92400e", marginBottom: 14 }}>
+              🛡️ <strong>Admin tabs</strong> (Kiosk PINs, Manager PINs, Store Allocation) only appear for senior ops roles — <strong>Owner</strong>, <strong>National Ops</strong> and <strong>Regional Ops</strong> — so PINs are never exposed to regular staff. For those users the toggles below still apply: untick <strong>Visible</strong> to hide an admin tab from them. Ticking it on for any other role has no effect.
+            </div>
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
               <button onClick={cancelEdit} disabled={busy}
@@ -10105,17 +10108,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 ]
               },
               // Admin group. Settings stays owner-only. Kiosk PINs / Manager
-              // PINs are shown to the Owner (full edit) and to Regional Ops
-              // Managers (view-only — mutating controls hidden via
-              // pinsViewOnly). Store Allocation is shown to the Owner and to
-              // anyone whose role looks like a National Ops Manager; the
-              // standard hideTabs / readOnlyTabs grid still applies on top,
-              // so the Owner can fine-tune visibility for any specific user.
+              // PINs are shown to senior ops roles: the Owner and National Ops
+              // (full edit) and Regional Ops Managers (view-only — mutating
+              // controls hidden via pinsViewOnly). Store Allocation is shown to
+              // the Owner and National Ops. The standard hideTabs / readOnlyTabs
+              // grid still applies on top, so the Owner can hide any of these
+              // from a specific senior user via Settings.
               ...(() => {
                 const role = (currentUser?.role || "").toLowerCase();
                 const isNationalOps = role.includes("national ops") || role.includes("national operations");
                 const adminItems = [];
-                if (currentUser?.isOwner || isRomRole(currentUser?.role)) {
+                if (currentUser?.isOwner || isNationalOps || isRomRole(currentUser?.role)) {
                   adminItems.push({ t: "kioskPins", l: "🔑 Kiosk PINs" });
                   adminItems.push({ t: "managerPins", l: "🆔 Manager PINs" });
                 }
