@@ -10361,9 +10361,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               if (_hasStoreScope && !scopedBranchSet.has(branchName)) continue;
               const ecs = dashSchedMgrsByBranch[branchName] || [];
               for (const ec of ecs) {
+                // Only count managers genuinely working today: drop anyone on
+                // maternity / off-boarded even if a stale working cell lingers
+                // in the schedule grid.
+                const m = (enrichedManagers || []).find(x => x.ec === ec) || (managers || []).find(x => x.ec === ec);
+                if (m && (m.onMat || m.offboarded)) continue;
                 mgrSchedToday++;
                 if (!dashTodayMgrClockinEcs.has(ec)) {
-                  const m = (managers || []).find(x => x.ec === ec);
                   mgrMissing.push({ ec, name: (m && m.name) || ec, branch: branchName });
                 }
               }
