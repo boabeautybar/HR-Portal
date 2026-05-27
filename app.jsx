@@ -6058,6 +6058,23 @@ function AppGate() {
           }
         });
         if (mutated) { try { await saveAppUsersToDb(dynamic); } catch (_) { } }
+
+        // One-time migration: hide new Home/Dashboard widgets for all non-owner
+        // users. Runs idempotently — once dashSecurityAlerts is already in a
+        // user's hideTabs the migration is skipped for that user.
+        const _dashWidgets = ["dashSecurityAlerts", "dashHrActions"];
+        let dashMigrated = false;
+        Object.keys(dynamic).forEach(pin => {
+          const u = dynamic[pin];
+          if (u.isOwner) return; // owners keep full access
+          const ht = Array.isArray(u.hideTabs) ? u.hideTabs : [];
+          const missing = _dashWidgets.filter(w => !ht.includes(w));
+          if (missing.length > 0) {
+            u.hideTabs = [...ht, ...missing];
+            dashMigrated = true;
+          }
+        });
+        if (dashMigrated) { try { await saveAppUsersToDb(dynamic); } catch (_) { } }
       }
       if (cancelled) return;
       window.__BOA_APP_USERS = dynamic;
@@ -6162,6 +6179,8 @@ function AppGate() {
 // All changes flow through `onUsersUpdate` (defined in AppGate) which
 // upserts the live user store into Supabase under APP_USERS_KEY.
 const SETTINGS_TABS = [
+  { t: "dashSecurityAlerts", l: "Security Alerts", cat: "Home/Dashboard", icon: "🚨" },
+  { t: "dashHrActions", l: "HR Actions & Tasks", cat: "Home/Dashboard", icon: "📝" },
   { t: "staff", l: "Staff List", cat: "People", icon: "👥" },
   { t: "onboard", l: "Onboarding", cat: "People", icon: "🌱" },
   { t: "offboard", l: "Off-boarding", cat: "People", icon: "👋" },
@@ -6186,7 +6205,7 @@ const SETTINGS_TABS = [
   { t: "managerPins", l: "Manager PINs", cat: "Admin", icon: "🆔" },
   { t: "storeAllocation", l: "Store Allocation", cat: "Admin", icon: "🏬" }
 ];
-const SETTINGS_CATS = ["People", "Operations", "Payroll", "Insights", "Admin"];
+const SETTINGS_CATS = ["Home/Dashboard", "People", "Operations", "Payroll", "Insights", "Admin"];
 
 // Convert a stored user record (hideCategories + hideTabs + readOnlyTabs)
 // into a per-tab matrix the editor can flip checkboxes against.
@@ -10662,7 +10681,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               })()}
 
               {/* ── SECTION: SECURITY ALERTS ── */}
-              {securityLogs && securityLogs.length > 0 && (
+              {/* Only visible to users who have the dashSecurityAlerts permission (not in hideTabs) */}
+              {!(new Set(currentUser?.hideTabs || []).has("dashSecurityAlerts")) && securityLogs && securityLogs.length > 0 && (
                 <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 14, padding: "16px", marginBottom: 18, boxShadow: "0 1px 4px rgba(220,38,38,0.06)" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -10841,8 +10861,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
               {/* ── SECTION: HR TASKS (Mocked Phase 3) ── hidden for ROM
                   users — onboarding trial-review actions are HR's job,
-                  not something a Regional Ops Manager would action. */}
-              {!_hasStoreScope && (() => {
+                  not something a Regional Ops Manager would action.
+                  Also gated by the dashHrActions permission. */}
+              {!_hasStoreScope && !(new Set(currentUser?.hideTabs || []).has("dashHrActions")) && (() => {
                 const pendingTasks = obList.filter(o =>
                   o.status === "Pending Trainer Review" ||
                   o.status === "Pending Trial 1 Review" ||
