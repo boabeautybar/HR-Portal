@@ -6060,18 +6060,21 @@ function AppGate() {
         if (mutated) { try { await saveAppUsersToDb(dynamic); } catch (_) { } }
 
         // One-time migration: hide new Home/Dashboard widgets for all non-owner
-        // users. Runs idempotently — once dashSecurityAlerts is already in a
-        // user's hideTabs the migration is skipped for that user.
+        // users. We set `_dashMigrated` so it only ever runs once per user.
         const _dashWidgets = ["dashSecurityAlerts", "dashHrActions"];
         let dashMigrated = false;
         Object.keys(dynamic).forEach(pin => {
           const u = dynamic[pin];
+          if (u._dashMigrated) return; // Already migrated, don't force them hidden again
+          
+          u._dashMigrated = true;
+          dashMigrated = true;
+
           if (u.isOwner) return; // owners keep full access
           const ht = Array.isArray(u.hideTabs) ? u.hideTabs : [];
           const missing = _dashWidgets.filter(w => !ht.includes(w));
           if (missing.length > 0) {
             u.hideTabs = [...ht, ...missing];
-            dashMigrated = true;
           }
         });
         if (dashMigrated) { try { await saveAppUsersToDb(dynamic); } catch (_) { } }
@@ -6120,6 +6123,7 @@ function AppGate() {
     Object.keys(cleaned).forEach(pin => {
       const u = cleaned[pin];
       const rec = {
+        ...u,
         name: u.name, role: u.role,
         demo: !!u.demo, isOwner: !!u.isOwner,
         hideCategories: u.hideCategories || [],
@@ -6234,6 +6238,7 @@ function permsToUser(base, perms, stores) {
     if (!p.editable) readOnlyTabs.push(t);
   });
   const out = {
+    ...base,
     name: base.name || "",
     role: base.role || "",
     demo: !!base.demo,
@@ -6320,7 +6325,9 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
       alert("That PIN is already taken by another user.");
       return;
     }
+    const oldUser = users[editing.originalPin] || {};
     const packed = permsToUser({
+      ...oldUser,
       name: editing.name.trim(),
       role: editing.role.trim() || (editing.isOwner ? "Owner" : "Staff"),
       demo: editing.demo,
