@@ -9054,6 +9054,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Fresha imports or manual HR-portal edits to the same grid. Also feeds
   // the Attendance grid's green ✓ check (via checkInsByBranch).
   const [attCheckinRows, setAttCheckinRows] = useState([]);
+  const [checkinsTick, setCheckinsTick] = useState(0);   // bump to re-pull after a manual add / reopen
+  const [manualCheckinModal, setManualCheckinModal] = useState(null);  // null | { branch, ec, ymd, status, note, _saving, _err }
   useEffect(() => {
     if (tab !== "checkins" && tab !== "attendance" && tab !== "payrollProgress") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
@@ -9066,7 +9068,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       } catch (e) { console.error("kiosk check-ins load:", e); }
     })();
     return () => { cancelled = true; };
-  }, [tab, techClockinDays]);
+  }, [tab, techClockinDays, checkinsTick]);
 
   // Index check-ins by branch → ec → ymd, with per-day flags. Used by both the
   // Attendance grid and the Check-ins tab so the data is parsed once. Pulls
@@ -19983,7 +19985,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // half-finished duplicates (e.g. a tech as LATE and then ON TIME).
           const attLatestByKey = {};
           for (const r of (attCheckinRows || [])) {
-            if (!r.signedOff) continue;                          // day not submitted yet
+            if (!r.signedOff && !r.manual) continue;             // day not submitted (manual portal entries always show)
             if (r.status === "(cleared)") continue;              // tech was un-tagged before submit
             if (checkinFilterBranch !== "All" && r.branch !== checkinFilterBranch) continue;
             if (_hasStoreScope && r.branch && !scopedSalonNames.has(r.branch)) continue;
@@ -20082,7 +20084,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             return String(b.ts || "").localeCompare(String(a.ts || ""));
           });
           const _countByBranch = {};
-          groupedRows.forEach(r => { const b = _branchOf(r); _countByBranch[b] = (_countByBranch[b] || 0) + 1; });
+          const _signedOffByBranch = {};
+          groupedRows.forEach(r => { const b = _branchOf(r); _countByBranch[b] = (_countByBranch[b] || 0) + 1; if (r.signedOff) _signedOffByBranch[b] = true; });
 
           return (
             <div style={{ padding: "0 24px" }}>
@@ -20111,6 +20114,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </div>
                 </div>
                 <div style={{ flex: 1 }} />
+                <button
+                  onClick={() => setManualCheckinModal({
+                    branch: checkinFilterBranch !== "All" ? checkinFilterBranch : (SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name))[0] || {}).name || "",
+                    ec: "", ymd: checkinDay, status: "on", note: ""
+                  })}
+                  style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: "0.03em", alignSelf: "flex-end" }}>
+                  ➕ Add check-in
+                </button>
                 <div style={{ fontSize: 12, color: "#831843", textAlign: "right" }}><div style={{ fontWeight: 700 }}>{dayLabel(checkinDay)}</div><strong>{filtered.length}</strong> record{filtered.length !== 1 ? "s" : ""}</div>
               </div>
 
@@ -20175,7 +20186,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         _lastBranch = _b;
                         rowsOut.push(
                           <tr key={"grp-" + _b} style={{ background: "#FCE7F3" }}>
-                            <td colSpan={5} style={{ padding: "9px 12px", fontWeight: 800, color: "#831843", fontSize: 12.5 }}>📍 {_b} · {_countByBranch[_b]} record{_countByBranch[_b] !== 1 ? "s" : ""}</td>
+                            <td colSpan={5} style={{ padding: "9px 12px", fontWeight: 800, color: "#831843", fontSize: 12.5 }}>
+                              📍 {_b} · {_countByBranch[_b]} record{_countByBranch[_b] !== 1 ? "s" : ""}
+                              {_signedOffByBranch[_b] && (
+                                <button
+                                  onClick={async () => {
+                                    if (!window.confirm("Reopen " + _b + "'s check-in for " + dayLabel(checkinDay) + "?\n\nThis unlocks the day on the kiosk so the manager can add the remaining techs and submit again. Statuses already tagged on the kiosk are kept.")) return;
+                                    try {
+                                      await window.BOA_DB.reopenDailyCheckin(_b, checkinDay);
+                                      setCheckinsTick(t => t + 1);
+                                    } catch (e) { alert("Could not reopen: " + ((e && e.message) || e)); }
+                                  }}
+                                  style={{ marginLeft: 10, background: "#fff", color: "#9d174d", border: "1px solid #FBCFE8", borderRadius: 6, padding: "3px 9px", cursor: "pointer", fontSize: 10.5, fontWeight: 700 }}>
+                                  🔓 Reopen check-in
+                                </button>
+                              )}
+                            </td>
                           </tr>
                         );
                       }
@@ -20486,6 +20512,68 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       {tab === "hrLibrary" && (currentUser?.role === "Master Admin" || currentUser?.isOwner) && (
         <div style={{ padding: "0 24px" }}>{window.EmployeeDataLibrary ? React.createElement(window.EmployeeDataLibrary, { staff: staff, currentUser: currentUser, managers: managers, obList: obList, offList: offList }) : <div style={{ padding: 24 }}>Loading Employee Files...</div>}</div>
       )}
+
+      {/* Manual check-in modal — log a nail-tech check-in straight from the
+          portal (shows in the feed + importable into attendance). */}
+      {manualCheckinModal && (() => {
+        const m = manualCheckinModal;
+        const _today = (() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
+        const branchTechs = (staff || []).filter(s => s.branch === m.branch).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+        const lbl = { display: "block", fontSize: 10, fontWeight: 700, color: "#BE185D", letterSpacing: "0.06em", textTransform: "uppercase", margin: "10px 0 4px" };
+        const inp = { width: "100%", padding: "8px 11px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, fontFamily: "inherit", background: "#fff", boxSizing: "border-box" };
+        return (
+          <div onClick={() => !m._saving && setManualCheckinModal(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "20px 22px", width: "100%", maxWidth: 440, boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: "#831843" }}>➕ Add a nail-tech check-in</div>
+              <div style={{ fontSize: 12, color: "#6b7280", margin: "4px 0 6px" }}>Manually record a check-in. It shows in this feed and can be pulled onto the attendance grid via Import Check-ins.</div>
+              <label style={lbl}>Store</label>
+              <select value={m.branch} onChange={e => setManualCheckinModal(x => ({ ...x, branch: e.target.value, ec: "" }))} style={inp}>
+                {SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name)).map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+              </select>
+              <label style={lbl}>Nail tech</label>
+              <select value={m.ec} onChange={e => setManualCheckinModal(x => ({ ...x, ec: e.target.value }))} style={inp}>
+                <option value="">Choose tech…</option>
+                {branchTechs.map(s => <option key={s.ec} value={s.ec}>{s.name} · {s.ec}</option>)}
+              </select>
+              <label style={lbl}>Date</label>
+              <input type="date" value={m.ymd} max={_today} onChange={e => e.target.value && setManualCheckinModal(x => ({ ...x, ymd: e.target.value }))} style={inp} />
+              <label style={lbl}>Status</label>
+              <select value={m.status} onChange={e => setManualCheckinModal(x => ({ ...x, status: e.target.value }))} style={inp}>
+                <option value="on">On Time</option>
+                <option value="late">Late</option>
+                <option value="sick_n">Sick + note</option>
+                <option value="sick">Sick (no note)</option>
+                <option value="absent">Absent</option>
+                <option value="no">No-show</option>
+                <option value="frl">FRL</option>
+              </select>
+              <label style={lbl}>Note (optional)</label>
+              <input type="text" value={m.note} onChange={e => setManualCheckinModal(x => ({ ...x, note: e.target.value }))} placeholder="Reason / context" style={inp} />
+              {m._err && <div style={{ color: "#b91c1c", fontSize: 12, marginTop: 8 }}>{m._err}</div>}
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 16 }}>
+                <button onClick={() => setManualCheckinModal(null)} disabled={m._saving} style={{ background: "#f3f4f6", color: "#374151", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>Cancel</button>
+                <button
+                  onClick={async () => {
+                    if (!m.branch || !m.ec || !m.ymd || !m.status) { setManualCheckinModal(x => ({ ...x, _err: "Pick a store, tech, date and status." })); return; }
+                    setManualCheckinModal(x => ({ ...x, _saving: true, _err: null }));
+                    try {
+                      await window.BOA_DB.addManualKioskCheckin(m.branch, m.ec, m.ymd, m.status, m.note, "HR portal" + (currentUser && currentUser.name ? " · " + currentUser.name : ""));
+                      setCheckinDay(m.ymd);
+                      setManualCheckinModal(null);
+                      setCheckinsTick(t => t + 1);
+                    } catch (e) {
+                      setManualCheckinModal(x => ({ ...x, _saving: false, _err: (e && e.message) || String(e) }));
+                    }
+                  }}
+                  disabled={m._saving}
+                  style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: "pointer", fontSize: 13, fontWeight: 700, opacity: m._saving ? 0.6 : 1 }}>
+                  {m._saving ? "Saving…" : "Save check-in"}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Proof image modal — shared between Daily Check-ins and Attendance.
           When proofModal.onConfirm is set, an admin "✓ Confirm" button shows
