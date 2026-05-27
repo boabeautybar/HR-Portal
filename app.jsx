@@ -1343,6 +1343,22 @@ const SALONS = [
   { name: "Betty", mani: 9, pedi: 7, capacity: 18, targetCapacity: 10, lowDemand: true, region: "wc", closedDow: [0, 1] },
 ];
 
+// Recruitment headcount target ("how many techs can work there"). Defaults to
+// ~20% above the physical station count (mani+pedi) so off-days don't leave
+// seats unstaffed. Stores that already carry a larger hand-set capacity (the
+// seeded WC stores) keep it; low-demand stores keep their soft targetCapacity
+// untouched. Mutates the salon in place and is idempotent, so it can run over
+// seeded, imported and custom stores alike to give every region the same default.
+function applyDefaultRecruitTarget(s) {
+  if (!s || s.lowDemand) return s;
+  const stations = (Number(s.mani) || 0) + (Number(s.pedi) || 0);
+  if (stations > 0 && (Number(s.capacity) || 0) <= stations) {
+    s.capacity = Math.round(stations * 1.2);
+  }
+  return s;
+}
+SALONS.forEach(applyDefaultRecruitTarget);
+
 // Shared region metadata for the Locations filter and the Add Location form.
 const REGIONS = [
   { key: "wc", label: "Western Cape", short: "WC", color: "#0e7490", bg: "#cffafe" },
@@ -1382,6 +1398,10 @@ const JHB_IMPORT_BRANCHES = [
   { name: "Verdi", mani: 10, pedi: 6, capacity: 16, region: "gauteng" },
   { name: "Ballito", mani: 9, pedi: 7, capacity: 16, region: "kzn" }
 ];
+// Apply the same 20%-above-stations default to the import template so newly
+// imported JHB/KZN stores arrive with a recruitment buffer instead of a
+// capacity equal to their station count.
+JHB_IMPORT_BRANCHES.forEach(applyDefaultRecruitTarget);
 const JHB_IMPORT_STAFF = [
   // Fourways
   { ec: "B195", name: "Anele Kwatsha", branch: "Fourways", contract: "Permanent", permit: "sa_citizen", level: "One" },
@@ -7759,6 +7779,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           seen.add(x.name);
           added++;
         }
+        // Give imported / custom stores the same recruitment default as the
+        // seeded ones — stores still sitting at capacity == stations (no buffer)
+        // get bumped to ~20% above their station count. WC and low-demand
+        // stores are left untouched.
+        SALONS.forEach(applyDefaultRecruitTarget);
         if (added > 0 || overridden > 0) _setCustomSalonsTick(t => t + 1);
       } catch (e) { console.error("loadCustomSalons:", e); }
     })();
@@ -7927,7 +7952,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     }
     const mani = Math.max(0, Number(m.mani) || 0);
     const pedi = Math.max(0, Number(m.pedi) || 0);
-    const capacity = Math.max(1, Number(m.capacity) || (mani + pedi));
+    const capacity = Math.max(1, Number(m.capacity) || Math.round((mani + pedi) * 1.2));
     const region = REGIONS.some(r => r.key === m.region) ? m.region : "wc";
     const entry = { name: nm, mani, pedi, capacity, region };
     if (m.lowDemand) {
@@ -7970,7 +7995,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     }
     const mani = Math.max(0, Number(m.mani) || 0);
     const pedi = Math.max(0, Number(m.pedi) || 0);
-    const capacity = Math.max(1, Number(m.capacity) || (mani + pedi));
+    const capacity = Math.max(1, Number(m.capacity) || Math.round((mani + pedi) * 1.2));
     const region = REGIONS.some(r => r.key === m.region) ? m.region : "wc";
     const lowDemand = !!m.lowDemand;
     const targetCapacity = lowDemand ? Math.max(1, Number(m.targetCapacity) || capacity) : null;
