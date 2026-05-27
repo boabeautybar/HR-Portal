@@ -8624,12 +8624,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // dashboard "managers not checked in" tile cross-references this against
   // today's manager clockin rows.
   const [dashSchedMgrsByBranch, setDashSchedMgrsByBranch] = useState({});
+  // Per-branch nail-tech breakdown for today: { branch: { scheduled, checkedIn, notCheckedIn, absent } }
+  const [dashTechByBranch, setDashTechByBranch] = useState(null); // null = loading
   const [dashTodayMgrClockinEcs, setDashTodayMgrClockinEcs] = useState(null); // null = loading, Set<ec> once loaded
   useEffect(() => {
     if (tab !== "dashboard") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     let cancelled = false;
     setDashScheduledToday(null);
+    setDashTechByBranch(null);
     const today = new Date();
     const todayDay = today.getDate();
     const ymd = today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0") + "-" + String(todayDay).padStart(2, "0");
@@ -8643,33 +8646,48 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const mgrYm = _mgrY + "-" + String(_mgrM).padStart(2, "0");
     const safe = (p) => p.catch(() => null);
     Promise.all(SALONS.map(async (sl) => {
-      const [tech, mgr] = await Promise.all([
+      const [tech, mgr, att] = await Promise.all([
         safe(window.BOA_DB.loadSchedule(sl.name, ym, false)),
-        safe(window.BOA_DB.loadSchedule(sl.name, mgrYm, true))
+        safe(window.BOA_DB.loadSchedule(sl.name, mgrYm, true)),
+        safe(window.BOA_DB.loadAttendance(sl.name, mgrYm))   // attendance is keyed by the START-month ym
       ]);
       const techGrid = (tech && tech.grid) || {};
       const mgrGrid = (mgr && mgr.grid) || {};
+      const attGrid = (att && att.grid) || {};
       const isWorking = (v) => v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E";
+      // Confirmed (no "~" prefix) statuses. Present = actually checked in;
+      // absent = no-show / sick / FRL / explicit absent. Anything else on a
+      // scheduled tech = hasn't checked in.
+      const PRESENT = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1 };
+      const ABSENT = { absent: 1, no: 1, sick: 1, sick_n: 1, frl: 1 };
       let count = 0;
+      let tScheduled = 0, tCheckedIn = 0, tAbsent = 0;
       const mgrsScheduled = [];
       for (const ec in techGrid) {
         const v = techGrid[ec][todayDay];
-        if (isWorking(v)) count++;
+        if (!isWorking(v)) continue;
+        count++; tScheduled++;
+        let st = attGrid[ec] && attGrid[ec][todayDay];
+        if (st && st.indexOf("~") === 0) st = "";   // unconfirmed mirror ≠ a real check-in
+        if (st && PRESENT[st]) tCheckedIn++;
+        else if (st && ABSENT[st]) tAbsent++;
       }
       for (const ec in mgrGrid) {
         // manager grid is keyed by YMD strings (mgrSched line 141)
         const v = mgrGrid[ec][ymd] || mgrGrid[ec][todayDay];
         if (isWorking(v)) { count++; mgrsScheduled.push(ec); }
       }
-      return [sl.name, count, mgrsScheduled];
-    })).then(triples => {
+      return [sl.name, count, mgrsScheduled, { scheduled: tScheduled, checkedIn: tCheckedIn, notCheckedIn: tScheduled - tCheckedIn - tAbsent, absent: tAbsent }];
+    })).then(quads => {
       if (cancelled) return;
       const map = {};
       const mgrMap = {};
+      const techMap = {};
       let total = 0;
-      for (const [name, c, mgrs] of triples) { map[name] = c; mgrMap[name] = mgrs; total += c; }
+      for (const [name, c, mgrs, tech] of quads) { map[name] = c; mgrMap[name] = mgrs; techMap[name] = tech; total += c; }
       setDashByBranch(map);
       setDashSchedMgrsByBranch(mgrMap);
+      setDashTechByBranch(techMap);
       setDashScheduledToday(total);
     });
     // Today's manager clockins — used by the "managers not checked in" tile.
@@ -10353,6 +10371,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
           const mgrCheckinLoading = dashTodayMgrClockinEcs == null || dashScheduledToday == null;
 
+          // Nail-tech "scheduled to work today" breakdown, aggregated over the
+          // in-scope branches: how many must work, how many checked in, how
+          // many haven't, and how many were marked absent (incl. no-show /
+          // sick / FRL).
+          const techToday = (() => {
+            if (!dashTechByBranch) return null;
+            const a = { scheduled: 0, checkedIn: 0, notCheckedIn: 0, absent: 0 };
+            for (const b in dashTechByBranch) {
+              if (_hasStoreScope && !scopedBranchSet.has(b)) continue;
+              const t = dashTechByBranch[b] || {};
+              a.scheduled += t.scheduled || 0;
+              a.checkedIn += t.checkedIn || 0;
+              a.notCheckedIn += t.notCheckedIn || 0;
+              a.absent += t.absent || 0;
+            }
+            return a;
+          })();
+
           // Today's store-openings snapshot (loaded by the useEffect above).
           // null while the first load is in flight; show "…" until data lands.
           const todayY = new Date();
@@ -10767,13 +10803,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       click: () => tryChangeTab("mgrclockins")
                     },
                     scheduledToday: { l: "Scheduled today", v: dashScheduledToday == null ? "…" : (_hasStoreScope ? Object.keys(dashByBranch).filter(b => scopedBranchSet.has(b)).reduce((a, b) => a + (dashByBranch[b] || 0), 0) : dashScheduledToday), sub: _hasStoreScope ? ("scope: " + (dashScope === "mine" ? "my stores" : dashScope === "other" ? "peer stores" : "all branches")) : "across all branches", i: "📅", c: "#1e3a8a", bg: "#dbeafe" },
+                    techsToday: { l: "Techs working today", v: techToday == null ? "…" : techToday.scheduled, sub: "must actively work today", i: "💅", c: "#0c4a6e", bg: "#e0f2fe" },
+                    techsCheckedIn: { l: "Techs checked in", v: techToday == null ? "…" : (techToday.checkedIn + " / " + techToday.scheduled), sub: techToday == null ? "loading…" : (techToday.notCheckedIn + " not checked in yet"), i: "✅", c: "#14532d", bg: "#dcfce7", click: () => tryChangeTab("checkins") },
+                    techsAbsent: { l: "Techs absent today", v: techToday == null ? "…" : techToday.absent, sub: "incl. no-show / sick / FRL", i: "🚫", c: "#7f1d1d", bg: "#fee2e2", click: () => tryChangeTab("checkins") },
                     activeStaff: { l: "Active staff", v: scopedStats.active, sub: "incl. " + scopedStats.pregnant + " pregnant", i: "👥", c: "#14532d", bg: "#dcfce7" },
                     onMaternity: { l: "On maternity", v: scopedStats.onMat, sub: scopedStats.returning60 + " returning ≤60d", i: "🤱", c: "#7A4258", bg: "#fce7f3" },
                     vacancies: { l: "Positions to hire", v: scopedStats.vacancies, sub: "across " + scopedStats.understaffed + " branch" + (scopedStats.understaffed !== 1 ? "es" : ""), i: "🎯", c: "#7c3aed", bg: "#ede9fe", click: () => tryChangeTab("recruitment") }
                   };
                   const order = _hasStoreScope
-                    ? ["storesOpen", "mgrCheckin", "scheduledToday", "activeStaff", "vacancies", "onMaternity"]
-                    : ["storesOpen", "scheduledToday", "activeStaff", "onMaternity", "vacancies", "mgrCheckin"];
+                    ? ["storesOpen", "mgrCheckin", "techsToday", "techsCheckedIn", "techsAbsent", "scheduledToday", "activeStaff", "vacancies", "onMaternity"]
+                    : ["storesOpen", "techsToday", "techsCheckedIn", "techsAbsent", "mgrCheckin", "scheduledToday", "activeStaff", "onMaternity", "vacancies"];
                   return order.map(k => tiles[k]);
                 })().map(c => (
                   <div key={c.l} onClick={c.click} style={{ background: c.bg, borderRadius: 16, padding: "16px 18px", cursor: c.click ? "pointer" : "default", border: "1px solid rgba(255,255,255,0.6)" }}>
