@@ -8245,7 +8245,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [mgrClockinRows, setMgrClockinRows] = useState([]);
   const [mgrClockinMeta, setMgrClockinMeta] = useState({});  // {clockinId: meta}
   const [mgrClockinFilterBranch, setMgrClockinFilterBranch] = useState("All");
-  const [mgrClockinDays, setMgrClockinDays] = useState(7);
+  const [mgrClockinDays, setMgrClockinDays] = useState(31);        // how far back rows are loaded
+  const [mgrClockinDay, setMgrClockinDay] = useState(() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); });
   const [mgrClockinPhoto, setMgrClockinPhoto] = useState(null);   // {url, name, ts, ...}
   const [mgrClockinSchedCache, setMgrClockinSchedCache] = useState({});  // {branch|ym: grid}
 
@@ -8255,7 +8256,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [techClockinRows, setTechClockinRows] = useState([]);
   const [techClockinDays, setTechClockinDays] = useState(60);          // load window
   const [checkinFilterBranch, setCheckinFilterBranch] = useState("All");
-  const [checkinDayRange, setCheckinDayRange] = useState(7);    // viewer range
+  const [checkinDay, setCheckinDay] = useState(() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); });   // viewer day (one day at a time)
   const [proofModal, setProofModal] = useState(null); // { loading, dataUrl, name, ymd, status }
 
   // ── Onboarding / Off-boarding state ────────────────────────────────
@@ -8952,20 +8953,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const rows = await window.BOA_DB.listRecentManagerClockins(mgrClockinDays);
         if (cancelled) return;
         setMgrClockinRows(rows || []);
-        // Lazily fetch metadata (photos + GPS) for the rows
-        const need = (rows || []).filter(r => !(r.id in mgrClockinMeta));
-        if (need.length > 0) {
-          const pairs = await Promise.all(need.map(async (r) => {
-            try { return [r.id, await window.BOA_DB.loadClockinMeta(r.id)]; }
-            catch (_) { return [r.id, null]; }
-          }));
-          if (cancelled) return;
-          setMgrClockinMeta(prev => {
-            const next = { ...prev };
-            pairs.forEach(([id, m]) => { next[id] = m; });
-            return next;
-          });
-        }
+        // Photo/GPS metadata is loaded per selected day (see the effect below)
+        // so a wide load window doesn't eagerly pull every day's selfies.
         // ALSO load manager schedules for the cycles touched by the visible range,
         // for every branch — used to derive no-show flags.
         const today = new Date();
@@ -9001,6 +8990,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     })();
     return () => { cancelled = true; };
   }, [tab, mgrClockinDays]);
+
+  // Load photo/GPS metadata only for the manager clock-ins on the currently
+  // selected day, so navigating day-by-day stays snappy even with a wide
+  // load window.
+  useEffect(() => {
+    if (tab !== "mgrclockins") return;
+    if (!window.BOA_DB || !window.BOA_DB.loadClockinMeta) return;
+    let cancelled = false;
+    (async () => {
+      const _p = n => String(n).padStart(2, "0");
+      const dayOf = (ts) => { const d = new Date(ts); return d.getFullYear() + "-" + _p(d.getMonth() + 1) + "-" + _p(d.getDate()); };
+      const need = (mgrClockinRows || []).filter(r => dayOf(r.ts) === mgrClockinDay && !(r.id in mgrClockinMeta));
+      if (need.length === 0) return;
+      const pairs = await Promise.all(need.map(async (r) => {
+        try { return [r.id, await window.BOA_DB.loadClockinMeta(r.id)]; }
+        catch (_) { return [r.id, null]; }
+      }));
+      if (cancelled) return;
+      setMgrClockinMeta(prev => {
+        const next = { ...prev };
+        pairs.forEach(([id, m]) => { next[id] = m; });
+        return next;
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [tab, mgrClockinDay, mgrClockinRows]);
 
   // Load recent nail-tech clock-ins when either the Check-ins tab or the
   // Attendance tab opens. The Attendance grid uses these to overlay check-in
@@ -19887,9 +19902,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       {/* ── DAILY CHECK-INS (nail tech) ── */}
       {tab === "checkins" && (() => {
         try {
-          // Filter rows by branch + range, and group by tech / day for compact display.
-          const today = new Date(); const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-          const since = new Date(t0); since.setDate(since.getDate() - (checkinDayRange - 1));
+          // Single-day view: show one day's check-ins (defaults to today) with
+          // prev/next day navigation. localYmd buckets a timestamp by its local
+          // calendar date so a check-in lands on the day it actually happened.
+          const _p2d = n => String(n).padStart(2, "0");
+          const localYmd = (ts) => { const d = new Date(ts); return d.getFullYear() + "-" + _p2d(d.getMonth() + 1) + "-" + _p2d(d.getDate()); };
+          const _todayYmd = localYmd(Date.now());
+          const shiftDay = (ymd, delta) => { const a = ymd.split("-").map(Number); const dt = new Date(Date.UTC(a[0], a[1] - 1, a[2])); dt.setUTCDate(dt.getUTCDate() + delta); return dt.getUTCFullYear() + "-" + _p2d(dt.getUTCMonth() + 1) + "-" + _p2d(dt.getUTCDate()); };
+          const dayLabel = (ymd) => { try { return new Date(ymd + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short", year: "numeric" }); } catch (_) { return ymd; } };
           // Keep orphan rows (staff join failed) so they show up as diagnostics
           // instead of being silently swallowed. Branch filter only applies when
           // the row has a staff record; orphans always pass through so they're
@@ -19901,7 +19921,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // rows (no staff record) always pass through so they remain
             // visible as diagnostics regardless of scope.
             if (_hasStoreScope && r.staff && !scopedSalonNames.has(branch)) return false;
-            return new Date(r.ts) >= since;
+            return localYmd(r.ts) === checkinDay;
           });
           // Look up staff names for attendance-grid rows (which only carry ec).
           const staffByEc = {};
@@ -19919,7 +19939,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             if (r.status === "(cleared)") continue;              // tech was un-tagged before submit
             if (checkinFilterBranch !== "All" && r.branch !== checkinFilterBranch) continue;
             if (_hasStoreScope && r.branch && !scopedSalonNames.has(r.branch)) continue;
-            if (new Date(r.ts) < since) continue;
+            if ((r.ymd || localYmd(r.ts)) !== checkinDay) continue;
             const k = r.branch + "|" + r.ec + "|" + (r.ymd || r.dayKey || r.ts);
             const cur = attLatestByKey[k];
             if (!cur || String(r.ts) > String(cur.ts)) attLatestByKey[k] = r;
@@ -20034,13 +20054,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </select>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                  <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>RANGE</label>
-                  <select value={checkinDayRange} onChange={e => setCheckinDayRange(parseInt(e.target.value, 10))} style={{ padding: "7px 11px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff" }}>
-                    {rangeOpts.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
-                  </select>
+                  <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>DAY</label>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <button onClick={() => setCheckinDay(shiftDay(checkinDay, -1))} title="Previous day" style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "6px 11px", cursor: "pointer", fontSize: 15, fontWeight: 700, lineHeight: 1 }}>‹</button>
+                    <input type="date" value={checkinDay} max={_todayYmd} onChange={e => e.target.value && setCheckinDay(e.target.value)} style={{ padding: "6px 9px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff" }} />
+                    <button onClick={() => { if (checkinDay < _todayYmd) setCheckinDay(shiftDay(checkinDay, 1)); }} disabled={checkinDay >= _todayYmd} title="Next day" style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "6px 11px", cursor: checkinDay >= _todayYmd ? "default" : "pointer", fontSize: 15, fontWeight: 700, lineHeight: 1, opacity: checkinDay >= _todayYmd ? 0.4 : 1 }}>›</button>
+                    <button onClick={() => setCheckinDay(_todayYmd)} disabled={checkinDay === _todayYmd} style={{ background: checkinDay === _todayYmd ? "#FCE7F3" : "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "6px 12px", cursor: checkinDay === _todayYmd ? "default" : "pointer", fontSize: 12, fontWeight: 700, opacity: checkinDay === _todayYmd ? 0.6 : 1 }}>Today</button>
+                  </div>
                 </div>
                 <div style={{ flex: 1 }} />
-                <div style={{ fontSize: 12, color: "#831843" }}><strong>{filtered.length}</strong> record{filtered.length !== 1 ? "s" : ""}</div>
+                <div style={{ fontSize: 12, color: "#831843", textAlign: "right" }}><div style={{ fontWeight: 700 }}>{dayLabel(checkinDay)}</div><strong>{filtered.length}</strong> record{filtered.length !== 1 ? "s" : ""}</div>
               </div>
 
               {/* ── Diagnostics: per-branch counts of rows actually fetched from Supabase ── */}
@@ -20093,7 +20116,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </thead>
                   <tbody>
                     {groupedRows.length === 0 && (
-                      <tr><td colSpan={5} style={{ textAlign: "center", padding: 30, color: "#9ca3af", fontStyle: "italic" }}>No check-ins in this range.</td></tr>
+                      <tr><td colSpan={5} style={{ textAlign: "center", padding: 30, color: "#9ca3af", fontStyle: "italic" }}>No check-ins on this day.</td></tr>
                     )}
                     {(() => {
                       const rowsOut = [];
@@ -20187,10 +20210,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       })()}
 
       {tab === "mgrclockins" && (() => {
+        // Single-day view (defaults to today) with prev/next day navigation —
+        // one day's clock-ins at a time, not the whole window.
+        const _p2m = n => String(n).padStart(2, "0");
+        const mLocalYmd = (ts) => { const d = new Date(ts); return d.getFullYear() + "-" + _p2m(d.getMonth() + 1) + "-" + _p2m(d.getDate()); };
+        const _mTodayYmd = mLocalYmd(Date.now());
+        const mShiftDay = (ymd, delta) => { const a = ymd.split("-").map(Number); const dt = new Date(Date.UTC(a[0], a[1] - 1, a[2])); dt.setUTCDate(dt.getUTCDate() + delta); return dt.getUTCFullYear() + "-" + _p2m(dt.getUTCMonth() + 1) + "-" + _p2m(dt.getUTCDate()); };
+        const mDayLabel = (ymd) => { try { return new Date(ymd + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short", year: "numeric" }); } catch (_) { return ymd; } };
         const filtered = mgrClockinRows.filter(r => {
           if (mgrClockinFilterBranch !== "All" && (!r.staff || r.staff.branch !== mgrClockinFilterBranch)) return false;
           if (_hasStoreScope && r.staff && !scopedSalonNames.has(r.staff.branch)) return false;
-          return true;
+          return mLocalYmd(r.ts) === mgrClockinDay;
         });
         // Group by manager-day for compact display
         const fmtDate = (iso) => new Date(iso).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
@@ -20234,54 +20264,46 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </select>
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>RANGE</label>
-                <select value={mgrClockinDays} onChange={e => setMgrClockinDays(parseInt(e.target.value, 10))} style={{ padding: "7px 11px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff" }}>
-                  {rangeOpts.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
-                </select>
+                <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>DAY</label>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <button onClick={() => setMgrClockinDay(mShiftDay(mgrClockinDay, -1))} title="Previous day" style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "6px 11px", cursor: "pointer", fontSize: 15, fontWeight: 700, lineHeight: 1 }}>‹</button>
+                  <input type="date" value={mgrClockinDay} max={_mTodayYmd} onChange={e => e.target.value && setMgrClockinDay(e.target.value)} style={{ padding: "6px 9px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff" }} />
+                  <button onClick={() => { if (mgrClockinDay < _mTodayYmd) setMgrClockinDay(mShiftDay(mgrClockinDay, 1)); }} disabled={mgrClockinDay >= _mTodayYmd} title="Next day" style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "6px 11px", cursor: mgrClockinDay >= _mTodayYmd ? "default" : "pointer", fontSize: 15, fontWeight: 700, lineHeight: 1, opacity: mgrClockinDay >= _mTodayYmd ? 0.4 : 1 }}>›</button>
+                  <button onClick={() => setMgrClockinDay(_mTodayYmd)} disabled={mgrClockinDay === _mTodayYmd} style={{ background: mgrClockinDay === _mTodayYmd ? "#FCE7F3" : "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "6px 12px", cursor: mgrClockinDay === _mTodayYmd ? "default" : "pointer", fontSize: 12, fontWeight: 700, opacity: mgrClockinDay === _mTodayYmd ? 0.6 : 1 }}>Today</button>
+                </div>
               </div>
               <div style={{ flex: 1 }} />
-              <div style={{ fontSize: 12, color: "#831843" }}><strong>{filtered.length}</strong> clock-in record{filtered.length !== 1 ? "s" : ""}</div>
+              <div style={{ fontSize: 12, color: "#831843", textAlign: "right" }}><div style={{ fontWeight: 700 }}>{mDayLabel(mgrClockinDay)}</div><strong>{filtered.length}</strong> clock-in record{filtered.length !== 1 ? "s" : ""}</div>
             </div>
 
-            {/* No-show detection: managers scheduled to work but never clocked IN */}
+            {/* No-show detection: managers scheduled to work on the SELECTED day
+                but who never clocked IN. Only shown for past days — for today
+                managers may still clock in later. */}
             {(() => {
-              // Build set of (ec, ymd) pairs that DID clock in (any "in" or "out_auto" — at least they were here)
+              if (mgrClockinDay >= _mTodayYmd) return null;   // don't flag today/future
+              // Set of ECs that clocked IN on the selected day.
               const clockedIn = new Set();
               mgrClockinRows.forEach(r => {
                 if (!r.staff || !r.staff.employee_code) return;
-                const ymd = new Date(r.ts).toISOString().slice(0, 10);
-                if (r.type === "in") clockedIn.add(r.staff.employee_code + "|" + ymd);
+                if (r.type === "in" && mLocalYmd(r.ts) === mgrClockinDay) clockedIn.add(r.staff.employee_code);
               });
-              // For each branch+cycle in range, check the schedule for W/E cells
-              // and cross-reference with clockins. Filter by branch dropdown.
-              const noShows = [];
-              const today = new Date();
-              const since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - mgrClockinDays);
-              const ymdToYm = (d) => {
-                let y = d.getFullYear(), m = d.getMonth() + 1;
-                if (d.getDate() > 24) { m += 1; if (m > 12) { m = 1; y++; } }
-                return y + "-" + String(m).padStart(2, "0");
-              };
+              const ymd = mgrClockinDay;
+              const ymOf = (() => { const a = ymd.split("-").map(Number); let y = a[0], m = a[1]; if (a[2] > 24) { m += 1; if (m > 12) { m = 1; y++; } } return y + "-" + String(m).padStart(2, "0"); })();
               const branchesToCheck = mgrClockinFilterBranch === "All"
                 ? SALONS.map(s => s.name)
                 : [mgrClockinFilterBranch];
+              const noShows = [];
               for (const branchName of branchesToCheck) {
-                const branchMgrs = managers.filter(m => m.branch === branchName);
-                for (let cur = new Date(since); cur <= today; cur.setDate(cur.getDate() + 1)) {
-                  const ymd = cur.toISOString().slice(0, 10);
-                  if (cur.getTime() > today.getTime()) continue;
-                  const ym = ymdToYm(cur);
-                  const grid = mgrClockinSchedCache[branchName + "|" + ym];
-                  if (!grid) continue;        // schedule not loaded yet
-                  for (const m of branchMgrs) {
-                    const cell = grid[m.ec] && grid[m.ec][ymd];
-                    if (cell !== "W" && cell !== "E") continue;     // not scheduled to work
-                    if (clockedIn.has(m.ec + "|" + ymd)) continue;   // they did clock in
-                    noShows.push({ ec: m.ec, name: m.name, branch: branchName, ymd });
-                  }
+                const grid = mgrClockinSchedCache[branchName + "|" + ymOf];
+                if (!grid) continue;        // schedule not loaded yet
+                for (const m of managers.filter(mm => mm.branch === branchName)) {
+                  const cell = grid[m.ec] && grid[m.ec][ymd];
+                  if (cell !== "W" && cell !== "E") continue;     // not scheduled to work
+                  if (clockedIn.has(m.ec)) continue;              // they did clock in
+                  noShows.push({ ec: m.ec, name: m.name, branch: branchName, ymd });
                 }
               }
-              noShows.sort((a, b) => b.ymd.localeCompare(a.ymd) || a.branch.localeCompare(b.branch) || a.name.localeCompare(b.name));
+              noShows.sort((a, b) => a.branch.localeCompare(b.branch) || a.name.localeCompare(b.name));
               if (noShows.length === 0) return null;
               return (
                 <div style={{ background: "#fee2e2", border: "1px solid #fca5a5", borderRadius: 11, padding: "12px 16px", marginBottom: 14 }}>
@@ -20300,7 +20322,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             })()}
 
             {filtered.length === 0 ? (
-              <div style={{ background: "#FFFFFF", borderRadius: 11, border: "1px dashed #FBCFE8", padding: "30px 20px", textAlign: "center", color: "#9ca3af" }}>No manager clock-ins in this range.</div>
+              <div style={{ background: "#FFFFFF", borderRadius: 11, border: "1px dashed #FBCFE8", padding: "30px 20px", textAlign: "center", color: "#9ca3af" }}>No manager clock-ins on this day.</div>
             ) : (
               mgrGroups.map(group => (
                 <div key={group.branch} style={{ marginBottom: 18 }}>
