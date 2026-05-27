@@ -1350,6 +1350,19 @@ const REGIONS = [
   { key: "kzn", label: "KZN", short: "KZN", color: "#15803d", bg: "#dcfce7" }
 ];
 
+// Default per-store kiosk PINs — the hard-coded fallbacks baked into the
+// check-in app's config.js (BRANCHES[].pin). A store uses its default unless
+// an admin sets a custom PIN on the Kiosk PINs tab (boa_kiosk_pins_v1). Kept
+// here so the Kiosk PINs admin view can show the effective PIN per store.
+const KIOSK_DEFAULT_PINS = {
+  "Sea Point": "0001", "Bree": "0002", "Kloof": "0003", "Claremont": "0004",
+  "Rondebosch": "0005", "Durbanville": "0006", "Table Bay": "0007", "Somerset West": "0008",
+  "Riverlands": "0009", "Kuils River": "0010", "Westlake": "0011", "Green Point": "0012",
+  "Plumstead": "0013", "Sandown": "0014", "Cape Gate": "0015", "Winelands": "0016",
+  "Betty": "0017", "Fourways": "0018", "Eastgate": "0019", "Mall of the South": "0020",
+  "Mushroom Farm": "0021", "Verdi": "0022", "Ballito": "0023"
+};
+
 // ── One-shot JHB + Durban starter-data import ────────────────────────────
 // Populated from the operations team's "BOA Current Staff- 2026" sheet.
 // Six new locations (five Johannesburg + one Durban) plus 56 nail-tech rows
@@ -19681,6 +19694,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>4-digit PINs that unlock the manager dashboard on the check-in tablet. Staff PIN is shared and managed separately.</div>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                {(() => {
+                  const allRevealed = SALONS.length > 0 && SALONS.every(s => kioskPinReveal[s.name]);
+                  return (
+                    <button onClick={() => {
+                      const next = {};
+                      if (!allRevealed) SALONS.forEach(s => { next[s.name] = true; });
+                      setKioskPinReveal(next);
+                    }} style={{ background: allRevealed ? "#f3f4f6" : "#FCE7F3", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 6, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
+                      {allRevealed ? "🙈 Hide all PINs" : "👁 Reveal all PINs"}
+                    </button>
+                  );
+                })()}
                 <button onClick={async () => {
                   const next = { ...kioskSecurityConfig, disableDeviceVerification: !kioskSecurityConfig.disableDeviceVerification };
                   setKioskSecurityConfig(next);
@@ -19712,8 +19737,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </thead>
                 <tbody>
                   {SALONS.map((s) => {
-                    const pin = kioskPins[s.name] || "";
-                    const hasPin = !!pin;
+                    const customPin = kioskPins[s.name] || "";
+                    const defaultPin = KIOSK_DEFAULT_PINS[s.name] || "";
+                    const pin = customPin || defaultPin;          // effective PIN the kiosk uses
+                    const hasPin = !!customPin;                   // a custom override is set
                     const reveal = !!kioskPinReveal[s.name];
                     const saving = kioskPinSaving === s.name;
                     const r = REGIONS.find(x => x.key === s.region);
@@ -19724,8 +19751,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <td style={{ padding: "10px 14px" }}>
                           {r && <span style={{ background: r.bg, color: r.color, fontSize: 10, fontWeight: 800, padding: "2px 8px", borderRadius: 999, letterSpacing: "0.06em" }}>{r.short.toUpperCase()}</span>}
                         </td>
-                        <td style={{ padding: "10px 14px", fontFamily: "'Outfit',monospace", fontSize: 16, fontWeight: 700, color: hasPin ? "#111827" : "#9ca3af", letterSpacing: "0.18em" }}>
-                          {hasPin ? (reveal ? pin : "••••") : <span style={{ fontSize: 11, fontStyle: "italic", color: "#9ca3af" }}>using fallback</span>}
+                        <td style={{ padding: "10px 14px", fontFamily: "'Outfit',monospace", fontSize: 16, fontWeight: 700, color: pin ? "#111827" : "#9ca3af", letterSpacing: "0.18em" }}>
+                          {pin ? (reveal ? pin : "••••") : <span style={{ fontSize: 11, fontStyle: "italic", color: "#9ca3af" }}>not set</span>}
                         </td>
                         <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 11, color: deviceId ? "#111827" : "#9ca3af" }}>
                           {deviceId || <span style={{ fontStyle: "italic" }}>none</span>}
@@ -19733,7 +19760,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <td style={{ padding: "10px 14px" }}>
                           {hasPin
                             ? <span style={{ background: "#dcfce7", color: "#166534", fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, letterSpacing: "0.04em" }}>Custom PIN active</span>
-                            : <span style={{ background: "#fef3c7", color: "#7c2d12", fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, letterSpacing: "0.04em" }}>Fallback PIN</span>}
+                            : <span style={{ background: "#fef3c7", color: "#7c2d12", fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, letterSpacing: "0.04em" }}>Default PIN</span>}
                         </td>
                         <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
                           {deviceId && (
@@ -19751,12 +19778,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               } catch (e) { alert("Error deregistering: " + e.message); }
                             }} style={{ background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 7, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, marginRight: 6 }}>Deregister</button>
                           )}
-                          {hasPin && (
+                          {pin && (
                             <button onClick={() => setKioskPinReveal(prev => ({ ...prev, [s.name]: !prev[s.name] }))}
                               style={{ background: "#f3f4f6", color: "#374151", border: "none", borderRadius: 7, padding: "6px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, marginRight: 6 }}
                             >{reveal ? "Hide" : "Reveal"}</button>
                           )}
-                          {hasPin && reveal && (
+                          {pin && reveal && (
                             <button onClick={() => { try { navigator.clipboard.writeText(pin); } catch (_e) { } }}
                               style={{ background: "#f3f4f6", color: "#374151", border: "none", borderRadius: 7, padding: "6px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, marginRight: 6 }}
                             >Copy</button>
