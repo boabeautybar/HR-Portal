@@ -26,6 +26,14 @@
     return "Good night";
   }
 
+  // Shift codes that mean a tech is rostered to work that day. Mirrors the HR
+  // portal's "working" set (W, WE, WL, WB, WM, E) so the check-in shows every
+  // working tech regardless of shift — not just W / WL / E (which used to drop
+  // WE "work early" techs from the roster).
+  function isWorkingShift(code) {
+    return code === "W" || code === "WE" || code === "WL" || code === "WB" || code === "WM" || code === "E";
+  }
+
   function boot() {
     root = document.getElementById("app-root");
     if (!root) return;
@@ -644,8 +652,8 @@
       var grid = schedByBranch[s.branch];
       if (!grid) return false;
       var v = grid[s.employee_code] && grid[s.employee_code][dayKey];
-      // W = working, WL = working late, E = extra day
-      return v === "W" || v === "WL" || v === "E";
+      // Any working shift (W / WE / WL / WB / WM / E) makes the tech borrowable.
+      return isWorkingShift(v);
     });
 
     var inp = document.getElementById("bt-search");
@@ -930,7 +938,7 @@
       if (isManagerStaff(s)) return;   // managers check in via their own tile
       var schSt = grid[s.employee_code] && grid[s.employee_code][dayKey];
       var attSt = attGrid[s.employee_code] && attGrid[s.employee_code][dayKey];
-      var isScheduled      = (schSt === "W" || schSt === "WL" || schSt === "E");
+      var isScheduled      = isWorkingShift(schSt);
       var isSameDayCoverer = (attSt === "swap_i" || hasExtraDayFor(s.employee_code));
       // Guests loaned in from another branch are unconditionally in today's
       // roster. Their schedule entry lives in their home branch's grid so
@@ -1102,6 +1110,7 @@
       // Late on top.
       var rosterTag = "";
       if (schedSt === "WL")                       rosterTag = '<span class="row-tag row-tag-warn">WL · work late</span>';
+      else if (schedSt === "WE")                  rosterTag = '<span class="row-tag row-tag-info">WE · work early</span>';
       else if (schedSt === "E")                   rosterTag = '<span class="row-tag row-tag-info">E · extra cover</span>';
       else if (isExtraDay)                        rosterTag = '<span class="row-tag row-tag-info">Extra cover</span>';
       else if (!schedSt && current === "swap_i")  rosterTag = '<span class="row-tag row-tag-swap">Covering (swap-in)</span>';
@@ -2280,7 +2289,7 @@
       var dayKey = String(now.getDate());
       for (var ec in grid) {
         var st = grid[ec] && grid[ec][dayKey];
-        if (st !== "W" && st !== "WL" && st !== "E") continue;
+        if (!isWorkingShift(st)) continue;
         var code = String(ec).toUpperCase();
         if (/\dM$/.test(code) || /^M\d/.test(code)) continue;   // manager code
         return true;
