@@ -6582,6 +6582,9 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
             <div style={{ background: "#FDF2F8", border: "1px solid #FBCFE8", borderRadius: 9, padding: "9px 13px", fontSize: 11, color: "#9F1A4F", marginBottom: 14 }}>
               🏬 <strong>Store allocation</strong> is now managed on the dedicated <strong>Store Allocation</strong> tab (under Admin), so a National Ops Manager can be granted edit rights to it without full Settings access.
             </div>
+            <div style={{ background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 9, padding: "9px 13px", fontSize: 11, color: "#92400e", marginBottom: 14 }}>
+              🛡️ <strong>Admin tabs</strong> (Kiosk PINs, Manager PINs, Store Allocation) only appear for senior ops roles — <strong>Owner</strong>, <strong>National Ops</strong> and <strong>Regional Ops</strong> — so PINs are never exposed to regular staff. For those users the toggles below still apply: untick <strong>Visible</strong> to hide an admin tab from them. Ticking it on for any other role has no effect.
+            </div>
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
               <button onClick={cancelEdit} disabled={busy}
@@ -8118,6 +8121,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     window.__BOA_RO_ACTIVE = !!currentTabIsReadOnly;
     return () => { window.__BOA_RO_ACTIVE = false; };
   }, [currentTabIsReadOnly]);
+  // Regional Ops Managers may read the Kiosk/Manager PIN directories but not
+  // change them, so every mutating control on those two tabs is hidden for
+  // them. The Owner keeps full edit rights.
+  const pinsViewOnly = isRomRole(currentUser?.role) && !currentUser?.isOwner;
   // Recruitment is now a parent tab with two children (Nail Tech / Manager).
   // The Manager child further nests Coverage and Planner.
   const [recruitSubTab, setRecruitSubTab] = useState("nailTech");   // "nailTech" | "mgrRecruit"
@@ -8643,12 +8650,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // dashboard "managers not checked in" tile cross-references this against
   // today's manager clockin rows.
   const [dashSchedMgrsByBranch, setDashSchedMgrsByBranch] = useState({});
+  // Per-branch nail-tech breakdown for today: { branch: { scheduled, checkedIn, notCheckedIn, absent } }
+  const [dashTechByBranch, setDashTechByBranch] = useState(null); // null = loading
   const [dashTodayMgrClockinEcs, setDashTodayMgrClockinEcs] = useState(null); // null = loading, Set<ec> once loaded
   useEffect(() => {
     if (tab !== "dashboard") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     let cancelled = false;
     setDashScheduledToday(null);
+    setDashTechByBranch(null);
     const today = new Date();
     const todayDay = today.getDate();
     const ymd = today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0") + "-" + String(todayDay).padStart(2, "0");
@@ -8662,33 +8672,48 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const mgrYm = _mgrY + "-" + String(_mgrM).padStart(2, "0");
     const safe = (p) => p.catch(() => null);
     Promise.all(SALONS.map(async (sl) => {
-      const [tech, mgr] = await Promise.all([
+      const [tech, mgr, att] = await Promise.all([
         safe(window.BOA_DB.loadSchedule(sl.name, ym, false)),
-        safe(window.BOA_DB.loadSchedule(sl.name, mgrYm, true))
+        safe(window.BOA_DB.loadSchedule(sl.name, mgrYm, true)),
+        safe(window.BOA_DB.loadAttendance(sl.name, mgrYm))   // attendance is keyed by the START-month ym
       ]);
       const techGrid = (tech && tech.grid) || {};
       const mgrGrid = (mgr && mgr.grid) || {};
+      const attGrid = (att && att.grid) || {};
       const isWorking = (v) => v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E";
+      // Confirmed (no "~" prefix) statuses. Present = actually checked in;
+      // absent = no-show / sick / FRL / explicit absent. Anything else on a
+      // scheduled tech = hasn't checked in.
+      const PRESENT = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1 };
+      const ABSENT = { absent: 1, no: 1, sick: 1, sick_n: 1, frl: 1 };
       let count = 0;
+      let tScheduled = 0, tCheckedIn = 0, tAbsent = 0;
       const mgrsScheduled = [];
       for (const ec in techGrid) {
         const v = techGrid[ec][todayDay];
-        if (isWorking(v)) count++;
+        if (!isWorking(v)) continue;
+        count++; tScheduled++;
+        let st = attGrid[ec] && attGrid[ec][todayDay];
+        if (st && st.indexOf("~") === 0) st = "";   // unconfirmed mirror ≠ a real check-in
+        if (st && PRESENT[st]) tCheckedIn++;
+        else if (st && ABSENT[st]) tAbsent++;
       }
       for (const ec in mgrGrid) {
         // manager grid is keyed by YMD strings (mgrSched line 141)
         const v = mgrGrid[ec][ymd] || mgrGrid[ec][todayDay];
         if (isWorking(v)) { count++; mgrsScheduled.push(ec); }
       }
-      return [sl.name, count, mgrsScheduled];
-    })).then(triples => {
+      return [sl.name, count, mgrsScheduled, { scheduled: tScheduled, checkedIn: tCheckedIn, notCheckedIn: tScheduled - tCheckedIn - tAbsent, absent: tAbsent }];
+    })).then(quads => {
       if (cancelled) return;
       const map = {};
       const mgrMap = {};
+      const techMap = {};
       let total = 0;
-      for (const [name, c, mgrs] of triples) { map[name] = c; mgrMap[name] = mgrs; total += c; }
+      for (const [name, c, mgrs, tech] of quads) { map[name] = c; mgrMap[name] = mgrs; techMap[name] = tech; total += c; }
       setDashByBranch(map);
       setDashSchedMgrsByBranch(mgrMap);
+      setDashTechByBranch(techMap);
       setDashScheduledToday(total);
     });
     // Today's manager clockins — used by the "managers not checked in" tile.
@@ -10101,18 +10126,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "activity", l: "📜 Activity Log" }
                 ]
               },
-              // Admin group. Kiosk PINs / Manager PINs / Settings are
-              // owner-only. Store Allocation is shown to the Owner and to
-              // anyone whose role looks like a National Ops Manager; the
-              // standard hideTabs / readOnlyTabs grid still applies on top,
-              // so the Owner can fine-tune visibility for any specific user.
+              // Admin group. Settings stays owner-only. Kiosk PINs / Manager
+              // PINs are shown to senior ops roles: the Owner and National Ops
+              // (full edit) and Regional Ops Managers (view-only — mutating
+              // controls hidden via pinsViewOnly). Store Allocation is shown to
+              // the Owner and National Ops. The standard hideTabs / readOnlyTabs
+              // grid still applies on top, so the Owner can hide any of these
+              // from a specific senior user via Settings.
               ...(() => {
                 const role = (currentUser?.role || "").toLowerCase();
                 const isNationalOps = role.includes("national ops") || role.includes("national operations");
                 const adminItems = [];
-                if (currentUser?.isOwner) {
+                if (currentUser?.isOwner || isNationalOps || isRomRole(currentUser?.role)) {
                   adminItems.push({ t: "kioskPins", l: "🔑 Kiosk PINs" });
                   adminItems.push({ t: "managerPins", l: "🆔 Manager PINs" });
+                }
+                if (currentUser?.isOwner) {
                   adminItems.push({ t: "settings", l: "⚙️ Settings" });
                 }
                 if (currentUser?.isOwner || isNationalOps) {
@@ -10362,15 +10391,37 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               if (_hasStoreScope && !scopedBranchSet.has(branchName)) continue;
               const ecs = dashSchedMgrsByBranch[branchName] || [];
               for (const ec of ecs) {
+                // Only count managers genuinely working today: drop anyone on
+                // maternity / off-boarded even if a stale working cell lingers
+                // in the schedule grid.
+                const m = (enrichedManagers || []).find(x => x.ec === ec) || (managers || []).find(x => x.ec === ec);
+                if (m && (m.onMat || m.offboarded)) continue;
                 mgrSchedToday++;
                 if (!dashTodayMgrClockinEcs.has(ec)) {
-                  const m = (managers || []).find(x => x.ec === ec);
                   mgrMissing.push({ ec, name: (m && m.name) || ec, branch: branchName });
                 }
               }
             }
           }
           const mgrCheckinLoading = dashTodayMgrClockinEcs == null || dashScheduledToday == null;
+
+          // Nail-tech "scheduled to work today" breakdown, aggregated over the
+          // in-scope branches: how many must work, how many checked in, how
+          // many haven't, and how many were marked absent (incl. no-show /
+          // sick / FRL).
+          const techToday = (() => {
+            if (!dashTechByBranch) return null;
+            const a = { scheduled: 0, checkedIn: 0, notCheckedIn: 0, absent: 0 };
+            for (const b in dashTechByBranch) {
+              if (_hasStoreScope && !scopedBranchSet.has(b)) continue;
+              const t = dashTechByBranch[b] || {};
+              a.scheduled += t.scheduled || 0;
+              a.checkedIn += t.checkedIn || 0;
+              a.notCheckedIn += t.notCheckedIn || 0;
+              a.absent += t.absent || 0;
+            }
+            return a;
+          })();
 
           // Today's store-openings snapshot (loaded by the useEffect above).
           // null while the first load is in flight; show "…" until data lands.
@@ -10787,13 +10838,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       click: () => tryChangeTab("mgrclockins")
                     },
                     scheduledToday: { l: "Scheduled today", v: dashScheduledToday == null ? "…" : (_hasStoreScope ? Object.keys(dashByBranch).filter(b => scopedBranchSet.has(b)).reduce((a, b) => a + (dashByBranch[b] || 0), 0) : dashScheduledToday), sub: _hasStoreScope ? ("scope: " + (dashScope === "mine" ? "my stores" : dashScope === "other" ? "peer stores" : "all branches")) : "across all branches", i: "📅", c: "#1e3a8a", bg: "#dbeafe" },
+                    techsToday: { l: "Techs working today", v: techToday == null ? "…" : techToday.scheduled, sub: "must actively work today", i: "💅", c: "#0c4a6e", bg: "#e0f2fe" },
+                    techsCheckedIn: { l: "Techs checked in", v: techToday == null ? "…" : (techToday.checkedIn + " / " + techToday.scheduled), sub: techToday == null ? "loading…" : (techToday.notCheckedIn + " not checked in yet"), i: "✅", c: "#14532d", bg: "#dcfce7", click: () => tryChangeTab("checkins") },
+                    techsAbsent: { l: "Techs absent today", v: techToday == null ? "…" : techToday.absent, sub: "incl. no-show / sick / FRL", i: "🚫", c: "#7f1d1d", bg: "#fee2e2", click: () => tryChangeTab("checkins") },
                     activeStaff: { l: "Active staff", v: scopedStats.active, sub: "incl. " + scopedStats.pregnant + " pregnant", i: "👥", c: "#14532d", bg: "#dcfce7" },
                     onMaternity: { l: "On maternity", v: scopedStats.onMat, sub: scopedStats.returning60 + " returning ≤60d", i: "🤱", c: "#7A4258", bg: "#fce7f3" },
                     vacancies: { l: "Positions to hire", v: scopedStats.vacancies, sub: "across " + scopedStats.understaffed + " branch" + (scopedStats.understaffed !== 1 ? "es" : ""), i: "🎯", c: "#7c3aed", bg: "#ede9fe", click: () => tryChangeTab("recruitment") }
                   };
                   const order = _hasStoreScope
-                    ? ["storesOpen", "mgrCheckin", "scheduledToday", "activeStaff", "vacancies", "onMaternity"]
-                    : ["storesOpen", "scheduledToday", "activeStaff", "onMaternity", "vacancies", "mgrCheckin"];
+                    ? ["storesOpen", "mgrCheckin", "techsToday", "techsCheckedIn", "techsAbsent", "scheduledToday", "activeStaff", "vacancies", "onMaternity"]
+                    : ["storesOpen", "techsToday", "techsCheckedIn", "techsAbsent", "mgrCheckin", "scheduledToday", "activeStaff", "onMaternity", "vacancies"];
                   return order.map(k => tiles[k]);
                 })().map(c => (
                   <div key={c.l} onClick={c.click} style={{ background: c.bg, borderRadius: 16, padding: "16px 18px", cursor: c.click ? "pointer" : "default", border: "1px solid rgba(255,255,255,0.6)" }}>
@@ -17455,8 +17509,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         rows.forEach(r => { if (r && r.branch) byBranch[r.branch] = r; });
         // Sort: still-closed first (so the ops manager sees who needs chasing),
         // then opened (sorted by openedAt). Stable on branch name.
+        // Stores with an openingDate after the viewed date aren't trading yet
+        // (e.g. a branch that opens next month), so they're excluded — they must
+        // not show as "not opened" or inflate the X-of-N denominator.
+        const _viewedMid = new Date(storeOpenYmd + "T00:00:00");
         const sorted = SALONS.slice()
           .filter(sl => !_hasStoreScope || scopedSalonNames.has(sl.name))
+          .filter(sl => {
+            if (!sl.openingDate) return true;
+            const od = new Date(sl.openingDate + "T00:00:00");
+            return !(od > _viewedMid);
+          })
           .map(sl => {
             const rec = byBranch[sl.name];
             return { branch: sl.name, opened: !!rec, openedAt: rec ? rec.openedAt : null, openedBy: rec ? rec.openedBy : null };
@@ -19751,6 +19814,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </button>
                   );
                 })()}
+                {!pinsViewOnly && (
                 <button onClick={async () => {
                   const next = { ...kioskSecurityConfig, disableDeviceVerification: !kioskSecurityConfig.disableDeviceVerification };
                   setKioskSecurityConfig(next);
@@ -19760,6 +19824,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 }} style={{ background: kioskSecurityConfig.disableDeviceVerification ? "#fee2e2" : "#e0f2fe", border: "none", borderRadius: 6, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: kioskSecurityConfig.disableDeviceVerification ? "#991b1b" : "#0369a1" }}>
                   {kioskSecurityConfig.disableDeviceVerification ? "🔴 Device Verification Disabled" : "🟢 Device Verification Enabled"}
                 </button>
+                )}
                 <div style={{ fontSize: 11, color: "#9ca3af" }}>{kioskPinsLoaded ? Object.keys(kioskPins).length + " custom · " + SALONS.length + " branches total" : "Loading…"}</div>
               </div>
             </div>
@@ -19808,7 +19873,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             : <span style={{ background: "#fef3c7", color: "#7c2d12", fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, letterSpacing: "0.04em" }}>Default PIN</span>}
                         </td>
                         <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
-                          {deviceId && (
+                          {!pinsViewOnly && deviceId && (
                             <button onClick={async () => {
                               if (!window.confirm(`Deregister device for ${s.name}?`)) return;
                               try {
@@ -19833,9 +19898,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               style={{ background: "#f3f4f6", color: "#374151", border: "none", borderRadius: 7, padding: "6px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, marginRight: 6 }}
                             >Copy</button>
                           )}
+                          {!pinsViewOnly && (
                           <button onClick={() => resetKioskPin(s.name)} disabled={saving}
                             style={{ background: PINK.accent, color: "#fff", border: "none", borderRadius: 7, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700, opacity: saving ? 0.6 : 1 }}
                           >{saving ? "Saving…" : (hasPin ? "Reset" : "Set PIN")}</button>
+                          )}
                         </td>
                       </tr>
                     );
@@ -19952,9 +20019,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       style={{ background: "#f3f4f6", color: "#374151", border: "none", borderRadius: 7, padding: "6px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, marginRight: 6 }}
                                     >Copy</button>
                                   )}
+                                  {!pinsViewOnly && (
                                   <button onClick={() => resetMgrPin(m)} disabled={saving || !m.ec}
                                     style={{ background: PINK.accent, color: "#fff", border: "none", borderRadius: 7, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700, opacity: (saving || !m.ec) ? 0.6 : 1 }}
                                   >{saving ? "Saving…" : (hasPin ? "Reset" : "Set PIN")}</button>
+                                  )}
                                 </td>
                               </tr>
                             );
