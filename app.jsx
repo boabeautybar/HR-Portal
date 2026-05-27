@@ -16975,7 +16975,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         };
         const ROLE_GUARD = isTechMode
           ? (s) => /^[BT]/.test(s.ec) && !s.offHidden && !(s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft > 0)
-          : (m) => (m.role === "SM" || m.role === "AM") && !_hasLeft(m.ec);
+          : (m) => (m.role === "SM" || m.role === "SSM" || m.role === "AM") && !_hasLeft(m.ec);
         // Active people of the chosen type at this branch — exclude maternity / off-boarded / wrong role
         const sourceArr = isTechMode ? enriched : managers;
         const peopleAtBranch = (sourceArr || [])
