@@ -700,10 +700,14 @@ textarea.input { resize: vertical; min-height: 64px; }
 .sched-name { text-align: left; padding: 6px 10px !important; font-weight: 600; color: var(--pink-900); background: #fff; position: sticky; left: 0; }
 .sched-cell { font-weight: 800; }
 .sched-today { outline: 2px solid var(--pink-500); outline-offset: -2px; }
-/* Working states — greens / amber */
-.sched-st-W  { background: var(--green-100); color: var(--green-700); }
-.sched-st-WL { background: #fef3c7;          color: #92400e; }            /* Work late          */
-.sched-st-E  { background: #a7f3d0;          color: #065f46; }            /* Extra (covering)   */
+/* Working states — all greens (different shades) so any working day reads as
+   green at a glance and never gets mistaken for a red OFF day. */
+.sched-st-W  { background: #86efac;          color: #14532d; }            /* Work               */
+.sched-st-WL { background: #bbf7d0;          color: #166534; }            /* Work late          */
+.sched-st-WE { background: #dcfce7;          color: #15803d; }            /* Work early         */
+.sched-st-WB { background: #6ee7b7;          color: #064e3b; }            /* Work (back)        */
+.sched-st-WM { background: #a7f3d0;          color: #065f46; }            /* Work (mid)         */
+.sched-st-E  { background: #4ade80;          color: #052e16; }            /* Extra (covering)   */
 /* Off / leave — all red, slightly different shades so the letter still reads */
 .sched-st-O  { background: #fecaca; color: #991b1b; }                     /* OFF                */
 .sched-st-R  { background: #fee2e2; color: #b91c1c; }                     /* REQUESTED OFF      */
