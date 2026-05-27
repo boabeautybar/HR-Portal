@@ -9513,9 +9513,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }, [enriched, matRecs, onMatEcs, pregnantEcs, onUnpaidLegalEcs, staff]);
 
   // Locations
-  const salonData = useMemo(() => SALONS.map(salon => {
+  const salonData = useMemo(() => {
+    const _ld = new Date();
+    const _ymd = _ld.getFullYear() + "-" + String(_ld.getMonth() + 1).padStart(2, "0") + "-" + String(_ld.getDate()).padStart(2, "0");
+    // A transfer whose date is strictly in the PAST counts as completed: the
+    // person now sits at their new branch with the transfer flags cleared, so
+    // no "transferring" chip shows on Locations and they drop off the old
+    // branch. Pending / same-day transfers are left untouched.
+    const settle = (x) => (x && x.transferring && x.transferTo && x.transferDate && x.transferDate < _ymd)
+      ? { ...x, branch: x.transferTo, transferring: false, transferTo: null } : x;
+    const eff = enriched.map(settle);
+    return SALONS.map(salon => {
     // .offHidden hides leavers older than 31 days post-leftDate from the cards.
-    const all = enriched.filter(s => s.branch === salon.name && !s.offHidden).sort(ecSort);
+    const all = eff.filter(s => s.branch === salon.name && !s.offHidden).sort(ecSort);
     // Off-boarded + maternity + unpaid-legal staff are visually present (greyed) but
     // excluded from the active count and from urgency/fillRate — their seat is OPEN.
     const active = all.filter(s => !s.onMat && !s.onUnpaidLegal && !s.isShadow && !s.offboarded);
@@ -9528,7 +9538,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     // arriving row survives a page refresh and so it doesn't pollute
     // the staff / manager lists with an undeletable duplicate row.
     const arriving = enriched
-      .filter(s => !s.isShadow && s.transferring && s.transferTo === salon.name && s.transferDate)
+      .filter(s => !s.isShadow && s.transferring && s.transferTo === salon.name && s.transferDate && s.transferDate >= _ymd)
       .map(s => ({ ...s, _id: "shadow-" + s.ec, branch: salon.name, transferFrom: s.branch, isShadow: true }));
     // Same idea for managers — incoming SM/SSM/AM appear on the
     // destination card with an 'arriving from X on <date>' chip.
@@ -9536,7 +9546,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     // as arriving and so the shadow row picks up the same flags as the
     // MANAGEMENT TEAM card.
     const arrivingMgrs = (enrichedManagers || [])
-      .filter(m => m && !m.isShadow && m.transferring && m.transferTo === salon.name && m.transferDate && !m.offHidden)
+      .filter(m => m && !m.isShadow && m.transferring && m.transferTo === salon.name && m.transferDate && m.transferDate >= _ymd && !m.offHidden)
       .map(m => ({ ...m, _id: "shadow-mgr-" + (m.ec || m._id), branch: salon.name, transferFrom: m.branch, isShadow: true }));
 
     // Trial candidates assigned to this branch and not yet passed/failed/hired.
@@ -9559,7 +9569,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       ? "preopen"
       : (active.length === 0 ? "critical" : fillRate < 0.5 ? "high" : fillRate < 1 ? "low" : "full");
     return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, arrivingMgrs, trial, urgency, goal, preOpen, daysToOpen };
-  }), [enriched, enrichedManagers, managers, trialList, _customSalonsTick]);
+    });
+  }, [enriched, enrichedManagers, managers, trialList, _customSalonsTick]);
+
+  // Managers placed at their effective branch for Locations: a manager whose
+  // transfer date is strictly in the past shows at the new branch with the
+  // transfer flags cleared (mirrors `settle` in salonData above).
+  const enrichedManagersEff = useMemo(() => {
+    const _ld = new Date();
+    const _ymd = _ld.getFullYear() + "-" + String(_ld.getMonth() + 1).padStart(2, "0") + "-" + String(_ld.getDate()).padStart(2, "0");
+    return (enrichedManagers || []).map(m => (m && m.transferring && m.transferTo && m.transferDate && m.transferDate < _ymd)
+      ? { ...m, branch: m.transferTo, transferring: false, transferTo: null } : m);
+  }, [enrichedManagers]);
 
   const uColor = { critical: "#dc2626", high: "#f97316", low: "#eab308", full: "#16a34a", preopen: "#7c3aed" };
   const uLabel = { critical: "UNSTAFFED", high: "UNDERSTAFFED", low: "NEEDS STAFF", full: "AT CAPACITY", preopen: "PRE-OPENING" };
@@ -11426,10 +11447,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <div style={{ background: "#FCE7F3", border: "1px solid #FBCFE8", borderRadius: 10, padding: "12px 14px", marginBottom: 12 }}>
                           <div style={{ fontSize: 11, fontWeight: 700, color: "#831843", marginBottom: 8 }}>Select a staff member to edit or transfer:</div>
                           {/* Managers sub-section */}
-                          {(enrichedManagers.filter(m => m.branch === salon.name).length > 0 || (salon.arrivingMgrs && salon.arrivingMgrs.length > 0)) && (
+                          {(enrichedManagersEff.filter(m => m.branch === salon.name).length > 0 || (salon.arrivingMgrs && salon.arrivingMgrs.length > 0)) && (
                             <div style={{ marginBottom: 8 }}>
                               <div style={{ fontSize: 9, fontWeight: 800, color: "#BE185D", letterSpacing: "0.08em", marginBottom: 5 }}>MANAGEMENT</div>
-                              {enrichedManagers.filter(m => m.branch === salon.name && !m.offHidden).sort((a, b) => {
+                              {enrichedManagersEff.filter(m => m.branch === salon.name && !m.offHidden).sort((a, b) => {
                                 const rank = (r) => r === "SSM" ? 0 : r === "SM" ? 1 : 2;
                                 // Off-boarded managers sink to the bottom inside their tier so the active roster stays at the top.
                                 if ((!!a.offboarded) !== (!!b.offboarded)) return a.offboarded ? 1 : -1;
