@@ -10417,13 +10417,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               for (const ecRaw of (dashSchedMgrsByBranch[branchName] || [])) {
                 const ec = String(ecRaw).trim();
                 const m = mgrByEc[ec];
+                if (!m) continue;   // no current manager record — deleted/unknown, skip stale grid key
                 // Skip anyone not really working today even if a stale work cell
                 // lingers: maternity, off-boarded, departed, or on leave.
-                if (m && (m.onMat || m.offboarded || (m.leftDate && _todayYmd > m.leftDate))) continue;
+                if (m.onMat || m.offboarded || (m.leftDate && _todayYmd > m.leftDate)) continue;
                 if (onLeaveEcs.has(ec)) continue;
                 const checkedIn = clockedIn.has(ec);
                 const cur = seen[ec];
-                if (!cur) seen[ec] = { checkedIn, name: (m && m.name) || ec, branch: (m && m.branch) || branchName };
+                if (!cur) seen[ec] = { checkedIn, name: m.name || ec, branch: m.branch || branchName };
                 else if (checkedIn && !cur.checkedIn) cur.checkedIn = true;
               }
             }
@@ -10477,6 +10478,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               for (const ec in tb) {
                 const ecKey = (ec || "").trim();
                 const er = enrichedByEc[ecKey];
+                if (!er) continue;   // no current staff record — deleted/unknown, skip stale grid key
                 if (isOffToday(er, ecKey)) continue;
                 const eff = effBranchOf(er);
                 if (eff && branchSet.has(eff) && b !== eff) continue;   // stale / wrong-branch grid entry
