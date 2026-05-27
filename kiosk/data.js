@@ -32,6 +32,20 @@
   function branch()        { return cfg.branchName        || "Green Point"; }
   function branchDisplay() { return cfg.branchDisplayName || branch(); }
 
+  // A staff row is a manager if it's tagged as one in the DB, OR its employee
+  // code follows the manager convention. Branch managers use codes ending in
+  // "M" (e.g. B147M) and head-office managers use an "M###" prefix (e.g. M005);
+  // neither ends in the "-M" suffix the HR portal's role_type derivation looks
+  // for, so some manager rows land in the DB with role_type "tech". Matching
+  // the code pattern too keeps managers out of the tech lists and ensures they
+  // still surface in the Manager Clock-in regardless of how role_type stored.
+  function isManagerRow(s) {
+    if (!s) return false;
+    if (s.role_type === "manager") return true;
+    var code = (s.employee_code || "").toUpperCase().trim();
+    return !!code && (/\dM$/.test(code) || /^M\d/.test(code));
+  }
+
   function todayStr() {
     var d = new Date(), p = function (n) { return String(n).padStart(2, "0"); };
     return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
@@ -227,7 +241,7 @@
     var res = await c.from("staff").select("*").eq("active", true)
       .order("branch", { ascending: true }).order("name", { ascending: true });
     if (res.error) { console.error("listStaffAllBranches:", res.error); return []; }
-    return (res.data || []).filter(function (s) { return s.role_type !== "manager"; });
+    return (res.data || []).filter(function (s) { return !isManagerRow(s); });
   }
   async function _fetchStaffByEcs(ecs) {
     if (!ecs || !ecs.length) return [];
@@ -235,6 +249,18 @@
     var res = await c.from("staff").select("*").in("employee_code", ecs);
     if (res.error) { console.error("fetchStaffByEcs:", res.error); return []; }
     return res.data || [];
+  }
+  // Active staff whose home record still lives at another branch but who have
+  // a pending/effective transfer INTO `toBranch`. The HR portal keeps the
+  // staff row on its original branch and records the move via
+  // transferring / transfer_to / transfer_date; the destination only "owns"
+  // them on and after transfer_date. Callers apply that date cutoff.
+  async function listTransfersInto(toBranch) {
+    var c = client(); if (!c) return [];
+    var res = await c.from("staff").select("*")
+      .eq("transferring", true).eq("transfer_to", toBranch).eq("active", true);
+    if (res.error) { console.error("listTransfersInto:", res.error); return []; }
+    return (res.data || []).filter(function (s) { return s && s.branch !== toBranch; });
   }
 
   async function categorizeStaff(refDate, opts) {
@@ -255,9 +281,10 @@
       listMaternity(),
       listLeaveRecords(),
       listTechLoans(refIso),
-      loadOffboarding()
+      loadOffboarding(),
+      listTransfersInto(thisBranch)
     ]);
-    var staff = results[0], matRecs = results[1], leaveRecs = results[2], loansToday = results[3], offList = results[4];
+    var staff = results[0], matRecs = results[1], leaveRecs = results[2], loansToday = results[3], offList = results[4], transfersIn = results[5];
 
     // Off-boarding lookup: HR portal's dedicated tab writes leftDate into
     // boa_offboard_v1 (NOT the staff row's left_date column), so we have
@@ -301,6 +328,14 @@
       return (a.name || "").localeCompare(b.name || "");
     });
 
+    // Transfers OUT: a tech moving to another branch drops off THIS branch's
+    // roster on and after their transfer_date (the HR portal shows the same —
+    // they appear at the destination from that day). Before the date they stay.
+    staff = staff.filter(function (s) {
+      return !(s && s.transferring && s.transfer_to && s.transfer_to !== thisBranch
+               && s.transfer_date && refIso >= s.transfer_date);
+    });
+
     // Loans: ECs leaving us today (loaned out) stay on the home roster so
     // the manager knows where they are - tagged with _loanedOut / _awayAt
     // and rendered with a chip + locked actions. ECs arriving from another
@@ -332,6 +367,20 @@
         staff.push(g);
       });
     }
+
+    // Transfers IN: techs whose home record still lives at another branch but
+    // whose transfer to THIS branch has taken effect (refIso >= transfer_date).
+    // Their schedule for this branch is already stored under this branch's
+    // grid, so adding them to the roster lets the check-in pick them up. The
+    // home branch drops them via the "Transfers OUT" filter above.
+    (transfersIn || []).forEach(function (t) {
+      if (!t || !t.employee_code) return;
+      if (!t.transfer_date || refIso < t.transfer_date) return;   // not arrived yet
+      if (staff.some(function (s) { return s.id === t.id || s.employee_code === t.employee_code; })) return;
+      t._transferredIn = true;
+      t._homeBranch = t.branch || "";
+      staff.push(t);
+    });
 
     var matByEc = {};
     matRecs.forEach(function (m) {
@@ -1016,9 +1065,16 @@
   var TECH_REQUESTS_KEY = "boa_tech_requests_v1";
   var MGR_REQUESTS_KEY  = "boa_mgr_requests_v1";
 
+  // The schedule month open for off-day requests. Requests for a schedule
+  // month close on the 20th of the month before it (a schedule month runs
+  // the 25th → 24th, so its end-month is the ym we return). Up to and
+  // including the 20th the open month is two months out; from the 21st that
+  // window has closed, so we open the following month. e.g. on 26 May the
+  // June window (closes 20 May) is shut, so July (25 Jun → 24 Jul) is open.
   function nextMonthYm() {
     var d = new Date(), y = d.getFullYear(), m = d.getMonth() + 2;
-    if (m > 12) { m -= 12; y += 1; }
+    if (d.getDate() > 20) m += 1;
+    while (m > 12) { m -= 12; y += 1; }
     return y + "-" + String(m).padStart(2, "0");
   }
   function nextMonthLabel() {
@@ -1228,9 +1284,11 @@
 
   window.APP_DATA = {
     isConfigured: isConfigured,
+    isManagerRow: isManagerRow,
     branch: branch, branchDisplay: branchDisplay, todayStr: todayStr,
     listStaff: listStaff, listMaternity: listMaternity, listLeaveRecords: listLeaveRecords, loadOffboarding: loadOffboarding,
     listTechLoans: listTechLoans, saveTechLoan: saveTechLoan, listStaffAllBranches: listStaffAllBranches,
+    listTransfersInto: listTransfersInto,
     listKioskReminders: listKioskReminders,
     listTrialCandidates: listTrialCandidates,
     recordTrialCheckin: recordTrialCheckin,
@@ -1254,6 +1312,8 @@
     listOffRequests: listOffRequests, addOffRequest: addOffRequest, deleteOffRequest: deleteOffRequest,
     getStoreOpenedToday: getStoreOpenedToday, markStoreOpened: markStoreOpened,
     loadManagerPins: loadManagerPins, saveManagerPins: saveManagerPins,
+    lookupFreshaVoucher: lookupFreshaVoucher,
+    activeSmTrialEcs: activeSmTrialEcs,
     listAllManagers: listAllManagers, listTodayManagerClockins: listTodayManagerClockins,
     addManagerClockinWithMeta: addManagerClockinWithMeta,
     loadClockinMeta: loadClockinMeta, listRecentManagerClockins: listRecentManagerClockins
@@ -1274,6 +1334,18 @@
 
   async function addManagerClockinWithMeta(staffId, type, meta) {
     var c = client(); if (!c) throw new Error("Supabase not configured");
+    // One clock-in per manager per day. A second "in" is rejected outright so
+    // a manager can't rack up multiple clock-ins. The UI also hides the button
+    // once they're in, but this guards against a stale tablet view / double tap.
+    if (type === "in") {
+      var dup = await c.from("clockins").select("id")
+        .eq("staff_id", staffId).eq("type", "in")
+        .gte("ts", startOfTodayIso()).limit(1);
+      if (dup.error) { console.error("clock-in dup check:", dup.error); }
+      else if (dup.data && dup.data.length > 0) {
+        throw new Error("Already clocked in today — only one clock-in per day is allowed.");
+      }
+    }
     var row = { staff_id: staffId, branch: branch(), type: type };
     if (meta && meta.tsOverride) row.ts = meta.tsOverride;
     var ins = await c.from("clockins").insert(row).select().single();
@@ -1310,17 +1382,62 @@
     var v = res.data && res.data.value;
     return (v && typeof v === "object" && !Array.isArray(v)) ? v : {};
   }
+  // Employee codes of AMs currently on an active Store-Manager trial. The HR
+  // portal writes these to app_state['boa_sm_trial_v1'] and treats a matching
+  // AM as an effective SM (badged "SM on trial"); the kiosk mirrors that.
+  async function activeSmTrialEcs() {
+    var c = client(); if (!c) return {};
+    var res = await c.from("app_state").select("value").eq("key", "boa_sm_trial_v1").maybeSingle();
+    if (res.error) { console.error("activeSmTrialEcs:", res.error); return {}; }
+    var v = res.data && res.data.value;
+    var arr = Array.isArray(v) ? v : [];
+    var out = {};
+    arr.forEach(function (r) {
+      if (r && r.ec && r.status === "active") out[String(r.ec).trim()] = true;
+    });
+    return out;
+  }
   async function saveManagerPins(map) {
     var c = client(); if (!c) throw new Error("Supabase not configured");
     var res = await c.from("app_state").upsert({ key: "boa_mgr_pins_v1", value: map || {} });
     if (res.error) throw res.error;
     return map;
   }
+
+  // ---------- Voucher code lookup (Shopify last-4 → Fresha) ----------
+  // Shopify only reveals the LAST 4 of a gift-voucher code to the seller, so
+  // the store's sheet maps that last-4 (plus the voucher amount) to a Fresha
+  // voucher code. The manager is made to type the client's full code, but the
+  // match is on the last 4 only; when two vouchers share the same last 4 we
+  // return both with their amounts so the manager picks by amount.
+  //
+  // Data lives in a `vouchers` table: { last4 text, amount text, fresha_code
+  // text }. `last4` is NOT unique (collisions are expected — that's why amount
+  // is shown). Store last4 as TEXT so leading zeros (e.g. "0042") survive.
+  async function lookupFreshaVoucher(typed) {
+    var c = client(); if (!c) throw new Error("Supabase not configured");
+    // Strip spaces / dashes so a 16-char code pasted as "ABCD EFGH IJKL MNOP"
+    // still counts. Shopify codes are 16 chars; force the manager to enter the
+    // whole thing (configurable) so they can't shortcut to just the last 4 —
+    // even though the match itself only uses the last 4 characters.
+    var full   = String(typed || "").replace(/[^A-Za-z0-9]/g, "");
+    var minLen = (cfg.voucherMinChars != null) ? cfg.voucherMinChars : 16;
+    if (full.length < minLen) {
+      return { found: false, matches: [], last4: "", tooShort: true, minLen: minLen };
+    }
+    var last4 = full.slice(-4).toUpperCase();
+    var res = await c.from("vouchers").select("fresha_code, amount").eq("last4", last4);
+    if (res.error) { console.error("lookupFreshaVoucher:", res.error); throw res.error; }
+    var matches = (res.data || [])
+      .map(function (r) { return { fresha: r.fresha_code, amount: r.amount }; })
+      .filter(function (m) { return m.fresha; });
+    return { found: matches.length > 0, matches: matches, last4: last4, tooShort: false };
+  }
   async function listAllManagers() {
     var c = client(); if (!c) return [];
-    var res = await c.from("staff").select("*").eq("role_type", "manager").eq("active", true).order("name", { ascending: true });
+    var res = await c.from("staff").select("*").eq("active", true).order("name", { ascending: true });
     if (res.error) { console.error("listAllManagers:", res.error); return []; }
-    return res.data || [];
+    return (res.data || []).filter(isManagerRow);
   }
   async function listTodayManagerClockins() {
     var c = client(); if (!c) return [];

@@ -143,6 +143,8 @@
     if (window.BOA_FLOWS) {
       window.BOA_FLOWS.refreshNewsBadge();
       setInterval(window.BOA_FLOWS.refreshNewsBadge, 60 * 1000);
+      // Keep the "submit your check-in" warning live while the landing is open.
+      setInterval(window.BOA_FLOWS.refreshCheckinNag, 60 * 1000);
     }
 
     // ── Store-open gate ─────────────────────────────────────────
@@ -423,6 +425,9 @@
       '<div class="hero-brand">' + esc(cfg.branchDisplayName || cfg.branchName || "BOA Check-in") + ' · Manager</div>' +
       '<div class="hero-title">What would you like to do?</div>' +
       '</div>' +
+      // Big blinking warning when today's nail-tech check-in hasn't been
+      // submitted yet (and it's past 10:30) — populated async below.
+      '<div id="checkin-nag-slot"></div>' +
       // Reminders panel — populated async right after this innerHTML write.
       // Hidden by default; only flips visible when there's at least one
       // reminder firing today for this branch.
@@ -448,9 +453,15 @@
       '<div class="tile-label">Request ' + esc(nextMonth) + ' Off</div>' +
       '<div class="tile-hint">TIME OFF NEXT MONTH</div>' +
       '</button>' +
+      '<button class="tile tile-big" id="tile-voucher" type="button">' +
+      '<div class="tile-icon">🎟️</div>' +
+      '<div class="tile-label">Voucher Code</div>' +
+      '<div class="tile-hint">SHOPIFY → FRESHA</div>' +
+      '</button>' +
       '</div>'
     );
     loadKioskRemindersIntoPanel();
+    if (window.BOA_FLOWS) window.BOA_FLOWS.refreshCheckinNag();
     document.getElementById("tile-nailtech").onclick = function () {
       if (window.BOA_FLOWS) window.BOA_FLOWS.renderCheckin();
     };
@@ -461,6 +472,99 @@
     document.getElementById("tile-offreq").onclick = function () {
       if (window.BOA_FLOWS) window.BOA_FLOWS.renderOffRequests();
     };
+    document.getElementById("tile-voucher").onclick = function () { renderVoucherLookup(); };
+  }
+
+  // ---------------- Voucher code lookup (Shopify → Fresha) ----------------
+  // Shopify only shows the seller the LAST 4 of a gift-voucher code, so the
+  // store's sheet maps that last-4 (+ the voucher amount) to a Fresha code.
+  // The manager is required to type the client's FULL code — there's no list,
+  // no partial / live search — but the match is on the last 4 only. When two
+  // vouchers share the same last 4, every match is shown with its amount so
+  // the manager picks the one whose amount matches the client's voucher.
+  function _voucherCard(m) {
+    return '<div style="background:#dcfce7;border:1px solid #86efac;border-radius:12px;padding:14px 16px;margin-top:10px">' +
+      (m.amount ? '<div style="font-size:13px;font-weight:800;color:#14532d">Amount: ' + esc(String(m.amount)) + '</div>' : '') +
+      '<div style="font-size:11px;font-weight:700;color:#14532d;text-transform:uppercase;letter-spacing:0.06em;margin-top:' + (m.amount ? '6' : '0') + 'px">Fresha voucher code</div>' +
+      '<div style="display:flex;align-items:center;gap:12px;margin-top:4px;flex-wrap:wrap">' +
+        '<code style="font-size:22px;font-weight:800;color:#065f46;letter-spacing:0.04em">' + esc(m.fresha) + '</code>' +
+        '<button type="button" class="vc-copy" data-code="' + esc(m.fresha) + '" style="background:#fff;border:1px solid #86efac;color:#065f46;border-radius:8px;padding:6px 12px;font-weight:700;cursor:pointer">Copy</button>' +
+      '</div>' +
+    '</div>';
+  }
+  async function renderVoucherLookup() {
+    setSublabel("Voucher Code");
+    if (configMissing()) { setMain(configMissingHtml()); return; }
+    setMain(
+      '<section class="panel">' +
+        '<div class="panel-head">' +
+          '<h2>🎟️ Voucher Code Lookup</h2>' +
+          '<button class="link-btn link-btn-dark" id="back-home">← Back</button>' +
+        '</div>' +
+        '<div style="font-size:13px;color:#6b7280;margin-bottom:14px;line-height:1.5">' +
+          'Enter the client\'s <strong>full 16-character Shopify voucher code</strong> exactly as it appears, then press <strong>Find</strong>. ' +
+          'The matching Fresha code only appears once the complete code is entered.' +
+        '</div>' +
+        '<form id="vc-form" autocomplete="off">' +
+          '<label class="lbl" for="vc-input">Full Shopify voucher code (16 characters)</label>' +
+          '<input id="vc-input" class="input" type="text" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="Type or paste the full code…">' +
+          '<div class="btn-row" style="margin-top:12px"><button class="btn btn-primary" id="vc-find" type="submit">Find Fresha code</button></div>' +
+        '</form>' +
+        '<div id="vc-result" style="margin-top:16px"></div>' +
+      '</section>'
+    );
+    document.getElementById("back-home").onclick = renderManagerLanding;
+
+    var input   = document.getElementById("vc-input");
+    var form    = document.getElementById("vc-form");
+    var resEl   = document.getElementById("vc-result");
+    var findBtn = document.getElementById("vc-find");
+
+    // Clear any previous result the instant the code is edited, so a stale
+    // Fresha code is never left on screen against a different / partial entry.
+    input.addEventListener("input", function () { resEl.innerHTML = ""; });
+
+    function wireCopies() {
+      Array.prototype.forEach.call(resEl.querySelectorAll(".vc-copy"), function (btn) {
+        btn.onclick = function () {
+          var code = btn.getAttribute("data-code") || "";
+          try {
+            navigator.clipboard.writeText(code).then(function () { btn.textContent = "Copied ✓"; }, function () { btn.textContent = "Copy failed"; });
+          } catch (_) { btn.textContent = "Copy failed"; }
+        };
+      });
+    }
+
+    form.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      var code = (input.value || "").trim();
+      if (!code) { resEl.innerHTML = '<div class="warn">Type the full voucher code first.</div>'; return; }
+      findBtn.disabled = true; findBtn.textContent = "Searching…";
+      try {
+        var r = await window.APP_DATA.lookupFreshaVoucher(code);
+        if (r.tooShort) {
+          resEl.innerHTML = '<div class="warn">Enter the client\'s <strong>full</strong> voucher code (at least ' + r.minLen + ' characters).</div>';
+        } else if (!r.found) {
+          resEl.innerHTML = '<div class="warn">No matching Fresha voucher found. Double-check the full code was entered correctly.</div>';
+        } else if (r.matches.length === 1) {
+          resEl.innerHTML = _voucherCard(r.matches[0]);
+          wireCopies();
+        } else {
+          resEl.innerHTML =
+            '<div class="warn" style="background:#fef3c7;border-color:#fde68a;color:#92400e">' +
+              '<strong>' + r.matches.length + ' vouchers end in those digits.</strong> Pick the one whose <strong>amount</strong> matches the client\'s voucher.' +
+            '</div>' +
+            r.matches.map(_voucherCard).join("");
+          wireCopies();
+        }
+      } catch (err) {
+        resEl.innerHTML = '<div class="warn">Could not look that up: ' + esc((err && err.message) || err) + '</div>';
+      } finally {
+        findBtn.disabled = false; findBtn.textContent = "Find Fresha code";
+      }
+    });
+
+    setTimeout(function () { try { input.focus(); } catch (_) {} }, 50);
   }
 
   // ---------------- Staff (read-only viewer) ----------------
@@ -556,9 +660,10 @@
     }
 
     // Split active and leavers further by role (managers vs nail techs)
-    // so each list is grouped in the kiosk view. role_type === "manager"
-    // is the canonical flag; everything else is treated as a nail tech.
-    function isManager(s) { return s && s.role_type === "manager"; }
+    // so each list is grouped in the kiosk view. isManagerRow treats both the
+    // role_type flag and the manager employee-code convention (e.g. B147M) as
+    // manager, so a mis-tagged manager still groups with managers here.
+    function isManager(s) { return window.APP_DATA.isManagerRow(s); }
     var techsActive = activeStaff.filter(function (s) { return !isManager(s); });
     var managersActive = activeStaff.filter(isManager);
     var techsLeft = leftStaff.filter(function (s) { return !isManager(s); });
@@ -801,11 +906,12 @@
     document.getElementById("back-home").onclick = renderManagerLanding;
     document.getElementById("mc-refresh").onclick = renderMgrClockin;
 
-    var pins, mgrs, recent;
+    var pins, mgrs, recent, smTrialEcs;
     try {
       pins = await window.APP_DATA.loadManagerPins();
       mgrs = await window.APP_DATA.listAllManagers();
       recent = await window.APP_DATA.listRecentManagerClockins(7);
+      smTrialEcs = window.APP_DATA.activeSmTrialEcs ? await window.APP_DATA.activeSmTrialEcs() : {};
     } catch (e) {
       document.getElementById("mc-body").innerHTML =
         '<div class="warn">Could not load: ' + esc(e.message || e) + '</div>';
@@ -836,10 +942,12 @@
       var d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
     })();
     var byEc = {};
+    var inTodayByEc = {};   // earliest "in" record today per ec — only one clock-in/day allowed
     recent.forEach(function (r) {
       var ec = r.staff && r.staff.employee_code; if (!ec) return;
       if (dateKeyOf(r.ts) !== todayK) return;
       if (!byEc[ec] || r.ts > byEc[ec].ts) byEc[ec] = r;
+      if (r.type === "in" && (!inTodayByEc[ec] || r.ts < inTodayByEc[ec].ts)) inTodayByEc[ec] = r;
     });
 
     // Yesterday-auto-out summary banner
@@ -854,35 +962,81 @@
     }
     document.getElementById("mc-warn").innerHTML = warnHtml;
 
+    function mgrRowHtml(m) {
+      var ec = m.employee_code || "";
+      var has = !!pins[ec];
+      var last = byEc[ec];
+      var inDone = !!inTodayByEc[ec];   // already clocked in today → no second clock-in
+      // An AM on an active SM trial is shown as "SM · on trial", mirroring
+      // the HR portal's effective-role badge.
+      var onSmTrial = m.role === "AM" && !!(smTrialEcs && smTrialEcs[String(ec).trim()]);
+      var roleLabel = onSmTrial ? "SM · on trial" : m.role;
+      var rolePill = roleLabel
+        ? (onSmTrial
+            ? ' <span class="pill" style="background:#FFF7ED;color:#9A3412;border:1px solid #FED7AA">⭐ ' + esc(roleLabel) + '</span>'
+            : ' <span class="pill pill-mute">' + esc(roleLabel) + '</span>')
+        : "";
+      var lastLabel;
+      if (!last) lastLabel = '<span class="pill pill-mute">not clocked in</span>';
+      else if (last.type === "in") lastLabel = '<span class="pill pill-ok">IN ' + fmtTime(last.ts) + '</span>';
+      else if (last.type === "out_auto") lastLabel = '<span class="pill pill-warn">AUTO-OUT ' + fmtTime(last.ts) + '</span>';
+      else lastLabel = '<span class="pill pill-warn">OUT ' + fmtTime(last.ts) + '</span>';
+      if (inDone && last && last.type !== "in") {
+        lastLabel += ' <span class="pill pill-mute">clocked in ' + fmtTime(inTodayByEc[ec].ts) + '</span>';
+      }
+      var autoBadge = autoYesterday[ec] ? ' <span class="pill" style="background:#fee2e2;color:#7f1d1d">⚠ auto-out yesterday</span>' : "";
+      var rowCls = m.branch === thisBranch ? "" : " staff-inactive";
+      return '<div class="staff-row' + rowCls + '" data-id="' + m.id + '" data-ec="' + esc(ec) + '" data-name="' + esc(m.name) + '">' +
+        '<div class="staff-row-main">' +
+        '<div class="staff-name">' + esc(m.name) +
+        rolePill +
+        (m.branch !== thisBranch ? ' <span class="pill pill-mute">' + esc(m.branch || "—") + "</span>" : "") +
+        (has ? "" : ' <span class="pill pill-warn">NO PIN</span>') + autoBadge +
+        '</div>' +
+        '<div class="staff-code" style="margin-top:3px">' + lastLabel + '</div>' +
+        '</div>' +
+        '<div class="staff-row-actions">' +
+        '<button class="btn btn-primary" data-act="clockin"  ' + (has && !inDone ? "" : 'disabled') + (inDone ? ' title="Already clocked in today"' : '') + '>Clock In</button>' +
+        '<button class="link-btn"       data-act="clockout" ' + (has ? "" : 'disabled') + '>Clock Out</button>' +
+        '</div>' +
+        '</div>';
+    }
+
+    // Only THIS store's managers are shown by default. Managers based at other
+    // stores live behind a "Clock in other manager" button so the list isn't
+    // cluttered with every manager in the company.
+    var hereMgrs  = mgrs.filter(function (m) { return m.branch === thisBranch; });
+    var otherMgrs = mgrs.filter(function (m) { return m.branch !== thisBranch; });
+
     document.getElementById("mc-body").innerHTML =
       '<div class="staff-list">' +
-      mgrs.map(function (m) {
-        var ec = m.employee_code || "";
-        var has = !!pins[ec];
-        var last = byEc[ec];
-        var lastLabel;
-        if (!last) lastLabel = '<span class="pill pill-mute">not clocked in</span>';
-        else if (last.type === "in") lastLabel = '<span class="pill pill-ok">IN ' + fmtTime(last.ts) + '</span>';
-        else if (last.type === "out_auto") lastLabel = '<span class="pill pill-warn">AUTO-OUT ' + fmtTime(last.ts) + '</span>';
-        else lastLabel = '<span class="pill pill-warn">OUT ' + fmtTime(last.ts) + '</span>';
-        var autoBadge = autoYesterday[ec] ? ' <span class="pill" style="background:#fee2e2;color:#7f1d1d">⚠ auto-out yesterday</span>' : "";
-        var rowCls = m.branch === thisBranch ? "" : " staff-inactive";
-        return '<div class="staff-row' + rowCls + '" data-id="' + m.id + '" data-ec="' + esc(ec) + '" data-name="' + esc(m.name) + '">' +
-          '<div class="staff-row-main">' +
-          '<div class="staff-name">' + esc(m.name) +
-          (m.role ? ' <span class="pill pill-mute">' + esc(m.role) + "</span>" : "") +
-          (m.branch !== thisBranch ? ' <span class="pill pill-mute">' + esc(m.branch || "—") + "</span>" : "") +
-          (has ? "" : ' <span class="pill pill-warn">NO PIN</span>') + autoBadge +
-          '</div>' +
-          '<div class="staff-code" style="margin-top:3px">' + lastLabel + '</div>' +
-          '</div>' +
-          '<div class="staff-row-actions">' +
-          '<button class="btn btn-primary" data-act="clockin"  ' + (has ? "" : 'disabled') + '>Clock In</button>' +
-          '<button class="link-btn"       data-act="clockout" ' + (has ? "" : 'disabled') + '>Clock Out</button>' +
-          '</div>' +
-          '</div>';
-      }).join("") +
-      '</div>';
+      (hereMgrs.length
+        ? hereMgrs.map(mgrRowHtml).join("")
+        : '<div class="empty">No managers are based at ' + esc(thisBranch || "this store") + ' yet.</div>') +
+      '</div>' +
+      (otherMgrs.length
+        ? '<button id="mc-show-others" type="button" ' +
+            'style="margin-top:14px;width:100%;background:#fff;color:var(--pink-700);border:2px solid var(--pink-200);border-radius:10px;padding:11px 14px;font-weight:700;font-size:14px;cursor:pointer">' +
+            '➕ Clock in other manager (' + otherMgrs.length + ' from other stores)' +
+          '</button>' +
+          '<div id="mc-others" style="display:none;margin-top:12px">' +
+            '<div style="font-size:12px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Managers from other stores</div>' +
+            '<div class="staff-list">' + otherMgrs.map(mgrRowHtml).join("") + '</div>' +
+          '</div>'
+        : "");
+
+    var showOthersBtn = document.getElementById("mc-show-others");
+    if (showOthersBtn) {
+      showOthersBtn.onclick = function () {
+        var box = document.getElementById("mc-others");
+        if (!box) return;
+        var willOpen = box.style.display === "none";
+        box.style.display = willOpen ? "" : "none";
+        showOthersBtn.innerHTML = willOpen
+          ? "▲ Hide other stores' managers"
+          : "➕ Clock in other manager (" + otherMgrs.length + " from other stores)";
+      };
+    }
 
     var rows = document.querySelectorAll('#mc-body .staff-row');
     Array.prototype.forEach.call(rows, function (row) {
@@ -908,11 +1062,15 @@
         entered = entered.trim();
         if (!/^\d{6}$/.test(entered)) { alert("PIN must be exactly 6 digits."); return; }
         if (entered !== pins[ec]) { alert("Wrong PIN."); return; }
-        // 3. Block double clock of same type today
+        // 3. One clock-in per day — hard-block a second clock-in (no override).
+        //    Clock-out can still be re-recorded with a confirm.
+        if (type === "in" && inTodayByEc[ec]) {
+          alert(name + " already clocked in today at " + fmtTime(inTodayByEc[ec].ts) + ".\n\nOnly one clock-in per day is allowed.");
+          return;
+        }
         var last = byEc[ec];
-        if (last && last.type === type) {
-          var lbl = type === "in" ? "in" : "out";
-          if (!confirm(name + " is already clocked " + lbl + " today (" + fmtTime(last.ts) + "). Record another clock-" + lbl + " anyway?")) return;
+        if (type === "out" && last && last.type === "out") {
+          if (!confirm(name + " is already clocked out today (" + fmtTime(last.ts) + "). Record another clock-out anyway?")) return;
         }
         // 4. Get GPS (best-effort — graceful if denied/unavailable)
         var gps = await getGPS();

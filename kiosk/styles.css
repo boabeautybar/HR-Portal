@@ -700,10 +700,14 @@ textarea.input { resize: vertical; min-height: 64px; }
 .sched-name { text-align: left; padding: 6px 10px !important; font-weight: 600; color: var(--pink-900); background: #fff; position: sticky; left: 0; }
 .sched-cell { font-weight: 800; }
 .sched-today { outline: 2px solid var(--pink-500); outline-offset: -2px; }
-/* Working states — greens / amber */
-.sched-st-W  { background: var(--green-100); color: var(--green-700); }
-.sched-st-WL { background: #fef3c7;          color: #92400e; }            /* Work late          */
-.sched-st-E  { background: #a7f3d0;          color: #065f46; }            /* Extra (covering)   */
+/* Working states — all greens (different shades) so any working day reads as
+   green at a glance and never gets mistaken for a red OFF day. */
+.sched-st-W  { background: #86efac;          color: #14532d; }            /* Work               */
+.sched-st-WL { background: #bbf7d0;          color: #166534; }            /* Work late          */
+.sched-st-WE { background: #dcfce7;          color: #15803d; }            /* Work early         */
+.sched-st-WB { background: #6ee7b7;          color: #064e3b; }            /* Work (back)        */
+.sched-st-WM { background: #a7f3d0;          color: #065f46; }            /* Work (mid)         */
+.sched-st-E  { background: #4ade80;          color: #052e16; }            /* Extra (covering)   */
 /* Off / leave — all red, slightly different shades so the letter still reads */
 .sched-st-O  { background: #fecaca; color: #991b1b; }                     /* OFF                */
 .sched-st-R  { background: #fee2e2; color: #b91c1c; }                     /* REQUESTED OFF      */
@@ -716,3 +720,30 @@ textarea.input { resize: vertical; min-height: 64px; }
 .sched-legend > span { display: inline-flex; align-items: center; gap: 6px; }
 .sched-legend > span > span { display: inline-block; padding: 2px 6px; border-radius: 4px; font-weight: 700; min-width: 22px; text-align: center; }
 .sched-legend-note { color: var(--pink-700) !important; font-style: italic; }
+
+/* ── "Submit today's check-in" home-screen warning ───────────────────────
+   Big, red, blinking banner shown on the kiosk home screen after 10:30 when
+   the day's nail-tech check-in still hasn't been signed off. */
+@keyframes checkin-nag-blink {
+  0%, 49%   { opacity: 1; }
+  50%, 100% { opacity: 0.45; }
+}
+@keyframes checkin-nag-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.0); }
+  50%      { box-shadow: 0 0 26px 7px rgba(220, 38, 38, 0.65); }
+}
+.checkin-nag {
+  display: flex; align-items: center; gap: 16px;
+  background: #DC2626; color: #fff;
+  border: 3px solid #7F1D1D; border-radius: 16px;
+  padding: 18px 22px; margin: 0 0 20px;
+  animation: checkin-nag-blink 1.1s steps(1, end) infinite,
+             checkin-nag-glow  1.6s ease-in-out infinite;
+}
+.checkin-nag-icon  { font-size: 42px; line-height: 1; flex: 0 0 auto; }
+.checkin-nag-text  { flex: 1 1 auto; }
+.checkin-nag-title { font-size: 22px; font-weight: 800; letter-spacing: 0.05em; }
+.checkin-nag-sub   { font-size: 14px; font-weight: 600; line-height: 1.45; margin-top: 4px; opacity: 0.97; }
+@media (prefers-reduced-motion: reduce) {
+  .checkin-nag { animation: none; box-shadow: 0 0 18px 4px rgba(220, 38, 38, 0.55); }
+}
