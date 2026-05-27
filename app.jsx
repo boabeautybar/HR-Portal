@@ -8695,6 +8695,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const ABSENT = { absent: 1, no: 1, sick: 1, sick_n: 1, frl: 1 };
       let count = 0;
       let tScheduled = 0, tCheckedIn = 0, tAbsent = 0;
+      const techByEc = {};   // ec -> "in" | "absent" | "pending" (deduped & offboard-filtered at render)
       const mgrsScheduled = [];
       for (const ec in techGrid) {
         const v = techGrid[ec][todayDay];
@@ -8702,15 +8703,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         count++; tScheduled++;
         let st = attGrid[ec] && attGrid[ec][todayDay];
         if (st && st.indexOf("~") === 0) st = "";   // unconfirmed mirror ≠ a real check-in
-        if (st && PRESENT[st]) tCheckedIn++;
-        else if (st && ABSENT[st]) tAbsent++;
+        if (st && PRESENT[st]) { tCheckedIn++; techByEc[ec] = "in"; }
+        else if (st && ABSENT[st]) { tAbsent++; techByEc[ec] = "absent"; }
+        else { techByEc[ec] = "pending"; }          // scheduled, neither present nor absent
       }
       for (const ec in mgrGrid) {
         // manager grid is keyed by YMD strings (mgrSched line 141)
         const v = mgrGrid[ec][ymd] || mgrGrid[ec][todayDay];
         if (isWorking(v)) { count++; mgrsScheduled.push(ec); }
       }
-      return [sl.name, count, mgrsScheduled, { scheduled: tScheduled, checkedIn: tCheckedIn, notCheckedIn: tScheduled - tCheckedIn - tAbsent, absent: tAbsent }];
+      return [sl.name, count, mgrsScheduled, { scheduled: tScheduled, checkedIn: tCheckedIn, notCheckedIn: tScheduled - tCheckedIn - tAbsent, absent: tAbsent, techByEc }];
     })).then(quads => {
       if (cancelled) return;
       const map = {};
@@ -9108,6 +9110,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [checkinsTick, setCheckinsTick] = useState(0);   // bump to re-pull after a manual add / reopen
   const [manualCheckinModal, setManualCheckinModal] = useState(null);  // null | { branch, ec, ymd, status, note, _saving, _err }
   const [reopenModal, setReopenModal] = useState(null);  // null | { branch, ymd, _saving, _err }
+  const [notCheckedInModal, setNotCheckedInModal] = useState(null);  // null | [{ ec, name, branch }] — techs scheduled today who haven't checked in
   useEffect(() => {
     if (tab !== "checkins" && tab !== "attendance" && tab !== "payrollProgress") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
@@ -10394,20 +10397,40 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           let mgrSchedToday = 0;
           let mgrMissing = [];
           if (dashTodayMgrClockinEcs) {
+            const _t = new Date();
+            const _todayYmd = _t.getFullYear() + "-" + String(_t.getMonth() + 1).padStart(2, "0") + "-" + String(_t.getDate()).padStart(2, "0");
+            // Normalise EC codes on both sides so a manager who DID clock in isn't
+            // mis-counted as missing over a stray whitespace mismatch.
+            const clockedIn = new Set();
+            dashTodayMgrClockinEcs.forEach(e => clockedIn.add(String(e).trim()));
+            const onLeaveEcs = new Set();
+            for (const lv of (leaveRecs || [])) {
+              if (lv && lv.ec && lv.startDate && lv.endDate && _todayYmd >= lv.startDate && _todayYmd <= lv.endDate) onLeaveEcs.add(lv.ec.trim());
+            }
+            const mgrByEc = {};
+            for (const m of (enrichedManagers || [])) if (m && m.ec) mgrByEc[m.ec.trim()] = m;
+            // One row per manager EC — a manager scheduled across more than one
+            // branch's grid (coverage / mid-transfer) must only be counted once.
+            const seen = {};   // ec -> { checkedIn, name, branch }
             for (const branchName in dashSchedMgrsByBranch) {
               if (_hasStoreScope && !scopedBranchSet.has(branchName)) continue;
-              const ecs = dashSchedMgrsByBranch[branchName] || [];
-              for (const ec of ecs) {
-                // Only count managers genuinely working today: drop anyone on
-                // maternity / off-boarded even if a stale working cell lingers
-                // in the schedule grid.
-                const m = (enrichedManagers || []).find(x => x.ec === ec) || (managers || []).find(x => x.ec === ec);
-                if (m && (m.onMat || m.offboarded)) continue;
-                mgrSchedToday++;
-                if (!dashTodayMgrClockinEcs.has(ec)) {
-                  mgrMissing.push({ ec, name: (m && m.name) || ec, branch: branchName });
-                }
+              for (const ecRaw of (dashSchedMgrsByBranch[branchName] || [])) {
+                const ec = String(ecRaw).trim();
+                const m = mgrByEc[ec];
+                if (!m) continue;   // no current manager record — deleted/unknown, skip stale grid key
+                // Skip anyone not really working today even if a stale work cell
+                // lingers: maternity, off-boarded, departed, or on leave.
+                if (m.onMat || m.offboarded || (m.leftDate && _todayYmd > m.leftDate)) continue;
+                if (onLeaveEcs.has(ec)) continue;
+                const checkedIn = clockedIn.has(ec);
+                const cur = seen[ec];
+                if (!cur) seen[ec] = { checkedIn, name: m.name || ec, branch: m.branch || branchName };
+                else if (checkedIn && !cur.checkedIn) cur.checkedIn = true;
               }
+            }
+            for (const ec in seen) {
+              mgrSchedToday++;
+              if (!seen[ec].checkedIn) mgrMissing.push({ ec, name: seen[ec].name, branch: seen[ec].branch });
             }
           }
           const mgrCheckinLoading = dashTodayMgrClockinEcs == null || dashScheduledToday == null;
@@ -10418,15 +10441,67 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // sick / FRL).
           const techToday = (() => {
             if (!dashTechByBranch) return null;
-            const a = { scheduled: 0, checkedIn: 0, notCheckedIn: 0, absent: 0 };
+            const _t = new Date();
+            const _todayYmd = _t.getFullYear() + "-" + String(_t.getMonth() + 1).padStart(2, "0") + "-" + String(_t.getDate()).padStart(2, "0");
+            const enrichedByEc = {};
+            for (const s of (enriched || [])) if (s && s.ec) enrichedByEc[s.ec.trim()] = s;
+            // ECs whose leave record covers today — the live schedule shows these
+            // as L even when the stored grid the dashboard reads still has a work code.
+            const onLeaveEcs = new Set();
+            for (const lv of (leaveRecs || [])) {
+              if (lv && lv.ec && lv.startDate && lv.endDate && _todayYmd >= lv.startDate && _todayYmd <= lv.endDate) onLeaveEcs.add(lv.ec.trim());
+            }
+            const branchSet = new Set(Object.keys(dashTechByBranch));
+            // A tech isn't really working today — whatever a stale stored grid says
+            // — if they've left, are on maternity / unpaid-legal leave, or have an
+            // annual-leave record over today.
+            const isOffToday = (er, ecKey) =>
+              (!!(er && er.leftDate && _todayYmd > er.leftDate)) ||   // departed (today past last working day)
+              (!!(er && (er.onMat || er.onUnpaidLegal))) ||           // maternity / unpaid-legal leave
+              onLeaveEcs.has(ecKey);                                  // annual leave covering today
+            // Effective home branch today — follows a transfer once its date has
+            // passed. Lets us ignore stale work codes lingering in a branch the
+            // tech no longer (or doesn't yet) work at.
+            const effBranchOf = (er) => {
+              if (!er) return null;
+              if (er.transferring && er.transferTo && er.transferDate && _todayYmd >= String(er.transferDate).replace(/\//g, "-")) return er.transferTo;
+              return er.branch || null;
+            };
+            // Collapse to one row per EC. A real check-in / absent mark outranks a
+            // pending slot, so a transferred tech who checked in at their new
+            // branch isn't flagged "not checked in" at the old one.
+            const rank = { in: 2, absent: 1, pending: 0 };
+            const byEc = {};   // ec -> { status, branch }
             for (const b in dashTechByBranch) {
               if (_hasStoreScope && !scopedBranchSet.has(b)) continue;
-              const t = dashTechByBranch[b] || {};
-              a.scheduled += t.scheduled || 0;
-              a.checkedIn += t.checkedIn || 0;
-              a.notCheckedIn += t.notCheckedIn || 0;
-              a.absent += t.absent || 0;
+              const tb = (dashTechByBranch[b] || {}).techByEc || {};
+              for (const ec in tb) {
+                const ecKey = (ec || "").trim();
+                const er = enrichedByEc[ecKey];
+                if (!er) continue;   // no current staff record — deleted/unknown, skip stale grid key
+                if (isOffToday(er, ecKey)) continue;
+                const eff = effBranchOf(er);
+                if (eff && branchSet.has(eff) && b !== eff) continue;   // stale / wrong-branch grid entry
+                const status = tb[ec];
+                const cur = byEc[ec];
+                if (!cur || rank[status] > rank[cur.status]) byEc[ec] = { status, branch: eff || b };
+              }
             }
+            const a = { scheduled: 0, checkedIn: 0, notCheckedIn: 0, absent: 0, notCheckedInList: [] };
+            for (const ec in byEc) {
+              const { status, branch } = byEc[ec];
+              a.scheduled++;
+              if (status === "in") a.checkedIn++;
+              else if (status === "absent") a.absent++;
+              else {
+                a.notCheckedIn++;
+                const er = enrichedByEc[(ec || "").trim()];
+                a.notCheckedInList.push({ ec, name: (er && er.name) || ec, branch });
+              }
+            }
+            a.notCheckedInList.sort((x, y) =>
+              (x.branch || "").localeCompare(y.branch || "") || (x.name || "").localeCompare(y.name || "")
+            );
             return a;
           })();
 
@@ -10830,38 +10905,46 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       click: () => tryChangeTab("storeOpenings")
                     },
                     mgrCheckin: {
-                      l: "Mgrs not checked in",
-                      v: mgrCheckinLoading ? "…" : (mgrSchedToday === 0 ? "—" : mgrMissing.length + " / " + mgrSchedToday),
-                      sub: mgrCheckinLoading
-                        ? "loading…"
-                        : (mgrSchedToday === 0
-                          ? "no managers scheduled"
-                          : (mgrMissing.length === 0
-                            ? "✓ all managers checked in"
-                            : mgrMissing.slice(0, 2).map(m => m.name + " · " + m.branch).join(", ") + (mgrMissing.length > 2 ? " +" + (mgrMissing.length - 2) + " more" : ""))),
-                      i: mgrCheckinLoading ? "⌛" : (mgrSchedToday === 0 ? "🕐" : (mgrMissing.length === 0 ? "✓" : "🚨")),
-                      c: mgrCheckinLoading ? "#7c2d12" : (mgrMissing.length === 0 ? "#166534" : "#7f1d1d"),
-                      bg: mgrCheckinLoading ? "#fef3c7" : (mgrMissing.length === 0 ? "#dcfce7" : "#fee2e2"),
-                      click: () => tryChangeTab("mgrclockins")
+                      l: "Managers checked in",
+                      v: mgrCheckinLoading ? "…" : (mgrSchedToday === 0 ? "—" : ((mgrSchedToday - mgrMissing.length) + " / " + mgrSchedToday)),
+                      sub: mgrCheckinLoading ? "loading…" : (mgrSchedToday === 0 ? "no managers scheduled" : (mgrMissing.length + " not checked in yet")),
+                      i: "✅",
+                      c: "#14532d",
+                      bg: "#dcfce7",
+                      click: () => tryChangeTab("mgrclockins"),
+                      subClick: mgrMissing.length > 0 ? () => setNotCheckedInModal({ title: "Managers not checked in", role: "manager", list: mgrMissing.slice().sort((x, y) => (x.branch || "").localeCompare(y.branch || "") || (x.name || "").localeCompare(y.name || "")), tab: "mgrclockins", tabLabel: "Open Manager Clock-ins →" }) : null
+                    },
+                    mgrAbsent: {
+                      l: "Managers absent today",
+                      v: mgrCheckinLoading ? "…" : (mgrSchedToday === 0 ? "—" : mgrMissing.length),
+                      sub: mgrCheckinLoading ? "loading…" : (mgrSchedToday === 0 ? "no managers scheduled" : "haven't clocked in"),
+                      i: "🚫",
+                      c: "#7f1d1d",
+                      bg: "#fee2e2",
+                      click: () => tryChangeTab("mgrclockins"),
+                      subClick: mgrMissing.length > 0 ? () => setNotCheckedInModal({ title: "Managers absent today", role: "manager", list: mgrMissing.slice().sort((x, y) => (x.branch || "").localeCompare(y.branch || "") || (x.name || "").localeCompare(y.name || "")), tab: "mgrclockins", tabLabel: "Open Manager Clock-ins →" }) : null
                     },
                     scheduledToday: { l: "Scheduled today", v: dashScheduledToday == null ? "…" : (_hasStoreScope ? Object.keys(dashByBranch).filter(b => scopedBranchSet.has(b)).reduce((a, b) => a + (dashByBranch[b] || 0), 0) : dashScheduledToday), sub: _hasStoreScope ? ("scope: " + (dashScope === "mine" ? "my stores" : dashScope === "other" ? "peer stores" : "all branches")) : "across all branches", i: "📅", c: "#1e3a8a", bg: "#dbeafe" },
                     techsToday: { l: "Techs working today", v: techToday == null ? "…" : techToday.scheduled, sub: "must actively work today", i: "💅", c: "#0c4a6e", bg: "#e0f2fe" },
-                    techsCheckedIn: { l: "Techs checked in", v: techToday == null ? "…" : (techToday.checkedIn + " / " + techToday.scheduled), sub: techToday == null ? "loading…" : (techToday.notCheckedIn + " not checked in yet"), i: "✅", c: "#14532d", bg: "#dcfce7", click: () => tryChangeTab("checkins") },
+                    techsCheckedIn: { l: "Techs checked in", v: techToday == null ? "…" : (techToday.checkedIn + " / " + techToday.scheduled), sub: techToday == null ? "loading…" : (techToday.notCheckedIn + " not checked in yet"), i: "✅", c: "#14532d", bg: "#dcfce7", click: () => tryChangeTab("checkins"), subClick: (techToday && techToday.notCheckedIn > 0) ? () => setNotCheckedInModal({ title: "Techs not checked in yet", role: "tech", list: techToday.notCheckedInList, tab: "checkins", tabLabel: "Open Check-ins →" }) : null },
                     techsAbsent: { l: "Techs absent today", v: techToday == null ? "…" : techToday.absent, sub: "incl. no-show / sick / FRL", i: "🚫", c: "#7f1d1d", bg: "#fee2e2", click: () => tryChangeTab("checkins") },
                     activeStaff: { l: "Active staff", v: scopedStats.active, sub: "incl. " + scopedStats.pregnant + " pregnant", i: "👥", c: "#14532d", bg: "#dcfce7" },
                     onMaternity: { l: "On maternity", v: scopedStats.onMat, sub: scopedStats.returning60 + " returning ≤60d", i: "🤱", c: "#7A4258", bg: "#fce7f3" },
                     vacancies: { l: "Positions to hire", v: scopedStats.vacancies, sub: "across " + scopedStats.understaffed + " branch" + (scopedStats.understaffed !== 1 ? "es" : ""), i: "🎯", c: "#7c3aed", bg: "#ede9fe", click: () => tryChangeTab("recruitment") }
                   };
                   const order = _hasStoreScope
-                    ? ["storesOpen", "mgrCheckin", "techsToday", "techsCheckedIn", "techsAbsent", "scheduledToday", "activeStaff", "vacancies", "onMaternity"]
-                    : ["storesOpen", "techsToday", "techsCheckedIn", "techsAbsent", "mgrCheckin", "scheduledToday", "activeStaff", "onMaternity", "vacancies"];
+                    ? ["storesOpen", "mgrCheckin", "mgrAbsent", "techsToday", "techsCheckedIn", "techsAbsent", "scheduledToday", "activeStaff", "vacancies", "onMaternity"]
+                    : ["storesOpen", "techsToday", "techsCheckedIn", "techsAbsent", "mgrCheckin", "mgrAbsent", "scheduledToday", "activeStaff", "onMaternity", "vacancies"];
                   return order.map(k => tiles[k]);
                 })().map(c => (
                   <div key={c.l} onClick={c.click} style={{ background: c.bg, borderRadius: 16, padding: "16px 18px", cursor: c.click ? "pointer" : "default", border: "1px solid rgba(255,255,255,0.6)" }}>
                     <div style={{ fontSize: 24 }}>{c.i}</div>
                     <div style={{ fontSize: 32, fontWeight: 800, color: c.c, lineHeight: 1.05, marginTop: 4 }}>{c.v}</div>
                     <div style={{ fontSize: 10, fontWeight: 700, color: c.c, letterSpacing: "0.1em", textTransform: "uppercase", marginTop: 6 }}>{c.l}</div>
-                    <div style={{ fontSize: 10, color: c.c, opacity: 0.6, marginTop: 2 }}>{c.sub}</div>
+                    <div
+                      onClick={c.subClick ? (e) => { e.stopPropagation(); c.subClick(); } : undefined}
+                      style={{ fontSize: 10, color: c.c, opacity: c.subClick ? 0.95 : 0.6, marginTop: 2, ...(c.subClick ? { cursor: "pointer", textDecoration: "underline", fontWeight: 700 } : {}) }}
+                    >{c.sub}</div>
                   </div>
                 ))}
               </div>
@@ -20720,6 +20803,54 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   style={{ background: "#9d174d", color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: "pointer", fontSize: 13, fontWeight: 700, opacity: m._saving ? 0.6 : 1 }}>
                   {m._saving ? "Reopening…" : "Reopen check-in"}
                 </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Not-checked-in list — opened from the dashboard check-in tiles. Lists
+          everyone scheduled to work today who hasn't checked in or been marked
+          absent, grouped by branch. Shared by the tech and manager tiles via a
+          { title, role, list, tab, tabLabel } payload. */}
+      {notCheckedInModal && (() => {
+        const data = notCheckedInModal || {};
+        const list = data.list || [];
+        const noun = data.role === "manager" ? "manager" : "tech";
+        const byBranch = {};
+        for (const t of list) (byBranch[t.branch] = byBranch[t.branch] || []).push(t);
+        const branches = Object.keys(byBranch).sort();
+        return (
+          <div onClick={() => setNotCheckedInModal(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "20px 22px", width: "100%", maxWidth: 460, maxHeight: "85vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                <div>
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: "#831843" }}>⏳ {data.title || "Not checked in yet"}</div>
+                  <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>{list.length} {noun}{list.length !== 1 ? "s" : ""} scheduled today {list.length !== 1 ? "haven't" : "hasn't"} {data.role === "manager" ? "clocked in" : "checked in or been marked absent"}.</div>
+                </div>
+                <button onClick={() => setNotCheckedInModal(null)} style={{ background: "transparent", border: "none", fontSize: 18, cursor: "pointer", color: "#6b7280", lineHeight: 1 }}>✕</button>
+              </div>
+              {list.length === 0 ? (
+                <div style={{ color: "#15803d", fontSize: 13, fontWeight: 700, marginTop: 14 }}>✓ Everyone scheduled today has checked in.</div>
+              ) : (
+                <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 14 }}>
+                  {branches.map(b => (
+                    <div key={b}>
+                      <div style={{ fontSize: 10, fontWeight: 800, color: "#BE185D", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 6 }}>📍 {b} · {byBranch[b].length}</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {byBranch[b].map(t => (
+                          <div key={t.ec} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#FDEEF5", borderRadius: 8, padding: "8px 12px" }}>
+                            <span style={{ fontSize: 13, fontWeight: 600, color: "#831843" }}>{t.name}</span>
+                            <span style={{ fontSize: 11, fontFamily: "monospace", color: "#9d174d", background: "#fff", padding: "2px 7px", borderRadius: 5 }}>{t.ec}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 18 }}>
+                <button onClick={() => { const _tab = data.tab || "checkins"; setNotCheckedInModal(null); tryChangeTab(_tab); }} style={{ background: "#9d174d", color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>{data.tabLabel || "Open Check-ins →"}</button>
               </div>
             </div>
           </div>
