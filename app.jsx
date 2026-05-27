@@ -13395,7 +13395,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* ── ALERTS TAB ── */}
         {tab === "alerts" && (() => {
-          const active = enriched.filter(s => !s.onMat);
+          // Exclude maternity, unpaid-legal leave AND off-boarded/departed staff
+          // from compliance alerts — someone who has left the company shouldn't
+          // keep raising a "no work permit" / "no contract" flag.
+          const active = enriched.filter(s => !s.onMat && !s.onUnpaidLegal && !s.offboarded);
           // Upcoming-cycle schedule alerts (only for users responsible for scheduling).
           const schedAlerts = [];
           if (SCHED_ALERT_PINS.has(currentUser.pin) && upcomingChecked && upcomingMissing.length > 0) {
@@ -13423,7 +13426,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             ...matRecs.filter(r => r.matStatus === "on_mat" && r.returnDate && daysDiff(r.returnDate) >= 0 && daysDiff(r.returnDate) <= 14).map(r => ({ type: "info", msg: `${r.name} (${r.branch}) — returning in ${daysDiff(r.returnDate)} day(s) on ${fmt(r.returnDate)}`, rec: r })),
             ...active.filter(s => s.permit === "z_na").map(s => ({ type: "critical", msg: `${s.name} (${s.branch}) — Z/NA: no valid work permit`, s })),
             ...active.filter(s => s.contract === "NO CONTRACT").map(s => ({ type: "warning", msg: `${s.name} (${s.branch}) — no employment contract on file`, s })),
-            ...SALONS.filter(sl => enriched.filter(s => s.branch === sl.name && !s.onMat).length === 0).map(sl => ({ type: "critical", msg: `${sl.name} — NO active staff assigned`, s: null })),
+            ...SALONS.filter(sl => active.filter(s => s.branch === sl.name).length === 0).map(sl => ({ type: "critical", msg: `${sl.name} — NO active staff assigned`, s: null })),
           ];
           return (
             <div style={{ padding: "0 24px" }}>
