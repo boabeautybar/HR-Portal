@@ -10915,11 +10915,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       i: mgrCheckinLoading ? "⌛" : (mgrSchedToday === 0 ? "🕐" : (mgrMissing.length === 0 ? "✓" : "🚨")),
                       c: mgrCheckinLoading ? "#7c2d12" : (mgrMissing.length === 0 ? "#166534" : "#7f1d1d"),
                       bg: mgrCheckinLoading ? "#fef3c7" : (mgrMissing.length === 0 ? "#dcfce7" : "#fee2e2"),
-                      click: () => tryChangeTab("mgrclockins")
+                      click: () => tryChangeTab("mgrclockins"),
+                      subClick: mgrMissing.length > 0 ? () => setNotCheckedInModal({ title: "Managers not checked in", role: "manager", list: mgrMissing.slice().sort((x, y) => (x.branch || "").localeCompare(y.branch || "") || (x.name || "").localeCompare(y.name || "")), tab: "mgrclockins", tabLabel: "Open Manager Clock-ins →" }) : null
                     },
                     scheduledToday: { l: "Scheduled today", v: dashScheduledToday == null ? "…" : (_hasStoreScope ? Object.keys(dashByBranch).filter(b => scopedBranchSet.has(b)).reduce((a, b) => a + (dashByBranch[b] || 0), 0) : dashScheduledToday), sub: _hasStoreScope ? ("scope: " + (dashScope === "mine" ? "my stores" : dashScope === "other" ? "peer stores" : "all branches")) : "across all branches", i: "📅", c: "#1e3a8a", bg: "#dbeafe" },
                     techsToday: { l: "Techs working today", v: techToday == null ? "…" : techToday.scheduled, sub: "must actively work today", i: "💅", c: "#0c4a6e", bg: "#e0f2fe" },
-                    techsCheckedIn: { l: "Techs checked in", v: techToday == null ? "…" : (techToday.checkedIn + " / " + techToday.scheduled), sub: techToday == null ? "loading…" : (techToday.notCheckedIn + " not checked in yet"), i: "✅", c: "#14532d", bg: "#dcfce7", click: () => tryChangeTab("checkins"), subClick: (techToday && techToday.notCheckedIn > 0) ? () => setNotCheckedInModal(techToday.notCheckedInList) : null },
+                    techsCheckedIn: { l: "Techs checked in", v: techToday == null ? "…" : (techToday.checkedIn + " / " + techToday.scheduled), sub: techToday == null ? "loading…" : (techToday.notCheckedIn + " not checked in yet"), i: "✅", c: "#14532d", bg: "#dcfce7", click: () => tryChangeTab("checkins"), subClick: (techToday && techToday.notCheckedIn > 0) ? () => setNotCheckedInModal({ title: "Techs not checked in yet", role: "tech", list: techToday.notCheckedInList, tab: "checkins", tabLabel: "Open Check-ins →" }) : null },
                     techsAbsent: { l: "Techs absent today", v: techToday == null ? "…" : techToday.absent, sub: "incl. no-show / sick / FRL", i: "🚫", c: "#7f1d1d", bg: "#fee2e2", click: () => tryChangeTab("checkins") },
                     activeStaff: { l: "Active staff", v: scopedStats.active, sub: "incl. " + scopedStats.pregnant + " pregnant", i: "👥", c: "#14532d", bg: "#dcfce7" },
                     onMaternity: { l: "On maternity", v: scopedStats.onMat, sub: scopedStats.returning60 + " returning ≤60d", i: "🤱", c: "#7A4258", bg: "#fce7f3" },
@@ -20802,11 +20803,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         );
       })()}
 
-      {/* Techs not checked in yet — opened from the "X not checked in yet" line
-          on the dashboard "Techs checked in" tile. Lists every nail tech who is
-          scheduled to work today but isn't marked present or absent. */}
+      {/* Not-checked-in list — opened from the dashboard check-in tiles. Lists
+          everyone scheduled to work today who hasn't checked in or been marked
+          absent, grouped by branch. Shared by the tech and manager tiles via a
+          { title, role, list, tab, tabLabel } payload. */}
       {notCheckedInModal && (() => {
-        const list = notCheckedInModal || [];
+        const data = notCheckedInModal || {};
+        const list = data.list || [];
+        const noun = data.role === "manager" ? "manager" : "tech";
         const byBranch = {};
         for (const t of list) (byBranch[t.branch] = byBranch[t.branch] || []).push(t);
         const branches = Object.keys(byBranch).sort();
@@ -20815,8 +20819,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "20px 22px", width: "100%", maxWidth: 460, maxHeight: "85vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
                 <div>
-                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: "#831843" }}>⏳ Not checked in yet</div>
-                  <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>{list.length} tech{list.length !== 1 ? "s" : ""} scheduled today {list.length !== 1 ? "haven't" : "hasn't"} checked in or been marked absent.</div>
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: "#831843" }}>⏳ {data.title || "Not checked in yet"}</div>
+                  <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>{list.length} {noun}{list.length !== 1 ? "s" : ""} scheduled today {list.length !== 1 ? "haven't" : "hasn't"} checked in or been marked absent.</div>
                 </div>
                 <button onClick={() => setNotCheckedInModal(null)} style={{ background: "transparent", border: "none", fontSize: 18, cursor: "pointer", color: "#6b7280", lineHeight: 1 }}>✕</button>
               </div>
@@ -20840,7 +20844,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               )}
               <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 18 }}>
-                <button onClick={() => { setNotCheckedInModal(null); tryChangeTab("checkins"); }} style={{ background: "#9d174d", color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>Open Check-ins →</button>
+                <button onClick={() => { const _tab = data.tab || "checkins"; setNotCheckedInModal(null); tryChangeTab(_tab); }} style={{ background: "#9d174d", color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>{data.tabLabel || "Open Check-ins →"}</button>
               </div>
             </div>
           </div>
