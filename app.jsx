@@ -9572,6 +9572,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return pool;
   }, [enriched, managers, matRecs]);
 
+  // Active trial candidates per branch, split by role. On the Locations cards a
+  // trial person occupies a seat (they count toward the staffing meter), so the
+  // vacancy / "still to hire" maths below subtract them too — otherwise the
+  // recruitment totals overstate the gap relative to what Locations shows.
+  const activeTrialByBranch = useMemo(() => {
+    const nt = {}, am = {};
+    for (const c of (trialList || [])) {
+      if (!c || !c.branch) continue;
+      if (c.status === "passed" || c.status === "failed" || c.status === "hired") continue;
+      if ((c.role || "nt") === "am") am[c.branch] = (am[c.branch] || 0) + 1;
+      else nt[c.branch] = (nt[c.branch] || 0) + 1;
+    }
+    return { nt, am };
+  }, [trialList]);
+
   const stats = useMemo(() => {
     // "active" excludes maternity, unpaid-legal leave AND off-boarded — all
     // three reduce the active headcount.
@@ -9588,11 +9603,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       // so they immediately surface as open positions in the Recruitment tab.
       // Pre-opening stores are KEPT in these counts — those seats must be
       // hired for before the store opens, so they need to drive recruitment.
-      vacancies: SALONS.reduce((a, sl) => { const g = sl.targetCapacity || sl.capacity; const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length; return a + Math.max(0, g - act); }, 0),
-      understaffed: SALONS.filter(sl => enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length < sl.capacity).length,
+      vacancies: SALONS.reduce((a, sl) => { const g = sl.targetCapacity || sl.capacity; const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length + (activeTrialByBranch.nt[sl.name] || 0); return a + Math.max(0, g - act); }, 0),
+      understaffed: SALONS.filter(sl => { const g = sl.targetCapacity || sl.capacity; const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length + (activeTrialByBranch.nt[sl.name] || 0); return act < g; }).length,
       returning60,
     };
-  }, [enriched, matRecs, onMatEcs, pregnantEcs, onUnpaidLegalEcs, staff]);
+  }, [enriched, matRecs, onMatEcs, pregnantEcs, onUnpaidLegalEcs, staff, activeTrialByBranch]);
 
   // Locations
   const salonData = useMemo(() => {
@@ -10333,9 +10348,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <span style={{ fontSize: 11, opacity: 0.8 }}>Sorted by most urgent</span>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(185px,1fr))" }}>
-                {salonData.filter(s => s.active.length < s.capacity).sort((a, b) => (b.capacity - b.active.length) - (a.capacity - a.active.length)).map((s, i) => {
-                  const need = s.goal - s.active.length;
-                  const pct = Math.round(s.active.length / s.goal * 100);
+                {salonData.filter(s => (s.active.length + s.trial.length) < s.goal).sort((a, b) => (b.goal - b.active.length - b.trial.length) - (a.goal - a.active.length - a.trial.length)).map((s, i) => {
+                  const filled = s.active.length + s.trial.length;
+                  const need = Math.max(0, s.goal - filled);
+                  const pct = s.goal > 0 ? Math.round(filled / s.goal * 100) : 100;
                   const [col, bg] = need >= 5 ? ["#7f1d1d", "#fee2e2"] : need >= 3 ? ["#9a3412", "#ffedd5"] : ["#78350f", "#fef9c3"];
                   return (
                     <div key={s.name} style={{ padding: "11px 15px", borderTop: `1px solid #e5e7eb`, borderRight: `1px solid #e5e7eb`, background: bg }}>
@@ -10343,7 +10359,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <div style={{ fontWeight: 700, fontSize: 12, color: "#111827" }}>📍 {s.name}</div>
                         <div style={{ fontWeight: 800, fontSize: 22, color: col, lineHeight: 1 }}>{need}</div>
                       </div>
-                      <div style={{ fontSize: 10, color: "#BE185D", marginTop: 2 }}>{s.active.length}/{s.capacity} filled · {pct}%</div>
+                      <div style={{ fontSize: 10, color: "#BE185D", marginTop: 2 }}>{filled}/{s.goal} filled · {pct}%</div>
                       <div style={{ height: 4, borderRadius: 99, background: "#e5e7eb", marginTop: 5, overflow: "hidden" }}>
                         <div style={{ height: "100%", width: `${pct}%`, background: pct < 60 ? "#dc2626" : pct < 80 ? "#f97316" : "#eab308", borderRadius: 99 }} />
                       </div>
@@ -10393,8 +10409,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const _scopedMat = enriched.filter(s => scopedBranchSet.has(s.branch) && s.onMat);
           const _scopedPreg = enriched.filter(s => scopedBranchSet.has(s.branch) && s.pregnant && !s.onMat);
           const _scopedReturning60 = matRecs.filter(r => r.matStatus === "on_mat" && r.returnDate && daysDiff(r.returnDate) !== null && daysDiff(r.returnDate) >= 0 && daysDiff(r.returnDate) <= 60 && scopedBranchSet.has(((enriched.find(e => e.ec && r.ec && e.ec.trim() === r.ec.trim()) || {}).branch || ""))).length;
-          const _scopedVacancies = scopedSalons.reduce((a, sl) => { const g = sl.targetCapacity || sl.capacity; const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length; return a + Math.max(0, g - act); }, 0);
-          const _scopedUnderstaffed = scopedSalons.filter(sl => enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length < sl.capacity).length;
+          const _scopedVacancies = scopedSalons.reduce((a, sl) => { const g = sl.targetCapacity || sl.capacity; const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length + (activeTrialByBranch.nt[sl.name] || 0); return a + Math.max(0, g - act); }, 0);
+          const _scopedUnderstaffed = scopedSalons.filter(sl => { const g = sl.targetCapacity || sl.capacity; const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length + (activeTrialByBranch.nt[sl.name] || 0); return act < g; }).length;
           const scopedStats = {
             active: _scopedActive.length,
             onMat: _scopedMat.length,
@@ -10410,7 +10426,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const understaffedBranches = scopedSalons
             .map(sl => {
               const goal = sl.targetCapacity || sl.capacity;
-              const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.offboarded).length;
+              const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.offboarded).length + (activeTrialByBranch.nt[sl.name] || 0);
               return { name: sl.name, gap: Math.max(0, goal - act), goal, act };
             })
             .filter(x => x.gap > 0)
@@ -11508,7 +11524,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const filteredOnMat = filteredSalonData.reduce((a, s) => a + s.onMat.length, 0);
           const filteredSeats = filteredSalonData.reduce((a, s) => a + s.capacity, 0);
           const filteredVacancies = filteredSalonData.reduce((a, s) =>
-            a + Math.max(0, (s.targetCapacity || s.capacity) - s.active.length), 0);
+            a + Math.max(0, (s.targetCapacity || s.capacity) - s.active.length - s.trial.length), 0);
           return (
             <div style={{ padding: "0 24px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
@@ -13452,7 +13468,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const mgrVacancies = SALONS.reduce((a, sl) => {
               const mgrs = enrichedManagers.filter(m => m.branch === sl.name && !m.onMat && !m.offboarded);
               const sms = mgrs.filter(m => (m.effectiveRole || m.role) === "SM").length;
-              const ams = mgrs.filter(m => (m.effectiveRole || m.role) === "AM").length;
+              // AM trial candidates (shown in the Locations manager box) are
+              // filling the AM gap, so count them toward the AM minimum.
+              const ams = mgrs.filter(m => (m.effectiveRole || m.role) === "AM").length + (activeTrialByBranch.am[sl.name] || 0);
               return a + Math.max(0, MIN_SM - sms) + Math.max(0, MIN_AM - ams);
             }, 0);
             const counts = { nailTech: stats.vacancies, mgrRecruit: mgrVacancies };
