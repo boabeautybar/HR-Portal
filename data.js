@@ -828,16 +828,18 @@
     });
     var wr = await sb.from("app_state").upsert({ key: key, value: arr });
     if (wr.error) { console.error("addManualKioskCheckin write:", wr.error); throw wr.error; }
-    // Also stamp the attendance grid (boa_att_<branch>_<cycleYm>) so it shows
-    // on the Attendance sheet straight away — mirroring what the kiosk does
-    // when a manager tags a status. Schedule cycles run the 25th → 24th, so a
-    // day after the 24th belongs to the NEXT calendar month's cycle. The grid
+    // Also stamp the attendance grid so it shows on the Attendance sheet
+    // straight away — mirroring what the kiosk does when a manager tags a
+    // status. The attendance grid is keyed by the cycle's START month
+    // (boa_att_<branch>_<startYm>): a cycle runs the 25th of month M → 24th of
+    // M+1 and is stored under month M, so a date on/after the 25th uses its own
+    // month, while the 1st–24th belong to the PREVIOUS month's cycle. The grid
     // is keyed by ec → day-of-month. Best-effort: a failure here never blocks
     // the check-in (it still shows in the feed and is importable).
     try {
       var p = String(ymd).split("-").map(Number);
       var ay = p[0], am = p[1];
-      if (p[2] > 24) { am = p[1] + 1; if (am > 12) { am = 1; ay = p[0] + 1; } }
+      if (p[2] < 25) { am = p[1] - 1; if (am < 1) { am = 12; ay = p[0] - 1; } }
       var attYm = ay + "-" + String(am).padStart(2, "0");
       var att = await loadAttendance(branch, attYm);
       var grid = (att && att.grid && typeof att.grid === "object") ? JSON.parse(JSON.stringify(att.grid)) : {};
