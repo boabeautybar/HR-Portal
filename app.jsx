@@ -17485,8 +17485,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         rows.forEach(r => { if (r && r.branch) byBranch[r.branch] = r; });
         // Sort: still-closed first (so the ops manager sees who needs chasing),
         // then opened (sorted by openedAt). Stable on branch name.
+        // Stores with an openingDate after the viewed date aren't trading yet
+        // (e.g. a branch that opens next month), so they're excluded — they must
+        // not show as "not opened" or inflate the X-of-N denominator.
+        const _viewedMid = new Date(storeOpenYmd + "T00:00:00");
         const sorted = SALONS.slice()
           .filter(sl => !_hasStoreScope || scopedSalonNames.has(sl.name))
+          .filter(sl => {
+            if (!sl.openingDate) return true;
+            const od = new Date(sl.openingDate + "T00:00:00");
+            return !(od > _viewedMid);
+          })
           .map(sl => {
             const rec = byBranch[sl.name];
             return { branch: sl.name, opened: !!rec, openedAt: rec ? rec.openedAt : null, openedBy: rec ? rec.openedBy : null };
