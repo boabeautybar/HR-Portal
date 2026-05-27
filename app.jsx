@@ -9608,8 +9608,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
     // Trial candidates assigned to this branch and not yet passed/failed/hired.
     // "hired" entries have already moved to Onboarding — they shouldn't linger
-    // on the branch's trial strip.
-    const trial = trialList.filter(c => c.branch === salon.name && c.status !== "passed" && c.status !== "failed" && c.status !== "hired");
+    // on the branch's trial strip. Split by role: nail-tech trials sit with the
+    // techs; AM trials belong in the management-team box.
+    const trialAll = trialList.filter(c => c.branch === salon.name && c.status !== "passed" && c.status !== "failed" && c.status !== "hired");
+    const trial = trialAll.filter(c => (c.role || "nt") !== "am");
+    const trialMgrs = trialAll.filter(c => (c.role || "nt") === "am");
 
     // Use targetCapacity for low-demand stores (e.g. Betty), full capacity otherwise
     const goal = salon.targetCapacity || salon.capacity;
@@ -9625,7 +9628,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const urgency = preOpen
       ? "preopen"
       : (active.length === 0 ? "critical" : fillRate < 0.5 ? "high" : fillRate < 1 ? "low" : "full");
-    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, arrivingMgrs, trial, urgency, goal, preOpen, daysToOpen };
+    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, arrivingMgrs, trial, trialMgrs, urgency, goal, preOpen, daysToOpen };
     });
   }, [enriched, enrichedManagers, managers, trialList, _customSalonsTick]);
 
@@ -11760,7 +11763,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         const ssm = mgrs.filter(m => (m.effectiveRole || m.role) === "SSM");
                         const sm = mgrs.filter(m => (m.effectiveRole || m.role) === "SM");
                         const am = mgrs.filter(m => (m.effectiveRole || m.role) === "AM");
-                        if (allMgrs.length === 0 && (!salon.arrivingMgrs || salon.arrivingMgrs.length === 0)) return null;
+                        if (allMgrs.length === 0 && (!salon.arrivingMgrs || salon.arrivingMgrs.length === 0) && (!salon.trialMgrs || salon.trialMgrs.length === 0)) return null;
                         return (
                           <div style={{ background: "#FCE7F3", border: "1px solid #FBCFE8", borderRadius: 10, padding: "9px 12px", marginBottom: 10 }}>
                             <div style={{ fontSize: 9, fontWeight: 800, color: "#BE185D", letterSpacing: "0.1em", marginBottom: 7 }}>MANAGEMENT TEAM</div>
@@ -11803,6 +11806,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                     <span title="On 3-month SM trial — see People → SM Trials"
                                       style={{ fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 700, letterSpacing: "0.04em" }}>⭐ ON TRIAL</span>
                                   )}
+                                </div>
+                              ))}
+                              {/* AM trial candidates — added in the Trial Period tab
+                              (Assistant Manager pipeline). They sit in the management
+                              box (not the nail-tech list) since they're trialling for
+                              a manager role. Amber dashed treatment marks them as
+                              pre-contract, with their current trial stage. */}
+                              {(salon.trialMgrs || []).map(t => (
+                                <div key={t._id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 7px", borderRadius: 7, background: "#FFFBEB", border: "1.5px dashed #FCD34D" }}>
+                                  <span style={{ fontSize: 13 }}>⏳</span>
+                                  <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: "#78350f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name}</span>
+                                  <span style={{ fontSize: 9, background: "#FCD34D", color: "#78350f", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{t.status}</span>
+                                  <span style={{ fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 700, letterSpacing: "0.04em" }}>AM · TRIAL</span>
                                 </div>
                               ))}
                               {/* Arriving (pending incoming transfer) — managers
@@ -14040,27 +14056,57 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           persistTrial(trialList.filter(r => r._id !== id));
         };
 
+        const editTrial = (r) => {
+          setTForm({
+            name: r.name || "", phone: r.phone || "", email: r.email || "",
+            homeAddress: r.homeAddress || "", trainerName: r.trainerName || "",
+            inductionPassDate: r.inductionPassDate || "", branch: r.branch || SALONS[0].name,
+            startDate: r.startDate || "", notes: r.notes || "", role: r.role || "nt",
+            _open: true, _editId: r._id
+          });
+          if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
+        };
+
         const submitTrial = () => {
           if (!tForm.name.trim()) { alert("Name is required."); return; }
           if (!tForm.branch) { alert("Branch is required."); return; }
-          const role = trialSubTab;
-          const rec = {
-            _id: Date.now(),
-            name: tForm.name.trim(),
-            phone: tForm.phone, email: tForm.email,
-            homeAddress: tForm.homeAddress,
-            trainerName: tForm.trainerName,
-            inductionPassDate: tForm.inductionPassDate,
-            branch: tForm.branch,
-            startDate: tForm.startDate,
-            notes: tForm.notes,
-            role: role,
-            status: role === "am" ? "trial_w1" : "induction",
-            addedAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          };
-          persistTrial([...trialList, rec]);
-          setTForm({ name: "", phone: "", email: "", homeAddress: "", trainerName: "", inductionPassDate: "", branch: SALONS[0].name, startDate: "", notes: "", role: "nt", _open: false });
+          if (tForm._editId) {
+            // Editing an existing candidate — update details / location only,
+            // leaving the trial stage, attendance and timestamps intact.
+            persistTrial(trialList.map(r => r._id === tForm._editId
+              ? {
+                ...r,
+                name: tForm.name.trim(),
+                phone: tForm.phone, email: tForm.email,
+                homeAddress: tForm.homeAddress,
+                trainerName: tForm.trainerName,
+                inductionPassDate: tForm.inductionPassDate,
+                branch: tForm.branch,
+                startDate: tForm.startDate,
+                notes: tForm.notes,
+                updatedAt: new Date().toISOString()
+              }
+              : r));
+          } else {
+            const role = trialSubTab;
+            const rec = {
+              _id: Date.now(),
+              name: tForm.name.trim(),
+              phone: tForm.phone, email: tForm.email,
+              homeAddress: tForm.homeAddress,
+              trainerName: tForm.trainerName,
+              inductionPassDate: tForm.inductionPassDate,
+              branch: tForm.branch,
+              startDate: tForm.startDate,
+              notes: tForm.notes,
+              role: role,
+              status: role === "am" ? "trial_w1" : "induction",
+              addedAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            };
+            persistTrial([...trialList, rec]);
+          }
+          setTForm({ name: "", phone: "", email: "", homeAddress: "", trainerName: "", inductionPassDate: "", branch: SALONS[0].name, startDate: "", notes: "", role: "nt", _open: false, _editId: null });
         };
 
         const currentList = trialList.filter(r => (r.role || "nt") === trialSubTab);
@@ -14104,7 +14150,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
 
               <button
-                onClick={() => setTForm(f => ({ ...f, _open: !f._open }))}
+                onClick={() => setTForm(f => f._open
+                  ? { ...f, _open: false, _editId: null }
+                  : { name: "", phone: "", email: "", homeAddress: "", trainerName: "", inductionPassDate: "", branch: SALONS[0]?.name || "", startDate: "", notes: "", role: trialSubTab, _open: true, _editId: null })}
                 style={{ padding: "10px 20px", borderRadius: 10, border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700, boxShadow: "0 4px 12px rgba(124,58,237,0.2)" }}
               >
                 ➕ Add Trainee
@@ -14130,7 +14178,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             {/* Add Trainee Form */}
             {tForm._open && (
               <div style={{ background: "#fff", borderRadius: 16, border: "2px solid #7c3aed", padding: "20px 22px", marginBottom: 24, boxShadow: "0 4px 20px rgba(124,58,237,0.08)" }}>
-                <div style={{ fontSize: 14, fontWeight: 800, color: "#7c3aed", marginBottom: 16 }}>➕ New Trial Candidate</div>
+                <div style={{ fontSize: 14, fontWeight: 800, color: "#7c3aed", marginBottom: 16 }}>{tForm._editId ? "✏️ Edit Trial Candidate" : "➕ New Trial Candidate"}</div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12, marginBottom: 12 }}>
                   <div><label style={lbl}>Full Name *</label><input style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.name || ""} onChange={e => setTForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Thandi Mokoena" /></div>
                   <div><label style={lbl}>Phone</label><input style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.phone || ""} onChange={e => setTForm(f => ({ ...f, phone: e.target.value }))} placeholder="+27 ..." /></div>
@@ -14157,8 +14205,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <textarea rows={2} style={{ ...inp, width: "100%", boxSizing: "border-box", resize: "vertical" }} value={tForm.notes || ""} onChange={e => setTForm(f => ({ ...f, notes: e.target.value }))} />
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={submitTrial} style={{ padding: "9px 22px", borderRadius: 9, border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>🧪 Add to {trialSubTab === "am" ? "AM Trial" : "Trial Pipeline"}</button>
-                  <button onClick={() => setTForm(f => ({ ...f, _open: false }))} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>Cancel</button>
+                  <button onClick={submitTrial} style={{ padding: "9px 22px", borderRadius: 9, border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>{tForm._editId ? "💾 Save Changes" : "🧪 Add to " + (trialSubTab === "am" ? "AM Trial" : "Trial Pipeline")}</button>
+                  <button onClick={() => setTForm(f => ({ ...f, _open: false, _editId: null }))} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>Cancel</button>
                 </div>
               </div>
             )}
@@ -14185,7 +14233,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             <div key={r._id} style={{ background: "#fff", borderRadius: 12, border: `1.5px solid ${isStale ? "#fca5a5" : stage.bg}`, padding: "12px 14px", boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                                 <div style={{ fontWeight: 700, color: "#111827", fontSize: 13, marginBottom: 2 }}>{r.name}</div>
-                                <button onClick={() => deleteTrial(r._id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#d1d5db", fontSize: 14, lineHeight: 1, padding: 0 }} title="Delete">✕</button>
+                                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                  <button onClick={() => editTrial(r)} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 13, lineHeight: 1, padding: 0 }} title="Edit details & location">✏️</button>
+                                  <button onClick={() => deleteTrial(r._id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#d1d5db", fontSize: 14, lineHeight: 1, padding: 0 }} title="Delete">✕</button>
+                                </div>
                               </div>
                               <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 8 }}>📍 {r.branch}</div>
                               {r.startDate && <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 4 }}>Started: {fmtDate(r.startDate)}</div>}
@@ -14303,7 +14354,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     )}
                     {passedTrials.map(r => (
                       <div key={r._id} style={{ background: "#fff", borderRadius: 12, border: "1.5px solid #bbf7d0", padding: "12px 14px", boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
-                        <div style={{ fontWeight: 700, color: "#111827", fontSize: 13, marginBottom: 2 }}>{r.name}</div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                          <div style={{ fontWeight: 700, color: "#111827", fontSize: 13, marginBottom: 2 }}>{r.name}</div>
+                          <button onClick={() => editTrial(r)} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 13, lineHeight: 1, padding: 0 }} title="Edit details & location">✏️</button>
+                        </div>
                         <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 10 }}>📍 {r.branch}</div>
                         <button
                           onClick={() => promoteToOnboarding(r)}
