@@ -21887,12 +21887,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // All drag/drop and popover edits stage changes into mgrCoverageDraft
         // / mgrCoverageDraftLoans. Nothing is persisted until the ROM clicks
         // "Apply to live" on the banner at the top of this tab.
-        const _setDraftCell = (branchName, mgrYm, ec, dom, value) => {
+        //
+        // Cells are written under BOTH dom and ymd keys because saved grids
+        // historically use either format and readCell prefers ymd — writing
+        // only dom would let an older ymd-keyed saved cell mask the draft.
+        const _setDraftCell = (branchName, mgrYm, ec, dom, ymd, value) => {
           setMgrCoverageDraft(prev => {
             const k = _draftKey(branchName, mgrYm);
             const branch = { ...(prev[k] || {}) };
             const row = { ...(branch[ec] || {}) };
-            row[dom] = value || "";
+            const v = value || "";
+            row[dom] = v;
+            if (ymd) row[ymd] = v;
             branch[ec] = row;
             return { ...prev, [k]: branch };
           });
@@ -21900,17 +21906,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Same-row drag swap — move a shift from src day to tgt day inside
         // one manager's row. Reads the effective view so chained drags
         // compose correctly.
-        const _draftSwapSameRow = (branchName, mgrYm, ec, srcDom, tgtDom) => {
+        const _draftSwapSameRow = (branchName, mgrYm, ec, srcDom, srcYmd, tgtDom, tgtYmd) => {
           const grid = _gridForView(branchName, mgrYm);
           const row = grid[ec] || {};
-          const srcVal = row[srcDom] ?? row[String(srcDom)] ?? "";
-          const tgtVal = row[tgtDom] ?? row[String(tgtDom)] ?? "";
+          const srcVal = row[srcYmd] ?? row[srcDom] ?? row[String(srcDom)] ?? "";
+          const tgtVal = row[tgtYmd] ?? row[tgtDom] ?? row[String(tgtDom)] ?? "";
           setMgrCoverageDraft(prev => {
             const k = _draftKey(branchName, mgrYm);
             const branch = { ...(prev[k] || {}) };
             const dRow = { ...(branch[ec] || {}) };
-            dRow[srcDom] = tgtVal || "";
-            dRow[tgtDom] = srcVal || "";
+            dRow[srcDom] = tgtVal || ""; dRow[srcYmd] = tgtVal || "";
+            dRow[tgtDom] = srcVal || ""; dRow[tgtYmd] = srcVal || "";
             branch[ec] = dRow;
             return { ...prev, [k]: branch };
           });
@@ -21927,14 +21933,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const sk = _draftKey(srcBranch, mgrYm);
             const srcBranchD = { ...(next[sk] || {}) };
             const srcRow = { ...(srcBranchD[ec] || {}) };
-            srcRow[srcDom] = "loan_out";
+            srcRow[srcDom] = "loan_out"; srcRow[srcYmd] = "loan_out";
             srcBranchD[ec] = srcRow;
             next[sk] = srcBranchD;
             // Destination: insert ec row with the shift code on dst day.
             const dk = _draftKey(dstBranch, mgrYm);
             const dstBranchD = { ...(next[dk] || {}) };
             const dstRow = { ...(dstBranchD[ec] || {}) };
-            dstRow[dstDom] = (srcCode && srcCode !== "loan_out") ? srcCode : "W";
+            const code = (srcCode && srcCode !== "loan_out") ? srcCode : "W";
+            dstRow[dstDom] = code; dstRow[dstYmd] = code;
             dstBranchD[ec] = dstRow;
             next[dk] = dstBranchD;
             return next;
@@ -22023,7 +22030,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   // Same branch: only meaningful as a same-row swap.
                   if (data.ec !== ec) return;
                   if (data.dom === dom) return;
-                  _draftSwapSameRow(branchName, mgrYm, ec, data.dom, dom);
+                  _draftSwapSameRow(branchName, mgrYm, ec, data.dom, data.ymd, dom, ymd);
                 } else {
                   // Cross-branch: drop on ANY cell in the destination
                   // branch's table — even on a different manager's row.
@@ -22728,14 +22735,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const hk = _dk(homeBranch, ym);
             const hb = { ...(next[hk] || {}) };
             const hr = { ...(hb[ec] || {}) };
-            hr[dom] = dest && dest !== homeBranch ? "loan_out" : (draftCode || "");
+            const homeVal = dest && dest !== homeBranch ? "loan_out" : (draftCode || "");
+            hr[dom] = homeVal; if (ymd) hr[ymd] = homeVal;
             hb[ec] = hr;
             next[hk] = hb;
             if (dest && dest !== homeBranch) {
               const ddk = _dk(dest, ym);
               const db = { ...(next[ddk] || {}) };
               const dr = { ...(db[ec] || {}) };
-              dr[dom] = draftCode && draftCode !== "loan_out" ? draftCode : "W";
+              const destVal = draftCode && draftCode !== "loan_out" ? draftCode : "W";
+              dr[dom] = destVal; if (ymd) dr[ymd] = destVal;
               db[ec] = dr;
               next[ddk] = db;
             }
