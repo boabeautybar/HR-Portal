@@ -9428,7 +9428,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // render "↪ <destination>" on a home-branch loan_out cell and to drive
   // the kiosk's expected-manager list.
   useEffect(() => {
-    if (tab !== "mgrCoverage" && tab !== "mgrclockins" && tab !== "attendance") return;
+    if (tab !== "mgrCoverage" && tab !== "mgrclockins" && tab !== "attendance" && tab !== "scheduling") return;
     if (!window.BOA_DB || !window.BOA_DB.loadMgrLoans) return;
     let cancelled = false;
     window.BOA_DB.loadMgrLoans().then(rows => {
@@ -20191,22 +20191,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         const xferOther = xferEdge === "in" ? (mg.transferFrom || "")
                           : xferEdge === "out" ? (mg.transferTo || "")
                             : null;
+                        // Cross-store loan: cell value "loan_out" means the
+                        // manager is loaned to another branch on this day.
+                        // Resolve the destination from mgrLoanRows and render
+                        // the same "→{dest}" chip we use for the tech schedule.
+                        const isLoanOut = v === "loan_out";
+                        const _loanRec = isLoanOut ? (mgrLoanRows || []).find(l => l && String(l.ec).trim() === String(mg.ec).trim() && l.date === dy.d) : null;
+                        const loanToBranch = _loanRec ? _loanRec.toBranch : (isLoanOut ? "Other store" : null);
                         const bg = xferEdge === "out" ? "#fef3c7"
                           : xferEdge === "in" ? "#dbeafe"
+                            : isLoanOut ? "#dbeafe"
                             : (cellBg[v] || "#fff");
                         const fg = xferEdge === "out" ? "#92400e"
                           : xferEdge === "in" ? "#1e40af"
+                            : isLoanOut ? "#1e40af"
                             : (cellColor[v] || "#9ca3af");
-                        const txt = xferEdge ? null : (cellTxt[v] || "");
+                        const txt = xferEdge || isLoanOut ? null : (cellTxt[v] || "");
                         const isMon = dy.dow === 1;
                         // WE / WM / WL (Sandown early / middle / late) are
                         // working cells just like W, so they're draggable
                         // for the same-week swap. R stays included from PR #105.
-                        // Transfer-locked cells aren't draggable.
+                        // Transfer-locked + loan_out cells aren't draggable —
+                        // loan_out is managed from the Manager Coverage tab.
                         // Guest rows (cross-store loans) are read-only here —
                         // they should be edited from Manager Coverage instead
                         // so the loan record + both branches stay in sync.
-                        const draggable = !xferEdge && !mg._guestFromBranch && (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "O" || v === "E" || v === "R");
+                        const draggable = !xferEdge && !isLoanOut && !mg._guestFromBranch && (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "O" || v === "E" || v === "R");
                         return (
                           <td key={dy.d}
                             draggable={draggable}
@@ -20219,14 +20229,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 if (data.ec === mg.ec && data.d !== dy.d) dragSwap(mg.ec, data.d, dy.d);
                               } catch (_) { }
                             }}
-                            onDoubleClick={xferEdge || mg._guestFromBranch ? undefined : () => toggleReq(mg.ec, dy.d)}
+                            onDoubleClick={xferEdge || isLoanOut || mg._guestFromBranch ? undefined : () => toggleReq(mg.ec, dy.d)}
                             title={xferEdge === "out" ? `${mg.name} · ${dy.d} · transferring to ${xferOther} on ${_xferDate} — fill remaining days on the destination schedule`
                               : xferEdge === "in" ? `${mg.name} · ${dy.d} · arriving from ${xferOther} on ${_xferDate} — pre-transfer days are still on the source schedule`
+                                : isLoanOut ? `${mg.name} · ${dy.d} · loaned to ${loanToBranch} this day — manage from Manager Coverage tab`
                                 : mg._guestFromBranch ? `${mg.name} · ${dy.d} · on loan from ${mg._guestFromBranch} — edit on Manager Coverage tab`
                                 : dy.d + ": " + (txt || "—") + (draggable ? " · drag to swap, double-click OFF→REQ→EXT" : "")}
                             style={{ padding: "4px 0", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: isMon ? "3px solid #E84B9B" : "1px solid #FCE7F3", background: bg, color: fg, fontSize: 10, fontWeight: 700, cursor: draggable ? "grab" : "default", userSelect: "none" }}>
                             {xferEdge === "out" ? <span style={{ fontSize: 9, fontWeight: 800 }}>→{xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0, 4)}</span>
                               : xferEdge === "in" ? <span style={{ fontSize: 9, fontWeight: 800 }}>←{xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0, 4)}</span>
+                                : isLoanOut ? <span style={{ fontSize: 9, fontWeight: 800 }}>→{loanToBranch === "Green Point" ? "GP" : (loanToBranch || "").slice(0, 4)}</span>
                                 : txt}
                           </td>
                         );
@@ -22010,6 +22022,39 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // manager) OR on a different branch's row (cross-store loan).
         const _isSrcDraggable = (cellVal) =>
           cellVal === "W" || cellVal === "WE" || cellVal === "WL" || cellVal === "WM" || cellVal === "WB" || cellVal === "E" || cellVal === "O" || cellVal === "R";
+        // Cancel an existing cross-store loan. Clears the destination guest
+        // cell, restores the source manager's home cell (or sets it to the
+        // returned shift code), and stages the loan record for removal.
+        // Used when the user drags a guest cell back to the manager's home
+        // branch.
+        const _draftReturnLoan = (loanBranch, mgrYm, ec, loanDom, loanYmd, returnCode, homeBranch, homeDom, homeYmd) => {
+          setMgrCoverageDraft(prev => {
+            const next = { ...prev };
+            // Clear the borrow store's cell.
+            const lk = _draftKey(loanBranch, mgrYm);
+            const lBranch = { ...(next[lk] || {}) };
+            const lRow = { ...(lBranch[ec] || {}) };
+            lRow[loanDom] = ""; lRow[loanYmd] = "";
+            lBranch[ec] = lRow;
+            next[lk] = lBranch;
+            // Restore home cell with the returned code (defaults to W).
+            const hk = _draftKey(homeBranch, mgrYm);
+            const hBranch = { ...(next[hk] || {}) };
+            const hRow = { ...(hBranch[ec] || {}) };
+            const code = (returnCode && returnCode !== "loan_out") ? returnCode : "W";
+            hRow[homeDom] = code; hRow[homeYmd] = code;
+            hBranch[ec] = hRow;
+            next[hk] = hBranch;
+            return next;
+          });
+          // Stage loan record removal (or drop a pending upsert) so Apply
+          // doesn't re-create the loan.
+          setMgrCoverageDraftLoans(prev => {
+            const filtered = prev.filter(l => !(String(l.ec).trim() === ec && l.date === loanYmd));
+            const hadLive = (mgrLoanRows || []).some(l => l && String(l.ec).trim() === ec && l.date === loanYmd);
+            return hadLive ? [...filtered, { _op: "remove", ec, date: loanYmd }] : filtered;
+          });
+        };
         const _dragHandlers = (cellVal, branchName, mgrYm, ec, dom, ymd, mgrName) => {
           if (!ec) return {};
           const isSrc = _isSrcDraggable(cellVal);
@@ -22032,12 +22077,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   if (data.dom === dom) return;
                   _draftSwapSameRow(branchName, mgrYm, ec, data.dom, data.ymd, dom, ymd);
                 } else {
-                  // Cross-branch: drop on ANY cell in the destination
-                  // branch's table — even on a different manager's row.
-                  // The loaned manager's row gets added to the destination
-                  // (via _gridForView in the inclusion loop) so the
-                  // receiving store shows them on the dropped day.
-                  _draftCrossStoreLoan(data.branch, mgrYm, data.ec, data.dom, data.ymd, data.code, data.name, branchName, dom, ymd);
+                  // Cross-branch drop. Two sub-cases:
+                  //   a) Source is the manager's home branch → create a
+                  //      new loan to this destination.
+                  //   b) Source is a guest position (manager loaned to
+                  //      that branch) and target is the manager's actual
+                  //      home → undo the loan, clearing the borrow cell
+                  //      and restoring the home shift.
+                  const _person = ecToPerson[String(data.ec).trim()];
+                  const _personHome = _person && _person.branch;
+                  if (_personHome && data.branch !== _personHome && branchName === _personHome) {
+                    _draftReturnLoan(data.branch, mgrYm, data.ec, data.dom, data.ymd, data.code, branchName, dom, ymd);
+                  } else {
+                    _draftCrossStoreLoan(data.branch, mgrYm, data.ec, data.dom, data.ymd, data.code, data.name, branchName, dom, ymd);
+                  }
                 }
               } catch (_) { }
             }
@@ -22745,8 +22798,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const draftCode = E._draftCode != null ? E._draftCode : E.currentCell;
           const dest = E._draftDest || "";
           const _dk = (b, y) => b + "|" + y;
+          // Look up the existing loan destination (live or pending draft)
+          // so we can clear the OLD destination cell when the user reverts
+          // a loan or re-routes it to a different store. Otherwise the old
+          // destination keeps a stale guest row.
+          const _oldLoan = (mgrLoanRows || []).find(l => l && String(l.ec).trim() === ec && l.date === ymd);
+          const _pendingLoan = (mgrCoverageDraftLoans || []).find(l => l && String(l.ec).trim() === ec && l.date === ymd && l._op !== "remove");
+          const oldDest = (_pendingLoan && _pendingLoan.toBranch) || (_oldLoan && _oldLoan.toBranch) || null;
           setMgrCoverageDraft(prev => {
             const next = { ...prev };
+            // Clear the OLD destination's cell first if we're reverting or
+            // re-routing — same edit, different draft branch.
+            if (oldDest && oldDest !== dest) {
+              const oldDk = _dk(oldDest, ym);
+              const odBranch = { ...(next[oldDk] || {}) };
+              const odRow = { ...(odBranch[ec] || {}) };
+              odRow[dom] = ""; if (ymd) odRow[ymd] = "";
+              odBranch[ec] = odRow;
+              next[oldDk] = odBranch;
+            }
+            // Home cell — loan_out marker or the explicit code (or clear).
             const hk = _dk(homeBranch, ym);
             const hb = { ...(next[hk] || {}) };
             const hr = { ...(hb[ec] || {}) };
@@ -22754,6 +22825,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             hr[dom] = homeVal; if (ymd) hr[ymd] = homeVal;
             hb[ec] = hr;
             next[hk] = hb;
+            // New destination cell.
             if (dest && dest !== homeBranch) {
               const ddk = _dk(dest, ym);
               const db = { ...(next[ddk] || {}) };
