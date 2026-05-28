@@ -21644,7 +21644,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             isToday: ymdToStr(d) === todayYmd,
             isWeekend: i >= 5,
             // Start-month ym for this date — used to look up schedule cache.
-            mgrYm: (() => { let y = d.getFullYear(), m = d.getMonth() + 1; if (d.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + _p2(m); })()
+            mgrYm: (() => { let y = d.getFullYear(), m = d.getMonth() + 1; if (d.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + _p2(m); })(),
+            dow: d.getDay()      // 0=Sun, 1=Mon, …, 6=Sat — used by shiftTimes for per-branch + per-DOW hour tables
           });
         }
         const lastDay = weekDays[6];
@@ -21706,15 +21707,86 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Cell code → suffix the role-default shift times. Lets us show
         // "9:00a - 6:30p" inside a manager's working block the way
         // Connecteam does, without needing per-shift data on each cell.
-        const shiftTimes = (role, code) => {
+        // Resolve the visible shift hours for a cell. Times vary by
+        // branch, role and day-of-week — they come straight from the
+        // banners shown on the Manager Schedule editor (app.jsx:20086-
+        // 20134) so the coverage view stays in sync with what schedulers
+        // see there. Branches not listed below fall back to the generic
+        // SM 8-5 / AM 9:30-6:30 defaults.
+        //   dow: 0=Sun, 1=Mon, …, 6=Sat (matches Date#getDay)
+        const shiftTimes = (role, code, branch, dow) => {
           const r = (role || "").toUpperCase();
-          if (r === "SM" || r === "SSM") {
+          const isSM = r === "SM" || r === "SSM";
+          const _b = branch || "";
+
+          // Sandown / Table Bay share the same shift table.
+          if (_b === "Sandown" || _b === "Table Bay") {
+            if (isSM) return "8:00a - 5:00p";              // SM every working day
+            if (dow === 0) {                                // Sunday — single late-morning split
+              if (code === "WE") return "8:00a - 5:00p";
+              if (code === "WL") return "9:00a - 6:00p";
+              return "9:00a - 6:00p";
+            }
+            if (dow === 6) {                                // Saturday
+              if (_b === "Sandown") {
+                if (code === "WE") return "8:00a - 5:00p";
+                if (code === "WL") return "10:00a - 7:00p";
+                return "10:00a - 7:00p";
+              }
+              // Table Bay treats Sat like a weekday (Mon-Sat band).
+            }
+            // Mon-Fri (and Mon-Sat for Table Bay)
+            if (code === "WE") return "8:00a - 5:00p";
+            if (code === "WM") return "9:00a - 6:00p";
+            if (code === "WL") return "11:00a - 8:00p";
+            return "11:00a - 8:00p";
+          }
+
+          // Riverlands — Mon-Fri split, Sat/Sun single shift.
+          if (_b === "Riverlands") {
+            if (dow === 6) return "9:00a - 6:00p";          // Sat single WE
+            if (dow === 0) return "8:00a - 5:00p";          // Sun single WE
+            if (isSM) return "8:00a - 5:00p";
+            if (code === "WE") return "9:00a - 6:00p";      // AM opener
+            if (code === "WB") return "8:00a - 5:00p";      // 4+ bonus opener
+            if (code === "WL") return "10:00a - 7:00p";
+            return "10:00a - 7:00p";
+          }
+
+          // Ballito / Mall of the South — SM-only WE opener, AM closers.
+          if (_b === "Ballito" || _b === "Mall of the South") {
+            if (isSM) return "8:00a - 5:00p";
+            if (dow === 0) return "8:00a - 5:00p";          // Sunday single WE
+            if (code === "WE") return "8:00a - 5:00p";      // rare AM fallback
+            if (code === "WM") return "9:00a - 6:00p";
+            if (code === "WL") return "10:00a - 7:00p";
+            return "10:00a - 7:00p";
+          }
+
+          // Fourways — store hours differ; SM rotates opener/closer.
+          if (_b === "Fourways") {
+            if (isSM) {
+              if (code === "WL") return "11:00a - 8:00p";
+              return "8:00a - 5:00p";                       // WE / default
+            }
+            if (dow === 0) {                                // Sunday (store 09-19)
+              if (code === "WE") return "8:00a - 5:00p";
+              if (code === "WL") return "10:00a - 7:00p";
+              return "10:00a - 7:00p";
+            }
+            // Mon-Sat (store 09-20)
+            if (code === "WM") return "10:00a - 7:00p";
+            if (code === "WL") return "11:00a - 8:00p";
+            return "11:00a - 8:00p";
+          }
+
+          // Generic stores — fall back to the original defaults.
+          if (isSM) {
             if (code === "WL") return "8:30a - 5:30p";
             if (code === "WE") return "7:30a - 4:30p";
             if (code === "WM") return "8:00a - 1:00p";
             return "8:00a - 5:00p";
           }
-          // AM and others default
           if (code === "WL") return "10:00a - 7:00p";
           if (code === "WE") return "8:30a - 6:00p";
           if (code === "WM") return "9:00a - 1:00p";
@@ -22169,7 +22241,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }
           };
         };
-        const renderCell = (cellVal, key, branchName, role, ymd, ec, isGuest, mgrYm, mgrName, dom) => {
+        const renderCell = (cellVal, key, branchName, role, ymd, ec, isGuest, mgrYm, mgrName, dom, dow) => {
           const clockedIn = ec && ymd && _clockedInByEcYmd[String(ec).trim()] && _clockedInByEcYmd[String(ec).trim()][ymd];
           const isPast = ymd && ymd < (function () { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
           const _dragDraggable = _isSrcDraggable(cellVal);
@@ -22217,7 +22289,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Working cell → solid branch-coloured block with times + role.
           if (isWorking(cellVal)) {
             const pal = branchColour(branchName);
-            const time = shiftTimes(role, cellVal);
+            const time = shiftTimes(role, cellVal, branchName, dow);
             const subtle = cellVal !== "W" ? { borderLeft: "4px solid rgba(255,255,255,0.5)" } : {};
             const dotColor = clockedIn ? "#22c55e" : (isPast ? "#ef4444" : null);
             const dotTitle = clockedIn ? "✓ Clocked in" : (isPast ? "✗ Absent — did not clock in" : null);
@@ -22415,7 +22487,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       </td>
                                       {weekDays.map(d => {
                                         const v = readWithFallback(b, m.ec, d);
-                                        return renderCell(v, m.ec + "-" + d.ymd, b, m.role, d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom);
+                                        return renderCell(v, m.ec + "-" + d.ymd, b, m.role, d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow);
                                       })}
                                     </tr>
                                   );
@@ -22462,7 +22534,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           </td>
                           {weekDays.map(d => {
                             const v = readWithFallback(b, m.ec, d);
-                            return renderCell(v, m.ec + "-" + d.ymd, b, m.role, d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom);
+                            return renderCell(v, m.ec + "-" + d.ymd, b, m.role, d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow);
                           })}
                         </tr>
                       ));
