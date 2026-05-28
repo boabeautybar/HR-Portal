@@ -21985,11 +21985,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const nm = String(mg.name || "").trim().toLowerCase();
           return !!(nm && _matNames.has(nm));
         };
+        // Order within a store: SSM → SM (or AM-on-SM-trial) → AM → other,
+        // then by name. Maternity-leave managers always pinned at the
+        // bottom regardless of role.
+        const _roleRank = (r) => r === "SSM" ? 0 : r === "SM" ? 1 : r === "AM" ? 2 : 3;
         Object.keys(mgrByBranch).forEach(b => mgrByBranch[b].sort((a, b) => {
           const am = _isOnMat(a) ? 1 : 0;
           const bm = _isOnMat(b) ? 1 : 0;
           if (am !== bm) return am - bm;
-          return (a.role === "SM" ? 0 : a.role === "AM" ? 1 : 2) - (b.role === "SM" ? 0 : b.role === "AM" ? 1 : 2)
+          return _roleRank(_effectiveRole(a)) - _roleRank(_effectiveRole(b))
             || (a.name || "").localeCompare(b.name || "");
         }));
 
@@ -22487,7 +22491,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   return (
                                     <tr key={m.ec}>
                                       <td style={{ padding: "6px 14px", fontWeight: 700, color: "#831843", fontSize: 12, borderBottom: "1px solid #FCE7F3" }}>
-                                        {_effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}
+                                        {_effectiveRole(m) === "SSM" ? "💎 " : _effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}
                                         <span style={{ marginLeft: 6, fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{_effectiveRole(m) || ""}{m.role === "AM" && _effectiveRole(m) === "SM" ? " (trial)" : ""}</span>
                                       </td>
                                       {weekDays.map(d => {
@@ -22531,10 +22535,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       return rows.map(({ m, b, r }) => (
                         <tr key={m.ec + "-" + b}>
                           <td style={{ padding: "6px 14px", borderBottom: "1px solid #FCE7F3" }}>
-                            <div style={{ fontWeight: 700, color: "#831843", fontSize: 12.5 }}>{m.role === "SM" ? "👑 " : m.role === "AM" ? "⭐ " : ""}{m.name}</div>
+                            <div style={{ fontWeight: 700, color: "#831843", fontSize: 12.5 }}>{_effectiveRole(m) === "SSM" ? "💎 " : _effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}</div>
                             <div style={{ fontSize: 10, color: "#9ca3af" }}>
                               📍 {b} <span style={{ background: r.bg, color: r.color, padding: "1px 6px", borderRadius: 4, fontWeight: 700, marginLeft: 4 }}>{r.label}</span>
-                              <span style={{ marginLeft: 6, fontFamily: "monospace" }}>{m.role || ""}</span>
+                              <span style={{ marginLeft: 6, fontFamily: "monospace" }}>{_effectiveRole(m) || ""}{m.role === "AM" && _effectiveRole(m) === "SM" ? " (trial)" : ""}</span>
                             </div>
                           </td>
                           {weekDays.map(d => {
