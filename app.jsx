@@ -150,6 +150,161 @@ const TODAY = new Date("2026-04-27");
 function daysDiff(d) { return d ? Math.ceil((new Date(d) - TODAY) / 86400000) : null; }
 function fmt(d) { return d ? new Date(d).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : "—"; }
 
+// Compress an image File → JPEG data URL bounded by maxDim & quality.
+// Matches the kiosk's helper of the same name so proof images stored
+// from either side stay around the same KB envelope.
+function compressImageDataUrl(file, maxDim, quality) {
+  return new Promise((resolve, reject) => {
+    if (!file || !file.type || file.type.indexOf("image/") !== 0) {
+      reject(new Error("Only image files are accepted as proof.")); return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read file."));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Couldn't load image."));
+      img.onload = () => {
+        const ratio = Math.min((maxDim || 1600) / img.width, (maxDim || 1600) / img.height, 1);
+        const w = Math.round(img.width * ratio), h = Math.round(img.height * ratio);
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        try { resolve(canvas.toDataURL("image/jpeg", quality || 0.8)); }
+        catch (e) { reject(new Error("Could not compress image.")); }
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// Status options surfaced to ROMs when marking a manager's absence.
+// Codes map straight onto STAT entries on the attendance grid so the
+// reason renders the same colour & label that the tech statuses use.
+const MGR_REASON_OPTIONS = [
+  { code: "sick_n", label: "🤒 Sick + note",     needsProof: true,  payroll: "Paid sick" },
+  { code: "sick",   label: "🤒 Sick NO note",    needsProof: false, payroll: "Unpaid sick" },
+  { code: "frl",    label: "👪 FRL + proof",     needsProof: true,  payroll: "Paid Family Responsibility Leave" },
+  { code: "al",     label: "🏖 Annual leave",     needsProof: false, payroll: "Paid annual" },
+  { code: "absent", label: "🚫 Absent (no reason)", needsProof: false, payroll: "Unpaid" },
+  { code: "no",     label: "⛔ NO SHOW",         needsProof: false, payroll: "Unpaid" },
+  { code: "off",    label: "🛌 Off (schedule error — should not be working)", needsProof: false, payroll: "None" }
+];
+// Payroll cycle (25th → 24th) helper. Used to lock editing for closed
+// cycles so payroll figures don't shift after a run.
+function payrollYmFor(ymd) {
+  const [y, m, d] = ymd.split("-").map(Number);
+  let yy = y, mm = m;
+  if (d > 24) { mm += 1; if (mm > 12) { mm = 1; yy++; } }
+  return yy + "-" + String(mm).padStart(2, "0");
+}
+
+// Modal body for marking / editing a manager's absence reason.
+function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose, onSaved }) {
+  const [status, setStatus] = useState(existing?.status || "");
+  const [note, setNote] = useState(existing?.note || "");
+  const [proof, setProof] = useState(existing?.proof || null);
+  const [proofErr, setProofErr] = useState("");
+  const [saving, setSaving] = useState(false);
+  const opt = MGR_REASON_OPTIONS.find(o => o.code === status);
+  const needsProof = !!(opt && opt.needsProof);
+  const canSave = !locked && !!status && (!needsProof || !!proof);
+
+  async function handleFile(e) {
+    setProofErr("");
+    const file = e.target.files && e.target.files[0];
+    if (!file) { setProof(null); return; }
+    try { setProof(await compressImageDataUrl(file, 1600, 0.8)); }
+    catch (err) { setProofErr(err.message || String(err)); setProof(null); }
+  }
+
+  async function save() {
+    if (!canSave) return;
+    setSaving(true);
+    try {
+      await window.BOA_DB.saveManagerDayStatus({
+        staffId: modal.staffId,
+        date: modal.date,
+        status,
+        note,
+        proof: needsProof ? proof : null,
+        recordedBy: currentUserName
+      });
+      await onSaved();
+    } catch (e) {
+      window.alert("Could not save: " + ((e && e.message) || e));
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "20px 22px", width: "100%", maxWidth: 480, maxHeight: "90vh", overflow: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+          <div>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 19, color: "#831843", fontWeight: 700 }}>Mark absence reason</div>
+            <div style={{ fontSize: 12, color: "#9ca3af" }}>{modal.name} · {modal.branch} · {new Date(modal.date + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short", year: "numeric" })}</div>
+          </div>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
+        </div>
+
+        {locked && (
+          <div style={{ marginTop: 12, background: "#fef3c7", border: "1px solid #fcd34d", color: "#92400e", borderRadius: 9, padding: "8px 10px", fontSize: 12 }}>
+            🔒 This day is in a closed payroll cycle (25th → 24th). Ask an admin to override.
+          </div>
+        )}
+
+        <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+          {MGR_REASON_OPTIONS.map(o => (
+            <button key={o.code} disabled={locked}
+              onClick={() => setStatus(o.code)}
+              style={{
+                padding: "9px 10px", borderRadius: 9, fontSize: 12, fontWeight: 700, cursor: locked ? "not-allowed" : "pointer",
+                border: status === o.code ? "2px solid #BE185D" : "1px solid #FBCFE8",
+                background: status === o.code ? "#FCE7F3" : "#fff",
+                color: "#831843", textAlign: "left", opacity: locked ? 0.5 : 1
+              }}>
+              <div>{o.label}</div>
+              <div style={{ fontSize: 10, color: "#9ca3af", fontWeight: 600, marginTop: 2 }}>{o.payroll}</div>
+            </button>
+          ))}
+        </div>
+
+        {needsProof && (
+          <div style={{ marginTop: 14 }}>
+            <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>PROOF PHOTO (required for {opt.code === "sick_n" ? "Sick + note" : "FRL"})</label>
+            <input type="file" accept="image/*" capture="environment" onChange={handleFile} disabled={locked}
+              style={{ display: "block", marginTop: 4, fontSize: 13 }} />
+            {proofErr && <div style={{ fontSize: 11, color: "#7f1d1d", marginTop: 4 }}>{proofErr}</div>}
+            {proof && <img src={proof} alt="proof" style={{ marginTop: 8, maxWidth: "100%", maxHeight: 180, borderRadius: 8, border: "1px solid #FBCFE8", display: "block" }} />}
+          </div>
+        )}
+
+        <div style={{ marginTop: 14 }}>
+          <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>NOTE (optional)</label>
+          <textarea value={note} disabled={locked} onChange={e => setNote(e.target.value)} rows={2}
+            placeholder="e.g. spoke to her Monday, flu — back Wed"
+            style={{ display: "block", width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+        </div>
+
+        {existing && (
+          <div style={{ marginTop: 10, fontSize: 11, color: "#9ca3af" }}>
+            Last updated by {existing.updated_by || existing.recorded_by || "?"} on {new Date(existing.updated_at || existing.created_at).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+          </div>
+        )}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+          <button onClick={onClose} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", color: "#831843", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Cancel</button>
+          <button onClick={save} disabled={!canSave || saving}
+            style={{ padding: "9px 20px", borderRadius: 9, border: "none", background: canSave && !saving ? "#BE185D" : "#FBCFE8", color: "#fff", fontWeight: 700, fontSize: 13, cursor: canSave && !saving ? "pointer" : "not-allowed" }}>
+            {saving ? "Saving…" : (existing ? "💾 Update" : "💾 Save reason")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Sort by B-number: extract numeric part after "B", sort ascending; T-codes go after
 function ecSort(a, b) {
   const parse = ec => {
@@ -1343,6 +1498,22 @@ const SALONS = [
   { name: "Betty", mani: 9, pedi: 7, capacity: 18, targetCapacity: 10, lowDemand: true, region: "wc", closedDow: [0, 1] },
 ];
 
+// Recruitment headcount target ("how many techs can work there"). Defaults to
+// ~20% above the physical station count (mani+pedi) so off-days don't leave
+// seats unstaffed. Stores that already carry a larger hand-set capacity (the
+// seeded WC stores) keep it; low-demand stores keep their soft targetCapacity
+// untouched. Mutates the salon in place and is idempotent, so it can run over
+// seeded, imported and custom stores alike to give every region the same default.
+function applyDefaultRecruitTarget(s) {
+  if (!s || s.lowDemand) return s;
+  const stations = (Number(s.mani) || 0) + (Number(s.pedi) || 0);
+  if (stations > 0 && (Number(s.capacity) || 0) <= stations) {
+    s.capacity = Math.round(stations * 1.2);
+  }
+  return s;
+}
+SALONS.forEach(applyDefaultRecruitTarget);
+
 // Shared region metadata for the Locations filter and the Add Location form.
 const REGIONS = [
   { key: "wc", label: "Western Cape", short: "WC", color: "#0e7490", bg: "#cffafe" },
@@ -1382,6 +1553,10 @@ const JHB_IMPORT_BRANCHES = [
   { name: "Verdi", mani: 10, pedi: 6, capacity: 16, region: "gauteng" },
   { name: "Ballito", mani: 9, pedi: 7, capacity: 16, region: "kzn" }
 ];
+// Apply the same 20%-above-stations default to the import template so newly
+// imported JHB/KZN stores arrive with a recruitment buffer instead of a
+// capacity equal to their station count.
+JHB_IMPORT_BRANCHES.forEach(applyDefaultRecruitTarget);
 const JHB_IMPORT_STAFF = [
   // Fourways
   { ec: "B195", name: "Anele Kwatsha", branch: "Fourways", contract: "Permanent", permit: "sa_citizen", level: "One" },
@@ -6201,6 +6376,7 @@ const SETTINGS_TABS = [
   { t: "storeOpenings", l: "Store Openings", cat: "Operations", icon: "🔓" },
   { t: "movements", l: "Today's Movements", cat: "Operations", icon: "🔀" },
   { t: "dailyTasks", l: "Daily Tasks", cat: "Operations", icon: "📋" },
+  { t: "cashups", l: "Cash Ups", cat: "Operations", icon: "💰" },
   { t: "attendance", l: "Attendance / Payroll", cat: "Payroll", icon: "📕" },
   { t: "payrollProgress", l: "Payroll Progress", cat: "Payroll", icon: "📊" },
   { t: "alerts", l: "Alerts", cat: "Insights", icon: "🔔" },
@@ -7759,6 +7935,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           seen.add(x.name);
           added++;
         }
+        // Give imported / custom stores the same recruitment default as the
+        // seeded ones — stores still sitting at capacity == stations (no buffer)
+        // get bumped to ~20% above their station count. WC and low-demand
+        // stores are left untouched.
+        SALONS.forEach(applyDefaultRecruitTarget);
         if (added > 0 || overridden > 0) _setCustomSalonsTick(t => t + 1);
       } catch (e) { console.error("loadCustomSalons:", e); }
     })();
@@ -7927,7 +8108,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     }
     const mani = Math.max(0, Number(m.mani) || 0);
     const pedi = Math.max(0, Number(m.pedi) || 0);
-    const capacity = Math.max(1, Number(m.capacity) || (mani + pedi));
+    const capacity = Math.max(1, Number(m.capacity) || Math.round((mani + pedi) * 1.2));
     const region = REGIONS.some(r => r.key === m.region) ? m.region : "wc";
     const entry = { name: nm, mani, pedi, capacity, region };
     if (m.lowDemand) {
@@ -7970,7 +8151,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     }
     const mani = Math.max(0, Number(m.mani) || 0);
     const pedi = Math.max(0, Number(m.pedi) || 0);
-    const capacity = Math.max(1, Number(m.capacity) || (mani + pedi));
+    const capacity = Math.max(1, Number(m.capacity) || Math.round((mani + pedi) * 1.2));
     const region = REGIONS.some(r => r.key === m.region) ? m.region : "wc";
     const lowDemand = !!m.lowDemand;
     const targetCapacity = lowDemand ? Math.max(1, Number(m.targetCapacity) || capacity) : null;
@@ -8271,7 +8452,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Map of tab → category name. Kept in sync with the groups list below.
   const NAV_TAB_TO_CATEGORY = {
     onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
-    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", storeOpenings: "Operations", movements: "Operations",
+    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations",
     attendance: "Payroll", payrollProgress: "Payroll",
     alerts: "Insights", activity: "Insights",
     settings: "Admin"
@@ -8289,6 +8470,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // ── Manager Clock-ins viewer state ─────────────────────────────────
   const [mgrClockinRows, setMgrClockinRows] = useState([]);
+  // ROM-managed reasons for manager absences. Loaded on dashboard,
+  // mgrclockins and attendance tabs so the grid + dashboard tile + the
+  // no-show banner all see the same data.
+  const [mgrDayStatuses, setMgrDayStatuses] = useState([]);
+  // Modal state for the "Mark reason" flow. null when closed; otherwise
+  // { staffId, ec, name, branch, date, existing? }.
+  const [mgrReasonModal, setMgrReasonModal] = useState(null);
+  // Picker modal for the "Tag absence" button — lets a ROM pick any
+  // branch + manager + date and feed them into mgrReasonModal. Used for
+  // early sick calls and for days where the no-show banner didn't surface
+  // a name (e.g. schedule not loaded).
+  const [mgrAbsencePicker, setMgrAbsencePicker] = useState(null);
   const [mgrClockinMeta, setMgrClockinMeta] = useState({});  // {clockinId: meta}
   const [mgrClockinFilterBranch, setMgrClockinFilterBranch] = useState("All");
   const [mgrClockinDays, setMgrClockinDays] = useState(31);        // how far back rows are loaded
@@ -8304,6 +8497,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [checkinFilterBranch, setCheckinFilterBranch] = useState("All");
   const [checkinDay, setCheckinDay] = useState(() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); });   // viewer day (one day at a time)
   const [proofModal, setProofModal] = useState(null); // { loading, dataUrl, name, ymd, status }
+
+  // ── Cash Ups viewer state ─────────────────────────────────────────
+  // Aggregated daily cash-up rows from every kiosk. ROMs see only their
+  // stores via the existing scope bar; everyone else sees all branches
+  // and can filter by region.
+  const [cashupRows, setCashupRows] = useState([]);
+  const [cashupDays, setCashupDays] = useState(14);
+  const [cashupRegion, setCashupRegion] = useState("all");
+  const [cashupBranchFilter, setCashupBranchFilter] = useState("All");
+  const [cashupSlipModal, setCashupSlipModal] = useState(null);
+  useEffect(() => {
+    if (tab !== "cashups") return;
+    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
+    let cancelled = false;
+    window.BOA_DB.listRecentCashups(cashupDays).then(rows => {
+      if (!cancelled) setCashupRows(rows || []);
+    });
+    return () => { cancelled = true; };
+  }, [tab, cashupDays]);
 
   // ── Onboarding / Off-boarding state ────────────────────────────────
   const [obList, setObList] = useState([]);           // joiner records (3-month contract signers)
@@ -8695,6 +8907,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const ABSENT = { absent: 1, no: 1, sick: 1, sick_n: 1, frl: 1 };
       let count = 0;
       let tScheduled = 0, tCheckedIn = 0, tAbsent = 0;
+      const techByEc = {};   // ec -> "in" | "absent" | "pending" (deduped & offboard-filtered at render)
       const mgrsScheduled = [];
       for (const ec in techGrid) {
         const v = techGrid[ec][todayDay];
@@ -8702,15 +8915,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         count++; tScheduled++;
         let st = attGrid[ec] && attGrid[ec][todayDay];
         if (st && st.indexOf("~") === 0) st = "";   // unconfirmed mirror ≠ a real check-in
-        if (st && PRESENT[st]) tCheckedIn++;
-        else if (st && ABSENT[st]) tAbsent++;
+        if (st && PRESENT[st]) { tCheckedIn++; techByEc[ec] = "in"; }
+        else if (st && ABSENT[st]) { tAbsent++; techByEc[ec] = "absent"; }
+        else { techByEc[ec] = "pending"; }          // scheduled, neither present nor absent
       }
       for (const ec in mgrGrid) {
         // manager grid is keyed by YMD strings (mgrSched line 141)
         const v = mgrGrid[ec][ymd] || mgrGrid[ec][todayDay];
         if (isWorking(v)) { count++; mgrsScheduled.push(ec); }
       }
-      return [sl.name, count, mgrsScheduled, { scheduled: tScheduled, checkedIn: tCheckedIn, notCheckedIn: tScheduled - tCheckedIn - tAbsent, absent: tAbsent }];
+      return [sl.name, count, mgrsScheduled, { scheduled: tScheduled, checkedIn: tCheckedIn, notCheckedIn: tScheduled - tCheckedIn - tAbsent, absent: tAbsent, techByEc }];
     })).then(quads => {
       if (cancelled) return;
       const map = {};
@@ -9007,6 +9221,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return () => { cancelled = true; };
   }, [tab, schedSubTab, mgrSchedBranch, mgrSchedCycle, mgrSchedTick, mgrTrashTick]);
 
+  // Load ROM-managed manager day statuses whenever a view that needs them
+  // is open. Cheap to refetch — single Supabase select capped at 5000 rows.
+  useEffect(() => {
+    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
+    if (!window.BOA_DB.loadManagerDayStatuses) return;
+    if (tab !== "dashboard" && tab !== "mgrclockins" && tab !== "attendance") return;
+    let cancelled = false;
+    window.BOA_DB.loadManagerDayStatuses(60).then(rows => {
+      if (!cancelled) setMgrDayStatuses(rows || []);
+    });
+    return () => { cancelled = true; };
+  }, [tab]);
+
   // Load recent manager clock-ins when the viewer tab opens.
   useEffect(() => {
     if (tab !== "mgrclockins") return;
@@ -9108,6 +9335,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [checkinsTick, setCheckinsTick] = useState(0);   // bump to re-pull after a manual add / reopen
   const [manualCheckinModal, setManualCheckinModal] = useState(null);  // null | { branch, ec, ymd, status, note, _saving, _err }
   const [reopenModal, setReopenModal] = useState(null);  // null | { branch, ymd, _saving, _err }
+  const [notCheckedInModal, setNotCheckedInModal] = useState(null);  // null | [{ ec, name, branch }] — techs scheduled today who haven't checked in
   useEffect(() => {
     if (tab !== "checkins" && tab !== "attendance" && tab !== "payrollProgress") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
@@ -9544,6 +9772,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return pool;
   }, [enriched, managers, matRecs]);
 
+  // Active trial candidates per branch, split by role. On the Locations cards a
+  // trial person occupies a seat (they count toward the staffing meter), so the
+  // vacancy / "still to hire" maths below subtract them too — otherwise the
+  // recruitment totals overstate the gap relative to what Locations shows.
+  const activeTrialByBranch = useMemo(() => {
+    const nt = {}, am = {};
+    for (const c of (trialList || [])) {
+      if (!c || !c.branch) continue;
+      if (c.status === "passed" || c.status === "failed" || c.status === "hired") continue;
+      if ((c.role || "nt") === "am") am[c.branch] = (am[c.branch] || 0) + 1;
+      else nt[c.branch] = (nt[c.branch] || 0) + 1;
+    }
+    return { nt, am };
+  }, [trialList]);
+
   const stats = useMemo(() => {
     // "active" excludes maternity, unpaid-legal leave AND off-boarded — all
     // three reduce the active headcount.
@@ -9560,11 +9803,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       // so they immediately surface as open positions in the Recruitment tab.
       // Pre-opening stores are KEPT in these counts — those seats must be
       // hired for before the store opens, so they need to drive recruitment.
-      vacancies: SALONS.reduce((a, sl) => { const g = sl.targetCapacity || sl.capacity; const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length; return a + Math.max(0, g - act); }, 0),
-      understaffed: SALONS.filter(sl => enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length < sl.capacity).length,
+      vacancies: SALONS.reduce((a, sl) => { const g = sl.targetCapacity || sl.capacity; const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length + (activeTrialByBranch.nt[sl.name] || 0); return a + Math.max(0, g - act); }, 0),
+      understaffed: SALONS.filter(sl => { const g = sl.targetCapacity || sl.capacity; const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length + (activeTrialByBranch.nt[sl.name] || 0); return act < g; }).length,
       returning60,
     };
-  }, [enriched, matRecs, onMatEcs, pregnantEcs, onUnpaidLegalEcs, staff]);
+  }, [enriched, matRecs, onMatEcs, pregnantEcs, onUnpaidLegalEcs, staff, activeTrialByBranch]);
 
   // Locations
   const salonData = useMemo(() => {
@@ -9605,8 +9848,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
     // Trial candidates assigned to this branch and not yet passed/failed/hired.
     // "hired" entries have already moved to Onboarding — they shouldn't linger
-    // on the branch's trial strip.
-    const trial = trialList.filter(c => c.branch === salon.name && c.status !== "passed" && c.status !== "failed" && c.status !== "hired");
+    // on the branch's trial strip. Split by role: nail-tech trials sit with the
+    // techs; AM trials belong in the management-team box.
+    const trialAll = trialList.filter(c => c.branch === salon.name && c.status !== "passed" && c.status !== "failed" && c.status !== "hired");
+    const trial = trialAll.filter(c => (c.role || "nt") !== "am");
+    const trialMgrs = trialAll.filter(c => (c.role || "nt") === "am");
 
     // Use targetCapacity for low-demand stores (e.g. Betty), full capacity otherwise
     const goal = salon.targetCapacity || salon.capacity;
@@ -9622,7 +9868,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const urgency = preOpen
       ? "preopen"
       : (active.length === 0 ? "critical" : fillRate < 0.5 ? "high" : fillRate < 1 ? "low" : "full");
-    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, arrivingMgrs, trial, urgency, goal, preOpen, daysToOpen };
+    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, arrivingMgrs, trial, trialMgrs, urgency, goal, preOpen, daysToOpen };
     });
   }, [enriched, enrichedManagers, managers, trialList, _customSalonsTick]);
 
@@ -10110,6 +10356,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "storeOpenings", l: "🔓 Store Openings" },
                   { t: "movements", l: "🔀 Today's Movements" },
                   { t: "dailyTasks", l: "📋 Daily Tasks" },
+                  { t: "cashups", l: "💰 Cash Ups" },
                   {
                     t: "mgrPlanner", l: "🧩 Manager Planner",
                     isActive: tab === "recruitment" && recruitSubTab === "mgrRecruit" && mgrSubTab === "planner",
@@ -10302,9 +10549,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <span style={{ fontSize: 11, opacity: 0.8 }}>Sorted by most urgent</span>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(185px,1fr))" }}>
-                {salonData.filter(s => s.active.length < s.capacity).sort((a, b) => (b.capacity - b.active.length) - (a.capacity - a.active.length)).map((s, i) => {
-                  const need = s.goal - s.active.length;
-                  const pct = Math.round(s.active.length / s.goal * 100);
+                {salonData.filter(s => (s.active.length + s.trial.length) < s.goal).sort((a, b) => (b.goal - b.active.length - b.trial.length) - (a.goal - a.active.length - a.trial.length)).map((s, i) => {
+                  const filled = s.active.length + s.trial.length;
+                  const need = Math.max(0, s.goal - filled);
+                  const pct = s.goal > 0 ? Math.round(filled / s.goal * 100) : 100;
                   const [col, bg] = need >= 5 ? ["#7f1d1d", "#fee2e2"] : need >= 3 ? ["#9a3412", "#ffedd5"] : ["#78350f", "#fef9c3"];
                   return (
                     <div key={s.name} style={{ padding: "11px 15px", borderTop: `1px solid #e5e7eb`, borderRight: `1px solid #e5e7eb`, background: bg }}>
@@ -10312,7 +10560,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <div style={{ fontWeight: 700, fontSize: 12, color: "#111827" }}>📍 {s.name}</div>
                         <div style={{ fontWeight: 800, fontSize: 22, color: col, lineHeight: 1 }}>{need}</div>
                       </div>
-                      <div style={{ fontSize: 10, color: "#BE185D", marginTop: 2 }}>{s.active.length}/{s.capacity} filled · {pct}%</div>
+                      <div style={{ fontSize: 10, color: "#BE185D", marginTop: 2 }}>{filled}/{s.goal} filled · {pct}%</div>
                       <div style={{ height: 4, borderRadius: 99, background: "#e5e7eb", marginTop: 5, overflow: "hidden" }}>
                         <div style={{ height: "100%", width: `${pct}%`, background: pct < 60 ? "#dc2626" : pct < 80 ? "#f97316" : "#eab308", borderRadius: 99 }} />
                       </div>
@@ -10362,8 +10610,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const _scopedMat = enriched.filter(s => scopedBranchSet.has(s.branch) && s.onMat);
           const _scopedPreg = enriched.filter(s => scopedBranchSet.has(s.branch) && s.pregnant && !s.onMat);
           const _scopedReturning60 = matRecs.filter(r => r.matStatus === "on_mat" && r.returnDate && daysDiff(r.returnDate) !== null && daysDiff(r.returnDate) >= 0 && daysDiff(r.returnDate) <= 60 && scopedBranchSet.has(((enriched.find(e => e.ec && r.ec && e.ec.trim() === r.ec.trim()) || {}).branch || ""))).length;
-          const _scopedVacancies = scopedSalons.reduce((a, sl) => { const g = sl.targetCapacity || sl.capacity; const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length; return a + Math.max(0, g - act); }, 0);
-          const _scopedUnderstaffed = scopedSalons.filter(sl => enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length < sl.capacity).length;
+          const _scopedVacancies = scopedSalons.reduce((a, sl) => { const g = sl.targetCapacity || sl.capacity; const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length + (activeTrialByBranch.nt[sl.name] || 0); return a + Math.max(0, g - act); }, 0);
+          const _scopedUnderstaffed = scopedSalons.filter(sl => { const g = sl.targetCapacity || sl.capacity; const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.onUnpaidLegal && !s.offboarded).length + (activeTrialByBranch.nt[sl.name] || 0); return act < g; }).length;
           const scopedStats = {
             active: _scopedActive.length,
             onMat: _scopedMat.length,
@@ -10379,7 +10627,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const understaffedBranches = scopedSalons
             .map(sl => {
               const goal = sl.targetCapacity || sl.capacity;
-              const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.offboarded).length;
+              const act = enriched.filter(s => s.branch === sl.name && !s.onMat && !s.offboarded).length + (activeTrialByBranch.nt[sl.name] || 0);
               return { name: sl.name, gap: Math.max(0, goal - act), goal, act };
             })
             .filter(x => x.gap > 0)
@@ -10394,20 +10642,40 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           let mgrSchedToday = 0;
           let mgrMissing = [];
           if (dashTodayMgrClockinEcs) {
+            const _t = new Date();
+            const _todayYmd = _t.getFullYear() + "-" + String(_t.getMonth() + 1).padStart(2, "0") + "-" + String(_t.getDate()).padStart(2, "0");
+            // Normalise EC codes on both sides so a manager who DID clock in isn't
+            // mis-counted as missing over a stray whitespace mismatch.
+            const clockedIn = new Set();
+            dashTodayMgrClockinEcs.forEach(e => clockedIn.add(String(e).trim()));
+            const onLeaveEcs = new Set();
+            for (const lv of (leaveRecs || [])) {
+              if (lv && lv.ec && lv.startDate && lv.endDate && _todayYmd >= lv.startDate && _todayYmd <= lv.endDate) onLeaveEcs.add(lv.ec.trim());
+            }
+            const mgrByEc = {};
+            for (const m of (enrichedManagers || [])) if (m && m.ec) mgrByEc[m.ec.trim()] = m;
+            // One row per manager EC — a manager scheduled across more than one
+            // branch's grid (coverage / mid-transfer) must only be counted once.
+            const seen = {};   // ec -> { checkedIn, name, branch }
             for (const branchName in dashSchedMgrsByBranch) {
               if (_hasStoreScope && !scopedBranchSet.has(branchName)) continue;
-              const ecs = dashSchedMgrsByBranch[branchName] || [];
-              for (const ec of ecs) {
-                // Only count managers genuinely working today: drop anyone on
-                // maternity / off-boarded even if a stale working cell lingers
-                // in the schedule grid.
-                const m = (enrichedManagers || []).find(x => x.ec === ec) || (managers || []).find(x => x.ec === ec);
-                if (m && (m.onMat || m.offboarded)) continue;
-                mgrSchedToday++;
-                if (!dashTodayMgrClockinEcs.has(ec)) {
-                  mgrMissing.push({ ec, name: (m && m.name) || ec, branch: branchName });
-                }
+              for (const ecRaw of (dashSchedMgrsByBranch[branchName] || [])) {
+                const ec = String(ecRaw).trim();
+                const m = mgrByEc[ec];
+                if (!m) continue;   // no current manager record — deleted/unknown, skip stale grid key
+                // Skip anyone not really working today even if a stale work cell
+                // lingers: maternity, off-boarded, departed, or on leave.
+                if (m.onMat || m.offboarded || (m.leftDate && _todayYmd > m.leftDate)) continue;
+                if (onLeaveEcs.has(ec)) continue;
+                const checkedIn = clockedIn.has(ec);
+                const cur = seen[ec];
+                if (!cur) seen[ec] = { checkedIn, name: m.name || ec, branch: m.branch || branchName };
+                else if (checkedIn && !cur.checkedIn) cur.checkedIn = true;
               }
+            }
+            for (const ec in seen) {
+              mgrSchedToday++;
+              if (!seen[ec].checkedIn) mgrMissing.push({ ec, name: seen[ec].name, branch: seen[ec].branch });
             }
           }
           const mgrCheckinLoading = dashTodayMgrClockinEcs == null || dashScheduledToday == null;
@@ -10418,15 +10686,67 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // sick / FRL).
           const techToday = (() => {
             if (!dashTechByBranch) return null;
-            const a = { scheduled: 0, checkedIn: 0, notCheckedIn: 0, absent: 0 };
+            const _t = new Date();
+            const _todayYmd = _t.getFullYear() + "-" + String(_t.getMonth() + 1).padStart(2, "0") + "-" + String(_t.getDate()).padStart(2, "0");
+            const enrichedByEc = {};
+            for (const s of (enriched || [])) if (s && s.ec) enrichedByEc[s.ec.trim()] = s;
+            // ECs whose leave record covers today — the live schedule shows these
+            // as L even when the stored grid the dashboard reads still has a work code.
+            const onLeaveEcs = new Set();
+            for (const lv of (leaveRecs || [])) {
+              if (lv && lv.ec && lv.startDate && lv.endDate && _todayYmd >= lv.startDate && _todayYmd <= lv.endDate) onLeaveEcs.add(lv.ec.trim());
+            }
+            const branchSet = new Set(Object.keys(dashTechByBranch));
+            // A tech isn't really working today — whatever a stale stored grid says
+            // — if they've left, are on maternity / unpaid-legal leave, or have an
+            // annual-leave record over today.
+            const isOffToday = (er, ecKey) =>
+              (!!(er && er.leftDate && _todayYmd > er.leftDate)) ||   // departed (today past last working day)
+              (!!(er && (er.onMat || er.onUnpaidLegal))) ||           // maternity / unpaid-legal leave
+              onLeaveEcs.has(ecKey);                                  // annual leave covering today
+            // Effective home branch today — follows a transfer once its date has
+            // passed. Lets us ignore stale work codes lingering in a branch the
+            // tech no longer (or doesn't yet) work at.
+            const effBranchOf = (er) => {
+              if (!er) return null;
+              if (er.transferring && er.transferTo && er.transferDate && _todayYmd >= String(er.transferDate).replace(/\//g, "-")) return er.transferTo;
+              return er.branch || null;
+            };
+            // Collapse to one row per EC. A real check-in / absent mark outranks a
+            // pending slot, so a transferred tech who checked in at their new
+            // branch isn't flagged "not checked in" at the old one.
+            const rank = { in: 2, absent: 1, pending: 0 };
+            const byEc = {};   // ec -> { status, branch }
             for (const b in dashTechByBranch) {
               if (_hasStoreScope && !scopedBranchSet.has(b)) continue;
-              const t = dashTechByBranch[b] || {};
-              a.scheduled += t.scheduled || 0;
-              a.checkedIn += t.checkedIn || 0;
-              a.notCheckedIn += t.notCheckedIn || 0;
-              a.absent += t.absent || 0;
+              const tb = (dashTechByBranch[b] || {}).techByEc || {};
+              for (const ec in tb) {
+                const ecKey = (ec || "").trim();
+                const er = enrichedByEc[ecKey];
+                if (!er) continue;   // no current staff record — deleted/unknown, skip stale grid key
+                if (isOffToday(er, ecKey)) continue;
+                const eff = effBranchOf(er);
+                if (eff && branchSet.has(eff) && b !== eff) continue;   // stale / wrong-branch grid entry
+                const status = tb[ec];
+                const cur = byEc[ec];
+                if (!cur || rank[status] > rank[cur.status]) byEc[ec] = { status, branch: eff || b };
+              }
             }
+            const a = { scheduled: 0, checkedIn: 0, notCheckedIn: 0, absent: 0, notCheckedInList: [] };
+            for (const ec in byEc) {
+              const { status, branch } = byEc[ec];
+              a.scheduled++;
+              if (status === "in") a.checkedIn++;
+              else if (status === "absent") a.absent++;
+              else {
+                a.notCheckedIn++;
+                const er = enrichedByEc[(ec || "").trim()];
+                a.notCheckedInList.push({ ec, name: (er && er.name) || ec, branch });
+              }
+            }
+            a.notCheckedInList.sort((x, y) =>
+              (x.branch || "").localeCompare(y.branch || "") || (x.name || "").localeCompare(y.name || "")
+            );
             return a;
           })();
 
@@ -10830,38 +11150,96 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       click: () => tryChangeTab("storeOpenings")
                     },
                     mgrCheckin: {
-                      l: "Mgrs not checked in",
-                      v: mgrCheckinLoading ? "…" : (mgrSchedToday === 0 ? "—" : mgrMissing.length + " / " + mgrSchedToday),
-                      sub: mgrCheckinLoading
-                        ? "loading…"
-                        : (mgrSchedToday === 0
-                          ? "no managers scheduled"
-                          : (mgrMissing.length === 0
-                            ? "✓ all managers checked in"
-                            : mgrMissing.slice(0, 2).map(m => m.name + " · " + m.branch).join(", ") + (mgrMissing.length > 2 ? " +" + (mgrMissing.length - 2) + " more" : ""))),
-                      i: mgrCheckinLoading ? "⌛" : (mgrSchedToday === 0 ? "🕐" : (mgrMissing.length === 0 ? "✓" : "🚨")),
-                      c: mgrCheckinLoading ? "#7c2d12" : (mgrMissing.length === 0 ? "#166534" : "#7f1d1d"),
-                      bg: mgrCheckinLoading ? "#fef3c7" : (mgrMissing.length === 0 ? "#dcfce7" : "#fee2e2"),
-                      click: () => tryChangeTab("mgrclockins")
+                      l: "Managers checked in",
+                      v: mgrCheckinLoading ? "…" : (mgrSchedToday === 0 ? "—" : ((mgrSchedToday - mgrMissing.length) + " / " + mgrSchedToday)),
+                      sub: mgrCheckinLoading ? "loading…" : (mgrSchedToday === 0 ? "no managers scheduled" : (mgrMissing.length + " not checked in yet")),
+                      i: "✅",
+                      c: "#14532d",
+                      bg: "#dcfce7",
+                      click: () => tryChangeTab("mgrclockins"),
+                      subClick: mgrMissing.length > 0 ? () => setNotCheckedInModal({ title: "Managers not checked in", role: "manager", list: mgrMissing.slice().sort((x, y) => (x.branch || "").localeCompare(y.branch || "") || (x.name || "").localeCompare(y.name || "")), tab: "mgrclockins", tabLabel: "Open Manager Clock-ins →" }) : null
                     },
+                    mgrAbsent: {
+                      l: "Managers absent today",
+                      v: mgrCheckinLoading ? "…" : (mgrSchedToday === 0 ? "—" : mgrMissing.length),
+                      sub: mgrCheckinLoading ? "loading…" : (mgrSchedToday === 0 ? "no managers scheduled" : "haven't clocked in"),
+                      i: "🚫",
+                      c: "#7f1d1d",
+                      bg: "#fee2e2",
+                      click: () => tryChangeTab("mgrclockins"),
+                      subClick: mgrMissing.length > 0 ? () => setNotCheckedInModal({ title: "Managers absent today", role: "manager", list: mgrMissing.slice().sort((x, y) => (x.branch || "").localeCompare(y.branch || "") || (x.name || "").localeCompare(y.name || "")), tab: "mgrclockins", tabLabel: "Open Manager Clock-ins →" }) : null
+                    },
+                    mgrAbsentReason: (() => {
+                      // To-do tile for ROMs: count of recent manager no-shows
+                      // that DON'T yet have a reason recorded. We use the
+                      // mgrDayStatuses set loaded for the mgrclockins/attendance
+                      // tabs and the past 14 days of mgrClockinRows when the
+                      // viewer has already opened that tab. Otherwise the count
+                      // shows "…" and clicking still takes them to the page.
+                      const taggedKeys = new Set((mgrDayStatuses || []).map(s => (s.staff_id || "") + "|" + s.date));
+                      const ecToStaffId = {};
+                      managers.forEach(m => { if (m.ec && (m._id || m.id)) ecToStaffId[m.ec] = m._id || m.id; });
+                      // Build past-day no-shows from cached clockin rows (last
+                      // 14 days). If the cache is empty (mgrclockins tab not
+                      // opened yet) the tile defers — clicking still works.
+                      const tdY = new Date(); const _t0 = tdY.getFullYear() + "-" + String(tdY.getMonth() + 1).padStart(2, "0") + "-" + String(tdY.getDate()).padStart(2, "0");
+                      const _ymdOf = (ts) => { const d = new Date(ts); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+                      const clockedInByEcDate = new Set();
+                      (mgrClockinRows || []).forEach(r => {
+                        if (!r.staff || r.staff.role_type !== "manager") return;
+                        if (r.type !== "in") return;
+                        clockedInByEcDate.add(r.staff.employee_code + "|" + _ymdOf(r.ts));
+                      });
+                      // Look at last 14 days excluding today (today still
+                      // pending — they may still clock in).
+                      const pending = [];
+                      const since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - 14);
+                      for (let dt = new Date(since); dt < tdY && dt.toISOString().slice(0, 10) < _t0; dt.setDate(dt.getDate() + 1)) {
+                        const ymd = dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
+                        const ymOf = (() => { const a = ymd.split("-").map(Number); let y = a[0], m = a[1]; if (a[2] > 24) { m += 1; if (m > 12) { m = 1; y++; } } return y + "-" + String(m).padStart(2, "0"); })();
+                        managers.forEach(m => {
+                          const grid = mgrClockinSchedCache[(m.branch || "") + "|" + ymOf];
+                          if (!grid) return;
+                          const cell = grid[m.ec] && grid[m.ec][ymd];
+                          if (cell !== "W" && cell !== "E") return;
+                          if (clockedInByEcDate.has(m.ec + "|" + ymd)) return;
+                          const sid = ecToStaffId[m.ec];
+                          if (sid && taggedKeys.has(sid + "|" + ymd)) return;
+                          pending.push({ name: m.name, branch: m.branch, ymd });
+                        });
+                      }
+                      const haveData = (mgrClockinRows || []).length > 0 || Object.keys(mgrClockinSchedCache || {}).length > 0;
+                      return {
+                        l: "Manager reasons to add",
+                        v: haveData ? pending.length : "…",
+                        sub: haveData ? (pending.length === 0 ? "all manager absences explained 🎉" : "past 14d · click to tag reasons") : "open Manager Check-ins to scan",
+                        i: "📝",
+                        c: pending.length > 0 ? "#7c2d12" : "#14532d",
+                        bg: pending.length > 0 ? "#fef3c7" : "#dcfce7",
+                        click: () => tryChangeTab("mgrclockins")
+                      };
+                    })(),
                     scheduledToday: { l: "Scheduled today", v: dashScheduledToday == null ? "…" : (_hasStoreScope ? Object.keys(dashByBranch).filter(b => scopedBranchSet.has(b)).reduce((a, b) => a + (dashByBranch[b] || 0), 0) : dashScheduledToday), sub: _hasStoreScope ? ("scope: " + (dashScope === "mine" ? "my stores" : dashScope === "other" ? "peer stores" : "all branches")) : "across all branches", i: "📅", c: "#1e3a8a", bg: "#dbeafe" },
                     techsToday: { l: "Techs working today", v: techToday == null ? "…" : techToday.scheduled, sub: "must actively work today", i: "💅", c: "#0c4a6e", bg: "#e0f2fe" },
-                    techsCheckedIn: { l: "Techs checked in", v: techToday == null ? "…" : (techToday.checkedIn + " / " + techToday.scheduled), sub: techToday == null ? "loading…" : (techToday.notCheckedIn + " not checked in yet"), i: "✅", c: "#14532d", bg: "#dcfce7", click: () => tryChangeTab("checkins") },
+                    techsCheckedIn: { l: "Techs checked in", v: techToday == null ? "…" : (techToday.checkedIn + " / " + techToday.scheduled), sub: techToday == null ? "loading…" : (techToday.notCheckedIn + " not checked in yet"), i: "✅", c: "#14532d", bg: "#dcfce7", click: () => tryChangeTab("checkins"), subClick: (techToday && techToday.notCheckedIn > 0) ? () => setNotCheckedInModal({ title: "Techs not checked in yet", role: "tech", list: techToday.notCheckedInList, tab: "checkins", tabLabel: "Open Check-ins →" }) : null },
                     techsAbsent: { l: "Techs absent today", v: techToday == null ? "…" : techToday.absent, sub: "incl. no-show / sick / FRL", i: "🚫", c: "#7f1d1d", bg: "#fee2e2", click: () => tryChangeTab("checkins") },
                     activeStaff: { l: "Active staff", v: scopedStats.active, sub: "incl. " + scopedStats.pregnant + " pregnant", i: "👥", c: "#14532d", bg: "#dcfce7" },
                     onMaternity: { l: "On maternity", v: scopedStats.onMat, sub: scopedStats.returning60 + " returning ≤60d", i: "🤱", c: "#7A4258", bg: "#fce7f3" },
                     vacancies: { l: "Positions to hire", v: scopedStats.vacancies, sub: "across " + scopedStats.understaffed + " branch" + (scopedStats.understaffed !== 1 ? "es" : ""), i: "🎯", c: "#7c3aed", bg: "#ede9fe", click: () => tryChangeTab("recruitment") }
                   };
                   const order = _hasStoreScope
-                    ? ["storesOpen", "mgrCheckin", "techsToday", "techsCheckedIn", "techsAbsent", "scheduledToday", "activeStaff", "vacancies", "onMaternity"]
-                    : ["storesOpen", "techsToday", "techsCheckedIn", "techsAbsent", "mgrCheckin", "scheduledToday", "activeStaff", "onMaternity", "vacancies"];
+                    ? ["storesOpen", "mgrCheckin", "mgrAbsent", "mgrAbsentReason", "techsToday", "techsCheckedIn", "techsAbsent", "scheduledToday", "activeStaff", "vacancies", "onMaternity"]
+                    : ["storesOpen", "techsToday", "techsCheckedIn", "techsAbsent", "mgrCheckin", "mgrAbsent", "mgrAbsentReason", "scheduledToday", "activeStaff", "onMaternity", "vacancies"];
                   return order.map(k => tiles[k]);
                 })().map(c => (
                   <div key={c.l} onClick={c.click} style={{ background: c.bg, borderRadius: 16, padding: "16px 18px", cursor: c.click ? "pointer" : "default", border: "1px solid rgba(255,255,255,0.6)" }}>
                     <div style={{ fontSize: 24 }}>{c.i}</div>
                     <div style={{ fontSize: 32, fontWeight: 800, color: c.c, lineHeight: 1.05, marginTop: 4 }}>{c.v}</div>
                     <div style={{ fontSize: 10, fontWeight: 700, color: c.c, letterSpacing: "0.1em", textTransform: "uppercase", marginTop: 6 }}>{c.l}</div>
-                    <div style={{ fontSize: 10, color: c.c, opacity: 0.6, marginTop: 2 }}>{c.sub}</div>
+                    <div
+                      onClick={c.subClick ? (e) => { e.stopPropagation(); c.subClick(); } : undefined}
+                      style={{ fontSize: 10, color: c.c, opacity: c.subClick ? 0.95 : 0.6, marginTop: 2, ...(c.subClick ? { cursor: "pointer", textDecoration: "underline", fontWeight: 700 } : {}) }}
+                    >{c.sub}</div>
                   </div>
                 ))}
               </div>
@@ -11397,7 +11775,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const filteredOnMat = filteredSalonData.reduce((a, s) => a + s.onMat.length, 0);
           const filteredSeats = filteredSalonData.reduce((a, s) => a + s.capacity, 0);
           const filteredVacancies = filteredSalonData.reduce((a, s) =>
-            a + Math.max(0, (s.targetCapacity || s.capacity) - s.active.length), 0);
+            a + Math.max(0, (s.targetCapacity || s.capacity) - s.active.length - s.trial.length), 0);
           return (
             <div style={{ padding: "0 24px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
@@ -11677,7 +12055,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         const ssm = mgrs.filter(m => (m.effectiveRole || m.role) === "SSM");
                         const sm = mgrs.filter(m => (m.effectiveRole || m.role) === "SM");
                         const am = mgrs.filter(m => (m.effectiveRole || m.role) === "AM");
-                        if (allMgrs.length === 0 && (!salon.arrivingMgrs || salon.arrivingMgrs.length === 0)) return null;
+                        if (allMgrs.length === 0 && (!salon.arrivingMgrs || salon.arrivingMgrs.length === 0) && (!salon.trialMgrs || salon.trialMgrs.length === 0)) return null;
                         return (
                           <div style={{ background: "#FCE7F3", border: "1px solid #FBCFE8", borderRadius: 10, padding: "9px 12px", marginBottom: 10 }}>
                             <div style={{ fontSize: 9, fontWeight: 800, color: "#BE185D", letterSpacing: "0.1em", marginBottom: 7 }}>MANAGEMENT TEAM</div>
@@ -11720,6 +12098,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                     <span title="On 3-month SM trial — see People → SM Trials"
                                       style={{ fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 700, letterSpacing: "0.04em" }}>⭐ ON TRIAL</span>
                                   )}
+                                </div>
+                              ))}
+                              {/* AM trial candidates — added in the Trial Period tab
+                              (Assistant Manager pipeline). They sit in the management
+                              box (not the nail-tech list) since they're trialling for
+                              a manager role. Amber dashed treatment marks them as
+                              pre-contract, with their current trial stage. */}
+                              {(salon.trialMgrs || []).map(t => (
+                                <div key={t._id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 7px", borderRadius: 7, background: "#FFFBEB", border: "1.5px dashed #FCD34D" }}>
+                                  <span style={{ fontSize: 13 }}>⏳</span>
+                                  <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: "#78350f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name}</span>
+                                  <span style={{ fontSize: 9, background: "#FCD34D", color: "#78350f", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{t.status}</span>
+                                  <span style={{ fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 700, letterSpacing: "0.04em" }}>AM · TRIAL</span>
                                 </div>
                               ))}
                               {/* Arriving (pending incoming transfer) — managers
@@ -13255,7 +13646,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* ── ALERTS TAB ── */}
         {tab === "alerts" && (() => {
-          const active = enriched.filter(s => !s.onMat);
+          // Exclude maternity, unpaid-legal leave AND off-boarded/departed staff
+          // from compliance alerts — someone who has left the company shouldn't
+          // keep raising a "no work permit" / "no contract" flag.
+          const active = enriched.filter(s => !s.onMat && !s.onUnpaidLegal && !s.offboarded);
           // Upcoming-cycle schedule alerts (only for users responsible for scheduling).
           const schedAlerts = [];
           if (SCHED_ALERT_PINS.has(currentUser.pin) && upcomingChecked && upcomingMissing.length > 0) {
@@ -13283,7 +13677,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             ...matRecs.filter(r => r.matStatus === "on_mat" && r.returnDate && daysDiff(r.returnDate) >= 0 && daysDiff(r.returnDate) <= 14).map(r => ({ type: "info", msg: `${r.name} (${r.branch}) — returning in ${daysDiff(r.returnDate)} day(s) on ${fmt(r.returnDate)}`, rec: r })),
             ...active.filter(s => s.permit === "z_na").map(s => ({ type: "critical", msg: `${s.name} (${s.branch}) — Z/NA: no valid work permit`, s })),
             ...active.filter(s => s.contract === "NO CONTRACT").map(s => ({ type: "warning", msg: `${s.name} (${s.branch}) — no employment contract on file`, s })),
-            ...SALONS.filter(sl => enriched.filter(s => s.branch === sl.name && !s.onMat).length === 0).map(sl => ({ type: "critical", msg: `${sl.name} — NO active staff assigned`, s: null })),
+            ...SALONS.filter(sl => active.filter(s => s.branch === sl.name).length === 0).map(sl => ({ type: "critical", msg: `${sl.name} — NO active staff assigned`, s: null })),
           ];
           return (
             <div style={{ padding: "0 24px" }}>
@@ -13328,7 +13722,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const mgrVacancies = SALONS.reduce((a, sl) => {
               const mgrs = enrichedManagers.filter(m => m.branch === sl.name && !m.onMat && !m.offboarded);
               const sms = mgrs.filter(m => (m.effectiveRole || m.role) === "SM").length;
-              const ams = mgrs.filter(m => (m.effectiveRole || m.role) === "AM").length;
+              // AM trial candidates (shown in the Locations manager box) are
+              // filling the AM gap, so count them toward the AM minimum.
+              const ams = mgrs.filter(m => (m.effectiveRole || m.role) === "AM").length + (activeTrialByBranch.am[sl.name] || 0);
               return a + Math.max(0, MIN_SM - sms) + Math.max(0, MIN_AM - ams);
             }, 0);
             const counts = { nailTech: stats.vacancies, mgrRecruit: mgrVacancies };
@@ -13385,9 +13781,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
                   {/* Per-branch cards sorted by urgency */}
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 12 }}>
-                    {salonData.sort((a, b) => (b.goal - b.active.length) - (a.goal - a.active.length)).map(salon => {
-                      const need = Math.max(0, salon.goal - salon.active.length);
-                      const pct = Math.min(Math.round(salon.active.length / salon.goal * 100), 100);
+                    {salonData.sort((a, b) => (b.goal - b.active.length - b.trial.length) - (a.goal - a.active.length - a.trial.length)).map(salon => {
+                      const filled = salon.active.length + salon.trial.length;   // trial candidates occupy seats (as on Locations)
+                      const need = Math.max(0, salon.goal - filled);
+                      const pct = salon.goal > 0 ? Math.min(Math.round(filled / salon.goal * 100), 100) : 100;
                       const [col, bg, brd] = need === 0 ? ["#14532d", "#dcfce7", "#86efac"] : need >= 5 ? ["#7f1d1d", "#fee2e2", "#fca5a5"] : need >= 3 ? ["#9a3412", "#ffedd5", "#fcd34d"] : ["#78350f", "#fef9c3", "#fde68a"];
                       return (
                         <div key={salon.name} style={{ background: "#FFFFFF", borderRadius: 14, border: `2px solid ${brd}`, overflow: "hidden" }}>
@@ -13409,7 +13806,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             <div style={{ marginBottom: 10 }}>
                               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontWeight: 700, marginBottom: 4, color: need === 0 ? "#15803d" : "#9a3412" }}>
                                 <span>
-                                  {salon.active.length} of {salon.goal} staff {salon.lowDemand ? "(target)" : "(capacity)"}
+                                  {filled} of {salon.goal} staff {salon.lowDemand ? "(target)" : "(capacity)"}
+                                  {salon.trial.length > 0 && <span style={{ fontWeight: 400, color: "#9a3412" }}> · incl. {salon.trial.length} on trial</span>}
                                 </span>
                                 <span>{pct}% filled</span>
                               </div>
@@ -13957,27 +14355,57 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           persistTrial(trialList.filter(r => r._id !== id));
         };
 
+        const editTrial = (r) => {
+          setTForm({
+            name: r.name || "", phone: r.phone || "", email: r.email || "",
+            homeAddress: r.homeAddress || "", trainerName: r.trainerName || "",
+            inductionPassDate: r.inductionPassDate || "", branch: r.branch || SALONS[0].name,
+            startDate: r.startDate || "", notes: r.notes || "", role: r.role || "nt",
+            _open: true, _editId: r._id
+          });
+          if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
+        };
+
         const submitTrial = () => {
           if (!tForm.name.trim()) { alert("Name is required."); return; }
           if (!tForm.branch) { alert("Branch is required."); return; }
-          const role = trialSubTab;
-          const rec = {
-            _id: Date.now(),
-            name: tForm.name.trim(),
-            phone: tForm.phone, email: tForm.email,
-            homeAddress: tForm.homeAddress,
-            trainerName: tForm.trainerName,
-            inductionPassDate: tForm.inductionPassDate,
-            branch: tForm.branch,
-            startDate: tForm.startDate,
-            notes: tForm.notes,
-            role: role,
-            status: role === "am" ? "trial_w1" : "induction",
-            addedAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          };
-          persistTrial([...trialList, rec]);
-          setTForm({ name: "", phone: "", email: "", homeAddress: "", trainerName: "", inductionPassDate: "", branch: SALONS[0].name, startDate: "", notes: "", role: "nt", _open: false });
+          if (tForm._editId) {
+            // Editing an existing candidate — update details / location only,
+            // leaving the trial stage, attendance and timestamps intact.
+            persistTrial(trialList.map(r => r._id === tForm._editId
+              ? {
+                ...r,
+                name: tForm.name.trim(),
+                phone: tForm.phone, email: tForm.email,
+                homeAddress: tForm.homeAddress,
+                trainerName: tForm.trainerName,
+                inductionPassDate: tForm.inductionPassDate,
+                branch: tForm.branch,
+                startDate: tForm.startDate,
+                notes: tForm.notes,
+                updatedAt: new Date().toISOString()
+              }
+              : r));
+          } else {
+            const role = trialSubTab;
+            const rec = {
+              _id: Date.now(),
+              name: tForm.name.trim(),
+              phone: tForm.phone, email: tForm.email,
+              homeAddress: tForm.homeAddress,
+              trainerName: tForm.trainerName,
+              inductionPassDate: tForm.inductionPassDate,
+              branch: tForm.branch,
+              startDate: tForm.startDate,
+              notes: tForm.notes,
+              role: role,
+              status: role === "am" ? "trial_w1" : "induction",
+              addedAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            };
+            persistTrial([...trialList, rec]);
+          }
+          setTForm({ name: "", phone: "", email: "", homeAddress: "", trainerName: "", inductionPassDate: "", branch: SALONS[0].name, startDate: "", notes: "", role: "nt", _open: false, _editId: null });
         };
 
         const currentList = trialList.filter(r => (r.role || "nt") === trialSubTab);
@@ -14021,7 +14449,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
 
               <button
-                onClick={() => setTForm(f => ({ ...f, _open: !f._open }))}
+                onClick={() => setTForm(f => f._open
+                  ? { ...f, _open: false, _editId: null }
+                  : { name: "", phone: "", email: "", homeAddress: "", trainerName: "", inductionPassDate: "", branch: SALONS[0]?.name || "", startDate: "", notes: "", role: trialSubTab, _open: true, _editId: null })}
                 style={{ padding: "10px 20px", borderRadius: 10, border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700, boxShadow: "0 4px 12px rgba(124,58,237,0.2)" }}
               >
                 ➕ Add Trainee
@@ -14047,7 +14477,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             {/* Add Trainee Form */}
             {tForm._open && (
               <div style={{ background: "#fff", borderRadius: 16, border: "2px solid #7c3aed", padding: "20px 22px", marginBottom: 24, boxShadow: "0 4px 20px rgba(124,58,237,0.08)" }}>
-                <div style={{ fontSize: 14, fontWeight: 800, color: "#7c3aed", marginBottom: 16 }}>➕ New Trial Candidate</div>
+                <div style={{ fontSize: 14, fontWeight: 800, color: "#7c3aed", marginBottom: 16 }}>{tForm._editId ? "✏️ Edit Trial Candidate" : "➕ New Trial Candidate"}</div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12, marginBottom: 12 }}>
                   <div><label style={lbl}>Full Name *</label><input style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.name || ""} onChange={e => setTForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Thandi Mokoena" /></div>
                   <div><label style={lbl}>Phone</label><input style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.phone || ""} onChange={e => setTForm(f => ({ ...f, phone: e.target.value }))} placeholder="+27 ..." /></div>
@@ -14074,8 +14504,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <textarea rows={2} style={{ ...inp, width: "100%", boxSizing: "border-box", resize: "vertical" }} value={tForm.notes || ""} onChange={e => setTForm(f => ({ ...f, notes: e.target.value }))} />
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={submitTrial} style={{ padding: "9px 22px", borderRadius: 9, border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>🧪 Add to {trialSubTab === "am" ? "AM Trial" : "Trial Pipeline"}</button>
-                  <button onClick={() => setTForm(f => ({ ...f, _open: false }))} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>Cancel</button>
+                  <button onClick={submitTrial} style={{ padding: "9px 22px", borderRadius: 9, border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>{tForm._editId ? "💾 Save Changes" : "🧪 Add to " + (trialSubTab === "am" ? "AM Trial" : "Trial Pipeline")}</button>
+                  <button onClick={() => setTForm(f => ({ ...f, _open: false, _editId: null }))} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>Cancel</button>
                 </div>
               </div>
             )}
@@ -14102,7 +14532,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             <div key={r._id} style={{ background: "#fff", borderRadius: 12, border: `1.5px solid ${isStale ? "#fca5a5" : stage.bg}`, padding: "12px 14px", boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                                 <div style={{ fontWeight: 700, color: "#111827", fontSize: 13, marginBottom: 2 }}>{r.name}</div>
-                                <button onClick={() => deleteTrial(r._id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#d1d5db", fontSize: 14, lineHeight: 1, padding: 0 }} title="Delete">✕</button>
+                                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                  <button onClick={() => editTrial(r)} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 13, lineHeight: 1, padding: 0 }} title="Edit details & location">✏️</button>
+                                  <button onClick={() => deleteTrial(r._id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#d1d5db", fontSize: 14, lineHeight: 1, padding: 0 }} title="Delete">✕</button>
+                                </div>
                               </div>
                               <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 8 }}>📍 {r.branch}</div>
                               {r.startDate && <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 4 }}>Started: {fmtDate(r.startDate)}</div>}
@@ -14220,7 +14653,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     )}
                     {passedTrials.map(r => (
                       <div key={r._id} style={{ background: "#fff", borderRadius: 12, border: "1.5px solid #bbf7d0", padding: "12px 14px", boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
-                        <div style={{ fontWeight: 700, color: "#111827", fontSize: 13, marginBottom: 2 }}>{r.name}</div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                          <div style={{ fontWeight: 700, color: "#111827", fontSize: 13, marginBottom: 2 }}>{r.name}</div>
+                          <button onClick={() => editTrial(r)} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 13, lineHeight: 1, padding: 0 }} title="Edit details & location">✏️</button>
+                        </div>
                         <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 10 }}>📍 {r.branch}</div>
                         <button
                           onClick={() => promoteToOnboarding(r)}
@@ -15283,6 +15719,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // in the saved schedule grid (which may still have legacy 'L'
         // codes for them).
         const onMatEcs = new Set(attStaff.filter(s => s.onMat).map(s => s.ec));
+        // ROM-managed absence reasons. Build an ec → ymd → status code
+        // lookup so getStatus() can overlay a manager's day with the ROM's
+        // recorded reason (sick_n / sick / frl / al / absent / no / off).
+        // We map employee_code → staff_id via the live managers list, then
+        // index mgrDayStatuses by staff_id+date.
+        const _mgrEcToStaffId = {};
+        managers.forEach(m => { if (m.ec && (m._id || m.id)) _mgrEcToStaffId[m.ec] = m._id || m.id; });
+        const _mgrStatusByEcYmd = {};
+        (mgrDayStatuses || []).forEach(r => {
+          for (const ec in _mgrEcToStaffId) {
+            if (_mgrEcToStaffId[ec] === r.staff_id) {
+              (_mgrStatusByEcYmd[ec] = _mgrStatusByEcYmd[ec] || {})[r.date] = r.status;
+              break;
+            }
+          }
+        });
         // For a given (ec, ymd), is this day strictly AFTER their last day?
         const isPostLeftDate = (ec, ymd) => {
           const ld = offByEc[ec];
@@ -15292,6 +15744,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Helpers
         const mirrorSuppressed = !!(attMeta && attMeta.mirrorSuppressed);
         const getStatus = (ec, d) => {
+          // ROM-managed manager-absence overlay. When a regional has
+          // recorded a reason (sick + note / FRL + proof / annual / etc.)
+          // for a manager's missed day, that's the source of truth for
+          // payroll and overrides any schedule mirror / attGrid value.
+          if (_mgrStatusByEcYmd[ec]) {
+            const _do = days.find(x => x.d === d);
+            const _v = _do && _mgrStatusByEcYmd[ec][_do.ymd];
+            if (_v) return _v;
+          }
           // Tech-loan override: the home branch's loaned-out cell mirrors
           // the status the receiving branch's kiosk recorded that day so
           // payroll at home sees Esther's real workday (On Time / Late /
@@ -20453,14 +20914,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               </div>
               <div style={{ flex: 1 }} />
+              <button
+                onClick={() => setMgrAbsencePicker({
+                  branch: mgrClockinFilterBranch !== "All" ? mgrClockinFilterBranch : ((managers.filter(m => !_hasStoreScope || scopedSalonNames.has(m.branch))[0] || {}).branch || ""),
+                  staffId: "", ec: "", name: "",
+                  date: mgrClockinDay
+                })}
+                title="Tag a manager absence — for early sick calls, called-out days, etc."
+                style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "9px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: "0.03em", alignSelf: "flex-end" }}>
+                ➕ Tag absence
+              </button>
               <div style={{ fontSize: 12, color: "#831843", textAlign: "right" }}><div style={{ fontWeight: 700 }}>{mDayLabel(mgrClockinDay)}</div><strong>{filtered.length}</strong> clock-in record{filtered.length !== 1 ? "s" : ""}</div>
             </div>
 
-            {/* No-show detection: managers scheduled to work on the SELECTED day
-                but who never clocked IN. Only shown for past days — for today
-                managers may still clock in later. */}
+            {/* No-show / not-in-yet detection: managers scheduled to work on
+                the SELECTED day who haven't clocked IN. Past days render as a
+                hard red NO-SHOW banner; today renders as a softer yellow
+                "not in yet — may still clock in" banner so ROMs can tag
+                early sick calls without waiting for the day to end. Future
+                days are skipped. */}
             {(() => {
-              if (mgrClockinDay >= _mTodayYmd) return null;   // don't flag today/future
+              const isFuture = mgrClockinDay > _mTodayYmd;
+              if (isFuture) return null;
+              const isToday = mgrClockinDay === _mTodayYmd;
               // Set of ECs that clocked IN on the selected day.
               const clockedIn = new Set();
               mgrClockinRows.forEach(r => {
@@ -20480,22 +20956,52 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   const cell = grid[m.ec] && grid[m.ec][ymd];
                   if (cell !== "W" && cell !== "E") continue;     // not scheduled to work
                   if (clockedIn.has(m.ec)) continue;              // they did clock in
-                  noShows.push({ ec: m.ec, name: m.name, branch: branchName, ymd });
+                  noShows.push({ ec: m.ec, name: m.name, branch: branchName, ymd, staffId: m._id || m.id });
                 }
               }
               noShows.sort((a, b) => a.branch.localeCompare(b.branch) || a.name.localeCompare(b.name));
               if (noShows.length === 0) return null;
+              // Lookup of ROM-marked reasons keyed by staff_id + date.
+              const statByKey = {};
+              (mgrDayStatuses || []).forEach(s => { statByKey[s.staff_id + "|" + s.date] = s; });
+              const statLabel = code => (MGR_REASON_OPTIONS.find(o => o.code === code) || { label: code }).label;
+              // Softer styling for today (still may arrive) vs hard NO-SHOW for past days.
+              const palette = isToday
+                ? { bg: "#fef3c7", border: "#fcd34d", text: "#92400e", cardBorder: "#fcd34d" }
+                : { bg: "#fee2e2", border: "#fca5a5", text: "#7f1d1d", cardBorder: "#fca5a5" };
+              const headerLabel = isToday
+                ? "⏳ " + noShows.length + " NOT IN YET — may still clock in. Tag a reason if you already know they won't come (e.g. early sick call)."
+                : "⚠ " + noShows.length + " NO-SHOW" + (noShows.length === 1 ? "" : "S") + " — scheduled to work but never clocked in";
               return (
-                <div style={{ background: "#fee2e2", border: "1px solid #fca5a5", borderRadius: 11, padding: "12px 16px", marginBottom: 14 }}>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: "#7f1d1d", marginBottom: 6 }}>⚠ {noShows.length} NO-SHOW{noShows.length === 1 ? "" : "S"} — scheduled to work but never clocked in</div>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 6 }}>
-                    {noShows.slice(0, 30).map((ns, i) => (
-                      <div key={i} style={{ background: "#fff", borderRadius: 7, padding: "7px 10px", border: "1px solid #fca5a5", fontSize: 12 }}>
-                        <div style={{ fontWeight: 700, color: "#7f1d1d" }}>{ns.name}</div>
-                        <div style={{ fontSize: 11, color: "#9a1a1a" }}>{ns.branch} · {new Date(ns.ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", weekday: "short" })}</div>
-                      </div>
-                    ))}
-                    {noShows.length > 30 && <div style={{ alignSelf: "center", fontSize: 12, color: "#9a1a1a", fontStyle: "italic" }}>…and {noShows.length - 30} more</div>}
+                <div style={{ background: palette.bg, border: "1px solid " + palette.border, borderRadius: 11, padding: "12px 16px", marginBottom: 14 }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: palette.text, marginBottom: 6 }}>{headerLabel}</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 6 }}>
+                    {noShows.slice(0, 30).map((ns, i) => {
+                      const existing = statByKey[(ns.staffId || "") + "|" + ns.ymd];
+                      return (
+                        <div key={i} style={{ background: "#fff", borderRadius: 7, padding: "7px 10px", border: "1px solid " + palette.cardBorder, fontSize: 12 }}>
+                          <div style={{ fontWeight: 700, color: palette.text }}>{ns.name}</div>
+                          <div style={{ fontSize: 11, color: palette.text, opacity: 0.85 }}>{ns.branch} · {new Date(ns.ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", weekday: "short" })}</div>
+                          <div style={{ marginTop: 6 }}>
+                            {existing
+                              ? <button
+                                  onClick={() => setMgrReasonModal({ staffId: ns.staffId, ec: ns.ec, name: ns.name, branch: ns.branch, date: ns.ymd, existing })}
+                                  title={(existing.note || "") + (existing.recorded_by ? "\n— " + existing.recorded_by : "")}
+                                  style={{ background: "#dcfce7", color: "#166534", border: "1px solid #86efac", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                                  {statLabel(existing.status)}{existing.proof ? " 📎" : ""} ✎
+                                </button>
+                              : <button
+                                  onClick={() => ns.staffId && setMgrReasonModal({ staffId: ns.staffId, ec: ns.ec, name: ns.name, branch: ns.branch, date: ns.ymd, existing: null })}
+                                  disabled={!ns.staffId}
+                                  style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: ns.staffId ? "pointer" : "not-allowed", opacity: ns.staffId ? 1 : 0.5 }}>
+                                  Mark reason
+                                </button>
+                            }
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {noShows.length > 30 && <div style={{ alignSelf: "center", fontSize: 12, color: palette.text, fontStyle: "italic" }}>…and {noShows.length - 30} more</div>}
                   </div>
                 </div>
               );
@@ -20568,6 +21074,216 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <button onClick={() => setMgrClockinPhoto(null)} style={{ background: "none", border: "none", fontSize: 24, color: "#9CA3AF", cursor: "pointer", lineHeight: 1 }}>×</button>
                   </div>
                   <img src={mgrClockinPhoto.url} alt="full selfie" style={{ width: "100%", borderRadius: 8, display: "block" }} />
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {tab === "cashups" && (() => {
+        // Build a region lookup from SALONS so we can colour-code each row
+        // and apply the optional region filter. Unknown branches (e.g.
+        // newly-added stores not yet on a region) fall back to "—".
+        const regionByBranch = {};
+        SALONS.forEach(s => { regionByBranch[s.name] = s.region || ""; });
+        const regionMeta = {};
+        REGIONS.forEach(r => { regionMeta[r.key] = r; });
+
+        const _fmtMoney = (n) => "R " + (Number(n) || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+        const _fmtDate = (ymd) => { try { return new Date(ymd + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" }); } catch (_) { return ymd; } };
+
+        const filtered = cashupRows.filter(r => {
+          if (_hasStoreScope && !scopedSalonNames.has(r.branch)) return false;
+          if (cashupRegion !== "all" && regionByBranch[r.branch] !== cashupRegion) return false;
+          if (cashupBranchFilter !== "All" && r.branch !== cashupBranchFilter) return false;
+          return true;
+        });
+
+        // Roll-up stats across the visible window. Reopened rows have
+        // been superseded by a newer entry and shouldn't be double-counted.
+        const activeRows = filtered.filter(r => !r.archived_at);
+        const totals = activeRows.reduce((acc, r) => {
+          acc.revenue += Number(r.total) || 0;
+          acc.cash    += Number(r.cash)  || 0;
+          acc.banked  += Number(r.amount_banked) || 0;
+          acc.tips    += Number(r.card_tips) || 0;
+          acc.manualD += Number(r.manual_discounts) || 0;
+          return acc;
+        }, { revenue: 0, cash: 0, banked: 0, tips: 0, manualD: 0 });
+
+        // Stores that took cash but didn't capture banking confirmation —
+        // the biggest reason this page exists.
+        const bankingGaps = activeRows.filter(r =>
+          Number(r.cash) > 0 && r.cash_banked !== true && r.cash_banked !== false
+        );
+        const notBanked = activeRows.filter(r => r.cash_banked === false);
+
+        const branchesInScope = SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name));
+        const visibleBranches = cashupRegion === "all"
+          ? branchesInScope
+          : branchesInScope.filter(s => s.region === cashupRegion);
+
+        const rangeOpts = [{ v: 1, l: "Today" }, { v: 3, l: "Last 3 days" }, { v: 7, l: "Last 7 days" }, { v: 14, l: "Last 14 days" }, { v: 30, l: "Last 30 days" }, { v: 60, l: "Last 60 days" }];
+
+        const statCard = (label, value, sub) => (
+          <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 12, padding: "10px 14px", minWidth: 140 }}>
+            <div style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.08em", textTransform: "uppercase" }}>{label}</div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: "#831843", marginTop: 2 }}>{value}</div>
+            {sub && <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>{sub}</div>}
+          </div>
+        );
+
+        return (
+          <div style={{ padding: "0 24px" }}>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700, marginBottom: 4 }}>💰 Cash Ups</div>
+              <div style={{ fontSize: 12, color: "#F472B6" }}>Every store's daily cash-up, banking slip and manual-discount reasons in one place. Submitted from the BOA Check-in kiosk → Cash Up screen.</div>
+            </div>
+
+            {renderScopeBar({ marginBottom: 12 })}
+
+            <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "12px 14px", border: "1px solid #FBCFE8", marginBottom: 14, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>REGION</label>
+                <select value={cashupRegion} onChange={e => { setCashupRegion(e.target.value); setCashupBranchFilter("All"); }} style={{ padding: "7px 11px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff", minWidth: 160 }}>
+                  <option value="all">All regions</option>
+                  {REGIONS.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
+                </select>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>BRANCH</label>
+                <select value={cashupBranchFilter} onChange={e => setCashupBranchFilter(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff", minWidth: 160 }}>
+                  <option value="All">All branches</option>
+                  {visibleBranches.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                </select>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>RANGE</label>
+                <select value={cashupDays} onChange={e => setCashupDays(Number(e.target.value))} style={{ padding: "7px 11px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff", minWidth: 140 }}>
+                  {rangeOpts.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
+                </select>
+              </div>
+              <div style={{ flex: 1 }} />
+              <div style={{ fontSize: 12, color: "#831843", textAlign: "right" }}>
+                <div style={{ fontWeight: 700 }}>{filtered.length} cash-up{filtered.length !== 1 ? "s" : ""}</div>
+                <div style={{ fontSize: 11, color: "#9ca3af" }}>across {new Set(filtered.map(r => r.branch)).size} store{new Set(filtered.map(r => r.branch)).size !== 1 ? "s" : ""}</div>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+              {statCard("Total Revenue", _fmtMoney(totals.revenue), totals.tips > 0 ? "+ " + _fmtMoney(totals.tips) + " tips (not included)" : null)}
+              {statCard("Cash Taken", _fmtMoney(totals.cash), _fmtMoney(totals.banked) + " banked")}
+              {statCard("Card Tips", _fmtMoney(totals.tips))}
+              {statCard("Manual Discounts", _fmtMoney(totals.manualD))}
+              {statCard("Banking Gaps", String(bankingGaps.length), notBanked.length + " explicitly not banked")}
+            </div>
+
+            {(bankingGaps.length > 0 || notBanked.length > 0) && (
+              <div style={{ background: "#fef3c7", border: "1px solid #fcd34d", borderRadius: 11, padding: "12px 16px", marginBottom: 14 }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: "#92400e", marginBottom: 6 }}>⚠ Banking attention required</div>
+                <div style={{ fontSize: 12, color: "#92400e" }}>
+                  {bankingGaps.length > 0 && <div><strong>{bankingGaps.length}</strong> cash-up{bankingGaps.length === 1 ? "" : "s"} took cash but didn't capture a banking answer (legacy rows or skipped on submit).</div>}
+                  {notBanked.length > 0 && <div><strong>{notBanked.length}</strong> cash-up{notBanked.length === 1 ? "" : "s"} marked "Not banked" — follow up with the store.</div>}
+                </div>
+              </div>
+            )}
+
+            {filtered.length === 0 ? (
+              <div style={{ background: "#FFFFFF", borderRadius: 11, border: "1px dashed #FBCFE8", padding: "30px 20px", textAlign: "center", color: "#9ca3af" }}>No cash-ups submitted in this window.</div>
+            ) : (
+              <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 13, overflow: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: "#1f2937" }}>
+                  <thead>
+                    <tr style={{ background: "#FCE7F3", color: "#831843", textAlign: "left" }}>
+                      {["Date","Branch","Region","Yoco","Yoco Link","Cash","Tips","Vouchers","Gift card","Manual Disc.","Total","Banking","Signed by","Action"].map(h => (
+                        <th key={h} style={{ padding: "8px 10px", fontSize: 11, fontWeight: 800, letterSpacing: "0.04em", borderBottom: "1px solid #FBCFE8", whiteSpace: "nowrap" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map(r => {
+                      const rk = regionByBranch[r.branch];
+                      const rm = regionMeta[rk] || { short: "—", color: "#6b7280", bg: "#f3f4f6" };
+                      let banking;
+                      if (r.cash_banked === true) {
+                        banking = (
+                          <span>
+                            <strong style={{ color: "#14532d" }}>Yes</strong>
+                            {" · "}{_fmtMoney(r.amount_banked)}
+                            {r.banking_ref && <> · ref <em>{r.banking_ref}</em></>}
+                            {r.banked_by   && <> · by <em>{r.banked_by}</em></>}
+                            {r.banking_slip && <> · <a href="#" onClick={e => { e.preventDefault(); setCashupSlipModal({ url: r.banking_slip, branch: r.branch, date: r.date }); }} style={{ color: "#BE185D", fontWeight: 700 }}>slip</a></>}
+                          </span>
+                        );
+                      } else if (r.cash_banked === false) {
+                        banking = <span style={{ background: "#fee2e2", color: "#7f1d1d", padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>Not banked</span>;
+                      } else if (Number(r.cash) > 0) {
+                        banking = <span style={{ background: "#fef3c7", color: "#92400e", padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>Missing</span>;
+                      } else {
+                        banking = <span style={{ color: "#9ca3af" }}>—</span>;
+                      }
+                      const isArchived = !!r.archived_at;
+                      const rowMute = isArchived ? { opacity: 0.55 } : null;
+                      const strikeIfArchived = isArchived ? { textDecoration: "line-through" } : null;
+                      const cell = { padding: "7px 10px", borderBottom: "1px solid #FCE7F3", whiteSpace: "nowrap", ...rowMute };
+                      const cellNum = { ...cell, textAlign: "right", fontVariantNumeric: "tabular-nums" };
+                      return (
+                        <tr key={r.id || (r.branch + "|" + r.date + "|" + r.created_at)} style={isArchived ? { background: "#fafafa" } : null}>
+                          <td style={cell}>{_fmtDate(r.date)}{isArchived && <span style={{ marginLeft: 6, background: "#e5e7eb", color: "#4b5563", padding: "1px 6px", borderRadius: 5, fontSize: 10, fontWeight: 700 }}>REOPENED</span>}</td>
+                          <td style={{ ...cell, fontWeight: 700, color: "#831843" }}>{r.branch}</td>
+                          <td style={cell}><span style={{ background: rm.bg, color: rm.color, padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>{rm.short}</span></td>
+                          <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.yoco)}</td>
+                          <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.yoco_link)}</td>
+                          <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.cash)}</td>
+                          <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.card_tips)}</td>
+                          <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.vouchers)}</td>
+                          <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.gift_card)}</td>
+                          <td style={{ ...cellNum, ...strikeIfArchived }} title={r.manual_discount_reason || ""}>{_fmtMoney(r.manual_discounts)}{r.manual_discount_reason ? " ⓘ" : ""}</td>
+                          <td style={{ ...cellNum, fontWeight: 800, color: "#831843", ...strikeIfArchived }}>
+                            {_fmtMoney(r.total)}
+                            {Number(r.card_tips) > 0 && (
+                              <div style={{ fontSize: 10, fontWeight: 600, color: "#9ca3af", letterSpacing: "0.02em" }}>+ {_fmtMoney(r.card_tips)} tips</div>
+                            )}
+                          </td>
+                          <td style={cell}>{banking}</td>
+                          <td style={cell}>{r.signed_by}{r.notes ? <span title={r.notes} style={{ marginLeft: 6, color: "#9ca3af" }}>📝</span> : null}{isArchived && r.reopened_by ? <div style={{ fontSize: 10, color: "#9ca3af" }}>reopened by {r.reopened_by}</div> : null}</td>
+                          <td style={cell}>
+                            {isArchived ? (
+                              <span style={{ color: "#9ca3af", fontSize: 11 }}>—</span>
+                            ) : (
+                              <button
+                                onClick={async () => {
+                                  if (!window.confirm("Reopen this cash-up?\n\nStore: " + r.branch + "\nDate: " + r.date + "\nTotal: " + _fmtMoney(r.total) + "\n\nThe store will be able to submit a new cash-up for this day. The current entry stays in the history as 'Reopened'.")) return;
+                                  try {
+                                    await window.BOA_DB.reopenCashup(r.id, currentUser?.name || "");
+                                    const fresh = await window.BOA_DB.listRecentCashups(cashupDays);
+                                    setCashupRows(fresh || []);
+                                  } catch (e) {
+                                    window.alert("Couldn't reopen: " + ((e && e.message) || e));
+                                  }
+                                }}
+                                title="Reopen — let the store submit again for this day"
+                                style={{ background: "#fff", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+                              >↻ Reopen</button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {cashupSlipModal && (
+              <div onClick={() => setCashupSlipModal(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, padding: 16 }}>
+                <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 14, padding: 16, maxWidth: 720, width: "100%" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                    <div style={{ fontWeight: 800, color: "#831843" }}>🏦 Banking slip — {cashupSlipModal.branch} · {_fmtDate(cashupSlipModal.date)}</div>
+                    <button onClick={() => setCashupSlipModal(null)} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
+                  </div>
+                  <img src={cashupSlipModal.url} alt="banking slip" style={{ width: "100%", borderRadius: 8, display: "block" }} />
                 </div>
               </div>
             )}
@@ -20720,6 +21436,149 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   style={{ background: "#9d174d", color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: "pointer", fontSize: 13, fontWeight: 700, opacity: m._saving ? 0.6 : 1 }}>
                   {m._saving ? "Reopening…" : "Reopen check-in"}
                 </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Mark / edit a reason for a manager who didn't clock in. Opened from
+          the Manager Check-ins no-show banner, the dashboard to-do tile, or
+          (later) the attendance sheet cell. Saves into manager_day_status
+          and refetches so the attendance overlay, no-show banner and to-do
+          card all reflect the new value immediately. */}
+      {/* "Tag absence" picker — lets a ROM pick any manager + day and
+          drop into the Mark-reason modal. Used for early sick calls and
+          for days the no-show banner missed. */}
+      {mgrAbsencePicker && (() => {
+        const p = mgrAbsencePicker;
+        const scopedBranches = SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name));
+        const branchManagers = managers
+          .filter(m => m.branch === p.branch)
+          .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+        return (
+          <div onClick={() => setMgrAbsencePicker(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "20px 22px", width: "100%", maxWidth: 460 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                <div>
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 19, color: "#831843", fontWeight: 700 }}>Tag a manager absence</div>
+                  <div style={{ fontSize: 12, color: "#9ca3af" }}>Pick the manager and day — next step is the reason &amp; sick-note.</div>
+                </div>
+                <button onClick={() => setMgrAbsencePicker(null)} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
+              </div>
+              <div style={{ marginTop: 14 }}>
+                <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>BRANCH</label>
+                <select value={p.branch} onChange={e => setMgrAbsencePicker({ ...p, branch: e.target.value, staffId: "", ec: "", name: "" })}
+                  style={{ display: "block", width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff" }}>
+                  {scopedBranches.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                </select>
+              </div>
+              <div style={{ marginTop: 12 }}>
+                <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>MANAGER</label>
+                {branchManagers.length === 0 ? (
+                  <div style={{ marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px dashed #FBCFE8", fontSize: 12, color: "#9ca3af" }}>No managers on the staff list for this branch.</div>
+                ) : (
+                  <select value={p.staffId || ""} onChange={e => {
+                    const m = branchManagers.find(mm => (mm._id || mm.id) === e.target.value);
+                    setMgrAbsencePicker({ ...p, staffId: e.target.value, ec: m ? m.ec : "", name: m ? m.name : "" });
+                  }}
+                    style={{ display: "block", width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff" }}>
+                    <option value="">— Choose a manager —</option>
+                    {branchManagers.map(m => <option key={m._id || m.id} value={m._id || m.id}>{m.name} {m.role ? "· " + m.role : ""}</option>)}
+                  </select>
+                )}
+              </div>
+              <div style={{ marginTop: 12 }}>
+                <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>DAY</label>
+                <input type="date" value={p.date} max={(() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })()}
+                  onChange={e => e.target.value && setMgrAbsencePicker({ ...p, date: e.target.value })}
+                  style={{ display: "block", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13 }} />
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+                <button onClick={() => setMgrAbsencePicker(null)} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", color: "#831843", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Cancel</button>
+                <button
+                  onClick={() => {
+                    if (!p.staffId || !p.date) return;
+                    // Pre-fill from existing record if there is one.
+                    const ex = (mgrDayStatuses || []).find(s => s.staff_id === p.staffId && s.date === p.date) || null;
+                    setMgrAbsencePicker(null);
+                    setMgrReasonModal({ staffId: p.staffId, ec: p.ec, name: p.name, branch: p.branch, date: p.date, existing: ex });
+                  }}
+                  disabled={!p.staffId || !p.date}
+                  style={{ padding: "9px 20px", borderRadius: 9, border: "none", background: (p.staffId && p.date) ? "#BE185D" : "#FBCFE8", color: "#fff", fontWeight: 700, fontSize: 13, cursor: (p.staffId && p.date) ? "pointer" : "not-allowed" }}>
+                  Continue →
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {mgrReasonModal && (() => {
+        const m = mgrReasonModal;
+        const existing = m.existing || null;
+        const todayY = new Date(); const t0 = todayY.getFullYear() + "-" + String(todayY.getMonth() + 1).padStart(2, "0") + "-" + String(todayY.getDate()).padStart(2, "0");
+        const locked = payrollYmFor(m.date) !== payrollYmFor(t0);
+        return (
+          <MgrReasonModalBody
+            modal={m}
+            existing={existing}
+            locked={locked}
+            currentUserName={currentUser?.name || ""}
+            onClose={() => setMgrReasonModal(null)}
+            onSaved={async () => {
+              try {
+                const rows = await window.BOA_DB.loadManagerDayStatuses(60);
+                setMgrDayStatuses(rows || []);
+              } catch (_) {}
+              setMgrReasonModal(null);
+            }}
+          />
+        );
+      })()}
+
+      {/* Not-checked-in list — opened from the dashboard check-in tiles. Lists
+          everyone scheduled to work today who hasn't checked in or been marked
+          absent, grouped by branch. Shared by the tech and manager tiles via a
+          { title, role, list, tab, tabLabel } payload. */}
+      {notCheckedInModal && (() => {
+        const data = notCheckedInModal || {};
+        const list = data.list || [];
+        const noun = data.role === "manager" ? "manager" : "tech";
+        const byBranch = {};
+        for (const t of list) (byBranch[t.branch] = byBranch[t.branch] || []).push(t);
+        const branches = Object.keys(byBranch).sort();
+        return (
+          <div onClick={() => setNotCheckedInModal(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "20px 22px", width: "100%", maxWidth: 460, maxHeight: "85vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                <div>
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: "#831843" }}>⏳ {data.title || "Not checked in yet"}</div>
+                  <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>{list.length} {noun}{list.length !== 1 ? "s" : ""} scheduled today {list.length !== 1 ? "haven't" : "hasn't"} {data.role === "manager" ? "clocked in" : "checked in or been marked absent"}.</div>
+                </div>
+                <button onClick={() => setNotCheckedInModal(null)} style={{ background: "transparent", border: "none", fontSize: 18, cursor: "pointer", color: "#6b7280", lineHeight: 1 }}>✕</button>
+              </div>
+              {list.length === 0 ? (
+                <div style={{ color: "#15803d", fontSize: 13, fontWeight: 700, marginTop: 14 }}>✓ Everyone scheduled today has checked in.</div>
+              ) : (
+                <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 14 }}>
+                  {branches.map(b => (
+                    <div key={b}>
+                      <div style={{ fontSize: 10, fontWeight: 800, color: "#BE185D", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 6 }}>📍 {b} · {byBranch[b].length}</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {byBranch[b].map(t => (
+                          <div key={t.ec} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#FDEEF5", borderRadius: 8, padding: "8px 12px" }}>
+                            <span style={{ fontSize: 13, fontWeight: 600, color: "#831843" }}>{t.name}</span>
+                            <span style={{ fontSize: 11, fontFamily: "monospace", color: "#9d174d", background: "#fff", padding: "2px 7px", borderRadius: 5 }}>{t.ec}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 18 }}>
+                <button onClick={() => { const _tab = data.tab || "checkins"; setNotCheckedInModal(null); tryChangeTab(_tab); }} style={{ background: "#9d174d", color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>{data.tabLabel || "Open Check-ins →"}</button>
               </div>
             </div>
           </div>

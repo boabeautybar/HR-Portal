@@ -989,6 +989,9 @@
 
     var myBranch = cfg.branchName || "";
     var myTrialCand = trialCand.filter(function(c) {
+      // Trial AMs live on the Manager Clock-in page instead — they don't
+      // belong with the nail-tech roster.
+      if ((c.role || "nt") === "am") return false;
       return c.branch === myBranch && c.status && c.status.indexOf("trial") === 0;
     });
 
@@ -2139,27 +2142,78 @@
           '<div class="result-sub">Signed by ' + esc(existing.signed_by) + ' at ' + fmtTime(existing.created_at) + '</div>' +
         '</div>' +
         '<div class="cashup-summary">' +
-          row("Yoco (Card)",      existing.yoco) +
-          row("Cash",             existing.cash) +
-          row("Vouchers",         existing.vouchers) +
-          row("Discounts",        -Math.abs(existing.discounts), true) +
-          row("Total",            existing.total, false, true) +
+          row("Yoco (Card)",         existing.yoco) +
+          row("Yoco Payment Link",   existing.yoco_link) +
+          row("Cash",                existing.cash) +
+          row("Card Tips",           existing.card_tips) +
+          row("Vouchers purchased",  existing.vouchers) +
+          row("Gift card redemption", existing.gift_card) +
+          row("Manual Discounts",    -Math.abs(existing.manual_discounts || 0), true) +
+          (existing.manual_discount_reason ? '<div class="cashup-row"><span>Reason</span><span>' + esc(existing.manual_discount_reason) + '</span></div>' : "") +
+          row("Total",               existing.total, false, true) +
+          (Number(existing.card_tips) > 0
+            ? '<div class="cashup-row" style="font-size:0.85em;color:#6b7280"><span>+ Card Tips (not included in total)</span><span>' + fmtMoney(existing.card_tips) + '</span></div>'
+            : "") +
           (existing.notes ? '<div class="cashup-notes">"' + esc(existing.notes) + '"</div>' : "") +
+          (existing.cash_banked === true || existing.cash_banked === false
+            ? '<div class="cashup-banking-summary" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--pink-100)">' +
+                '<div class="lbl" style="margin-bottom:6px">🏦 Banking</div>' +
+                (existing.cash_banked
+                  ? '<div class="cashup-row"><span>Cash banked today</span><span>Yes</span></div>'
+                    + row("Amount banked", existing.amount_banked)
+                    + (existing.banking_ref ? '<div class="cashup-row"><span>Reference</span><span>' + esc(existing.banking_ref) + '</span></div>' : "")
+                    + (existing.banked_by   ? '<div class="cashup-row"><span>Banked by</span><span>' + esc(existing.banked_by)   + '</span></div>' : "")
+                    + (existing.banking_slip ? '<div style="margin-top:8px"><a href="' + existing.banking_slip + '" target="_blank" rel="noopener"><img src="' + existing.banking_slip + '" alt="banking slip" style="max-width:100%;max-height:180px;border-radius:8px;border:1px solid var(--pink-100)"></a></div>' : "")
+                  : '<div class="cashup-row"><span>Cash banked today</span><span>No</span></div>'
+                ) +
+              '</div>'
+            : "") +
         '</div>';
       return;
     }
 
     document.getElementById("cashup-body").innerHTML =
       '<div class="cashup-form">' +
-        amountField("yoco",      "💳 Yoco (Card)") +
-        amountField("cash",      "💵 Cash") +
-        amountField("vouchers",  "🎟️ Vouchers") +
-        amountField("discounts", "− Discounts") +
+        amountField("yoco",       "💳 Yoco (Card)") +
+        amountField("yoco_link",  "🔗 Yoco Payment Link") +
+        amountField("cash",       "💵 Cash") +
+        amountField("card_tips",  "💰 Card Tips") +
+        amountField("vouchers",   "🎟️ Vouchers purchased") +
+        amountField("gift_card",  "🎁 Gift card redemption") +
+        amountField("manual_discounts", "− Manual Discounts") +
+        '<div id="cu-manual-reason-wrap" style="display:none;margin-top:-4px;margin-bottom:10px">' +
+          '<label class="lbl" for="cu-manual-reason">Reason for manual discount <span style="color:#b53">required</span></label>' +
+          '<textarea id="cu-manual-reason" class="input" rows="2" placeholder="e.g. service complaint, staff family, manager approval…"></textarea>' +
+        '</div>' +
 
         '<div class="cashup-total-box">' +
           '<div><div class="lbl">Total Revenue</div>' +
           '<div class="cashup-breakdown" id="cu-brk">Enter amounts above</div></div>' +
           '<div class="cashup-total" id="cu-total">R 0.00</div>' +
+        '</div>' +
+
+        '<div id="cu-banking" class="cashup-banking" style="display:none;margin-top:14px;padding:12px;border:1px solid var(--pink-100);border-radius:10px;background:#fff7fb">' +
+          '<div class="lbl" style="margin-bottom:8px">🏦 Banking Information <span style="color:#b53">required</span></div>' +
+          '<div class="cashup-fineprint" style="margin-bottom:8px">Cash received must be banked the same day. Capture the deposit slip to protect the store.</div>' +
+          '<label class="lbl">Cash banked today?</label>' +
+          '<div class="btn-row" style="gap:8px;margin-bottom:8px">' +
+            '<label style="display:flex;align-items:center;gap:6px"><input type="radio" name="cu-banked" id="cu-banked-yes" value="yes"> Yes</label>' +
+            '<label style="display:flex;align-items:center;gap:6px"><input type="radio" name="cu-banked" id="cu-banked-no"  value="no"> No</label>' +
+          '</div>' +
+          '<div id="cu-bank-yes" style="display:none">' +
+            amountField("amount_banked", "Amount banked") +
+            '<label class="lbl" for="cu-banking-ref">Banking reference number</label>' +
+            '<input id="cu-banking-ref" class="input" type="text" placeholder="e.g. deposit slip / EFT ref">' +
+            '<label class="lbl" for="cu-banked-by">Who banked it</label>' +
+            '<input id="cu-banked-by" class="input" type="text" autocomplete="name" placeholder="Full name of person who banked">' +
+            '<label class="lbl" for="cu-banking-slip">Banking slip photo</label>' +
+            '<input id="cu-banking-slip" class="input" type="file" accept="image/*" capture="environment">' +
+            '<div id="cu-banking-slip-preview" style="margin-top:8px"></div>' +
+            '<div id="cu-banking-slip-err" class="err-line"></div>' +
+          '</div>' +
+          '<div id="cu-bank-no" class="cashup-fineprint" style="display:none;color:#b53;margin-top:6px">' +
+            '⚠ Cash not banked today. Explain in the Notes field below (e.g. weekend, safe drop, will bank tomorrow).' +
+          '</div>' +
         '</div>' +
 
         '<label class="lbl">Notes (optional)</label>' +
@@ -2173,21 +2227,63 @@
         '<div id="cu-result"></div>' +
       '</div>';
 
-    var ids = ["yoco", "cash", "vouchers", "discounts"];
-    ids.forEach(function (id) { document.getElementById("cu-" + id).addEventListener("input", recalc); });
+    var ids = ["yoco", "yoco_link", "cash", "card_tips", "vouchers", "gift_card", "manual_discounts", "amount_banked"];
+    ids.forEach(function (id) {
+      var el = document.getElementById("cu-" + id);
+      if (el) el.addEventListener("input", recalc);
+    });
     document.getElementById("cu-name").addEventListener("input", recalc);
+    document.getElementById("cu-manual-reason").addEventListener("input", recalc);
+    document.getElementById("cu-banking-ref").addEventListener("input", recalc);
+    document.getElementById("cu-banked-by").addEventListener("input", recalc);
+    document.getElementById("cu-banked-yes").addEventListener("change", onBankedToggle);
+    document.getElementById("cu-banked-no").addEventListener("change", onBankedToggle);
+
+    var bankingSlipDataUrl = null;
+    document.getElementById("cu-banking-slip").addEventListener("change", function () {
+      var errEl = document.getElementById("cu-banking-slip-err");
+      var prev  = document.getElementById("cu-banking-slip-preview");
+      errEl.textContent = "";
+      var file = this.files && this.files[0];
+      if (!file) { bankingSlipDataUrl = null; prev.innerHTML = ""; recalc(); return; }
+      compressImage(file, 1600, 0.8, function (dataUrl, err) {
+        if (err) { errEl.textContent = err; bankingSlipDataUrl = null; prev.innerHTML = ""; recalc(); return; }
+        bankingSlipDataUrl = dataUrl;
+        prev.innerHTML = '<img src="' + dataUrl + '" alt="banking slip" style="max-width:100%;max-height:200px;border-radius:8px;border:1px solid var(--pink-100)">';
+        recalc();
+      });
+    });
+
+    function onBankedToggle() {
+      var yes = document.getElementById("cu-banked-yes").checked;
+      document.getElementById("cu-bank-yes").style.display = yes ? "" : "none";
+      document.getElementById("cu-bank-no").style.display  = yes ? "none" : (document.getElementById("cu-banked-no").checked ? "" : "none");
+      recalc();
+    }
 
     document.getElementById("cu-submit").onclick = async function () {
       var btn = this; btn.disabled = true;
       var resEl = document.getElementById("cu-result");
+      var cashBankedYes = document.getElementById("cu-banked-yes").checked;
+      var cashBankedNo  = document.getElementById("cu-banked-no").checked;
+      var cashBanked    = cashBankedYes ? true : (cashBankedNo ? false : null);
       try {
         await window.APP_DATA.addCashup({
-          yoco:      val("yoco"),
-          cash:      val("cash"),
-          vouchers:  val("vouchers"),
-          discounts: val("discounts"),
-          notes:     document.getElementById("cu-notes").value,
-          signedBy:  document.getElementById("cu-name").value
+          yoco:       val("yoco"),
+          yoco_link:  val("yoco_link"),
+          cash:       val("cash"),
+          card_tips:  val("card_tips"),
+          vouchers:   val("vouchers"),
+          gift_card:  val("gift_card"),
+          manual_discounts:       val("manual_discounts"),
+          manual_discount_reason: document.getElementById("cu-manual-reason").value,
+          notes:      document.getElementById("cu-notes").value,
+          signedBy:   document.getElementById("cu-name").value,
+          cash_banked:   cashBanked,
+          amount_banked: cashBankedYes ? val("amount_banked") : 0,
+          banking_ref:   cashBankedYes ? document.getElementById("cu-banking-ref").value : "",
+          banked_by:     cashBankedYes ? document.getElementById("cu-banked-by").value  : "",
+          banking_slip:  cashBankedYes ? bankingSlipDataUrl : null
         });
         resEl.innerHTML = '<div class="result-card result-ok"><div class="result-icon">✓</div><div class="result-title">Cash-up saved. Thank you!</div></div>';
         setTimeout(renderCashup, 800);
@@ -2208,18 +2304,60 @@
   }
   function val(id) { return parseFloat(document.getElementById("cu-" + id).value) || 0; }
   function recalc() {
-    var y = val("yoco"), c = val("cash"), v = val("vouchers"), d = val("discounts");
-    var t = Math.max(0, y + c + v - d);
+    var y  = val("yoco"),
+        yl = val("yoco_link"),
+        c  = val("cash"),
+        ct = val("card_tips"),
+        v  = val("vouchers"),
+        gc = val("gift_card"),
+        md = val("manual_discounts");
+    var t = Math.max(0, y + yl + c + v + gc - md);
     document.getElementById("cu-total").textContent = fmtMoney(t);
     var parts = [];
-    if (y) parts.push("Yoco "      + fmtMoney(y));
-    if (c) parts.push("Cash "      + fmtMoney(c));
-    if (v) parts.push("Vouchers "  + fmtMoney(v));
-    if (d) parts.push("− Disc "    + fmtMoney(d));
+    if (y)  parts.push("Yoco "       + fmtMoney(y));
+    if (yl) parts.push("Yoco Link "  + fmtMoney(yl));
+    if (c)  parts.push("Cash "       + fmtMoney(c));
+    if (ct) parts.push("Tips "       + fmtMoney(ct));
+    if (v)  parts.push("Vouchers "   + fmtMoney(v));
+    if (gc) parts.push("Gift card "  + fmtMoney(gc));
+    if (md) parts.push("− Manual "   + fmtMoney(md));
     document.getElementById("cu-brk").textContent = parts.length ? parts.join(" · ") : "Enter amounts above";
-    var hasAmt = (y > 0 || c > 0 || v > 0);
+    var hasAmt = (y > 0 || yl > 0 || c > 0 || v > 0 || gc > 0);
     var name   = document.getElementById("cu-name").value.trim();
-    document.getElementById("cu-submit").disabled = !(hasAmt && name.length >= 2);
+
+    var reasonWrap = document.getElementById("cu-manual-reason-wrap");
+    var manualReason = document.getElementById("cu-manual-reason").value.trim();
+    var manualOk = true;
+    if (md > 0) {
+      reasonWrap.style.display = "";
+      manualOk = manualReason.length >= 3;
+    } else {
+      reasonWrap.style.display = "none";
+    }
+
+    var bankingBox = document.getElementById("cu-banking");
+    var bankingOk  = true;
+    if (c > 0) {
+      bankingBox.style.display = "";
+      var yes = document.getElementById("cu-banked-yes").checked;
+      var no  = document.getElementById("cu-banked-no").checked;
+      document.getElementById("cu-bank-yes").style.display = yes ? "" : "none";
+      document.getElementById("cu-bank-no").style.display  = no  ? "" : "none";
+      if (!yes && !no) {
+        bankingOk = false;
+      } else if (yes) {
+        var amt    = val("amount_banked");
+        var ref    = document.getElementById("cu-banking-ref").value.trim();
+        var by     = document.getElementById("cu-banked-by").value.trim();
+        var slipEl = document.getElementById("cu-banking-slip");
+        var hasSlip = slipEl && slipEl.files && slipEl.files.length > 0;
+        bankingOk = (amt > 0 && ref.length > 0 && by.length >= 2 && hasSlip);
+      }
+    } else {
+      bankingBox.style.display = "none";
+    }
+
+    document.getElementById("cu-submit").disabled = !(hasAmt && name.length >= 2 && bankingOk && manualOk);
   }
 
   // ---------------- helpers ----------------

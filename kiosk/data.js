@@ -459,6 +459,7 @@
     var c = client(); if (!c) return null;
     var res = await c.from("cashups").select("*")
       .eq("branch", branch()).eq("date", todayStr())
+      .is("archived_at", null)
       .order("created_at", { ascending: false }).limit(1);
     if (res.error) { console.error("todaysCashup:", res.error); return null; }
     return (res.data || [])[0] || null;
@@ -468,10 +469,21 @@
     var c = client(); if (!c) throw new Error("Supabase not configured");
     var row = {
       branch: branch(), date: todayStr(),
-      yoco: Number(payload.yoco) || 0, cash: Number(payload.cash) || 0,
-      vouchers: Number(payload.vouchers) || 0, discounts: Number(payload.discounts) || 0,
+      yoco:      Number(payload.yoco)      || 0,
+      yoco_link: Number(payload.yoco_link) || 0,
+      cash:      Number(payload.cash)      || 0,
+      card_tips: Number(payload.card_tips) || 0,
+      vouchers:  Number(payload.vouchers)  || 0,
+      gift_card: Number(payload.gift_card) || 0,
+      manual_discounts:       Number(payload.manual_discounts) || 0,
+      manual_discount_reason: (payload.manual_discount_reason || "").trim() || null,
       notes: (payload.notes || "").trim() || null,
-      signed_by: (payload.signedBy || "").trim()
+      signed_by: (payload.signedBy || "").trim(),
+      cash_banked:   (payload.cash_banked === true || payload.cash_banked === false) ? payload.cash_banked : null,
+      amount_banked: Number(payload.amount_banked) || 0,
+      banking_ref:   (payload.banking_ref || "").trim() || null,
+      banked_by:     (payload.banked_by   || "").trim() || null,
+      banking_slip:  payload.banking_slip || null
     };
     var res = await c.from("cashups").insert(row).select().single();
     if (res.error) throw res.error;
