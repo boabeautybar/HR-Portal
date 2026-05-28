@@ -21770,6 +21770,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           (_clockedInByEcYmd[_ec] = _clockedInByEcYmd[_ec] || {})[_ymd] = true;
         });
 
+        // Cross-store loan lookup. Keyed by "<ec>|<ymd>" → {fromBranch,toBranch,name}.
+        // Used to render "↪ <destination>" on a home-branch loan_out cell.
+        const _loansByEcYmd = {};
+        (mgrLoanRows || []).forEach(lo => {
+          if (!lo || !lo.ec || !lo.date) return;
+          _loansByEcYmd[String(lo.ec).trim() + "|" + lo.date] = lo;
+        });
+
         // Coverage per branch per day — count managers scheduled to work.
         // Uses readWithFallback so published-only schedules still count.
         const coverageByBranchDay = {};
@@ -21795,16 +21803,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Connecteam-style colored blocks branded by branch with the shift
         // times and role · branch label; non-working cells fall back to a
         // small muted pill (OFF / LEAVE / REQ / MATERNITY) or blank.
-        const renderCell = (cellVal, key, branchName, role, ymd, ec, isGuest) => {
+        const openCellEditor = (branchName, mgrYm, dom, ymd, ec, name, role, currentCell) => {
+          if (!ec) return;
+          setMgrCellEditor({ branch: branchName, mgrYm, ec, name: name || "", role: role || "", ymd, dom, currentCell: currentCell || "" });
+        };
+        const renderCell = (cellVal, key, branchName, role, ymd, ec, isGuest, mgrYm, mgrName, dom) => {
           const clockedIn = ec && ymd && _clockedInByEcYmd[String(ec).trim()] && _clockedInByEcYmd[String(ec).trim()][ymd];
-          // Did this day already pass? (Today still in flight, so absence
-          // can't be inferred yet.)
           const isPast = ymd && ymd < (function () { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
-          // Blank / empty day cell.
+          const tdStyle = { background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", cursor: ec ? "pointer" : "default" };
+          const onCellClick = () => openCellEditor(branchName, mgrYm, dom, ymd, ec, mgrName, role, cellVal || "");
+          // Blank / empty day cell — also clickable so a ROM can add a shift.
           if (!cellVal) {
             return (
-              <td key={key} style={{ background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", textAlign: "center" }}>
-                <div style={{ minHeight: 56, display: "flex", alignItems: "center", justifyContent: "center", color: "#e5e7eb", fontSize: 18 }}>·</div>
+              <td key={key} onClick={ec ? onCellClick : undefined} title={ec ? "Click to add a shift" : ""} style={{ ...tdStyle, textAlign: "center" }}>
+                <div style={{ minHeight: 56, display: "flex", alignItems: "center", justifyContent: "center", color: ec ? "#FBCFE8" : "#e5e7eb", fontSize: 18, transition: "color 0.15s" }}>＋</div>
+              </td>
+            );
+          }
+          // Cross-store loan cell at home branch — show "↪ Destination".
+          if (cellVal === "loan_out") {
+            const lo = _loansByEcYmd[String(ec).trim() + "|" + ymd];
+            const destLbl = (lo && lo.toBranch) || "Other store";
+            return (
+              <td key={key} onClick={onCellClick} title={"Loaned to " + destLbl + " on this day"} style={tdStyle}>
+                <div style={{ background: "#1E3A8A", color: "#fff", borderRadius: 6, padding: "8px 6px", textAlign: "left", lineHeight: 1.25, minHeight: 56, boxShadow: "inset 0 -2px 0 rgba(0,0,0,0.18)" }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, opacity: 0.85 }}>↪ Loaned to</div>
+                  <div style={{ fontSize: 12, fontWeight: 800, marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{destLbl}</div>
+                  <div style={{ fontSize: 9, fontWeight: 700, opacity: 0.85, marginTop: 1 }}>{(role || "").toUpperCase()}</div>
+                </div>
               </td>
             );
           }
@@ -21816,8 +21842,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const dotColor = clockedIn ? "#22c55e" : (isPast ? "#ef4444" : null);
             const dotTitle = clockedIn ? "✓ Clocked in" : (isPast ? "✗ Absent — did not clock in" : null);
             return (
-              <td key={key} style={{ background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle" }}>
-                <div title={(role || "") + " · " + branchName + " · " + cellVal + " · " + time + (dotTitle ? "\n" + dotTitle : "") + (isGuest ? "\nGuest from " + isGuest : "")}
+              <td key={key} onClick={onCellClick} style={tdStyle}>
+                <div title={(role || "") + " · " + branchName + " · " + cellVal + " · " + time + (dotTitle ? "\n" + dotTitle : "") + (isGuest ? "\nGuest from " + isGuest : "") + "\n\nClick to edit"}
                   style={{ position: "relative", background: pal.bg, color: pal.fg, borderRadius: 6, padding: "8px 6px", textAlign: "left", lineHeight: 1.25, minHeight: 56, boxShadow: "inset 0 -2px 0 rgba(0,0,0,0.18)", ...subtle }}>
                   {dotColor && (
                     <span title={dotTitle} style={{ position: "absolute", top: 4, right: 4, width: 9, height: 9, borderRadius: 9, background: dotColor, border: "2px solid #fff", boxShadow: "0 0 0 1px rgba(0,0,0,0.12)" }} />
@@ -21836,7 +21862,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const fg = NON_WORK_FG[cellVal] || "#374151";
           const lbl = NON_WORK_LBL[cellVal] || cellVal;
           return (
-            <td key={key} style={{ background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", textAlign: "center" }}>
+            <td key={key} onClick={onCellClick} title={ec ? "Click to edit" : ""} style={{ ...tdStyle, textAlign: "center" }}>
               <div style={{ background: bg, color: fg, borderRadius: 6, padding: "8px 6px", fontSize: 10, fontWeight: 800, letterSpacing: "0.05em", minHeight: 56, display: "flex", alignItems: "center", justifyContent: "center" }}>
                 {lbl}
               </div>
@@ -21980,7 +22006,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       </td>
                                       {weekDays.map(d => {
                                         const v = readWithFallback(b, m.ec, d);
-                                        return renderCell(v, m.ec + "-" + d.ymd, b, m.role, d.ymd, m.ec, m._guestFromBranch || null);
+                                        return renderCell(v, m.ec + "-" + d.ymd, b, m.role, d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom);
                                       })}
                                     </tr>
                                   );
@@ -22027,7 +22053,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           </td>
                           {weekDays.map(d => {
                             const v = readWithFallback(b, m.ec, d);
-                            return renderCell(v, m.ec + "-" + d.ymd, b, m.role, d.ymd, m.ec, m._guestFromBranch || null);
+                            return renderCell(v, m.ec + "-" + d.ymd, b, m.role, d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom);
                           })}
                         </tr>
                       ));
@@ -22413,6 +22439,151 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           organise stores into clusters that matter for them (e.g.
           Cape Town city bowl, Southern suburbs) and reorder freely.
           Saved per user PIN so each ROM has their own view. */}
+      {/* Manager Coverage — cell editor. Click any manager-day cell on
+          the coverage tab to change the shift code, clear it, or loan
+          the manager to another store. Writes through to the working
+          schedule grid via BOA_DB.saveSchedule and to the mgr_loans
+          row when it's a cross-store move — both are read by the
+          Scheduling tab and the kiosk on next refresh. */}
+      {mgrCellEditor && (() => {
+        const E = mgrCellEditor;
+        const _close = () => setMgrCellEditor(null);
+        const _isCrossStore = (E._draftCode === "loan_out") || (E._draftDest && E._draftDest !== E.branch);
+        // Save: mutate the working draft grid for the home branch and
+        // (optionally) the destination branch, then upsert via
+        // BOA_DB.saveSchedule. Also write a manager-loan row when a
+        // destination is set.
+        const _save = async () => {
+          if (!window.BOA_DB || !window.BOA_DB.saveSchedule) { window.alert("Not connected — try again."); return; }
+          const homeBranch = E.branch;
+          const ym = E.mgrYm;
+          const ec = String(E.ec).trim();
+          const dom = E.dom;
+          const ymd = E.ymd;
+          const draftCode = E._draftCode != null ? E._draftCode : E.currentCell;
+          const dest = E._draftDest || "";
+          const setMgrCellEditorSaving = (next) => setMgrCellEditor(prev => prev ? { ...prev, ...next } : null);
+          setMgrCellEditorSaving({ _saving: true, _err: "" });
+          try {
+            // 1) Update home-branch grid.
+            const homeKey = homeBranch + "|" + ym;
+            const homeWorking = mgrClockinSchedCache[homeKey] || {};
+            const homeRow = { ...(homeWorking[ec] || {}) };
+            const newHomeCode = dest && dest !== homeBranch ? "loan_out" : (draftCode || null);
+            if (newHomeCode) { homeRow[dom] = newHomeCode; delete homeRow[ymd]; }
+            else { delete homeRow[dom]; delete homeRow[ymd]; }
+            const newHomeGrid = { ...homeWorking, [ec]: homeRow };
+            await window.BOA_DB.saveSchedule(homeBranch, ym, newHomeGrid, true);
+            // 2) Update destination grid when loaning.
+            if (dest && dest !== homeBranch) {
+              const destKey = dest + "|" + ym;
+              const destWorking = mgrClockinSchedCache[destKey] || {};
+              const destRow = { ...(destWorking[ec] || {}) };
+              destRow[dom] = draftCode && draftCode !== "loan_out" ? draftCode : "W";
+              const newDestGrid = { ...destWorking, [ec]: destRow };
+              await window.BOA_DB.saveSchedule(dest, ym, newDestGrid, true);
+              setMgrClockinSchedCache(prev => ({ ...prev, [destKey]: newDestGrid }));
+            }
+            setMgrClockinSchedCache(prev => ({ ...prev, [homeKey]: newHomeGrid }));
+            // 3) Update mgr_loans row.
+            const existingLoans = (mgrLoanRows || []).slice();
+            const idx = existingLoans.findIndex(l => l && String(l.ec).trim() === ec && l.date === ymd);
+            if (dest && dest !== homeBranch) {
+              const rec = {
+                _id: idx >= 0 ? existingLoans[idx]._id : ("l_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7)),
+                ec, name: E.name || "", date: ymd,
+                fromBranch: homeBranch, toBranch: dest,
+                note: E._draftNote || "",
+                createdBy: (currentUser && currentUser.name) || "",
+                createdAt: idx >= 0 ? existingLoans[idx].createdAt : new Date().toISOString()
+              };
+              if (idx >= 0) existingLoans[idx] = rec; else existingLoans.push(rec);
+            } else if (idx >= 0) {
+              // Removed a loan that was previously set.
+              existingLoans.splice(idx, 1);
+            }
+            if (window.BOA_DB.saveMgrLoans) {
+              await window.BOA_DB.saveMgrLoans(existingLoans);
+              setMgrLoanRows(existingLoans);
+            }
+            _close();
+          } catch (err) {
+            setMgrCellEditor(prev => prev ? { ...prev, _saving: false, _err: (err && err.message) || String(err) } : null);
+          }
+        };
+        const _setDraft = (next) => setMgrCellEditor(prev => prev ? { ...prev, ...next } : null);
+        const _opts = [
+          { code: "W",  lbl: "Work · standard" },
+          { code: "WE", lbl: "Work early" },
+          { code: "WL", lbl: "Work late" },
+          { code: "WM", lbl: "Work morning (half)" },
+          { code: "WB", lbl: "Work both shifts" },
+          { code: "E",  lbl: "Extra cover" },
+          { code: "O",  lbl: "Off" },
+          { code: "R",  lbl: "Requested off" },
+          { code: "L",  lbl: "Annual leave" },
+          { code: "",   lbl: "(clear cell)" }
+        ];
+        const otherBranches = SALONS.map(s => s.name).filter(b => b !== E.branch);
+        const draftCode = E._draftCode != null ? E._draftCode : E.currentCell;
+        const draftDest = E._draftDest || "";
+        return (
+          <div onClick={_close} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <div onClick={ev => ev.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "20px 22px", width: "100%", maxWidth: 500 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                <div>
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, color: "#831843", fontWeight: 700 }}>Edit shift</div>
+                  <div style={{ fontSize: 12, color: "#9ca3af" }}>
+                    {E.name} {E.role ? "· " + E.role : ""} · 📍 {E.branch} · {new Date(E.ymd + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short", year: "numeric" })}
+                  </div>
+                </div>
+                <button onClick={_close} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
+              </div>
+
+              <div style={{ marginTop: 14 }}>
+                <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>SHIFT CODE</label>
+                <select value={draftCode || ""} onChange={ev => _setDraft({ _draftCode: ev.target.value })}
+                  style={{ display: "block", width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff" }}>
+                  {_opts.map(o => <option key={o.code} value={o.code}>{o.code ? o.code + " — " + o.lbl : o.lbl}</option>)}
+                </select>
+              </div>
+
+              <div style={{ marginTop: 12 }}>
+                <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>OR LOAN TO ANOTHER STORE (optional)</label>
+                <select value={draftDest} onChange={ev => _setDraft({ _draftDest: ev.target.value })}
+                  style={{ display: "block", width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff" }}>
+                  <option value="">— Stay at {E.branch} —</option>
+                  {otherBranches.map(b => <option key={b} value={b}>{b}</option>)}
+                </select>
+                {draftDest && (
+                  <div style={{ marginTop: 6, padding: "8px 10px", background: "#dbeafe", border: "1px solid #93c5fd", borderRadius: 8, fontSize: 12, color: "#1e3a8a" }}>
+                    ↪ {E.name} will be loaned to <strong>{draftDest}</strong> on this day. {E.branch}'s schedule will show "↪ Loaned to {draftDest}".
+                  </div>
+                )}
+              </div>
+
+              <div style={{ marginTop: 12 }}>
+                <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>NOTE (optional)</label>
+                <input value={E._draftNote || ""} onChange={ev => _setDraft({ _draftNote: ev.target.value })} placeholder="e.g. covering for Charlene who's sick"
+                  style={{ display: "block", width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+              </div>
+
+              {E._err && (
+                <div style={{ marginTop: 10, background: "#fee2e2", border: "1px solid #fca5a5", color: "#7f1d1d", borderRadius: 8, padding: "8px 10px", fontSize: 12 }}>{E._err}</div>
+              )}
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+                <button onClick={_close} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", color: "#831843", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Cancel</button>
+                <button onClick={_save} disabled={!!E._saving}
+                  style={{ padding: "9px 20px", borderRadius: 9, border: "none", background: E._saving ? "#FBCFE8" : "#BE185D", color: "#fff", fontWeight: 700, fontSize: 13, cursor: E._saving ? "not-allowed" : "pointer" }}>
+                  {E._saving ? "Saving…" : "💾 Save"}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {mgrCoverageGroupsEditor && (() => {
         const e = mgrCoverageGroupsEditor;
         const scopedBranchNames = SALONS
