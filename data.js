@@ -700,6 +700,42 @@
     return res.data || [];
   }
 
+  // Manager day-status — reason captured by a ROM when a scheduled manager
+  // didn't clock in. Powers the "Mark reason" flow on Manager Check-ins,
+  // overlays the absence on the attendance grid, and feeds the ROM dashboard
+  // to-do list. Stored as one row per (staff_id, date).
+  async function loadManagerDayStatuses(daysBack) {
+    var d = new Date(); d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - (daysBack || 60));
+    var since = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    var res = await sb.from("manager_day_status").select("*")
+      .gte("date", since)
+      .order("date", { ascending: false })
+      .limit(5000);
+    if (res.error) { console.error("loadManagerDayStatuses:", res.error); return []; }
+    return res.data || [];
+  }
+
+  async function saveManagerDayStatus(p) {
+    if (!p || !p.staffId || !p.date || !p.status) throw new Error("staffId, date and status are required");
+    var row = {
+      staff_id:    p.staffId,
+      date:        p.date,
+      status:      p.status,
+      note:        (p.note || "").trim() || null,
+      proof:       p.proof || null,
+      recorded_by: (p.recordedBy || "").trim() || null,
+      updated_by:  (p.recordedBy || "").trim() || null,
+      updated_at:  new Date().toISOString()
+    };
+    var res = await sb.from("manager_day_status")
+      .upsert(row, { onConflict: "staff_id,date" })
+      .select()
+      .maybeSingle();
+    if (res.error) { console.error("saveManagerDayStatus:", res.error); throw res.error; }
+    return res.data;
+  }
+
   // Soft-delete a cash-up so the store can submit a fresh one for the
   // same date from the kiosk. The kiosk's todaysCashup() filters
   // archived rows out, so a reopened row falls off the "already
@@ -1365,6 +1401,8 @@
     // Cash-ups (from the kiosk)
     listRecentCashups: listRecentCashups,
     reopenCashup: reopenCashup,
+    loadManagerDayStatuses: loadManagerDayStatuses,
+    saveManagerDayStatus: saveManagerDayStatus,
 
     // Manager clock-ins viewer
     listRecentManagerClockins: listRecentManagerClockins,

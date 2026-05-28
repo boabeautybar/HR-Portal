@@ -150,6 +150,161 @@ const TODAY = new Date("2026-04-27");
 function daysDiff(d) { return d ? Math.ceil((new Date(d) - TODAY) / 86400000) : null; }
 function fmt(d) { return d ? new Date(d).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : "—"; }
 
+// Compress an image File → JPEG data URL bounded by maxDim & quality.
+// Matches the kiosk's helper of the same name so proof images stored
+// from either side stay around the same KB envelope.
+function compressImageDataUrl(file, maxDim, quality) {
+  return new Promise((resolve, reject) => {
+    if (!file || !file.type || file.type.indexOf("image/") !== 0) {
+      reject(new Error("Only image files are accepted as proof.")); return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read file."));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Couldn't load image."));
+      img.onload = () => {
+        const ratio = Math.min((maxDim || 1600) / img.width, (maxDim || 1600) / img.height, 1);
+        const w = Math.round(img.width * ratio), h = Math.round(img.height * ratio);
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        try { resolve(canvas.toDataURL("image/jpeg", quality || 0.8)); }
+        catch (e) { reject(new Error("Could not compress image.")); }
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// Status options surfaced to ROMs when marking a manager's absence.
+// Codes map straight onto STAT entries on the attendance grid so the
+// reason renders the same colour & label that the tech statuses use.
+const MGR_REASON_OPTIONS = [
+  { code: "sick_n", label: "🤒 Sick + note",     needsProof: true,  payroll: "Paid sick" },
+  { code: "sick",   label: "🤒 Sick NO note",    needsProof: false, payroll: "Unpaid sick" },
+  { code: "frl",    label: "👪 FRL + proof",     needsProof: true,  payroll: "Paid Family Responsibility Leave" },
+  { code: "al",     label: "🏖 Annual leave",     needsProof: false, payroll: "Paid annual" },
+  { code: "absent", label: "🚫 Absent (no reason)", needsProof: false, payroll: "Unpaid" },
+  { code: "no",     label: "⛔ NO SHOW",         needsProof: false, payroll: "Unpaid" },
+  { code: "off",    label: "🛌 Off (schedule error — should not be working)", needsProof: false, payroll: "None" }
+];
+// Payroll cycle (25th → 24th) helper. Used to lock editing for closed
+// cycles so payroll figures don't shift after a run.
+function payrollYmFor(ymd) {
+  const [y, m, d] = ymd.split("-").map(Number);
+  let yy = y, mm = m;
+  if (d > 24) { mm += 1; if (mm > 12) { mm = 1; yy++; } }
+  return yy + "-" + String(mm).padStart(2, "0");
+}
+
+// Modal body for marking / editing a manager's absence reason.
+function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose, onSaved }) {
+  const [status, setStatus] = useState(existing?.status || "");
+  const [note, setNote] = useState(existing?.note || "");
+  const [proof, setProof] = useState(existing?.proof || null);
+  const [proofErr, setProofErr] = useState("");
+  const [saving, setSaving] = useState(false);
+  const opt = MGR_REASON_OPTIONS.find(o => o.code === status);
+  const needsProof = !!(opt && opt.needsProof);
+  const canSave = !locked && !!status && (!needsProof || !!proof);
+
+  async function handleFile(e) {
+    setProofErr("");
+    const file = e.target.files && e.target.files[0];
+    if (!file) { setProof(null); return; }
+    try { setProof(await compressImageDataUrl(file, 1600, 0.8)); }
+    catch (err) { setProofErr(err.message || String(err)); setProof(null); }
+  }
+
+  async function save() {
+    if (!canSave) return;
+    setSaving(true);
+    try {
+      await window.BOA_DB.saveManagerDayStatus({
+        staffId: modal.staffId,
+        date: modal.date,
+        status,
+        note,
+        proof: needsProof ? proof : null,
+        recordedBy: currentUserName
+      });
+      await onSaved();
+    } catch (e) {
+      window.alert("Could not save: " + ((e && e.message) || e));
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "20px 22px", width: "100%", maxWidth: 480, maxHeight: "90vh", overflow: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+          <div>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 19, color: "#831843", fontWeight: 700 }}>Mark absence reason</div>
+            <div style={{ fontSize: 12, color: "#9ca3af" }}>{modal.name} · {modal.branch} · {new Date(modal.date + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short", year: "numeric" })}</div>
+          </div>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
+        </div>
+
+        {locked && (
+          <div style={{ marginTop: 12, background: "#fef3c7", border: "1px solid #fcd34d", color: "#92400e", borderRadius: 9, padding: "8px 10px", fontSize: 12 }}>
+            🔒 This day is in a closed payroll cycle (25th → 24th). Ask an admin to override.
+          </div>
+        )}
+
+        <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+          {MGR_REASON_OPTIONS.map(o => (
+            <button key={o.code} disabled={locked}
+              onClick={() => setStatus(o.code)}
+              style={{
+                padding: "9px 10px", borderRadius: 9, fontSize: 12, fontWeight: 700, cursor: locked ? "not-allowed" : "pointer",
+                border: status === o.code ? "2px solid #BE185D" : "1px solid #FBCFE8",
+                background: status === o.code ? "#FCE7F3" : "#fff",
+                color: "#831843", textAlign: "left", opacity: locked ? 0.5 : 1
+              }}>
+              <div>{o.label}</div>
+              <div style={{ fontSize: 10, color: "#9ca3af", fontWeight: 600, marginTop: 2 }}>{o.payroll}</div>
+            </button>
+          ))}
+        </div>
+
+        {needsProof && (
+          <div style={{ marginTop: 14 }}>
+            <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>PROOF PHOTO (required for {opt.code === "sick_n" ? "Sick + note" : "FRL"})</label>
+            <input type="file" accept="image/*" capture="environment" onChange={handleFile} disabled={locked}
+              style={{ display: "block", marginTop: 4, fontSize: 13 }} />
+            {proofErr && <div style={{ fontSize: 11, color: "#7f1d1d", marginTop: 4 }}>{proofErr}</div>}
+            {proof && <img src={proof} alt="proof" style={{ marginTop: 8, maxWidth: "100%", maxHeight: 180, borderRadius: 8, border: "1px solid #FBCFE8", display: "block" }} />}
+          </div>
+        )}
+
+        <div style={{ marginTop: 14 }}>
+          <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>NOTE (optional)</label>
+          <textarea value={note} disabled={locked} onChange={e => setNote(e.target.value)} rows={2}
+            placeholder="e.g. spoke to her Monday, flu — back Wed"
+            style={{ display: "block", width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+        </div>
+
+        {existing && (
+          <div style={{ marginTop: 10, fontSize: 11, color: "#9ca3af" }}>
+            Last updated by {existing.updated_by || existing.recorded_by || "?"} on {new Date(existing.updated_at || existing.created_at).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+          </div>
+        )}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+          <button onClick={onClose} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", color: "#831843", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Cancel</button>
+          <button onClick={save} disabled={!canSave || saving}
+            style={{ padding: "9px 20px", borderRadius: 9, border: "none", background: canSave && !saving ? "#BE185D" : "#FBCFE8", color: "#fff", fontWeight: 700, fontSize: 13, cursor: canSave && !saving ? "pointer" : "not-allowed" }}>
+            {saving ? "Saving…" : (existing ? "💾 Update" : "💾 Save reason")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Sort by B-number: extract numeric part after "B", sort ascending; T-codes go after
 function ecSort(a, b) {
   const parse = ec => {
@@ -8315,6 +8470,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // ── Manager Clock-ins viewer state ─────────────────────────────────
   const [mgrClockinRows, setMgrClockinRows] = useState([]);
+  // ROM-managed reasons for manager absences. Loaded on dashboard,
+  // mgrclockins and attendance tabs so the grid + dashboard tile + the
+  // no-show banner all see the same data.
+  const [mgrDayStatuses, setMgrDayStatuses] = useState([]);
+  // Modal state for the "Mark reason" flow. null when closed; otherwise
+  // { staffId, ec, name, branch, date, existing? }.
+  const [mgrReasonModal, setMgrReasonModal] = useState(null);
   const [mgrClockinMeta, setMgrClockinMeta] = useState({});  // {clockinId: meta}
   const [mgrClockinFilterBranch, setMgrClockinFilterBranch] = useState("All");
   const [mgrClockinDays, setMgrClockinDays] = useState(31);        // how far back rows are loaded
@@ -9053,6 +9215,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       .catch((e) => { console.warn("listDeletedSchedules:", e); });
     return () => { cancelled = true; };
   }, [tab, schedSubTab, mgrSchedBranch, mgrSchedCycle, mgrSchedTick, mgrTrashTick]);
+
+  // Load ROM-managed manager day statuses whenever a view that needs them
+  // is open. Cheap to refetch — single Supabase select capped at 5000 rows.
+  useEffect(() => {
+    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
+    if (!window.BOA_DB.loadManagerDayStatuses) return;
+    if (tab !== "dashboard" && tab !== "mgrclockins" && tab !== "attendance") return;
+    let cancelled = false;
+    window.BOA_DB.loadManagerDayStatuses(60).then(rows => {
+      if (!cancelled) setMgrDayStatuses(rows || []);
+    });
+    return () => { cancelled = true; };
+  }, [tab]);
 
   // Load recent manager clock-ins when the viewer tab opens.
   useEffect(() => {
@@ -10989,6 +11164,56 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       click: () => tryChangeTab("mgrclockins"),
                       subClick: mgrMissing.length > 0 ? () => setNotCheckedInModal({ title: "Managers absent today", role: "manager", list: mgrMissing.slice().sort((x, y) => (x.branch || "").localeCompare(y.branch || "") || (x.name || "").localeCompare(y.name || "")), tab: "mgrclockins", tabLabel: "Open Manager Clock-ins →" }) : null
                     },
+                    mgrAbsentReason: (() => {
+                      // To-do tile for ROMs: count of recent manager no-shows
+                      // that DON'T yet have a reason recorded. We use the
+                      // mgrDayStatuses set loaded for the mgrclockins/attendance
+                      // tabs and the past 14 days of mgrClockinRows when the
+                      // viewer has already opened that tab. Otherwise the count
+                      // shows "…" and clicking still takes them to the page.
+                      const taggedKeys = new Set((mgrDayStatuses || []).map(s => (s.staff_id || "") + "|" + s.date));
+                      const ecToStaffId = {};
+                      managers.forEach(m => { if (m.ec && (m._id || m.id)) ecToStaffId[m.ec] = m._id || m.id; });
+                      // Build past-day no-shows from cached clockin rows (last
+                      // 14 days). If the cache is empty (mgrclockins tab not
+                      // opened yet) the tile defers — clicking still works.
+                      const tdY = new Date(); const _t0 = tdY.getFullYear() + "-" + String(tdY.getMonth() + 1).padStart(2, "0") + "-" + String(tdY.getDate()).padStart(2, "0");
+                      const _ymdOf = (ts) => { const d = new Date(ts); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+                      const clockedInByEcDate = new Set();
+                      (mgrClockinRows || []).forEach(r => {
+                        if (!r.staff || r.staff.role_type !== "manager") return;
+                        if (r.type !== "in") return;
+                        clockedInByEcDate.add(r.staff.employee_code + "|" + _ymdOf(r.ts));
+                      });
+                      // Look at last 14 days excluding today (today still
+                      // pending — they may still clock in).
+                      const pending = [];
+                      const since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - 14);
+                      for (let dt = new Date(since); dt < tdY && dt.toISOString().slice(0, 10) < _t0; dt.setDate(dt.getDate() + 1)) {
+                        const ymd = dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
+                        const ymOf = (() => { const a = ymd.split("-").map(Number); let y = a[0], m = a[1]; if (a[2] > 24) { m += 1; if (m > 12) { m = 1; y++; } } return y + "-" + String(m).padStart(2, "0"); })();
+                        managers.forEach(m => {
+                          const grid = mgrClockinSchedCache[(m.branch || "") + "|" + ymOf];
+                          if (!grid) return;
+                          const cell = grid[m.ec] && grid[m.ec][ymd];
+                          if (cell !== "W" && cell !== "E") return;
+                          if (clockedInByEcDate.has(m.ec + "|" + ymd)) return;
+                          const sid = ecToStaffId[m.ec];
+                          if (sid && taggedKeys.has(sid + "|" + ymd)) return;
+                          pending.push({ name: m.name, branch: m.branch, ymd });
+                        });
+                      }
+                      const haveData = (mgrClockinRows || []).length > 0 || Object.keys(mgrClockinSchedCache || {}).length > 0;
+                      return {
+                        l: "Manager reasons to add",
+                        v: haveData ? pending.length : "…",
+                        sub: haveData ? (pending.length === 0 ? "all manager absences explained 🎉" : "past 14d · click to tag reasons") : "open Manager Check-ins to scan",
+                        i: "📝",
+                        c: pending.length > 0 ? "#7c2d12" : "#14532d",
+                        bg: pending.length > 0 ? "#fef3c7" : "#dcfce7",
+                        click: () => tryChangeTab("mgrclockins")
+                      };
+                    })(),
                     scheduledToday: { l: "Scheduled today", v: dashScheduledToday == null ? "…" : (_hasStoreScope ? Object.keys(dashByBranch).filter(b => scopedBranchSet.has(b)).reduce((a, b) => a + (dashByBranch[b] || 0), 0) : dashScheduledToday), sub: _hasStoreScope ? ("scope: " + (dashScope === "mine" ? "my stores" : dashScope === "other" ? "peer stores" : "all branches")) : "across all branches", i: "📅", c: "#1e3a8a", bg: "#dbeafe" },
                     techsToday: { l: "Techs working today", v: techToday == null ? "…" : techToday.scheduled, sub: "must actively work today", i: "💅", c: "#0c4a6e", bg: "#e0f2fe" },
                     techsCheckedIn: { l: "Techs checked in", v: techToday == null ? "…" : (techToday.checkedIn + " / " + techToday.scheduled), sub: techToday == null ? "loading…" : (techToday.notCheckedIn + " not checked in yet"), i: "✅", c: "#14532d", bg: "#dcfce7", click: () => tryChangeTab("checkins"), subClick: (techToday && techToday.notCheckedIn > 0) ? () => setNotCheckedInModal({ title: "Techs not checked in yet", role: "tech", list: techToday.notCheckedInList, tab: "checkins", tabLabel: "Open Check-ins →" }) : null },
@@ -10998,8 +11223,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     vacancies: { l: "Positions to hire", v: scopedStats.vacancies, sub: "across " + scopedStats.understaffed + " branch" + (scopedStats.understaffed !== 1 ? "es" : ""), i: "🎯", c: "#7c3aed", bg: "#ede9fe", click: () => tryChangeTab("recruitment") }
                   };
                   const order = _hasStoreScope
-                    ? ["storesOpen", "mgrCheckin", "mgrAbsent", "techsToday", "techsCheckedIn", "techsAbsent", "scheduledToday", "activeStaff", "vacancies", "onMaternity"]
-                    : ["storesOpen", "techsToday", "techsCheckedIn", "techsAbsent", "mgrCheckin", "mgrAbsent", "scheduledToday", "activeStaff", "onMaternity", "vacancies"];
+                    ? ["storesOpen", "mgrCheckin", "mgrAbsent", "mgrAbsentReason", "techsToday", "techsCheckedIn", "techsAbsent", "scheduledToday", "activeStaff", "vacancies", "onMaternity"]
+                    : ["storesOpen", "techsToday", "techsCheckedIn", "techsAbsent", "mgrCheckin", "mgrAbsent", "mgrAbsentReason", "scheduledToday", "activeStaff", "onMaternity", "vacancies"];
                   return order.map(k => tiles[k]);
                 })().map(c => (
                   <div key={c.l} onClick={c.click} style={{ background: c.bg, borderRadius: 16, padding: "16px 18px", cursor: c.click ? "pointer" : "default", border: "1px solid rgba(255,255,255,0.6)" }}>
@@ -15489,6 +15714,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // in the saved schedule grid (which may still have legacy 'L'
         // codes for them).
         const onMatEcs = new Set(attStaff.filter(s => s.onMat).map(s => s.ec));
+        // ROM-managed absence reasons. Build an ec → ymd → status code
+        // lookup so getStatus() can overlay a manager's day with the ROM's
+        // recorded reason (sick_n / sick / frl / al / absent / no / off).
+        // We map employee_code → staff_id via the live managers list, then
+        // index mgrDayStatuses by staff_id+date.
+        const _mgrEcToStaffId = {};
+        managers.forEach(m => { if (m.ec && (m._id || m.id)) _mgrEcToStaffId[m.ec] = m._id || m.id; });
+        const _mgrStatusByEcYmd = {};
+        (mgrDayStatuses || []).forEach(r => {
+          for (const ec in _mgrEcToStaffId) {
+            if (_mgrEcToStaffId[ec] === r.staff_id) {
+              (_mgrStatusByEcYmd[ec] = _mgrStatusByEcYmd[ec] || {})[r.date] = r.status;
+              break;
+            }
+          }
+        });
         // For a given (ec, ymd), is this day strictly AFTER their last day?
         const isPostLeftDate = (ec, ymd) => {
           const ld = offByEc[ec];
@@ -15498,6 +15739,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Helpers
         const mirrorSuppressed = !!(attMeta && attMeta.mirrorSuppressed);
         const getStatus = (ec, d) => {
+          // ROM-managed manager-absence overlay. When a regional has
+          // recorded a reason (sick + note / FRL + proof / annual / etc.)
+          // for a manager's missed day, that's the source of truth for
+          // payroll and overrides any schedule mirror / attGrid value.
+          if (_mgrStatusByEcYmd[ec]) {
+            const _do = days.find(x => x.d === d);
+            const _v = _do && _mgrStatusByEcYmd[ec][_do.ymd];
+            if (_v) return _v;
+          }
           // Tech-loan override: the home branch's loaned-out cell mirrors
           // the status the receiving branch's kiosk recorded that day so
           // payroll at home sees Esther's real workday (On Time / Late /
@@ -20686,21 +20936,44 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   const cell = grid[m.ec] && grid[m.ec][ymd];
                   if (cell !== "W" && cell !== "E") continue;     // not scheduled to work
                   if (clockedIn.has(m.ec)) continue;              // they did clock in
-                  noShows.push({ ec: m.ec, name: m.name, branch: branchName, ymd });
+                  noShows.push({ ec: m.ec, name: m.name, branch: branchName, ymd, staffId: m._id || m.id });
                 }
               }
               noShows.sort((a, b) => a.branch.localeCompare(b.branch) || a.name.localeCompare(b.name));
               if (noShows.length === 0) return null;
+              // Lookup of ROM-marked reasons keyed by staff_id + date.
+              const statByKey = {};
+              (mgrDayStatuses || []).forEach(s => { statByKey[s.staff_id + "|" + s.date] = s; });
+              const statLabel = code => (MGR_REASON_OPTIONS.find(o => o.code === code) || { label: code }).label;
               return (
                 <div style={{ background: "#fee2e2", border: "1px solid #fca5a5", borderRadius: 11, padding: "12px 16px", marginBottom: 14 }}>
                   <div style={{ fontSize: 13, fontWeight: 800, color: "#7f1d1d", marginBottom: 6 }}>⚠ {noShows.length} NO-SHOW{noShows.length === 1 ? "" : "S"} — scheduled to work but never clocked in</div>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 6 }}>
-                    {noShows.slice(0, 30).map((ns, i) => (
-                      <div key={i} style={{ background: "#fff", borderRadius: 7, padding: "7px 10px", border: "1px solid #fca5a5", fontSize: 12 }}>
-                        <div style={{ fontWeight: 700, color: "#7f1d1d" }}>{ns.name}</div>
-                        <div style={{ fontSize: 11, color: "#9a1a1a" }}>{ns.branch} · {new Date(ns.ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", weekday: "short" })}</div>
-                      </div>
-                    ))}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 6 }}>
+                    {noShows.slice(0, 30).map((ns, i) => {
+                      const existing = statByKey[(ns.staffId || "") + "|" + ns.ymd];
+                      return (
+                        <div key={i} style={{ background: "#fff", borderRadius: 7, padding: "7px 10px", border: "1px solid #fca5a5", fontSize: 12 }}>
+                          <div style={{ fontWeight: 700, color: "#7f1d1d" }}>{ns.name}</div>
+                          <div style={{ fontSize: 11, color: "#9a1a1a" }}>{ns.branch} · {new Date(ns.ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", weekday: "short" })}</div>
+                          <div style={{ marginTop: 6 }}>
+                            {existing
+                              ? <button
+                                  onClick={() => setMgrReasonModal({ staffId: ns.staffId, ec: ns.ec, name: ns.name, branch: ns.branch, date: ns.ymd, existing })}
+                                  title={(existing.note || "") + (existing.recorded_by ? "\n— " + existing.recorded_by : "")}
+                                  style={{ background: "#dcfce7", color: "#166534", border: "1px solid #86efac", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                                  {statLabel(existing.status)}{existing.proof ? " 📎" : ""} ✎
+                                </button>
+                              : <button
+                                  onClick={() => ns.staffId && setMgrReasonModal({ staffId: ns.staffId, ec: ns.ec, name: ns.name, branch: ns.branch, date: ns.ymd, existing: null })}
+                                  disabled={!ns.staffId}
+                                  style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: ns.staffId ? "pointer" : "not-allowed", opacity: ns.staffId ? 1 : 0.5 }}>
+                                  Mark reason
+                                </button>
+                            }
+                          </div>
+                        </div>
+                      );
+                    })}
                     {noShows.length > 30 && <div style={{ alignSelf: "center", fontSize: 12, color: "#9a1a1a", fontStyle: "italic" }}>…and {noShows.length - 30} more</div>}
                   </div>
                 </div>
@@ -21139,6 +21412,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
             </div>
           </div>
+        );
+      })()}
+
+      {/* Mark / edit a reason for a manager who didn't clock in. Opened from
+          the Manager Check-ins no-show banner, the dashboard to-do tile, or
+          (later) the attendance sheet cell. Saves into manager_day_status
+          and refetches so the attendance overlay, no-show banner and to-do
+          card all reflect the new value immediately. */}
+      {mgrReasonModal && (() => {
+        const m = mgrReasonModal;
+        const existing = m.existing || null;
+        const todayY = new Date(); const t0 = todayY.getFullYear() + "-" + String(todayY.getMonth() + 1).padStart(2, "0") + "-" + String(todayY.getDate()).padStart(2, "0");
+        const locked = payrollYmFor(m.date) !== payrollYmFor(t0);
+        return (
+          <MgrReasonModalBody
+            modal={m}
+            existing={existing}
+            locked={locked}
+            currentUserName={currentUser?.name || ""}
+            onClose={() => setMgrReasonModal(null)}
+            onSaved={async () => {
+              try {
+                const rows = await window.BOA_DB.loadManagerDayStatuses(60);
+                setMgrDayStatuses(rows || []);
+              } catch (_) {}
+              setMgrReasonModal(null);
+            }}
+          />
         );
       })()}
 
