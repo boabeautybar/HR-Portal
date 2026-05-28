@@ -11205,7 +11205,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         const dom = dt.getDate();
                         // Manager schedule uses START-month ym.
                         const ymOf = (() => { const a = ymd.split("-").map(Number); let y = a[0], m = a[1]; if (a[2] <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + String(m).padStart(2, "0"); })();
+                        // Skip anyone on annual leave for this date.
+                        const _onLeaveEcs = new Set();
+                        (leaveRecs || []).forEach(lv => {
+                          if (lv && lv.ec && lv.startDate && lv.endDate && ymd >= lv.startDate && ymd <= lv.endDate) _onLeaveEcs.add(String(lv.ec).trim());
+                        });
                         managers.forEach(m => {
+                          if (_onLeaveEcs.has(String(m.ec || "").trim())) return;   // annual leave
                           const grid = mgrClockinSchedCache[(m.branch || "") + "|" + ymOf];
                           if (!grid) return;
                           const cell = (grid[m.ec]) ? (grid[m.ec][ymd] || grid[m.ec][dom]) : undefined;
@@ -20967,6 +20973,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const ymOf = (() => { let y = ymdParts[0], m = ymdParts[1]; if (ymdParts[2] <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + String(m).padStart(2, "0"); })();
               const _readCell = (grid, ec) => (grid && grid[ec]) ? (grid[ec][ymd] || grid[ec][dayOfMonth]) : undefined;
               const _isWorking = v => v === "W" || v === "WL" || v === "WE" || v === "WM" || v === "WB" || v === "E";
+              // Anyone on annual leave today is OFF — don't count them as a
+              // no-show even if their schedule cell still says W. Matches the
+              // dashboard's onLeaveEcs handling.
+              const _onLeaveEcs = new Set();
+              (leaveRecs || []).forEach(lv => {
+                if (lv && lv.ec && lv.startDate && lv.endDate && ymd >= lv.startDate && ymd <= lv.endDate) _onLeaveEcs.add(lv.ec.trim());
+              });
               const scopedBranches = SALONS
                 .map(s => s.name)
                 .filter(b => !_hasStoreScope || scopedSalonNames.has(b))
@@ -20982,7 +20995,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const surpriseClockIns = [];   // clocked in but scheduled off today
               scopedBranches.forEach(b => {
                 const grid = mgrClockinSchedCache[b + "|" + ymOf];
-                const branchMgrs = managers.filter(m => m.branch === b && !m.onMat && !m.leftDate);
+                const branchMgrs = managers.filter(m => m.branch === b && !m.onMat && !m.leftDate && !_onLeaveEcs.has(String(m.ec || "").trim()));
                 const scheduleHasToday = !!grid && branchMgrs.some(m => _readCell(grid, m.ec) != null);
                 if (!scheduleHasToday) {
                   // No schedule data for today at this branch — fall back to
@@ -21097,11 +21110,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const branchesToCheck = mgrClockinFilterBranch === "All"
                 ? SALONS.map(s => s.name)
                 : [mgrClockinFilterBranch];
+              // Anyone on annual leave for THIS day shouldn't count as a no-show.
+              const _onLeaveEcs = new Set();
+              (leaveRecs || []).forEach(lv => {
+                if (lv && lv.ec && lv.startDate && lv.endDate && ymd >= lv.startDate && ymd <= lv.endDate) _onLeaveEcs.add(String(lv.ec).trim());
+              });
               const noShows = [];
               for (const branchName of branchesToCheck) {
                 const grid = mgrClockinSchedCache[branchName + "|" + ymOf];
                 if (!grid) continue;        // schedule not loaded yet
                 for (const m of managers.filter(mm => mm.branch === branchName)) {
+                  if (_onLeaveEcs.has(String(m.ec || "").trim())) continue;    // on annual leave
                   const cell = (grid[m.ec]) ? (grid[m.ec][ymd] || grid[m.ec][_dom]) : undefined;
                   if (cell !== "W" && cell !== "WL" && cell !== "WE" && cell !== "WM" && cell !== "WB" && cell !== "E") continue;     // not scheduled to work
                   if (clockedIn.has(m.ec)) continue;              // they did clock in
