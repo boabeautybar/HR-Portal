@@ -21890,10 +21890,31 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             unresolvedEcs: Array.from(new Set(_unresolved)).slice(0, 8)
           };
         });
-        Object.keys(mgrByBranch).forEach(b => mgrByBranch[b].sort((a, b) =>
-          (a.role === "SM" ? 0 : a.role === "AM" ? 1 : 2) - (b.role === "SM" ? 0 : b.role === "AM" ? 1 : 2)
-          || (a.name || "").localeCompare(b.name || "")
-        ));
+        // Sort: maternity-leave managers pinned at the bottom, then
+        // SM → AM → other, then name. Maternity status is resolved the
+        // same way mgrSched does it — EC match against onMatEcs, with a
+        // case-insensitive name fallback for orphan mat records whose
+        // EC drifted from the manager record.
+        const _matNames = new Set(
+          (matRecs || [])
+            .filter(r => r && (r.matStatus === "on_mat" || r.matStatus === "dates_tbc") && r.name)
+            .map(r => r.name.trim().toLowerCase())
+        );
+        const _isOnMat = (mg) => {
+          if (!mg) return false;
+          if (mg.onMat || mg._onMat) return true;
+          const ec = String(mg.ec || "").trim();
+          if (ec && onMatEcs.has(ec)) return true;
+          const nm = String(mg.name || "").trim().toLowerCase();
+          return !!(nm && _matNames.has(nm));
+        };
+        Object.keys(mgrByBranch).forEach(b => mgrByBranch[b].sort((a, b) => {
+          const am = _isOnMat(a) ? 1 : 0;
+          const bm = _isOnMat(b) ? 1 : 0;
+          if (am !== bm) return am - bm;
+          return (a.role === "SM" ? 0 : a.role === "AM" ? 1 : 2) - (b.role === "SM" ? 0 : b.role === "AM" ? 1 : 2)
+            || (a.name || "").localeCompare(b.name || "");
+        }));
 
         // Manager clock-in lookup keyed by ec → ymd → true. Powers the
         // small green dot we render on cells where the manager actually
