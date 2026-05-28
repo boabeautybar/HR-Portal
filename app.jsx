@@ -8548,6 +8548,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Loaded manager loan records, keyed for fast (ec,date) lookup. Refreshed
   // when the coverage tab opens and whenever a save completes.
   const [mgrLoanRows, setMgrLoanRows] = useState([]);
+  // Manager Coverage DRAFT mode. Drag-and-drop and popover edits write
+  // here first; nothing is persisted until the ROM clicks "Apply to live"
+  // on the banner at the top of the coverage tab. Shape:
+  //   mgrCoverageDraft       = { "<branch>|<ym>": { [ec]: { [dom]: code|"" } } }
+  //   mgrCoverageDraftLoans  = [{ _op:"upsert"|"remove", ec, name, date, fromBranch, toBranch, note }]
+  const [mgrCoverageDraft, setMgrCoverageDraft] = useState({});
+  const [mgrCoverageDraftLoans, setMgrCoverageDraftLoans] = useState([]);
+  const [mgrCoverageDraftApplying, setMgrCoverageDraftApplying] = useState(false);
 
   // ── Daily Check-ins (nail tech) state ──────────────────────────────
   // Loaded once when the Check-ins tab or the Attendance tab opens, so the
@@ -21626,8 +21634,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // to the working draft. mgrApprovedFallbackCache is built lazily
         // below as branches need it.
         const _approvedFallbackCache = mgrApprovedFallbackCache || {};
+        // Apply draft patches on top of a base grid to get the effective
+        // view. A draft cell value of "" (or null) means "clear this day".
+        const _draftKey = (b, ym) => b + "|" + ym;
+        const _mergeDraft = (base, draftBranch) => {
+          if (!draftBranch || Object.keys(draftBranch).length === 0) return base || {};
+          const out = { ...(base || {}) };
+          Object.entries(draftBranch).forEach(([ec, dRow]) => {
+            const baseRow = { ...(out[ec] || {}) };
+            Object.entries(dRow).forEach(([dom, v]) => {
+              if (v) { baseRow[dom] = v; delete baseRow[String(dom)]; }
+              else { delete baseRow[dom]; delete baseRow[String(dom)]; }
+            });
+            if (Object.keys(baseRow).length === 0) delete out[ec];
+            else out[ec] = baseRow;
+          });
+          return out;
+        };
+        const _gridForView = (branchName, ym) => {
+          const k = _draftKey(branchName, ym);
+          return _mergeDraft(mgrClockinSchedCache[k], mgrCoverageDraft[k]);
+        };
         const readWithFallback = (branchName, ec, d) => {
-          const grid = mgrClockinSchedCache[branchName + "|" + d.mgrYm];
+          const grid = _gridForView(branchName, d.mgrYm);
           const v = readCell(grid, ec, d);
           if (v) return v;
           const ag = _approvedFallbackCache[branchName + "|" + d.mgrYm];
@@ -21720,9 +21749,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           let _gridEcsCount = 0, _resolvedCount = 0, _unresolved = [];
           let _ymsSeen = new Set();
           weekDays.forEach(d => {
-            const wGrid = mgrClockinSchedCache[s.name + "|" + d.mgrYm];
+            // Use the draft-merged view so cross-store loans staged in the
+            // editor's draft mode also surface the receiving manager on the
+            // destination branch's row list before the user clicks Apply.
+            const wGrid = _gridForView(s.name, d.mgrYm);
             const aGrid = _approvedFallbackCache[s.name + "|" + d.mgrYm];
-            if (wGrid || aGrid) _ymsSeen.add(d.mgrYm);
+            if ((wGrid && Object.keys(wGrid).length) || aGrid) _ymsSeen.add(d.mgrYm);
             [wGrid, aGrid].forEach(grid => {
               if (!grid) return;
               for (const _ec in grid) {
@@ -21807,15 +21839,171 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (!ec) return;
           setMgrCellEditor({ branch: branchName, mgrYm, ec, name: name || "", role: role || "", ymd, dom, currentCell: currentCell || "" });
         };
+
+        // ── Draft-mode mutations ────────────────────────────────────
+        // All drag/drop and popover edits stage changes into mgrCoverageDraft
+        // / mgrCoverageDraftLoans. Nothing is persisted until the ROM clicks
+        // "Apply to live" on the banner at the top of this tab.
+        const _setDraftCell = (branchName, mgrYm, ec, dom, value) => {
+          setMgrCoverageDraft(prev => {
+            const k = _draftKey(branchName, mgrYm);
+            const branch = { ...(prev[k] || {}) };
+            const row = { ...(branch[ec] || {}) };
+            row[dom] = value || "";
+            branch[ec] = row;
+            return { ...prev, [k]: branch };
+          });
+        };
+        // Same-row drag swap — move a shift from src day to tgt day inside
+        // one manager's row. Reads the effective view so chained drags
+        // compose correctly.
+        const _draftSwapSameRow = (branchName, mgrYm, ec, srcDom, tgtDom) => {
+          const grid = _gridForView(branchName, mgrYm);
+          const row = grid[ec] || {};
+          const srcVal = row[srcDom] ?? row[String(srcDom)] ?? "";
+          const tgtVal = row[tgtDom] ?? row[String(tgtDom)] ?? "";
+          setMgrCoverageDraft(prev => {
+            const k = _draftKey(branchName, mgrYm);
+            const branch = { ...(prev[k] || {}) };
+            const dRow = { ...(branch[ec] || {}) };
+            dRow[srcDom] = tgtVal || "";
+            dRow[tgtDom] = srcVal || "";
+            branch[ec] = dRow;
+            return { ...prev, [k]: branch };
+          });
+        };
+        // Cross-store loan via drag — drag a manager's shift from their
+        // home-branch row to ANY day cell on a DIFFERENT branch's row.
+        // Source becomes "loan_out" at the home branch; destination gets
+        // the original code (or "W" by default); a loan record is staged
+        // for Apply.
+        const _draftCrossStoreLoan = (srcBranch, mgrYm, ec, srcDom, srcYmd, srcCode, srcName, dstBranch, dstDom, dstYmd) => {
+          setMgrCoverageDraft(prev => {
+            const next = { ...prev };
+            // Home: mark loan_out on the source day.
+            const sk = _draftKey(srcBranch, mgrYm);
+            const srcBranchD = { ...(next[sk] || {}) };
+            const srcRow = { ...(srcBranchD[ec] || {}) };
+            srcRow[srcDom] = "loan_out";
+            srcBranchD[ec] = srcRow;
+            next[sk] = srcBranchD;
+            // Destination: insert ec row with the shift code on dst day.
+            const dk = _draftKey(dstBranch, mgrYm);
+            const dstBranchD = { ...(next[dk] || {}) };
+            const dstRow = { ...(dstBranchD[ec] || {}) };
+            dstRow[dstDom] = (srcCode && srcCode !== "loan_out") ? srcCode : "W";
+            dstBranchD[ec] = dstRow;
+            next[dk] = dstBranchD;
+            return next;
+          });
+          setMgrCoverageDraftLoans(prev => [
+            ...prev.filter(l => !(String(l.ec).trim() === ec && l.date === dstYmd)),
+            { _op: "upsert", ec, name: srcName || "", date: dstYmd, fromBranch: srcBranch, toBranch: dstBranch, note: "" }
+          ]);
+        };
+
+        const _applyDraft = async () => {
+          if (!window.BOA_DB || !window.BOA_DB.saveSchedule) { window.alert("Not connected — try again."); return; }
+          setMgrCoverageDraftApplying(true);
+          try {
+            const entries = Object.entries(mgrCoverageDraft);
+            for (const [key, draftBranch] of entries) {
+              const [branchName, ym] = key.split("|");
+              const base = mgrClockinSchedCache[key] || {};
+              const merged = _mergeDraft(base, draftBranch);
+              await window.BOA_DB.saveSchedule(branchName, ym, merged, true);
+              setMgrClockinSchedCache(prev => ({ ...prev, [key]: merged }));
+            }
+            // Commit loan record changes.
+            if (mgrCoverageDraftLoans.length > 0 && window.BOA_DB.saveMgrLoans) {
+              const existing = (mgrLoanRows || []).slice();
+              mgrCoverageDraftLoans.forEach(dl => {
+                const idx = existing.findIndex(l => l && String(l.ec).trim() === String(dl.ec).trim() && l.date === dl.date);
+                if (dl._op === "remove") { if (idx >= 0) existing.splice(idx, 1); return; }
+                const rec = {
+                  _id: idx >= 0 ? existing[idx]._id : ("l_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7)),
+                  ec: dl.ec, name: dl.name || "", date: dl.date,
+                  fromBranch: dl.fromBranch, toBranch: dl.toBranch,
+                  note: dl.note || "",
+                  createdBy: (currentUser && currentUser.name) || "",
+                  createdAt: idx >= 0 ? existing[idx].createdAt : new Date().toISOString()
+                };
+                if (idx >= 0) existing[idx] = rec; else existing.push(rec);
+              });
+              await window.BOA_DB.saveMgrLoans(existing);
+              setMgrLoanRows(existing);
+            }
+            setMgrCoverageDraft({});
+            setMgrCoverageDraftLoans([]);
+          } catch (err) {
+            window.alert("Apply failed: " + ((err && err.message) || err));
+          } finally {
+            setMgrCoverageDraftApplying(false);
+          }
+        };
+        const _discardDraft = () => {
+          if (Object.keys(mgrCoverageDraft).length === 0 && mgrCoverageDraftLoans.length === 0) return;
+          if (!window.confirm("Discard all pending shift changes?")) return;
+          setMgrCoverageDraft({});
+          setMgrCoverageDraftLoans([]);
+        };
+        const _draftChangeCount = (() => {
+          let n = 0;
+          Object.values(mgrCoverageDraft).forEach(br => {
+            Object.values(br).forEach(row => { n += Object.keys(row).length; });
+          });
+          return n;
+        })();
+
+        // Drag handler factory — attached to every cell <td> so a ROM can
+        // pick a shift up and drop it on another day (swap within the same
+        // manager) OR on a different branch's row (cross-store loan).
+        const _isSrcDraggable = (cellVal) =>
+          cellVal === "W" || cellVal === "WE" || cellVal === "WL" || cellVal === "WM" || cellVal === "WB" || cellVal === "E" || cellVal === "O" || cellVal === "R";
+        const _dragHandlers = (cellVal, branchName, mgrYm, ec, dom, ymd, mgrName) => {
+          if (!ec) return {};
+          const isSrc = _isSrcDraggable(cellVal);
+          return {
+            draggable: isSrc,
+            onDragStart: isSrc ? (e) => {
+              try { e.dataTransfer.setData("text/plain", JSON.stringify({ kind: "mgrCov", branch: branchName, mgrYm, ec, dom, ymd, code: cellVal, name: mgrName || "" })); } catch (_) { }
+              e.dataTransfer.effectAllowed = "move";
+            } : undefined,
+            onDragOver: (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; },
+            onDrop: (e) => {
+              e.preventDefault();
+              try {
+                const data = JSON.parse(e.dataTransfer.getData("text/plain"));
+                if (!data || data.kind !== "mgrCov") return;
+                if (data.mgrYm !== mgrYm) return; // can't move across cycles by drag — too easy to misclick
+                if (data.branch === branchName) {
+                  // Same branch: only meaningful as a same-row swap.
+                  if (data.ec !== ec) return;
+                  if (data.dom === dom) return;
+                  _draftSwapSameRow(branchName, mgrYm, ec, data.dom, dom);
+                } else {
+                  // Cross-branch: drop on ANY cell in the destination
+                  // branch's table — even on a different manager's row.
+                  // The loaned manager's row gets added to the destination
+                  // (via _gridForView in the inclusion loop) so the
+                  // receiving store shows them on the dropped day.
+                  _draftCrossStoreLoan(data.branch, mgrYm, data.ec, data.dom, data.ymd, data.code, data.name, branchName, dom, ymd);
+                }
+              } catch (_) { }
+            }
+          };
+        };
         const renderCell = (cellVal, key, branchName, role, ymd, ec, isGuest, mgrYm, mgrName, dom) => {
           const clockedIn = ec && ymd && _clockedInByEcYmd[String(ec).trim()] && _clockedInByEcYmd[String(ec).trim()][ymd];
           const isPast = ymd && ymd < (function () { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
-          const tdStyle = { background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", cursor: ec ? "pointer" : "default" };
+          const _dragDraggable = _isSrcDraggable(cellVal);
+          const tdStyle = { background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", cursor: ec ? (_dragDraggable ? "grab" : "pointer") : "default" };
+          const _dh = _dragHandlers(cellVal, branchName, mgrYm, ec, dom, ymd, mgrName);
           const onCellClick = () => openCellEditor(branchName, mgrYm, dom, ymd, ec, mgrName, role, cellVal || "");
           // Blank / empty day cell — also clickable so a ROM can add a shift.
           if (!cellVal) {
             return (
-              <td key={key} onClick={ec ? onCellClick : undefined} title={ec ? "Click to add a shift" : ""} style={{ ...tdStyle, textAlign: "center" }}>
+              <td key={key} {..._dh} onClick={ec ? onCellClick : undefined} title={ec ? "Click to add a shift · drop a dragged shift here" : ""} style={{ ...tdStyle, textAlign: "center" }}>
                 <div style={{ minHeight: 56, display: "flex", alignItems: "center", justifyContent: "center", color: ec ? "#FBCFE8" : "#e5e7eb", fontSize: 18, transition: "color 0.15s" }}>＋</div>
               </td>
             );
@@ -21823,9 +22011,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Cross-store loan cell at home branch — show "↪ Destination".
           if (cellVal === "loan_out") {
             const lo = _loansByEcYmd[String(ec).trim() + "|" + ymd];
-            const destLbl = (lo && lo.toBranch) || "Other store";
+            const draftLo = (mgrCoverageDraftLoans || []).find(l => String(l.ec).trim() === String(ec).trim() && l.date === ymd && l._op !== "remove");
+            const destLbl = (draftLo && draftLo.toBranch) || (lo && lo.toBranch) || "Other store";
             return (
-              <td key={key} onClick={onCellClick} title={"Loaned to " + destLbl + " on this day"} style={tdStyle}>
+              <td key={key} {..._dh} onClick={onCellClick} title={"Loaned to " + destLbl + " on this day"} style={tdStyle}>
                 <div style={{ background: "#1E3A8A", color: "#fff", borderRadius: 6, padding: "8px 6px", textAlign: "left", lineHeight: 1.25, minHeight: 56, boxShadow: "inset 0 -2px 0 rgba(0,0,0,0.18)" }}>
                   <div style={{ fontSize: 10, fontWeight: 700, opacity: 0.85 }}>↪ Loaned to</div>
                   <div style={{ fontSize: 12, fontWeight: 800, marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{destLbl}</div>
@@ -21842,8 +22031,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const dotColor = clockedIn ? "#22c55e" : (isPast ? "#ef4444" : null);
             const dotTitle = clockedIn ? "✓ Clocked in" : (isPast ? "✗ Absent — did not clock in" : null);
             return (
-              <td key={key} onClick={onCellClick} style={tdStyle}>
-                <div title={(role || "") + " · " + branchName + " · " + cellVal + " · " + time + (dotTitle ? "\n" + dotTitle : "") + (isGuest ? "\nGuest from " + isGuest : "") + "\n\nClick to edit"}
+              <td key={key} {..._dh} onClick={onCellClick} style={tdStyle}>
+                <div title={(role || "") + " · " + branchName + " · " + cellVal + " · " + time + (dotTitle ? "\n" + dotTitle : "") + (isGuest ? "\nGuest from " + isGuest : "") + "\n\nClick to edit · drag to swap days or loan to another store"}
                   style={{ position: "relative", background: pal.bg, color: pal.fg, borderRadius: 6, padding: "8px 6px", textAlign: "left", lineHeight: 1.25, minHeight: 56, boxShadow: "inset 0 -2px 0 rgba(0,0,0,0.18)", ...subtle }}>
                   {dotColor && (
                     <span title={dotTitle} style={{ position: "absolute", top: 4, right: 4, width: 9, height: 9, borderRadius: 9, background: dotColor, border: "2px solid #fff", boxShadow: "0 0 0 1px rgba(0,0,0,0.12)" }} />
@@ -21862,7 +22051,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const fg = NON_WORK_FG[cellVal] || "#374151";
           const lbl = NON_WORK_LBL[cellVal] || cellVal;
           return (
-            <td key={key} onClick={onCellClick} title={ec ? "Click to edit" : ""} style={{ ...tdStyle, textAlign: "center" }}>
+            <td key={key} {..._dh} onClick={onCellClick} title={ec ? "Click to edit · drag to swap or loan" : ""} style={{ ...tdStyle, textAlign: "center" }}>
               <div style={{ background: bg, color: fg, borderRadius: 6, padding: "8px 6px", fontSize: 10, fontWeight: 800, letterSpacing: "0.05em", minHeight: 56, display: "flex", alignItems: "center", justifyContent: "center" }}>
                 {lbl}
               </div>
@@ -21950,6 +22139,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   {totalSingleCover > 0 && <>{totalGaps > 0 ? "Plus " : "⚠ "}<strong>{totalSingleCover}</strong> single-cover day{totalSingleCover === 1 ? "" : "s"} (one manager only — vulnerable to sick days). </>}
                   Borrow from a branch with 2+ to balance.
                 </div>
+              </div>
+            )}
+
+            {/* Draft banner — pending changes from drag/drop or popover
+                edits sit here until the ROM commits with "Apply to live".
+                Until then nothing is written to BOA_DB.saveSchedule /
+                saveMgrLoans, so the kiosk and Scheduling tab keep showing
+                the live state. */}
+            {(_draftChangeCount > 0 || mgrCoverageDraftLoans.length > 0) && (
+              <div style={{ background: "#FFFBEB", border: "1px solid #FCD34D", borderRadius: 11, padding: "10px 14px", marginBottom: 14, display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "#92400E" }}>
+                    📝 {_draftChangeCount} pending shift change{_draftChangeCount === 1 ? "" : "s"}
+                    {mgrCoverageDraftLoans.filter(l => l._op !== "remove").length > 0 ? (
+                      <> · {mgrCoverageDraftLoans.filter(l => l._op !== "remove").length} cross-store loan{mgrCoverageDraftLoans.filter(l => l._op !== "remove").length === 1 ? "" : "s"}</>
+                    ) : null}
+                  </div>
+                  <div style={{ fontSize: 11, color: "#92400E", marginTop: 2, opacity: 0.85 }}>
+                    Showing as a preview. Nothing is saved to the kiosk or Scheduling tab yet — click "Apply to live" to commit, or "Discard" to revert.
+                  </div>
+                </div>
+                <button onClick={_discardDraft} disabled={mgrCoverageDraftApplying}
+                  style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 8, padding: "8px 14px", cursor: mgrCoverageDraftApplying ? "not-allowed" : "pointer", fontSize: 12, fontWeight: 700, opacity: mgrCoverageDraftApplying ? 0.6 : 1 }}>
+                  ↺ Discard
+                </button>
+                <button onClick={_applyDraft} disabled={mgrCoverageDraftApplying}
+                  style={{ background: mgrCoverageDraftApplying ? "#FBCFE8" : "#16A34A", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", cursor: mgrCoverageDraftApplying ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 800 }}>
+                  {mgrCoverageDraftApplying ? "Applying…" : "✓ Apply to live"}
+                </button>
               </div>
             )}
 
@@ -22449,12 +22667,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const E = mgrCellEditor;
         const _close = () => setMgrCellEditor(null);
         const _isCrossStore = (E._draftCode === "loan_out") || (E._draftDest && E._draftDest !== E.branch);
-        // Save: mutate the working draft grid for the home branch and
-        // (optionally) the destination branch, then upsert via
-        // BOA_DB.saveSchedule. Also write a manager-loan row when a
-        // destination is set.
-        const _save = async () => {
-          if (!window.BOA_DB || !window.BOA_DB.saveSchedule) { window.alert("Not connected — try again."); return; }
+        // Stage edit into mgrCoverageDraft / mgrCoverageDraftLoans — NOT
+        // written to the backend here. The "Apply to live" banner at the
+        // top of the coverage tab is what actually persists. Lets a ROM
+        // play with several moves and undo / apply as a batch.
+        const _save = () => {
           const homeBranch = E.branch;
           const ym = E.mgrYm;
           const ec = String(E.ec).trim();
@@ -22462,54 +22679,40 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const ymd = E.ymd;
           const draftCode = E._draftCode != null ? E._draftCode : E.currentCell;
           const dest = E._draftDest || "";
-          const setMgrCellEditorSaving = (next) => setMgrCellEditor(prev => prev ? { ...prev, ...next } : null);
-          setMgrCellEditorSaving({ _saving: true, _err: "" });
-          try {
-            // 1) Update home-branch grid.
-            const homeKey = homeBranch + "|" + ym;
-            const homeWorking = mgrClockinSchedCache[homeKey] || {};
-            const homeRow = { ...(homeWorking[ec] || {}) };
-            const newHomeCode = dest && dest !== homeBranch ? "loan_out" : (draftCode || null);
-            if (newHomeCode) { homeRow[dom] = newHomeCode; delete homeRow[ymd]; }
-            else { delete homeRow[dom]; delete homeRow[ymd]; }
-            const newHomeGrid = { ...homeWorking, [ec]: homeRow };
-            await window.BOA_DB.saveSchedule(homeBranch, ym, newHomeGrid, true);
-            // 2) Update destination grid when loaning.
+          const _dk = (b, y) => b + "|" + y;
+          setMgrCoverageDraft(prev => {
+            const next = { ...prev };
+            const hk = _dk(homeBranch, ym);
+            const hb = { ...(next[hk] || {}) };
+            const hr = { ...(hb[ec] || {}) };
+            hr[dom] = dest && dest !== homeBranch ? "loan_out" : (draftCode || "");
+            hb[ec] = hr;
+            next[hk] = hb;
             if (dest && dest !== homeBranch) {
-              const destKey = dest + "|" + ym;
-              const destWorking = mgrClockinSchedCache[destKey] || {};
-              const destRow = { ...(destWorking[ec] || {}) };
-              destRow[dom] = draftCode && draftCode !== "loan_out" ? draftCode : "W";
-              const newDestGrid = { ...destWorking, [ec]: destRow };
-              await window.BOA_DB.saveSchedule(dest, ym, newDestGrid, true);
-              setMgrClockinSchedCache(prev => ({ ...prev, [destKey]: newDestGrid }));
+              const ddk = _dk(dest, ym);
+              const db = { ...(next[ddk] || {}) };
+              const dr = { ...(db[ec] || {}) };
+              dr[dom] = draftCode && draftCode !== "loan_out" ? draftCode : "W";
+              db[ec] = dr;
+              next[ddk] = db;
             }
-            setMgrClockinSchedCache(prev => ({ ...prev, [homeKey]: newHomeGrid }));
-            // 3) Update mgr_loans row.
-            const existingLoans = (mgrLoanRows || []).slice();
-            const idx = existingLoans.findIndex(l => l && String(l.ec).trim() === ec && l.date === ymd);
-            if (dest && dest !== homeBranch) {
-              const rec = {
-                _id: idx >= 0 ? existingLoans[idx]._id : ("l_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7)),
-                ec, name: E.name || "", date: ymd,
-                fromBranch: homeBranch, toBranch: dest,
-                note: E._draftNote || "",
-                createdBy: (currentUser && currentUser.name) || "",
-                createdAt: idx >= 0 ? existingLoans[idx].createdAt : new Date().toISOString()
-              };
-              if (idx >= 0) existingLoans[idx] = rec; else existingLoans.push(rec);
-            } else if (idx >= 0) {
-              // Removed a loan that was previously set.
-              existingLoans.splice(idx, 1);
-            }
-            if (window.BOA_DB.saveMgrLoans) {
-              await window.BOA_DB.saveMgrLoans(existingLoans);
-              setMgrLoanRows(existingLoans);
-            }
-            _close();
-          } catch (err) {
-            setMgrCellEditor(prev => prev ? { ...prev, _saving: false, _err: (err && err.message) || String(err) } : null);
+            return next;
+          });
+          if (dest && dest !== homeBranch) {
+            setMgrCoverageDraftLoans(prev => [
+              ...prev.filter(l => !(String(l.ec).trim() === ec && l.date === ymd)),
+              { _op: "upsert", ec, name: E.name || "", date: ymd, fromBranch: homeBranch, toBranch: dest, note: E._draftNote || "" }
+            ]);
+          } else {
+            // Cleared destination — drop any pending draft loan for the
+            // same (ec,date) and stage a removal if a live loan exists.
+            const hadLive = (mgrLoanRows || []).some(l => String(l.ec).trim() === ec && l.date === ymd);
+            setMgrCoverageDraftLoans(prev => {
+              const filtered = prev.filter(l => !(String(l.ec).trim() === ec && l.date === ymd));
+              return hadLive ? [...filtered, { _op: "remove", ec, date: ymd }] : filtered;
+            });
           }
+          _close();
         };
         const _setDraft = (next) => setMgrCellEditor(prev => prev ? { ...prev, ...next } : null);
         const _opts = [
@@ -22574,9 +22777,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
               <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
                 <button onClick={_close} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", color: "#831843", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Cancel</button>
-                <button onClick={_save} disabled={!!E._saving}
-                  style={{ padding: "9px 20px", borderRadius: 9, border: "none", background: E._saving ? "#FBCFE8" : "#BE185D", color: "#fff", fontWeight: 700, fontSize: 13, cursor: E._saving ? "not-allowed" : "pointer" }}>
-                  {E._saving ? "Saving…" : "💾 Save"}
+                <button onClick={_save}
+                  title="Stages the change in your draft — click 'Apply to live' on the coverage tab to commit"
+                  style={{ padding: "9px 20px", borderRadius: 9, border: "none", background: "#BE185D", color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+                  ＋ Add to draft
                 </button>
               </div>
             </div>
