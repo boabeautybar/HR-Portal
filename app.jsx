@@ -21628,21 +21628,37 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // 12 saturated shades so its working blocks read as a single solid
         // colour across the week, the way Connecteam groups stores by hue.
         // Deterministic so the colour stays stable across reloads.
+        // One distinct dark colour per store, ordered to maximise contrast
+        // between adjacent SALONS entries (so the By-Branch grid never has
+        // two neighbours blending). 18 slots covers the 17 current stores
+        // plus a buffer; we wrap with modulo if SALONS ever grows past 18.
         const BRANCH_PALETTE = [
-          { bg: "#9F1239", fg: "#FFFFFF" },   // rose
-          { bg: "#7C2D12", fg: "#FFFFFF" },   // amber-deep
-          { bg: "#365314", fg: "#FFFFFF" },   // olive
-          { bg: "#581C87", fg: "#FFFFFF" },   // purple
-          { bg: "#155E75", fg: "#FFFFFF" },   // sky-deep
-          { bg: "#7E22CE", fg: "#FFFFFF" },   // violet
-          { bg: "#92400E", fg: "#FFFFFF" },   // brown
-          { bg: "#831843", fg: "#FFFFFF" },   // pink-deep
-          { bg: "#166534", fg: "#FFFFFF" },   // emerald
-          { bg: "#9A3412", fg: "#FFFFFF" },   // orange-deep
-          { bg: "#1E3A8A", fg: "#FFFFFF" },   // blue-deep
-          { bg: "#0F766E", fg: "#FFFFFF" }    // teal
+          { bg: "#9F1239", fg: "#FFFFFF" },   // 0  rose            — Sea Point
+          { bg: "#0F766E", fg: "#FFFFFF" },   // 1  teal            — Bree
+          { bg: "#9A3412", fg: "#FFFFFF" },   // 2  orange-deep     — Kloof
+          { bg: "#3730A3", fg: "#FFFFFF" },   // 3  indigo          — Claremont
+          { bg: "#4D7C0F", fg: "#FFFFFF" },   // 4  olive           — Rondebosch
+          { bg: "#A21CAF", fg: "#FFFFFF" },   // 5  fuchsia         — Durbanville
+          { bg: "#1E3A8A", fg: "#FFFFFF" },   // 6  blue-deep       — Table Bay
+          { bg: "#B45309", fg: "#FFFFFF" },   // 7  amber-dark      — Somerset West
+          { bg: "#155E75", fg: "#FFFFFF" },   // 8  sky-deep        — Riverlands
+          { bg: "#831843", fg: "#FFFFFF" },   // 9  pink-deep       — Kuils River
+          { bg: "#15803D", fg: "#FFFFFF" },   // 10 green-dark      — Westlake
+          { bg: "#6D28D9", fg: "#FFFFFF" },   // 11 violet          — Green Point
+          { bg: "#0E7490", fg: "#FFFFFF" },   // 12 cyan-deep       — Plumstead
+          { bg: "#7F1D1D", fg: "#FFFFFF" },   // 13 maroon          — Sandown
+          { bg: "#365314", fg: "#FFFFFF" },   // 14 lime-dark       — Cape Gate
+          { bg: "#7E22CE", fg: "#FFFFFF" },   // 15 purple          — Winelands
+          { bg: "#78350F", fg: "#FFFFFF" },   // 16 brown           — Betty
+          { bg: "#334155", fg: "#FFFFFF" }    // 17 slate           — (buffer)
         ];
+        const _salonIdxByName = {};
+        SALONS.forEach((s, i) => { _salonIdxByName[s.name] = i; });
         const branchColour = (name) => {
+          const idx = _salonIdxByName[name];
+          if (idx != null) return BRANCH_PALETTE[idx % BRANCH_PALETTE.length];
+          // Unknown branch (legacy data) — fall back to a stable hash so the
+          // colour at least doesn't change between renders.
           let h = 0;
           for (let i = 0; i < name.length; i++) h = ((h << 5) - h + name.charCodeAt(i)) | 0;
           return BRANCH_PALETTE[Math.abs(h) % BRANCH_PALETTE.length];
