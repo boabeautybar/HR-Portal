@@ -20927,11 +20927,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ fontSize: 12, color: "#831843", textAlign: "right" }}><div style={{ fontWeight: 700 }}>{mDayLabel(mgrClockinDay)}</div><strong>{filtered.length}</strong> clock-in record{filtered.length !== 1 ? "s" : ""}</div>
             </div>
 
-            {/* Today's manager roster — one row per scoped manager with a
-                live status (clocked in / not in yet / pre-tagged reason).
-                Independent of the manager schedule cache so it always
-                renders, and gives the ROM a clear "who's where right now"
-                view of every store they cover. */}
+            {/* Today's manager roster — derived from the manager schedule
+                cache so the list ONLY shows managers actually rostered to
+                work today (W / WL / WE / E). Anyone scheduled off or on
+                leave is excluded so ROMs see a true "who's expected in"
+                list. Managers who clocked in despite not being scheduled
+                still get listed under their branch as a sanity check. */}
             {mgrClockinDay === _mTodayYmd && (() => {
               // Clock-in lookup for today, keyed by ec.
               const inByEc = {};
@@ -20946,67 +20947,95 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const statByKey = {};
               (mgrDayStatuses || []).forEach(s => { statByKey[s.staff_id + "|" + s.date] = s; });
               const statLabel = code => (MGR_REASON_OPTIONS.find(o => o.code === code) || { label: code }).label;
-              const scopedMgrs = managers
-                .filter(m => !_hasStoreScope || scopedSalonNames.has(m.branch))
-                .filter(m => mgrClockinFilterBranch === "All" || m.branch === mgrClockinFilterBranch)
-                .filter(m => !m.onMat && !m.leftDate)
-                .slice()
-                .sort((a, b) => (a.branch || "").localeCompare(b.branch || "") || (a.name || "").localeCompare(b.name || ""));
-              if (scopedMgrs.length === 0) return null;
-              // Group by branch.
-              const byBranch = {};
-              scopedMgrs.forEach(m => { (byBranch[m.branch] = byBranch[m.branch] || []).push(m); });
-              const branchNames = Object.keys(byBranch).sort();
-              const totalIn = scopedMgrs.filter(m => inByEc[m.ec]).length;
-              const totalTagged = scopedMgrs.filter(m => statByKey[(m._id || m.id) + "|" + mgrClockinDay]).length;
-              const totalPending = scopedMgrs.length - totalIn - totalTagged;
+              const ymd = mgrClockinDay;
+              const ymOf = (() => { const a = ymd.split("-").map(Number); let y = a[0], m = a[1]; if (a[2] > 24) { m += 1; if (m > 12) { m = 1; y++; } } return y + "-" + String(m).padStart(2, "0"); })();
+              const scopedBranches = SALONS
+                .map(s => s.name)
+                .filter(b => !_hasStoreScope || scopedSalonNames.has(b))
+                .filter(b => mgrClockinFilterBranch === "All" || b === mgrClockinFilterBranch);
+              // For each branch, collect managers scheduled to work today.
+              // Cell codes that count as "working": W, WL, WE, E. Anything
+              // else (O / R / L / ML / blank) means not expected in.
+              const scheduledByBranch = {};
+              const missingScheduleBranches = [];
+              const allScheduled = [];
+              const surpriseClockIns = [];   // clocked in but not scheduled to work today
+              scopedBranches.forEach(b => {
+                const grid = mgrClockinSchedCache[b + "|" + ymOf];
+                if (!grid) { missingScheduleBranches.push(b); return; }
+                const list = [];
+                managers.filter(m => m.branch === b && !m.onMat && !m.leftDate).forEach(m => {
+                  const cell = grid[m.ec] && grid[m.ec][ymd];
+                  const isWorking = cell === "W" || cell === "WL" || cell === "WE" || cell === "E";
+                  if (isWorking) { list.push(m); allScheduled.push(m); }
+                  else if (inByEc[m.ec]) { surpriseClockIns.push({ m, cell: cell || "—" }); }
+                });
+                list.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+                if (list.length > 0) scheduledByBranch[b] = list;
+              });
+              if (allScheduled.length === 0 && missingScheduleBranches.length === 0 && surpriseClockIns.length === 0) return null;
+              const totalIn = allScheduled.filter(m => inByEc[m.ec]).length;
+              const totalTagged = allScheduled.filter(m => statByKey[(m._id || m.id) + "|" + ymd]).length;
+              const totalPending = allScheduled.length - totalIn - totalTagged;
+              const branchNames = Object.keys(scheduledByBranch).sort();
+              const renderCard = (m) => {
+                const sid = m._id || m.id;
+                const tagged = statByKey[sid + "|" + ymd];
+                const clockin = inByEc[m.ec];
+                const inTime = clockin ? new Date(clockin.ts).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }) : null;
+                let pill;
+                if (clockin) {
+                  pill = <span style={{ background: "#dcfce7", color: "#14532d", padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>✅ IN {inTime}</span>;
+                } else if (tagged) {
+                  pill = <button
+                    onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: ymd, existing: tagged })}
+                    title={(tagged.note || "") + (tagged.recorded_by ? "\n— " + tagged.recorded_by : "")}
+                    style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                    {statLabel(tagged.status)}{tagged.proof ? " 📎" : ""} ✎
+                  </button>;
+                } else {
+                  pill = <button
+                    onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: ymd, existing: null })}
+                    style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                    ⏳ Not in yet · Mark reason
+                  </button>;
+                }
+                return (
+                  <div key={sid} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, background: clockin ? "#f0fdf4" : (tagged ? "#fffbeb" : "#fef2f2"), border: "1px solid " + (clockin ? "#bbf7d0" : (tagged ? "#fde68a" : "#fecaca")), borderRadius: 8, padding: "7px 10px" }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 700, color: "#831843", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.name}</div>
+                      <div style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{m.ec} {m.role ? "· " + m.role : ""}</div>
+                    </div>
+                    <div>{pill}</div>
+                  </div>
+                );
+              };
               return (
                 <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 13, padding: "12px 14px", marginBottom: 14 }}>
                   <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
-                    <div style={{ fontSize: 13, fontWeight: 800, color: "#831843", letterSpacing: "0.04em", textTransform: "uppercase" }}>👥 Today's manager roster</div>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: "#831843", letterSpacing: "0.04em", textTransform: "uppercase" }}>👥 Today's manager roster · scheduled to work</div>
                     <div style={{ fontSize: 12, color: "#6b7280" }}>
-                      <strong style={{ color: "#14532d" }}>{totalIn}</strong> in · <strong style={{ color: "#7f1d1d" }}>{totalPending}</strong> not in yet · <strong style={{ color: "#92400e" }}>{totalTagged}</strong> tagged · {scopedMgrs.length} total
+                      <strong style={{ color: "#14532d" }}>{totalIn}</strong> in · <strong style={{ color: "#7f1d1d" }}>{totalPending}</strong> not in yet · <strong style={{ color: "#92400e" }}>{totalTagged}</strong> tagged · {allScheduled.length} scheduled
                     </div>
                   </div>
+                  {missingScheduleBranches.length > 0 && (
+                    <div style={{ background: "#fef3c7", border: "1px solid #fcd34d", color: "#92400e", borderRadius: 8, padding: "7px 10px", fontSize: 11.5, marginBottom: 8 }}>
+                      ⚠ No schedule loaded for {missingScheduleBranches.length} branch{missingScheduleBranches.length === 1 ? "" : "es"}: <strong>{missingScheduleBranches.join(", ")}</strong>. Publish the {ymOf} cycle's manager schedule in <em>Scheduling → Managers</em> and refresh. Until then those branches aren't checked for no-shows here — use <strong>➕ Tag absence</strong> if you need to log one.
+                    </div>
+                  )}
                   {branchNames.map(b => (
                     <div key={b} style={{ marginBottom: 10 }}>
-                      <div style={{ fontSize: 11, fontWeight: 800, color: "#831843", marginBottom: 4, letterSpacing: "0.05em" }}>📍 {b}</div>
+                      <div style={{ fontSize: 11, fontWeight: 800, color: "#831843", marginBottom: 4, letterSpacing: "0.05em" }}>📍 {b} · {scheduledByBranch[b].length} scheduled</div>
                       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 6 }}>
-                        {byBranch[b].map(m => {
-                          const sid = m._id || m.id;
-                          const tagged = statByKey[sid + "|" + mgrClockinDay];
-                          const clockin = inByEc[m.ec];
-                          const inTime = clockin ? new Date(clockin.ts).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }) : null;
-                          let pill;
-                          if (clockin) {
-                            pill = <span style={{ background: "#dcfce7", color: "#14532d", padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>✅ IN {inTime}</span>;
-                          } else if (tagged) {
-                            pill = <button
-                              onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: mgrClockinDay, existing: tagged })}
-                              title={(tagged.note || "") + (tagged.recorded_by ? "\n— " + tagged.recorded_by : "")}
-                              style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
-                              {statLabel(tagged.status)}{tagged.proof ? " 📎" : ""} ✎
-                            </button>;
-                          } else {
-                            pill = <button
-                              onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: mgrClockinDay, existing: null })}
-                              style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
-                              ⏳ Not in yet · Mark reason
-                            </button>;
-                          }
-                          return (
-                            <div key={sid} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, background: clockin ? "#f0fdf4" : (tagged ? "#fffbeb" : "#fef2f2"), border: "1px solid " + (clockin ? "#bbf7d0" : (tagged ? "#fde68a" : "#fecaca")), borderRadius: 8, padding: "7px 10px" }}>
-                              <div style={{ minWidth: 0 }}>
-                                <div style={{ fontSize: 12.5, fontWeight: 700, color: "#831843", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.name}</div>
-                                <div style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{m.ec} {m.role ? "· " + m.role : ""}</div>
-                              </div>
-                              <div>{pill}</div>
-                            </div>
-                          );
-                        })}
+                        {scheduledByBranch[b].map(renderCard)}
                       </div>
                     </div>
                   ))}
+                  {surpriseClockIns.length > 0 && (
+                    <div style={{ marginTop: 4, fontSize: 11.5, color: "#6b7280" }}>
+                      🟦 {surpriseClockIns.length} manager{surpriseClockIns.length === 1 ? "" : "s"} clocked in but were not scheduled to work today: <strong>{surpriseClockIns.map(s => s.m.name + " (" + (s.cell || "—") + ")").join(", ")}</strong>. Check the schedule.
+                    </div>
+                  )}
                 </div>
               );
             })()}
