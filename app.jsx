@@ -8542,6 +8542,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // defined any groups yet. Stored per signed-in user PIN.
   const [mgrCoverageGroups, setMgrCoverageGroups] = useState(null);   // null = loading; [] = none; [{id,name,branches:[]}]
   const [mgrCoverageGroupsEditor, setMgrCoverageGroupsEditor] = useState(null);   // null = closed; {groups, newName}
+  // Cell-edit popover on the Manager Coverage view. Lets a ROM change a
+  // shift code or loan the manager to another store for that day.
+  const [mgrCellEditor, setMgrCellEditor] = useState(null);     // null | { branch, mgrYm, ec, name, role, ymd, dom, currentCell }
+  // Loaded manager loan records, keyed for fast (ec,date) lookup. Refreshed
+  // when the coverage tab opens and whenever a save completes.
+  const [mgrLoanRows, setMgrLoanRows] = useState([]);
 
   // ── Daily Check-ins (nail tech) state ──────────────────────────────
   // Loaded once when the Check-ins tab or the Attendance tab opens, so the
@@ -9409,6 +9415,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     })();
     return () => { cancelled = true; };
   }, [tab, mgrCoverageWeekStart]);
+
+  // Load cross-store manager loans when the coverage tab opens. Used to
+  // render "↪ <destination>" on a home-branch loan_out cell and to drive
+  // the kiosk's expected-manager list.
+  useEffect(() => {
+    if (tab !== "mgrCoverage" && tab !== "mgrclockins" && tab !== "attendance") return;
+    if (!window.BOA_DB || !window.BOA_DB.loadMgrLoans) return;
+    let cancelled = false;
+    window.BOA_DB.loadMgrLoans().then(rows => {
+      if (!cancelled) setMgrLoanRows(Array.isArray(rows) ? rows : []);
+    });
+    return () => { cancelled = true; };
+  }, [tab]);
 
   // Load custom Manager Coverage branch groupings for the signed-in user
   // when the tab opens. Stored per PIN under boa_mgrcov_groups_<pin>.
