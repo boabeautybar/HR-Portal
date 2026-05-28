@@ -20956,15 +20956,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // For each branch, collect managers scheduled to work today.
               // Cell codes that count as "working": W, WL, WE, E. Anything
               // else (O / R / L / ML / blank) means not expected in.
+              // A branch falls back to its full active-manager list when the
+              // grid for this cycle hasn't been published — better to show
+              // everyone with a "schedule not published" notice than show
+              // nothing while 51 managers clocked in.
               const scheduledByBranch = {};
-              const missingScheduleBranches = [];
+              const fallbackBranches = [];
               const allScheduled = [];
-              const surpriseClockIns = [];   // clocked in but not scheduled to work today
+              const surpriseClockIns = [];   // clocked in but scheduled off today
               scopedBranches.forEach(b => {
                 const grid = mgrClockinSchedCache[b + "|" + ymOf];
-                if (!grid) { missingScheduleBranches.push(b); return; }
+                const branchMgrs = managers.filter(m => m.branch === b && !m.onMat && !m.leftDate);
+                const scheduleHasToday = !!grid && branchMgrs.some(m => grid[m.ec] && grid[m.ec][ymd]);
+                if (!scheduleHasToday) {
+                  // No schedule data for today at this branch — fall back to
+                  // listing every active manager so ROMs can still tag.
+                  if (branchMgrs.length > 0) {
+                    fallbackBranches.push(b);
+                    scheduledByBranch[b] = branchMgrs.slice().sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+                    branchMgrs.forEach(m => allScheduled.push(m));
+                  }
+                  return;
+                }
                 const list = [];
-                managers.filter(m => m.branch === b && !m.onMat && !m.leftDate).forEach(m => {
+                branchMgrs.forEach(m => {
                   const cell = grid[m.ec] && grid[m.ec][ymd];
                   const isWorking = cell === "W" || cell === "WL" || cell === "WE" || cell === "E";
                   if (isWorking) { list.push(m); allScheduled.push(m); }
@@ -20973,7 +20988,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 list.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
                 if (list.length > 0) scheduledByBranch[b] = list;
               });
-              if (allScheduled.length === 0 && missingScheduleBranches.length === 0 && surpriseClockIns.length === 0) return null;
+              if (allScheduled.length === 0 && fallbackBranches.length === 0 && surpriseClockIns.length === 0) return null;
               const totalIn = allScheduled.filter(m => inByEc[m.ec]).length;
               const totalTagged = allScheduled.filter(m => statByKey[(m._id || m.id) + "|" + ymd]).length;
               const totalPending = allScheduled.length - totalIn - totalTagged;
@@ -21013,14 +21028,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               return (
                 <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 13, padding: "12px 14px", marginBottom: 14 }}>
                   <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
-                    <div style={{ fontSize: 13, fontWeight: 800, color: "#831843", letterSpacing: "0.04em", textTransform: "uppercase" }}>👥 Today's manager roster · scheduled to work</div>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: "#831843", letterSpacing: "0.04em", textTransform: "uppercase" }}>👥 Today's manager roster</div>
                     <div style={{ fontSize: 12, color: "#6b7280" }}>
-                      <strong style={{ color: "#14532d" }}>{totalIn}</strong> in · <strong style={{ color: "#7f1d1d" }}>{totalPending}</strong> not in yet · <strong style={{ color: "#92400e" }}>{totalTagged}</strong> tagged · {allScheduled.length} scheduled
+                      <strong style={{ color: "#14532d" }}>{totalIn}</strong> in · <strong style={{ color: "#7f1d1d" }}>{totalPending}</strong> not in yet · <strong style={{ color: "#92400e" }}>{totalTagged}</strong> tagged · {allScheduled.length} {fallbackBranches.length > 0 ? "managers" : "scheduled"}
                     </div>
                   </div>
-                  {missingScheduleBranches.length > 0 && (
+                  {fallbackBranches.length > 0 && (
                     <div style={{ background: "#fef3c7", border: "1px solid #fcd34d", color: "#92400e", borderRadius: 8, padding: "7px 10px", fontSize: 11.5, marginBottom: 8 }}>
-                      ⚠ No schedule loaded for {missingScheduleBranches.length} branch{missingScheduleBranches.length === 1 ? "" : "es"}: <strong>{missingScheduleBranches.join(", ")}</strong>. Publish the {ymOf} cycle's manager schedule in <em>Scheduling → Managers</em> and refresh. Until then those branches aren't checked for no-shows here — use <strong>➕ Tag absence</strong> if you need to log one.
+                      ⚠ The <strong>{ymOf}</strong> cycle's manager schedule isn't published for {fallbackBranches.length} branch{fallbackBranches.length === 1 ? "" : "es"}: <strong>{fallbackBranches.join(", ")}</strong>. Showing all active managers there as a fallback — publish the schedule in <em>Operations → Scheduling → Managers</em> to filter out off-day managers.
                     </div>
                   )}
                   {branchNames.map(b => (
