@@ -21486,11 +21486,52 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         }
         const lastDay = weekDays[6];
 
-        // Cell colour mapping — matches the Scheduling tab's editor so
-        // anyone toggling between the two reads the same visual language.
-        const CELL_BG = { W: "#dcfce7", WE: "#a7f3d0", WL: "#86efac", WM: "#5eead4", WB: "#67e8f9", E: "#6ee7b7", O: "#FCE7F3", L: "#fde68a", R: "#fbcfe8", ML: "#ede9fe" };
-        const CELL_FG = { W: "#15803d", WE: "#064e3b", WL: "#14532d", WM: "#134e4a", WB: "#155e75", E: "#064e3b", O: "#9d174d", L: "#92400e", R: "#9d174d", ML: "#5b21b6" };
-        const CELL_LBL = { W: "W", WE: "WE", WL: "WL", WM: "WM", WB: "WB", E: "E", O: "OFF", L: "LV", R: "REQ", ML: "ML" };
+        // Per-branch colour palette — every branch is anchored to one of
+        // 12 saturated shades so its working blocks read as a single solid
+        // colour across the week, the way Connecteam groups stores by hue.
+        // Deterministic so the colour stays stable across reloads.
+        const BRANCH_PALETTE = [
+          { bg: "#9F1239", fg: "#FFFFFF" },   // rose
+          { bg: "#7C2D12", fg: "#FFFFFF" },   // amber-deep
+          { bg: "#365314", fg: "#FFFFFF" },   // olive
+          { bg: "#581C87", fg: "#FFFFFF" },   // purple
+          { bg: "#155E75", fg: "#FFFFFF" },   // sky-deep
+          { bg: "#7E22CE", fg: "#FFFFFF" },   // violet
+          { bg: "#92400E", fg: "#FFFFFF" },   // brown
+          { bg: "#831843", fg: "#FFFFFF" },   // pink-deep
+          { bg: "#166534", fg: "#FFFFFF" },   // emerald
+          { bg: "#9A3412", fg: "#FFFFFF" },   // orange-deep
+          { bg: "#1E3A8A", fg: "#FFFFFF" },   // blue-deep
+          { bg: "#0F766E", fg: "#FFFFFF" }    // teal
+        ];
+        const branchColour = (name) => {
+          let h = 0;
+          for (let i = 0; i < name.length; i++) h = ((h << 5) - h + name.charCodeAt(i)) | 0;
+          return BRANCH_PALETTE[Math.abs(h) % BRANCH_PALETTE.length];
+        };
+        // Non-working cell styling (kept muted so the working blocks pop).
+        const NON_WORK_BG = { O: "#FDF2F8", L: "#FEF3C7", R: "#FCE7F3", ML: "#EDE9FE" };
+        const NON_WORK_FG = { O: "#9D174D", L: "#92400E", R: "#9D174D", ML: "#5B21B6" };
+        const NON_WORK_LBL = { O: "OFF", L: "LEAVE", R: "REQ", ML: "MATERNITY" };
+        // Cell code → suffix the role-default shift times. Lets us show
+        // "9:00a - 6:30p" inside a manager's working block the way
+        // Connecteam does, without needing per-shift data on each cell.
+        const shiftTimes = (role, code) => {
+          const r = (role || "").toUpperCase();
+          if (r === "SM" || r === "SSM") {
+            if (code === "WL") return "8:30a - 5:30p";
+            if (code === "WE") return "7:30a - 4:30p";
+            if (code === "WM") return "8:00a - 1:00p";
+            return "8:00a - 5:00p";
+          }
+          // AM and others default
+          if (code === "WL") return "10:00a - 7:00p";
+          if (code === "WE") return "8:30a - 6:00p";
+          if (code === "WM") return "9:00a - 1:00p";
+          if (code === "WB") return "8:00a - 7:00p";
+          if (code === "E")  return "9:00a - 6:30p";
+          return "9:00a - 6:30p";
+        };
         const isWorking = (v) => v === "W" || v === "WE" || v === "WL" || v === "WM" || v === "WB" || v === "E";
 
         const readCell = (grid, ec, d) => (grid && grid[ec]) ? (grid[ec][d.ymd] || grid[ec][d.dom]) : undefined;
@@ -21530,15 +21571,46 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           else if (c.gridLoaded && c.count === 1) totalSingleCover++;
         }));
 
-        // Cell renderer for a manager-day cell.
-        const renderCell = (cellVal, key) => {
-          if (!cellVal) return <td key={key} style={{ background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: "6px 4px", textAlign: "center", fontSize: 10, color: "#d1d5db" }}>—</td>;
-          const lbl = CELL_LBL[cellVal] || cellVal;
-          const bg = CELL_BG[cellVal] || "#f3f4f6";
-          const fg = CELL_FG[cellVal] || "#374151";
+        // Cell renderer for a manager-day cell. Working cells become tall
+        // Connecteam-style colored blocks branded by branch with the shift
+        // times and role · branch label; non-working cells fall back to a
+        // small muted pill (OFF / LEAVE / REQ / MATERNITY) or blank.
+        const renderCell = (cellVal, key, branchName, role) => {
+          // Blank / empty day cell.
+          if (!cellVal) {
+            return (
+              <td key={key} style={{ background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", textAlign: "center" }}>
+                <div style={{ minHeight: 56, display: "flex", alignItems: "center", justifyContent: "center", color: "#e5e7eb", fontSize: 18 }}>·</div>
+              </td>
+            );
+          }
+          // Working cell → solid branch-coloured block with times + role.
+          if (isWorking(cellVal)) {
+            const pal = branchColour(branchName);
+            const time = shiftTimes(role, cellVal);
+            const subtle = cellVal !== "W" ? { borderLeft: "4px solid rgba(255,255,255,0.5)" } : {};
+            return (
+              <td key={key} style={{ background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle" }}>
+                <div title={role + " · " + branchName + " · " + cellVal + " · " + time}
+                  style={{ background: pal.bg, color: pal.fg, borderRadius: 6, padding: "8px 6px", textAlign: "left", lineHeight: 1.25, minHeight: 56, boxShadow: "inset 0 -2px 0 rgba(0,0,0,0.18)", ...subtle }}>
+                  <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.01em", whiteSpace: "nowrap" }}>{time}</div>
+                  <div style={{ fontSize: 10, fontWeight: 600, opacity: 0.95, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{branchName}</div>
+                  <div style={{ fontSize: 9, fontWeight: 800, opacity: 0.92, letterSpacing: "0.06em", marginTop: 1 }}>
+                    {(role || "").toUpperCase()}{cellVal !== "W" ? " · " + cellVal : ""}
+                  </div>
+                </div>
+              </td>
+            );
+          }
+          // Non-working code → muted pill (OFF / LEAVE / REQ / MATERNITY).
+          const bg = NON_WORK_BG[cellVal] || "#f3f4f6";
+          const fg = NON_WORK_FG[cellVal] || "#374151";
+          const lbl = NON_WORK_LBL[cellVal] || cellVal;
           return (
-            <td key={key} style={{ background: bg, borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: "5px 4px", textAlign: "center", fontSize: 11, fontWeight: 800, color: fg, letterSpacing: "0.04em" }}>
-              {lbl}
+            <td key={key} style={{ background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", textAlign: "center" }}>
+              <div style={{ background: bg, color: fg, borderRadius: 6, padding: "8px 6px", fontSize: 10, fontWeight: 800, letterSpacing: "0.05em", minHeight: 56, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                {lbl}
+              </div>
             </td>
           );
         };
@@ -21551,7 +21623,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         };
 
         const dayHeader = (d) => (
-          <th key={d.ymd} style={{ background: d.isToday ? "#FCE7F3" : (d.isWeekend ? "#FDEEF5" : "#fff"), color: "#831843", borderBottom: "2px solid #FBCFE8", padding: "6px 6px", fontSize: 10, fontWeight: 800, letterSpacing: "0.04em", textAlign: "center", minWidth: 56 }}>
+          <th key={d.ymd} style={{ background: d.isToday ? "#FCE7F3" : (d.isWeekend ? "#FDEEF5" : "#fff"), color: "#831843", borderBottom: "2px solid #FBCFE8", padding: "6px 6px", fontSize: 10, fontWeight: 800, letterSpacing: "0.04em", textAlign: "center", minWidth: 122 }}>
             <div>{d.dowLbl}</div>
             <div style={{ fontSize: 9, fontWeight: 500, color: d.isToday ? "#BE185D" : "#9ca3af" }}>{d.dayLbl}</div>
           </th>
@@ -21629,7 +21701,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         const mgrs = mgrByBranch[b] || [];
                         return (
                           <div key={b} style={{ borderBottom: "3px solid #FCE7F3" }}>
-                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: "#1f2937", tableLayout: "fixed" }}>
+                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: "#1f2937", tableLayout: "auto", minWidth: 1100 }}>
                               <thead>
                                 <tr style={{ background: "#FCE7F3" }}>
                                   <th style={{ textAlign: "left", padding: "8px 14px", fontSize: 13, fontWeight: 800, color: "#831843", width: 240, borderBottom: "1px solid #FBCFE8" }}>📍 {b}</th>
@@ -21659,7 +21731,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       {weekDays.map(d => {
                                         const grid = mgrClockinSchedCache[b + "|" + d.mgrYm];
                                         const v = readCell(grid, m.ec, d);
-                                        return renderCell(v, m.ec + "-" + d.ymd);
+                                        return renderCell(v, m.ec + "-" + d.ymd, b, m.role);
                                       })}
                                     </tr>
                                   );
@@ -21675,7 +21747,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
             ) : (
               <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 13, overflow: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: "#1f2937", tableLayout: "fixed" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: "#1f2937", tableLayout: "auto", minWidth: 1100 }}>
                   <thead>
                     <tr style={{ background: "#FCE7F3" }}>
                       <th style={{ textAlign: "left", padding: "8px 14px", fontSize: 11, fontWeight: 800, color: "#831843", width: 280, borderBottom: "2px solid #FBCFE8" }}>MANAGER · BRANCH</th>
@@ -21707,7 +21779,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           {weekDays.map(d => {
                             const grid = mgrClockinSchedCache[b + "|" + d.mgrYm];
                             const v = readCell(grid, m.ec, d);
-                            return renderCell(v, m.ec + "-" + d.ymd);
+                            return renderCell(v, m.ec + "-" + d.ymd, b, m.role);
                           })}
                         </tr>
                       ));
