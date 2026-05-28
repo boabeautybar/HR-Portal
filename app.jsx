@@ -21630,27 +21630,38 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Deterministic so the colour stays stable across reloads.
         // One distinct dark colour per store, ordered to maximise contrast
         // between adjacent SALONS entries (so the By-Branch grid never has
-        // two neighbours blending). 18 slots covers the 17 current stores
-        // plus a buffer; we wrap with modulo if SALONS ever grows past 18.
+        // two neighbours blending). 28 slots covers the 17 seeded WC stores
+        // plus the JHB/KZN imports plus a buffer; we wrap with modulo if
+        // SALONS ever grows past that.
         const BRANCH_PALETTE = [
-          { bg: "#9F1239", fg: "#FFFFFF" },   // 0  rose            — Sea Point
-          { bg: "#0F766E", fg: "#FFFFFF" },   // 1  teal            — Bree
-          { bg: "#9A3412", fg: "#FFFFFF" },   // 2  orange-deep     — Kloof
-          { bg: "#3730A3", fg: "#FFFFFF" },   // 3  indigo          — Claremont
-          { bg: "#4D7C0F", fg: "#FFFFFF" },   // 4  olive           — Rondebosch
-          { bg: "#A21CAF", fg: "#FFFFFF" },   // 5  fuchsia         — Durbanville
-          { bg: "#1E3A8A", fg: "#FFFFFF" },   // 6  blue-deep       — Table Bay
-          { bg: "#B45309", fg: "#FFFFFF" },   // 7  amber-dark      — Somerset West
-          { bg: "#155E75", fg: "#FFFFFF" },   // 8  sky-deep        — Riverlands
-          { bg: "#831843", fg: "#FFFFFF" },   // 9  pink-deep       — Kuils River
-          { bg: "#15803D", fg: "#FFFFFF" },   // 10 green-dark      — Westlake
-          { bg: "#6D28D9", fg: "#FFFFFF" },   // 11 violet          — Green Point
-          { bg: "#0E7490", fg: "#FFFFFF" },   // 12 cyan-deep       — Plumstead
-          { bg: "#7F1D1D", fg: "#FFFFFF" },   // 13 maroon          — Sandown
-          { bg: "#365314", fg: "#FFFFFF" },   // 14 lime-dark       — Cape Gate
-          { bg: "#7E22CE", fg: "#FFFFFF" },   // 15 purple          — Winelands
-          { bg: "#78350F", fg: "#FFFFFF" },   // 16 brown           — Betty
-          { bg: "#334155", fg: "#FFFFFF" }    // 17 slate           — (buffer)
+          { bg: "#9F1239", fg: "#FFFFFF" },   // 0  rose
+          { bg: "#0F766E", fg: "#FFFFFF" },   // 1  teal
+          { bg: "#9A3412", fg: "#FFFFFF" },   // 2  orange-deep
+          { bg: "#3730A3", fg: "#FFFFFF" },   // 3  indigo
+          { bg: "#4D7C0F", fg: "#FFFFFF" },   // 4  olive
+          { bg: "#A21CAF", fg: "#FFFFFF" },   // 5  fuchsia
+          { bg: "#1E3A8A", fg: "#FFFFFF" },   // 6  blue-deep
+          { bg: "#B45309", fg: "#FFFFFF" },   // 7  amber-dark
+          { bg: "#155E75", fg: "#FFFFFF" },   // 8  sky-deep
+          { bg: "#831843", fg: "#FFFFFF" },   // 9  pink-deep
+          { bg: "#15803D", fg: "#FFFFFF" },   // 10 green-dark
+          { bg: "#6D28D9", fg: "#FFFFFF" },   // 11 violet
+          { bg: "#0E7490", fg: "#FFFFFF" },   // 12 cyan-deep
+          { bg: "#7F1D1D", fg: "#FFFFFF" },   // 13 maroon
+          { bg: "#365314", fg: "#FFFFFF" },   // 14 lime-dark
+          { bg: "#7E22CE", fg: "#FFFFFF" },   // 15 purple
+          { bg: "#78350F", fg: "#FFFFFF" },   // 16 brown
+          { bg: "#334155", fg: "#FFFFFF" },   // 17 slate
+          { bg: "#BE185D", fg: "#FFFFFF" },   // 18 magenta
+          { bg: "#047857", fg: "#FFFFFF" },   // 19 emerald-deep
+          { bg: "#C2410C", fg: "#FFFFFF" },   // 20 orange
+          { bg: "#1D4ED8", fg: "#FFFFFF" },   // 21 blue
+          { bg: "#86198F", fg: "#FFFFFF" },   // 22 plum
+          { bg: "#166534", fg: "#FFFFFF" },   // 23 forest
+          { bg: "#0369A1", fg: "#FFFFFF" },   // 24 ocean
+          { bg: "#854D0E", fg: "#FFFFFF" },   // 25 dark-mustard
+          { bg: "#4338CA", fg: "#FFFFFF" },   // 26 royal
+          { bg: "#5B21B6", fg: "#FFFFFF" }    // 27 dark-violet
         ];
         const _salonIdxByName = {};
         SALONS.forEach((s, i) => { _salonIdxByName[s.name] = i; });
