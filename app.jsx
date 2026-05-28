@@ -9299,7 +9299,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   useEffect(() => {
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     if (!window.BOA_DB.loadManagerDayStatuses) return;
-    if (tab !== "dashboard" && tab !== "mgrclockins" && tab !== "attendance") return;
+    if (tab !== "dashboard" && tab !== "mgrclockins" && tab !== "attendance" && tab !== "mgrCoverage") return;
     let cancelled = false;
     window.BOA_DB.loadManagerDayStatuses(60).then(rows => {
       if (!cancelled) setMgrDayStatuses(rows || []);
@@ -21917,6 +21917,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           _loansByEcYmd[String(lo.ec).trim() + "|" + lo.date] = lo;
         });
 
+        // Manager absence tags from the ROM "Mark reason" flow on the
+        // Check-ins tab. Keyed "<ec>|<ymd>" → {status, note, proof}.
+        // mgrDayStatuses uses staff_id, so build a staff_id → ec lookup
+        // first via the managers list.
+        const _ecByStaffId = {};
+        (managers || []).forEach(mm => {
+          const sid = mm._id || mm.id;
+          const _ec = String(mm.ec || "").trim();
+          if (sid && _ec) _ecByStaffId[sid] = _ec;
+        });
+        const _absByEcYmd = {};
+        (mgrDayStatuses || []).forEach(s => {
+          if (!s || !s.staff_id || !s.date || !s.status) return;
+          const _ec = _ecByStaffId[s.staff_id];
+          if (!_ec) return;
+          _absByEcYmd[_ec + "|" + s.date] = s;
+        });
+        // Visual treatment per reason code — colours match the
+        // MGR_REASON_OPTIONS labels (sick/frl/absent/no-show). Order is
+        // small-icon + short label so it fits inside the W block.
+        const _ABS_STYLE = {
+          sick_n: { bg: "#FEE2E2", fg: "#7F1D1D", lbl: "🤒 SICK + NOTE" },
+          sick:   { bg: "#FEE2E2", fg: "#7F1D1D", lbl: "🤒 SICK" },
+          frl:    { bg: "#FEF3C7", fg: "#92400E", lbl: "👪 FRL" },
+          absent: { bg: "#FECDD3", fg: "#9F1239", lbl: "🚫 ABSENT" },
+          no:     { bg: "#7F1D1D", fg: "#FFFFFF", lbl: "⛔ NO SHOW" }
+        };
+
         // Coverage per branch per day — count managers scheduled to work.
         // Uses readWithFallback so published-only schedules still count.
         const coverageByBranchDay = {};
@@ -22198,16 +22226,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const pal = branchColour(branchName);
             const time = shiftTimes(role, cellVal);
             const subtle = cellVal !== "W" ? { borderLeft: "4px solid rgba(255,255,255,0.5)" } : {};
-            const dotColor = clockedIn ? "#22c55e" : (isPast ? "#ef4444" : null);
+            // Was this day tagged with an absence reason by the ROM? If so
+            // the block desaturates and a coloured pill at the top calls
+            // out WHY they weren't in — replaces the plain red "absent" dot
+            // so the reason is visible at a glance.
+            const _abs = ec && ymd ? _absByEcYmd[String(ec).trim() + "|" + ymd] : null;
+            const _absStyle = _abs ? _ABS_STYLE[_abs.status] : null;
+            const dotColor = _abs ? null : (clockedIn ? "#22c55e" : (isPast ? "#ef4444" : null));
             const dotTitle = clockedIn ? "✓ Clocked in" : (isPast ? "✗ Absent — did not clock in" : null);
             return (
               <td key={key} {..._dh} onClick={onCellClick} style={tdStyle}>
-                <div title={(role || "") + " · " + branchName + " · " + cellVal + " · " + time + (dotTitle ? "\n" + dotTitle : "") + (isGuest ? "\nGuest from " + isGuest : "") + "\n\nClick to edit · drag to swap days or loan to another store"}
-                  style={{ position: "relative", background: pal.bg, color: pal.fg, borderRadius: 6, padding: "8px 6px", textAlign: "left", lineHeight: 1.25, minHeight: 56, boxShadow: "inset 0 -2px 0 rgba(0,0,0,0.18)", ...subtle }}>
+                <div title={(role || "") + " · " + branchName + " · " + cellVal + " · " + time + (dotTitle ? "\n" + dotTitle : "") + (_abs && _absStyle ? "\n" + _absStyle.lbl + (_abs.note ? " — " + _abs.note : "") + (_abs.recorded_by ? " (by " + _abs.recorded_by + ")" : "") : "") + (isGuest ? "\nGuest from " + isGuest : "") + "\n\nClick to edit · drag to swap days or loan to another store"}
+                  style={{ position: "relative", background: pal.bg, color: pal.fg, borderRadius: 6, padding: "8px 6px", textAlign: "left", lineHeight: 1.25, minHeight: 56, boxShadow: "inset 0 -2px 0 rgba(0,0,0,0.18)", opacity: _abs ? 0.55 : 1, ...subtle }}>
+                  {_abs && _absStyle && (
+                    <div style={{ position: "absolute", top: 3, left: 3, right: 3, background: _absStyle.bg, color: _absStyle.fg, borderRadius: 4, padding: "1px 5px", fontSize: 9, fontWeight: 800, letterSpacing: "0.05em", textAlign: "center", boxShadow: "0 1px 2px rgba(0,0,0,0.18)", opacity: 1 }}>
+                      {_absStyle.lbl}{_abs.proof ? " 📎" : ""}
+                    </div>
+                  )}
                   {dotColor && (
                     <span title={dotTitle} style={{ position: "absolute", top: 4, right: 4, width: 9, height: 9, borderRadius: 9, background: dotColor, border: "2px solid #fff", boxShadow: "0 0 0 1px rgba(0,0,0,0.12)" }} />
                   )}
-                  <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.01em", whiteSpace: "nowrap" }}>{time}</div>
+                  <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.01em", whiteSpace: "nowrap", marginTop: _abs ? 16 : 0 }}>{time}</div>
                   <div style={{ fontSize: 10, fontWeight: 600, opacity: 0.95, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{branchName}{isGuest ? " ↪" : ""}</div>
                   <div style={{ fontSize: 9, fontWeight: 800, opacity: 0.92, letterSpacing: "0.06em", marginTop: 1 }}>
                     {(role || "").toUpperCase()}{cellVal !== "W" ? " · " + cellVal : ""}
