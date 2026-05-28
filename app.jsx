@@ -15733,22 +15733,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // in the saved schedule grid (which may still have legacy 'L'
         // codes for them).
         const onMatEcs = new Set(attStaff.filter(s => s.onMat).map(s => s.ec));
-        // ROM-managed absence reasons. Build an ec → ymd → status code
+        // ROM-managed absence reasons. Build an ec → ymd → { status, mds }
         // lookup so getStatus() can overlay a manager's day with the ROM's
-        // recorded reason (sick_n / sick / frl / al / absent / no / off).
-        // We map employee_code → staff_id via the live managers list, then
-        // index mgrDayStatuses by staff_id+date.
-        const _mgrEcToStaffId = {};
-        managers.forEach(m => { if (m.ec && (m._id || m.id)) _mgrEcToStaffId[m.ec] = m._id || m.id; });
+        // recorded reason (sick_n / sick / frl / absent / no) and so the cell
+        // renderer can show a small "ROM" pip + tooltip with the recorder's
+        // name. EC matching trims whitespace on both sides — same hardening
+        // we did on the dashboard / Manager Check-ins panels — so a stray
+        // space on a staff row can't drop the overlay silently.
+        const _staffIdToEc = {};
+        managers.forEach(m => {
+          const _ec = String(m.ec || "").trim();
+          const _id = m._id || m.id;
+          if (_ec && _id) _staffIdToEc[_id] = _ec;
+        });
         const _mgrStatusByEcYmd = {};
         (mgrDayStatuses || []).forEach(r => {
-          for (const ec in _mgrEcToStaffId) {
-            if (_mgrEcToStaffId[ec] === r.staff_id) {
-              (_mgrStatusByEcYmd[ec] = _mgrStatusByEcYmd[ec] || {})[r.date] = r.status;
-              break;
-            }
-          }
+          const _ec = _staffIdToEc[r.staff_id];
+          if (!_ec) return;
+          (_mgrStatusByEcYmd[_ec] = _mgrStatusByEcYmd[_ec] || {})[r.date] = r;
         });
+        const _mgrLookup = (ec, ymd) => {
+          const m = _mgrStatusByEcYmd[String(ec || "").trim()];
+          return m ? m[ymd] : null;
+        };
         // For a given (ec, ymd), is this day strictly AFTER their last day?
         const isPostLeftDate = (ec, ymd) => {
           const ld = offByEc[ec];
@@ -15759,14 +15766,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const mirrorSuppressed = !!(attMeta && attMeta.mirrorSuppressed);
         const getStatus = (ec, d) => {
           // ROM-managed manager-absence overlay. When a regional has
-          // recorded a reason (sick + note / FRL + proof / annual / etc.)
-          // for a manager's missed day, that's the source of truth for
-          // payroll and overrides any schedule mirror / attGrid value.
-          if (_mgrStatusByEcYmd[ec]) {
-            const _do = days.find(x => x.d === d);
-            const _v = _do && _mgrStatusByEcYmd[ec][_do.ymd];
-            if (_v) return _v;
-          }
+          // recorded a reason (sick + note / FRL + proof / absent / etc.)
+          // for a manager's missed day, that IS the source of truth for
+          // payroll — overrides any schedule mirror / attGrid value, and
+          // feeds totalsFor() so SICK / FRL / UNPAID columns include it.
+          const _do = days.find(x => x.d === d);
+          const _mds = _do && _mgrLookup(ec, _do.ymd);
+          if (_mds && _mds.status) return _mds.status;
           // Tech-loan override: the home branch's loaned-out cell mirrors
           // the status the receiving branch's kiosk recorded that day so
           // payroll at home sees Esther's real workday (On Time / Late /
@@ -17056,6 +17062,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const v = getStatus(s.ec, dy.d);
                           const hint = schedHint(s.ec, dy.d);
                           const override = hasOverride(s.ec, dy.d);
+                          // ROM-tagged absence for this exact cell (so the
+                          // payroll columns reflecting it can show a tooltip
+                          // and a small pip). Managers only.
+                          const _romTag = isMgr ? _mgrLookup(s.ec, dy.ymd) : null;
                           let st = resolveStat(v) || { lbl: "", bg: "#FFFFFF", fg: "#9ca3af" };
                           // Pending loan-day placeholder: receiving branch hasn't
                           // recorded a status yet, so the cell still reads 'loan_out'.
@@ -17324,6 +17334,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           } else if (isFutureSwap) {
                             tipLines.push("(Future swap — placeholder only; fill in the actual status on the day.)");
                           }
+                          if (_romTag) {
+                            const _who = _romTag.recorded_by || _romTag.updated_by || "ROM";
+                            const _when = _romTag.updated_at || _romTag.created_at;
+                            tipLines.push("ROM-tagged absence: " + ((STAT[_romTag.status] || {}).lbl || _romTag.status) + (_romTag.note ? " — \"" + _romTag.note + "\"" : ""));
+                            tipLines.push("by " + _who + (_when ? " · " + new Date(_when).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : ""));
+                          }
                           const cellTooltip = tipLines.join("\n");
                           // Simplified presence palette — every source (schedule / kiosk /
                           // Fresha) maps to "work" (green) or "off" (slate) when it represents
@@ -17364,6 +17380,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 : "transparent";
                           return (
                             <td key={dy.d} style={{ padding: 0, borderBottom: "1px solid #FCE7F3", borderLeft: allMatchEdge, background: allMatchBg || cellBaseBg, position: "relative" }}>
+                              {_romTag && (
+                                <div title={cellTooltip} style={{ position: "absolute", top: 2, right: 2, zIndex: 3, background: "#BE185D", color: "#fff", fontSize: 7, fontWeight: 800, lineHeight: 1, padding: "2px 4px", borderRadius: 4, letterSpacing: "0.05em", pointerEvents: "none" }}>ROM</div>
+                              )}
                               <div style={{ position: "relative", height: 36, width: "100%" }}>
                                 <div title={cellTooltip} style={{ position: "absolute", top: 0, left: 0, right: 0, height: 6, background: schedStripeColor === "transparent" ? "#f9fafb" : schedStripeColor, borderBottom: cleanFill ? "none" : "1px solid rgba(0,0,0,0.05)", pointerEvents: "none", display: "flex", alignItems: "center", justifyContent: "flex-start", paddingLeft: 2 }}>
                                   {!cleanFill && <span style={{ fontSize: 7, fontWeight: 800, color: "rgba(0,0,0,0.45)", letterSpacing: "0.05em" }}>S</span>}
