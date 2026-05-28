@@ -6401,6 +6401,7 @@ const SETTINGS_TABS = [
   { t: "storeOpenings", l: "Store Openings", cat: "Operations", icon: "🔓" },
   { t: "movements", l: "Today's Movements", cat: "Operations", icon: "🔀" },
   { t: "dailyTasks", l: "Daily Tasks", cat: "Operations", icon: "📋" },
+  { t: "mgrCoverage", l: "Manager Coverage", cat: "Operations", icon: "🗓" },
   { t: "cashups", l: "Cash Ups", cat: "Operations", icon: "💰" },
   { t: "attendance", l: "Attendance / Payroll", cat: "Payroll", icon: "📕" },
   { t: "payrollProgress", l: "Payroll Progress", cat: "Payroll", icon: "📊" },
@@ -8477,7 +8478,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Map of tab → category name. Kept in sync with the groups list below.
   const NAV_TAB_TO_CATEGORY = {
     onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
-    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations",
+    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
     attendance: "Payroll", payrollProgress: "Payroll",
     alerts: "Insights", activity: "Insights",
     settings: "Admin"
@@ -8513,6 +8514,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [mgrClockinDay, setMgrClockinDay] = useState(() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); });
   const [mgrClockinPhoto, setMgrClockinPhoto] = useState(null);   // {url, name, ts, ...}
   const [mgrClockinSchedCache, setMgrClockinSchedCache] = useState({});  // {branch|ym: grid}
+
+  // ── Manager Coverage tab state ─────────────────────────────────────
+  // Week-at-a-glance roster of every manager grouped by branch (and
+  // region) so a ROM can spot coverage gaps and decide where to borrow.
+  // Defaults to the current ISO week (Monday-start). Schedule grids
+  // reuse mgrClockinSchedCache; we load whichever cycle ym(s) the
+  // visible week touches on tab open.
+  const [mgrCoverageWeekStart, setMgrCoverageWeekStart] = useState(() => {
+    const d = new Date();
+    const dow = d.getDay();          // 0=Sun, 1=Mon, …
+    const offset = (dow + 6) % 7;    // Mon=0, Sun=6
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - offset);
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  });
+  const [mgrCoverageView, setMgrCoverageView] = useState("byBranch");   // "byBranch" | "byManager"
+  const [mgrCoverageRegion, setMgrCoverageRegion] = useState("all");
+  // Most-recent-approved schedule cache for the Manager Coverage tab,
+  // used as a fallback when the working draft grid has no entry for a
+  // manager — keyed `<branch>|<ym>` like mgrClockinSchedCache.
+  const [mgrApprovedFallbackCache, setMgrApprovedFallbackCache] = useState({});
+  // Per-user custom branch groupings for the Manager Coverage tab. Lets a
+  // ROM organise stores into clusters that make sense for their region
+  // (e.g. "Cape Town city bowl", "Southern suburbs"). Falls back to the
+  // built-in region grouping (WC / Gauteng / KZN) when the user hasn't
+  // defined any groups yet. Stored per signed-in user PIN.
+  const [mgrCoverageGroups, setMgrCoverageGroups] = useState(null);   // null = loading; [] = none; [{id,name,branches:[]}]
+  const [mgrCoverageGroupsEditor, setMgrCoverageGroupsEditor] = useState(null);   // null = closed; {groups, newName}
 
   // ── Daily Check-ins (nail tech) state ──────────────────────────────
   // Loaded once when the Check-ins tab or the Attendance tab opens, so the
@@ -9261,7 +9290,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // Load recent manager clock-ins when the viewer tab opens.
   useEffect(() => {
-    if (tab !== "mgrclockins") return;
+    if (tab !== "mgrclockins" && tab !== "mgrCoverage") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     let cancelled = false;
     (async () => {
@@ -9312,6 +9341,93 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     })();
     return () => { cancelled = true; };
   }, [tab, mgrClockinDays]);
+
+  // Manager Coverage tab: load manager schedules for every branch for
+  // the cycle(s) the visible week touches. Reuses mgrClockinSchedCache
+  // (same start-month ym convention) so loads are deduped across the
+  // mgrclockins, dashboard absences card and this new coverage view.
+  useEffect(() => {
+    if (tab !== "mgrCoverage") return;
+    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
+    let cancelled = false;
+    (async () => {
+      // Start-month ym (cycle 25-May → 24-Jun is saved as "2026-05"):
+      const ymdToMgrYm = (d) => {
+        let y = d.getFullYear(), m = d.getMonth() + 1;
+        if (d.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y--; } }
+        return y + "-" + String(m).padStart(2, "0");
+      };
+      const [yy, mm, dd] = mgrCoverageWeekStart.split("-").map(Number);
+      const start = new Date(yy, mm - 1, dd);
+      const yms = new Set();
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(start); d.setDate(d.getDate() + i);
+        yms.add(ymdToMgrYm(d));
+      }
+      const need = [];
+      for (const ym of yms) for (const sl of SALONS) {
+        const k = sl.name + "|" + ym;
+        if (!(k in mgrClockinSchedCache)) need.push({ branch: sl.name, ym, key: k });
+      }
+      if (need.length > 0) {
+        const pairs = await Promise.all(need.map(async (n) => {
+          try { const s = await window.BOA_DB.loadSchedule(n.branch, n.ym, true); return [n.key, (s && s.grid) || null]; }
+          catch (_) { return [n.key, null]; }
+        }));
+        if (cancelled) return;
+        setMgrClockinSchedCache(prev => {
+          const next = { ...prev };
+          pairs.forEach(([k, g]) => { next[k] = g; });
+          return next;
+        });
+      }
+      // Approved-snapshot fallback — load the most recent approved version
+      // for each (branch, ym) and store its grid keyed the same way. The
+      // coverage cell reader prefers the working draft and falls back to
+      // this when the draft has no entry for a manager (covers stores
+      // whose schedule was published then wiped from the working draft).
+      const needApproved = [];
+      for (const ym of yms) for (const sl of SALONS) {
+        const k = sl.name + "|" + ym;
+        if (!(k in mgrApprovedFallbackCache)) needApproved.push({ branch: sl.name, ym, key: k });
+      }
+      if (needApproved.length > 0 && window.BOA_DB.loadApprovedSchedules) {
+        const aPairs = await Promise.all(needApproved.map(async (n) => {
+          try {
+            const list = await window.BOA_DB.loadApprovedSchedules(n.branch, n.ym, true);
+            const top = Array.isArray(list) && list.length > 0 ? list[0] : null;
+            return [n.key, (top && top.grid) || null];
+          } catch (_) { return [n.key, null]; }
+        }));
+        if (cancelled) return;
+        setMgrApprovedFallbackCache(prev => {
+          const next = { ...prev };
+          aPairs.forEach(([k, g]) => { next[k] = g; });
+          return next;
+        });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [tab, mgrCoverageWeekStart]);
+
+  // Load custom Manager Coverage branch groupings for the signed-in user
+  // when the tab opens. Stored per PIN under boa_mgrcov_groups_<pin>.
+  useEffect(() => {
+    if (tab !== "mgrCoverage") return;
+    if (!window.BOA_DB || !window.BOA_DB.sb) return;
+    if (!currentUser || !currentUser.pin) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const key = "boa_mgrcov_groups_" + currentUser.pin;
+        const res = await window.BOA_DB.sb.from("app_state").select("value").eq("key", key).maybeSingle();
+        if (cancelled) return;
+        const v = res && res.data && res.data.value;
+        setMgrCoverageGroups(Array.isArray(v) ? v : []);
+      } catch (_) { if (!cancelled) setMgrCoverageGroups([]); }
+    })();
+    return () => { cancelled = true; };
+  }, [tab, currentUser && currentUser.pin]);
 
   // Load photo/GPS metadata only for the manager clock-ins on the currently
   // selected day, so navigating day-by-day stays snappy even with a wide
@@ -10387,6 +10503,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "storeOpenings", l: "🔓 Store Openings" },
                   { t: "movements", l: "🔀 Today's Movements" },
                   { t: "dailyTasks", l: "📋 Daily Tasks" },
+                  { t: "mgrCoverage", l: "🗓 Manager Coverage" },
                   { t: "cashups", l: "💰 Cash Ups" },
                   {
                     t: "mgrPlanner", l: "🧩 Manager Planner",
@@ -21386,6 +21503,483 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         );
       })()}
 
+      {tab === "mgrCoverage" && (() => {
+        // ── Manager Coverage tab ───────────────────────────────────────
+        // Weekly per-branch (and per-manager) view of who's scheduled
+        // to work. Surfaces coverage gaps so a ROM can decide where to
+        // borrow a manager. Reads from mgrClockinSchedCache (same
+        // start-month ym convention as the rest of the manager flows).
+
+        const _p2 = n => String(n).padStart(2, "0");
+        const ymdToStr = (d) => d.getFullYear() + "-" + _p2(d.getMonth() + 1) + "-" + _p2(d.getDate());
+        const shiftWeek = (delta) => {
+          const [yy, mm, dd] = mgrCoverageWeekStart.split("-").map(Number);
+          const d = new Date(yy, mm - 1, dd);
+          d.setDate(d.getDate() + delta * 7);
+          setMgrCoverageWeekStart(ymdToStr(d));
+        };
+        const thisWeekStart = (() => {
+          const d = new Date(); const dow = d.getDay();
+          const offset = (dow + 6) % 7;
+          d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - offset);
+          return ymdToStr(d);
+        })();
+        const [yy, mm, dd] = mgrCoverageWeekStart.split("-").map(Number);
+        const weekDays = [];
+        const todayY = new Date(); const todayYmd = ymdToStr(todayY);
+        for (let i = 0; i < 7; i++) {
+          const d = new Date(yy, mm - 1, dd); d.setDate(d.getDate() + i);
+          weekDays.push({
+            ymd: ymdToStr(d),
+            dom: d.getDate(),
+            dowLbl: ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][i],
+            dayLbl: d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }),
+            isToday: ymdToStr(d) === todayYmd,
+            isWeekend: i >= 5,
+            // Start-month ym for this date — used to look up schedule cache.
+            mgrYm: (() => { let y = d.getFullYear(), m = d.getMonth() + 1; if (d.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + _p2(m); })()
+          });
+        }
+        const lastDay = weekDays[6];
+
+        // Per-branch colour palette — every branch is anchored to one of
+        // 12 saturated shades so its working blocks read as a single solid
+        // colour across the week, the way Connecteam groups stores by hue.
+        // Deterministic so the colour stays stable across reloads.
+        const BRANCH_PALETTE = [
+          { bg: "#9F1239", fg: "#FFFFFF" },   // rose
+          { bg: "#7C2D12", fg: "#FFFFFF" },   // amber-deep
+          { bg: "#365314", fg: "#FFFFFF" },   // olive
+          { bg: "#581C87", fg: "#FFFFFF" },   // purple
+          { bg: "#155E75", fg: "#FFFFFF" },   // sky-deep
+          { bg: "#7E22CE", fg: "#FFFFFF" },   // violet
+          { bg: "#92400E", fg: "#FFFFFF" },   // brown
+          { bg: "#831843", fg: "#FFFFFF" },   // pink-deep
+          { bg: "#166534", fg: "#FFFFFF" },   // emerald
+          { bg: "#9A3412", fg: "#FFFFFF" },   // orange-deep
+          { bg: "#1E3A8A", fg: "#FFFFFF" },   // blue-deep
+          { bg: "#0F766E", fg: "#FFFFFF" }    // teal
+        ];
+        const branchColour = (name) => {
+          let h = 0;
+          for (let i = 0; i < name.length; i++) h = ((h << 5) - h + name.charCodeAt(i)) | 0;
+          return BRANCH_PALETTE[Math.abs(h) % BRANCH_PALETTE.length];
+        };
+        // Non-working cell styling (kept muted so the working blocks pop).
+        const NON_WORK_BG = { O: "#FDF2F8", L: "#FEF3C7", R: "#FCE7F3", ML: "#EDE9FE" };
+        const NON_WORK_FG = { O: "#9D174D", L: "#92400E", R: "#9D174D", ML: "#5B21B6" };
+        const NON_WORK_LBL = { O: "OFF", L: "LEAVE", R: "REQ", ML: "MATERNITY" };
+        // Cell code → suffix the role-default shift times. Lets us show
+        // "9:00a - 6:30p" inside a manager's working block the way
+        // Connecteam does, without needing per-shift data on each cell.
+        const shiftTimes = (role, code) => {
+          const r = (role || "").toUpperCase();
+          if (r === "SM" || r === "SSM") {
+            if (code === "WL") return "8:30a - 5:30p";
+            if (code === "WE") return "7:30a - 4:30p";
+            if (code === "WM") return "8:00a - 1:00p";
+            return "8:00a - 5:00p";
+          }
+          // AM and others default
+          if (code === "WL") return "10:00a - 7:00p";
+          if (code === "WE") return "8:30a - 6:00p";
+          if (code === "WM") return "9:00a - 1:00p";
+          if (code === "WB") return "8:00a - 7:00p";
+          if (code === "E")  return "9:00a - 6:30p";
+          return "9:00a - 6:30p";
+        };
+        const isWorking = (v) => v === "W" || v === "WE" || v === "WL" || v === "WM" || v === "WB" || v === "E";
+
+        // Read a cell from the working schedule grid. Tries the EC as-is
+        // AND with whitespace trimmed (some staff rows carry a trailing
+        // space) and tries both possible key formats: full ymd string and
+        // day-of-month number. The grid store has historically held either.
+        const readCell = (grid, ec, d) => {
+          if (!grid || !ec) return undefined;
+          const _e1 = ec, _e2 = String(ec).trim();
+          const row = grid[_e1] || (_e2 !== _e1 ? grid[_e2] : null);
+          if (!row) return undefined;
+          return row[d.ymd] || row[d.dom] || row[String(d.dom)];
+        };
+        // Fall back to the most recent APPROVED snapshot for a branch+ym
+        // when the working grid is empty for a manager — covers stores
+        // whose schedule was published and then reset / never saved back
+        // to the working draft. mgrApprovedFallbackCache is built lazily
+        // below as branches need it.
+        const _approvedFallbackCache = mgrApprovedFallbackCache || {};
+        const readWithFallback = (branchName, ec, d) => {
+          const grid = mgrClockinSchedCache[branchName + "|" + d.mgrYm];
+          const v = readCell(grid, ec, d);
+          if (v) return v;
+          const ag = _approvedFallbackCache[branchName + "|" + d.mgrYm];
+          return readCell(ag, ec, d);
+        };
+
+        // Branches in scope, grouped by region OR by the user's custom
+        // groups when they've defined any. Region filter still narrows.
+        const scopedBranches = SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name));
+        const regionsToShow = mgrCoverageRegion === "all" ? REGIONS : REGIONS.filter(r => r.key === mgrCoverageRegion);
+        const branchesByRegion = {};
+        regionsToShow.forEach(r => { branchesByRegion[r.key] = scopedBranches.filter(s => s.region === r.key).map(s => s.name).sort((a, b) => a.localeCompare(b)); });
+        // Compute the effective group list for the By-Branch view. Each
+        // group is {key, label, bg, color, branches:[]}. When the user
+        // has saved custom groups we use those; otherwise fall back to
+        // REGIONS. Branches not in any custom group land in a tail
+        // "Other stores" group so nothing disappears.
+        const scopedBranchSet = new Set(scopedBranches.map(s => s.name));
+        const hasCustomGroups = Array.isArray(mgrCoverageGroups) && mgrCoverageGroups.length > 0;
+        const effectiveGroups = (() => {
+          if (!hasCustomGroups) {
+            return regionsToShow.map(r => ({
+              key: "region:" + r.key,
+              label: r.label,
+              bg: r.bg, color: r.color,
+              branches: branchesByRegion[r.key] || []
+            }));
+          }
+          // Honour the user's custom order; drop empty / out-of-scope branches.
+          const used = new Set();
+          const out = mgrCoverageGroups.map((g, i) => {
+            const branches = (g.branches || []).filter(b => scopedBranchSet.has(b) && !used.has(b));
+            branches.forEach(b => used.add(b));
+            return {
+              key: "grp:" + (g.id || i),
+              label: g.name || "Untitled group",
+              bg: "#FCE7F3", color: "#831843",
+              branches
+            };
+          }).filter(g => g.branches.length > 0);
+          const unassigned = scopedBranches.map(s => s.name).filter(b => !used.has(b)).sort((a, b) => a.localeCompare(b));
+          if (unassigned.length > 0) out.push({ key: "grp:_other", label: "Other stores", bg: "#f3f4f6", color: "#374151", branches: unassigned });
+          // Apply region filter: keep groups that touch the picked region.
+          if (mgrCoverageRegion !== "all") {
+            const regionBranchSet = new Set(scopedBranches.filter(s => s.region === mgrCoverageRegion).map(s => s.name));
+            return out
+              .map(g => ({ ...g, branches: g.branches.filter(b => regionBranchSet.has(b)) }))
+              .filter(g => g.branches.length > 0);
+          }
+          return out;
+        })();
+        // Per-EC manager lookup so we can join schedule-grid keys back
+        // to a manager record even when the schedule lists them at a
+        // store that isn't their home branch (e.g. Tanita scheduled at
+        // Betty while her home is Buitengracht).
+        const mgrByEc = {};
+        managers.forEach(m => {
+          const _ec = String(m.ec || "").trim();
+          if (_ec && !m.leftDate) mgrByEc[_ec] = m;
+        });
+        // Managers visible at each branch this week — start with the home-
+        // branch active list, then ADD any EC that appears in this branch's
+        // schedule grid (working or approved) on a working day. Catches the
+        // cross-store coverage case so Tanita shows up at Betty when her
+        // shift is on Betty's schedule.
+        const mgrByBranch = {};
+        scopedBranches.forEach(s => { mgrByBranch[s.name] = []; });
+        managers.forEach(m => {
+          if (!m.branch || m.onMat || m.leftDate) return;
+          if (mgrByBranch[m.branch]) mgrByBranch[m.branch].push(m);
+        });
+        scopedBranches.forEach(s => {
+          const _seen = new Set(mgrByBranch[s.name].map(m => String(m.ec || "").trim()));
+          weekDays.forEach(d => {
+            const wGrid = mgrClockinSchedCache[s.name + "|" + d.mgrYm];
+            const aGrid = _approvedFallbackCache[s.name + "|" + d.mgrYm];
+            [wGrid, aGrid].forEach(grid => {
+              if (!grid) return;
+              for (const _ec in grid) {
+                const ecKey = String(_ec).trim();
+                if (_seen.has(ecKey)) continue;
+                const cell = grid[_ec][d.ymd] || grid[_ec][d.dom] || grid[_ec][String(d.dom)];
+                if (!isWorking(cell)) continue;     // only flag a guest mgr when there's an actual working cell
+                const mgr = mgrByEc[ecKey];
+                if (!mgr) continue;                  // unknown ec — skip
+                if (mgr.onMat || mgr.leftDate) continue;
+                _seen.add(ecKey);
+                mgrByBranch[s.name].push({ ...mgr, _guestFromBranch: mgr.branch });
+              }
+            });
+          });
+        });
+        Object.keys(mgrByBranch).forEach(b => mgrByBranch[b].sort((a, b) =>
+          (a.role === "SM" ? 0 : a.role === "AM" ? 1 : 2) - (b.role === "SM" ? 0 : b.role === "AM" ? 1 : 2)
+          || (a.name || "").localeCompare(b.name || "")
+        ));
+
+        // Manager clock-in lookup keyed by ec → ymd → true. Powers the
+        // small green dot we render on cells where the manager actually
+        // showed up. Today's clock-ins come straight from mgrClockinRows
+        // (loaded by the mgrclockins / mgrCoverage useEffect).
+        const _clockedInByEcYmd = {};
+        (mgrClockinRows || []).forEach(r => {
+          if (!r.staff || !r.staff.employee_code) return;
+          if (r.type !== "in") return;
+          const _ec = String(r.staff.employee_code).trim();
+          const _d = new Date(r.ts);
+          const _ymd = _d.getFullYear() + "-" + String(_d.getMonth() + 1).padStart(2, "0") + "-" + String(_d.getDate()).padStart(2, "0");
+          (_clockedInByEcYmd[_ec] = _clockedInByEcYmd[_ec] || {})[_ymd] = true;
+        });
+
+        // Coverage per branch per day — count managers scheduled to work.
+        // Uses readWithFallback so published-only schedules still count.
+        const coverageByBranchDay = {};
+        scopedBranches.forEach(s => {
+          coverageByBranchDay[s.name] = weekDays.map(d => {
+            const wGrid = mgrClockinSchedCache[s.name + "|" + d.mgrYm];
+            const aGrid = _approvedFallbackCache[s.name + "|" + d.mgrYm];
+            let count = 0;
+            (mgrByBranch[s.name] || []).forEach(m => {
+              if (isWorking(readWithFallback(s.name, m.ec, d))) count++;
+            });
+            return { count, gridLoaded: !!(wGrid || aGrid) };
+          });
+        });
+        // Total gaps (0-mgr days) for the headline banner.
+        let totalGaps = 0, totalSingleCover = 0;
+        Object.values(coverageByBranchDay).forEach(arr => arr.forEach(c => {
+          if (c.gridLoaded && c.count === 0) totalGaps++;
+          else if (c.gridLoaded && c.count === 1) totalSingleCover++;
+        }));
+
+        // Cell renderer for a manager-day cell. Working cells become tall
+        // Connecteam-style colored blocks branded by branch with the shift
+        // times and role · branch label; non-working cells fall back to a
+        // small muted pill (OFF / LEAVE / REQ / MATERNITY) or blank.
+        const renderCell = (cellVal, key, branchName, role, ymd, ec, isGuest) => {
+          const clockedIn = ec && ymd && _clockedInByEcYmd[String(ec).trim()] && _clockedInByEcYmd[String(ec).trim()][ymd];
+          // Did this day already pass? (Today still in flight, so absence
+          // can't be inferred yet.)
+          const isPast = ymd && ymd < (function () { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
+          // Blank / empty day cell.
+          if (!cellVal) {
+            return (
+              <td key={key} style={{ background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", textAlign: "center" }}>
+                <div style={{ minHeight: 56, display: "flex", alignItems: "center", justifyContent: "center", color: "#e5e7eb", fontSize: 18 }}>·</div>
+              </td>
+            );
+          }
+          // Working cell → solid branch-coloured block with times + role.
+          if (isWorking(cellVal)) {
+            const pal = branchColour(branchName);
+            const time = shiftTimes(role, cellVal);
+            const subtle = cellVal !== "W" ? { borderLeft: "4px solid rgba(255,255,255,0.5)" } : {};
+            const dotColor = clockedIn ? "#22c55e" : (isPast ? "#ef4444" : null);
+            const dotTitle = clockedIn ? "✓ Clocked in" : (isPast ? "✗ Absent — did not clock in" : null);
+            return (
+              <td key={key} style={{ background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle" }}>
+                <div title={(role || "") + " · " + branchName + " · " + cellVal + " · " + time + (dotTitle ? "\n" + dotTitle : "") + (isGuest ? "\nGuest from " + isGuest : "")}
+                  style={{ position: "relative", background: pal.bg, color: pal.fg, borderRadius: 6, padding: "8px 6px", textAlign: "left", lineHeight: 1.25, minHeight: 56, boxShadow: "inset 0 -2px 0 rgba(0,0,0,0.18)", ...subtle }}>
+                  {dotColor && (
+                    <span title={dotTitle} style={{ position: "absolute", top: 4, right: 4, width: 9, height: 9, borderRadius: 9, background: dotColor, border: "2px solid #fff", boxShadow: "0 0 0 1px rgba(0,0,0,0.12)" }} />
+                  )}
+                  <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.01em", whiteSpace: "nowrap" }}>{time}</div>
+                  <div style={{ fontSize: 10, fontWeight: 600, opacity: 0.95, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{branchName}{isGuest ? " ↪" : ""}</div>
+                  <div style={{ fontSize: 9, fontWeight: 800, opacity: 0.92, letterSpacing: "0.06em", marginTop: 1 }}>
+                    {(role || "").toUpperCase()}{cellVal !== "W" ? " · " + cellVal : ""}
+                  </div>
+                </div>
+              </td>
+            );
+          }
+          // Non-working code → muted pill (OFF / LEAVE / REQ / MATERNITY).
+          const bg = NON_WORK_BG[cellVal] || "#f3f4f6";
+          const fg = NON_WORK_FG[cellVal] || "#374151";
+          const lbl = NON_WORK_LBL[cellVal] || cellVal;
+          return (
+            <td key={key} style={{ background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", textAlign: "center" }}>
+              <div style={{ background: bg, color: fg, borderRadius: 6, padding: "8px 6px", fontSize: 10, fontWeight: 800, letterSpacing: "0.05em", minHeight: 56, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                {lbl}
+              </div>
+            </td>
+          );
+        };
+
+        const coverPill = (c) => {
+          if (!c.gridLoaded) return <span title="Schedule not loaded for this cycle" style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, fontSize: 9, fontWeight: 800, background: "#f3f4f6", color: "#9ca3af" }}>—</span>;
+          if (c.count === 0) return <span title="No manager scheduled — coverage gap" style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, fontSize: 9, fontWeight: 800, background: "#fee2e2", color: "#7f1d1d" }}>✗ 0</span>;
+          if (c.count === 1) return <span title="Single cover — vulnerable" style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, fontSize: 9, fontWeight: 800, background: "#fef3c7", color: "#92400e" }}>⚠ 1</span>;
+          return <span title={c.count + " managers scheduled"} style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, fontSize: 9, fontWeight: 800, background: "#dcfce7", color: "#166534" }}>✓ {c.count}</span>;
+        };
+
+        const dayHeader = (d) => (
+          <th key={d.ymd} style={{ background: d.isToday ? "#FCE7F3" : (d.isWeekend ? "#FDEEF5" : "#fff"), color: "#831843", borderBottom: "2px solid #FBCFE8", padding: "6px 6px", fontSize: 10, fontWeight: 800, letterSpacing: "0.04em", textAlign: "center", minWidth: 122 }}>
+            <div>{d.dowLbl}</div>
+            <div style={{ fontSize: 9, fontWeight: 500, color: d.isToday ? "#BE185D" : "#9ca3af" }}>{d.dayLbl}</div>
+          </th>
+        );
+
+        return (
+          <div style={{ padding: "0 24px" }}>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700, marginBottom: 4 }}>🗓 Manager Coverage</div>
+              <div style={{ fontSize: 12, color: "#F472B6" }}>Weekly view of every manager's scheduled shifts. Spot days with no coverage and decide where to borrow a manager.</div>
+            </div>
+
+            {renderScopeBar({ marginBottom: 12 })}
+
+            <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "12px 14px", border: "1px solid #FBCFE8", marginBottom: 14, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>WEEK</label>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <button onClick={() => shiftWeek(-1)} style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "6px 11px", cursor: "pointer", fontSize: 15, fontWeight: 700, lineHeight: 1 }}>‹</button>
+                  <div style={{ padding: "6px 12px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, fontWeight: 700, color: "#831843", background: "#fff" }}>
+                    {weekDays[0].dayLbl} – {lastDay.dayLbl}
+                  </div>
+                  <button onClick={() => shiftWeek(1)} style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "6px 11px", cursor: "pointer", fontSize: 15, fontWeight: 700, lineHeight: 1 }}>›</button>
+                  <button onClick={() => setMgrCoverageWeekStart(thisWeekStart)} disabled={mgrCoverageWeekStart === thisWeekStart}
+                    style={{ background: mgrCoverageWeekStart === thisWeekStart ? "#FCE7F3" : "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "6px 12px", cursor: mgrCoverageWeekStart === thisWeekStart ? "default" : "pointer", fontSize: 12, fontWeight: 700, opacity: mgrCoverageWeekStart === thisWeekStart ? 0.6 : 1 }}>This week</button>
+                </div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>VIEW</label>
+                <div style={{ display: "flex", gap: 4, background: "#FCE7F3", borderRadius: 8, padding: 3 }}>
+                  {["byBranch", "byManager"].map(v => (
+                    <button key={v} onClick={() => setMgrCoverageView(v)}
+                      style={{ background: mgrCoverageView === v ? "#fff" : "transparent", color: "#831843", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                      {v === "byBranch" ? "By Branch" : "By Manager"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>REGION</label>
+                <select value={mgrCoverageRegion} onChange={e => setMgrCoverageRegion(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff", minWidth: 160 }}>
+                  <option value="all">All regions</option>
+                  {REGIONS.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
+                </select>
+              </div>
+              <div style={{ flex: 1 }} />
+              <button
+                onClick={() => setMgrCoverageGroupsEditor({
+                  groups: (mgrCoverageGroups || []).map(g => ({ id: g.id, name: g.name, branches: [...(g.branches || [])] }))
+                })}
+                title="Organise stores into your own groups (e.g. Cape Town city bowl, Southern suburbs). Saved per user."
+                style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                🗂 Edit groups{hasCustomGroups ? " · " + (mgrCoverageGroups || []).length : ""}
+              </button>
+              <div style={{ fontSize: 11, display: "flex", gap: 12 }}>
+                <span><span style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, background: "#fee2e2", color: "#7f1d1d", fontWeight: 800, fontSize: 9 }}>✗ 0</span> no coverage</span>
+                <span><span style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, background: "#fef3c7", color: "#92400e", fontWeight: 800, fontSize: 9 }}>⚠ 1</span> single cover</span>
+                <span><span style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, background: "#dcfce7", color: "#166534", fontWeight: 800, fontSize: 9 }}>✓ 2+</span> covered</span>
+                <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 8, background: "#22c55e", border: "1.5px solid #fff", boxShadow: "0 0 0 1px rgba(0,0,0,0.12)", marginRight: 4 }} />clocked in</span>
+                <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 8, background: "#ef4444", border: "1.5px solid #fff", boxShadow: "0 0 0 1px rgba(0,0,0,0.12)", marginRight: 4 }} />absent</span>
+                <span title="Guest shift — manager's home store is different">↪ guest shift</span>
+              </div>
+            </div>
+
+            {(totalGaps > 0 || totalSingleCover > 0) && (
+              <div style={{ background: totalGaps > 0 ? "#fee2e2" : "#fef3c7", border: "1px solid " + (totalGaps > 0 ? "#fca5a5" : "#fcd34d"), borderRadius: 11, padding: "10px 14px", marginBottom: 14 }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: totalGaps > 0 ? "#7f1d1d" : "#92400e" }}>
+                  {totalGaps > 0 && <>⚠ <strong>{totalGaps}</strong> coverage gap{totalGaps === 1 ? "" : "s"} this week — branches with NO manager scheduled. </>}
+                  {totalSingleCover > 0 && <>{totalGaps > 0 ? "Plus " : "⚠ "}<strong>{totalSingleCover}</strong> single-cover day{totalSingleCover === 1 ? "" : "s"} (one manager only — vulnerable to sick days). </>}
+                  Borrow from a branch with 2+ to balance.
+                </div>
+              </div>
+            )}
+
+            {mgrCoverageView === "byBranch" ? (
+              <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 13, overflow: "auto" }}>
+                {effectiveGroups.map(r => {
+                  const branches = r.branches || [];
+                  if (branches.length === 0) return null;
+                  return (
+                    <div key={r.key} style={{ marginBottom: 4 }}>
+                      <div style={{ background: r.bg, color: r.color, padding: "8px 14px", fontWeight: 800, fontSize: 12, letterSpacing: "0.05em", textTransform: "uppercase", borderBottom: "2px solid " + r.color }}>
+                        {r.label} · {branches.length} store{branches.length === 1 ? "" : "s"}
+                      </div>
+                      {branches.map(b => {
+                        const mgrs = mgrByBranch[b] || [];
+                        return (
+                          <div key={b} style={{ borderBottom: "3px solid #FCE7F3" }}>
+                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: "#1f2937", tableLayout: "auto", minWidth: 1100 }}>
+                              <thead>
+                                <tr style={{ background: "#FCE7F3" }}>
+                                  <th style={{ textAlign: "left", padding: "8px 14px", fontSize: 13, fontWeight: 800, color: "#831843", width: 240, borderBottom: "1px solid #FBCFE8" }}>📍 {b}</th>
+                                  {weekDays.map(dayHeader)}
+                                </tr>
+                                <tr style={{ background: "#FDEEF5" }}>
+                                  <td style={{ padding: "5px 14px", fontSize: 11, color: "#831843", fontWeight: 700 }}>Coverage</td>
+                                  {weekDays.map((d, i) => (
+                                    <td key={"cov-" + d.ymd} style={{ padding: "5px 4px", textAlign: "center", borderBottom: "1px solid #FBCFE8" }}>
+                                      {coverPill(coverageByBranchDay[b][i])}
+                                    </td>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {mgrs.length === 0 ? (
+                                  <tr>
+                                    <td colSpan={8} style={{ padding: "10px 14px", color: "#9ca3af", fontStyle: "italic", fontSize: 12 }}>No active managers at this branch.</td>
+                                  </tr>
+                                ) : mgrs.map(m => {
+                                  return (
+                                    <tr key={m.ec}>
+                                      <td style={{ padding: "6px 14px", fontWeight: 700, color: "#831843", fontSize: 12, borderBottom: "1px solid #FCE7F3" }}>
+                                        {m.role === "SM" ? "👑 " : m.role === "AM" ? "⭐ " : ""}{m.name}
+                                        <span style={{ marginLeft: 6, fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{m.role || ""}</span>
+                                      </td>
+                                      {weekDays.map(d => {
+                                        const v = readWithFallback(b, m.ec, d);
+                                        return renderCell(v, m.ec + "-" + d.ymd, b, m.role, d.ymd, m.ec, m._guestFromBranch || null);
+                                      })}
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 13, overflow: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: "#1f2937", tableLayout: "auto", minWidth: 1100 }}>
+                  <thead>
+                    <tr style={{ background: "#FCE7F3" }}>
+                      <th style={{ textAlign: "left", padding: "8px 14px", fontSize: 11, fontWeight: 800, color: "#831843", width: 280, borderBottom: "2px solid #FBCFE8" }}>MANAGER · BRANCH</th>
+                      {weekDays.map(dayHeader)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(() => {
+                      const rows = [];
+                      effectiveGroups.forEach(r => {
+                        (r.branches || []).forEach(b => {
+                          (mgrByBranch[b] || []).forEach(m => {
+                            rows.push({ m, b, r });
+                          });
+                        });
+                      });
+                      if (rows.length === 0) return (
+                        <tr><td colSpan={8} style={{ padding: 30, textAlign: "center", color: "#9ca3af", fontStyle: "italic" }}>No managers in scope.</td></tr>
+                      );
+                      return rows.map(({ m, b, r }) => (
+                        <tr key={m.ec + "-" + b}>
+                          <td style={{ padding: "6px 14px", borderBottom: "1px solid #FCE7F3" }}>
+                            <div style={{ fontWeight: 700, color: "#831843", fontSize: 12.5 }}>{m.role === "SM" ? "👑 " : m.role === "AM" ? "⭐ " : ""}{m.name}</div>
+                            <div style={{ fontSize: 10, color: "#9ca3af" }}>
+                              📍 {b} <span style={{ background: r.bg, color: r.color, padding: "1px 6px", borderRadius: 4, fontWeight: 700, marginLeft: 4 }}>{r.label}</span>
+                              <span style={{ marginLeft: 6, fontFamily: "monospace" }}>{m.role || ""}</span>
+                            </div>
+                          </td>
+                          {weekDays.map(d => {
+                            const v = readWithFallback(b, m.ec, d);
+                            return renderCell(v, m.ec + "-" + d.ymd, b, m.role, d.ymd, m.ec, m._guestFromBranch || null);
+                          })}
+                        </tr>
+                      ));
+                    })()}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {tab === "cashups" && (() => {
         // Build a region lookup from SALONS so we can colour-code each row
         // and apply the optional region filter. Unknown branches (e.g.
@@ -21755,6 +22349,157 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       {/* "Tag absence" picker — lets a ROM pick any manager + day and
           drop into the Mark-reason modal. Used for early sick calls and
           for days the no-show banner missed. */}
+      {/* Manager Coverage — custom branch groups editor. Lets a user
+          organise stores into clusters that matter for them (e.g.
+          Cape Town city bowl, Southern suburbs) and reorder freely.
+          Saved per user PIN so each ROM has their own view. */}
+      {mgrCoverageGroupsEditor && (() => {
+        const e = mgrCoverageGroupsEditor;
+        const scopedBranchNames = SALONS
+          .filter(s => !_hasStoreScope || scopedSalonNames.has(s.name))
+          .map(s => s.name)
+          .sort((a, b) => a.localeCompare(b));
+        const assigned = new Set();
+        (e.groups || []).forEach(g => (g.branches || []).forEach(b => assigned.add(b)));
+        const unassigned = scopedBranchNames.filter(b => !assigned.has(b));
+        const setGroups = (next) => setMgrCoverageGroupsEditor({ ...e, groups: next });
+        const addGroup = () => {
+          const name = (window.prompt("Group name (e.g. 'Cape Town city bowl', 'Southern suburbs')") || "").trim();
+          if (!name) return;
+          setGroups([...(e.groups || []), { id: "g_" + Date.now().toString(36), name, branches: [] }]);
+        };
+        const renameGroup = (i) => {
+          const cur = e.groups[i].name;
+          const name = (window.prompt("Rename group", cur) || "").trim();
+          if (!name || name === cur) return;
+          const next = e.groups.slice(); next[i] = { ...next[i], name }; setGroups(next);
+        };
+        const removeGroup = (i) => {
+          if (!window.confirm("Delete this group? Its stores will go back to the 'unassigned' list.")) return;
+          const next = e.groups.slice(); next.splice(i, 1); setGroups(next);
+        };
+        const moveGroup = (i, delta) => {
+          const j = i + delta;
+          if (j < 0 || j >= e.groups.length) return;
+          const next = e.groups.slice(); const [g] = next.splice(i, 1); next.splice(j, 0, g); setGroups(next);
+        };
+        const addBranchTo = (groupIdx, branch) => {
+          if (!branch) return;
+          const next = e.groups.map((g, i) => i === groupIdx
+            ? { ...g, branches: [...(g.branches || []), branch] }
+            : { ...g, branches: (g.branches || []).filter(b => b !== branch) });
+          setGroups(next);
+        };
+        const removeBranch = (groupIdx, branch) => {
+          const next = e.groups.slice();
+          next[groupIdx] = { ...next[groupIdx], branches: (next[groupIdx].branches || []).filter(b => b !== branch) };
+          setGroups(next);
+        };
+        const moveBranch = (groupIdx, branchIdx, delta) => {
+          const arr = (e.groups[groupIdx].branches || []).slice();
+          const j = branchIdx + delta;
+          if (j < 0 || j >= arr.length) return;
+          const [b] = arr.splice(branchIdx, 1); arr.splice(j, 0, b);
+          const next = e.groups.slice(); next[groupIdx] = { ...next[groupIdx], branches: arr }; setGroups(next);
+        };
+        const save = async () => {
+          if (!window.BOA_DB || !window.BOA_DB.sb || !currentUser || !currentUser.pin) {
+            window.alert("Could not save — not signed in."); return;
+          }
+          const key = "boa_mgrcov_groups_" + currentUser.pin;
+          // Strip empty groups before save.
+          const cleaned = (e.groups || []).filter(g => (g.branches || []).length > 0 || (g.name || "").trim());
+          try {
+            await window.BOA_DB.sb.from("app_state").upsert({ key, value: cleaned });
+            setMgrCoverageGroups(cleaned);
+            setMgrCoverageGroupsEditor(null);
+          } catch (err) {
+            window.alert("Could not save: " + ((err && err.message) || err));
+          }
+        };
+        const resetToRegions = async () => {
+          if (!window.confirm("Reset to the default region grouping (Western Cape / Gauteng / KZN)?")) return;
+          try {
+            const key = "boa_mgrcov_groups_" + currentUser.pin;
+            await window.BOA_DB.sb.from("app_state").upsert({ key, value: [] });
+            setMgrCoverageGroups([]);
+            setMgrCoverageGroupsEditor(null);
+          } catch (err) { window.alert("Could not reset: " + ((err && err.message) || err)); }
+        };
+        return (
+          <div onClick={() => setMgrCoverageGroupsEditor(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <div onClick={ev => ev.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "20px 22px", width: "100%", maxWidth: 720, maxHeight: "92vh", overflow: "auto" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 6 }}>
+                <div>
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, color: "#831843", fontWeight: 700 }}>🗂 Edit branch groups</div>
+                  <div style={{ fontSize: 12, color: "#9ca3af" }}>Organise stores into clusters that matter to you — e.g. "Cape Town city bowl", "Southern suburbs". Saved just for you. Empty groups disappear on save.</div>
+                </div>
+                <button onClick={() => setMgrCoverageGroupsEditor(null)} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
+              </div>
+
+              {(e.groups || []).length === 0 ? (
+                <div style={{ background: "#FDEEF5", border: "1px dashed #FBCFE8", borderRadius: 10, padding: "14px 16px", marginTop: 12, color: "#831843", fontSize: 13 }}>
+                  No groups yet. Click <strong>+ Add group</strong> to create one (e.g. <em>Cape Town city bowl</em>) and start moving stores into it. While no groups exist the coverage view uses the default Western Cape / Gauteng / KZN regions.
+                </div>
+              ) : (e.groups || []).map((g, gi) => (
+                <div key={g.id || gi} style={{ marginTop: 12, background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 11, padding: "10px 12px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                    <div style={{ fontWeight: 800, color: "#831843", fontSize: 14 }}>{g.name || "Untitled group"} <span style={{ fontSize: 11, color: "#9ca3af", fontWeight: 600, marginLeft: 4 }}>· {(g.branches || []).length} store{(g.branches || []).length === 1 ? "" : "s"}</span></div>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <button onClick={() => moveGroup(gi, -1)} disabled={gi === 0} title="Move group up" style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 6, padding: "3px 8px", cursor: gi === 0 ? "default" : "pointer", fontSize: 11, fontWeight: 700, color: "#831843", opacity: gi === 0 ? 0.4 : 1 }}>▲</button>
+                      <button onClick={() => moveGroup(gi, 1)} disabled={gi === (e.groups.length - 1)} title="Move group down" style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 6, padding: "3px 8px", cursor: gi === (e.groups.length - 1) ? "default" : "pointer", fontSize: 11, fontWeight: 700, color: "#831843", opacity: gi === (e.groups.length - 1) ? 0.4 : 1 }}>▼</button>
+                      <button onClick={() => renameGroup(gi)} title="Rename" style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#831843" }}>✎</button>
+                      <button onClick={() => removeGroup(gi)} title="Delete group" style={{ background: "#fff", border: "1px solid #fca5a5", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#7f1d1d" }}>×</button>
+                    </div>
+                  </div>
+                  {(g.branches || []).length === 0
+                    ? <div style={{ fontSize: 11, color: "#9ca3af", fontStyle: "italic", padding: "4px 0" }}>No stores in this group yet — add some from the dropdown below.</div>
+                    : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 4 }}>
+                        {g.branches.map((b, bi) => (
+                          <div key={b} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#FDEEF5", border: "1px solid #FBCFE8", borderRadius: 7, padding: "4px 8px", fontSize: 12 }}>
+                            <span style={{ fontWeight: 700, color: "#831843" }}>📍 {b}</span>
+                            <span style={{ display: "flex", gap: 2 }}>
+                              <button onClick={() => moveBranch(gi, bi, -1)} disabled={bi === 0} style={{ background: "transparent", border: "none", cursor: bi === 0 ? "default" : "pointer", fontSize: 11, color: "#831843", padding: "0 4px", opacity: bi === 0 ? 0.3 : 1 }}>▲</button>
+                              <button onClick={() => moveBranch(gi, bi, 1)} disabled={bi === g.branches.length - 1} style={{ background: "transparent", border: "none", cursor: bi === g.branches.length - 1 ? "default" : "pointer", fontSize: 11, color: "#831843", padding: "0 4px", opacity: bi === g.branches.length - 1 ? 0.3 : 1 }}>▼</button>
+                              <button onClick={() => removeBranch(gi, b)} title="Remove from group" style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: 13, color: "#7f1d1d", padding: "0 4px" }}>×</button>
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                  }
+                  {unassigned.length > 0 && (
+                    <div style={{ marginTop: 8 }}>
+                      <select defaultValue="" onChange={(ev) => { addBranchTo(gi, ev.target.value); ev.target.value = ""; }}
+                        style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid #FBCFE8", fontSize: 12, background: "#fff" }}>
+                        <option value="">＋ Add a store to {g.name || "this group"}…</option>
+                        {unassigned.map(b => <option key={b} value={b}>{b}</option>)}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              <div style={{ marginTop: 14, padding: "10px 12px", background: "#FDF2F8", border: "1px dashed #FBCFE8", borderRadius: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: "#831843", letterSpacing: "0.04em", marginBottom: 4 }}>UNASSIGNED · {unassigned.length} store{unassigned.length === 1 ? "" : "s"}</div>
+                <div style={{ fontSize: 11, color: "#9ca3af" }}>Stores not in any group land in a "Other stores" section at the bottom of the coverage view. Add them above to organise.</div>
+                {unassigned.length > 0 && <div style={{ fontSize: 11, color: "#831843", marginTop: 4 }}>{unassigned.join(" · ")}</div>}
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginTop: 16 }}>
+                <button onClick={addGroup} style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 9, padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>+ Add group</button>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {hasCustomGroups && (
+                    <button onClick={resetToRegions} style={{ background: "#fff", color: "#7f1d1d", border: "1px solid #fca5a5", borderRadius: 9, padding: "9px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Reset to regions</button>
+                  )}
+                  <button onClick={() => setMgrCoverageGroupsEditor(null)} style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 9, padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>Cancel</button>
+                  <button onClick={save} style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 9, padding: "9px 20px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>💾 Save groups</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {mgrAbsencePicker && (() => {
         const p = mgrAbsencePicker;
         const scopedBranches = SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name));
