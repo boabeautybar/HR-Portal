@@ -6240,13 +6240,17 @@ function AppGate() {
         if (mutated) { try { await saveAppUsersToDb(dynamic); } catch (_) { } }
 
         // One-time migration: hide new Home/Dashboard widgets for all non-owner
-        // users. We set `_dashMigrated` so it only ever runs once per user.
+        // users. We set `_dashMigrated*` so each migration step only ever runs
+        // once per user. The original V1 hid Security Alerts + HR Actions for
+        // everyone except the owner. V2 adds the "Manager Absences (Action
+        // required)" widget, hidden for everyone except the owner AND ROMs —
+        // ROMs are the primary actors on that card, so they see it by default.
         const _dashWidgets = ["dashSecurityAlerts", "dashHrActions"];
         let dashMigrated = false;
         Object.keys(dynamic).forEach(pin => {
           const u = dynamic[pin];
           if (u._dashMigrated) return; // Already migrated, don't force them hidden again
-          
+
           u._dashMigrated = true;
           dashMigrated = true;
 
@@ -6255,6 +6259,21 @@ function AppGate() {
           const missing = _dashWidgets.filter(w => !ht.includes(w));
           if (missing.length > 0) {
             u.hideTabs = [...ht, ...missing];
+          }
+        });
+        // V2 migration: introduces the Manager Absences (Action required) widget.
+        // Hidden by default for non-owners, EXCEPT ROMs — they're the primary
+        // actor on the card so they should see it without an admin step.
+        Object.keys(dynamic).forEach(pin => {
+          const u = dynamic[pin];
+          if (u._dashMigratedV2) return;
+          u._dashMigratedV2 = true;
+          dashMigrated = true;
+          if (u.isOwner) return;
+          if (isRomRole(u.role)) return;   // ROMs see it by default
+          const ht = Array.isArray(u.hideTabs) ? u.hideTabs : [];
+          if (!ht.includes("dashMgrAbsences")) {
+            u.hideTabs = [...ht, "dashMgrAbsences"];
           }
         });
         if (dashMigrated) { try { await saveAppUsersToDb(dynamic); } catch (_) { } }
@@ -6365,6 +6384,7 @@ function AppGate() {
 const SETTINGS_TABS = [
   { t: "dashSecurityAlerts", l: "Security Alerts", cat: "Home/Dashboard", icon: "🚨" },
   { t: "dashHrActions", l: "HR Actions & Tasks", cat: "Home/Dashboard", icon: "📝" },
+  { t: "dashMgrAbsences", l: "Manager Absences (Action required)", cat: "Home/Dashboard", icon: "📌" },
   { t: "staff", l: "Staff List", cat: "People", icon: "👥" },
   { t: "onboard", l: "Onboarding", cat: "People", icon: "🌱" },
   { t: "offboard", l: "Off-boarding", cat: "People", icon: "👋" },
@@ -10977,8 +10997,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   recorded. Honours the dashboard scope toggle: in "mine"
                   mode only the ROM's allocated stores; in "all" mode
                   every region so cover decisions can happen here. After
-                  11:30 local time the title blinks to nudge action. */}
-              {(() => {
+                  11:30 local time the title blinks to nudge action.
+                  Gated by the "Manager Absences (Action required)"
+                  Home/Dashboard permission — visible by default for
+                  owners and ROMs; admins can grant it to other roles in
+                  Settings → Users → Edit. */}
+              {!(new Set(currentUser?.hideTabs || []).has("dashMgrAbsences")) && (() => {
                 const _t = new Date();
                 const _todayYmd = _t.getFullYear() + "-" + String(_t.getMonth() + 1).padStart(2, "0") + "-" + String(_t.getDate()).padStart(2, "0");
                 if (dashTodayMgrClockinEcs == null) return null;     // still loading
