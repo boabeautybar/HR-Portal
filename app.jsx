@@ -22956,6 +22956,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
       {mgrCoverageGroupsEditor && (() => {
         const e = mgrCoverageGroupsEditor;
+        // hasCustomGroups is declared inside the Manager Coverage tab IIFE
+        // and isn't in scope at this top-level modal; recompute it here.
+        const hasCustomGroups = Array.isArray(mgrCoverageGroups) && mgrCoverageGroups.length > 0;
         const scopedBranchNames = SALONS
           .filter(s => !_hasStoreScope || scopedSalonNames.has(s.name))
           .map(s => s.name)
