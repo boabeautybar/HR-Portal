@@ -1223,6 +1223,22 @@
     return records;
   }
 
+  // ---------- Manager day-loans (boa_mgr_loans_v1) ----------
+  // Mirror of the tech loan model for managers — one record per
+  // (manager, day) cross-store assignment. Same shape as tech loans
+  // so the kiosk and reports can reuse the same lookup pattern.
+  async function loadMgrLoans() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_mgr_loans_v1").maybeSingle();
+    if (res.error) { console.error("loadMgrLoans:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveMgrLoans(records) {
+    var res = await sb.from("app_state").upsert({ key: "boa_mgr_loans_v1", value: records || [] });
+    if (res.error) { console.error("saveMgrLoans:", res.error); throw res.error; }
+    return records;
+  }
+
   // ---------- Daily tasks (boa_daily_tasks_v1) ----------
   // Per-user to-do items assigned by an admin. Records:
   //   { _id, title, description, assigneePin, date (YYYY-MM-DD),
@@ -1434,6 +1450,8 @@
     // Unpaid legal-status leave
     loadTechLoans: loadTechLoans,
     saveTechLoans: saveTechLoans,
+    loadMgrLoans: loadMgrLoans,
+    saveMgrLoans: saveMgrLoans,
     loadDailyTasks: loadDailyTasks,
     saveDailyTasks: saveDailyTasks,
     loadComplianceActions: loadComplianceActions,
