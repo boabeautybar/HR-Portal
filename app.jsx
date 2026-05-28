@@ -182,13 +182,11 @@ function compressImageDataUrl(file, maxDim, quality) {
 // Codes map straight onto STAT entries on the attendance grid so the
 // reason renders the same colour & label that the tech statuses use.
 const MGR_REASON_OPTIONS = [
-  { code: "sick_n", label: "🤒 Sick + note",     needsProof: true,  payroll: "Paid sick" },
-  { code: "sick",   label: "🤒 Sick NO note",    needsProof: false, payroll: "Unpaid sick" },
-  { code: "frl",    label: "👪 FRL + proof",     needsProof: true,  payroll: "Paid Family Responsibility Leave" },
-  { code: "al",     label: "🏖 Annual leave",     needsProof: false, payroll: "Paid annual" },
-  { code: "absent", label: "🚫 Absent (no reason)", needsProof: false, payroll: "Unpaid" },
-  { code: "no",     label: "⛔ NO SHOW",         needsProof: false, payroll: "Unpaid" },
-  { code: "off",    label: "🛌 Off (schedule error — should not be working)", needsProof: false, payroll: "None" }
+  { code: "sick_n", label: "🤒 Sick + note",  needsProof: true,  needsNote: false, payroll: "Paid sick" },
+  { code: "sick",   label: "🤒 Sick NO note", needsProof: false, needsNote: false, payroll: "Unpaid sick" },
+  { code: "frl",    label: "👪 FRL + proof",  needsProof: true,  needsNote: false, payroll: "Paid Family Responsibility Leave" },
+  { code: "absent", label: "🚫 Absent",       needsProof: false, needsNote: true,  payroll: "Unpaid" },
+  { code: "no",     label: "⛔ NO SHOW",      needsProof: false, needsNote: false, payroll: "Unpaid" }
 ];
 // Payroll cycle (25th → 24th) helper. Used to lock editing for closed
 // cycles so payroll figures don't shift after a run.
@@ -208,7 +206,12 @@ function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose,
   const [saving, setSaving] = useState(false);
   const opt = MGR_REASON_OPTIONS.find(o => o.code === status);
   const needsProof = !!(opt && opt.needsProof);
-  const canSave = !locked && !!status && (!needsProof || !!proof);
+  const needsNote  = !!(opt && opt.needsNote);
+  const noteTrim   = (note || "").trim();
+  const canSave = !locked
+    && !!status
+    && (!needsProof || !!proof)
+    && (!needsNote || noteTrim.length >= 3);
 
   async function handleFile(e) {
     setProofErr("");
@@ -281,10 +284,12 @@ function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose,
         )}
 
         <div style={{ marginTop: 14 }}>
-          <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>NOTE (optional)</label>
+          <label style={{ fontSize: 10, fontWeight: 800, color: needsNote ? "#7f1d1d" : "#F472B6", letterSpacing: "0.06em" }}>
+            {needsNote ? "REASON (required for Absent)" : "NOTE (optional)"}
+          </label>
           <textarea value={note} disabled={locked} onChange={e => setNote(e.target.value)} rows={2}
-            placeholder="e.g. spoke to her Monday, flu — back Wed"
-            style={{ display: "block", width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+            placeholder={needsNote ? "Why was the manager absent? e.g. unauthorised, family emergency, no contact…" : "e.g. spoke to her Monday, flu — back Wed"}
+            style={{ display: "block", width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px solid " + (needsNote && noteTrim.length < 3 ? "#fca5a5" : "#FBCFE8"), fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
         </div>
 
         {existing && (
@@ -6235,13 +6240,17 @@ function AppGate() {
         if (mutated) { try { await saveAppUsersToDb(dynamic); } catch (_) { } }
 
         // One-time migration: hide new Home/Dashboard widgets for all non-owner
-        // users. We set `_dashMigrated` so it only ever runs once per user.
+        // users. We set `_dashMigrated*` so each migration step only ever runs
+        // once per user. The original V1 hid Security Alerts + HR Actions for
+        // everyone except the owner. V2 adds the "Manager Absences (Action
+        // required)" widget, hidden for everyone except the owner AND ROMs —
+        // ROMs are the primary actors on that card, so they see it by default.
         const _dashWidgets = ["dashSecurityAlerts", "dashHrActions"];
         let dashMigrated = false;
         Object.keys(dynamic).forEach(pin => {
           const u = dynamic[pin];
           if (u._dashMigrated) return; // Already migrated, don't force them hidden again
-          
+
           u._dashMigrated = true;
           dashMigrated = true;
 
@@ -6250,6 +6259,21 @@ function AppGate() {
           const missing = _dashWidgets.filter(w => !ht.includes(w));
           if (missing.length > 0) {
             u.hideTabs = [...ht, ...missing];
+          }
+        });
+        // V2 migration: introduces the Manager Absences (Action required) widget.
+        // Hidden by default for non-owners, EXCEPT ROMs — they're the primary
+        // actor on the card so they should see it without an admin step.
+        Object.keys(dynamic).forEach(pin => {
+          const u = dynamic[pin];
+          if (u._dashMigratedV2) return;
+          u._dashMigratedV2 = true;
+          dashMigrated = true;
+          if (u.isOwner) return;
+          if (isRomRole(u.role)) return;   // ROMs see it by default
+          const ht = Array.isArray(u.hideTabs) ? u.hideTabs : [];
+          if (!ht.includes("dashMgrAbsences")) {
+            u.hideTabs = [...ht, "dashMgrAbsences"];
           }
         });
         if (dashMigrated) { try { await saveAppUsersToDb(dynamic); } catch (_) { } }
@@ -6360,6 +6384,7 @@ function AppGate() {
 const SETTINGS_TABS = [
   { t: "dashSecurityAlerts", l: "Security Alerts", cat: "Home/Dashboard", icon: "🚨" },
   { t: "dashHrActions", l: "HR Actions & Tasks", cat: "Home/Dashboard", icon: "📝" },
+  { t: "dashMgrAbsences", l: "Manager Absences (Action required)", cat: "Home/Dashboard", icon: "📌" },
   { t: "staff", l: "Staff List", cat: "People", icon: "👥" },
   { t: "onboard", l: "Onboarding", cat: "People", icon: "🌱" },
   { t: "offboard", l: "Off-boarding", cat: "People", icon: "👋" },
@@ -6376,6 +6401,7 @@ const SETTINGS_TABS = [
   { t: "storeOpenings", l: "Store Openings", cat: "Operations", icon: "🔓" },
   { t: "movements", l: "Today's Movements", cat: "Operations", icon: "🔀" },
   { t: "dailyTasks", l: "Daily Tasks", cat: "Operations", icon: "📋" },
+  { t: "mgrCoverage", l: "Manager Coverage", cat: "Operations", icon: "🗓" },
   { t: "cashups", l: "Cash Ups", cat: "Operations", icon: "💰" },
   { t: "attendance", l: "Attendance / Payroll", cat: "Payroll", icon: "📕" },
   { t: "payrollProgress", l: "Payroll Progress", cat: "Payroll", icon: "📊" },
@@ -8452,7 +8478,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Map of tab → category name. Kept in sync with the groups list below.
   const NAV_TAB_TO_CATEGORY = {
     onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
-    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations",
+    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
     attendance: "Payroll", payrollProgress: "Payroll",
     alerts: "Insights", activity: "Insights",
     settings: "Admin"
@@ -8488,6 +8514,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [mgrClockinDay, setMgrClockinDay] = useState(() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); });
   const [mgrClockinPhoto, setMgrClockinPhoto] = useState(null);   // {url, name, ts, ...}
   const [mgrClockinSchedCache, setMgrClockinSchedCache] = useState({});  // {branch|ym: grid}
+
+  // ── Manager Coverage tab state ─────────────────────────────────────
+  // Week-at-a-glance roster of every manager grouped by branch (and
+  // region) so a ROM can spot coverage gaps and decide where to borrow.
+  // Defaults to the current ISO week (Monday-start). Schedule grids
+  // reuse mgrClockinSchedCache; we load whichever cycle ym(s) the
+  // visible week touches on tab open.
+  const [mgrCoverageWeekStart, setMgrCoverageWeekStart] = useState(() => {
+    const d = new Date();
+    const dow = d.getDay();          // 0=Sun, 1=Mon, …
+    const offset = (dow + 6) % 7;    // Mon=0, Sun=6
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - offset);
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  });
+  const [mgrCoverageView, setMgrCoverageView] = useState("byBranch");   // "byBranch" | "byManager"
+  const [mgrCoverageRegion, setMgrCoverageRegion] = useState("all");
+  // Most-recent-approved schedule cache for the Manager Coverage tab,
+  // used as a fallback when the working draft grid has no entry for a
+  // manager — keyed `<branch>|<ym>` like mgrClockinSchedCache.
+  const [mgrApprovedFallbackCache, setMgrApprovedFallbackCache] = useState({});
+  // Per-user custom branch groupings for the Manager Coverage tab. Lets a
+  // ROM organise stores into clusters that make sense for their region
+  // (e.g. "Cape Town city bowl", "Southern suburbs"). Falls back to the
+  // built-in region grouping (WC / Gauteng / KZN) when the user hasn't
+  // defined any groups yet. Stored per signed-in user PIN.
+  const [mgrCoverageGroups, setMgrCoverageGroups] = useState(null);   // null = loading; [] = none; [{id,name,branches:[]}]
+  const [mgrCoverageGroupsEditor, setMgrCoverageGroupsEditor] = useState(null);   // null = closed; {groups, newName}
 
   // ── Daily Check-ins (nail tech) state ──────────────────────────────
   // Loaded once when the Check-ins tab or the Attendance tab opens, so the
@@ -9236,7 +9290,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // Load recent manager clock-ins when the viewer tab opens.
   useEffect(() => {
-    if (tab !== "mgrclockins") return;
+    if (tab !== "mgrclockins" && tab !== "mgrCoverage") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     let cancelled = false;
     (async () => {
@@ -9247,14 +9301,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Photo/GPS metadata is loaded per selected day (see the effect below)
         // so a wide load window doesn't eagerly pull every day's selfies.
         // ALSO load manager schedules for the cycles touched by the visible range,
-        // for every branch — used to derive no-show flags.
+        // for every branch — used to derive no-show flags. NOTE: manager
+        // schedules are stored under the START-month ym of the cycle (the cycle
+        // running 25-May → 24-Jun is saved as "2026-05"), opposite of the tech
+        // schedule which uses end-month. Match the dashboard's convention.
         const today = new Date();
         const since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - mgrClockinDays);
         const ymsInRange = new Set();
-        // Helper: convert a date to its schedule period ym (cycle ending YYYY-MM-24)
+        // Manager-schedule cycle ym: cycle starts on the 25th of month X
+        // (saved as ym "X"); a date with day > 24 sits in the cycle whose
+        // start-month is X, and a date with day ≤ 24 sits in the cycle that
+        // started in the PREVIOUS month.
         const ymdToYm = (d) => {
           let y = d.getFullYear(), m = d.getMonth() + 1;
-          if (d.getDate() > 24) { m += 1; if (m > 12) { m = 1; y++; } }
+          if (d.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y--; } }
           return y + "-" + String(m).padStart(2, "0");
         };
         for (let cur = new Date(since); cur <= today; cur.setDate(cur.getDate() + 1)) {
@@ -9281,6 +9341,93 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     })();
     return () => { cancelled = true; };
   }, [tab, mgrClockinDays]);
+
+  // Manager Coverage tab: load manager schedules for every branch for
+  // the cycle(s) the visible week touches. Reuses mgrClockinSchedCache
+  // (same start-month ym convention) so loads are deduped across the
+  // mgrclockins, dashboard absences card and this new coverage view.
+  useEffect(() => {
+    if (tab !== "mgrCoverage") return;
+    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
+    let cancelled = false;
+    (async () => {
+      // Start-month ym (cycle 25-May → 24-Jun is saved as "2026-05"):
+      const ymdToMgrYm = (d) => {
+        let y = d.getFullYear(), m = d.getMonth() + 1;
+        if (d.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y--; } }
+        return y + "-" + String(m).padStart(2, "0");
+      };
+      const [yy, mm, dd] = mgrCoverageWeekStart.split("-").map(Number);
+      const start = new Date(yy, mm - 1, dd);
+      const yms = new Set();
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(start); d.setDate(d.getDate() + i);
+        yms.add(ymdToMgrYm(d));
+      }
+      const need = [];
+      for (const ym of yms) for (const sl of SALONS) {
+        const k = sl.name + "|" + ym;
+        if (!(k in mgrClockinSchedCache)) need.push({ branch: sl.name, ym, key: k });
+      }
+      if (need.length > 0) {
+        const pairs = await Promise.all(need.map(async (n) => {
+          try { const s = await window.BOA_DB.loadSchedule(n.branch, n.ym, true); return [n.key, (s && s.grid) || null]; }
+          catch (_) { return [n.key, null]; }
+        }));
+        if (cancelled) return;
+        setMgrClockinSchedCache(prev => {
+          const next = { ...prev };
+          pairs.forEach(([k, g]) => { next[k] = g; });
+          return next;
+        });
+      }
+      // Approved-snapshot fallback — load the most recent approved version
+      // for each (branch, ym) and store its grid keyed the same way. The
+      // coverage cell reader prefers the working draft and falls back to
+      // this when the draft has no entry for a manager (covers stores
+      // whose schedule was published then wiped from the working draft).
+      const needApproved = [];
+      for (const ym of yms) for (const sl of SALONS) {
+        const k = sl.name + "|" + ym;
+        if (!(k in mgrApprovedFallbackCache)) needApproved.push({ branch: sl.name, ym, key: k });
+      }
+      if (needApproved.length > 0 && window.BOA_DB.loadApprovedSchedules) {
+        const aPairs = await Promise.all(needApproved.map(async (n) => {
+          try {
+            const list = await window.BOA_DB.loadApprovedSchedules(n.branch, n.ym, true);
+            const top = Array.isArray(list) && list.length > 0 ? list[0] : null;
+            return [n.key, (top && top.grid) || null];
+          } catch (_) { return [n.key, null]; }
+        }));
+        if (cancelled) return;
+        setMgrApprovedFallbackCache(prev => {
+          const next = { ...prev };
+          aPairs.forEach(([k, g]) => { next[k] = g; });
+          return next;
+        });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [tab, mgrCoverageWeekStart]);
+
+  // Load custom Manager Coverage branch groupings for the signed-in user
+  // when the tab opens. Stored per PIN under boa_mgrcov_groups_<pin>.
+  useEffect(() => {
+    if (tab !== "mgrCoverage") return;
+    if (!window.BOA_DB || !window.BOA_DB.sb) return;
+    if (!currentUser || !currentUser.pin) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const key = "boa_mgrcov_groups_" + currentUser.pin;
+        const res = await window.BOA_DB.sb.from("app_state").select("value").eq("key", key).maybeSingle();
+        if (cancelled) return;
+        const v = res && res.data && res.data.value;
+        setMgrCoverageGroups(Array.isArray(v) ? v : []);
+      } catch (_) { if (!cancelled) setMgrCoverageGroups([]); }
+    })();
+    return () => { cancelled = true; };
+  }, [tab, currentUser && currentUser.pin]);
 
   // Load photo/GPS metadata only for the manager clock-ins on the currently
   // selected day, so navigating day-by-day stays snappy even with a wide
@@ -10356,6 +10503,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "storeOpenings", l: "🔓 Store Openings" },
                   { t: "movements", l: "🔀 Today's Movements" },
                   { t: "dailyTasks", l: "📋 Daily Tasks" },
+                  { t: "mgrCoverage", l: "🗓 Manager Coverage" },
                   { t: "cashups", l: "💰 Cash Ups" },
                   {
                     t: "mgrPlanner", l: "🧩 Manager Planner",
@@ -10958,6 +11106,105 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 );
               })()}
 
+              {/* ── SECTION: MANAGER ABSENCES — ROM ACTION REQUIRED ──
+                  Lifted to the very top of the dashboard (above Upcoming
+                  Openings) so a ROM sees the action item first thing on
+                  sign-in. To-do list of managers scheduled to work today
+                  who haven't clocked in and don't yet have a reason
+                  recorded. Honours the dashboard scope toggle: in "mine"
+                  mode only the ROM's allocated stores; in "all" mode
+                  every region so cover decisions can happen here. After
+                  11:30 local time the title blinks to nudge action.
+                  Gated by the "Manager Absences (Action required)"
+                  Home/Dashboard permission — visible by default for
+                  owners and ROMs; admins can grant it to other roles in
+                  Settings → Users → Edit. */}
+              {!(new Set(currentUser?.hideTabs || []).has("dashMgrAbsences")) && (() => {
+                const _t = new Date();
+                const _todayYmd = _t.getFullYear() + "-" + String(_t.getMonth() + 1).padStart(2, "0") + "-" + String(_t.getDate()).padStart(2, "0");
+                if (dashTodayMgrClockinEcs == null) return null;     // still loading
+                const clockedIn = new Set();
+                (dashTodayMgrClockinEcs || []).forEach(e => clockedIn.add(String(e).trim()));
+                const onLeaveEcs = new Set();
+                (leaveRecs || []).forEach(lv => {
+                  if (lv && lv.ec && lv.startDate && lv.endDate && _todayYmd >= lv.startDate && _todayYmd <= lv.endDate) onLeaveEcs.add(String(lv.ec).trim());
+                });
+                const mgrByEc = {};
+                (enrichedManagers || []).forEach(m => { if (m && m.ec) mgrByEc[String(m.ec).trim()] = m; });
+                const taggedKeys = new Set((mgrDayStatuses || []).map(s => s.staff_id + "|" + s.date));
+                const pending = [];
+                for (const branchName in dashSchedMgrsByBranch) {
+                  if (!scopedSalonNames.has(branchName)) continue;
+                  for (const ecRaw of (dashSchedMgrsByBranch[branchName] || [])) {
+                    const ec = String(ecRaw).trim();
+                    if (clockedIn.has(ec)) continue;
+                    if (onLeaveEcs.has(ec)) continue;
+                    const m = mgrByEc[ec];
+                    if (!m) continue;
+                    if (m.onMat || m.offboarded || (m.leftDate && _todayYmd > m.leftDate)) continue;
+                    const sid = m._id || m.id;
+                    if (sid && taggedKeys.has(sid + "|" + _todayYmd)) continue;
+                    pending.push({ ec, name: m.name, branch: branchName, staffId: sid });
+                  }
+                }
+                if (pending.length === 0) {
+                  const anyScheduled = Object.values(dashSchedMgrsByBranch || {}).some(arr => (arr || []).length > 0);
+                  if (!anyScheduled) return null;
+                  return (
+                    <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 13, padding: "12px 16px", marginBottom: 18, color: "#14532d", fontSize: 13, fontWeight: 700 }}>
+                      ✅ All manager absences explained for today.
+                    </div>
+                  );
+                }
+                pending.sort((a, b) => (a.branch || "").localeCompare(b.branch || "") || (a.name || "").localeCompare(b.name || ""));
+                const byBranch = {};
+                pending.forEach(p => { (byBranch[p.branch] = byBranch[p.branch] || []).push(p); });
+                const branchKeys = Object.keys(byBranch).sort();
+                const minsNow = _t.getHours() * 60 + _t.getMinutes();
+                const urgent = minsNow >= 11 * 60 + 30;
+                const palette = urgent
+                  ? { bg: "#fee2e2", border: "#fca5a5", text: "#7f1d1d", chip: "#fff", chipBorder: "#fca5a5" }
+                  : { bg: "#fef3c7", border: "#fcd34d", text: "#92400e", chip: "#fff", chipBorder: "#fcd34d" };
+                return (
+                  <div style={{ background: palette.bg, border: "2px solid " + palette.border, borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: urgent ? "0 6px 22px rgba(127,29,29,0.18)" : "0 4px 16px rgba(146,64,14,0.12)" }}>
+                    <style>{`@keyframes _romAbsBlink { 0%,49%{opacity:1} 50%,100%{opacity:0.35} }`}</style>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: palette.text, letterSpacing: "0.04em", textTransform: "uppercase", animation: urgent ? "_romAbsBlink 1s infinite" : "none" }}>
+                        {urgent ? "🚨" : "📌"} Manager absences · action required
+                      </div>
+                      <div style={{ fontSize: 12, color: palette.text, fontWeight: 700 }}>
+                        {pending.length} manager{pending.length === 1 ? "" : "s"} scheduled but no clock-in &amp; no reason yet
+                        {urgent && " · past 11:30 — please tag now"}
+                      </div>
+                      <div style={{ flex: 1 }} />
+                      <button
+                        onClick={() => tryChangeTab("mgrclockins")}
+                        style={{ background: "#fff", color: palette.text, border: "1px solid " + palette.border, borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
+                        Open Manager Check-ins →
+                      </button>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 8 }}>
+                      {branchKeys.map(b => (
+                        <div key={b} style={{ background: palette.chip, border: "1px solid " + palette.chipBorder, borderRadius: 9, padding: "8px 10px" }}>
+                          <div style={{ fontSize: 11, fontWeight: 800, color: palette.text, letterSpacing: "0.04em", marginBottom: 4 }}>📍 {b}</div>
+                          {byBranch[b].map(p => (
+                            <div key={p.ec} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "5px 0", borderTop: "1px dashed #FBCFE8" }}>
+                              <div style={{ fontSize: 12.5, fontWeight: 700, color: "#831843" }}>{p.name}</div>
+                              <button
+                                onClick={() => p.staffId && setMgrReasonModal({ staffId: p.staffId, ec: p.ec, name: p.name, branch: p.branch, date: _todayYmd, existing: null })}
+                                disabled={!p.staffId}
+                                style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: p.staffId ? "pointer" : "not-allowed", opacity: p.staffId ? 1 : 0.5 }}>
+                                Mark reason
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* ── SECTION: UPCOMING STORE OPENINGS ──
                   Only renders when at least one SALON has an openingDate
                   that is still in the future. Sorted soonest first. */}
@@ -11188,7 +11435,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       (mgrClockinRows || []).forEach(r => {
                         if (!r.staff || r.staff.role_type !== "manager") return;
                         if (r.type !== "in") return;
-                        clockedInByEcDate.add(r.staff.employee_code + "|" + _ymdOf(r.ts));
+                        clockedInByEcDate.add(String(r.staff.employee_code).trim() + "|" + _ymdOf(r.ts));
                       });
                       // Look at last 14 days excluding today (today still
                       // pending — they may still clock in).
@@ -11196,13 +11443,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       const since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - 14);
                       for (let dt = new Date(since); dt < tdY && dt.toISOString().slice(0, 10) < _t0; dt.setDate(dt.getDate() + 1)) {
                         const ymd = dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
-                        const ymOf = (() => { const a = ymd.split("-").map(Number); let y = a[0], m = a[1]; if (a[2] > 24) { m += 1; if (m > 12) { m = 1; y++; } } return y + "-" + String(m).padStart(2, "0"); })();
+                        const dom = dt.getDate();
+                        // Manager schedule uses START-month ym.
+                        const ymOf = (() => { const a = ymd.split("-").map(Number); let y = a[0], m = a[1]; if (a[2] <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + String(m).padStart(2, "0"); })();
+                        // Skip anyone on annual leave for this date.
+                        const _onLeaveEcs = new Set();
+                        (leaveRecs || []).forEach(lv => {
+                          if (lv && lv.ec && lv.startDate && lv.endDate && ymd >= lv.startDate && ymd <= lv.endDate) _onLeaveEcs.add(String(lv.ec).trim());
+                        });
                         managers.forEach(m => {
+                          if (_onLeaveEcs.has(String(m.ec || "").trim())) return;   // annual leave
                           const grid = mgrClockinSchedCache[(m.branch || "") + "|" + ymOf];
                           if (!grid) return;
-                          const cell = grid[m.ec] && grid[m.ec][ymd];
-                          if (cell !== "W" && cell !== "E") return;
-                          if (clockedInByEcDate.has(m.ec + "|" + ymd)) return;
+                          const cell = (grid[m.ec]) ? (grid[m.ec][ymd] || grid[m.ec][dom]) : undefined;
+                          if (cell !== "W" && cell !== "WL" && cell !== "WE" && cell !== "WM" && cell !== "WB" && cell !== "E") return;
+                          if (clockedInByEcDate.has(String(m.ec || "").trim() + "|" + ymd)) return;
                           const sid = ecToStaffId[m.ec];
                           if (sid && taggedKeys.has(sid + "|" + ymd)) return;
                           pending.push({ name: m.name, branch: m.branch, ymd });
@@ -20894,6 +21149,109 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ fontSize: 12, color: "#F472B6" }}>Spot-check manager attendance. Each row shows the selfie, GPS distance from store, and timestamp. Auto-out (red) means they forgot to clock out — talk to them.</div>
             </div>
 
+            {/* No-show / not-in-yet banner — rendered at the top so it's the
+                first thing the ROM sees on this tab. Past days render as a
+                hard red NO-SHOW banner; today before 11:00 renders as a
+                softer yellow "not in yet — may still clock in" banner;
+                today AT or AFTER 11:00 escalates to an "ABSENT" framing
+                because by then the manager really should have clocked in.
+                ROMs can tag a reason in either state. Future days skipped. */}
+            {(() => {
+              const isFuture = mgrClockinDay > _mTodayYmd;
+              if (isFuture) return null;
+              const isToday = mgrClockinDay === _mTodayYmd;
+              // After 11:00 a "not in yet" today is functionally an absence —
+              // escalate the wording (and styling) so the ROM treats it that
+              // way, but stop short of the past-day red until end of day.
+              const _now = new Date();
+              const past11 = isToday && (_now.getHours() * 60 + _now.getMinutes()) >= 11 * 60;
+              // Set of ECs that clocked IN on the selected day. Trim ECs on
+              // both sides so a stray whitespace can't desync the no-show
+              // check against the actual clock-in records.
+              const clockedIn = new Set();
+              mgrClockinRows.forEach(r => {
+                if (!r.staff || !r.staff.employee_code) return;
+                if (r.type === "in" && mLocalYmd(r.ts) === mgrClockinDay) clockedIn.add(String(r.staff.employee_code).trim());
+              });
+              const ymd = mgrClockinDay;
+              // Schedule grid is keyed by either YMD or day-of-month — match
+              // the dashboard's read pattern and try both. Manager schedules
+              // use START-month ym (day > 24 = current month, ≤ 24 = prev).
+              const _ymdParts = ymd.split("-").map(Number);
+              const _dom = _ymdParts[2];
+              const ymOf = (() => { let y = _ymdParts[0], m = _ymdParts[1]; if (_ymdParts[2] <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + String(m).padStart(2, "0"); })();
+              const branchesToCheck = mgrClockinFilterBranch === "All"
+                ? SALONS.map(s => s.name)
+                : [mgrClockinFilterBranch];
+              // Anyone on annual leave for THIS day shouldn't count as a no-show.
+              const _onLeaveEcs = new Set();
+              (leaveRecs || []).forEach(lv => {
+                if (lv && lv.ec && lv.startDate && lv.endDate && ymd >= lv.startDate && ymd <= lv.endDate) _onLeaveEcs.add(String(lv.ec).trim());
+              });
+              const noShows = [];
+              for (const branchName of branchesToCheck) {
+                const grid = mgrClockinSchedCache[branchName + "|" + ymOf];
+                if (!grid) continue;        // schedule not loaded yet
+                for (const m of managers.filter(mm => mm.branch === branchName)) {
+                  if (_onLeaveEcs.has(String(m.ec || "").trim())) continue;    // on annual leave
+                  const cell = (grid[m.ec]) ? (grid[m.ec][ymd] || grid[m.ec][_dom]) : undefined;
+                  if (cell !== "W" && cell !== "WL" && cell !== "WE" && cell !== "WM" && cell !== "WB" && cell !== "E") continue;     // not scheduled to work
+                  if (clockedIn.has(String(m.ec || "").trim())) continue;              // they did clock in
+                  noShows.push({ ec: m.ec, name: m.name, branch: branchName, ymd, staffId: m._id || m.id });
+                }
+              }
+              noShows.sort((a, b) => a.branch.localeCompare(b.branch) || a.name.localeCompare(b.name));
+              if (noShows.length === 0) return null;
+              // Lookup of ROM-marked reasons keyed by staff_id + date.
+              const statByKey = {};
+              (mgrDayStatuses || []).forEach(s => { statByKey[s.staff_id + "|" + s.date] = s; });
+              const statLabel = code => (MGR_REASON_OPTIONS.find(o => o.code === code) || { label: code }).label;
+              // Styling: soft yellow before 11:00 today, hard red after 11:00
+              // or for past days (functionally absent either way).
+              const hardRed = !isToday || past11;
+              const palette = hardRed
+                ? { bg: "#fee2e2", border: "#fca5a5", text: "#7f1d1d", cardBorder: "#fca5a5" }
+                : { bg: "#fef3c7", border: "#fcd34d", text: "#92400e", cardBorder: "#fcd34d" };
+              const headerLabel = !isToday
+                ? "⚠ " + noShows.length + " NO-SHOW" + (noShows.length === 1 ? "" : "S") + " — scheduled to work but never clocked in"
+                : past11
+                  ? "🚨 " + noShows.length + " ABSENT — scheduled to work, no clock-in past 11:00. Tag a reason."
+                  : "⏳ " + noShows.length + " NOT IN YET — may still clock in. Tag a reason if you already know they won't come (e.g. early sick call).";
+              return (
+                <div style={{ background: palette.bg, border: "1px solid " + palette.border, borderRadius: 11, padding: "12px 16px", marginBottom: 14 }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: palette.text, marginBottom: 6 }}>{headerLabel}</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 6 }}>
+                    {noShows.slice(0, 30).map((ns, i) => {
+                      const existing = statByKey[(ns.staffId || "") + "|" + ns.ymd];
+                      return (
+                        <div key={i} style={{ background: "#fff", borderRadius: 7, padding: "7px 10px", border: "1px solid " + palette.cardBorder, fontSize: 12 }}>
+                          <div style={{ fontWeight: 700, color: palette.text }}>{ns.name}</div>
+                          <div style={{ fontSize: 11, color: palette.text, opacity: 0.85 }}>{ns.branch} · {new Date(ns.ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", weekday: "short" })}</div>
+                          <div style={{ marginTop: 6 }}>
+                            {existing
+                              ? <button
+                                  onClick={() => setMgrReasonModal({ staffId: ns.staffId, ec: ns.ec, name: ns.name, branch: ns.branch, date: ns.ymd, existing })}
+                                  title={(existing.note || "") + (existing.recorded_by ? "\n— " + existing.recorded_by : "")}
+                                  style={{ background: "#dcfce7", color: "#166534", border: "1px solid #86efac", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                                  {statLabel(existing.status)}{existing.proof ? " 📎" : ""} ✎
+                                </button>
+                              : <button
+                                  onClick={() => ns.staffId && setMgrReasonModal({ staffId: ns.staffId, ec: ns.ec, name: ns.name, branch: ns.branch, date: ns.ymd, existing: null })}
+                                  disabled={!ns.staffId}
+                                  style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: ns.staffId ? "pointer" : "not-allowed", opacity: ns.staffId ? 1 : 0.5 }}>
+                                  Mark reason
+                                </button>
+                            }
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {noShows.length > 30 && <div style={{ alignSelf: "center", fontSize: 12, color: palette.text, fontStyle: "italic" }}>…and {noShows.length - 30} more</div>}
+                  </div>
+                </div>
+              );
+            })()}
+
             {renderScopeBar({ marginBottom: 12 })}
 
             <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "12px 14px", border: "1px solid #FBCFE8", marginBottom: 14, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
@@ -20927,82 +21285,146 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ fontSize: 12, color: "#831843", textAlign: "right" }}><div style={{ fontWeight: 700 }}>{mDayLabel(mgrClockinDay)}</div><strong>{filtered.length}</strong> clock-in record{filtered.length !== 1 ? "s" : ""}</div>
             </div>
 
-            {/* No-show / not-in-yet detection: managers scheduled to work on
-                the SELECTED day who haven't clocked IN. Past days render as a
-                hard red NO-SHOW banner; today renders as a softer yellow
-                "not in yet — may still clock in" banner so ROMs can tag
-                early sick calls without waiting for the day to end. Future
-                days are skipped. */}
-            {(() => {
-              const isFuture = mgrClockinDay > _mTodayYmd;
-              if (isFuture) return null;
-              const isToday = mgrClockinDay === _mTodayYmd;
-              // Set of ECs that clocked IN on the selected day.
-              const clockedIn = new Set();
+            {/* Today's manager roster — derived from the manager schedule
+                cache so the list ONLY shows managers actually rostered to
+                work today (W / WL / WE / E). Anyone scheduled off or on
+                leave is excluded so ROMs see a true "who's expected in"
+                list. Managers who clocked in despite not being scheduled
+                still get listed under their branch as a sanity check. */}
+            {mgrClockinDay === _mTodayYmd && (() => {
+              // Clock-in lookup for today, keyed by trimmed EC. EC trimming
+              // matters because staff records sometimes carry trailing
+              // whitespace — without it a manager who clocked in could
+              // appear as "Not in yet". Matches the dashboard's approach.
+              const inByEc = {};
               mgrClockinRows.forEach(r => {
                 if (!r.staff || !r.staff.employee_code) return;
-                if (r.type === "in" && mLocalYmd(r.ts) === mgrClockinDay) clockedIn.add(r.staff.employee_code);
+                if (r.type !== "in") return;
+                if (mLocalYmd(r.ts) !== mgrClockinDay) return;
+                const _ec = String(r.staff.employee_code).trim();
+                if (!inByEc[_ec] || r.ts < inByEc[_ec].ts) inByEc[_ec] = r;
               });
-              const ymd = mgrClockinDay;
-              const ymOf = (() => { const a = ymd.split("-").map(Number); let y = a[0], m = a[1]; if (a[2] > 24) { m += 1; if (m > 12) { m = 1; y++; } } return y + "-" + String(m).padStart(2, "0"); })();
-              const branchesToCheck = mgrClockinFilterBranch === "All"
-                ? SALONS.map(s => s.name)
-                : [mgrClockinFilterBranch];
-              const noShows = [];
-              for (const branchName of branchesToCheck) {
-                const grid = mgrClockinSchedCache[branchName + "|" + ymOf];
-                if (!grid) continue;        // schedule not loaded yet
-                for (const m of managers.filter(mm => mm.branch === branchName)) {
-                  const cell = grid[m.ec] && grid[m.ec][ymd];
-                  if (cell !== "W" && cell !== "E") continue;     // not scheduled to work
-                  if (clockedIn.has(m.ec)) continue;              // they did clock in
-                  noShows.push({ ec: m.ec, name: m.name, branch: branchName, ymd, staffId: m._id || m.id });
-                }
-              }
-              noShows.sort((a, b) => a.branch.localeCompare(b.branch) || a.name.localeCompare(b.name));
-              if (noShows.length === 0) return null;
-              // Lookup of ROM-marked reasons keyed by staff_id + date.
               const statByKey = {};
               (mgrDayStatuses || []).forEach(s => { statByKey[s.staff_id + "|" + s.date] = s; });
               const statLabel = code => (MGR_REASON_OPTIONS.find(o => o.code === code) || { label: code }).label;
-              // Softer styling for today (still may arrive) vs hard NO-SHOW for past days.
-              const palette = isToday
-                ? { bg: "#fef3c7", border: "#fcd34d", text: "#92400e", cardBorder: "#fcd34d" }
-                : { bg: "#fee2e2", border: "#fca5a5", text: "#7f1d1d", cardBorder: "#fca5a5" };
-              const headerLabel = isToday
-                ? "⏳ " + noShows.length + " NOT IN YET — may still clock in. Tag a reason if you already know they won't come (e.g. early sick call)."
-                : "⚠ " + noShows.length + " NO-SHOW" + (noShows.length === 1 ? "" : "S") + " — scheduled to work but never clocked in";
-              return (
-                <div style={{ background: palette.bg, border: "1px solid " + palette.border, borderRadius: 11, padding: "12px 16px", marginBottom: 14 }}>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: palette.text, marginBottom: 6 }}>{headerLabel}</div>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 6 }}>
-                    {noShows.slice(0, 30).map((ns, i) => {
-                      const existing = statByKey[(ns.staffId || "") + "|" + ns.ymd];
-                      return (
-                        <div key={i} style={{ background: "#fff", borderRadius: 7, padding: "7px 10px", border: "1px solid " + palette.cardBorder, fontSize: 12 }}>
-                          <div style={{ fontWeight: 700, color: palette.text }}>{ns.name}</div>
-                          <div style={{ fontSize: 11, color: palette.text, opacity: 0.85 }}>{ns.branch} · {new Date(ns.ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", weekday: "short" })}</div>
-                          <div style={{ marginTop: 6 }}>
-                            {existing
-                              ? <button
-                                  onClick={() => setMgrReasonModal({ staffId: ns.staffId, ec: ns.ec, name: ns.name, branch: ns.branch, date: ns.ymd, existing })}
-                                  title={(existing.note || "") + (existing.recorded_by ? "\n— " + existing.recorded_by : "")}
-                                  style={{ background: "#dcfce7", color: "#166534", border: "1px solid #86efac", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
-                                  {statLabel(existing.status)}{existing.proof ? " 📎" : ""} ✎
-                                </button>
-                              : <button
-                                  onClick={() => ns.staffId && setMgrReasonModal({ staffId: ns.staffId, ec: ns.ec, name: ns.name, branch: ns.branch, date: ns.ymd, existing: null })}
-                                  disabled={!ns.staffId}
-                                  style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: ns.staffId ? "pointer" : "not-allowed", opacity: ns.staffId ? 1 : 0.5 }}>
-                                  Mark reason
-                                </button>
-                            }
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {noShows.length > 30 && <div style={{ alignSelf: "center", fontSize: 12, color: palette.text, fontStyle: "italic" }}>…and {noShows.length - 30} more</div>}
+              const ymd = mgrClockinDay;
+              // The manager schedule grid may be keyed by full YMD strings
+              // ("2026-05-28") on newer schedules or by day-of-month numbers
+              // (28) on older ones. Match the dashboard's logic and try both.
+              // The CYCLE ym uses the START-month (cycle 25-May → 24-Jun is
+              // stored as "2026-05"), so day > 24 = current month,
+              // day ≤ 24 = previous month.
+              const ymdParts = ymd.split("-").map(Number);
+              const dayOfMonth = ymdParts[2];
+              const ymOf = (() => { let y = ymdParts[0], m = ymdParts[1]; if (ymdParts[2] <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + String(m).padStart(2, "0"); })();
+              const _readCell = (grid, ec) => (grid && grid[ec]) ? (grid[ec][ymd] || grid[ec][dayOfMonth]) : undefined;
+              const _isWorking = v => v === "W" || v === "WL" || v === "WE" || v === "WM" || v === "WB" || v === "E";
+              // Anyone on annual leave today is OFF — don't count them as a
+              // no-show even if their schedule cell still says W. Matches the
+              // dashboard's onLeaveEcs handling.
+              const _onLeaveEcs = new Set();
+              (leaveRecs || []).forEach(lv => {
+                if (lv && lv.ec && lv.startDate && lv.endDate && ymd >= lv.startDate && ymd <= lv.endDate) _onLeaveEcs.add(lv.ec.trim());
+              });
+              const scopedBranches = SALONS
+                .map(s => s.name)
+                .filter(b => !_hasStoreScope || scopedSalonNames.has(b))
+                .filter(b => mgrClockinFilterBranch === "All" || b === mgrClockinFilterBranch);
+              // For each branch, collect managers scheduled to work today.
+              // A branch falls back to its full active-manager list when the
+              // grid for this cycle hasn't been published — better to show
+              // everyone with a "schedule not published" notice than show
+              // nothing while 51 managers clocked in.
+              const scheduledByBranch = {};
+              const fallbackBranches = [];
+              const allScheduled = [];
+              const surpriseClockIns = [];   // clocked in but scheduled off today
+              scopedBranches.forEach(b => {
+                const grid = mgrClockinSchedCache[b + "|" + ymOf];
+                const branchMgrs = managers.filter(m => m.branch === b && !m.onMat && !m.leftDate && !_onLeaveEcs.has(String(m.ec || "").trim()));
+                const scheduleHasToday = !!grid && branchMgrs.some(m => _readCell(grid, m.ec) != null);
+                if (!scheduleHasToday) {
+                  // No schedule data for today at this branch — fall back to
+                  // listing every active manager so ROMs can still tag.
+                  if (branchMgrs.length > 0) {
+                    fallbackBranches.push(b);
+                    scheduledByBranch[b] = branchMgrs.slice().sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+                    branchMgrs.forEach(m => allScheduled.push(m));
+                  }
+                  return;
+                }
+                const list = [];
+                branchMgrs.forEach(m => {
+                  const cell = _readCell(grid, m.ec);
+                  if (_isWorking(cell)) { list.push(m); allScheduled.push(m); }
+                  else if (inByEc[String(m.ec || "").trim()]) { surpriseClockIns.push({ m, cell: cell || "—" }); }
+                });
+                list.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+                if (list.length > 0) scheduledByBranch[b] = list;
+              });
+              if (allScheduled.length === 0 && fallbackBranches.length === 0 && surpriseClockIns.length === 0) return null;
+              const totalIn = allScheduled.filter(m => inByEc[String(m.ec || "").trim()]).length;
+              const totalTagged = allScheduled.filter(m => statByKey[(m._id || m.id) + "|" + ymd]).length;
+              const totalPending = allScheduled.length - totalIn - totalTagged;
+              const branchNames = Object.keys(scheduledByBranch).sort();
+              const renderCard = (m) => {
+                const sid = m._id || m.id;
+                const tagged = statByKey[sid + "|" + ymd];
+                const clockin = inByEc[String(m.ec || "").trim()];
+                const inTime = clockin ? new Date(clockin.ts).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }) : null;
+                let pill;
+                if (clockin) {
+                  pill = <span style={{ background: "#dcfce7", color: "#14532d", padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>✅ IN {inTime}</span>;
+                } else if (tagged) {
+                  pill = <button
+                    onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: ymd, existing: tagged })}
+                    title={(tagged.note || "") + (tagged.recorded_by ? "\n— " + tagged.recorded_by : "")}
+                    style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                    {statLabel(tagged.status)}{tagged.proof ? " 📎" : ""} ✎
+                  </button>;
+                } else {
+                  pill = <button
+                    onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: ymd, existing: null })}
+                    style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                    ⏳ Not in yet · Mark reason
+                  </button>;
+                }
+                return (
+                  <div key={sid} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, background: clockin ? "#f0fdf4" : (tagged ? "#fffbeb" : "#fef2f2"), border: "1px solid " + (clockin ? "#bbf7d0" : (tagged ? "#fde68a" : "#fecaca")), borderRadius: 8, padding: "7px 10px" }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 700, color: "#831843", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.name}</div>
+                      <div style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{m.ec} {m.role ? "· " + m.role : ""}</div>
+                    </div>
+                    <div>{pill}</div>
                   </div>
+                );
+              };
+              return (
+                <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 13, padding: "12px 14px", marginBottom: 14 }}>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: "#831843", letterSpacing: "0.04em", textTransform: "uppercase" }}>👥 Today's manager roster</div>
+                    <div style={{ fontSize: 12, color: "#6b7280" }}>
+                      <strong style={{ color: "#14532d" }}>{totalIn}</strong> in · <strong style={{ color: "#7f1d1d" }}>{totalPending}</strong> not in yet · <strong style={{ color: "#92400e" }}>{totalTagged}</strong> tagged · {allScheduled.length} {fallbackBranches.length > 0 ? "managers" : "scheduled"}
+                    </div>
+                  </div>
+                  {fallbackBranches.length > 0 && (
+                    <div style={{ background: "#fef3c7", border: "1px solid #fcd34d", color: "#92400e", borderRadius: 8, padding: "7px 10px", fontSize: 11.5, marginBottom: 8 }}>
+                      ⚠ The <strong>{ymOf}</strong> cycle's manager schedule isn't published for {fallbackBranches.length} branch{fallbackBranches.length === 1 ? "" : "es"}: <strong>{fallbackBranches.join(", ")}</strong>. Showing all active managers there as a fallback — publish the schedule in <em>Operations → Scheduling → Managers</em> to filter out off-day managers.
+                    </div>
+                  )}
+                  {branchNames.map(b => (
+                    <div key={b} style={{ marginBottom: 10 }}>
+                      <div style={{ fontSize: 11, fontWeight: 800, color: "#831843", marginBottom: 4, letterSpacing: "0.05em" }}>📍 {b} · {scheduledByBranch[b].length} scheduled</div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 6 }}>
+                        {scheduledByBranch[b].map(renderCard)}
+                      </div>
+                    </div>
+                  ))}
+                  {surpriseClockIns.length > 0 && (
+                    <div style={{ marginTop: 4, fontSize: 11.5, color: "#6b7280" }}>
+                      🟦 {surpriseClockIns.length} manager{surpriseClockIns.length === 1 ? "" : "s"} clocked in but were not scheduled to work today: <strong>{surpriseClockIns.map(s => s.m.name + " (" + (s.cell || "—") + ")").join(", ")}</strong>. Check the schedule.
+                    </div>
+                  )}
                 </div>
               );
             })()}
@@ -21075,6 +21497,483 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </div>
                   <img src={mgrClockinPhoto.url} alt="full selfie" style={{ width: "100%", borderRadius: 8, display: "block" }} />
                 </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {tab === "mgrCoverage" && (() => {
+        // ── Manager Coverage tab ───────────────────────────────────────
+        // Weekly per-branch (and per-manager) view of who's scheduled
+        // to work. Surfaces coverage gaps so a ROM can decide where to
+        // borrow a manager. Reads from mgrClockinSchedCache (same
+        // start-month ym convention as the rest of the manager flows).
+
+        const _p2 = n => String(n).padStart(2, "0");
+        const ymdToStr = (d) => d.getFullYear() + "-" + _p2(d.getMonth() + 1) + "-" + _p2(d.getDate());
+        const shiftWeek = (delta) => {
+          const [yy, mm, dd] = mgrCoverageWeekStart.split("-").map(Number);
+          const d = new Date(yy, mm - 1, dd);
+          d.setDate(d.getDate() + delta * 7);
+          setMgrCoverageWeekStart(ymdToStr(d));
+        };
+        const thisWeekStart = (() => {
+          const d = new Date(); const dow = d.getDay();
+          const offset = (dow + 6) % 7;
+          d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - offset);
+          return ymdToStr(d);
+        })();
+        const [yy, mm, dd] = mgrCoverageWeekStart.split("-").map(Number);
+        const weekDays = [];
+        const todayY = new Date(); const todayYmd = ymdToStr(todayY);
+        for (let i = 0; i < 7; i++) {
+          const d = new Date(yy, mm - 1, dd); d.setDate(d.getDate() + i);
+          weekDays.push({
+            ymd: ymdToStr(d),
+            dom: d.getDate(),
+            dowLbl: ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][i],
+            dayLbl: d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }),
+            isToday: ymdToStr(d) === todayYmd,
+            isWeekend: i >= 5,
+            // Start-month ym for this date — used to look up schedule cache.
+            mgrYm: (() => { let y = d.getFullYear(), m = d.getMonth() + 1; if (d.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + _p2(m); })()
+          });
+        }
+        const lastDay = weekDays[6];
+
+        // Per-branch colour palette — every branch is anchored to one of
+        // 12 saturated shades so its working blocks read as a single solid
+        // colour across the week, the way Connecteam groups stores by hue.
+        // Deterministic so the colour stays stable across reloads.
+        const BRANCH_PALETTE = [
+          { bg: "#9F1239", fg: "#FFFFFF" },   // rose
+          { bg: "#7C2D12", fg: "#FFFFFF" },   // amber-deep
+          { bg: "#365314", fg: "#FFFFFF" },   // olive
+          { bg: "#581C87", fg: "#FFFFFF" },   // purple
+          { bg: "#155E75", fg: "#FFFFFF" },   // sky-deep
+          { bg: "#7E22CE", fg: "#FFFFFF" },   // violet
+          { bg: "#92400E", fg: "#FFFFFF" },   // brown
+          { bg: "#831843", fg: "#FFFFFF" },   // pink-deep
+          { bg: "#166534", fg: "#FFFFFF" },   // emerald
+          { bg: "#9A3412", fg: "#FFFFFF" },   // orange-deep
+          { bg: "#1E3A8A", fg: "#FFFFFF" },   // blue-deep
+          { bg: "#0F766E", fg: "#FFFFFF" }    // teal
+        ];
+        const branchColour = (name) => {
+          let h = 0;
+          for (let i = 0; i < name.length; i++) h = ((h << 5) - h + name.charCodeAt(i)) | 0;
+          return BRANCH_PALETTE[Math.abs(h) % BRANCH_PALETTE.length];
+        };
+        // Non-working cell styling (kept muted so the working blocks pop).
+        const NON_WORK_BG = { O: "#FDF2F8", L: "#FEF3C7", R: "#FCE7F3", ML: "#EDE9FE" };
+        const NON_WORK_FG = { O: "#9D174D", L: "#92400E", R: "#9D174D", ML: "#5B21B6" };
+        const NON_WORK_LBL = { O: "OFF", L: "LEAVE", R: "REQ", ML: "MATERNITY" };
+        // Cell code → suffix the role-default shift times. Lets us show
+        // "9:00a - 6:30p" inside a manager's working block the way
+        // Connecteam does, without needing per-shift data on each cell.
+        const shiftTimes = (role, code) => {
+          const r = (role || "").toUpperCase();
+          if (r === "SM" || r === "SSM") {
+            if (code === "WL") return "8:30a - 5:30p";
+            if (code === "WE") return "7:30a - 4:30p";
+            if (code === "WM") return "8:00a - 1:00p";
+            return "8:00a - 5:00p";
+          }
+          // AM and others default
+          if (code === "WL") return "10:00a - 7:00p";
+          if (code === "WE") return "8:30a - 6:00p";
+          if (code === "WM") return "9:00a - 1:00p";
+          if (code === "WB") return "8:00a - 7:00p";
+          if (code === "E")  return "9:00a - 6:30p";
+          return "9:00a - 6:30p";
+        };
+        const isWorking = (v) => v === "W" || v === "WE" || v === "WL" || v === "WM" || v === "WB" || v === "E";
+
+        // Read a cell from the working schedule grid. Tries the EC as-is
+        // AND with whitespace trimmed (some staff rows carry a trailing
+        // space) and tries both possible key formats: full ymd string and
+        // day-of-month number. The grid store has historically held either.
+        const readCell = (grid, ec, d) => {
+          if (!grid || !ec) return undefined;
+          const _e1 = ec, _e2 = String(ec).trim();
+          const row = grid[_e1] || (_e2 !== _e1 ? grid[_e2] : null);
+          if (!row) return undefined;
+          return row[d.ymd] || row[d.dom] || row[String(d.dom)];
+        };
+        // Fall back to the most recent APPROVED snapshot for a branch+ym
+        // when the working grid is empty for a manager — covers stores
+        // whose schedule was published and then reset / never saved back
+        // to the working draft. mgrApprovedFallbackCache is built lazily
+        // below as branches need it.
+        const _approvedFallbackCache = mgrApprovedFallbackCache || {};
+        const readWithFallback = (branchName, ec, d) => {
+          const grid = mgrClockinSchedCache[branchName + "|" + d.mgrYm];
+          const v = readCell(grid, ec, d);
+          if (v) return v;
+          const ag = _approvedFallbackCache[branchName + "|" + d.mgrYm];
+          return readCell(ag, ec, d);
+        };
+
+        // Branches in scope, grouped by region OR by the user's custom
+        // groups when they've defined any. Region filter still narrows.
+        const scopedBranches = SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name));
+        const regionsToShow = mgrCoverageRegion === "all" ? REGIONS : REGIONS.filter(r => r.key === mgrCoverageRegion);
+        const branchesByRegion = {};
+        regionsToShow.forEach(r => { branchesByRegion[r.key] = scopedBranches.filter(s => s.region === r.key).map(s => s.name).sort((a, b) => a.localeCompare(b)); });
+        // Compute the effective group list for the By-Branch view. Each
+        // group is {key, label, bg, color, branches:[]}. When the user
+        // has saved custom groups we use those; otherwise fall back to
+        // REGIONS. Branches not in any custom group land in a tail
+        // "Other stores" group so nothing disappears.
+        const scopedBranchSet = new Set(scopedBranches.map(s => s.name));
+        const hasCustomGroups = Array.isArray(mgrCoverageGroups) && mgrCoverageGroups.length > 0;
+        const effectiveGroups = (() => {
+          if (!hasCustomGroups) {
+            return regionsToShow.map(r => ({
+              key: "region:" + r.key,
+              label: r.label,
+              bg: r.bg, color: r.color,
+              branches: branchesByRegion[r.key] || []
+            }));
+          }
+          // Honour the user's custom order; drop empty / out-of-scope branches.
+          const used = new Set();
+          const out = mgrCoverageGroups.map((g, i) => {
+            const branches = (g.branches || []).filter(b => scopedBranchSet.has(b) && !used.has(b));
+            branches.forEach(b => used.add(b));
+            return {
+              key: "grp:" + (g.id || i),
+              label: g.name || "Untitled group",
+              bg: "#FCE7F3", color: "#831843",
+              branches
+            };
+          }).filter(g => g.branches.length > 0);
+          const unassigned = scopedBranches.map(s => s.name).filter(b => !used.has(b)).sort((a, b) => a.localeCompare(b));
+          if (unassigned.length > 0) out.push({ key: "grp:_other", label: "Other stores", bg: "#f3f4f6", color: "#374151", branches: unassigned });
+          // Apply region filter: keep groups that touch the picked region.
+          if (mgrCoverageRegion !== "all") {
+            const regionBranchSet = new Set(scopedBranches.filter(s => s.region === mgrCoverageRegion).map(s => s.name));
+            return out
+              .map(g => ({ ...g, branches: g.branches.filter(b => regionBranchSet.has(b)) }))
+              .filter(g => g.branches.length > 0);
+          }
+          return out;
+        })();
+        // Per-EC manager lookup so we can join schedule-grid keys back
+        // to a manager record even when the schedule lists them at a
+        // store that isn't their home branch (e.g. Tanita scheduled at
+        // Betty while her home is Buitengracht).
+        const mgrByEc = {};
+        managers.forEach(m => {
+          const _ec = String(m.ec || "").trim();
+          if (_ec && !m.leftDate) mgrByEc[_ec] = m;
+        });
+        // Managers visible at each branch this week — start with the home-
+        // branch active list, then ADD any EC that appears in this branch's
+        // schedule grid (working or approved) on a working day. Catches the
+        // cross-store coverage case so Tanita shows up at Betty when her
+        // shift is on Betty's schedule.
+        const mgrByBranch = {};
+        scopedBranches.forEach(s => { mgrByBranch[s.name] = []; });
+        managers.forEach(m => {
+          if (!m.branch || m.onMat || m.leftDate) return;
+          if (mgrByBranch[m.branch]) mgrByBranch[m.branch].push(m);
+        });
+        scopedBranches.forEach(s => {
+          const _seen = new Set(mgrByBranch[s.name].map(m => String(m.ec || "").trim()));
+          weekDays.forEach(d => {
+            const wGrid = mgrClockinSchedCache[s.name + "|" + d.mgrYm];
+            const aGrid = _approvedFallbackCache[s.name + "|" + d.mgrYm];
+            [wGrid, aGrid].forEach(grid => {
+              if (!grid) return;
+              for (const _ec in grid) {
+                const ecKey = String(_ec).trim();
+                if (_seen.has(ecKey)) continue;
+                const cell = grid[_ec][d.ymd] || grid[_ec][d.dom] || grid[_ec][String(d.dom)];
+                if (!isWorking(cell)) continue;     // only flag a guest mgr when there's an actual working cell
+                const mgr = mgrByEc[ecKey];
+                if (!mgr) continue;                  // unknown ec — skip
+                if (mgr.onMat || mgr.leftDate) continue;
+                _seen.add(ecKey);
+                mgrByBranch[s.name].push({ ...mgr, _guestFromBranch: mgr.branch });
+              }
+            });
+          });
+        });
+        Object.keys(mgrByBranch).forEach(b => mgrByBranch[b].sort((a, b) =>
+          (a.role === "SM" ? 0 : a.role === "AM" ? 1 : 2) - (b.role === "SM" ? 0 : b.role === "AM" ? 1 : 2)
+          || (a.name || "").localeCompare(b.name || "")
+        ));
+
+        // Manager clock-in lookup keyed by ec → ymd → true. Powers the
+        // small green dot we render on cells where the manager actually
+        // showed up. Today's clock-ins come straight from mgrClockinRows
+        // (loaded by the mgrclockins / mgrCoverage useEffect).
+        const _clockedInByEcYmd = {};
+        (mgrClockinRows || []).forEach(r => {
+          if (!r.staff || !r.staff.employee_code) return;
+          if (r.type !== "in") return;
+          const _ec = String(r.staff.employee_code).trim();
+          const _d = new Date(r.ts);
+          const _ymd = _d.getFullYear() + "-" + String(_d.getMonth() + 1).padStart(2, "0") + "-" + String(_d.getDate()).padStart(2, "0");
+          (_clockedInByEcYmd[_ec] = _clockedInByEcYmd[_ec] || {})[_ymd] = true;
+        });
+
+        // Coverage per branch per day — count managers scheduled to work.
+        // Uses readWithFallback so published-only schedules still count.
+        const coverageByBranchDay = {};
+        scopedBranches.forEach(s => {
+          coverageByBranchDay[s.name] = weekDays.map(d => {
+            const wGrid = mgrClockinSchedCache[s.name + "|" + d.mgrYm];
+            const aGrid = _approvedFallbackCache[s.name + "|" + d.mgrYm];
+            let count = 0;
+            (mgrByBranch[s.name] || []).forEach(m => {
+              if (isWorking(readWithFallback(s.name, m.ec, d))) count++;
+            });
+            return { count, gridLoaded: !!(wGrid || aGrid) };
+          });
+        });
+        // Total gaps (0-mgr days) for the headline banner.
+        let totalGaps = 0, totalSingleCover = 0;
+        Object.values(coverageByBranchDay).forEach(arr => arr.forEach(c => {
+          if (c.gridLoaded && c.count === 0) totalGaps++;
+          else if (c.gridLoaded && c.count === 1) totalSingleCover++;
+        }));
+
+        // Cell renderer for a manager-day cell. Working cells become tall
+        // Connecteam-style colored blocks branded by branch with the shift
+        // times and role · branch label; non-working cells fall back to a
+        // small muted pill (OFF / LEAVE / REQ / MATERNITY) or blank.
+        const renderCell = (cellVal, key, branchName, role, ymd, ec, isGuest) => {
+          const clockedIn = ec && ymd && _clockedInByEcYmd[String(ec).trim()] && _clockedInByEcYmd[String(ec).trim()][ymd];
+          // Did this day already pass? (Today still in flight, so absence
+          // can't be inferred yet.)
+          const isPast = ymd && ymd < (function () { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
+          // Blank / empty day cell.
+          if (!cellVal) {
+            return (
+              <td key={key} style={{ background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", textAlign: "center" }}>
+                <div style={{ minHeight: 56, display: "flex", alignItems: "center", justifyContent: "center", color: "#e5e7eb", fontSize: 18 }}>·</div>
+              </td>
+            );
+          }
+          // Working cell → solid branch-coloured block with times + role.
+          if (isWorking(cellVal)) {
+            const pal = branchColour(branchName);
+            const time = shiftTimes(role, cellVal);
+            const subtle = cellVal !== "W" ? { borderLeft: "4px solid rgba(255,255,255,0.5)" } : {};
+            const dotColor = clockedIn ? "#22c55e" : (isPast ? "#ef4444" : null);
+            const dotTitle = clockedIn ? "✓ Clocked in" : (isPast ? "✗ Absent — did not clock in" : null);
+            return (
+              <td key={key} style={{ background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle" }}>
+                <div title={(role || "") + " · " + branchName + " · " + cellVal + " · " + time + (dotTitle ? "\n" + dotTitle : "") + (isGuest ? "\nGuest from " + isGuest : "")}
+                  style={{ position: "relative", background: pal.bg, color: pal.fg, borderRadius: 6, padding: "8px 6px", textAlign: "left", lineHeight: 1.25, minHeight: 56, boxShadow: "inset 0 -2px 0 rgba(0,0,0,0.18)", ...subtle }}>
+                  {dotColor && (
+                    <span title={dotTitle} style={{ position: "absolute", top: 4, right: 4, width: 9, height: 9, borderRadius: 9, background: dotColor, border: "2px solid #fff", boxShadow: "0 0 0 1px rgba(0,0,0,0.12)" }} />
+                  )}
+                  <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.01em", whiteSpace: "nowrap" }}>{time}</div>
+                  <div style={{ fontSize: 10, fontWeight: 600, opacity: 0.95, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{branchName}{isGuest ? " ↪" : ""}</div>
+                  <div style={{ fontSize: 9, fontWeight: 800, opacity: 0.92, letterSpacing: "0.06em", marginTop: 1 }}>
+                    {(role || "").toUpperCase()}{cellVal !== "W" ? " · " + cellVal : ""}
+                  </div>
+                </div>
+              </td>
+            );
+          }
+          // Non-working code → muted pill (OFF / LEAVE / REQ / MATERNITY).
+          const bg = NON_WORK_BG[cellVal] || "#f3f4f6";
+          const fg = NON_WORK_FG[cellVal] || "#374151";
+          const lbl = NON_WORK_LBL[cellVal] || cellVal;
+          return (
+            <td key={key} style={{ background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", textAlign: "center" }}>
+              <div style={{ background: bg, color: fg, borderRadius: 6, padding: "8px 6px", fontSize: 10, fontWeight: 800, letterSpacing: "0.05em", minHeight: 56, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                {lbl}
+              </div>
+            </td>
+          );
+        };
+
+        const coverPill = (c) => {
+          if (!c.gridLoaded) return <span title="Schedule not loaded for this cycle" style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, fontSize: 9, fontWeight: 800, background: "#f3f4f6", color: "#9ca3af" }}>—</span>;
+          if (c.count === 0) return <span title="No manager scheduled — coverage gap" style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, fontSize: 9, fontWeight: 800, background: "#fee2e2", color: "#7f1d1d" }}>✗ 0</span>;
+          if (c.count === 1) return <span title="Single cover — vulnerable" style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, fontSize: 9, fontWeight: 800, background: "#fef3c7", color: "#92400e" }}>⚠ 1</span>;
+          return <span title={c.count + " managers scheduled"} style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, fontSize: 9, fontWeight: 800, background: "#dcfce7", color: "#166534" }}>✓ {c.count}</span>;
+        };
+
+        const dayHeader = (d) => (
+          <th key={d.ymd} style={{ background: d.isToday ? "#FCE7F3" : (d.isWeekend ? "#FDEEF5" : "#fff"), color: "#831843", borderBottom: "2px solid #FBCFE8", padding: "6px 6px", fontSize: 10, fontWeight: 800, letterSpacing: "0.04em", textAlign: "center", minWidth: 122 }}>
+            <div>{d.dowLbl}</div>
+            <div style={{ fontSize: 9, fontWeight: 500, color: d.isToday ? "#BE185D" : "#9ca3af" }}>{d.dayLbl}</div>
+          </th>
+        );
+
+        return (
+          <div style={{ padding: "0 24px" }}>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700, marginBottom: 4 }}>🗓 Manager Coverage</div>
+              <div style={{ fontSize: 12, color: "#F472B6" }}>Weekly view of every manager's scheduled shifts. Spot days with no coverage and decide where to borrow a manager.</div>
+            </div>
+
+            {renderScopeBar({ marginBottom: 12 })}
+
+            <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "12px 14px", border: "1px solid #FBCFE8", marginBottom: 14, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>WEEK</label>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <button onClick={() => shiftWeek(-1)} style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "6px 11px", cursor: "pointer", fontSize: 15, fontWeight: 700, lineHeight: 1 }}>‹</button>
+                  <div style={{ padding: "6px 12px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, fontWeight: 700, color: "#831843", background: "#fff" }}>
+                    {weekDays[0].dayLbl} – {lastDay.dayLbl}
+                  </div>
+                  <button onClick={() => shiftWeek(1)} style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "6px 11px", cursor: "pointer", fontSize: 15, fontWeight: 700, lineHeight: 1 }}>›</button>
+                  <button onClick={() => setMgrCoverageWeekStart(thisWeekStart)} disabled={mgrCoverageWeekStart === thisWeekStart}
+                    style={{ background: mgrCoverageWeekStart === thisWeekStart ? "#FCE7F3" : "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "6px 12px", cursor: mgrCoverageWeekStart === thisWeekStart ? "default" : "pointer", fontSize: 12, fontWeight: 700, opacity: mgrCoverageWeekStart === thisWeekStart ? 0.6 : 1 }}>This week</button>
+                </div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>VIEW</label>
+                <div style={{ display: "flex", gap: 4, background: "#FCE7F3", borderRadius: 8, padding: 3 }}>
+                  {["byBranch", "byManager"].map(v => (
+                    <button key={v} onClick={() => setMgrCoverageView(v)}
+                      style={{ background: mgrCoverageView === v ? "#fff" : "transparent", color: "#831843", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                      {v === "byBranch" ? "By Branch" : "By Manager"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>REGION</label>
+                <select value={mgrCoverageRegion} onChange={e => setMgrCoverageRegion(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff", minWidth: 160 }}>
+                  <option value="all">All regions</option>
+                  {REGIONS.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
+                </select>
+              </div>
+              <div style={{ flex: 1 }} />
+              <button
+                onClick={() => setMgrCoverageGroupsEditor({
+                  groups: (mgrCoverageGroups || []).map(g => ({ id: g.id, name: g.name, branches: [...(g.branches || [])] }))
+                })}
+                title="Organise stores into your own groups (e.g. Cape Town city bowl, Southern suburbs). Saved per user."
+                style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                🗂 Edit groups{hasCustomGroups ? " · " + (mgrCoverageGroups || []).length : ""}
+              </button>
+              <div style={{ fontSize: 11, display: "flex", gap: 12 }}>
+                <span><span style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, background: "#fee2e2", color: "#7f1d1d", fontWeight: 800, fontSize: 9 }}>✗ 0</span> no coverage</span>
+                <span><span style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, background: "#fef3c7", color: "#92400e", fontWeight: 800, fontSize: 9 }}>⚠ 1</span> single cover</span>
+                <span><span style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, background: "#dcfce7", color: "#166534", fontWeight: 800, fontSize: 9 }}>✓ 2+</span> covered</span>
+                <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 8, background: "#22c55e", border: "1.5px solid #fff", boxShadow: "0 0 0 1px rgba(0,0,0,0.12)", marginRight: 4 }} />clocked in</span>
+                <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 8, background: "#ef4444", border: "1.5px solid #fff", boxShadow: "0 0 0 1px rgba(0,0,0,0.12)", marginRight: 4 }} />absent</span>
+                <span title="Guest shift — manager's home store is different">↪ guest shift</span>
+              </div>
+            </div>
+
+            {(totalGaps > 0 || totalSingleCover > 0) && (
+              <div style={{ background: totalGaps > 0 ? "#fee2e2" : "#fef3c7", border: "1px solid " + (totalGaps > 0 ? "#fca5a5" : "#fcd34d"), borderRadius: 11, padding: "10px 14px", marginBottom: 14 }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: totalGaps > 0 ? "#7f1d1d" : "#92400e" }}>
+                  {totalGaps > 0 && <>⚠ <strong>{totalGaps}</strong> coverage gap{totalGaps === 1 ? "" : "s"} this week — branches with NO manager scheduled. </>}
+                  {totalSingleCover > 0 && <>{totalGaps > 0 ? "Plus " : "⚠ "}<strong>{totalSingleCover}</strong> single-cover day{totalSingleCover === 1 ? "" : "s"} (one manager only — vulnerable to sick days). </>}
+                  Borrow from a branch with 2+ to balance.
+                </div>
+              </div>
+            )}
+
+            {mgrCoverageView === "byBranch" ? (
+              <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 13, overflow: "auto" }}>
+                {effectiveGroups.map(r => {
+                  const branches = r.branches || [];
+                  if (branches.length === 0) return null;
+                  return (
+                    <div key={r.key} style={{ marginBottom: 4 }}>
+                      <div style={{ background: r.bg, color: r.color, padding: "8px 14px", fontWeight: 800, fontSize: 12, letterSpacing: "0.05em", textTransform: "uppercase", borderBottom: "2px solid " + r.color }}>
+                        {r.label} · {branches.length} store{branches.length === 1 ? "" : "s"}
+                      </div>
+                      {branches.map(b => {
+                        const mgrs = mgrByBranch[b] || [];
+                        return (
+                          <div key={b} style={{ borderBottom: "3px solid #FCE7F3" }}>
+                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: "#1f2937", tableLayout: "auto", minWidth: 1100 }}>
+                              <thead>
+                                <tr style={{ background: "#FCE7F3" }}>
+                                  <th style={{ textAlign: "left", padding: "8px 14px", fontSize: 13, fontWeight: 800, color: "#831843", width: 240, borderBottom: "1px solid #FBCFE8" }}>📍 {b}</th>
+                                  {weekDays.map(dayHeader)}
+                                </tr>
+                                <tr style={{ background: "#FDEEF5" }}>
+                                  <td style={{ padding: "5px 14px", fontSize: 11, color: "#831843", fontWeight: 700 }}>Coverage</td>
+                                  {weekDays.map((d, i) => (
+                                    <td key={"cov-" + d.ymd} style={{ padding: "5px 4px", textAlign: "center", borderBottom: "1px solid #FBCFE8" }}>
+                                      {coverPill(coverageByBranchDay[b][i])}
+                                    </td>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {mgrs.length === 0 ? (
+                                  <tr>
+                                    <td colSpan={8} style={{ padding: "10px 14px", color: "#9ca3af", fontStyle: "italic", fontSize: 12 }}>No active managers at this branch.</td>
+                                  </tr>
+                                ) : mgrs.map(m => {
+                                  return (
+                                    <tr key={m.ec}>
+                                      <td style={{ padding: "6px 14px", fontWeight: 700, color: "#831843", fontSize: 12, borderBottom: "1px solid #FCE7F3" }}>
+                                        {m.role === "SM" ? "👑 " : m.role === "AM" ? "⭐ " : ""}{m.name}
+                                        <span style={{ marginLeft: 6, fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{m.role || ""}</span>
+                                      </td>
+                                      {weekDays.map(d => {
+                                        const v = readWithFallback(b, m.ec, d);
+                                        return renderCell(v, m.ec + "-" + d.ymd, b, m.role, d.ymd, m.ec, m._guestFromBranch || null);
+                                      })}
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 13, overflow: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: "#1f2937", tableLayout: "auto", minWidth: 1100 }}>
+                  <thead>
+                    <tr style={{ background: "#FCE7F3" }}>
+                      <th style={{ textAlign: "left", padding: "8px 14px", fontSize: 11, fontWeight: 800, color: "#831843", width: 280, borderBottom: "2px solid #FBCFE8" }}>MANAGER · BRANCH</th>
+                      {weekDays.map(dayHeader)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(() => {
+                      const rows = [];
+                      effectiveGroups.forEach(r => {
+                        (r.branches || []).forEach(b => {
+                          (mgrByBranch[b] || []).forEach(m => {
+                            rows.push({ m, b, r });
+                          });
+                        });
+                      });
+                      if (rows.length === 0) return (
+                        <tr><td colSpan={8} style={{ padding: 30, textAlign: "center", color: "#9ca3af", fontStyle: "italic" }}>No managers in scope.</td></tr>
+                      );
+                      return rows.map(({ m, b, r }) => (
+                        <tr key={m.ec + "-" + b}>
+                          <td style={{ padding: "6px 14px", borderBottom: "1px solid #FCE7F3" }}>
+                            <div style={{ fontWeight: 700, color: "#831843", fontSize: 12.5 }}>{m.role === "SM" ? "👑 " : m.role === "AM" ? "⭐ " : ""}{m.name}</div>
+                            <div style={{ fontSize: 10, color: "#9ca3af" }}>
+                              📍 {b} <span style={{ background: r.bg, color: r.color, padding: "1px 6px", borderRadius: 4, fontWeight: 700, marginLeft: 4 }}>{r.label}</span>
+                              <span style={{ marginLeft: 6, fontFamily: "monospace" }}>{m.role || ""}</span>
+                            </div>
+                          </td>
+                          {weekDays.map(d => {
+                            const v = readWithFallback(b, m.ec, d);
+                            return renderCell(v, m.ec + "-" + d.ymd, b, m.role, d.ymd, m.ec, m._guestFromBranch || null);
+                          })}
+                        </tr>
+                      ));
+                    })()}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>
@@ -21450,6 +22349,157 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       {/* "Tag absence" picker — lets a ROM pick any manager + day and
           drop into the Mark-reason modal. Used for early sick calls and
           for days the no-show banner missed. */}
+      {/* Manager Coverage — custom branch groups editor. Lets a user
+          organise stores into clusters that matter for them (e.g.
+          Cape Town city bowl, Southern suburbs) and reorder freely.
+          Saved per user PIN so each ROM has their own view. */}
+      {mgrCoverageGroupsEditor && (() => {
+        const e = mgrCoverageGroupsEditor;
+        const scopedBranchNames = SALONS
+          .filter(s => !_hasStoreScope || scopedSalonNames.has(s.name))
+          .map(s => s.name)
+          .sort((a, b) => a.localeCompare(b));
+        const assigned = new Set();
+        (e.groups || []).forEach(g => (g.branches || []).forEach(b => assigned.add(b)));
+        const unassigned = scopedBranchNames.filter(b => !assigned.has(b));
+        const setGroups = (next) => setMgrCoverageGroupsEditor({ ...e, groups: next });
+        const addGroup = () => {
+          const name = (window.prompt("Group name (e.g. 'Cape Town city bowl', 'Southern suburbs')") || "").trim();
+          if (!name) return;
+          setGroups([...(e.groups || []), { id: "g_" + Date.now().toString(36), name, branches: [] }]);
+        };
+        const renameGroup = (i) => {
+          const cur = e.groups[i].name;
+          const name = (window.prompt("Rename group", cur) || "").trim();
+          if (!name || name === cur) return;
+          const next = e.groups.slice(); next[i] = { ...next[i], name }; setGroups(next);
+        };
+        const removeGroup = (i) => {
+          if (!window.confirm("Delete this group? Its stores will go back to the 'unassigned' list.")) return;
+          const next = e.groups.slice(); next.splice(i, 1); setGroups(next);
+        };
+        const moveGroup = (i, delta) => {
+          const j = i + delta;
+          if (j < 0 || j >= e.groups.length) return;
+          const next = e.groups.slice(); const [g] = next.splice(i, 1); next.splice(j, 0, g); setGroups(next);
+        };
+        const addBranchTo = (groupIdx, branch) => {
+          if (!branch) return;
+          const next = e.groups.map((g, i) => i === groupIdx
+            ? { ...g, branches: [...(g.branches || []), branch] }
+            : { ...g, branches: (g.branches || []).filter(b => b !== branch) });
+          setGroups(next);
+        };
+        const removeBranch = (groupIdx, branch) => {
+          const next = e.groups.slice();
+          next[groupIdx] = { ...next[groupIdx], branches: (next[groupIdx].branches || []).filter(b => b !== branch) };
+          setGroups(next);
+        };
+        const moveBranch = (groupIdx, branchIdx, delta) => {
+          const arr = (e.groups[groupIdx].branches || []).slice();
+          const j = branchIdx + delta;
+          if (j < 0 || j >= arr.length) return;
+          const [b] = arr.splice(branchIdx, 1); arr.splice(j, 0, b);
+          const next = e.groups.slice(); next[groupIdx] = { ...next[groupIdx], branches: arr }; setGroups(next);
+        };
+        const save = async () => {
+          if (!window.BOA_DB || !window.BOA_DB.sb || !currentUser || !currentUser.pin) {
+            window.alert("Could not save — not signed in."); return;
+          }
+          const key = "boa_mgrcov_groups_" + currentUser.pin;
+          // Strip empty groups before save.
+          const cleaned = (e.groups || []).filter(g => (g.branches || []).length > 0 || (g.name || "").trim());
+          try {
+            await window.BOA_DB.sb.from("app_state").upsert({ key, value: cleaned });
+            setMgrCoverageGroups(cleaned);
+            setMgrCoverageGroupsEditor(null);
+          } catch (err) {
+            window.alert("Could not save: " + ((err && err.message) || err));
+          }
+        };
+        const resetToRegions = async () => {
+          if (!window.confirm("Reset to the default region grouping (Western Cape / Gauteng / KZN)?")) return;
+          try {
+            const key = "boa_mgrcov_groups_" + currentUser.pin;
+            await window.BOA_DB.sb.from("app_state").upsert({ key, value: [] });
+            setMgrCoverageGroups([]);
+            setMgrCoverageGroupsEditor(null);
+          } catch (err) { window.alert("Could not reset: " + ((err && err.message) || err)); }
+        };
+        return (
+          <div onClick={() => setMgrCoverageGroupsEditor(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <div onClick={ev => ev.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "20px 22px", width: "100%", maxWidth: 720, maxHeight: "92vh", overflow: "auto" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 6 }}>
+                <div>
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, color: "#831843", fontWeight: 700 }}>🗂 Edit branch groups</div>
+                  <div style={{ fontSize: 12, color: "#9ca3af" }}>Organise stores into clusters that matter to you — e.g. "Cape Town city bowl", "Southern suburbs". Saved just for you. Empty groups disappear on save.</div>
+                </div>
+                <button onClick={() => setMgrCoverageGroupsEditor(null)} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
+              </div>
+
+              {(e.groups || []).length === 0 ? (
+                <div style={{ background: "#FDEEF5", border: "1px dashed #FBCFE8", borderRadius: 10, padding: "14px 16px", marginTop: 12, color: "#831843", fontSize: 13 }}>
+                  No groups yet. Click <strong>+ Add group</strong> to create one (e.g. <em>Cape Town city bowl</em>) and start moving stores into it. While no groups exist the coverage view uses the default Western Cape / Gauteng / KZN regions.
+                </div>
+              ) : (e.groups || []).map((g, gi) => (
+                <div key={g.id || gi} style={{ marginTop: 12, background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 11, padding: "10px 12px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                    <div style={{ fontWeight: 800, color: "#831843", fontSize: 14 }}>{g.name || "Untitled group"} <span style={{ fontSize: 11, color: "#9ca3af", fontWeight: 600, marginLeft: 4 }}>· {(g.branches || []).length} store{(g.branches || []).length === 1 ? "" : "s"}</span></div>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <button onClick={() => moveGroup(gi, -1)} disabled={gi === 0} title="Move group up" style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 6, padding: "3px 8px", cursor: gi === 0 ? "default" : "pointer", fontSize: 11, fontWeight: 700, color: "#831843", opacity: gi === 0 ? 0.4 : 1 }}>▲</button>
+                      <button onClick={() => moveGroup(gi, 1)} disabled={gi === (e.groups.length - 1)} title="Move group down" style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 6, padding: "3px 8px", cursor: gi === (e.groups.length - 1) ? "default" : "pointer", fontSize: 11, fontWeight: 700, color: "#831843", opacity: gi === (e.groups.length - 1) ? 0.4 : 1 }}>▼</button>
+                      <button onClick={() => renameGroup(gi)} title="Rename" style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#831843" }}>✎</button>
+                      <button onClick={() => removeGroup(gi)} title="Delete group" style={{ background: "#fff", border: "1px solid #fca5a5", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#7f1d1d" }}>×</button>
+                    </div>
+                  </div>
+                  {(g.branches || []).length === 0
+                    ? <div style={{ fontSize: 11, color: "#9ca3af", fontStyle: "italic", padding: "4px 0" }}>No stores in this group yet — add some from the dropdown below.</div>
+                    : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 4 }}>
+                        {g.branches.map((b, bi) => (
+                          <div key={b} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#FDEEF5", border: "1px solid #FBCFE8", borderRadius: 7, padding: "4px 8px", fontSize: 12 }}>
+                            <span style={{ fontWeight: 700, color: "#831843" }}>📍 {b}</span>
+                            <span style={{ display: "flex", gap: 2 }}>
+                              <button onClick={() => moveBranch(gi, bi, -1)} disabled={bi === 0} style={{ background: "transparent", border: "none", cursor: bi === 0 ? "default" : "pointer", fontSize: 11, color: "#831843", padding: "0 4px", opacity: bi === 0 ? 0.3 : 1 }}>▲</button>
+                              <button onClick={() => moveBranch(gi, bi, 1)} disabled={bi === g.branches.length - 1} style={{ background: "transparent", border: "none", cursor: bi === g.branches.length - 1 ? "default" : "pointer", fontSize: 11, color: "#831843", padding: "0 4px", opacity: bi === g.branches.length - 1 ? 0.3 : 1 }}>▼</button>
+                              <button onClick={() => removeBranch(gi, b)} title="Remove from group" style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: 13, color: "#7f1d1d", padding: "0 4px" }}>×</button>
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                  }
+                  {unassigned.length > 0 && (
+                    <div style={{ marginTop: 8 }}>
+                      <select defaultValue="" onChange={(ev) => { addBranchTo(gi, ev.target.value); ev.target.value = ""; }}
+                        style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid #FBCFE8", fontSize: 12, background: "#fff" }}>
+                        <option value="">＋ Add a store to {g.name || "this group"}…</option>
+                        {unassigned.map(b => <option key={b} value={b}>{b}</option>)}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              <div style={{ marginTop: 14, padding: "10px 12px", background: "#FDF2F8", border: "1px dashed #FBCFE8", borderRadius: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: "#831843", letterSpacing: "0.04em", marginBottom: 4 }}>UNASSIGNED · {unassigned.length} store{unassigned.length === 1 ? "" : "s"}</div>
+                <div style={{ fontSize: 11, color: "#9ca3af" }}>Stores not in any group land in a "Other stores" section at the bottom of the coverage view. Add them above to organise.</div>
+                {unassigned.length > 0 && <div style={{ fontSize: 11, color: "#831843", marginTop: 4 }}>{unassigned.join(" · ")}</div>}
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginTop: 16 }}>
+                <button onClick={addGroup} style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 9, padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>+ Add group</button>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {hasCustomGroups && (
+                    <button onClick={resetToRegions} style={{ background: "#fff", color: "#7f1d1d", border: "1px solid #fca5a5", borderRadius: 9, padding: "9px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Reset to regions</button>
+                  )}
+                  <button onClick={() => setMgrCoverageGroupsEditor(null)} style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 9, padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>Cancel</button>
+                  <button onClick={save} style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 9, padding: "9px 20px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>💾 Save groups</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {mgrAbsencePicker && (() => {
         const p = mgrAbsencePicker;
         const scopedBranches = SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name));
