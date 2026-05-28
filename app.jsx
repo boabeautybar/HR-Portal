@@ -9247,14 +9247,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Photo/GPS metadata is loaded per selected day (see the effect below)
         // so a wide load window doesn't eagerly pull every day's selfies.
         // ALSO load manager schedules for the cycles touched by the visible range,
-        // for every branch — used to derive no-show flags.
+        // for every branch — used to derive no-show flags. NOTE: manager
+        // schedules are stored under the START-month ym of the cycle (the cycle
+        // running 25-May → 24-Jun is saved as "2026-05"), opposite of the tech
+        // schedule which uses end-month. Match the dashboard's convention.
         const today = new Date();
         const since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - mgrClockinDays);
         const ymsInRange = new Set();
-        // Helper: convert a date to its schedule period ym (cycle ending YYYY-MM-24)
+        // Manager-schedule cycle ym: cycle starts on the 25th of month X
+        // (saved as ym "X"); a date with day > 24 sits in the cycle whose
+        // start-month is X, and a date with day ≤ 24 sits in the cycle that
+        // started in the PREVIOUS month.
         const ymdToYm = (d) => {
           let y = d.getFullYear(), m = d.getMonth() + 1;
-          if (d.getDate() > 24) { m += 1; if (m > 12) { m = 1; y++; } }
+          if (d.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y--; } }
           return y + "-" + String(m).padStart(2, "0");
         };
         for (let cur = new Date(since); cur <= today; cur.setDate(cur.getDate() + 1)) {
@@ -11197,7 +11203,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       for (let dt = new Date(since); dt < tdY && dt.toISOString().slice(0, 10) < _t0; dt.setDate(dt.getDate() + 1)) {
                         const ymd = dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
                         const dom = dt.getDate();
-                        const ymOf = (() => { const a = ymd.split("-").map(Number); let y = a[0], m = a[1]; if (a[2] > 24) { m += 1; if (m > 12) { m = 1; y++; } } return y + "-" + String(m).padStart(2, "0"); })();
+                        // Manager schedule uses START-month ym.
+                        const ymOf = (() => { const a = ymd.split("-").map(Number); let y = a[0], m = a[1]; if (a[2] <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + String(m).padStart(2, "0"); })();
                         managers.forEach(m => {
                           const grid = mgrClockinSchedCache[(m.branch || "") + "|" + ymOf];
                           if (!grid) return;
@@ -20952,9 +20959,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // The manager schedule grid may be keyed by full YMD strings
               // ("2026-05-28") on newer schedules or by day-of-month numbers
               // (28) on older ones. Match the dashboard's logic and try both.
+              // The CYCLE ym uses the START-month (cycle 25-May → 24-Jun is
+              // stored as "2026-05"), so day > 24 = current month,
+              // day ≤ 24 = previous month.
               const ymdParts = ymd.split("-").map(Number);
               const dayOfMonth = ymdParts[2];
-              const ymOf = (() => { let y = ymdParts[0], m = ymdParts[1]; if (ymdParts[2] > 24) { m += 1; if (m > 12) { m = 1; y++; } } return y + "-" + String(m).padStart(2, "0"); })();
+              const ymOf = (() => { let y = ymdParts[0], m = ymdParts[1]; if (ymdParts[2] <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + String(m).padStart(2, "0"); })();
               const _readCell = (grid, ec) => (grid && grid[ec]) ? (grid[ec][ymd] || grid[ec][dayOfMonth]) : undefined;
               const _isWorking = v => v === "W" || v === "WL" || v === "WE" || v === "WM" || v === "WB" || v === "E";
               const scopedBranches = SALONS
@@ -21078,10 +21088,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               });
               const ymd = mgrClockinDay;
               // Schedule grid is keyed by either YMD or day-of-month —
-              // match the dashboard's read pattern and try both.
+              // match the dashboard's read pattern and try both. Manager
+              // schedules use START-month ym (day > 24 = current month,
+              // day ≤ 24 = previous month).
               const _ymdParts = ymd.split("-").map(Number);
               const _dom = _ymdParts[2];
-              const ymOf = (() => { let y = _ymdParts[0], m = _ymdParts[1]; if (_ymdParts[2] > 24) { m += 1; if (m > 12) { m = 1; y++; } } return y + "-" + String(m).padStart(2, "0"); })();
+              const ymOf = (() => { let y = _ymdParts[0], m = _ymdParts[1]; if (_ymdParts[2] <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + String(m).padStart(2, "0"); })();
               const branchesToCheck = mgrClockinFilterBranch === "All"
                 ? SALONS.map(s => s.name)
                 : [mgrClockinFilterBranch];
