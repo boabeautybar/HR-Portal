@@ -1140,10 +1140,25 @@
     document.getElementById("cu-body").innerHTML =
       '<table class="data-table">' +
       '<thead><tr>' +
-      '<th>Date</th><th>Yoco</th><th>Yoco Link</th><th>Cash</th><th>Card Tips</th><th>Vouchers purchased</th><th>Gift card</th><th>Discounts</th><th>Total</th><th>Signed by</th>' +
+      '<th>Date</th><th>Yoco</th><th>Yoco Link</th><th>Cash</th><th>Card Tips</th><th>Vouchers purchased</th><th>Gift card</th><th>Discounts</th><th>Total</th><th>Banking</th><th>Signed by</th>' +
       '</tr></thead>' +
       '<tbody>' +
       rows.map(function (r) {
+        var banking = "—";
+        if (r.cash_banked === true) {
+          var bits = [];
+          bits.push('<strong>Yes</strong>');
+          if (r.amount_banked) bits.push(fmtMoney(r.amount_banked));
+          if (r.banking_ref)   bits.push('ref ' + esc(r.banking_ref));
+          if (r.banked_by)     bits.push('by ' + esc(r.banked_by));
+          var bankingTxt = bits.join(' · ');
+          var slipLink   = r.banking_slip ? ' <a href="' + r.banking_slip + '" target="_blank" rel="noopener">slip</a>' : '';
+          banking = bankingTxt + slipLink;
+        } else if (r.cash_banked === false) {
+          banking = '<span class="pill pill-warn">Not banked</span>';
+        } else if (Number(r.cash) > 0) {
+          banking = '<span class="pill pill-warn">Missing</span>';
+        }
         return '<tr>' +
           '<td>' + fmtDate(r.date) + '</td>' +
           '<td>' + fmtMoney(r.yoco) + '</td>' +
@@ -1154,6 +1169,7 @@
           '<td>' + fmtMoney(r.gift_card) + '</td>' +
           '<td>' + fmtMoney(r.discounts) + '</td>' +
           '<td><strong>' + fmtMoney(r.total) + '</strong></td>' +
+          '<td>' + banking + '</td>' +
           '<td>' + esc(r.signed_by) + (r.notes ? ' <span class="pill pill-mute" title="' + esc(r.notes) + '">notes</span>' : "") + '</td>' +
           '</tr>';
       }).join("") +

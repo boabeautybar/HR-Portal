@@ -476,7 +476,12 @@
       gift_card: Number(payload.gift_card) || 0,
       discounts: Number(payload.discounts) || 0,
       notes: (payload.notes || "").trim() || null,
-      signed_by: (payload.signedBy || "").trim()
+      signed_by: (payload.signedBy || "").trim(),
+      cash_banked:   (payload.cash_banked === true || payload.cash_banked === false) ? payload.cash_banked : null,
+      amount_banked: Number(payload.amount_banked) || 0,
+      banking_ref:   (payload.banking_ref || "").trim() || null,
+      banked_by:     (payload.banked_by   || "").trim() || null,
+      banking_slip:  payload.banking_slip || null
     };
     var res = await c.from("cashups").insert(row).select().single();
     if (res.error) throw res.error;
