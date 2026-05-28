@@ -8477,6 +8477,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Modal state for the "Mark reason" flow. null when closed; otherwise
   // { staffId, ec, name, branch, date, existing? }.
   const [mgrReasonModal, setMgrReasonModal] = useState(null);
+  // Picker modal for the "Tag absence" button — lets a ROM pick any
+  // branch + manager + date and feed them into mgrReasonModal. Used for
+  // early sick calls and for days where the no-show banner didn't surface
+  // a name (e.g. schedule not loaded).
+  const [mgrAbsencePicker, setMgrAbsencePicker] = useState(null);
   const [mgrClockinMeta, setMgrClockinMeta] = useState({});  // {clockinId: meta}
   const [mgrClockinFilterBranch, setMgrClockinFilterBranch] = useState("All");
   const [mgrClockinDays, setMgrClockinDays] = useState(31);        // how far back rows are loaded
@@ -20909,14 +20914,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               </div>
               <div style={{ flex: 1 }} />
+              <button
+                onClick={() => setMgrAbsencePicker({
+                  branch: mgrClockinFilterBranch !== "All" ? mgrClockinFilterBranch : ((managers.filter(m => !_hasStoreScope || scopedSalonNames.has(m.branch))[0] || {}).branch || ""),
+                  staffId: "", ec: "", name: "",
+                  date: mgrClockinDay
+                })}
+                title="Tag a manager absence — for early sick calls, called-out days, etc."
+                style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "9px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: "0.03em", alignSelf: "flex-end" }}>
+                ➕ Tag absence
+              </button>
               <div style={{ fontSize: 12, color: "#831843", textAlign: "right" }}><div style={{ fontWeight: 700 }}>{mDayLabel(mgrClockinDay)}</div><strong>{filtered.length}</strong> clock-in record{filtered.length !== 1 ? "s" : ""}</div>
             </div>
 
-            {/* No-show detection: managers scheduled to work on the SELECTED day
-                but who never clocked IN. Only shown for past days — for today
-                managers may still clock in later. */}
+            {/* No-show / not-in-yet detection: managers scheduled to work on
+                the SELECTED day who haven't clocked IN. Past days render as a
+                hard red NO-SHOW banner; today renders as a softer yellow
+                "not in yet — may still clock in" banner so ROMs can tag
+                early sick calls without waiting for the day to end. Future
+                days are skipped. */}
             {(() => {
-              if (mgrClockinDay >= _mTodayYmd) return null;   // don't flag today/future
+              const isFuture = mgrClockinDay > _mTodayYmd;
+              if (isFuture) return null;
+              const isToday = mgrClockinDay === _mTodayYmd;
               // Set of ECs that clocked IN on the selected day.
               const clockedIn = new Set();
               mgrClockinRows.forEach(r => {
@@ -20945,16 +20965,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const statByKey = {};
               (mgrDayStatuses || []).forEach(s => { statByKey[s.staff_id + "|" + s.date] = s; });
               const statLabel = code => (MGR_REASON_OPTIONS.find(o => o.code === code) || { label: code }).label;
+              // Softer styling for today (still may arrive) vs hard NO-SHOW for past days.
+              const palette = isToday
+                ? { bg: "#fef3c7", border: "#fcd34d", text: "#92400e", cardBorder: "#fcd34d" }
+                : { bg: "#fee2e2", border: "#fca5a5", text: "#7f1d1d", cardBorder: "#fca5a5" };
+              const headerLabel = isToday
+                ? "⏳ " + noShows.length + " NOT IN YET — may still clock in. Tag a reason if you already know they won't come (e.g. early sick call)."
+                : "⚠ " + noShows.length + " NO-SHOW" + (noShows.length === 1 ? "" : "S") + " — scheduled to work but never clocked in";
               return (
-                <div style={{ background: "#fee2e2", border: "1px solid #fca5a5", borderRadius: 11, padding: "12px 16px", marginBottom: 14 }}>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: "#7f1d1d", marginBottom: 6 }}>⚠ {noShows.length} NO-SHOW{noShows.length === 1 ? "" : "S"} — scheduled to work but never clocked in</div>
+                <div style={{ background: palette.bg, border: "1px solid " + palette.border, borderRadius: 11, padding: "12px 16px", marginBottom: 14 }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: palette.text, marginBottom: 6 }}>{headerLabel}</div>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 6 }}>
                     {noShows.slice(0, 30).map((ns, i) => {
                       const existing = statByKey[(ns.staffId || "") + "|" + ns.ymd];
                       return (
-                        <div key={i} style={{ background: "#fff", borderRadius: 7, padding: "7px 10px", border: "1px solid #fca5a5", fontSize: 12 }}>
-                          <div style={{ fontWeight: 700, color: "#7f1d1d" }}>{ns.name}</div>
-                          <div style={{ fontSize: 11, color: "#9a1a1a" }}>{ns.branch} · {new Date(ns.ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", weekday: "short" })}</div>
+                        <div key={i} style={{ background: "#fff", borderRadius: 7, padding: "7px 10px", border: "1px solid " + palette.cardBorder, fontSize: 12 }}>
+                          <div style={{ fontWeight: 700, color: palette.text }}>{ns.name}</div>
+                          <div style={{ fontSize: 11, color: palette.text, opacity: 0.85 }}>{ns.branch} · {new Date(ns.ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", weekday: "short" })}</div>
                           <div style={{ marginTop: 6 }}>
                             {existing
                               ? <button
@@ -20974,7 +21001,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         </div>
                       );
                     })}
-                    {noShows.length > 30 && <div style={{ alignSelf: "center", fontSize: 12, color: "#9a1a1a", fontStyle: "italic" }}>…and {noShows.length - 30} more</div>}
+                    {noShows.length > 30 && <div style={{ alignSelf: "center", fontSize: 12, color: palette.text, fontStyle: "italic" }}>…and {noShows.length - 30} more</div>}
                   </div>
                 </div>
               );
@@ -21420,6 +21447,73 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           (later) the attendance sheet cell. Saves into manager_day_status
           and refetches so the attendance overlay, no-show banner and to-do
           card all reflect the new value immediately. */}
+      {/* "Tag absence" picker — lets a ROM pick any manager + day and
+          drop into the Mark-reason modal. Used for early sick calls and
+          for days the no-show banner missed. */}
+      {mgrAbsencePicker && (() => {
+        const p = mgrAbsencePicker;
+        const scopedBranches = SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name));
+        const branchManagers = managers
+          .filter(m => m.branch === p.branch)
+          .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+        return (
+          <div onClick={() => setMgrAbsencePicker(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "20px 22px", width: "100%", maxWidth: 460 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                <div>
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 19, color: "#831843", fontWeight: 700 }}>Tag a manager absence</div>
+                  <div style={{ fontSize: 12, color: "#9ca3af" }}>Pick the manager and day — next step is the reason &amp; sick-note.</div>
+                </div>
+                <button onClick={() => setMgrAbsencePicker(null)} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
+              </div>
+              <div style={{ marginTop: 14 }}>
+                <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>BRANCH</label>
+                <select value={p.branch} onChange={e => setMgrAbsencePicker({ ...p, branch: e.target.value, staffId: "", ec: "", name: "" })}
+                  style={{ display: "block", width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff" }}>
+                  {scopedBranches.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                </select>
+              </div>
+              <div style={{ marginTop: 12 }}>
+                <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>MANAGER</label>
+                {branchManagers.length === 0 ? (
+                  <div style={{ marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px dashed #FBCFE8", fontSize: 12, color: "#9ca3af" }}>No managers on the staff list for this branch.</div>
+                ) : (
+                  <select value={p.staffId || ""} onChange={e => {
+                    const m = branchManagers.find(mm => (mm._id || mm.id) === e.target.value);
+                    setMgrAbsencePicker({ ...p, staffId: e.target.value, ec: m ? m.ec : "", name: m ? m.name : "" });
+                  }}
+                    style={{ display: "block", width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff" }}>
+                    <option value="">— Choose a manager —</option>
+                    {branchManagers.map(m => <option key={m._id || m.id} value={m._id || m.id}>{m.name} {m.role ? "· " + m.role : ""}</option>)}
+                  </select>
+                )}
+              </div>
+              <div style={{ marginTop: 12 }}>
+                <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>DAY</label>
+                <input type="date" value={p.date} max={(() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })()}
+                  onChange={e => e.target.value && setMgrAbsencePicker({ ...p, date: e.target.value })}
+                  style={{ display: "block", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13 }} />
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+                <button onClick={() => setMgrAbsencePicker(null)} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", color: "#831843", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Cancel</button>
+                <button
+                  onClick={() => {
+                    if (!p.staffId || !p.date) return;
+                    // Pre-fill from existing record if there is one.
+                    const ex = (mgrDayStatuses || []).find(s => s.staff_id === p.staffId && s.date === p.date) || null;
+                    setMgrAbsencePicker(null);
+                    setMgrReasonModal({ staffId: p.staffId, ec: p.ec, name: p.name, branch: p.branch, date: p.date, existing: ex });
+                  }}
+                  disabled={!p.staffId || !p.date}
+                  style={{ padding: "9px 20px", borderRadius: 9, border: "none", background: (p.staffId && p.date) ? "#BE185D" : "#FBCFE8", color: "#fff", fontWeight: 700, fontSize: 13, cursor: (p.staffId && p.date) ? "pointer" : "not-allowed" }}>
+                  Continue →
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {mgrReasonModal && (() => {
         const m = mgrReasonModal;
         const existing = m.existing || null;
