@@ -19106,8 +19106,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               for (const x of result.dates) if (newGrid[m.ec][x.d] == null) newGrid[m.ec][x.d] = "W";
             }
           }
-          for (const ec of Object.keys(newGrid)) if (!result.managers.find(m => m.ec === ec)) delete newGrid[ec];
-          result = { ...result, grid: newGrid, _loadedFromSaved: true };
+          // Drop unknown-EC rows that don't resolve to any manager record,
+          // but PRESERVE rows for managers from other branches — those come
+          // from cross-store loans set up on Manager Coverage, and we want
+          // them to surface here as guest rows so the SM/AM can see who is
+          // visiting on a given day.
+          const _allMgrsByEc = {};
+          (managers || []).forEach(mm => {
+            const _ec = String(mm.ec || "").trim();
+            if (_ec) _allMgrsByEc[_ec] = mm;
+          });
+          const _guestEcs = [];
+          for (const ec of Object.keys(newGrid)) {
+            if (result.managers.find(m => m.ec === ec)) continue;
+            const gm = _allMgrsByEc[String(ec).trim()];
+            if (gm && !gm.leftDate && gm.branch !== branch) _guestEcs.push(String(ec).trim());
+            else delete newGrid[ec];
+          }
+          result = { ...result, grid: newGrid, _loadedFromSaved: true, _guestRowEcs: _guestEcs };
           // Recompute dayTotals + conflicts from merged grid. On-mat
           // managers are skipped entirely - they never count as working,
           // off, or on-leave for coverage purposes.
@@ -19727,6 +19743,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const rank = (r) => r === "SSM" ? 0 : r === "SM" ? 1 : 2;
           return rank(a.role) - rank(b.role) || (a.name || "").localeCompare(b.name || "");
         });
+        // Guest rows for cross-store loans — managers whose home is another
+        // branch but whose schedule grid here was populated by a loan from
+        // Manager Coverage. They render below the home managers and are
+        // marked read-only (drag/double-click disabled) so loans stay
+        // managed from Manager Coverage.
+        const _guestMgrsRender = (() => {
+          if (!Array.isArray(result._guestRowEcs) || result._guestRowEcs.length === 0) return [];
+          const byEc = {};
+          (managers || []).forEach(mm => {
+            const _ec = String(mm.ec || "").trim();
+            if (_ec) byEc[_ec] = mm;
+          });
+          const seen = new Set(sortedMgrs.map(m => String(m.ec || "").trim()));
+          return result._guestRowEcs
+            .filter(ec => !seen.has(ec))
+            .map(ec => byEc[ec])
+            .filter(Boolean)
+            .map(gm => ({ ...gm, _guestFromBranch: gm.branch }));
+        })();
+        const sortedMgrsRender = [...sortedMgrs, ..._guestMgrsRender];
 
         return (
           <div>
@@ -20110,13 +20146,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedMgrs.length === 0 && (
+                  {sortedMgrsRender.length === 0 && (
                     <tr><td colSpan={result.dates.length + 1} style={{ padding: 30, textAlign: "center", color: "#9ca3af", fontStyle: "italic" }}>No managers at {branch}.</td></tr>
                   )}
-                  {sortedMgrs.map(mg => (
+                  {sortedMgrsRender.map(mg => (
                     <tr key={mg.ec}>
-                      <td style={{ position: "sticky", left: 0, background: mg._offGhost ? "#f9fafb" : (mg._onMat ? "#f5e1ed" : (mg.isShadow ? "#eff6ff" : (mg.transferring ? "#fffbeb" : (mg._obStarting ? "#fefce8" : "#fff")))), padding: "6px 10px", borderBottom: "1px solid #FCE7F3", borderRight: "2px solid #FBCFE8", zIndex: 2, minWidth: 200, opacity: mg._offGhost || mg._onMat ? 0.55 : 1 }}>
-                        <div style={{ fontSize: 12, fontWeight: 700, color: mg._offGhost ? "#9ca3af" : mg._onMat ? "#7A4258" : "#831843", textDecoration: mg._offGhost ? "line-through" : "none", fontStyle: (mg._offGhost || mg._onMat) ? "italic" : "normal" }}>{mg._onMat ? "🤱 " : ""}{mg.name}</div>
+                      <td style={{ position: "sticky", left: 0, background: mg._guestFromBranch ? "#eff6ff" : (mg._offGhost ? "#f9fafb" : (mg._onMat ? "#f5e1ed" : (mg.isShadow ? "#eff6ff" : (mg.transferring ? "#fffbeb" : (mg._obStarting ? "#fefce8" : "#fff"))))), padding: "6px 10px", borderBottom: "1px solid #FCE7F3", borderRight: "2px solid #FBCFE8", zIndex: 2, minWidth: 200, opacity: mg._offGhost || mg._onMat ? 0.55 : 1 }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: mg._guestFromBranch ? "#1e40af" : (mg._offGhost ? "#9ca3af" : mg._onMat ? "#7A4258" : "#831843"), textDecoration: mg._offGhost ? "line-through" : "none", fontStyle: (mg._offGhost || mg._onMat) ? "italic" : "normal" }}>{mg._onMat ? "🤱 " : ""}{mg._guestFromBranch ? "↪ " : ""}{mg.name}</div>
+                        {mg._guestFromBranch && (
+                          <div style={{ fontSize: 9, color: "#1e40af", fontWeight: 700, marginTop: 1 }}>↪ ON LOAN FROM {mg._guestFromBranch}</div>
+                        )}
                         {mg.isShadow && mg.transferFrom && (
                           <div style={{ fontSize: 9, color: "#1e40af", fontWeight: 700, marginTop: 1 }}>🔄 FROM {mg.transferFrom}{mg.transferDate ? " · " + new Date(mg.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</div>
                         )}
@@ -20164,7 +20203,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         // working cells just like W, so they're draggable
                         // for the same-week swap. R stays included from PR #105.
                         // Transfer-locked cells aren't draggable.
-                        const draggable = !xferEdge && (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "O" || v === "E" || v === "R");
+                        // Guest rows (cross-store loans) are read-only here —
+                        // they should be edited from Manager Coverage instead
+                        // so the loan record + both branches stay in sync.
+                        const draggable = !xferEdge && !mg._guestFromBranch && (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "O" || v === "E" || v === "R");
                         return (
                           <td key={dy.d}
                             draggable={draggable}
@@ -20177,9 +20219,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 if (data.ec === mg.ec && data.d !== dy.d) dragSwap(mg.ec, data.d, dy.d);
                               } catch (_) { }
                             }}
-                            onDoubleClick={xferEdge ? undefined : () => toggleReq(mg.ec, dy.d)}
+                            onDoubleClick={xferEdge || mg._guestFromBranch ? undefined : () => toggleReq(mg.ec, dy.d)}
                             title={xferEdge === "out" ? `${mg.name} · ${dy.d} · transferring to ${xferOther} on ${_xferDate} — fill remaining days on the destination schedule`
                               : xferEdge === "in" ? `${mg.name} · ${dy.d} · arriving from ${xferOther} on ${_xferDate} — pre-transfer days are still on the source schedule`
+                                : mg._guestFromBranch ? `${mg.name} · ${dy.d} · on loan from ${mg._guestFromBranch} — edit on Manager Coverage tab`
                                 : dy.d + ": " + (txt || "—") + (draggable ? " · drag to swap, double-click OFF→REQ→EXT" : "")}
                             style={{ padding: "4px 0", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: isMon ? "3px solid #E84B9B" : "1px solid #FCE7F3", background: bg, color: fg, fontSize: 10, fontWeight: 700, cursor: draggable ? "grab" : "default", userSelect: "none" }}>
                             {xferEdge === "out" ? <span style={{ fontSize: 9, fontWeight: 800 }}>→{xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0, 4)}</span>
