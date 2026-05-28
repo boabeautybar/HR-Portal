@@ -9247,14 +9247,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Photo/GPS metadata is loaded per selected day (see the effect below)
         // so a wide load window doesn't eagerly pull every day's selfies.
         // ALSO load manager schedules for the cycles touched by the visible range,
-        // for every branch — used to derive no-show flags.
+        // for every branch — used to derive no-show flags. NOTE: manager
+        // schedules are stored under the START-month ym of the cycle (the cycle
+        // running 25-May → 24-Jun is saved as "2026-05"), opposite of the tech
+        // schedule which uses end-month. Match the dashboard's convention.
         const today = new Date();
         const since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - mgrClockinDays);
         const ymsInRange = new Set();
-        // Helper: convert a date to its schedule period ym (cycle ending YYYY-MM-24)
+        // Manager-schedule cycle ym: cycle starts on the 25th of month X
+        // (saved as ym "X"); a date with day > 24 sits in the cycle whose
+        // start-month is X, and a date with day ≤ 24 sits in the cycle that
+        // started in the PREVIOUS month.
         const ymdToYm = (d) => {
           let y = d.getFullYear(), m = d.getMonth() + 1;
-          if (d.getDate() > 24) { m += 1; if (m > 12) { m = 1; y++; } }
+          if (d.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y--; } }
           return y + "-" + String(m).padStart(2, "0");
         };
         for (let cur = new Date(since); cur <= today; cur.setDate(cur.getDate() + 1)) {
@@ -11188,7 +11194,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       (mgrClockinRows || []).forEach(r => {
                         if (!r.staff || r.staff.role_type !== "manager") return;
                         if (r.type !== "in") return;
-                        clockedInByEcDate.add(r.staff.employee_code + "|" + _ymdOf(r.ts));
+                        clockedInByEcDate.add(String(r.staff.employee_code).trim() + "|" + _ymdOf(r.ts));
                       });
                       // Look at last 14 days excluding today (today still
                       // pending — they may still clock in).
@@ -11196,13 +11202,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       const since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - 14);
                       for (let dt = new Date(since); dt < tdY && dt.toISOString().slice(0, 10) < _t0; dt.setDate(dt.getDate() + 1)) {
                         const ymd = dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
-                        const ymOf = (() => { const a = ymd.split("-").map(Number); let y = a[0], m = a[1]; if (a[2] > 24) { m += 1; if (m > 12) { m = 1; y++; } } return y + "-" + String(m).padStart(2, "0"); })();
+                        const dom = dt.getDate();
+                        // Manager schedule uses START-month ym.
+                        const ymOf = (() => { const a = ymd.split("-").map(Number); let y = a[0], m = a[1]; if (a[2] <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + String(m).padStart(2, "0"); })();
+                        // Skip anyone on annual leave for this date.
+                        const _onLeaveEcs = new Set();
+                        (leaveRecs || []).forEach(lv => {
+                          if (lv && lv.ec && lv.startDate && lv.endDate && ymd >= lv.startDate && ymd <= lv.endDate) _onLeaveEcs.add(String(lv.ec).trim());
+                        });
                         managers.forEach(m => {
+                          if (_onLeaveEcs.has(String(m.ec || "").trim())) return;   // annual leave
                           const grid = mgrClockinSchedCache[(m.branch || "") + "|" + ymOf];
                           if (!grid) return;
-                          const cell = grid[m.ec] && grid[m.ec][ymd];
-                          if (cell !== "W" && cell !== "E") return;
-                          if (clockedInByEcDate.has(m.ec + "|" + ymd)) return;
+                          const cell = (grid[m.ec]) ? (grid[m.ec][ymd] || grid[m.ec][dom]) : undefined;
+                          if (cell !== "W" && cell !== "WL" && cell !== "WE" && cell !== "WM" && cell !== "WB" && cell !== "E") return;
+                          if (clockedInByEcDate.has(String(m.ec || "").trim() + "|" + ymd)) return;
                           const sid = ecToStaffId[m.ec];
                           if (sid && taggedKeys.has(sid + "|" + ymd)) return;
                           pending.push({ name: m.name, branch: m.branch, ymd });
@@ -20927,6 +20941,150 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ fontSize: 12, color: "#831843", textAlign: "right" }}><div style={{ fontWeight: 700 }}>{mDayLabel(mgrClockinDay)}</div><strong>{filtered.length}</strong> clock-in record{filtered.length !== 1 ? "s" : ""}</div>
             </div>
 
+            {/* Today's manager roster — derived from the manager schedule
+                cache so the list ONLY shows managers actually rostered to
+                work today (W / WL / WE / E). Anyone scheduled off or on
+                leave is excluded so ROMs see a true "who's expected in"
+                list. Managers who clocked in despite not being scheduled
+                still get listed under their branch as a sanity check. */}
+            {mgrClockinDay === _mTodayYmd && (() => {
+              // Clock-in lookup for today, keyed by trimmed EC. EC trimming
+              // matters because staff records sometimes carry trailing
+              // whitespace — without it a manager who clocked in could
+              // appear as "Not in yet". Matches the dashboard's approach.
+              const inByEc = {};
+              mgrClockinRows.forEach(r => {
+                if (!r.staff || !r.staff.employee_code) return;
+                if (r.type !== "in") return;
+                if (mLocalYmd(r.ts) !== mgrClockinDay) return;
+                const _ec = String(r.staff.employee_code).trim();
+                if (!inByEc[_ec] || r.ts < inByEc[_ec].ts) inByEc[_ec] = r;
+              });
+              const statByKey = {};
+              (mgrDayStatuses || []).forEach(s => { statByKey[s.staff_id + "|" + s.date] = s; });
+              const statLabel = code => (MGR_REASON_OPTIONS.find(o => o.code === code) || { label: code }).label;
+              const ymd = mgrClockinDay;
+              // The manager schedule grid may be keyed by full YMD strings
+              // ("2026-05-28") on newer schedules or by day-of-month numbers
+              // (28) on older ones. Match the dashboard's logic and try both.
+              // The CYCLE ym uses the START-month (cycle 25-May → 24-Jun is
+              // stored as "2026-05"), so day > 24 = current month,
+              // day ≤ 24 = previous month.
+              const ymdParts = ymd.split("-").map(Number);
+              const dayOfMonth = ymdParts[2];
+              const ymOf = (() => { let y = ymdParts[0], m = ymdParts[1]; if (ymdParts[2] <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + String(m).padStart(2, "0"); })();
+              const _readCell = (grid, ec) => (grid && grid[ec]) ? (grid[ec][ymd] || grid[ec][dayOfMonth]) : undefined;
+              const _isWorking = v => v === "W" || v === "WL" || v === "WE" || v === "WM" || v === "WB" || v === "E";
+              // Anyone on annual leave today is OFF — don't count them as a
+              // no-show even if their schedule cell still says W. Matches the
+              // dashboard's onLeaveEcs handling.
+              const _onLeaveEcs = new Set();
+              (leaveRecs || []).forEach(lv => {
+                if (lv && lv.ec && lv.startDate && lv.endDate && ymd >= lv.startDate && ymd <= lv.endDate) _onLeaveEcs.add(lv.ec.trim());
+              });
+              const scopedBranches = SALONS
+                .map(s => s.name)
+                .filter(b => !_hasStoreScope || scopedSalonNames.has(b))
+                .filter(b => mgrClockinFilterBranch === "All" || b === mgrClockinFilterBranch);
+              // For each branch, collect managers scheduled to work today.
+              // A branch falls back to its full active-manager list when the
+              // grid for this cycle hasn't been published — better to show
+              // everyone with a "schedule not published" notice than show
+              // nothing while 51 managers clocked in.
+              const scheduledByBranch = {};
+              const fallbackBranches = [];
+              const allScheduled = [];
+              const surpriseClockIns = [];   // clocked in but scheduled off today
+              scopedBranches.forEach(b => {
+                const grid = mgrClockinSchedCache[b + "|" + ymOf];
+                const branchMgrs = managers.filter(m => m.branch === b && !m.onMat && !m.leftDate && !_onLeaveEcs.has(String(m.ec || "").trim()));
+                const scheduleHasToday = !!grid && branchMgrs.some(m => _readCell(grid, m.ec) != null);
+                if (!scheduleHasToday) {
+                  // No schedule data for today at this branch — fall back to
+                  // listing every active manager so ROMs can still tag.
+                  if (branchMgrs.length > 0) {
+                    fallbackBranches.push(b);
+                    scheduledByBranch[b] = branchMgrs.slice().sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+                    branchMgrs.forEach(m => allScheduled.push(m));
+                  }
+                  return;
+                }
+                const list = [];
+                branchMgrs.forEach(m => {
+                  const cell = _readCell(grid, m.ec);
+                  if (_isWorking(cell)) { list.push(m); allScheduled.push(m); }
+                  else if (inByEc[String(m.ec || "").trim()]) { surpriseClockIns.push({ m, cell: cell || "—" }); }
+                });
+                list.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+                if (list.length > 0) scheduledByBranch[b] = list;
+              });
+              if (allScheduled.length === 0 && fallbackBranches.length === 0 && surpriseClockIns.length === 0) return null;
+              const totalIn = allScheduled.filter(m => inByEc[String(m.ec || "").trim()]).length;
+              const totalTagged = allScheduled.filter(m => statByKey[(m._id || m.id) + "|" + ymd]).length;
+              const totalPending = allScheduled.length - totalIn - totalTagged;
+              const branchNames = Object.keys(scheduledByBranch).sort();
+              const renderCard = (m) => {
+                const sid = m._id || m.id;
+                const tagged = statByKey[sid + "|" + ymd];
+                const clockin = inByEc[String(m.ec || "").trim()];
+                const inTime = clockin ? new Date(clockin.ts).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }) : null;
+                let pill;
+                if (clockin) {
+                  pill = <span style={{ background: "#dcfce7", color: "#14532d", padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>✅ IN {inTime}</span>;
+                } else if (tagged) {
+                  pill = <button
+                    onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: ymd, existing: tagged })}
+                    title={(tagged.note || "") + (tagged.recorded_by ? "\n— " + tagged.recorded_by : "")}
+                    style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                    {statLabel(tagged.status)}{tagged.proof ? " 📎" : ""} ✎
+                  </button>;
+                } else {
+                  pill = <button
+                    onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: ymd, existing: null })}
+                    style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                    ⏳ Not in yet · Mark reason
+                  </button>;
+                }
+                return (
+                  <div key={sid} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, background: clockin ? "#f0fdf4" : (tagged ? "#fffbeb" : "#fef2f2"), border: "1px solid " + (clockin ? "#bbf7d0" : (tagged ? "#fde68a" : "#fecaca")), borderRadius: 8, padding: "7px 10px" }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 700, color: "#831843", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.name}</div>
+                      <div style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{m.ec} {m.role ? "· " + m.role : ""}</div>
+                    </div>
+                    <div>{pill}</div>
+                  </div>
+                );
+              };
+              return (
+                <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 13, padding: "12px 14px", marginBottom: 14 }}>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: "#831843", letterSpacing: "0.04em", textTransform: "uppercase" }}>👥 Today's manager roster</div>
+                    <div style={{ fontSize: 12, color: "#6b7280" }}>
+                      <strong style={{ color: "#14532d" }}>{totalIn}</strong> in · <strong style={{ color: "#7f1d1d" }}>{totalPending}</strong> not in yet · <strong style={{ color: "#92400e" }}>{totalTagged}</strong> tagged · {allScheduled.length} {fallbackBranches.length > 0 ? "managers" : "scheduled"}
+                    </div>
+                  </div>
+                  {fallbackBranches.length > 0 && (
+                    <div style={{ background: "#fef3c7", border: "1px solid #fcd34d", color: "#92400e", borderRadius: 8, padding: "7px 10px", fontSize: 11.5, marginBottom: 8 }}>
+                      ⚠ The <strong>{ymOf}</strong> cycle's manager schedule isn't published for {fallbackBranches.length} branch{fallbackBranches.length === 1 ? "" : "es"}: <strong>{fallbackBranches.join(", ")}</strong>. Showing all active managers there as a fallback — publish the schedule in <em>Operations → Scheduling → Managers</em> to filter out off-day managers.
+                    </div>
+                  )}
+                  {branchNames.map(b => (
+                    <div key={b} style={{ marginBottom: 10 }}>
+                      <div style={{ fontSize: 11, fontWeight: 800, color: "#831843", marginBottom: 4, letterSpacing: "0.05em" }}>📍 {b} · {scheduledByBranch[b].length} scheduled</div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 6 }}>
+                        {scheduledByBranch[b].map(renderCard)}
+                      </div>
+                    </div>
+                  ))}
+                  {surpriseClockIns.length > 0 && (
+                    <div style={{ marginTop: 4, fontSize: 11.5, color: "#6b7280" }}>
+                      🟦 {surpriseClockIns.length} manager{surpriseClockIns.length === 1 ? "" : "s"} clocked in but were not scheduled to work today: <strong>{surpriseClockIns.map(s => s.m.name + " (" + (s.cell || "—") + ")").join(", ")}</strong>. Check the schedule.
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* No-show / not-in-yet detection: managers scheduled to work on
                 the SELECTED day who haven't clocked IN. Past days render as a
                 hard red NO-SHOW banner; today renders as a softer yellow
@@ -20938,24 +21096,38 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               if (isFuture) return null;
               const isToday = mgrClockinDay === _mTodayYmd;
               // Set of ECs that clocked IN on the selected day.
+              // Trim ECs on both sides so a stray whitespace can't desync
+              // the no-show check against the actual clock-in records.
               const clockedIn = new Set();
               mgrClockinRows.forEach(r => {
                 if (!r.staff || !r.staff.employee_code) return;
-                if (r.type === "in" && mLocalYmd(r.ts) === mgrClockinDay) clockedIn.add(r.staff.employee_code);
+                if (r.type === "in" && mLocalYmd(r.ts) === mgrClockinDay) clockedIn.add(String(r.staff.employee_code).trim());
               });
               const ymd = mgrClockinDay;
-              const ymOf = (() => { const a = ymd.split("-").map(Number); let y = a[0], m = a[1]; if (a[2] > 24) { m += 1; if (m > 12) { m = 1; y++; } } return y + "-" + String(m).padStart(2, "0"); })();
+              // Schedule grid is keyed by either YMD or day-of-month —
+              // match the dashboard's read pattern and try both. Manager
+              // schedules use START-month ym (day > 24 = current month,
+              // day ≤ 24 = previous month).
+              const _ymdParts = ymd.split("-").map(Number);
+              const _dom = _ymdParts[2];
+              const ymOf = (() => { let y = _ymdParts[0], m = _ymdParts[1]; if (_ymdParts[2] <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + String(m).padStart(2, "0"); })();
               const branchesToCheck = mgrClockinFilterBranch === "All"
                 ? SALONS.map(s => s.name)
                 : [mgrClockinFilterBranch];
+              // Anyone on annual leave for THIS day shouldn't count as a no-show.
+              const _onLeaveEcs = new Set();
+              (leaveRecs || []).forEach(lv => {
+                if (lv && lv.ec && lv.startDate && lv.endDate && ymd >= lv.startDate && ymd <= lv.endDate) _onLeaveEcs.add(String(lv.ec).trim());
+              });
               const noShows = [];
               for (const branchName of branchesToCheck) {
                 const grid = mgrClockinSchedCache[branchName + "|" + ymOf];
                 if (!grid) continue;        // schedule not loaded yet
                 for (const m of managers.filter(mm => mm.branch === branchName)) {
-                  const cell = grid[m.ec] && grid[m.ec][ymd];
-                  if (cell !== "W" && cell !== "E") continue;     // not scheduled to work
-                  if (clockedIn.has(m.ec)) continue;              // they did clock in
+                  if (_onLeaveEcs.has(String(m.ec || "").trim())) continue;    // on annual leave
+                  const cell = (grid[m.ec]) ? (grid[m.ec][ymd] || grid[m.ec][_dom]) : undefined;
+                  if (cell !== "W" && cell !== "WL" && cell !== "WE" && cell !== "WM" && cell !== "WB" && cell !== "E") continue;     // not scheduled to work
+                  if (clockedIn.has(String(m.ec || "").trim())) continue;              // they did clock in
                   noShows.push({ ec: m.ec, name: m.name, branch: branchName, ymd, staffId: m._id || m.id });
                 }
               }
