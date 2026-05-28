@@ -8514,6 +8514,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [mgrClockinDay, setMgrClockinDay] = useState(() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); });
   const [mgrClockinPhoto, setMgrClockinPhoto] = useState(null);   // {url, name, ts, ...}
   const [mgrClockinSchedCache, setMgrClockinSchedCache] = useState({});  // {branch|ym: grid}
+  // Manual clock-in modal — opened from the Manager Check-ins no-show
+  // cards or the "+ Log manual shift" button so a ROM can backfill a
+  // forgotten clock-in. Shape:
+  //   { staffId, ec, name, branch, ymd, time, note, _saving, _err }
+  const [manualMgrClockinModal, setManualMgrClockinModal] = useState(null);
 
   // ── Manager Coverage tab state ─────────────────────────────────────
   // Week-at-a-glance roster of every manager grouped by branch (and
@@ -21309,7 +21314,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <div key={i} style={{ background: "#fff", borderRadius: 7, padding: "7px 10px", border: "1px solid " + palette.cardBorder, fontSize: 12 }}>
                           <div style={{ fontWeight: 700, color: palette.text }}>{ns.name}</div>
                           <div style={{ fontSize: 11, color: palette.text, opacity: 0.85 }}>{ns.branch} · {new Date(ns.ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", weekday: "short" })}</div>
-                          <div style={{ marginTop: 6 }}>
+                          <div style={{ marginTop: 6, display: "flex", gap: 4, flexWrap: "wrap" }}>
                             {existing
                               ? <button
                                   onClick={() => setMgrReasonModal({ staffId: ns.staffId, ec: ns.ec, name: ns.name, branch: ns.branch, date: ns.ymd, existing })}
@@ -21324,6 +21329,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   Mark reason
                                 </button>
                             }
+                            {!existing && ns.staffId && (
+                              <button
+                                onClick={() => setManualMgrClockinModal({ staffId: ns.staffId, ec: ns.ec, name: ns.name, branch: ns.branch, ymd: ns.ymd, time: "09:00", note: "" })}
+                                title="Manually log a clock-in for this manager — use when they forgot to tap the kiosk"
+                                style={{ background: "#fff", color: "#15803D", border: "1px solid #86efac", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                                ✓ Manual clock-in
+                              </button>
+                            )}
                           </div>
                         </div>
                       );
@@ -21363,6 +21376,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 title="Tag a manager absence — for early sick calls, called-out days, etc."
                 style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "9px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: "0.03em", alignSelf: "flex-end" }}>
                 ➕ Tag absence
+              </button>
+              <button
+                onClick={() => setManualMgrClockinModal({
+                  staffId: "", ec: "", name: "",
+                  branch: mgrClockinFilterBranch !== "All" ? mgrClockinFilterBranch : ((managers.filter(m => !_hasStoreScope || scopedSalonNames.has(m.branch))[0] || {}).branch || ""),
+                  ymd: mgrClockinDay,
+                  time: "09:00",
+                  note: ""
+                })}
+                title="Manually log a clock-in for a manager who forgot to tap the kiosk. The entry shows up on Manager Coverage and feeds the same attendance views."
+                style={{ background: "#15803D", color: "#fff", border: "none", borderRadius: 8, padding: "9px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: "0.03em", alignSelf: "flex-end" }}>
+                ✓ Manual clock-in
               </button>
               <div style={{ fontSize: 12, color: "#831843", textAlign: "right" }}><div style={{ fontWeight: 700 }}>{mDayLabel(mgrClockinDay)}</div><strong>{filtered.length}</strong> clock-in record{filtered.length !== 1 ? "s" : ""}</div>
             </div>
@@ -23098,6 +23123,118 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <button onClick={() => setMgrCoverageGroupsEditor(null)} style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 9, padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>Cancel</button>
                   <button onClick={save} style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 9, padding: "9px 20px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>💾 Save groups</button>
                 </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Manual manager clock-in modal — logs a clock-in into the same
+          `clockins` table the kiosk writes to, so the entry flows
+          naturally into Manager Coverage's green dot, the no-show
+          banner check, and the dashboard manager-attendance tile. */}
+      {manualMgrClockinModal && (() => {
+        const m = manualMgrClockinModal;
+        const _close = () => setManualMgrClockinModal(null);
+        const scopedBranches = SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name));
+        const branchManagers = managers
+          .filter(mg => mg.branch === m.branch && !mg.leftDate && !mg._onMat)
+          .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+        const _set = (patch) => setManualMgrClockinModal({ ...m, ...patch });
+        const _todayY = (() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
+        const ymdMax = _todayY;
+        const _save = async () => {
+          if (!m.staffId) { _set({ _err: "Pick a manager." }); return; }
+          if (!m.ymd) { _set({ _err: "Pick a date." }); return; }
+          if (!m.time || !/^\d{2}:\d{2}$/.test(m.time)) { _set({ _err: "Pick a time (HH:MM)." }); return; }
+          if (!window.BOA_DB || !window.BOA_DB.recordManualManagerClockin) { _set({ _err: "Not connected." }); return; }
+          _set({ _saving: true, _err: "" });
+          try {
+            // Build a local-timezone ISO so the row's day-of-week / day-of-month
+            // matches what the ROM picked on the form.
+            const [yy, mm, dd] = m.ymd.split("-").map(Number);
+            const [hh, mn] = m.time.split(":").map(Number);
+            const local = new Date(yy, mm - 1, dd, hh, mn, 0, 0);
+            const tsIso = local.toISOString();
+            await window.BOA_DB.recordManualManagerClockin({
+              staffId: m.staffId,
+              branch: m.branch,
+              type: "in",
+              ts: tsIso,
+              note: m.note || null,
+              recordedBy: (currentUser && (currentUser.name || currentUser.pin)) || null
+            });
+            // Refresh the clock-in window so the new row hits every
+            // downstream view immediately. listRecentManagerClockins
+            // covers the configured window (default 31 days).
+            if (window.BOA_DB.listRecentManagerClockins) {
+              const fresh = await window.BOA_DB.listRecentManagerClockins(mgrClockinDays || 31);
+              setMgrClockinRows(fresh || []);
+            }
+            _close();
+          } catch (err) {
+            setManualMgrClockinModal(prev => prev ? { ...prev, _saving: false, _err: (err && err.message) || String(err) } : null);
+          }
+        };
+        const inp = { display: "block", width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff", boxSizing: "border-box" };
+        const lbl = { fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" };
+        return (
+          <div onClick={_close} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <div onClick={ev => ev.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "20px 22px", width: "100%", maxWidth: 480 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                <div>
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 19, color: "#831843", fontWeight: 700 }}>✓ Manual manager clock-in</div>
+                  <div style={{ fontSize: 12, color: "#9ca3af" }}>Use when a manager forgot to tap the kiosk. Writes into the same clock-in log — Manager Coverage gets the green dot, no-show banner drops them.</div>
+                </div>
+                <button onClick={_close} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
+              </div>
+
+              <div style={{ marginTop: 14 }}>
+                <label style={lbl}>BRANCH</label>
+                <select value={m.branch || ""} onChange={ev => _set({ branch: ev.target.value, staffId: "", ec: "", name: "" })} style={inp}>
+                  <option value="">— pick a branch —</option>
+                  {scopedBranches.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                </select>
+              </div>
+
+              <div style={{ marginTop: 12 }}>
+                <label style={lbl}>MANAGER</label>
+                <select value={m.staffId || ""} onChange={ev => {
+                  const mg = branchManagers.find(x => (x._id || x.id) === ev.target.value);
+                  _set({ staffId: ev.target.value, ec: (mg && mg.ec) || "", name: (mg && mg.name) || "" });
+                }} disabled={!m.branch} style={inp}>
+                  <option value="">{m.branch ? "— pick a manager —" : "Pick a branch first"}</option>
+                  {branchManagers.map(mg => <option key={mg._id || mg.id} value={mg._id || mg.id}>{mg.name} · {mg.role || "AM"}</option>)}
+                </select>
+              </div>
+
+              <div style={{ marginTop: 12, display: "flex", gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <label style={lbl}>DATE</label>
+                  <input type="date" value={m.ymd || ""} max={ymdMax} onChange={ev => ev.target.value && _set({ ymd: ev.target.value })} style={inp} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={lbl}>CLOCK-IN TIME</label>
+                  <input type="time" value={m.time || "09:00"} onChange={ev => _set({ time: ev.target.value })} style={inp} />
+                </div>
+              </div>
+
+              <div style={{ marginTop: 12 }}>
+                <label style={lbl}>NOTE (optional)</label>
+                <input value={m.note || ""} onChange={ev => _set({ note: ev.target.value })} placeholder="e.g. forgot to tap — verified arrival 9:00"
+                  style={{ ...inp, fontFamily: "inherit" }} />
+              </div>
+
+              {m._err && (
+                <div style={{ marginTop: 10, background: "#fee2e2", border: "1px solid #fca5a5", color: "#7f1d1d", borderRadius: 8, padding: "8px 10px", fontSize: 12 }}>{m._err}</div>
+              )}
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+                <button onClick={_close} disabled={!!m._saving} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", color: "#831843", fontWeight: 700, fontSize: 13, cursor: m._saving ? "not-allowed" : "pointer" }}>Cancel</button>
+                <button onClick={_save} disabled={!!m._saving}
+                  style={{ padding: "9px 20px", borderRadius: 9, border: "none", background: m._saving ? "#FBCFE8" : "#15803D", color: "#fff", fontWeight: 700, fontSize: 13, cursor: m._saving ? "not-allowed" : "pointer" }}>
+                  {m._saving ? "Logging…" : "💾 Log clock-in"}
+                </button>
               </div>
             </div>
           </div>
