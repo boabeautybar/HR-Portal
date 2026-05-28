@@ -6221,6 +6221,7 @@ const SETTINGS_TABS = [
   { t: "storeOpenings", l: "Store Openings", cat: "Operations", icon: "🔓" },
   { t: "movements", l: "Today's Movements", cat: "Operations", icon: "🔀" },
   { t: "dailyTasks", l: "Daily Tasks", cat: "Operations", icon: "📋" },
+  { t: "cashups", l: "Cash Ups", cat: "Operations", icon: "💰" },
   { t: "attendance", l: "Attendance / Payroll", cat: "Payroll", icon: "📕" },
   { t: "payrollProgress", l: "Payroll Progress", cat: "Payroll", icon: "📊" },
   { t: "alerts", l: "Alerts", cat: "Insights", icon: "🔔" },
@@ -8296,7 +8297,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Map of tab → category name. Kept in sync with the groups list below.
   const NAV_TAB_TO_CATEGORY = {
     onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
-    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", storeOpenings: "Operations", movements: "Operations",
+    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations",
     attendance: "Payroll", payrollProgress: "Payroll",
     alerts: "Insights", activity: "Insights",
     settings: "Admin"
@@ -8329,6 +8330,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [checkinFilterBranch, setCheckinFilterBranch] = useState("All");
   const [checkinDay, setCheckinDay] = useState(() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); });   // viewer day (one day at a time)
   const [proofModal, setProofModal] = useState(null); // { loading, dataUrl, name, ymd, status }
+
+  // ── Cash Ups viewer state ─────────────────────────────────────────
+  // Aggregated daily cash-up rows from every kiosk. ROMs see only their
+  // stores via the existing scope bar; everyone else sees all branches
+  // and can filter by region.
+  const [cashupRows, setCashupRows] = useState([]);
+  const [cashupDays, setCashupDays] = useState(14);
+  const [cashupRegion, setCashupRegion] = useState("all");
+  const [cashupBranchFilter, setCashupBranchFilter] = useState("All");
+  const [cashupSlipModal, setCashupSlipModal] = useState(null);
+  useEffect(() => {
+    if (tab !== "cashups") return;
+    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
+    let cancelled = false;
+    window.BOA_DB.listRecentCashups(cashupDays).then(rows => {
+      if (!cancelled) setCashupRows(rows || []);
+    });
+    return () => { cancelled = true; };
+  }, [tab, cashupDays]);
 
   // ── Onboarding / Off-boarding state ────────────────────────────────
   const [obList, setObList] = useState([]);           // joiner records (3-month contract signers)
@@ -10156,6 +10176,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "storeOpenings", l: "🔓 Store Openings" },
                   { t: "movements", l: "🔀 Today's Movements" },
                   { t: "dailyTasks", l: "📋 Daily Tasks" },
+                  { t: "cashups", l: "💰 Cash Ups" },
                   {
                     t: "mgrPlanner", l: "🧩 Manager Planner",
                     isActive: tab === "recruitment" && recruitSubTab === "mgrRecruit" && mgrSubTab === "planner",
@@ -20753,6 +20774,187 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <button onClick={() => setMgrClockinPhoto(null)} style={{ background: "none", border: "none", fontSize: 24, color: "#9CA3AF", cursor: "pointer", lineHeight: 1 }}>×</button>
                   </div>
                   <img src={mgrClockinPhoto.url} alt="full selfie" style={{ width: "100%", borderRadius: 8, display: "block" }} />
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {tab === "cashups" && (() => {
+        // Build a region lookup from SALONS so we can colour-code each row
+        // and apply the optional region filter. Unknown branches (e.g.
+        // newly-added stores not yet on a region) fall back to "—".
+        const regionByBranch = {};
+        SALONS.forEach(s => { regionByBranch[s.name] = s.region || ""; });
+        const regionMeta = {};
+        REGIONS.forEach(r => { regionMeta[r.key] = r; });
+
+        const _fmtMoney = (n) => "R " + (Number(n) || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+        const _fmtDate = (ymd) => { try { return new Date(ymd + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" }); } catch (_) { return ymd; } };
+
+        const filtered = cashupRows.filter(r => {
+          if (_hasStoreScope && !scopedSalonNames.has(r.branch)) return false;
+          if (cashupRegion !== "all" && regionByBranch[r.branch] !== cashupRegion) return false;
+          if (cashupBranchFilter !== "All" && r.branch !== cashupBranchFilter) return false;
+          return true;
+        });
+
+        // Roll-up stats across the visible window.
+        const totals = filtered.reduce((acc, r) => {
+          acc.revenue += Number(r.total) || 0;
+          acc.cash    += Number(r.cash)  || 0;
+          acc.banked  += Number(r.amount_banked) || 0;
+          acc.tips    += Number(r.card_tips) || 0;
+          acc.manualD += Number(r.manual_discounts) || 0;
+          return acc;
+        }, { revenue: 0, cash: 0, banked: 0, tips: 0, manualD: 0 });
+
+        // Stores that took cash but didn't capture banking confirmation —
+        // the biggest reason this page exists.
+        const bankingGaps = filtered.filter(r =>
+          Number(r.cash) > 0 && r.cash_banked !== true && r.cash_banked !== false
+        );
+        const notBanked = filtered.filter(r => r.cash_banked === false);
+
+        const branchesInScope = SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name));
+        const visibleBranches = cashupRegion === "all"
+          ? branchesInScope
+          : branchesInScope.filter(s => s.region === cashupRegion);
+
+        const rangeOpts = [{ v: 1, l: "Today" }, { v: 3, l: "Last 3 days" }, { v: 7, l: "Last 7 days" }, { v: 14, l: "Last 14 days" }, { v: 30, l: "Last 30 days" }, { v: 60, l: "Last 60 days" }];
+
+        const statCard = (label, value, sub) => (
+          <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 12, padding: "10px 14px", minWidth: 140 }}>
+            <div style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.08em", textTransform: "uppercase" }}>{label}</div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: "#831843", marginTop: 2 }}>{value}</div>
+            {sub && <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>{sub}</div>}
+          </div>
+        );
+
+        return (
+          <div style={{ padding: "0 24px" }}>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700, marginBottom: 4 }}>💰 Cash Ups</div>
+              <div style={{ fontSize: 12, color: "#F472B6" }}>Every store's daily cash-up, banking slip and manual-discount reasons in one place. Submitted from the BOA Check-in kiosk → Cash Up screen.</div>
+            </div>
+
+            {renderScopeBar({ marginBottom: 12 })}
+
+            <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "12px 14px", border: "1px solid #FBCFE8", marginBottom: 14, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>REGION</label>
+                <select value={cashupRegion} onChange={e => { setCashupRegion(e.target.value); setCashupBranchFilter("All"); }} style={{ padding: "7px 11px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff", minWidth: 160 }}>
+                  <option value="all">All regions</option>
+                  {REGIONS.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
+                </select>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>BRANCH</label>
+                <select value={cashupBranchFilter} onChange={e => setCashupBranchFilter(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff", minWidth: 160 }}>
+                  <option value="All">All branches</option>
+                  {visibleBranches.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                </select>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>RANGE</label>
+                <select value={cashupDays} onChange={e => setCashupDays(Number(e.target.value))} style={{ padding: "7px 11px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff", minWidth: 140 }}>
+                  {rangeOpts.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
+                </select>
+              </div>
+              <div style={{ flex: 1 }} />
+              <div style={{ fontSize: 12, color: "#831843", textAlign: "right" }}>
+                <div style={{ fontWeight: 700 }}>{filtered.length} cash-up{filtered.length !== 1 ? "s" : ""}</div>
+                <div style={{ fontSize: 11, color: "#9ca3af" }}>across {new Set(filtered.map(r => r.branch)).size} store{new Set(filtered.map(r => r.branch)).size !== 1 ? "s" : ""}</div>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+              {statCard("Total Revenue", _fmtMoney(totals.revenue))}
+              {statCard("Cash Taken", _fmtMoney(totals.cash), _fmtMoney(totals.banked) + " banked")}
+              {statCard("Card Tips", _fmtMoney(totals.tips))}
+              {statCard("Manual Discounts", _fmtMoney(totals.manualD))}
+              {statCard("Banking Gaps", String(bankingGaps.length), notBanked.length + " explicitly not banked")}
+            </div>
+
+            {(bankingGaps.length > 0 || notBanked.length > 0) && (
+              <div style={{ background: "#fef3c7", border: "1px solid #fcd34d", borderRadius: 11, padding: "12px 16px", marginBottom: 14 }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: "#92400e", marginBottom: 6 }}>⚠ Banking attention required</div>
+                <div style={{ fontSize: 12, color: "#92400e" }}>
+                  {bankingGaps.length > 0 && <div><strong>{bankingGaps.length}</strong> cash-up{bankingGaps.length === 1 ? "" : "s"} took cash but didn't capture a banking answer (legacy rows or skipped on submit).</div>}
+                  {notBanked.length > 0 && <div><strong>{notBanked.length}</strong> cash-up{notBanked.length === 1 ? "" : "s"} marked "Not banked" — follow up with the store.</div>}
+                </div>
+              </div>
+            )}
+
+            {filtered.length === 0 ? (
+              <div style={{ background: "#FFFFFF", borderRadius: 11, border: "1px dashed #FBCFE8", padding: "30px 20px", textAlign: "center", color: "#9ca3af" }}>No cash-ups submitted in this window.</div>
+            ) : (
+              <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 13, overflow: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: "#1f2937" }}>
+                  <thead>
+                    <tr style={{ background: "#FCE7F3", color: "#831843", textAlign: "left" }}>
+                      {["Date","Branch","Region","Yoco","Yoco Link","Cash","Tips","Vouchers","Gift card","Discounts","Manual Disc.","Total","Banking","Signed by"].map(h => (
+                        <th key={h} style={{ padding: "8px 10px", fontSize: 11, fontWeight: 800, letterSpacing: "0.04em", borderBottom: "1px solid #FBCFE8", whiteSpace: "nowrap" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map(r => {
+                      const rk = regionByBranch[r.branch];
+                      const rm = regionMeta[rk] || { short: "—", color: "#6b7280", bg: "#f3f4f6" };
+                      let banking;
+                      if (r.cash_banked === true) {
+                        banking = (
+                          <span>
+                            <strong style={{ color: "#14532d" }}>Yes</strong>
+                            {" · "}{_fmtMoney(r.amount_banked)}
+                            {r.banking_ref && <> · ref <em>{r.banking_ref}</em></>}
+                            {r.banked_by   && <> · by <em>{r.banked_by}</em></>}
+                            {r.banking_slip && <> · <a href="#" onClick={e => { e.preventDefault(); setCashupSlipModal({ url: r.banking_slip, branch: r.branch, date: r.date }); }} style={{ color: "#BE185D", fontWeight: 700 }}>slip</a></>}
+                          </span>
+                        );
+                      } else if (r.cash_banked === false) {
+                        banking = <span style={{ background: "#fee2e2", color: "#7f1d1d", padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>Not banked</span>;
+                      } else if (Number(r.cash) > 0) {
+                        banking = <span style={{ background: "#fef3c7", color: "#92400e", padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>Missing</span>;
+                      } else {
+                        banking = <span style={{ color: "#9ca3af" }}>—</span>;
+                      }
+                      const cell = { padding: "7px 10px", borderBottom: "1px solid #FCE7F3", whiteSpace: "nowrap" };
+                      const cellNum = { ...cell, textAlign: "right", fontVariantNumeric: "tabular-nums" };
+                      return (
+                        <tr key={r.id || (r.branch + "|" + r.date + "|" + r.created_at)}>
+                          <td style={cell}>{_fmtDate(r.date)}</td>
+                          <td style={{ ...cell, fontWeight: 700, color: "#831843" }}>{r.branch}</td>
+                          <td style={cell}><span style={{ background: rm.bg, color: rm.color, padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>{rm.short}</span></td>
+                          <td style={cellNum}>{_fmtMoney(r.yoco)}</td>
+                          <td style={cellNum}>{_fmtMoney(r.yoco_link)}</td>
+                          <td style={cellNum}>{_fmtMoney(r.cash)}</td>
+                          <td style={cellNum}>{_fmtMoney(r.card_tips)}</td>
+                          <td style={cellNum}>{_fmtMoney(r.vouchers)}</td>
+                          <td style={cellNum}>{_fmtMoney(r.gift_card)}</td>
+                          <td style={cellNum}>{_fmtMoney(r.discounts)}</td>
+                          <td style={cellNum} title={r.manual_discount_reason || ""}>{_fmtMoney(r.manual_discounts)}{r.manual_discount_reason ? " ⓘ" : ""}</td>
+                          <td style={{ ...cellNum, fontWeight: 800, color: "#831843" }}>{_fmtMoney(r.total)}</td>
+                          <td style={cell}>{banking}</td>
+                          <td style={cell}>{r.signed_by}{r.notes ? <span title={r.notes} style={{ marginLeft: 6, color: "#9ca3af" }}>📝</span> : null}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {cashupSlipModal && (
+              <div onClick={() => setCashupSlipModal(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, padding: 16 }}>
+                <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 14, padding: 16, maxWidth: 720, width: "100%" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                    <div style={{ fontWeight: 800, color: "#831843" }}>🏦 Banking slip — {cashupSlipModal.branch} · {_fmtDate(cashupSlipModal.date)}</div>
+                    <button onClick={() => setCashupSlipModal(null)} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
+                  </div>
+                  <img src={cashupSlipModal.url} alt="banking slip" style={{ width: "100%", borderRadius: 8, display: "block" }} />
                 </div>
               </div>
             )}
