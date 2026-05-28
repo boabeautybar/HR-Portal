@@ -700,6 +700,23 @@
     return res.data || [];
   }
 
+  // Soft-delete a cash-up so the store can submit a fresh one for the
+  // same date from the kiosk. The kiosk's todaysCashup() filters
+  // archived rows out, so a reopened row falls off the "already
+  // submitted" check and the empty form is shown again. The archived
+  // row stays in the table for audit — finance can still see what was
+  // originally entered and who reopened it.
+  async function reopenCashup(id, actorName) {
+    if (!id) throw new Error("Missing cashup id");
+    var res = await sb.from("cashups")
+      .update({ archived_at: new Date().toISOString(), reopened_by: (actorName || "").trim() || null })
+      .eq("id", id)
+      .select()
+      .maybeSingle();
+    if (res.error) { console.error("reopenCashup:", res.error); throw res.error; }
+    return res.data;
+  }
+
   // portal's spot-check viewer. Photo + GPS lives in app_state under
   // boa_mgrclockin_meta_<id> — fetch lazily per row.
   async function listRecentManagerClockins(daysBack) {
@@ -1347,6 +1364,7 @@
 
     // Cash-ups (from the kiosk)
     listRecentCashups: listRecentCashups,
+    reopenCashup: reopenCashup,
 
     // Manager clock-ins viewer
     listRecentManagerClockins: listRecentManagerClockins,
