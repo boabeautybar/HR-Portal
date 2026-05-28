@@ -22040,7 +22040,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const clockedIn = ec && ymd && _clockedInByEcYmd[String(ec).trim()] && _clockedInByEcYmd[String(ec).trim()][ymd];
           const isPast = ymd && ymd < (function () { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
           const _dragDraggable = _isSrcDraggable(cellVal);
-          const tdStyle = { background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", cursor: ec ? (_dragDraggable ? "grab" : "pointer") : "default" };
+          const tdStyle = { background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", cursor: ec ? (_dragDraggable ? "grab" : "pointer") : "default", userSelect: "none", WebkitUserSelect: "none" };
           const _dh = _dragHandlers(cellVal, branchName, mgrYm, ec, dom, ymd, mgrName);
           const onCellClick = () => openCellEditor(branchName, mgrYm, dom, ymd, ec, mgrName, role, cellVal || "");
           // Blank / empty day cell — also clickable so a ROM can add a shift.
