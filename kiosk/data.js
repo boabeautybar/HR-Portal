@@ -459,6 +459,7 @@
     var c = client(); if (!c) return null;
     var res = await c.from("cashups").select("*")
       .eq("branch", branch()).eq("date", todayStr())
+      .is("archived_at", null)
       .order("created_at", { ascending: false }).limit(1);
     if (res.error) { console.error("todaysCashup:", res.error); return null; }
     return (res.data || [])[0] || null;
@@ -474,7 +475,6 @@
       card_tips: Number(payload.card_tips) || 0,
       vouchers:  Number(payload.vouchers)  || 0,
       gift_card: Number(payload.gift_card) || 0,
-      discounts: Number(payload.discounts) || 0,
       manual_discounts:       Number(payload.manual_discounts) || 0,
       manual_discount_reason: (payload.manual_discount_reason || "").trim() || null,
       notes: (payload.notes || "").trim() || null,

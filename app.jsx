@@ -20800,8 +20800,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           return true;
         });
 
-        // Roll-up stats across the visible window.
-        const totals = filtered.reduce((acc, r) => {
+        // Roll-up stats across the visible window. Reopened rows have
+        // been superseded by a newer entry and shouldn't be double-counted.
+        const activeRows = filtered.filter(r => !r.archived_at);
+        const totals = activeRows.reduce((acc, r) => {
           acc.revenue += Number(r.total) || 0;
           acc.cash    += Number(r.cash)  || 0;
           acc.banked  += Number(r.amount_banked) || 0;
@@ -20812,10 +20814,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         // Stores that took cash but didn't capture banking confirmation —
         // the biggest reason this page exists.
-        const bankingGaps = filtered.filter(r =>
+        const bankingGaps = activeRows.filter(r =>
           Number(r.cash) > 0 && r.cash_banked !== true && r.cash_banked !== false
         );
-        const notBanked = filtered.filter(r => r.cash_banked === false);
+        const notBanked = activeRows.filter(r => r.cash_banked === false);
 
         const branchesInScope = SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name));
         const visibleBranches = cashupRegion === "all"
@@ -20870,7 +20872,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             </div>
 
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-              {statCard("Total Revenue", _fmtMoney(totals.revenue))}
+              {statCard("Total Revenue", _fmtMoney(totals.revenue), totals.tips > 0 ? "+ " + _fmtMoney(totals.tips) + " tips (not included)" : null)}
               {statCard("Cash Taken", _fmtMoney(totals.cash), _fmtMoney(totals.banked) + " banked")}
               {statCard("Card Tips", _fmtMoney(totals.tips))}
               {statCard("Manual Discounts", _fmtMoney(totals.manualD))}
@@ -20894,7 +20896,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: "#1f2937" }}>
                   <thead>
                     <tr style={{ background: "#FCE7F3", color: "#831843", textAlign: "left" }}>
-                      {["Date","Branch","Region","Yoco","Yoco Link","Cash","Tips","Vouchers","Gift card","Discounts","Manual Disc.","Total","Banking","Signed by"].map(h => (
+                      {["Date","Branch","Region","Yoco","Yoco Link","Cash","Tips","Vouchers","Gift card","Manual Disc.","Total","Banking","Signed by","Action"].map(h => (
                         <th key={h} style={{ padding: "8px 10px", fontSize: 11, fontWeight: 800, letterSpacing: "0.04em", borderBottom: "1px solid #FBCFE8", whiteSpace: "nowrap" }}>{h}</th>
                       ))}
                     </tr>
@@ -20921,24 +20923,51 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       } else {
                         banking = <span style={{ color: "#9ca3af" }}>—</span>;
                       }
-                      const cell = { padding: "7px 10px", borderBottom: "1px solid #FCE7F3", whiteSpace: "nowrap" };
+                      const isArchived = !!r.archived_at;
+                      const rowMute = isArchived ? { opacity: 0.55 } : null;
+                      const strikeIfArchived = isArchived ? { textDecoration: "line-through" } : null;
+                      const cell = { padding: "7px 10px", borderBottom: "1px solid #FCE7F3", whiteSpace: "nowrap", ...rowMute };
                       const cellNum = { ...cell, textAlign: "right", fontVariantNumeric: "tabular-nums" };
                       return (
-                        <tr key={r.id || (r.branch + "|" + r.date + "|" + r.created_at)}>
-                          <td style={cell}>{_fmtDate(r.date)}</td>
+                        <tr key={r.id || (r.branch + "|" + r.date + "|" + r.created_at)} style={isArchived ? { background: "#fafafa" } : null}>
+                          <td style={cell}>{_fmtDate(r.date)}{isArchived && <span style={{ marginLeft: 6, background: "#e5e7eb", color: "#4b5563", padding: "1px 6px", borderRadius: 5, fontSize: 10, fontWeight: 700 }}>REOPENED</span>}</td>
                           <td style={{ ...cell, fontWeight: 700, color: "#831843" }}>{r.branch}</td>
                           <td style={cell}><span style={{ background: rm.bg, color: rm.color, padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>{rm.short}</span></td>
-                          <td style={cellNum}>{_fmtMoney(r.yoco)}</td>
-                          <td style={cellNum}>{_fmtMoney(r.yoco_link)}</td>
-                          <td style={cellNum}>{_fmtMoney(r.cash)}</td>
-                          <td style={cellNum}>{_fmtMoney(r.card_tips)}</td>
-                          <td style={cellNum}>{_fmtMoney(r.vouchers)}</td>
-                          <td style={cellNum}>{_fmtMoney(r.gift_card)}</td>
-                          <td style={cellNum}>{_fmtMoney(r.discounts)}</td>
-                          <td style={cellNum} title={r.manual_discount_reason || ""}>{_fmtMoney(r.manual_discounts)}{r.manual_discount_reason ? " ⓘ" : ""}</td>
-                          <td style={{ ...cellNum, fontWeight: 800, color: "#831843" }}>{_fmtMoney(r.total)}</td>
+                          <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.yoco)}</td>
+                          <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.yoco_link)}</td>
+                          <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.cash)}</td>
+                          <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.card_tips)}</td>
+                          <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.vouchers)}</td>
+                          <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.gift_card)}</td>
+                          <td style={{ ...cellNum, ...strikeIfArchived }} title={r.manual_discount_reason || ""}>{_fmtMoney(r.manual_discounts)}{r.manual_discount_reason ? " ⓘ" : ""}</td>
+                          <td style={{ ...cellNum, fontWeight: 800, color: "#831843", ...strikeIfArchived }}>
+                            {_fmtMoney(r.total)}
+                            {Number(r.card_tips) > 0 && (
+                              <div style={{ fontSize: 10, fontWeight: 600, color: "#9ca3af", letterSpacing: "0.02em" }}>+ {_fmtMoney(r.card_tips)} tips</div>
+                            )}
+                          </td>
                           <td style={cell}>{banking}</td>
-                          <td style={cell}>{r.signed_by}{r.notes ? <span title={r.notes} style={{ marginLeft: 6, color: "#9ca3af" }}>📝</span> : null}</td>
+                          <td style={cell}>{r.signed_by}{r.notes ? <span title={r.notes} style={{ marginLeft: 6, color: "#9ca3af" }}>📝</span> : null}{isArchived && r.reopened_by ? <div style={{ fontSize: 10, color: "#9ca3af" }}>reopened by {r.reopened_by}</div> : null}</td>
+                          <td style={cell}>
+                            {isArchived ? (
+                              <span style={{ color: "#9ca3af", fontSize: 11 }}>—</span>
+                            ) : (
+                              <button
+                                onClick={async () => {
+                                  if (!window.confirm("Reopen this cash-up?\n\nStore: " + r.branch + "\nDate: " + r.date + "\nTotal: " + _fmtMoney(r.total) + "\n\nThe store will be able to submit a new cash-up for this day. The current entry stays in the history as 'Reopened'.")) return;
+                                  try {
+                                    await window.BOA_DB.reopenCashup(r.id, currentUser?.name || "");
+                                    const fresh = await window.BOA_DB.listRecentCashups(cashupDays);
+                                    setCashupRows(fresh || []);
+                                  } catch (e) {
+                                    window.alert("Couldn't reopen: " + ((e && e.message) || e));
+                                  }
+                                }}
+                                title="Reopen — let the store submit again for this day"
+                                style={{ background: "#fff", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+                              >↻ Reopen</button>
+                            )}
+                          </td>
                         </tr>
                       );
                     })}
