@@ -475,6 +475,8 @@
       vouchers:  Number(payload.vouchers)  || 0,
       gift_card: Number(payload.gift_card) || 0,
       discounts: Number(payload.discounts) || 0,
+      manual_discounts:       Number(payload.manual_discounts) || 0,
+      manual_discount_reason: (payload.manual_discount_reason || "").trim() || null,
       notes: (payload.notes || "").trim() || null,
       signed_by: (payload.signedBy || "").trim(),
       cash_banked:   (payload.cash_banked === true || payload.cash_banked === false) ? payload.cash_banked : null,

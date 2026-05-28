@@ -2146,6 +2146,8 @@
           row("Vouchers purchased",  existing.vouchers) +
           row("Gift card redemption", existing.gift_card) +
           row("Discounts",           -Math.abs(existing.discounts || 0), true) +
+          row("Manual Discounts",    -Math.abs(existing.manual_discounts || 0), true) +
+          (existing.manual_discount_reason ? '<div class="cashup-row"><span>Reason</span><span>' + esc(existing.manual_discount_reason) + '</span></div>' : "") +
           row("Total",               existing.total, false, true) +
           (existing.notes ? '<div class="cashup-notes">"' + esc(existing.notes) + '"</div>' : "") +
           (existing.cash_banked === true || existing.cash_banked === false
@@ -2174,6 +2176,11 @@
         amountField("vouchers",   "🎟️ Vouchers purchased") +
         amountField("gift_card",  "🎁 Gift card redemption") +
         amountField("discounts",  "− Discounts") +
+        amountField("manual_discounts", "− Manual Discounts") +
+        '<div id="cu-manual-reason-wrap" style="display:none;margin-top:-4px;margin-bottom:10px">' +
+          '<label class="lbl" for="cu-manual-reason">Reason for manual discount <span style="color:#b53">required</span></label>' +
+          '<textarea id="cu-manual-reason" class="input" rows="2" placeholder="e.g. service complaint, staff family, manager approval…"></textarea>' +
+        '</div>' +
 
         '<div class="cashup-total-box">' +
           '<div><div class="lbl">Total Revenue</div>' +
@@ -2216,12 +2223,13 @@
         '<div id="cu-result"></div>' +
       '</div>';
 
-    var ids = ["yoco", "yoco_link", "cash", "card_tips", "vouchers", "gift_card", "discounts", "amount_banked"];
+    var ids = ["yoco", "yoco_link", "cash", "card_tips", "vouchers", "gift_card", "discounts", "manual_discounts", "amount_banked"];
     ids.forEach(function (id) {
       var el = document.getElementById("cu-" + id);
       if (el) el.addEventListener("input", recalc);
     });
     document.getElementById("cu-name").addEventListener("input", recalc);
+    document.getElementById("cu-manual-reason").addEventListener("input", recalc);
     document.getElementById("cu-banking-ref").addEventListener("input", recalc);
     document.getElementById("cu-banked-by").addEventListener("input", recalc);
     document.getElementById("cu-banked-yes").addEventListener("change", onBankedToggle);
@@ -2264,6 +2272,8 @@
           vouchers:   val("vouchers"),
           gift_card:  val("gift_card"),
           discounts:  val("discounts"),
+          manual_discounts:       val("manual_discounts"),
+          manual_discount_reason: document.getElementById("cu-manual-reason").value,
           notes:      document.getElementById("cu-notes").value,
           signedBy:   document.getElementById("cu-name").value,
           cash_banked:   cashBanked,
@@ -2297,8 +2307,9 @@
         ct = val("card_tips"),
         v  = val("vouchers"),
         gc = val("gift_card"),
-        d  = val("discounts");
-    var t = Math.max(0, y + yl + c + v + gc - d);
+        d  = val("discounts"),
+        md = val("manual_discounts");
+    var t = Math.max(0, y + yl + c + v + gc - d - md);
     document.getElementById("cu-total").textContent = fmtMoney(t);
     var parts = [];
     if (y)  parts.push("Yoco "       + fmtMoney(y));
@@ -2308,9 +2319,20 @@
     if (v)  parts.push("Vouchers "   + fmtMoney(v));
     if (gc) parts.push("Gift card "  + fmtMoney(gc));
     if (d)  parts.push("− Disc "     + fmtMoney(d));
+    if (md) parts.push("− Manual "   + fmtMoney(md));
     document.getElementById("cu-brk").textContent = parts.length ? parts.join(" · ") : "Enter amounts above";
     var hasAmt = (y > 0 || yl > 0 || c > 0 || v > 0 || gc > 0);
     var name   = document.getElementById("cu-name").value.trim();
+
+    var reasonWrap = document.getElementById("cu-manual-reason-wrap");
+    var manualReason = document.getElementById("cu-manual-reason").value.trim();
+    var manualOk = true;
+    if (md > 0) {
+      reasonWrap.style.display = "";
+      manualOk = manualReason.length >= 3;
+    } else {
+      reasonWrap.style.display = "none";
+    }
 
     var bankingBox = document.getElementById("cu-banking");
     var bankingOk  = true;
@@ -2334,7 +2356,7 @@
       bankingBox.style.display = "none";
     }
 
-    document.getElementById("cu-submit").disabled = !(hasAmt && name.length >= 2 && bankingOk);
+    document.getElementById("cu-submit").disabled = !(hasAmt && name.length >= 2 && bankingOk && manualOk);
   }
 
   // ---------------- helpers ----------------

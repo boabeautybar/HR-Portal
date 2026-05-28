@@ -1140,7 +1140,7 @@
     document.getElementById("cu-body").innerHTML =
       '<table class="data-table">' +
       '<thead><tr>' +
-      '<th>Date</th><th>Yoco</th><th>Yoco Link</th><th>Cash</th><th>Card Tips</th><th>Vouchers purchased</th><th>Gift card</th><th>Discounts</th><th>Total</th><th>Banking</th><th>Signed by</th>' +
+      '<th>Date</th><th>Yoco</th><th>Yoco Link</th><th>Cash</th><th>Card Tips</th><th>Vouchers purchased</th><th>Gift card</th><th>Discounts</th><th>Manual Disc.</th><th>Total</th><th>Banking</th><th>Signed by</th>' +
       '</tr></thead>' +
       '<tbody>' +
       rows.map(function (r) {
@@ -1168,6 +1168,7 @@
           '<td>' + fmtMoney(r.vouchers) + '</td>' +
           '<td>' + fmtMoney(r.gift_card) + '</td>' +
           '<td>' + fmtMoney(r.discounts) + '</td>' +
+          '<td>' + fmtMoney(r.manual_discounts) + (r.manual_discount_reason ? ' <span class="pill pill-mute" title="' + esc(r.manual_discount_reason) + '">reason</span>' : '') + '</td>' +
           '<td><strong>' + fmtMoney(r.total) + '</strong></td>' +
           '<td>' + banking + '</td>' +
           '<td>' + esc(r.signed_by) + (r.notes ? ' <span class="pill pill-mute" title="' + esc(r.notes) + '">notes</span>' : "") + '</td>' +
