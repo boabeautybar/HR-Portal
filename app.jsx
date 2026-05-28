@@ -21646,7 +21646,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           { bg: "#831843", fg: "#FFFFFF" },   // 9  pink-deep
           { bg: "#15803D", fg: "#FFFFFF" },   // 10 green-dark
           { bg: "#6D28D9", fg: "#FFFFFF" },   // 11 violet
-          { bg: "#0E7490", fg: "#FFFFFF" },   // 12 cyan-deep
+          { bg: "#86198F", fg: "#FFFFFF" },   // 12 plum (swapped from cyan-deep — too close to Riverlands)
           { bg: "#7F1D1D", fg: "#FFFFFF" },   // 13 maroon
           { bg: "#365314", fg: "#FFFFFF" },   // 14 lime-dark
           { bg: "#7E22CE", fg: "#FFFFFF" },   // 15 purple
@@ -21656,7 +21656,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           { bg: "#047857", fg: "#FFFFFF" },   // 19 emerald-deep
           { bg: "#C2410C", fg: "#FFFFFF" },   // 20 orange
           { bg: "#1D4ED8", fg: "#FFFFFF" },   // 21 blue
-          { bg: "#86198F", fg: "#FFFFFF" },   // 22 plum
+          { bg: "#0E7490", fg: "#FFFFFF" },   // 22 cyan-deep (moved from slot 12)
           { bg: "#166534", fg: "#FFFFFF" },   // 23 forest
           { bg: "#0369A1", fg: "#FFFFFF" },   // 24 ocean
           { bg: "#854D0E", fg: "#FFFFFF" },   // 25 dark-mustard
