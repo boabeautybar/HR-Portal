@@ -21685,9 +21685,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const out = { ...(base || {}) };
           Object.entries(draftBranch).forEach(([ec, dRow]) => {
             const baseRow = { ...(out[ec] || {}) };
-            Object.entries(dRow).forEach(([dom, v]) => {
-              if (v) { baseRow[dom] = v; delete baseRow[String(dom)]; }
-              else { delete baseRow[dom]; delete baseRow[String(dom)]; }
+            Object.entries(dRow).forEach(([key, v]) => {
+              if (v) baseRow[key] = v;
+              else delete baseRow[key];
             });
             if (Object.keys(baseRow).length === 0) delete out[ec];
             else out[ec] = baseRow;
