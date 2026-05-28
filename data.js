@@ -682,6 +682,24 @@
 
   // ---------- Manager clock-ins viewer ----------
   // Recent manager clock-in rows (joined with staff name) for the HR
+  // Daily cash-up rows from the kiosk. The kiosk writes one row per
+  // branch/date into the `cashups` table. The HR portal reads this for
+  // the Cash Ups page so finance / regional ops can monitor banking
+  // status across all stores. We pull everything across branches —
+  // region & branch filtering happens client-side using SALONS.
+  async function listRecentCashups(daysBack) {
+    var d = new Date(); d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - (daysBack || 14));
+    var since = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    var res = await sb.from("cashups").select("*")
+      .gte("date", since)
+      .order("date", { ascending: false })
+      .order("created_at", { ascending: false })
+      .limit(5000);
+    if (res.error) { console.error("listRecentCashups:", res.error); return []; }
+    return res.data || [];
+  }
+
   // portal's spot-check viewer. Photo + GPS lives in app_state under
   // boa_mgrclockin_meta_<id> — fetch lazily per row.
   async function listRecentManagerClockins(daysBack) {
@@ -1326,6 +1344,9 @@
     // Manager personal PINs
     loadManagerPins: loadManagerPins,
     saveManagerPins: saveManagerPins,
+
+    // Cash-ups (from the kiosk)
+    listRecentCashups: listRecentCashups,
 
     // Manager clock-ins viewer
     listRecentManagerClockins: listRecentManagerClockins,
