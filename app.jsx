@@ -182,13 +182,11 @@ function compressImageDataUrl(file, maxDim, quality) {
 // Codes map straight onto STAT entries on the attendance grid so the
 // reason renders the same colour & label that the tech statuses use.
 const MGR_REASON_OPTIONS = [
-  { code: "sick_n", label: "🤒 Sick + note",     needsProof: true,  payroll: "Paid sick" },
-  { code: "sick",   label: "🤒 Sick NO note",    needsProof: false, payroll: "Unpaid sick" },
-  { code: "frl",    label: "👪 FRL + proof",     needsProof: true,  payroll: "Paid Family Responsibility Leave" },
-  { code: "al",     label: "🏖 Annual leave",     needsProof: false, payroll: "Paid annual" },
-  { code: "absent", label: "🚫 Absent (no reason)", needsProof: false, payroll: "Unpaid" },
-  { code: "no",     label: "⛔ NO SHOW",         needsProof: false, payroll: "Unpaid" },
-  { code: "off",    label: "🛌 Off (schedule error — should not be working)", needsProof: false, payroll: "None" }
+  { code: "sick_n", label: "🤒 Sick + note",  needsProof: true,  needsNote: false, payroll: "Paid sick" },
+  { code: "sick",   label: "🤒 Sick NO note", needsProof: false, needsNote: false, payroll: "Unpaid sick" },
+  { code: "frl",    label: "👪 FRL + proof",  needsProof: true,  needsNote: false, payroll: "Paid Family Responsibility Leave" },
+  { code: "absent", label: "🚫 Absent",       needsProof: false, needsNote: true,  payroll: "Unpaid" },
+  { code: "no",     label: "⛔ NO SHOW",      needsProof: false, needsNote: false, payroll: "Unpaid" }
 ];
 // Payroll cycle (25th → 24th) helper. Used to lock editing for closed
 // cycles so payroll figures don't shift after a run.
@@ -208,7 +206,12 @@ function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose,
   const [saving, setSaving] = useState(false);
   const opt = MGR_REASON_OPTIONS.find(o => o.code === status);
   const needsProof = !!(opt && opt.needsProof);
-  const canSave = !locked && !!status && (!needsProof || !!proof);
+  const needsNote  = !!(opt && opt.needsNote);
+  const noteTrim   = (note || "").trim();
+  const canSave = !locked
+    && !!status
+    && (!needsProof || !!proof)
+    && (!needsNote || noteTrim.length >= 3);
 
   async function handleFile(e) {
     setProofErr("");
@@ -281,10 +284,12 @@ function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose,
         )}
 
         <div style={{ marginTop: 14 }}>
-          <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>NOTE (optional)</label>
+          <label style={{ fontSize: 10, fontWeight: 800, color: needsNote ? "#7f1d1d" : "#F472B6", letterSpacing: "0.06em" }}>
+            {needsNote ? "REASON (required for Absent)" : "NOTE (optional)"}
+          </label>
           <textarea value={note} disabled={locked} onChange={e => setNote(e.target.value)} rows={2}
-            placeholder="e.g. spoke to her Monday, flu — back Wed"
-            style={{ display: "block", width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+            placeholder={needsNote ? "Why was the manager absent? e.g. unauthorised, family emergency, no contact…" : "e.g. spoke to her Monday, flu — back Wed"}
+            style={{ display: "block", width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px solid " + (needsNote && noteTrim.length < 3 ? "#fca5a5" : "#FBCFE8"), fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
         </div>
 
         {existing && (
@@ -11258,6 +11263,104 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 ))}
               </div>
 
+              {/* ── SECTION: MANAGER ABSENCES — ROM ACTION REQUIRED ──
+                  For ROMs (and anyone else with the dashboard open), a live
+                  to-do list of managers who are scheduled to work today but
+                  haven't clocked in and don't yet have a reason recorded.
+                  Honours the dashboard scope toggle: in "mine" mode it shows
+                  only the ROM's allocated stores; in "all" mode it also
+                  surfaces other regions so cover decisions can happen here.
+                  After 11:30 local time the title blinks to nudge action. */}
+              {(() => {
+                const _t = new Date();
+                const _todayYmd = _t.getFullYear() + "-" + String(_t.getMonth() + 1).padStart(2, "0") + "-" + String(_t.getDate()).padStart(2, "0");
+                if (dashTodayMgrClockinEcs == null) return null;     // still loading
+                const clockedIn = new Set();
+                (dashTodayMgrClockinEcs || []).forEach(e => clockedIn.add(String(e).trim()));
+                const onLeaveEcs = new Set();
+                (leaveRecs || []).forEach(lv => {
+                  if (lv && lv.ec && lv.startDate && lv.endDate && _todayYmd >= lv.startDate && _todayYmd <= lv.endDate) onLeaveEcs.add(String(lv.ec).trim());
+                });
+                const mgrByEc = {};
+                (enrichedManagers || []).forEach(m => { if (m && m.ec) mgrByEc[String(m.ec).trim()] = m; });
+                const taggedKeys = new Set((mgrDayStatuses || []).map(s => s.staff_id + "|" + s.date));
+                const pending = [];
+                for (const branchName in dashSchedMgrsByBranch) {
+                  if (!scopedSalonNames.has(branchName)) continue;
+                  for (const ecRaw of (dashSchedMgrsByBranch[branchName] || [])) {
+                    const ec = String(ecRaw).trim();
+                    if (clockedIn.has(ec)) continue;
+                    if (onLeaveEcs.has(ec)) continue;
+                    const m = mgrByEc[ec];
+                    if (!m) continue;
+                    if (m.onMat || m.offboarded || (m.leftDate && _todayYmd > m.leftDate)) continue;
+                    const sid = m._id || m.id;
+                    if (sid && taggedKeys.has(sid + "|" + _todayYmd)) continue;
+                    pending.push({ ec, name: m.name, branch: branchName, staffId: sid });
+                  }
+                }
+                if (pending.length === 0) {
+                  // Quiet success state — only show when there are scheduled
+                  // managers worth confirming so the card isn't a no-op chip.
+                  const anyScheduled = Object.values(dashSchedMgrsByBranch || {}).some(arr => (arr || []).length > 0);
+                  if (!anyScheduled) return null;
+                  return (
+                    <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 13, padding: "12px 16px", marginTop: 14, color: "#14532d", fontSize: 13, fontWeight: 700 }}>
+                      ✅ All manager absences explained for today.
+                    </div>
+                  );
+                }
+                // Group by branch for compact display.
+                pending.sort((a, b) => (a.branch || "").localeCompare(b.branch || "") || (a.name || "").localeCompare(b.name || ""));
+                const byBranch = {};
+                pending.forEach(p => { (byBranch[p.branch] = byBranch[p.branch] || []).push(p); });
+                const branchKeys = Object.keys(byBranch).sort();
+                // Past 11:30 → blink to nudge action.
+                const minsNow = _t.getHours() * 60 + _t.getMinutes();
+                const urgent = minsNow >= 11 * 60 + 30;
+                const palette = urgent
+                  ? { bg: "#fee2e2", border: "#fca5a5", text: "#7f1d1d", chip: "#fff", chipBorder: "#fca5a5" }
+                  : { bg: "#fef3c7", border: "#fcd34d", text: "#92400e", chip: "#fff", chipBorder: "#fcd34d" };
+                return (
+                  <div style={{ background: palette.bg, border: "1px solid " + palette.border, borderRadius: 13, padding: "14px 16px", marginTop: 14 }}>
+                    <style>{`@keyframes _romAbsBlink { 0%,49%{opacity:1} 50%,100%{opacity:0.35} }`}</style>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+                      <div style={{ fontSize: 14, fontWeight: 800, color: palette.text, letterSpacing: "0.04em", textTransform: "uppercase", animation: urgent ? "_romAbsBlink 1s infinite" : "none" }}>
+                        {urgent ? "🚨" : "📌"} Manager absences · action required
+                      </div>
+                      <div style={{ fontSize: 12, color: palette.text, fontWeight: 700 }}>
+                        {pending.length} manager{pending.length === 1 ? "" : "s"} scheduled but no clock-in &amp; no reason yet
+                        {urgent && " · past 11:30 — please tag now"}
+                      </div>
+                      <div style={{ flex: 1 }} />
+                      <button
+                        onClick={() => tryChangeTab("mgrclockins")}
+                        style={{ background: "#fff", color: palette.text, border: "1px solid " + palette.border, borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
+                        Open Manager Check-ins →
+                      </button>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 8 }}>
+                      {branchKeys.map(b => (
+                        <div key={b} style={{ background: palette.chip, border: "1px solid " + palette.chipBorder, borderRadius: 9, padding: "8px 10px" }}>
+                          <div style={{ fontSize: 11, fontWeight: 800, color: palette.text, letterSpacing: "0.04em", marginBottom: 4 }}>📍 {b}</div>
+                          {byBranch[b].map(p => (
+                            <div key={p.ec} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "5px 0", borderTop: "1px dashed #FBCFE8" }}>
+                              <div style={{ fontSize: 12.5, fontWeight: 700, color: "#831843" }}>{p.name}</div>
+                              <button
+                                onClick={() => p.staffId && setMgrReasonModal({ staffId: p.staffId, ec: p.ec, name: p.name, branch: p.branch, date: _todayYmd, existing: null })}
+                                disabled={!p.staffId}
+                                style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: p.staffId ? "pointer" : "not-allowed", opacity: p.staffId ? 1 : 0.5 }}>
+                                Mark reason
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* ── SECTION: HR TASKS (Mocked Phase 3) ── hidden for ROM
                   users — onboarding trial-review actions are HR's job,
                   not something a Regional Ops Manager would action.
@@ -20908,6 +21011,109 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ fontSize: 12, color: "#F472B6" }}>Spot-check manager attendance. Each row shows the selfie, GPS distance from store, and timestamp. Auto-out (red) means they forgot to clock out — talk to them.</div>
             </div>
 
+            {/* No-show / not-in-yet banner — rendered at the top so it's the
+                first thing the ROM sees on this tab. Past days render as a
+                hard red NO-SHOW banner; today before 11:00 renders as a
+                softer yellow "not in yet — may still clock in" banner;
+                today AT or AFTER 11:00 escalates to an "ABSENT" framing
+                because by then the manager really should have clocked in.
+                ROMs can tag a reason in either state. Future days skipped. */}
+            {(() => {
+              const isFuture = mgrClockinDay > _mTodayYmd;
+              if (isFuture) return null;
+              const isToday = mgrClockinDay === _mTodayYmd;
+              // After 11:00 a "not in yet" today is functionally an absence —
+              // escalate the wording (and styling) so the ROM treats it that
+              // way, but stop short of the past-day red until end of day.
+              const _now = new Date();
+              const past11 = isToday && (_now.getHours() * 60 + _now.getMinutes()) >= 11 * 60;
+              // Set of ECs that clocked IN on the selected day. Trim ECs on
+              // both sides so a stray whitespace can't desync the no-show
+              // check against the actual clock-in records.
+              const clockedIn = new Set();
+              mgrClockinRows.forEach(r => {
+                if (!r.staff || !r.staff.employee_code) return;
+                if (r.type === "in" && mLocalYmd(r.ts) === mgrClockinDay) clockedIn.add(String(r.staff.employee_code).trim());
+              });
+              const ymd = mgrClockinDay;
+              // Schedule grid is keyed by either YMD or day-of-month — match
+              // the dashboard's read pattern and try both. Manager schedules
+              // use START-month ym (day > 24 = current month, ≤ 24 = prev).
+              const _ymdParts = ymd.split("-").map(Number);
+              const _dom = _ymdParts[2];
+              const ymOf = (() => { let y = _ymdParts[0], m = _ymdParts[1]; if (_ymdParts[2] <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + String(m).padStart(2, "0"); })();
+              const branchesToCheck = mgrClockinFilterBranch === "All"
+                ? SALONS.map(s => s.name)
+                : [mgrClockinFilterBranch];
+              // Anyone on annual leave for THIS day shouldn't count as a no-show.
+              const _onLeaveEcs = new Set();
+              (leaveRecs || []).forEach(lv => {
+                if (lv && lv.ec && lv.startDate && lv.endDate && ymd >= lv.startDate && ymd <= lv.endDate) _onLeaveEcs.add(String(lv.ec).trim());
+              });
+              const noShows = [];
+              for (const branchName of branchesToCheck) {
+                const grid = mgrClockinSchedCache[branchName + "|" + ymOf];
+                if (!grid) continue;        // schedule not loaded yet
+                for (const m of managers.filter(mm => mm.branch === branchName)) {
+                  if (_onLeaveEcs.has(String(m.ec || "").trim())) continue;    // on annual leave
+                  const cell = (grid[m.ec]) ? (grid[m.ec][ymd] || grid[m.ec][_dom]) : undefined;
+                  if (cell !== "W" && cell !== "WL" && cell !== "WE" && cell !== "WM" && cell !== "WB" && cell !== "E") continue;     // not scheduled to work
+                  if (clockedIn.has(String(m.ec || "").trim())) continue;              // they did clock in
+                  noShows.push({ ec: m.ec, name: m.name, branch: branchName, ymd, staffId: m._id || m.id });
+                }
+              }
+              noShows.sort((a, b) => a.branch.localeCompare(b.branch) || a.name.localeCompare(b.name));
+              if (noShows.length === 0) return null;
+              // Lookup of ROM-marked reasons keyed by staff_id + date.
+              const statByKey = {};
+              (mgrDayStatuses || []).forEach(s => { statByKey[s.staff_id + "|" + s.date] = s; });
+              const statLabel = code => (MGR_REASON_OPTIONS.find(o => o.code === code) || { label: code }).label;
+              // Styling: soft yellow before 11:00 today, hard red after 11:00
+              // or for past days (functionally absent either way).
+              const hardRed = !isToday || past11;
+              const palette = hardRed
+                ? { bg: "#fee2e2", border: "#fca5a5", text: "#7f1d1d", cardBorder: "#fca5a5" }
+                : { bg: "#fef3c7", border: "#fcd34d", text: "#92400e", cardBorder: "#fcd34d" };
+              const headerLabel = !isToday
+                ? "⚠ " + noShows.length + " NO-SHOW" + (noShows.length === 1 ? "" : "S") + " — scheduled to work but never clocked in"
+                : past11
+                  ? "🚨 " + noShows.length + " ABSENT — scheduled to work, no clock-in past 11:00. Tag a reason."
+                  : "⏳ " + noShows.length + " NOT IN YET — may still clock in. Tag a reason if you already know they won't come (e.g. early sick call).";
+              return (
+                <div style={{ background: palette.bg, border: "1px solid " + palette.border, borderRadius: 11, padding: "12px 16px", marginBottom: 14 }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: palette.text, marginBottom: 6 }}>{headerLabel}</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 6 }}>
+                    {noShows.slice(0, 30).map((ns, i) => {
+                      const existing = statByKey[(ns.staffId || "") + "|" + ns.ymd];
+                      return (
+                        <div key={i} style={{ background: "#fff", borderRadius: 7, padding: "7px 10px", border: "1px solid " + palette.cardBorder, fontSize: 12 }}>
+                          <div style={{ fontWeight: 700, color: palette.text }}>{ns.name}</div>
+                          <div style={{ fontSize: 11, color: palette.text, opacity: 0.85 }}>{ns.branch} · {new Date(ns.ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", weekday: "short" })}</div>
+                          <div style={{ marginTop: 6 }}>
+                            {existing
+                              ? <button
+                                  onClick={() => setMgrReasonModal({ staffId: ns.staffId, ec: ns.ec, name: ns.name, branch: ns.branch, date: ns.ymd, existing })}
+                                  title={(existing.note || "") + (existing.recorded_by ? "\n— " + existing.recorded_by : "")}
+                                  style={{ background: "#dcfce7", color: "#166534", border: "1px solid #86efac", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                                  {statLabel(existing.status)}{existing.proof ? " 📎" : ""} ✎
+                                </button>
+                              : <button
+                                  onClick={() => ns.staffId && setMgrReasonModal({ staffId: ns.staffId, ec: ns.ec, name: ns.name, branch: ns.branch, date: ns.ymd, existing: null })}
+                                  disabled={!ns.staffId}
+                                  style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: ns.staffId ? "pointer" : "not-allowed", opacity: ns.staffId ? 1 : 0.5 }}>
+                                  Mark reason
+                                </button>
+                            }
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {noShows.length > 30 && <div style={{ alignSelf: "center", fontSize: 12, color: palette.text, fontStyle: "italic" }}>…and {noShows.length - 30} more</div>}
+                  </div>
+                </div>
+              );
+            })()}
+
             {renderScopeBar({ marginBottom: 12 })}
 
             <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "12px 14px", border: "1px solid #FBCFE8", marginBottom: 14, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
@@ -21081,100 +21287,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       🟦 {surpriseClockIns.length} manager{surpriseClockIns.length === 1 ? "" : "s"} clocked in but were not scheduled to work today: <strong>{surpriseClockIns.map(s => s.m.name + " (" + (s.cell || "—") + ")").join(", ")}</strong>. Check the schedule.
                     </div>
                   )}
-                </div>
-              );
-            })()}
-
-            {/* No-show / not-in-yet detection: managers scheduled to work on
-                the SELECTED day who haven't clocked IN. Past days render as a
-                hard red NO-SHOW banner; today renders as a softer yellow
-                "not in yet — may still clock in" banner so ROMs can tag
-                early sick calls without waiting for the day to end. Future
-                days are skipped. */}
-            {(() => {
-              const isFuture = mgrClockinDay > _mTodayYmd;
-              if (isFuture) return null;
-              const isToday = mgrClockinDay === _mTodayYmd;
-              // Set of ECs that clocked IN on the selected day.
-              // Trim ECs on both sides so a stray whitespace can't desync
-              // the no-show check against the actual clock-in records.
-              const clockedIn = new Set();
-              mgrClockinRows.forEach(r => {
-                if (!r.staff || !r.staff.employee_code) return;
-                if (r.type === "in" && mLocalYmd(r.ts) === mgrClockinDay) clockedIn.add(String(r.staff.employee_code).trim());
-              });
-              const ymd = mgrClockinDay;
-              // Schedule grid is keyed by either YMD or day-of-month —
-              // match the dashboard's read pattern and try both. Manager
-              // schedules use START-month ym (day > 24 = current month,
-              // day ≤ 24 = previous month).
-              const _ymdParts = ymd.split("-").map(Number);
-              const _dom = _ymdParts[2];
-              const ymOf = (() => { let y = _ymdParts[0], m = _ymdParts[1]; if (_ymdParts[2] <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + String(m).padStart(2, "0"); })();
-              const branchesToCheck = mgrClockinFilterBranch === "All"
-                ? SALONS.map(s => s.name)
-                : [mgrClockinFilterBranch];
-              // Anyone on annual leave for THIS day shouldn't count as a no-show.
-              const _onLeaveEcs = new Set();
-              (leaveRecs || []).forEach(lv => {
-                if (lv && lv.ec && lv.startDate && lv.endDate && ymd >= lv.startDate && ymd <= lv.endDate) _onLeaveEcs.add(String(lv.ec).trim());
-              });
-              const noShows = [];
-              for (const branchName of branchesToCheck) {
-                const grid = mgrClockinSchedCache[branchName + "|" + ymOf];
-                if (!grid) continue;        // schedule not loaded yet
-                for (const m of managers.filter(mm => mm.branch === branchName)) {
-                  if (_onLeaveEcs.has(String(m.ec || "").trim())) continue;    // on annual leave
-                  const cell = (grid[m.ec]) ? (grid[m.ec][ymd] || grid[m.ec][_dom]) : undefined;
-                  if (cell !== "W" && cell !== "WL" && cell !== "WE" && cell !== "WM" && cell !== "WB" && cell !== "E") continue;     // not scheduled to work
-                  if (clockedIn.has(String(m.ec || "").trim())) continue;              // they did clock in
-                  noShows.push({ ec: m.ec, name: m.name, branch: branchName, ymd, staffId: m._id || m.id });
-                }
-              }
-              noShows.sort((a, b) => a.branch.localeCompare(b.branch) || a.name.localeCompare(b.name));
-              if (noShows.length === 0) return null;
-              // Lookup of ROM-marked reasons keyed by staff_id + date.
-              const statByKey = {};
-              (mgrDayStatuses || []).forEach(s => { statByKey[s.staff_id + "|" + s.date] = s; });
-              const statLabel = code => (MGR_REASON_OPTIONS.find(o => o.code === code) || { label: code }).label;
-              // Softer styling for today (still may arrive) vs hard NO-SHOW for past days.
-              const palette = isToday
-                ? { bg: "#fef3c7", border: "#fcd34d", text: "#92400e", cardBorder: "#fcd34d" }
-                : { bg: "#fee2e2", border: "#fca5a5", text: "#7f1d1d", cardBorder: "#fca5a5" };
-              const headerLabel = isToday
-                ? "⏳ " + noShows.length + " NOT IN YET — may still clock in. Tag a reason if you already know they won't come (e.g. early sick call)."
-                : "⚠ " + noShows.length + " NO-SHOW" + (noShows.length === 1 ? "" : "S") + " — scheduled to work but never clocked in";
-              return (
-                <div style={{ background: palette.bg, border: "1px solid " + palette.border, borderRadius: 11, padding: "12px 16px", marginBottom: 14 }}>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: palette.text, marginBottom: 6 }}>{headerLabel}</div>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 6 }}>
-                    {noShows.slice(0, 30).map((ns, i) => {
-                      const existing = statByKey[(ns.staffId || "") + "|" + ns.ymd];
-                      return (
-                        <div key={i} style={{ background: "#fff", borderRadius: 7, padding: "7px 10px", border: "1px solid " + palette.cardBorder, fontSize: 12 }}>
-                          <div style={{ fontWeight: 700, color: palette.text }}>{ns.name}</div>
-                          <div style={{ fontSize: 11, color: palette.text, opacity: 0.85 }}>{ns.branch} · {new Date(ns.ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", weekday: "short" })}</div>
-                          <div style={{ marginTop: 6 }}>
-                            {existing
-                              ? <button
-                                  onClick={() => setMgrReasonModal({ staffId: ns.staffId, ec: ns.ec, name: ns.name, branch: ns.branch, date: ns.ymd, existing })}
-                                  title={(existing.note || "") + (existing.recorded_by ? "\n— " + existing.recorded_by : "")}
-                                  style={{ background: "#dcfce7", color: "#166534", border: "1px solid #86efac", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
-                                  {statLabel(existing.status)}{existing.proof ? " 📎" : ""} ✎
-                                </button>
-                              : <button
-                                  onClick={() => ns.staffId && setMgrReasonModal({ staffId: ns.staffId, ec: ns.ec, name: ns.name, branch: ns.branch, date: ns.ymd, existing: null })}
-                                  disabled={!ns.staffId}
-                                  style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: ns.staffId ? "pointer" : "not-allowed", opacity: ns.staffId ? 1 : 0.5 }}>
-                                  Mark reason
-                                </button>
-                            }
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {noShows.length > 30 && <div style={{ alignSelf: "center", fontSize: 12, color: palette.text, fontStyle: "italic" }}>…and {noShows.length - 30} more</div>}
-                  </div>
                 </div>
               );
             })()}
