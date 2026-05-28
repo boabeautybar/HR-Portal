@@ -22058,17 +22058,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </td>
             );
           }
-          // Cross-store loan cell at home branch — show "↪ Destination".
+          // Cross-store loan cell at home branch — render as an "AWAY"
+          // hatch so it's obvious this manager isn't covering the home
+          // store that day. The destination branch's row shows them
+          // working normally; only the home side reads as away.
           if (cellVal === "loan_out") {
             const lo = _loansByEcYmd[String(ec).trim() + "|" + ymd];
             const draftLo = (mgrCoverageDraftLoans || []).find(l => String(l.ec).trim() === String(ec).trim() && l.date === ymd && l._op !== "remove");
             const destLbl = (draftLo && draftLo.toBranch) || (lo && lo.toBranch) || "Other store";
             return (
-              <td key={key} {..._dh} onClick={onCellClick} title={"Loaned to " + destLbl + " on this day"} style={tdStyle}>
-                <div style={{ background: "#1E3A8A", color: "#fff", borderRadius: 6, padding: "8px 6px", textAlign: "left", lineHeight: 1.25, minHeight: 56, boxShadow: "inset 0 -2px 0 rgba(0,0,0,0.18)" }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, opacity: 0.85 }}>↪ Loaned to</div>
-                  <div style={{ fontSize: 12, fontWeight: 800, marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{destLbl}</div>
-                  <div style={{ fontSize: 9, fontWeight: 700, opacity: 0.85, marginTop: 1 }}>{(role || "").toUpperCase()}</div>
+              <td key={key} {..._dh} onClick={onCellClick} title={"Not covering " + branchName + " — on loan to " + destLbl + " this day"} style={{ ...tdStyle, textAlign: "center" }}>
+                <div style={{
+                  background: "repeating-linear-gradient(135deg, #f3f4f6, #f3f4f6 5px, #e5e7eb 5px, #e5e7eb 10px)",
+                  color: "#1e3a8a",
+                  border: "1px dashed #93c5fd",
+                  borderRadius: 6,
+                  padding: "6px 6px",
+                  lineHeight: 1.15,
+                  minHeight: 56,
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center"
+                }}>
+                  <div style={{ fontSize: 9, fontWeight: 800, color: "#6b7280", letterSpacing: "0.08em" }}>AWAY</div>
+                  <div style={{ fontSize: 11, fontWeight: 800, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>↪ {destLbl}</div>
+                  <div style={{ fontSize: 8, fontWeight: 700, color: "#6b7280", marginTop: 1, letterSpacing: "0.04em" }}>on loan</div>
                 </div>
               </td>
             );
