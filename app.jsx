@@ -20927,6 +20927,90 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ fontSize: 12, color: "#831843", textAlign: "right" }}><div style={{ fontWeight: 700 }}>{mDayLabel(mgrClockinDay)}</div><strong>{filtered.length}</strong> clock-in record{filtered.length !== 1 ? "s" : ""}</div>
             </div>
 
+            {/* Today's manager roster — one row per scoped manager with a
+                live status (clocked in / not in yet / pre-tagged reason).
+                Independent of the manager schedule cache so it always
+                renders, and gives the ROM a clear "who's where right now"
+                view of every store they cover. */}
+            {mgrClockinDay === _mTodayYmd && (() => {
+              // Clock-in lookup for today, keyed by ec.
+              const inByEc = {};
+              mgrClockinRows.forEach(r => {
+                if (!r.staff || !r.staff.employee_code) return;
+                if (r.type !== "in") return;
+                if (mLocalYmd(r.ts) !== mgrClockinDay) return;
+                if (!inByEc[r.staff.employee_code] || r.ts < inByEc[r.staff.employee_code].ts) {
+                  inByEc[r.staff.employee_code] = r;
+                }
+              });
+              const statByKey = {};
+              (mgrDayStatuses || []).forEach(s => { statByKey[s.staff_id + "|" + s.date] = s; });
+              const statLabel = code => (MGR_REASON_OPTIONS.find(o => o.code === code) || { label: code }).label;
+              const scopedMgrs = managers
+                .filter(m => !_hasStoreScope || scopedSalonNames.has(m.branch))
+                .filter(m => mgrClockinFilterBranch === "All" || m.branch === mgrClockinFilterBranch)
+                .filter(m => !m.onMat && !m.leftDate)
+                .slice()
+                .sort((a, b) => (a.branch || "").localeCompare(b.branch || "") || (a.name || "").localeCompare(b.name || ""));
+              if (scopedMgrs.length === 0) return null;
+              // Group by branch.
+              const byBranch = {};
+              scopedMgrs.forEach(m => { (byBranch[m.branch] = byBranch[m.branch] || []).push(m); });
+              const branchNames = Object.keys(byBranch).sort();
+              const totalIn = scopedMgrs.filter(m => inByEc[m.ec]).length;
+              const totalTagged = scopedMgrs.filter(m => statByKey[(m._id || m.id) + "|" + mgrClockinDay]).length;
+              const totalPending = scopedMgrs.length - totalIn - totalTagged;
+              return (
+                <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 13, padding: "12px 14px", marginBottom: 14 }}>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: "#831843", letterSpacing: "0.04em", textTransform: "uppercase" }}>👥 Today's manager roster</div>
+                    <div style={{ fontSize: 12, color: "#6b7280" }}>
+                      <strong style={{ color: "#14532d" }}>{totalIn}</strong> in · <strong style={{ color: "#7f1d1d" }}>{totalPending}</strong> not in yet · <strong style={{ color: "#92400e" }}>{totalTagged}</strong> tagged · {scopedMgrs.length} total
+                    </div>
+                  </div>
+                  {branchNames.map(b => (
+                    <div key={b} style={{ marginBottom: 10 }}>
+                      <div style={{ fontSize: 11, fontWeight: 800, color: "#831843", marginBottom: 4, letterSpacing: "0.05em" }}>📍 {b}</div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 6 }}>
+                        {byBranch[b].map(m => {
+                          const sid = m._id || m.id;
+                          const tagged = statByKey[sid + "|" + mgrClockinDay];
+                          const clockin = inByEc[m.ec];
+                          const inTime = clockin ? new Date(clockin.ts).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }) : null;
+                          let pill;
+                          if (clockin) {
+                            pill = <span style={{ background: "#dcfce7", color: "#14532d", padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>✅ IN {inTime}</span>;
+                          } else if (tagged) {
+                            pill = <button
+                              onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: mgrClockinDay, existing: tagged })}
+                              title={(tagged.note || "") + (tagged.recorded_by ? "\n— " + tagged.recorded_by : "")}
+                              style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                              {statLabel(tagged.status)}{tagged.proof ? " 📎" : ""} ✎
+                            </button>;
+                          } else {
+                            pill = <button
+                              onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: mgrClockinDay, existing: null })}
+                              style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                              ⏳ Not in yet · Mark reason
+                            </button>;
+                          }
+                          return (
+                            <div key={sid} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, background: clockin ? "#f0fdf4" : (tagged ? "#fffbeb" : "#fef2f2"), border: "1px solid " + (clockin ? "#bbf7d0" : (tagged ? "#fde68a" : "#fecaca")), borderRadius: 8, padding: "7px 10px" }}>
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ fontSize: 12.5, fontWeight: 700, color: "#831843", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.name}</div>
+                                <div style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{m.ec} {m.role ? "· " + m.role : ""}</div>
+                              </div>
+                              <div>{pill}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+
             {/* No-show / not-in-yet detection: managers scheduled to work on
                 the SELECTED day who haven't clocked IN. Past days render as a
                 hard red NO-SHOW banner; today renders as a softer yellow
