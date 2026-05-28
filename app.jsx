@@ -21644,7 +21644,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             isToday: ymdToStr(d) === todayYmd,
             isWeekend: i >= 5,
             // Start-month ym for this date — used to look up schedule cache.
-            mgrYm: (() => { let y = d.getFullYear(), m = d.getMonth() + 1; if (d.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + _p2(m); })()
+            mgrYm: (() => { let y = d.getFullYear(), m = d.getMonth() + 1; if (d.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + _p2(m); })(),
+            dow: d.getDay()      // 0=Sun, 1=Mon, …, 6=Sat — used by shiftTimes for per-branch + per-DOW hour tables
           });
         }
         const lastDay = weekDays[6];
@@ -21706,21 +21707,89 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Cell code → suffix the role-default shift times. Lets us show
         // "9:00a - 6:30p" inside a manager's working block the way
         // Connecteam does, without needing per-shift data on each cell.
-        const shiftTimes = (role, code) => {
+        // Resolve the visible shift hours for a cell. Times match the
+        // banners on the Manager Schedule editor (app.jsx:20086-20134)
+        // and are written in 24-hour format the same way the banners do
+        // (08:00 - 17:00, 09:00 - 18:00, etc.) so the coverage view
+        // reads the same as the schedule.
+        //   dow: 0=Sun, 1=Mon, …, 6=Sat (matches Date#getDay)
+        const shiftTimes = (role, code, branch, dow) => {
           const r = (role || "").toUpperCase();
-          if (r === "SM" || r === "SSM") {
-            if (code === "WL") return "8:30a - 5:30p";
-            if (code === "WE") return "7:30a - 4:30p";
-            if (code === "WM") return "8:00a - 1:00p";
-            return "8:00a - 5:00p";
+          const isSM = r === "SM" || r === "SSM";
+          const _b = branch || "";
+
+          // Sandown / Table Bay share the same Mon-Fri split (and
+          // Table Bay extends it to Saturday). SM is a flat 08:00-17:00
+          // every working day.
+          if (_b === "Sandown" || _b === "Table Bay") {
+            if (isSM) return "08:00 - 17:00";
+            if (dow === 0) {                                // Sunday
+              if (code === "WE") return "08:00 - 17:00";
+              if (code === "WL") return "09:00 - 18:00";
+              return "09:00 - 18:00";
+            }
+            if (dow === 6 && _b === "Sandown") {            // Sandown Saturday
+              if (code === "WE") return "08:00 - 17:00";
+              if (code === "WL") return "10:00 - 19:00";
+              return "10:00 - 19:00";
+            }
+            // Mon-Fri (and Mon-Sat for Table Bay)
+            if (code === "WE") return "08:00 - 17:00";
+            if (code === "WM") return "09:00 - 18:00";
+            if (code === "WL") return "11:00 - 20:00";
+            return "11:00 - 20:00";
           }
-          // AM and others default
-          if (code === "WL") return "10:00a - 7:00p";
-          if (code === "WE") return "8:30a - 6:00p";
-          if (code === "WM") return "9:00a - 1:00p";
-          if (code === "WB") return "8:00a - 7:00p";
-          if (code === "E")  return "9:00a - 6:30p";
-          return "9:00a - 6:30p";
+
+          // Riverlands — Mon-Fri split, Sat/Sun single shift.
+          if (_b === "Riverlands") {
+            if (dow === 6) return "09:00 - 18:00";          // Sat single WE
+            if (dow === 0) return "08:00 - 17:00";          // Sun single WE
+            if (isSM) return "08:00 - 17:00";
+            if (code === "WE") return "09:00 - 18:00";      // AM opener
+            if (code === "WB") return "08:00 - 17:00";      // 4+ bonus opener
+            if (code === "WL") return "10:00 - 19:00";
+            return "10:00 - 19:00";
+          }
+
+          // Ballito / Mall of the South — SM-only WE opener, AM closers.
+          if (_b === "Ballito" || _b === "Mall of the South") {
+            if (isSM) return "08:00 - 17:00";
+            if (dow === 0) return "08:00 - 17:00";          // Sunday single WE
+            if (code === "WE") return "08:00 - 17:00";
+            if (code === "WM") return "09:00 - 18:00";
+            if (code === "WL") return "10:00 - 19:00";
+            return "10:00 - 19:00";
+          }
+
+          // Fourways — store hours differ; SM rotates opener/closer.
+          if (_b === "Fourways") {
+            if (isSM) {
+              if (code === "WL") return "11:00 - 20:00";
+              return "08:00 - 17:00";
+            }
+            if (dow === 0) {                                // Sunday (store 09-19)
+              if (code === "WE") return "08:00 - 17:00";
+              if (code === "WL") return "10:00 - 19:00";
+              return "10:00 - 19:00";
+            }
+            if (code === "WM") return "10:00 - 19:00";
+            if (code === "WL") return "11:00 - 20:00";
+            return "11:00 - 20:00";
+          }
+
+          // Generic stores — generic SM 08-17 / AM 09:30-18:30 hours.
+          if (isSM) {
+            if (code === "WL") return "08:30 - 17:30";
+            if (code === "WE") return "07:30 - 16:30";
+            if (code === "WM") return "08:00 - 13:00";
+            return "08:00 - 17:00";
+          }
+          if (code === "WL") return "10:00 - 19:00";
+          if (code === "WE") return "08:30 - 18:00";
+          if (code === "WM") return "09:00 - 13:00";
+          if (code === "WB") return "08:00 - 19:00";
+          if (code === "E")  return "09:00 - 18:30";
+          return "09:30 - 18:30";
         };
         const isWorking = (v) => v === "W" || v === "WE" || v === "WL" || v === "WM" || v === "WB" || v === "E";
 
@@ -21815,6 +21884,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
           return out;
         })();
+        // AMs on an active 3-month SM trial are treated as SMs on the
+        // coverage cells too — mirroring what the Schedule tab does
+        // when it builds allMgrs (app.jsx:18706-18712). So their
+        // working blocks pick the SM hours from shiftTimes and the
+        // role badge reads "SM · WE / WL / …" rather than "AM · …".
+        const _smTrialEcs = new Set((smTrialList || []).filter(t => t && t.status === "active" && t.ec).map(t => t.ec));
+        const _effectiveRole = (mg) => (mg && mg.role === "AM" && mg.ec && _smTrialEcs.has(mg.ec)) ? "SM" : (mg && mg.role);
+
         // Per-EC manager lookup so we can join schedule-grid keys back
         // to a manager record even when the schedule lists them at a
         // store that isn't their home branch (e.g. Tanita scheduled at
@@ -21908,11 +21985,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const nm = String(mg.name || "").trim().toLowerCase();
           return !!(nm && _matNames.has(nm));
         };
+        // Order within a store: SSM → SM (or AM-on-SM-trial) → AM → other,
+        // then by name. Maternity-leave managers always pinned at the
+        // bottom regardless of role.
+        const _roleRank = (r) => r === "SSM" ? 0 : r === "SM" ? 1 : r === "AM" ? 2 : 3;
         Object.keys(mgrByBranch).forEach(b => mgrByBranch[b].sort((a, b) => {
           const am = _isOnMat(a) ? 1 : 0;
           const bm = _isOnMat(b) ? 1 : 0;
           if (am !== bm) return am - bm;
-          return (a.role === "SM" ? 0 : a.role === "AM" ? 1 : 2) - (b.role === "SM" ? 0 : b.role === "AM" ? 1 : 2)
+          return _roleRank(_effectiveRole(a)) - _roleRank(_effectiveRole(b))
             || (a.name || "").localeCompare(b.name || "");
         }));
 
@@ -22197,7 +22278,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }
           };
         };
-        const renderCell = (cellVal, key, branchName, role, ymd, ec, isGuest, mgrYm, mgrName, dom) => {
+        const renderCell = (cellVal, key, branchName, role, ymd, ec, isGuest, mgrYm, mgrName, dom, dow) => {
           const clockedIn = ec && ymd && _clockedInByEcYmd[String(ec).trim()] && _clockedInByEcYmd[String(ec).trim()][ymd];
           const isPast = ymd && ymd < (function () { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
           const _dragDraggable = _isSrcDraggable(cellVal);
@@ -22245,7 +22326,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Working cell → solid branch-coloured block with times + role.
           if (isWorking(cellVal)) {
             const pal = branchColour(branchName);
-            const time = shiftTimes(role, cellVal);
+            const time = shiftTimes(role, cellVal, branchName, dow);
             const subtle = cellVal !== "W" ? { borderLeft: "4px solid rgba(255,255,255,0.5)" } : {};
             // Was this day tagged with an absence reason by the ROM? If so
             // the block desaturates and a coloured pill at the top calls
@@ -22449,12 +22530,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   return (
                                     <tr key={m.ec}>
                                       <td style={{ padding: "6px 14px", fontWeight: 700, color: "#831843", fontSize: 12, borderBottom: "1px solid #FCE7F3" }}>
-                                        {m.role === "SM" ? "👑 " : m.role === "AM" ? "⭐ " : ""}{m.name}
-                                        <span style={{ marginLeft: 6, fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{m.role || ""}</span>
+                                        {_effectiveRole(m) === "SSM" ? "💎 " : _effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}
+                                        <span style={{ marginLeft: 6, fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{_effectiveRole(m) || ""}{m.role === "AM" && _effectiveRole(m) === "SM" ? " (trial)" : ""}</span>
                                       </td>
                                       {weekDays.map(d => {
                                         const v = readWithFallback(b, m.ec, d);
-                                        return renderCell(v, m.ec + "-" + d.ymd, b, m.role, d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom);
+                                        return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow);
                                       })}
                                     </tr>
                                   );
@@ -22493,15 +22574,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       return rows.map(({ m, b, r }) => (
                         <tr key={m.ec + "-" + b}>
                           <td style={{ padding: "6px 14px", borderBottom: "1px solid #FCE7F3" }}>
-                            <div style={{ fontWeight: 700, color: "#831843", fontSize: 12.5 }}>{m.role === "SM" ? "👑 " : m.role === "AM" ? "⭐ " : ""}{m.name}</div>
+                            <div style={{ fontWeight: 700, color: "#831843", fontSize: 12.5 }}>{_effectiveRole(m) === "SSM" ? "💎 " : _effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}</div>
                             <div style={{ fontSize: 10, color: "#9ca3af" }}>
                               📍 {b} <span style={{ background: r.bg, color: r.color, padding: "1px 6px", borderRadius: 4, fontWeight: 700, marginLeft: 4 }}>{r.label}</span>
-                              <span style={{ marginLeft: 6, fontFamily: "monospace" }}>{m.role || ""}</span>
+                              <span style={{ marginLeft: 6, fontFamily: "monospace" }}>{_effectiveRole(m) || ""}{m.role === "AM" && _effectiveRole(m) === "SM" ? " (trial)" : ""}</span>
                             </div>
                           </td>
                           {weekDays.map(d => {
                             const v = readWithFallback(b, m.ec, d);
-                            return renderCell(v, m.ec + "-" + d.ymd, b, m.role, d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom);
+                            return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow);
                           })}
                         </tr>
                       ));
