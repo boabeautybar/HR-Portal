@@ -468,8 +468,13 @@
     var c = client(); if (!c) throw new Error("Supabase not configured");
     var row = {
       branch: branch(), date: todayStr(),
-      yoco: Number(payload.yoco) || 0, cash: Number(payload.cash) || 0,
-      vouchers: Number(payload.vouchers) || 0, discounts: Number(payload.discounts) || 0,
+      yoco:      Number(payload.yoco)      || 0,
+      yoco_link: Number(payload.yoco_link) || 0,
+      cash:      Number(payload.cash)      || 0,
+      card_tips: Number(payload.card_tips) || 0,
+      vouchers:  Number(payload.vouchers)  || 0,
+      gift_card: Number(payload.gift_card) || 0,
+      discounts: Number(payload.discounts) || 0,
       notes: (payload.notes || "").trim() || null,
       signed_by: (payload.signedBy || "").trim()
     };

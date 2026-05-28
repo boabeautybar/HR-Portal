@@ -1140,15 +1140,18 @@
     document.getElementById("cu-body").innerHTML =
       '<table class="data-table">' +
       '<thead><tr>' +
-      '<th>Date</th><th>Yoco</th><th>Cash</th><th>Vouchers</th><th>Discounts</th><th>Total</th><th>Signed by</th>' +
+      '<th>Date</th><th>Yoco</th><th>Yoco Link</th><th>Cash</th><th>Card Tips</th><th>Vouchers purchased</th><th>Gift card</th><th>Discounts</th><th>Total</th><th>Signed by</th>' +
       '</tr></thead>' +
       '<tbody>' +
       rows.map(function (r) {
         return '<tr>' +
           '<td>' + fmtDate(r.date) + '</td>' +
           '<td>' + fmtMoney(r.yoco) + '</td>' +
+          '<td>' + fmtMoney(r.yoco_link) + '</td>' +
           '<td>' + fmtMoney(r.cash) + '</td>' +
+          '<td>' + fmtMoney(r.card_tips) + '</td>' +
           '<td>' + fmtMoney(r.vouchers) + '</td>' +
+          '<td>' + fmtMoney(r.gift_card) + '</td>' +
           '<td>' + fmtMoney(r.discounts) + '</td>' +
           '<td><strong>' + fmtMoney(r.total) + '</strong></td>' +
           '<td>' + esc(r.signed_by) + (r.notes ? ' <span class="pill pill-mute" title="' + esc(r.notes) + '">notes</span>' : "") + '</td>' +

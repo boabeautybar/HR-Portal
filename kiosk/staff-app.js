@@ -2139,11 +2139,14 @@
           '<div class="result-sub">Signed by ' + esc(existing.signed_by) + ' at ' + fmtTime(existing.created_at) + '</div>' +
         '</div>' +
         '<div class="cashup-summary">' +
-          row("Yoco (Card)",      existing.yoco) +
-          row("Cash",             existing.cash) +
-          row("Vouchers",         existing.vouchers) +
-          row("Discounts",        -Math.abs(existing.discounts), true) +
-          row("Total",            existing.total, false, true) +
+          row("Yoco (Card)",         existing.yoco) +
+          row("Yoco Payment Link",   existing.yoco_link) +
+          row("Cash",                existing.cash) +
+          row("Card Tips",           existing.card_tips) +
+          row("Vouchers purchased",  existing.vouchers) +
+          row("Gift card redemption", existing.gift_card) +
+          row("Discounts",           -Math.abs(existing.discounts || 0), true) +
+          row("Total",               existing.total, false, true) +
           (existing.notes ? '<div class="cashup-notes">"' + esc(existing.notes) + '"</div>' : "") +
         '</div>';
       return;
@@ -2151,10 +2154,13 @@
 
     document.getElementById("cashup-body").innerHTML =
       '<div class="cashup-form">' +
-        amountField("yoco",      "💳 Yoco (Card)") +
-        amountField("cash",      "💵 Cash") +
-        amountField("vouchers",  "🎟️ Vouchers") +
-        amountField("discounts", "− Discounts") +
+        amountField("yoco",       "💳 Yoco (Card)") +
+        amountField("yoco_link",  "🔗 Yoco Payment Link") +
+        amountField("cash",       "💵 Cash") +
+        amountField("card_tips",  "💰 Card Tips") +
+        amountField("vouchers",   "🎟️ Vouchers purchased") +
+        amountField("gift_card",  "🎁 Gift card redemption") +
+        amountField("discounts",  "− Discounts") +
 
         '<div class="cashup-total-box">' +
           '<div><div class="lbl">Total Revenue</div>' +
@@ -2173,7 +2179,7 @@
         '<div id="cu-result"></div>' +
       '</div>';
 
-    var ids = ["yoco", "cash", "vouchers", "discounts"];
+    var ids = ["yoco", "yoco_link", "cash", "card_tips", "vouchers", "gift_card", "discounts"];
     ids.forEach(function (id) { document.getElementById("cu-" + id).addEventListener("input", recalc); });
     document.getElementById("cu-name").addEventListener("input", recalc);
 
@@ -2182,12 +2188,15 @@
       var resEl = document.getElementById("cu-result");
       try {
         await window.APP_DATA.addCashup({
-          yoco:      val("yoco"),
-          cash:      val("cash"),
-          vouchers:  val("vouchers"),
-          discounts: val("discounts"),
-          notes:     document.getElementById("cu-notes").value,
-          signedBy:  document.getElementById("cu-name").value
+          yoco:       val("yoco"),
+          yoco_link:  val("yoco_link"),
+          cash:       val("cash"),
+          card_tips:  val("card_tips"),
+          vouchers:   val("vouchers"),
+          gift_card:  val("gift_card"),
+          discounts:  val("discounts"),
+          notes:      document.getElementById("cu-notes").value,
+          signedBy:   document.getElementById("cu-name").value
         });
         resEl.innerHTML = '<div class="result-card result-ok"><div class="result-icon">✓</div><div class="result-title">Cash-up saved. Thank you!</div></div>';
         setTimeout(renderCashup, 800);
@@ -2208,16 +2217,25 @@
   }
   function val(id) { return parseFloat(document.getElementById("cu-" + id).value) || 0; }
   function recalc() {
-    var y = val("yoco"), c = val("cash"), v = val("vouchers"), d = val("discounts");
-    var t = Math.max(0, y + c + v - d);
+    var y  = val("yoco"),
+        yl = val("yoco_link"),
+        c  = val("cash"),
+        ct = val("card_tips"),
+        v  = val("vouchers"),
+        gc = val("gift_card"),
+        d  = val("discounts");
+    var t = Math.max(0, y + yl + c + v + gc - d);
     document.getElementById("cu-total").textContent = fmtMoney(t);
     var parts = [];
-    if (y) parts.push("Yoco "      + fmtMoney(y));
-    if (c) parts.push("Cash "      + fmtMoney(c));
-    if (v) parts.push("Vouchers "  + fmtMoney(v));
-    if (d) parts.push("− Disc "    + fmtMoney(d));
+    if (y)  parts.push("Yoco "       + fmtMoney(y));
+    if (yl) parts.push("Yoco Link "  + fmtMoney(yl));
+    if (c)  parts.push("Cash "       + fmtMoney(c));
+    if (ct) parts.push("Tips "       + fmtMoney(ct));
+    if (v)  parts.push("Vouchers "   + fmtMoney(v));
+    if (gc) parts.push("Gift card "  + fmtMoney(gc));
+    if (d)  parts.push("− Disc "     + fmtMoney(d));
     document.getElementById("cu-brk").textContent = parts.length ? parts.join(" · ") : "Enter amounts above";
-    var hasAmt = (y > 0 || c > 0 || v > 0);
+    var hasAmt = (y > 0 || yl > 0 || c > 0 || v > 0 || gc > 0);
     var name   = document.getElementById("cu-name").value.trim();
     document.getElementById("cu-submit").disabled = !(hasAmt && name.length >= 2);
   }
