@@ -21680,26 +21680,57 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (!m.branch || m.onMat || m.leftDate) return;
           if (mgrByBranch[m.branch]) mgrByBranch[m.branch].push(m);
         });
+        // Pool of every staff record we might match a grid EC against —
+        // try managers first, fall back to techs/all-staff if a row in the
+        // grid belongs to a nail tech covering manager hours.
+        const ecToPerson = {};
+        managers.forEach(m => {
+          const _ec = String(m.ec || "").trim();
+          if (_ec && !m.onMat && !m.leftDate) ecToPerson[_ec] = m;
+        });
+        (enriched || []).forEach(s => {
+          const _ec = String(s.ec || "").trim();
+          if (_ec && !ecToPerson[_ec] && !s.onMat && !s.leftDate) ecToPerson[_ec] = { ec: s.ec, name: s.name, branch: s.branch, role: s.role || "NT" };
+        });
+        // Build the per-branch guest list AND a small diagnostic
+        // summary (how many ECs found, how many resolved) so it's
+        // obvious when a branch's grid is empty vs has unmatched ECs.
+        const _branchDiag = {};
         scopedBranches.forEach(s => {
           const _seen = new Set(mgrByBranch[s.name].map(m => String(m.ec || "").trim()));
+          let _gridEcsCount = 0, _resolvedCount = 0, _unresolved = [];
+          let _ymsSeen = new Set();
           weekDays.forEach(d => {
             const wGrid = mgrClockinSchedCache[s.name + "|" + d.mgrYm];
             const aGrid = _approvedFallbackCache[s.name + "|" + d.mgrYm];
+            if (wGrid || aGrid) _ymsSeen.add(d.mgrYm);
             [wGrid, aGrid].forEach(grid => {
               if (!grid) return;
               for (const _ec in grid) {
                 const ecKey = String(_ec).trim();
+                if (!ecKey) continue;
+                _gridEcsCount++;
                 if (_seen.has(ecKey)) continue;
+                // Accept ANY non-empty cell so a cross-store shift is
+                // surfaced even if its code isn't W (e.g. WL / WE / E
+                // typed differently, or even an OFF code marking a
+                // requested day at this branch).
                 const cell = grid[_ec][d.ymd] || grid[_ec][d.dom] || grid[_ec][String(d.dom)];
-                if (!isWorking(cell)) continue;     // only flag a guest mgr when there's an actual working cell
-                const mgr = mgrByEc[ecKey];
-                if (!mgr) continue;                  // unknown ec — skip
-                if (mgr.onMat || mgr.leftDate) continue;
+                if (!cell) continue;
+                const person = ecToPerson[ecKey];
+                if (!person) { _unresolved.push(ecKey); continue; }
                 _seen.add(ecKey);
-                mgrByBranch[s.name].push({ ...mgr, _guestFromBranch: mgr.branch });
+                _resolvedCount++;
+                mgrByBranch[s.name].push({ ...person, _guestFromBranch: person.branch || "?" });
               }
             });
           });
+          _branchDiag[s.name] = {
+            ymsLoaded: Array.from(_ymsSeen),
+            gridEcsCount: _gridEcsCount,
+            resolvedCount: _resolvedCount,
+            unresolvedEcs: Array.from(new Set(_unresolved)).slice(0, 8)
+          };
         });
         Object.keys(mgrByBranch).forEach(b => mgrByBranch[b].sort((a, b) =>
           (a.role === "SM" ? 0 : a.role === "AM" ? 1 : 2) - (b.role === "SM" ? 0 : b.role === "AM" ? 1 : 2)
@@ -21894,7 +21925,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: "#1f2937", tableLayout: "auto", minWidth: 1100 }}>
                               <thead>
                                 <tr style={{ background: "#FCE7F3" }}>
-                                  <th style={{ textAlign: "left", padding: "8px 14px", fontSize: 13, fontWeight: 800, color: "#831843", width: 240, borderBottom: "1px solid #FBCFE8" }}>📍 {b}</th>
+                                  <th style={{ textAlign: "left", padding: "8px 14px", fontSize: 13, fontWeight: 800, color: "#831843", width: 240, borderBottom: "1px solid #FBCFE8" }}>
+                                    📍 {b}
+                                    {(() => {
+                                      const dg = _branchDiag[b];
+                                      if (!dg) return null;
+                                      const noSchedule = !dg.ymsLoaded || dg.ymsLoaded.length === 0 || dg.gridEcsCount === 0;
+                                      if (noSchedule) return <div style={{ fontSize: 10, fontWeight: 600, color: "#7f1d1d", marginTop: 2 }}>⚠ No manager schedule published for this branch in the visible cycle.</div>;
+                                      if (dg.unresolvedEcs.length > 0) return <div style={{ fontSize: 10, fontWeight: 600, color: "#92400e", marginTop: 2 }}>⚠ {dg.unresolvedEcs.length} EC{dg.unresolvedEcs.length === 1 ? "" : "s"} in schedule not on staff list: {dg.unresolvedEcs.join(", ")}</div>;
+                                      return null;
+                                    })()}
+                                  </th>
                                   {weekDays.map(dayHeader)}
                                 </tr>
                                 <tr style={{ background: "#FDEEF5" }}>
