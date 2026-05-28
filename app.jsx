@@ -6401,6 +6401,7 @@ const SETTINGS_TABS = [
   { t: "storeOpenings", l: "Store Openings", cat: "Operations", icon: "🔓" },
   { t: "movements", l: "Today's Movements", cat: "Operations", icon: "🔀" },
   { t: "dailyTasks", l: "Daily Tasks", cat: "Operations", icon: "📋" },
+  { t: "mgrCoverage", l: "Manager Coverage", cat: "Operations", icon: "🗓" },
   { t: "cashups", l: "Cash Ups", cat: "Operations", icon: "💰" },
   { t: "attendance", l: "Attendance / Payroll", cat: "Payroll", icon: "📕" },
   { t: "payrollProgress", l: "Payroll Progress", cat: "Payroll", icon: "📊" },
@@ -8477,7 +8478,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Map of tab → category name. Kept in sync with the groups list below.
   const NAV_TAB_TO_CATEGORY = {
     onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
-    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations",
+    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
     attendance: "Payroll", payrollProgress: "Payroll",
     alerts: "Insights", activity: "Insights",
     settings: "Admin"
@@ -8513,6 +8514,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [mgrClockinDay, setMgrClockinDay] = useState(() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); });
   const [mgrClockinPhoto, setMgrClockinPhoto] = useState(null);   // {url, name, ts, ...}
   const [mgrClockinSchedCache, setMgrClockinSchedCache] = useState({});  // {branch|ym: grid}
+
+  // ── Manager Coverage tab state ─────────────────────────────────────
+  // Week-at-a-glance roster of every manager grouped by branch (and
+  // region) so a ROM can spot coverage gaps and decide where to borrow.
+  // Defaults to the current ISO week (Monday-start). Schedule grids
+  // reuse mgrClockinSchedCache; we load whichever cycle ym(s) the
+  // visible week touches on tab open.
+  const [mgrCoverageWeekStart, setMgrCoverageWeekStart] = useState(() => {
+    const d = new Date();
+    const dow = d.getDay();          // 0=Sun, 1=Mon, …
+    const offset = (dow + 6) % 7;    // Mon=0, Sun=6
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - offset);
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  });
+  const [mgrCoverageView, setMgrCoverageView] = useState("byBranch");   // "byBranch" | "byManager"
+  const [mgrCoverageRegion, setMgrCoverageRegion] = useState("all");
 
   // ── Daily Check-ins (nail tech) state ──────────────────────────────
   // Loaded once when the Check-ins tab or the Attendance tab opens, so the
@@ -9312,6 +9330,48 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     })();
     return () => { cancelled = true; };
   }, [tab, mgrClockinDays]);
+
+  // Manager Coverage tab: load manager schedules for every branch for
+  // the cycle(s) the visible week touches. Reuses mgrClockinSchedCache
+  // (same start-month ym convention) so loads are deduped across the
+  // mgrclockins, dashboard absences card and this new coverage view.
+  useEffect(() => {
+    if (tab !== "mgrCoverage") return;
+    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
+    let cancelled = false;
+    (async () => {
+      // Start-month ym (cycle 25-May → 24-Jun is saved as "2026-05"):
+      const ymdToMgrYm = (d) => {
+        let y = d.getFullYear(), m = d.getMonth() + 1;
+        if (d.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y--; } }
+        return y + "-" + String(m).padStart(2, "0");
+      };
+      const [yy, mm, dd] = mgrCoverageWeekStart.split("-").map(Number);
+      const start = new Date(yy, mm - 1, dd);
+      const yms = new Set();
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(start); d.setDate(d.getDate() + i);
+        yms.add(ymdToMgrYm(d));
+      }
+      const need = [];
+      for (const ym of yms) for (const sl of SALONS) {
+        const k = sl.name + "|" + ym;
+        if (!(k in mgrClockinSchedCache)) need.push({ branch: sl.name, ym, key: k });
+      }
+      if (need.length === 0) return;
+      const pairs = await Promise.all(need.map(async (n) => {
+        try { const s = await window.BOA_DB.loadSchedule(n.branch, n.ym, true); return [n.key, (s && s.grid) || null]; }
+        catch (_) { return [n.key, null]; }
+      }));
+      if (cancelled) return;
+      setMgrClockinSchedCache(prev => {
+        const next = { ...prev };
+        pairs.forEach(([k, g]) => { next[k] = g; });
+        return next;
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [tab, mgrCoverageWeekStart]);
 
   // Load photo/GPS metadata only for the manager clock-ins on the currently
   // selected day, so navigating day-by-day stays snappy even with a wide
@@ -10387,6 +10447,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "storeOpenings", l: "🔓 Store Openings" },
                   { t: "movements", l: "🔀 Today's Movements" },
                   { t: "dailyTasks", l: "📋 Daily Tasks" },
+                  { t: "mgrCoverage", l: "🗓 Manager Coverage" },
                   { t: "cashups", l: "💰 Cash Ups" },
                   {
                     t: "mgrPlanner", l: "🧩 Manager Planner",
@@ -21380,6 +21441,279 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </div>
                   <img src={mgrClockinPhoto.url} alt="full selfie" style={{ width: "100%", borderRadius: 8, display: "block" }} />
                 </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {tab === "mgrCoverage" && (() => {
+        // ── Manager Coverage tab ───────────────────────────────────────
+        // Weekly per-branch (and per-manager) view of who's scheduled
+        // to work. Surfaces coverage gaps so a ROM can decide where to
+        // borrow a manager. Reads from mgrClockinSchedCache (same
+        // start-month ym convention as the rest of the manager flows).
+
+        const _p2 = n => String(n).padStart(2, "0");
+        const ymdToStr = (d) => d.getFullYear() + "-" + _p2(d.getMonth() + 1) + "-" + _p2(d.getDate());
+        const shiftWeek = (delta) => {
+          const [yy, mm, dd] = mgrCoverageWeekStart.split("-").map(Number);
+          const d = new Date(yy, mm - 1, dd);
+          d.setDate(d.getDate() + delta * 7);
+          setMgrCoverageWeekStart(ymdToStr(d));
+        };
+        const thisWeekStart = (() => {
+          const d = new Date(); const dow = d.getDay();
+          const offset = (dow + 6) % 7;
+          d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - offset);
+          return ymdToStr(d);
+        })();
+        const [yy, mm, dd] = mgrCoverageWeekStart.split("-").map(Number);
+        const weekDays = [];
+        const todayY = new Date(); const todayYmd = ymdToStr(todayY);
+        for (let i = 0; i < 7; i++) {
+          const d = new Date(yy, mm - 1, dd); d.setDate(d.getDate() + i);
+          weekDays.push({
+            ymd: ymdToStr(d),
+            dom: d.getDate(),
+            dowLbl: ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][i],
+            dayLbl: d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }),
+            isToday: ymdToStr(d) === todayYmd,
+            isWeekend: i >= 5,
+            // Start-month ym for this date — used to look up schedule cache.
+            mgrYm: (() => { let y = d.getFullYear(), m = d.getMonth() + 1; if (d.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + _p2(m); })()
+          });
+        }
+        const lastDay = weekDays[6];
+
+        // Cell colour mapping — matches the Scheduling tab's editor so
+        // anyone toggling between the two reads the same visual language.
+        const CELL_BG = { W: "#dcfce7", WE: "#a7f3d0", WL: "#86efac", WM: "#5eead4", WB: "#67e8f9", E: "#6ee7b7", O: "#FCE7F3", L: "#fde68a", R: "#fbcfe8", ML: "#ede9fe" };
+        const CELL_FG = { W: "#15803d", WE: "#064e3b", WL: "#14532d", WM: "#134e4a", WB: "#155e75", E: "#064e3b", O: "#9d174d", L: "#92400e", R: "#9d174d", ML: "#5b21b6" };
+        const CELL_LBL = { W: "W", WE: "WE", WL: "WL", WM: "WM", WB: "WB", E: "E", O: "OFF", L: "LV", R: "REQ", ML: "ML" };
+        const isWorking = (v) => v === "W" || v === "WE" || v === "WL" || v === "WM" || v === "WB" || v === "E";
+
+        const readCell = (grid, ec, d) => (grid && grid[ec]) ? (grid[ec][d.ymd] || grid[ec][d.dom]) : undefined;
+
+        // Branches in scope, grouped by region.
+        const scopedBranches = SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name));
+        const regionsToShow = mgrCoverageRegion === "all" ? REGIONS : REGIONS.filter(r => r.key === mgrCoverageRegion);
+        const branchesByRegion = {};
+        regionsToShow.forEach(r => { branchesByRegion[r.key] = scopedBranches.filter(s => s.region === r.key).map(s => s.name).sort((a, b) => a.localeCompare(b)); });
+        // Active managers per branch (skip mat / left).
+        const mgrByBranch = {};
+        managers.forEach(m => {
+          if (!m.branch || m.onMat || m.leftDate) return;
+          (mgrByBranch[m.branch] = mgrByBranch[m.branch] || []).push(m);
+        });
+        Object.keys(mgrByBranch).forEach(b => mgrByBranch[b].sort((a, b) =>
+          (a.role === "SM" ? 0 : a.role === "AM" ? 1 : 2) - (b.role === "SM" ? 0 : b.role === "AM" ? 1 : 2)
+          || (a.name || "").localeCompare(b.name || "")
+        ));
+
+        // Coverage per branch per day — count managers scheduled to work.
+        const coverageByBranchDay = {};
+        scopedBranches.forEach(s => {
+          coverageByBranchDay[s.name] = weekDays.map(d => {
+            const grid = mgrClockinSchedCache[s.name + "|" + d.mgrYm];
+            let count = 0;
+            (mgrByBranch[s.name] || []).forEach(m => {
+              if (isWorking(readCell(grid, m.ec, d))) count++;
+            });
+            return { count, gridLoaded: !!grid };
+          });
+        });
+        // Total gaps (0-mgr days) for the headline banner.
+        let totalGaps = 0, totalSingleCover = 0;
+        Object.values(coverageByBranchDay).forEach(arr => arr.forEach(c => {
+          if (c.gridLoaded && c.count === 0) totalGaps++;
+          else if (c.gridLoaded && c.count === 1) totalSingleCover++;
+        }));
+
+        // Cell renderer for a manager-day cell.
+        const renderCell = (cellVal, key) => {
+          if (!cellVal) return <td key={key} style={{ background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: "6px 4px", textAlign: "center", fontSize: 10, color: "#d1d5db" }}>—</td>;
+          const lbl = CELL_LBL[cellVal] || cellVal;
+          const bg = CELL_BG[cellVal] || "#f3f4f6";
+          const fg = CELL_FG[cellVal] || "#374151";
+          return (
+            <td key={key} style={{ background: bg, borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: "5px 4px", textAlign: "center", fontSize: 11, fontWeight: 800, color: fg, letterSpacing: "0.04em" }}>
+              {lbl}
+            </td>
+          );
+        };
+
+        const coverPill = (c) => {
+          if (!c.gridLoaded) return <span title="Schedule not loaded for this cycle" style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, fontSize: 9, fontWeight: 800, background: "#f3f4f6", color: "#9ca3af" }}>—</span>;
+          if (c.count === 0) return <span title="No manager scheduled — coverage gap" style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, fontSize: 9, fontWeight: 800, background: "#fee2e2", color: "#7f1d1d" }}>✗ 0</span>;
+          if (c.count === 1) return <span title="Single cover — vulnerable" style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, fontSize: 9, fontWeight: 800, background: "#fef3c7", color: "#92400e" }}>⚠ 1</span>;
+          return <span title={c.count + " managers scheduled"} style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, fontSize: 9, fontWeight: 800, background: "#dcfce7", color: "#166534" }}>✓ {c.count}</span>;
+        };
+
+        const dayHeader = (d) => (
+          <th key={d.ymd} style={{ background: d.isToday ? "#FCE7F3" : (d.isWeekend ? "#FDEEF5" : "#fff"), color: "#831843", borderBottom: "2px solid #FBCFE8", padding: "6px 6px", fontSize: 10, fontWeight: 800, letterSpacing: "0.04em", textAlign: "center", minWidth: 56 }}>
+            <div>{d.dowLbl}</div>
+            <div style={{ fontSize: 9, fontWeight: 500, color: d.isToday ? "#BE185D" : "#9ca3af" }}>{d.dayLbl}</div>
+          </th>
+        );
+
+        return (
+          <div style={{ padding: "0 24px" }}>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700, marginBottom: 4 }}>🗓 Manager Coverage</div>
+              <div style={{ fontSize: 12, color: "#F472B6" }}>Weekly view of every manager's scheduled shifts. Spot days with no coverage and decide where to borrow a manager.</div>
+            </div>
+
+            {renderScopeBar({ marginBottom: 12 })}
+
+            <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "12px 14px", border: "1px solid #FBCFE8", marginBottom: 14, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>WEEK</label>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <button onClick={() => shiftWeek(-1)} style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "6px 11px", cursor: "pointer", fontSize: 15, fontWeight: 700, lineHeight: 1 }}>‹</button>
+                  <div style={{ padding: "6px 12px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, fontWeight: 700, color: "#831843", background: "#fff" }}>
+                    {weekDays[0].dayLbl} – {lastDay.dayLbl}
+                  </div>
+                  <button onClick={() => shiftWeek(1)} style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "6px 11px", cursor: "pointer", fontSize: 15, fontWeight: 700, lineHeight: 1 }}>›</button>
+                  <button onClick={() => setMgrCoverageWeekStart(thisWeekStart)} disabled={mgrCoverageWeekStart === thisWeekStart}
+                    style={{ background: mgrCoverageWeekStart === thisWeekStart ? "#FCE7F3" : "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "6px 12px", cursor: mgrCoverageWeekStart === thisWeekStart ? "default" : "pointer", fontSize: 12, fontWeight: 700, opacity: mgrCoverageWeekStart === thisWeekStart ? 0.6 : 1 }}>This week</button>
+                </div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>VIEW</label>
+                <div style={{ display: "flex", gap: 4, background: "#FCE7F3", borderRadius: 8, padding: 3 }}>
+                  {["byBranch", "byManager"].map(v => (
+                    <button key={v} onClick={() => setMgrCoverageView(v)}
+                      style={{ background: mgrCoverageView === v ? "#fff" : "transparent", color: "#831843", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                      {v === "byBranch" ? "By Branch" : "By Manager"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>REGION</label>
+                <select value={mgrCoverageRegion} onChange={e => setMgrCoverageRegion(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff", minWidth: 160 }}>
+                  <option value="all">All regions</option>
+                  {REGIONS.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
+                </select>
+              </div>
+              <div style={{ flex: 1 }} />
+              <div style={{ fontSize: 11, display: "flex", gap: 12 }}>
+                <span><span style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, background: "#fee2e2", color: "#7f1d1d", fontWeight: 800, fontSize: 9 }}>✗ 0</span> no coverage</span>
+                <span><span style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, background: "#fef3c7", color: "#92400e", fontWeight: 800, fontSize: 9 }}>⚠ 1</span> single cover</span>
+                <span><span style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, background: "#dcfce7", color: "#166534", fontWeight: 800, fontSize: 9 }}>✓ 2+</span> covered</span>
+              </div>
+            </div>
+
+            {(totalGaps > 0 || totalSingleCover > 0) && (
+              <div style={{ background: totalGaps > 0 ? "#fee2e2" : "#fef3c7", border: "1px solid " + (totalGaps > 0 ? "#fca5a5" : "#fcd34d"), borderRadius: 11, padding: "10px 14px", marginBottom: 14 }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: totalGaps > 0 ? "#7f1d1d" : "#92400e" }}>
+                  {totalGaps > 0 && <>⚠ <strong>{totalGaps}</strong> coverage gap{totalGaps === 1 ? "" : "s"} this week — branches with NO manager scheduled. </>}
+                  {totalSingleCover > 0 && <>{totalGaps > 0 ? "Plus " : "⚠ "}<strong>{totalSingleCover}</strong> single-cover day{totalSingleCover === 1 ? "" : "s"} (one manager only — vulnerable to sick days). </>}
+                  Borrow from a branch with 2+ to balance.
+                </div>
+              </div>
+            )}
+
+            {mgrCoverageView === "byBranch" ? (
+              <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 13, overflow: "auto" }}>
+                {regionsToShow.map(r => {
+                  const branches = branchesByRegion[r.key] || [];
+                  if (branches.length === 0) return null;
+                  return (
+                    <div key={r.key} style={{ marginBottom: 4 }}>
+                      <div style={{ background: r.bg, color: r.color, padding: "8px 14px", fontWeight: 800, fontSize: 12, letterSpacing: "0.05em", textTransform: "uppercase", borderBottom: "2px solid " + r.color }}>
+                        {r.label} · {branches.length} store{branches.length === 1 ? "" : "s"}
+                      </div>
+                      {branches.map(b => {
+                        const mgrs = mgrByBranch[b] || [];
+                        return (
+                          <div key={b} style={{ borderBottom: "3px solid #FCE7F3" }}>
+                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: "#1f2937", tableLayout: "fixed" }}>
+                              <thead>
+                                <tr style={{ background: "#FCE7F3" }}>
+                                  <th style={{ textAlign: "left", padding: "8px 14px", fontSize: 13, fontWeight: 800, color: "#831843", width: 240, borderBottom: "1px solid #FBCFE8" }}>📍 {b}</th>
+                                  {weekDays.map(dayHeader)}
+                                </tr>
+                                <tr style={{ background: "#FDEEF5" }}>
+                                  <td style={{ padding: "5px 14px", fontSize: 11, color: "#831843", fontWeight: 700 }}>Coverage</td>
+                                  {weekDays.map((d, i) => (
+                                    <td key={"cov-" + d.ymd} style={{ padding: "5px 4px", textAlign: "center", borderBottom: "1px solid #FBCFE8" }}>
+                                      {coverPill(coverageByBranchDay[b][i])}
+                                    </td>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {mgrs.length === 0 ? (
+                                  <tr>
+                                    <td colSpan={8} style={{ padding: "10px 14px", color: "#9ca3af", fontStyle: "italic", fontSize: 12 }}>No active managers at this branch.</td>
+                                  </tr>
+                                ) : mgrs.map(m => {
+                                  return (
+                                    <tr key={m.ec}>
+                                      <td style={{ padding: "6px 14px", fontWeight: 700, color: "#831843", fontSize: 12, borderBottom: "1px solid #FCE7F3" }}>
+                                        {m.role === "SM" ? "👑 " : m.role === "AM" ? "⭐ " : ""}{m.name}
+                                        <span style={{ marginLeft: 6, fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{m.role || ""}</span>
+                                      </td>
+                                      {weekDays.map(d => {
+                                        const grid = mgrClockinSchedCache[b + "|" + d.mgrYm];
+                                        const v = readCell(grid, m.ec, d);
+                                        return renderCell(v, m.ec + "-" + d.ymd);
+                                      })}
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 13, overflow: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: "#1f2937", tableLayout: "fixed" }}>
+                  <thead>
+                    <tr style={{ background: "#FCE7F3" }}>
+                      <th style={{ textAlign: "left", padding: "8px 14px", fontSize: 11, fontWeight: 800, color: "#831843", width: 280, borderBottom: "2px solid #FBCFE8" }}>MANAGER · BRANCH</th>
+                      {weekDays.map(dayHeader)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(() => {
+                      const rows = [];
+                      regionsToShow.forEach(r => {
+                        (branchesByRegion[r.key] || []).forEach(b => {
+                          (mgrByBranch[b] || []).forEach(m => {
+                            rows.push({ m, b, r });
+                          });
+                        });
+                      });
+                      if (rows.length === 0) return (
+                        <tr><td colSpan={8} style={{ padding: 30, textAlign: "center", color: "#9ca3af", fontStyle: "italic" }}>No managers in scope.</td></tr>
+                      );
+                      return rows.map(({ m, b, r }) => (
+                        <tr key={m.ec + "-" + b}>
+                          <td style={{ padding: "6px 14px", borderBottom: "1px solid #FCE7F3" }}>
+                            <div style={{ fontWeight: 700, color: "#831843", fontSize: 12.5 }}>{m.role === "SM" ? "👑 " : m.role === "AM" ? "⭐ " : ""}{m.name}</div>
+                            <div style={{ fontSize: 10, color: "#9ca3af" }}>
+                              📍 {b} <span style={{ background: r.bg, color: r.color, padding: "1px 6px", borderRadius: 4, fontWeight: 700, marginLeft: 4 }}>{r.short}</span>
+                              <span style={{ marginLeft: 6, fontFamily: "monospace" }}>{m.role || ""}</span>
+                            </div>
+                          </td>
+                          {weekDays.map(d => {
+                            const grid = mgrClockinSchedCache[b + "|" + d.mgrYm];
+                            const v = readCell(grid, m.ec, d);
+                            return renderCell(v, m.ec + "-" + d.ymd);
+                          })}
+                        </tr>
+                      ));
+                    })()}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>
