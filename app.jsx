@@ -21707,92 +21707,89 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Cell code → suffix the role-default shift times. Lets us show
         // "9:00a - 6:30p" inside a manager's working block the way
         // Connecteam does, without needing per-shift data on each cell.
-        // Resolve the visible shift hours for a cell. Times vary by
-        // branch, role and day-of-week — they come straight from the
-        // banners shown on the Manager Schedule editor (app.jsx:20086-
-        // 20134) so the coverage view stays in sync with what schedulers
-        // see there. Branches not listed below fall back to the generic
-        // SM 8-5 / AM 9:30-6:30 defaults.
+        // Resolve the visible shift hours for a cell. Times match the
+        // banners on the Manager Schedule editor (app.jsx:20086-20134)
+        // and are written in 24-hour format the same way the banners do
+        // (08:00 - 17:00, 09:00 - 18:00, etc.) so the coverage view
+        // reads the same as the schedule.
         //   dow: 0=Sun, 1=Mon, …, 6=Sat (matches Date#getDay)
         const shiftTimes = (role, code, branch, dow) => {
           const r = (role || "").toUpperCase();
           const isSM = r === "SM" || r === "SSM";
           const _b = branch || "";
 
-          // Sandown / Table Bay share the same shift table.
+          // Sandown / Table Bay share the same Mon-Fri split (and
+          // Table Bay extends it to Saturday). SM is a flat 08:00-17:00
+          // every working day.
           if (_b === "Sandown" || _b === "Table Bay") {
-            if (isSM) return "8:00a - 5:00p";              // SM every working day
-            if (dow === 0) {                                // Sunday — single late-morning split
-              if (code === "WE") return "8:00a - 5:00p";
-              if (code === "WL") return "9:00a - 6:00p";
-              return "9:00a - 6:00p";
+            if (isSM) return "08:00 - 17:00";
+            if (dow === 0) {                                // Sunday
+              if (code === "WE") return "08:00 - 17:00";
+              if (code === "WL") return "09:00 - 18:00";
+              return "09:00 - 18:00";
             }
-            if (dow === 6) {                                // Saturday
-              if (_b === "Sandown") {
-                if (code === "WE") return "8:00a - 5:00p";
-                if (code === "WL") return "10:00a - 7:00p";
-                return "10:00a - 7:00p";
-              }
-              // Table Bay treats Sat like a weekday (Mon-Sat band).
+            if (dow === 6 && _b === "Sandown") {            // Sandown Saturday
+              if (code === "WE") return "08:00 - 17:00";
+              if (code === "WL") return "10:00 - 19:00";
+              return "10:00 - 19:00";
             }
             // Mon-Fri (and Mon-Sat for Table Bay)
-            if (code === "WE") return "8:00a - 5:00p";
-            if (code === "WM") return "9:00a - 6:00p";
-            if (code === "WL") return "11:00a - 8:00p";
-            return "11:00a - 8:00p";
+            if (code === "WE") return "08:00 - 17:00";
+            if (code === "WM") return "09:00 - 18:00";
+            if (code === "WL") return "11:00 - 20:00";
+            return "11:00 - 20:00";
           }
 
           // Riverlands — Mon-Fri split, Sat/Sun single shift.
           if (_b === "Riverlands") {
-            if (dow === 6) return "9:00a - 6:00p";          // Sat single WE
-            if (dow === 0) return "8:00a - 5:00p";          // Sun single WE
-            if (isSM) return "8:00a - 5:00p";
-            if (code === "WE") return "9:00a - 6:00p";      // AM opener
-            if (code === "WB") return "8:00a - 5:00p";      // 4+ bonus opener
-            if (code === "WL") return "10:00a - 7:00p";
-            return "10:00a - 7:00p";
+            if (dow === 6) return "09:00 - 18:00";          // Sat single WE
+            if (dow === 0) return "08:00 - 17:00";          // Sun single WE
+            if (isSM) return "08:00 - 17:00";
+            if (code === "WE") return "09:00 - 18:00";      // AM opener
+            if (code === "WB") return "08:00 - 17:00";      // 4+ bonus opener
+            if (code === "WL") return "10:00 - 19:00";
+            return "10:00 - 19:00";
           }
 
           // Ballito / Mall of the South — SM-only WE opener, AM closers.
           if (_b === "Ballito" || _b === "Mall of the South") {
-            if (isSM) return "8:00a - 5:00p";
-            if (dow === 0) return "8:00a - 5:00p";          // Sunday single WE
-            if (code === "WE") return "8:00a - 5:00p";      // rare AM fallback
-            if (code === "WM") return "9:00a - 6:00p";
-            if (code === "WL") return "10:00a - 7:00p";
-            return "10:00a - 7:00p";
+            if (isSM) return "08:00 - 17:00";
+            if (dow === 0) return "08:00 - 17:00";          // Sunday single WE
+            if (code === "WE") return "08:00 - 17:00";
+            if (code === "WM") return "09:00 - 18:00";
+            if (code === "WL") return "10:00 - 19:00";
+            return "10:00 - 19:00";
           }
 
           // Fourways — store hours differ; SM rotates opener/closer.
           if (_b === "Fourways") {
             if (isSM) {
-              if (code === "WL") return "11:00a - 8:00p";
-              return "8:00a - 5:00p";                       // WE / default
+              if (code === "WL") return "11:00 - 20:00";
+              return "08:00 - 17:00";
             }
             if (dow === 0) {                                // Sunday (store 09-19)
-              if (code === "WE") return "8:00a - 5:00p";
-              if (code === "WL") return "10:00a - 7:00p";
-              return "10:00a - 7:00p";
+              if (code === "WE") return "08:00 - 17:00";
+              if (code === "WL") return "10:00 - 19:00";
+              return "10:00 - 19:00";
             }
-            // Mon-Sat (store 09-20)
-            if (code === "WM") return "10:00a - 7:00p";
-            if (code === "WL") return "11:00a - 8:00p";
-            return "11:00a - 8:00p";
+            if (code === "WM") return "10:00 - 19:00";
+            if (code === "WL") return "11:00 - 20:00";
+            return "11:00 - 20:00";
           }
 
-          // Generic stores — fall back to the original defaults.
+          // Generic stores — generic SM 08-17 / AM 09:30-18:30 hours.
           if (isSM) {
-            if (code === "WL") return "8:30a - 5:30p";
-            if (code === "WE") return "7:30a - 4:30p";
-            if (code === "WM") return "8:00a - 1:00p";
-            return "8:00a - 5:00p";
+            if (code === "WL") return "08:30 - 17:30";
+            if (code === "WE") return "07:30 - 16:30";
+            if (code === "WM") return "08:00 - 13:00";
+            return "08:00 - 17:00";
           }
-          if (code === "WL") return "10:00a - 7:00p";
-          if (code === "WE") return "8:30a - 6:00p";
-          if (code === "WM") return "9:00a - 1:00p";
-          if (code === "WB") return "8:00a - 7:00p";
-          if (code === "E")  return "9:00a - 6:30p";
-          return "9:00a - 6:30p";
+          if (code === "WL") return "10:00 - 19:00";
+          if (code === "WE") return "08:30 - 18:00";
+          if (code === "WM") return "09:00 - 13:00";
+          if (code === "WB") return "08:00 - 19:00";
+          if (code === "E")  return "09:00 - 18:30";
+          return "09:30 - 18:30";
         };
         const isWorking = (v) => v === "W" || v === "WE" || v === "WL" || v === "WM" || v === "WB" || v === "E";
 
@@ -21887,6 +21884,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
           return out;
         })();
+        // AMs on an active 3-month SM trial are treated as SMs on the
+        // coverage cells too — mirroring what the Schedule tab does
+        // when it builds allMgrs (app.jsx:18706-18712). So their
+        // working blocks pick the SM hours from shiftTimes and the
+        // role badge reads "SM · WE / WL / …" rather than "AM · …".
+        const _smTrialEcs = new Set((smTrialList || []).filter(t => t && t.status === "active" && t.ec).map(t => t.ec));
+        const _effectiveRole = (mg) => (mg && mg.role === "AM" && mg.ec && _smTrialEcs.has(mg.ec)) ? "SM" : (mg && mg.role);
+
         // Per-EC manager lookup so we can join schedule-grid keys back
         // to a manager record even when the schedule lists them at a
         // store that isn't their home branch (e.g. Tanita scheduled at
@@ -22482,12 +22487,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   return (
                                     <tr key={m.ec}>
                                       <td style={{ padding: "6px 14px", fontWeight: 700, color: "#831843", fontSize: 12, borderBottom: "1px solid #FCE7F3" }}>
-                                        {m.role === "SM" ? "👑 " : m.role === "AM" ? "⭐ " : ""}{m.name}
-                                        <span style={{ marginLeft: 6, fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{m.role || ""}</span>
+                                        {_effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}
+                                        <span style={{ marginLeft: 6, fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{_effectiveRole(m) || ""}{m.role === "AM" && _effectiveRole(m) === "SM" ? " (trial)" : ""}</span>
                                       </td>
                                       {weekDays.map(d => {
                                         const v = readWithFallback(b, m.ec, d);
-                                        return renderCell(v, m.ec + "-" + d.ymd, b, m.role, d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow);
+                                        return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow);
                                       })}
                                     </tr>
                                   );
@@ -22534,7 +22539,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           </td>
                           {weekDays.map(d => {
                             const v = readWithFallback(b, m.ec, d);
-                            return renderCell(v, m.ec + "-" + d.ymd, b, m.role, d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow);
+                            return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow);
                           })}
                         </tr>
                       ));
