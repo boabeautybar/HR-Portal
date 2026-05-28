@@ -11194,7 +11194,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       (mgrClockinRows || []).forEach(r => {
                         if (!r.staff || r.staff.role_type !== "manager") return;
                         if (r.type !== "in") return;
-                        clockedInByEcDate.add(r.staff.employee_code + "|" + _ymdOf(r.ts));
+                        clockedInByEcDate.add(String(r.staff.employee_code).trim() + "|" + _ymdOf(r.ts));
                       });
                       // Look at last 14 days excluding today (today still
                       // pending — they may still clock in).
@@ -11216,7 +11216,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           if (!grid) return;
                           const cell = (grid[m.ec]) ? (grid[m.ec][ymd] || grid[m.ec][dom]) : undefined;
                           if (cell !== "W" && cell !== "WL" && cell !== "WE" && cell !== "WM" && cell !== "WB" && cell !== "E") return;
-                          if (clockedInByEcDate.has(m.ec + "|" + ymd)) return;
+                          if (clockedInByEcDate.has(String(m.ec || "").trim() + "|" + ymd)) return;
                           const sid = ecToStaffId[m.ec];
                           if (sid && taggedKeys.has(sid + "|" + ymd)) return;
                           pending.push({ name: m.name, branch: m.branch, ymd });
@@ -20948,15 +20948,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 list. Managers who clocked in despite not being scheduled
                 still get listed under their branch as a sanity check. */}
             {mgrClockinDay === _mTodayYmd && (() => {
-              // Clock-in lookup for today, keyed by ec.
+              // Clock-in lookup for today, keyed by trimmed EC. EC trimming
+              // matters because staff records sometimes carry trailing
+              // whitespace — without it a manager who clocked in could
+              // appear as "Not in yet". Matches the dashboard's approach.
               const inByEc = {};
               mgrClockinRows.forEach(r => {
                 if (!r.staff || !r.staff.employee_code) return;
                 if (r.type !== "in") return;
                 if (mLocalYmd(r.ts) !== mgrClockinDay) return;
-                if (!inByEc[r.staff.employee_code] || r.ts < inByEc[r.staff.employee_code].ts) {
-                  inByEc[r.staff.employee_code] = r;
-                }
+                const _ec = String(r.staff.employee_code).trim();
+                if (!inByEc[_ec] || r.ts < inByEc[_ec].ts) inByEc[_ec] = r;
               });
               const statByKey = {};
               (mgrDayStatuses || []).forEach(s => { statByKey[s.staff_id + "|" + s.date] = s; });
@@ -21011,20 +21013,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 branchMgrs.forEach(m => {
                   const cell = _readCell(grid, m.ec);
                   if (_isWorking(cell)) { list.push(m); allScheduled.push(m); }
-                  else if (inByEc[m.ec]) { surpriseClockIns.push({ m, cell: cell || "—" }); }
+                  else if (inByEc[String(m.ec || "").trim()]) { surpriseClockIns.push({ m, cell: cell || "—" }); }
                 });
                 list.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
                 if (list.length > 0) scheduledByBranch[b] = list;
               });
               if (allScheduled.length === 0 && fallbackBranches.length === 0 && surpriseClockIns.length === 0) return null;
-              const totalIn = allScheduled.filter(m => inByEc[m.ec]).length;
+              const totalIn = allScheduled.filter(m => inByEc[String(m.ec || "").trim()]).length;
               const totalTagged = allScheduled.filter(m => statByKey[(m._id || m.id) + "|" + ymd]).length;
               const totalPending = allScheduled.length - totalIn - totalTagged;
               const branchNames = Object.keys(scheduledByBranch).sort();
               const renderCard = (m) => {
                 const sid = m._id || m.id;
                 const tagged = statByKey[sid + "|" + ymd];
-                const clockin = inByEc[m.ec];
+                const clockin = inByEc[String(m.ec || "").trim()];
                 const inTime = clockin ? new Date(clockin.ts).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }) : null;
                 let pill;
                 if (clockin) {
@@ -21094,10 +21096,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               if (isFuture) return null;
               const isToday = mgrClockinDay === _mTodayYmd;
               // Set of ECs that clocked IN on the selected day.
+              // Trim ECs on both sides so a stray whitespace can't desync
+              // the no-show check against the actual clock-in records.
               const clockedIn = new Set();
               mgrClockinRows.forEach(r => {
                 if (!r.staff || !r.staff.employee_code) return;
-                if (r.type === "in" && mLocalYmd(r.ts) === mgrClockinDay) clockedIn.add(r.staff.employee_code);
+                if (r.type === "in" && mLocalYmd(r.ts) === mgrClockinDay) clockedIn.add(String(r.staff.employee_code).trim());
               });
               const ymd = mgrClockinDay;
               // Schedule grid is keyed by either YMD or day-of-month —
@@ -21123,7 +21127,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   if (_onLeaveEcs.has(String(m.ec || "").trim())) continue;    // on annual leave
                   const cell = (grid[m.ec]) ? (grid[m.ec][ymd] || grid[m.ec][_dom]) : undefined;
                   if (cell !== "W" && cell !== "WL" && cell !== "WE" && cell !== "WM" && cell !== "WB" && cell !== "E") continue;     // not scheduled to work
-                  if (clockedIn.has(m.ec)) continue;              // they did clock in
+                  if (clockedIn.has(String(m.ec || "").trim())) continue;              // they did clock in
                   noShows.push({ ec: m.ec, name: m.name, branch: branchName, ymd, staffId: m._id || m.id });
                 }
               }
