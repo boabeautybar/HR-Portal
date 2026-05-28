@@ -2145,10 +2145,12 @@
           row("Card Tips",           existing.card_tips) +
           row("Vouchers purchased",  existing.vouchers) +
           row("Gift card redemption", existing.gift_card) +
-          row("Discounts",           -Math.abs(existing.discounts || 0), true) +
           row("Manual Discounts",    -Math.abs(existing.manual_discounts || 0), true) +
           (existing.manual_discount_reason ? '<div class="cashup-row"><span>Reason</span><span>' + esc(existing.manual_discount_reason) + '</span></div>' : "") +
           row("Total",               existing.total, false, true) +
+          (Number(existing.card_tips) > 0
+            ? '<div class="cashup-row" style="font-size:0.85em;color:#6b7280"><span>+ Card Tips (not included in total)</span><span>' + fmtMoney(existing.card_tips) + '</span></div>'
+            : "") +
           (existing.notes ? '<div class="cashup-notes">"' + esc(existing.notes) + '"</div>' : "") +
           (existing.cash_banked === true || existing.cash_banked === false
             ? '<div class="cashup-banking-summary" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--pink-100)">' +
@@ -2175,7 +2177,6 @@
         amountField("card_tips",  "💰 Card Tips") +
         amountField("vouchers",   "🎟️ Vouchers purchased") +
         amountField("gift_card",  "🎁 Gift card redemption") +
-        amountField("discounts",  "− Discounts") +
         amountField("manual_discounts", "− Manual Discounts") +
         '<div id="cu-manual-reason-wrap" style="display:none;margin-top:-4px;margin-bottom:10px">' +
           '<label class="lbl" for="cu-manual-reason">Reason for manual discount <span style="color:#b53">required</span></label>' +
@@ -2223,7 +2224,7 @@
         '<div id="cu-result"></div>' +
       '</div>';
 
-    var ids = ["yoco", "yoco_link", "cash", "card_tips", "vouchers", "gift_card", "discounts", "manual_discounts", "amount_banked"];
+    var ids = ["yoco", "yoco_link", "cash", "card_tips", "vouchers", "gift_card", "manual_discounts", "amount_banked"];
     ids.forEach(function (id) {
       var el = document.getElementById("cu-" + id);
       if (el) el.addEventListener("input", recalc);
@@ -2271,7 +2272,6 @@
           card_tips:  val("card_tips"),
           vouchers:   val("vouchers"),
           gift_card:  val("gift_card"),
-          discounts:  val("discounts"),
           manual_discounts:       val("manual_discounts"),
           manual_discount_reason: document.getElementById("cu-manual-reason").value,
           notes:      document.getElementById("cu-notes").value,
@@ -2307,9 +2307,8 @@
         ct = val("card_tips"),
         v  = val("vouchers"),
         gc = val("gift_card"),
-        d  = val("discounts"),
         md = val("manual_discounts");
-    var t = Math.max(0, y + yl + c + v + gc - d - md);
+    var t = Math.max(0, y + yl + c + v + gc - md);
     document.getElementById("cu-total").textContent = fmtMoney(t);
     var parts = [];
     if (y)  parts.push("Yoco "       + fmtMoney(y));
@@ -2318,7 +2317,6 @@
     if (ct) parts.push("Tips "       + fmtMoney(ct));
     if (v)  parts.push("Vouchers "   + fmtMoney(v));
     if (gc) parts.push("Gift card "  + fmtMoney(gc));
-    if (d)  parts.push("− Disc "     + fmtMoney(d));
     if (md) parts.push("− Manual "   + fmtMoney(md));
     document.getElementById("cu-brk").textContent = parts.length ? parts.join(" · ") : "Enter amounts above";
     var hasAmt = (y > 0 || yl > 0 || c > 0 || v > 0 || gc > 0);
