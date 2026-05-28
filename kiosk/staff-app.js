@@ -989,6 +989,9 @@
 
     var myBranch = cfg.branchName || "";
     var myTrialCand = trialCand.filter(function(c) {
+      // Trial AMs live on the Manager Clock-in page instead — they don't
+      // belong with the nail-tech roster.
+      if ((c.role || "nt") === "am") return false;
       return c.branch === myBranch && c.status && c.status.indexOf("trial") === 0;
     });
 

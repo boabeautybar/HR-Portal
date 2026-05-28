@@ -906,18 +906,27 @@
     document.getElementById("back-home").onclick = renderManagerLanding;
     document.getElementById("mc-refresh").onclick = renderMgrClockin;
 
-    var pins, mgrs, recent, smTrialEcs;
+    var pins, mgrs, recent, smTrialEcs, trialCand;
     try {
       pins = await window.APP_DATA.loadManagerPins();
       mgrs = await window.APP_DATA.listAllManagers();
       recent = await window.APP_DATA.listRecentManagerClockins(7);
       smTrialEcs = window.APP_DATA.activeSmTrialEcs ? await window.APP_DATA.activeSmTrialEcs() : {};
+      trialCand = window.APP_DATA.listTrialCandidates ? await window.APP_DATA.listTrialCandidates() : [];
     } catch (e) {
       document.getElementById("mc-body").innerHTML =
         '<div class="warn">Could not load: ' + esc(e.message || e) + '</div>';
       return;
     }
-    if (mgrs.length === 0) {
+    // Trial AMs at this branch — shown on the manager screen during their
+    // trial weeks, no PIN. Once they pass the trial they get a real staff
+    // record + PIN and move into the regular list above.
+    var myTrialAMs = (trialCand || []).filter(function (c) {
+      return (c.role || "nt") === "am"
+        && c.branch === (cfg.branchName || "")
+        && c.status && c.status.indexOf("trial") === 0;
+    });
+    if (mgrs.length === 0 && myTrialAMs.length === 0) {
       document.getElementById("mc-body").innerHTML = '<div class="empty">No active managers in the staff table yet.</div>';
       return;
     }
@@ -1008,12 +1017,60 @@
     var hereMgrs  = mgrs.filter(function (m) { return m.branch === thisBranch; });
     var otherMgrs = mgrs.filter(function (m) { return m.branch !== thisBranch; });
 
+    // Trial AMs use the same daily-status buttons as the trial check-in
+    // on the nail-tech side. They have no PIN during the trial weeks; once
+    // they pass and get a real employee code they'll appear in the manager
+    // list above with PIN + photo + GPS.
+    var trialStatusButtons = [
+      { code: "on",     label: "On Time"     },
+      { code: "late",   label: "Late"        },
+      { code: "sick_n", label: "Sick + note" },
+      { code: "sick",   label: "Sick NO note"},
+      { code: "absent", label: "Absent"      },
+      { code: "no",     label: "NO SHOW"     },
+      { code: "frl",    label: "FRL + proof" }
+    ];
+    var todayStr = window.APP_DATA.todayStr ? window.APP_DATA.todayStr() : (new Date()).toISOString().slice(0, 10);
+    var trialAmHtml = "";
+    if (myTrialAMs.length > 0) {
+      trialAmHtml =
+        '<div style="margin-top:20px">' +
+          '<div style="font-size:12px;font-weight:800;color:#9A3412;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">⭐ Trial AMs · no PIN yet</div>' +
+          myTrialAMs.map(function (c) {
+            var checkinMap = (c.checkins && !Array.isArray(c.checkins)) ? c.checkins : {};
+            var workedDays = Object.values(checkinMap).filter(function (st) { return st === "on" || st === "late"; }).length;
+            var currentStatus = checkinMap[todayStr];
+            var btns = trialStatusButtons.map(function (b) {
+              var isActive = currentStatus === b.code;
+              return '<button type="button" class="trial-act dly-act-' + b.code +
+                     (isActive ? ' dly-act-active' : '') +
+                     '" style="padding:6px 10px;border-radius:6px;font-size:11px;font-weight:700;border:1px solid #e5e7eb;background:' + (isActive ? '#BE185D' : '#fff') + ';color:' + (isActive ? '#fff' : '#374151') + ';cursor:pointer" ' +
+                     'data-id="' + esc(c._id) + '" data-status="' + b.code + '">' + b.label + '</button>';
+            }).join("");
+            return '<div class="dly-row" style="display:flex;flex-direction:column;gap:8px;padding:10px 14px;background:#FFF7ED;border:1px solid #FED7AA;border-radius:12px;margin-bottom:8px">' +
+              '<div style="display:flex;justify-content:space-between;align-items:center">' +
+                '<div>' +
+                  '<div style="font-weight:700;color:#9A3412;font-size:14px">' + esc(c.name || "(no name)") +
+                    ' <span class="pill" style="background:#fff;color:#9A3412;border:1px solid #FED7AA">⭐ trial AM</span>' +
+                  '</div>' +
+                  '<div style="font-size:11px;color:var(--gray-500);margin-top:2px">' +
+                    'Status: ' + esc(c.status) + ' · Worked Days: ' + workedDays + '/5' +
+                  '</div>' +
+                '</div>' +
+              '</div>' +
+              '<div style="display:flex;gap:6px;flex-wrap:wrap">' + btns + '</div>' +
+            '</div>';
+          }).join("") +
+        '</div>';
+    }
+
     document.getElementById("mc-body").innerHTML =
       '<div class="staff-list">' +
       (hereMgrs.length
         ? hereMgrs.map(mgrRowHtml).join("")
         : '<div class="empty">No managers are based at ' + esc(thisBranch || "this store") + ' yet.</div>') +
       '</div>' +
+      trialAmHtml +
       (otherMgrs.length
         ? '<button id="mc-show-others" type="button" ' +
             'style="margin-top:14px;width:100%;background:#fff;color:var(--pink-700);border:2px solid var(--pink-200);border-radius:10px;padding:11px 14px;font-weight:700;font-size:14px;cursor:pointer">' +
@@ -1024,6 +1081,26 @@
             '<div class="staff-list">' + otherMgrs.map(mgrRowHtml).join("") + '</div>' +
           '</div>'
         : "");
+
+    // Wire trial-AM status buttons. Same flow as the nail-tech trial
+    // section: tap a status → recordTrialCheckin → re-render.
+    Array.prototype.forEach.call(document.querySelectorAll("#mc-body .trial-act"), function (btn) {
+      btn.onclick = async function () {
+        if (btn.disabled) return;
+        var candidateId = btn.dataset.id;
+        var status = btn.dataset.status;
+        var row = btn.closest(".dly-row");
+        var acts = row.querySelectorAll(".trial-act");
+        Array.prototype.forEach.call(acts, function (el) { el.disabled = true; });
+        try {
+          await window.APP_DATA.recordTrialCheckin(candidateId, status);
+          await renderMgrClockin();
+        } catch (e) {
+          alert("Could not record check-in: " + ((e && e.message) || e));
+          Array.prototype.forEach.call(acts, function (el) { el.disabled = false; });
+        }
+      };
+    });
 
     var showOthersBtn = document.getElementById("mc-show-others");
     if (showOthersBtn) {
