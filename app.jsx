@@ -9290,7 +9290,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // Load recent manager clock-ins when the viewer tab opens.
   useEffect(() => {
-    if (tab !== "mgrclockins") return;
+    if (tab !== "mgrclockins" && tab !== "mgrCoverage") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     let cancelled = false;
     (async () => {
@@ -21660,16 +21660,65 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
           return out;
         })();
-        // Active managers per branch (skip mat / left).
+        // Per-EC manager lookup so we can join schedule-grid keys back
+        // to a manager record even when the schedule lists them at a
+        // store that isn't their home branch (e.g. Tanita scheduled at
+        // Betty while her home is Buitengracht).
+        const mgrByEc = {};
+        managers.forEach(m => {
+          const _ec = String(m.ec || "").trim();
+          if (_ec && !m.leftDate) mgrByEc[_ec] = m;
+        });
+        // Managers visible at each branch this week — start with the home-
+        // branch active list, then ADD any EC that appears in this branch's
+        // schedule grid (working or approved) on a working day. Catches the
+        // cross-store coverage case so Tanita shows up at Betty when her
+        // shift is on Betty's schedule.
         const mgrByBranch = {};
+        scopedBranches.forEach(s => { mgrByBranch[s.name] = []; });
         managers.forEach(m => {
           if (!m.branch || m.onMat || m.leftDate) return;
-          (mgrByBranch[m.branch] = mgrByBranch[m.branch] || []).push(m);
+          if (mgrByBranch[m.branch]) mgrByBranch[m.branch].push(m);
+        });
+        scopedBranches.forEach(s => {
+          const _seen = new Set(mgrByBranch[s.name].map(m => String(m.ec || "").trim()));
+          weekDays.forEach(d => {
+            const wGrid = mgrClockinSchedCache[s.name + "|" + d.mgrYm];
+            const aGrid = _approvedFallbackCache[s.name + "|" + d.mgrYm];
+            [wGrid, aGrid].forEach(grid => {
+              if (!grid) return;
+              for (const _ec in grid) {
+                const ecKey = String(_ec).trim();
+                if (_seen.has(ecKey)) continue;
+                const cell = grid[_ec][d.ymd] || grid[_ec][d.dom] || grid[_ec][String(d.dom)];
+                if (!isWorking(cell)) continue;     // only flag a guest mgr when there's an actual working cell
+                const mgr = mgrByEc[ecKey];
+                if (!mgr) continue;                  // unknown ec — skip
+                if (mgr.onMat || mgr.leftDate) continue;
+                _seen.add(ecKey);
+                mgrByBranch[s.name].push({ ...mgr, _guestFromBranch: mgr.branch });
+              }
+            });
+          });
         });
         Object.keys(mgrByBranch).forEach(b => mgrByBranch[b].sort((a, b) =>
           (a.role === "SM" ? 0 : a.role === "AM" ? 1 : 2) - (b.role === "SM" ? 0 : b.role === "AM" ? 1 : 2)
           || (a.name || "").localeCompare(b.name || "")
         ));
+
+        // Manager clock-in lookup keyed by ec → ymd → true. Powers the
+        // small green dot we render on cells where the manager actually
+        // showed up. Today's clock-ins come straight from mgrClockinRows
+        // (loaded by the mgrclockins / mgrCoverage useEffect).
+        const _clockedInByEcYmd = {};
+        (mgrClockinRows || []).forEach(r => {
+          if (!r.staff || !r.staff.employee_code) return;
+          if (r.type !== "in") return;
+          const _ec = String(r.staff.employee_code).trim();
+          const _d = new Date(r.ts);
+          const _ymd = _d.getFullYear() + "-" + String(_d.getMonth() + 1).padStart(2, "0") + "-" + String(_d.getDate()).padStart(2, "0");
+          (_clockedInByEcYmd[_ec] = _clockedInByEcYmd[_ec] || {})[_ymd] = true;
+        });
 
         // Coverage per branch per day — count managers scheduled to work.
         // Uses readWithFallback so published-only schedules still count.
@@ -21696,7 +21745,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Connecteam-style colored blocks branded by branch with the shift
         // times and role · branch label; non-working cells fall back to a
         // small muted pill (OFF / LEAVE / REQ / MATERNITY) or blank.
-        const renderCell = (cellVal, key, branchName, role) => {
+        const renderCell = (cellVal, key, branchName, role, ymd, ec, isGuest) => {
+          const clockedIn = ec && ymd && _clockedInByEcYmd[String(ec).trim()] && _clockedInByEcYmd[String(ec).trim()][ymd];
+          // Did this day already pass? (Today still in flight, so absence
+          // can't be inferred yet.)
+          const isPast = ymd && ymd < (function () { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
           // Blank / empty day cell.
           if (!cellVal) {
             return (
@@ -21710,12 +21763,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const pal = branchColour(branchName);
             const time = shiftTimes(role, cellVal);
             const subtle = cellVal !== "W" ? { borderLeft: "4px solid rgba(255,255,255,0.5)" } : {};
+            const dotColor = clockedIn ? "#22c55e" : (isPast ? "#ef4444" : null);
+            const dotTitle = clockedIn ? "✓ Clocked in" : (isPast ? "✗ Absent — did not clock in" : null);
             return (
               <td key={key} style={{ background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle" }}>
-                <div title={role + " · " + branchName + " · " + cellVal + " · " + time}
-                  style={{ background: pal.bg, color: pal.fg, borderRadius: 6, padding: "8px 6px", textAlign: "left", lineHeight: 1.25, minHeight: 56, boxShadow: "inset 0 -2px 0 rgba(0,0,0,0.18)", ...subtle }}>
+                <div title={(role || "") + " · " + branchName + " · " + cellVal + " · " + time + (dotTitle ? "\n" + dotTitle : "") + (isGuest ? "\nGuest from " + isGuest : "")}
+                  style={{ position: "relative", background: pal.bg, color: pal.fg, borderRadius: 6, padding: "8px 6px", textAlign: "left", lineHeight: 1.25, minHeight: 56, boxShadow: "inset 0 -2px 0 rgba(0,0,0,0.18)", ...subtle }}>
+                  {dotColor && (
+                    <span title={dotTitle} style={{ position: "absolute", top: 4, right: 4, width: 9, height: 9, borderRadius: 9, background: dotColor, border: "2px solid #fff", boxShadow: "0 0 0 1px rgba(0,0,0,0.12)" }} />
+                  )}
                   <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.01em", whiteSpace: "nowrap" }}>{time}</div>
-                  <div style={{ fontSize: 10, fontWeight: 600, opacity: 0.95, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{branchName}</div>
+                  <div style={{ fontSize: 10, fontWeight: 600, opacity: 0.95, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{branchName}{isGuest ? " ↪" : ""}</div>
                   <div style={{ fontSize: 9, fontWeight: 800, opacity: 0.92, letterSpacing: "0.06em", marginTop: 1 }}>
                     {(role || "").toUpperCase()}{cellVal !== "W" ? " · " + cellVal : ""}
                   </div>
@@ -21803,6 +21861,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <span><span style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, background: "#fee2e2", color: "#7f1d1d", fontWeight: 800, fontSize: 9 }}>✗ 0</span> no coverage</span>
                 <span><span style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, background: "#fef3c7", color: "#92400e", fontWeight: 800, fontSize: 9 }}>⚠ 1</span> single cover</span>
                 <span><span style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, background: "#dcfce7", color: "#166534", fontWeight: 800, fontSize: 9 }}>✓ 2+</span> covered</span>
+                <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 8, background: "#22c55e", border: "1.5px solid #fff", boxShadow: "0 0 0 1px rgba(0,0,0,0.12)", marginRight: 4 }} />clocked in</span>
+                <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 8, background: "#ef4444", border: "1.5px solid #fff", boxShadow: "0 0 0 1px rgba(0,0,0,0.12)", marginRight: 4 }} />absent</span>
+                <span title="Guest shift — manager's home store is different">↪ guest shift</span>
               </div>
             </div>
 
@@ -21859,7 +21920,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       </td>
                                       {weekDays.map(d => {
                                         const v = readWithFallback(b, m.ec, d);
-                                        return renderCell(v, m.ec + "-" + d.ymd, b, m.role);
+                                        return renderCell(v, m.ec + "-" + d.ymd, b, m.role, d.ymd, m.ec, m._guestFromBranch || null);
                                       })}
                                     </tr>
                                   );
@@ -21906,7 +21967,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           </td>
                           {weekDays.map(d => {
                             const v = readWithFallback(b, m.ec, d);
-                            return renderCell(v, m.ec + "-" + d.ymd, b, m.role);
+                            return renderCell(v, m.ec + "-" + d.ymd, b, m.role, d.ymd, m.ec, m._guestFromBranch || null);
                           })}
                         </tr>
                       ));
