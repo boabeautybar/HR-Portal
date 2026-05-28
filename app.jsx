@@ -11196,12 +11196,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       const since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - 14);
                       for (let dt = new Date(since); dt < tdY && dt.toISOString().slice(0, 10) < _t0; dt.setDate(dt.getDate() + 1)) {
                         const ymd = dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
+                        const dom = dt.getDate();
                         const ymOf = (() => { const a = ymd.split("-").map(Number); let y = a[0], m = a[1]; if (a[2] > 24) { m += 1; if (m > 12) { m = 1; y++; } } return y + "-" + String(m).padStart(2, "0"); })();
                         managers.forEach(m => {
                           const grid = mgrClockinSchedCache[(m.branch || "") + "|" + ymOf];
                           if (!grid) return;
-                          const cell = grid[m.ec] && grid[m.ec][ymd];
-                          if (cell !== "W" && cell !== "E") return;
+                          const cell = grid[m.ec] && grid[m.ec][dom];
+                          if (cell !== "W" && cell !== "WL" && cell !== "WE" && cell !== "WM" && cell !== "E") return;
                           if (clockedInByEcDate.has(m.ec + "|" + ymd)) return;
                           const sid = ecToStaffId[m.ec];
                           if (sid && taggedKeys.has(sid + "|" + ymd)) return;
@@ -20948,13 +20949,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               (mgrDayStatuses || []).forEach(s => { statByKey[s.staff_id + "|" + s.date] = s; });
               const statLabel = code => (MGR_REASON_OPTIONS.find(o => o.code === code) || { label: code }).label;
               const ymd = mgrClockinDay;
-              const ymOf = (() => { const a = ymd.split("-").map(Number); let y = a[0], m = a[1]; if (a[2] > 24) { m += 1; if (m > 12) { m = 1; y++; } } return y + "-" + String(m).padStart(2, "0"); })();
+              // The manager schedule grid is stored as grid[ec][dayOfMonth]
+              // (a number, e.g. 28), keyed by the payroll cycle ym. Today's
+              // cycle is the one starting on the most recent 25th: for day
+              // 25-31, that's the cycle ending on the 24th of NEXT month
+              // (so ym is next month); for day 1-24 it's THIS month's ym.
+              const ymdParts = ymd.split("-").map(Number);
+              const dayOfMonth = ymdParts[2];
+              const ymOf = (() => { let y = ymdParts[0], m = ymdParts[1]; if (ymdParts[2] > 24) { m += 1; if (m > 12) { m = 1; y++; } } return y + "-" + String(m).padStart(2, "0"); })();
               const scopedBranches = SALONS
                 .map(s => s.name)
                 .filter(b => !_hasStoreScope || scopedSalonNames.has(b))
                 .filter(b => mgrClockinFilterBranch === "All" || b === mgrClockinFilterBranch);
               // For each branch, collect managers scheduled to work today.
-              // Cell codes that count as "working": W, WL, WE, E. Anything
+              // Cell codes that count as "working": W, WL, WE, WM, E. Anything
               // else (O / R / L / ML / blank) means not expected in.
               // A branch falls back to its full active-manager list when the
               // grid for this cycle hasn't been published — better to show
@@ -20967,7 +20975,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               scopedBranches.forEach(b => {
                 const grid = mgrClockinSchedCache[b + "|" + ymOf];
                 const branchMgrs = managers.filter(m => m.branch === b && !m.onMat && !m.leftDate);
-                const scheduleHasToday = !!grid && branchMgrs.some(m => grid[m.ec] && grid[m.ec][ymd]);
+                const scheduleHasToday = !!grid && branchMgrs.some(m => grid[m.ec] && grid[m.ec][dayOfMonth] != null);
                 if (!scheduleHasToday) {
                   // No schedule data for today at this branch — fall back to
                   // listing every active manager so ROMs can still tag.
@@ -20980,8 +20988,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 }
                 const list = [];
                 branchMgrs.forEach(m => {
-                  const cell = grid[m.ec] && grid[m.ec][ymd];
-                  const isWorking = cell === "W" || cell === "WL" || cell === "WE" || cell === "E";
+                  const cell = grid[m.ec] && grid[m.ec][dayOfMonth];
+                  const isWorking = cell === "W" || cell === "WL" || cell === "WE" || cell === "WM" || cell === "E";
                   if (isWorking) { list.push(m); allScheduled.push(m); }
                   else if (inByEc[m.ec]) { surpriseClockIns.push({ m, cell: cell || "—" }); }
                 });
@@ -21072,7 +21080,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 if (r.type === "in" && mLocalYmd(r.ts) === mgrClockinDay) clockedIn.add(r.staff.employee_code);
               });
               const ymd = mgrClockinDay;
-              const ymOf = (() => { const a = ymd.split("-").map(Number); let y = a[0], m = a[1]; if (a[2] > 24) { m += 1; if (m > 12) { m = 1; y++; } } return y + "-" + String(m).padStart(2, "0"); })();
+              // Schedule grid is keyed by day-of-month (number), not by ymd.
+              const _ymdParts = ymd.split("-").map(Number);
+              const _dom = _ymdParts[2];
+              const ymOf = (() => { let y = _ymdParts[0], m = _ymdParts[1]; if (_ymdParts[2] > 24) { m += 1; if (m > 12) { m = 1; y++; } } return y + "-" + String(m).padStart(2, "0"); })();
               const branchesToCheck = mgrClockinFilterBranch === "All"
                 ? SALONS.map(s => s.name)
                 : [mgrClockinFilterBranch];
@@ -21081,8 +21092,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const grid = mgrClockinSchedCache[branchName + "|" + ymOf];
                 if (!grid) continue;        // schedule not loaded yet
                 for (const m of managers.filter(mm => mm.branch === branchName)) {
-                  const cell = grid[m.ec] && grid[m.ec][ymd];
-                  if (cell !== "W" && cell !== "E") continue;     // not scheduled to work
+                  const cell = grid[m.ec] && grid[m.ec][_dom];
+                  if (cell !== "W" && cell !== "WL" && cell !== "WE" && cell !== "WM" && cell !== "E") continue;     // not scheduled to work
                   if (clockedIn.has(m.ec)) continue;              // they did clock in
                   noShows.push({ ec: m.ec, name: m.name, branch: branchName, ymd, staffId: m._id || m.id });
                 }
