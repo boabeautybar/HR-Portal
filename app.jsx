@@ -10969,6 +10969,101 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 );
               })()}
 
+              {/* ── SECTION: MANAGER ABSENCES — ROM ACTION REQUIRED ──
+                  Lifted to the very top of the dashboard (above Upcoming
+                  Openings) so a ROM sees the action item first thing on
+                  sign-in. To-do list of managers scheduled to work today
+                  who haven't clocked in and don't yet have a reason
+                  recorded. Honours the dashboard scope toggle: in "mine"
+                  mode only the ROM's allocated stores; in "all" mode
+                  every region so cover decisions can happen here. After
+                  11:30 local time the title blinks to nudge action. */}
+              {(() => {
+                const _t = new Date();
+                const _todayYmd = _t.getFullYear() + "-" + String(_t.getMonth() + 1).padStart(2, "0") + "-" + String(_t.getDate()).padStart(2, "0");
+                if (dashTodayMgrClockinEcs == null) return null;     // still loading
+                const clockedIn = new Set();
+                (dashTodayMgrClockinEcs || []).forEach(e => clockedIn.add(String(e).trim()));
+                const onLeaveEcs = new Set();
+                (leaveRecs || []).forEach(lv => {
+                  if (lv && lv.ec && lv.startDate && lv.endDate && _todayYmd >= lv.startDate && _todayYmd <= lv.endDate) onLeaveEcs.add(String(lv.ec).trim());
+                });
+                const mgrByEc = {};
+                (enrichedManagers || []).forEach(m => { if (m && m.ec) mgrByEc[String(m.ec).trim()] = m; });
+                const taggedKeys = new Set((mgrDayStatuses || []).map(s => s.staff_id + "|" + s.date));
+                const pending = [];
+                for (const branchName in dashSchedMgrsByBranch) {
+                  if (!scopedSalonNames.has(branchName)) continue;
+                  for (const ecRaw of (dashSchedMgrsByBranch[branchName] || [])) {
+                    const ec = String(ecRaw).trim();
+                    if (clockedIn.has(ec)) continue;
+                    if (onLeaveEcs.has(ec)) continue;
+                    const m = mgrByEc[ec];
+                    if (!m) continue;
+                    if (m.onMat || m.offboarded || (m.leftDate && _todayYmd > m.leftDate)) continue;
+                    const sid = m._id || m.id;
+                    if (sid && taggedKeys.has(sid + "|" + _todayYmd)) continue;
+                    pending.push({ ec, name: m.name, branch: branchName, staffId: sid });
+                  }
+                }
+                if (pending.length === 0) {
+                  const anyScheduled = Object.values(dashSchedMgrsByBranch || {}).some(arr => (arr || []).length > 0);
+                  if (!anyScheduled) return null;
+                  return (
+                    <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 13, padding: "12px 16px", marginBottom: 18, color: "#14532d", fontSize: 13, fontWeight: 700 }}>
+                      ✅ All manager absences explained for today.
+                    </div>
+                  );
+                }
+                pending.sort((a, b) => (a.branch || "").localeCompare(b.branch || "") || (a.name || "").localeCompare(b.name || ""));
+                const byBranch = {};
+                pending.forEach(p => { (byBranch[p.branch] = byBranch[p.branch] || []).push(p); });
+                const branchKeys = Object.keys(byBranch).sort();
+                const minsNow = _t.getHours() * 60 + _t.getMinutes();
+                const urgent = minsNow >= 11 * 60 + 30;
+                const palette = urgent
+                  ? { bg: "#fee2e2", border: "#fca5a5", text: "#7f1d1d", chip: "#fff", chipBorder: "#fca5a5" }
+                  : { bg: "#fef3c7", border: "#fcd34d", text: "#92400e", chip: "#fff", chipBorder: "#fcd34d" };
+                return (
+                  <div style={{ background: palette.bg, border: "2px solid " + palette.border, borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: urgent ? "0 6px 22px rgba(127,29,29,0.18)" : "0 4px 16px rgba(146,64,14,0.12)" }}>
+                    <style>{`@keyframes _romAbsBlink { 0%,49%{opacity:1} 50%,100%{opacity:0.35} }`}</style>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: palette.text, letterSpacing: "0.04em", textTransform: "uppercase", animation: urgent ? "_romAbsBlink 1s infinite" : "none" }}>
+                        {urgent ? "🚨" : "📌"} Manager absences · action required
+                      </div>
+                      <div style={{ fontSize: 12, color: palette.text, fontWeight: 700 }}>
+                        {pending.length} manager{pending.length === 1 ? "" : "s"} scheduled but no clock-in &amp; no reason yet
+                        {urgent && " · past 11:30 — please tag now"}
+                      </div>
+                      <div style={{ flex: 1 }} />
+                      <button
+                        onClick={() => tryChangeTab("mgrclockins")}
+                        style={{ background: "#fff", color: palette.text, border: "1px solid " + palette.border, borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
+                        Open Manager Check-ins →
+                      </button>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 8 }}>
+                      {branchKeys.map(b => (
+                        <div key={b} style={{ background: palette.chip, border: "1px solid " + palette.chipBorder, borderRadius: 9, padding: "8px 10px" }}>
+                          <div style={{ fontSize: 11, fontWeight: 800, color: palette.text, letterSpacing: "0.04em", marginBottom: 4 }}>📍 {b}</div>
+                          {byBranch[b].map(p => (
+                            <div key={p.ec} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "5px 0", borderTop: "1px dashed #FBCFE8" }}>
+                              <div style={{ fontSize: 12.5, fontWeight: 700, color: "#831843" }}>{p.name}</div>
+                              <button
+                                onClick={() => p.staffId && setMgrReasonModal({ staffId: p.staffId, ec: p.ec, name: p.name, branch: p.branch, date: _todayYmd, existing: null })}
+                                disabled={!p.staffId}
+                                style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: p.staffId ? "pointer" : "not-allowed", opacity: p.staffId ? 1 : 0.5 }}>
+                                Mark reason
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* ── SECTION: UPCOMING STORE OPENINGS ──
                   Only renders when at least one SALON has an openingDate
                   that is still in the future. Sorted soonest first. */}
@@ -11262,104 +11357,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </div>
                 ))}
               </div>
-
-              {/* ── SECTION: MANAGER ABSENCES — ROM ACTION REQUIRED ──
-                  For ROMs (and anyone else with the dashboard open), a live
-                  to-do list of managers who are scheduled to work today but
-                  haven't clocked in and don't yet have a reason recorded.
-                  Honours the dashboard scope toggle: in "mine" mode it shows
-                  only the ROM's allocated stores; in "all" mode it also
-                  surfaces other regions so cover decisions can happen here.
-                  After 11:30 local time the title blinks to nudge action. */}
-              {(() => {
-                const _t = new Date();
-                const _todayYmd = _t.getFullYear() + "-" + String(_t.getMonth() + 1).padStart(2, "0") + "-" + String(_t.getDate()).padStart(2, "0");
-                if (dashTodayMgrClockinEcs == null) return null;     // still loading
-                const clockedIn = new Set();
-                (dashTodayMgrClockinEcs || []).forEach(e => clockedIn.add(String(e).trim()));
-                const onLeaveEcs = new Set();
-                (leaveRecs || []).forEach(lv => {
-                  if (lv && lv.ec && lv.startDate && lv.endDate && _todayYmd >= lv.startDate && _todayYmd <= lv.endDate) onLeaveEcs.add(String(lv.ec).trim());
-                });
-                const mgrByEc = {};
-                (enrichedManagers || []).forEach(m => { if (m && m.ec) mgrByEc[String(m.ec).trim()] = m; });
-                const taggedKeys = new Set((mgrDayStatuses || []).map(s => s.staff_id + "|" + s.date));
-                const pending = [];
-                for (const branchName in dashSchedMgrsByBranch) {
-                  if (!scopedSalonNames.has(branchName)) continue;
-                  for (const ecRaw of (dashSchedMgrsByBranch[branchName] || [])) {
-                    const ec = String(ecRaw).trim();
-                    if (clockedIn.has(ec)) continue;
-                    if (onLeaveEcs.has(ec)) continue;
-                    const m = mgrByEc[ec];
-                    if (!m) continue;
-                    if (m.onMat || m.offboarded || (m.leftDate && _todayYmd > m.leftDate)) continue;
-                    const sid = m._id || m.id;
-                    if (sid && taggedKeys.has(sid + "|" + _todayYmd)) continue;
-                    pending.push({ ec, name: m.name, branch: branchName, staffId: sid });
-                  }
-                }
-                if (pending.length === 0) {
-                  // Quiet success state — only show when there are scheduled
-                  // managers worth confirming so the card isn't a no-op chip.
-                  const anyScheduled = Object.values(dashSchedMgrsByBranch || {}).some(arr => (arr || []).length > 0);
-                  if (!anyScheduled) return null;
-                  return (
-                    <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 13, padding: "12px 16px", marginTop: 14, color: "#14532d", fontSize: 13, fontWeight: 700 }}>
-                      ✅ All manager absences explained for today.
-                    </div>
-                  );
-                }
-                // Group by branch for compact display.
-                pending.sort((a, b) => (a.branch || "").localeCompare(b.branch || "") || (a.name || "").localeCompare(b.name || ""));
-                const byBranch = {};
-                pending.forEach(p => { (byBranch[p.branch] = byBranch[p.branch] || []).push(p); });
-                const branchKeys = Object.keys(byBranch).sort();
-                // Past 11:30 → blink to nudge action.
-                const minsNow = _t.getHours() * 60 + _t.getMinutes();
-                const urgent = minsNow >= 11 * 60 + 30;
-                const palette = urgent
-                  ? { bg: "#fee2e2", border: "#fca5a5", text: "#7f1d1d", chip: "#fff", chipBorder: "#fca5a5" }
-                  : { bg: "#fef3c7", border: "#fcd34d", text: "#92400e", chip: "#fff", chipBorder: "#fcd34d" };
-                return (
-                  <div style={{ background: palette.bg, border: "1px solid " + palette.border, borderRadius: 13, padding: "14px 16px", marginTop: 14 }}>
-                    <style>{`@keyframes _romAbsBlink { 0%,49%{opacity:1} 50%,100%{opacity:0.35} }`}</style>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
-                      <div style={{ fontSize: 14, fontWeight: 800, color: palette.text, letterSpacing: "0.04em", textTransform: "uppercase", animation: urgent ? "_romAbsBlink 1s infinite" : "none" }}>
-                        {urgent ? "🚨" : "📌"} Manager absences · action required
-                      </div>
-                      <div style={{ fontSize: 12, color: palette.text, fontWeight: 700 }}>
-                        {pending.length} manager{pending.length === 1 ? "" : "s"} scheduled but no clock-in &amp; no reason yet
-                        {urgent && " · past 11:30 — please tag now"}
-                      </div>
-                      <div style={{ flex: 1 }} />
-                      <button
-                        onClick={() => tryChangeTab("mgrclockins")}
-                        style={{ background: "#fff", color: palette.text, border: "1px solid " + palette.border, borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
-                        Open Manager Check-ins →
-                      </button>
-                    </div>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 8 }}>
-                      {branchKeys.map(b => (
-                        <div key={b} style={{ background: palette.chip, border: "1px solid " + palette.chipBorder, borderRadius: 9, padding: "8px 10px" }}>
-                          <div style={{ fontSize: 11, fontWeight: 800, color: palette.text, letterSpacing: "0.04em", marginBottom: 4 }}>📍 {b}</div>
-                          {byBranch[b].map(p => (
-                            <div key={p.ec} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "5px 0", borderTop: "1px dashed #FBCFE8" }}>
-                              <div style={{ fontSize: 12.5, fontWeight: 700, color: "#831843" }}>{p.name}</div>
-                              <button
-                                onClick={() => p.staffId && setMgrReasonModal({ staffId: p.staffId, ec: p.ec, name: p.name, branch: p.branch, date: _todayYmd, existing: null })}
-                                disabled={!p.staffId}
-                                style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: p.staffId ? "pointer" : "not-allowed", opacity: p.staffId ? 1 : 0.5 }}>
-                                Mark reason
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })()}
 
               {/* ── SECTION: HR TASKS (Mocked Phase 3) ── hidden for ROM
                   users — onboarding trial-review actions are HR's job,
