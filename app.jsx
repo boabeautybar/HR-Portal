@@ -9464,7 +9464,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // Load recent manager clock-ins when the viewer tab opens.
   useEffect(() => {
-    if (tab !== "mgrclockins" && tab !== "mgrCoverage") return;
+    if (tab !== "mgrclockins" && tab !== "mgrCoverage" && tab !== "attendance") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     let cancelled = false;
     (async () => {
@@ -16169,19 +16169,79 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const _mgrEcToStaffId = {};
         managers.forEach(m => { if (m.ec && (m._id || m.id)) _mgrEcToStaffId[m.ec] = m._id || m.id; });
         const _mgrStatusByEcYmd = {};
+        const _mgrProofByEcYmd = {};
+        const _mgrNoteByEcYmd = {};
+        const _mgrRecorderByEcYmd = {};
+        const _mgrRecordedAtByEcYmd = {};
         (mgrDayStatuses || []).forEach(r => {
           for (const ec in _mgrEcToStaffId) {
             if (_mgrEcToStaffId[ec] === r.staff_id) {
               (_mgrStatusByEcYmd[ec] = _mgrStatusByEcYmd[ec] || {})[r.date] = r.status;
+              if (r.proof) (_mgrProofByEcYmd[ec] = _mgrProofByEcYmd[ec] || {})[r.date] = r.proof;
+              if (r.note) (_mgrNoteByEcYmd[ec] = _mgrNoteByEcYmd[ec] || {})[r.date] = r.note;
+              (_mgrRecorderByEcYmd[ec] = _mgrRecorderByEcYmd[ec] || {})[r.date] = r.updated_by || r.recorded_by || null;
+              (_mgrRecordedAtByEcYmd[ec] = _mgrRecordedAtByEcYmd[ec] || {})[r.date] = r.updated_at || r.created_at || null;
               break;
             }
           }
         });
+        // Manager clock-in lookup. Sourced from mgrClockinRows (loaded for the
+        // attendance tab), capped at `mgrClockinDays` days back from today.
+        // Used to detect 'scheduled manager day with no clock-in + no reason'
+        // and auto-flag those cells as 'absent + needs review' on the grid —
+        // same shape as the missing-checkin warning for nail techs.
+        const _mgrCheckedInByEcYmd = {};
+        const _mLocalYmd = (ts) => { const d = new Date(ts); return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()); };
+        (mgrClockinRows || []).forEach(r => {
+          if (!r || !r.staff || r.staff.role_type !== "manager") return;
+          if (r.type !== "in") return;
+          const ec = String(r.staff.employee_code || "").trim();
+          if (!ec) return;
+          (_mgrCheckedInByEcYmd[ec] = _mgrCheckedInByEcYmd[ec] || {})[_mLocalYmd(r.ts)] = true;
+        });
+        const _todayYmdAtt = (() => { const d = new Date(); return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()); })();
+        const _mgrCheckinFromYmd = (() => {
+          const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - (mgrClockinDays || 31));
+          return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate());
+        })();
+        // Is this (ec, ymd) a manager day that should auto-render as 'absent
+        // + needs review' because they were scheduled to work but didn't
+        // clock in and no ROM tagged a reason? Only true for the past
+        // `mgrClockinDays` window so we never mis-flag days we have no
+        // clock-in cache for.
+        const _isMgrAutoAbsent = (ec, ymd, d) => {
+          if (!_mgrEcToStaffId[ec]) return false;
+          if (ymd > _todayYmdAtt) return false;
+          if (ymd < _mgrCheckinFromYmd) return false;
+          if ((_onLeaveByEcYmd[String(ec).trim()] || {})[ymd]) return false; // on approved leave
+          if ((_mgrStatusByEcYmd[ec] || {})[ymd]) return false;     // ROM already explained it
+          if ((attGrid[ec] || {})[d]) return false;                 // admin already set the cell
+          if ((_mgrCheckedInByEcYmd[ec] || {})[ymd]) return false;  // they did clock in
+          const sv = (attSched[ec] || {})[d];
+          return sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL" || sv === "E";
+        };
         // For a given (ec, ymd), is this day strictly AFTER their last day?
         const isPostLeftDate = (ec, ymd) => {
           const ld = offByEc[ec];
           return !!ld && ymd > ld;       // strictly after — leftDate itself is the "last day worked"
         };
+        // Leave Planner overlay. The Leave Planner stores approved leave on
+        // the leaveRecs collection; the Schedule component patches "L" into
+        // the saved schedule grid only when the user re-opens & saves that
+        // store's schedule. Until then the attendance grid (and the Manager
+        // Coverage grid, see below) would still read the old W/WL/WE for
+        // those days. Overlay leave directly from leaveRecs so an approved
+        // leave day shows as 'Annual' regardless of whether the schedule was
+        // re-saved.
+        const _onLeaveByEcYmd = {};
+        (leaveRecs || []).forEach(lv => {
+          if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return;
+          const ec = String(lv.ec).trim();
+          for (let cur = new Date(lv.startDate + "T00:00:00"); cur <= new Date(lv.endDate + "T00:00:00"); cur.setDate(cur.getDate() + 1)) {
+            const ymd = cur.getFullYear() + "-" + p2(cur.getMonth() + 1) + "-" + p2(cur.getDate());
+            (_onLeaveByEcYmd[ec] = _onLeaveByEcYmd[ec] || {})[ymd] = true;
+          }
+        });
 
         // Helpers
         const mirrorSuppressed = !!(attMeta && attMeta.mirrorSuppressed);
@@ -16194,6 +16254,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const _do = days.find(x => x.d === d);
             const _v = _do && _mgrStatusByEcYmd[ec][_do.ymd];
             if (_v) return _v;
+          }
+          // Leave Planner overlay. Approved leave is always 'Annual' on the
+          // attendance grid regardless of what the schedule grid still says,
+          // so a leave day granted after the schedule was published doesn't
+          // get mis-rendered as a working day.
+          {
+            const _do = days.find(x => x.d === d);
+            if (_do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd]) {
+              // Admin-edited cell still wins (e.g. "Sick + note" on top of a
+              // pre-approved leave day shouldn't get reverted).
+              const _gv = attGrid[ec] && attGrid[ec][d];
+              if (!_gv) return "al";
+            }
           }
           // Tech-loan override: the home branch's loaned-out cell mirrors
           // the status the receiving branch's kiosk recorded that day so
@@ -16228,6 +16301,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // After a Total Reset the schedule mirror is suppressed so the
           // grid reads as truly empty until the admin runs Auto-fill.
           if (mirrorSuppressed) return "";
+          // Manager-auto-absent overlay: scheduled to work but no kiosk
+          // clock-in and no ROM-recorded reason → render as 'Absent' so
+          // the existing absent-needs-review warning + red ⚠ kick in.
+          if (dayObj && _isMgrAutoAbsent(ec, dayObj.ymd, d)) return "absent";
           // Fall back to schedule hint
           const sv = attSched[ec] && attSched[ec][d];
           if (sv === "O" || sv === "R") return "off";
@@ -16247,12 +16324,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // mirrored from the receiving branch) - render as a solid override
           // so the cell isn't italicised like a schedule hint.
           if (outgoingLoanMap[ec] && outgoingLoanMap[ec][d]) return true;
+          // ROM-recorded manager status (sick/absent/frl/etc.), the
+          // auto-absent overlay and approved leave from the Leave Planner
+          // all count as solid overrides — render with the proper STAT
+          // colour band, not faded schedule italics.
+          if (dayObj && (_mgrStatusByEcYmd[ec] || {})[dayObj.ymd]) return true;
+          if (dayObj && _isMgrAutoAbsent(ec, dayObj.ymd, d)) return true;
+          if (dayObj && (_onLeaveByEcYmd[String(ec).trim()] || {})[dayObj.ymd] && !(attGrid[ec] && attGrid[ec][d])) return true;
           const v = attGrid[ec] && attGrid[ec][d];
           return !!v && v.indexOf("~") !== 0;
         };
         const schedHint = (ec, d) => {
           if (mirrorSuppressed) return null;        // hide schedule signal after a Total Reset
           if (onMatEcs.has(ec)) return "mat";       // maternity row — every day mirrors as 'mat'
+          // Leave Planner overlay — same idea as in getStatus. A leave day
+          // granted via the planner reads as 'al' on the schedule strip even
+          // if the saved schedule grid still has W/WL/WE for that day.
+          {
+            const _do = days.find(x => x.d === d);
+            if (_do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd]) return "al";
+          }
           const sv = attSched[ec] && attSched[ec][d];
           if (!sv) return null;
           if (sv === "W" || sv === "WE" || sv === "WL") return "on";
@@ -17205,7 +17296,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const t0Ymd = todayY.getFullYear() + "-" + p2(todayY.getMonth() + 1) + "-" + p2(todayY.getDate());
           const reviewedMap = (attMeta && attMeta.reviewedWarnings) || {};
           for (const s of attStaff) {
-            if (s.role !== "NT") continue;
             for (const dy of days) {
               const isPastOrToday = dy.ymd <= t0Ymd;
               if (!isPastOrToday) continue;        // future days never warn
@@ -17215,8 +17305,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const scheduleSaysWork = hint === "on" || hint === "ext";
               const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i";
               const isLate = bareV === "late";
-              const kioskAbs = ((kioskAbsentByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null;
-              const checkin = ((checkInsByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null;
+              // Kiosk audit log + check-ins are tech-only signals — managers
+              // have their own clock-in source (handled via the mgr-overlay
+              // upstream). Skip the lookups for them so we never mix tech
+              // kiosk hits into a manager warning.
+              const kioskAbs = s.role === "NT" ? (((kioskAbsentByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null) : null;
+              const checkin = s.role === "NT" ? (((checkInsByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null) : null;
               const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
               const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
               const freshaWorkedCell = !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
@@ -17700,8 +17794,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const cellLine = (st.lbl || "—") + (deviation ? "  (deviation from schedule)" : "") + (isFutureSwap ? "  (future placeholder)" : "");
                           const schedLine = hint ? lbl(hint) : "—";
                           let kioskLine;
+                          const mgrStatus = s.role !== "NT" ? ((_mgrStatusByEcYmd[s.ec] || {})[dy.ymd] || null) : null;
+                          const mgrNote = s.role !== "NT" ? ((_mgrNoteByEcYmd[s.ec] || {})[dy.ymd] || null) : null;
+                          const mgrRecorder = s.role !== "NT" ? ((_mgrRecorderByEcYmd[s.ec] || {})[dy.ymd] || null) : null;
+                          const mgrCheckedIn = s.role !== "NT" && ((_mgrCheckedInByEcYmd[s.ec] || {})[dy.ymd]);
                           if (s.role !== "NT") {
-                            kioskLine = null; // managers: no kiosk
+                            if (mgrStatus) {
+                              kioskLine = "ROM marked " + lbl(mgrStatus) + (mgrRecorder ? " (by " + mgrRecorder + ")" : "") + (mgrNote ? " — " + mgrNote : "");
+                            } else if (mgrCheckedIn) {
+                              kioskLine = "Clocked in via kiosk";
+                            } else if (!isPastOrToday) {
+                              kioskLine = "—";
+                            } else if (dy.ymd < _mgrCheckinFromYmd) {
+                              kioskLine = null; // outside loaded clock-in window — don't claim anything
+                            } else {
+                              kioskLine = "No manager clock-in recorded";
+                            }
                           } else if (kioskAbs) {
                             kioskLine = "Marked " + lbl(kioskAbs.status) + (kioskAbs.markedBy ? " (by " + kioskAbs.markedBy + ")" : "") + (kioskAbs.note ? " — " + kioskAbs.note : "");
                           } else if (checkinHasIn) {
@@ -17807,9 +17915,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   // and only then click Confirm to record the review.
                                   const isProofStatus = bareV === "sick_n" || bareV === "frl";
                                   const kioskProofKey = kioskAbs && kioskAbs.proofKey;
-                                  if (isProofStatus && !reviewed && s.role === "NT") {
+                                  const isMgrRow = !!_mgrEcToStaffId[s.ec];
+                                  if (isProofStatus && !reviewed) {
                                     const openProofModal = (e) => {
                                       e.stopPropagation();
+                                      // Managers: the proof image lives on the
+                                      // manager_day_status row that the ROM
+                                      // uploaded — no kiosk proof key. Just
+                                      // hand the dataUrl straight to the modal.
+                                      if (isMgrRow) {
+                                        const mgrProof = (_mgrProofByEcYmd[s.ec] || {})[dy.ymd] || null;
+                                        const mgrNote = (_mgrNoteByEcYmd[s.ec] || {})[dy.ymd] || null;
+                                        const mgrRecorder = (_mgrRecorderByEcYmd[s.ec] || {})[dy.ymd] || null;
+                                        setProofModal({
+                                          loading: false,
+                                          name: s.name,
+                                          ymd: dy.ymd,
+                                          status: bareV === "sick_n" ? "Sick + note" : "FRL + proof",
+                                          note: mgrNote ? (mgrNote + (mgrRecorder ? "  (recorded by " + mgrRecorder + ")" : "")) : (mgrRecorder ? "Recorded by " + mgrRecorder : null),
+                                          dataUrl: mgrProof,
+                                          onConfirm: async () => { await autoRecordReview(s.ec, dy.d, v); }
+                                        });
+                                        return;
+                                      }
                                       const proofKey = kioskProofKey || ("boa_proof_" + attBranch + "_" + attYM + "_" + s.ec + "_" + dy.d);
                                       setProofModal({
                                         loading: !!proofKey,
@@ -21986,7 +22114,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const k = _draftKey(branchName, ym);
           return _mergeDraft(mgrClockinSchedCache[k], mgrCoverageDraft[k]);
         };
+        // Leave Planner overlay (same idea as the attendance grid version).
+        // A manager granted leave through the Leave Planner reads as 'L' on
+        // every covered day regardless of whether the schedule was re-saved
+        // afterwards — so the coverage view stops treating that day as
+        // 'scheduled to work'.
+        const _onLeaveByEcYmdCov = {};
+        (leaveRecs || []).forEach(lv => {
+          if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return;
+          const ec = String(lv.ec).trim();
+          for (let cur = new Date(lv.startDate + "T00:00:00"); cur <= new Date(lv.endDate + "T00:00:00"); cur.setDate(cur.getDate() + 1)) {
+            const ymd = cur.getFullYear() + "-" + String(cur.getMonth() + 1).padStart(2, "0") + "-" + String(cur.getDate()).padStart(2, "0");
+            (_onLeaveByEcYmdCov[ec] = _onLeaveByEcYmdCov[ec] || {})[ymd] = true;
+          }
+        });
         const readWithFallback = (branchName, ec, d) => {
+          // Leave overlay wins over the saved grid + draft. Drafts can still
+          // override leave on purpose (ROM manually re-stamps a shift on top
+          // of a leave day) — those land in `mgrCoverageDraft` and we let
+          // them through.
+          const draftCell = readCell(mgrCoverageDraft[_draftKey(branchName, d.mgrYm)], ec, d);
+          if (!draftCell && ec && d && d.ymd && (_onLeaveByEcYmdCov[String(ec).trim()] || {})[d.ymd]) return "L";
           const grid = _gridForView(branchName, d.mgrYm);
           const v = readCell(grid, ec, d);
           if (v) return v;
