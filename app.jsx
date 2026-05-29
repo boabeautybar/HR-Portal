@@ -22258,9 +22258,31 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // shift is on Betty's schedule.
         const mgrByBranch = {};
         scopedBranches.forEach(s => { mgrByBranch[s.name] = []; });
+        // Off-board lookup: leftDate + reason from offList, used to surface
+        // resigned managers on the coverage view with a "👋 LEFT" chip and
+        // a greyed row — matches what the Schedule tab does for the same
+        // record. A manager carries leftDate either on the live record or
+        // (more reliably for post-leftDate days) on the off-board record.
+        const _offByEcCov = {};
+        (offList || []).forEach(o => { if (o && o.ec) _offByEcCov[String(o.ec).trim()] = o; });
+        const _resolveLeftDate = (m) => {
+          const o = _offByEcCov[String(m.ec || "").trim()];
+          return (o && o.leftDate) || m.leftDate || null;
+        };
+        const _resolveLeftReason = (m) => {
+          const o = _offByEcCov[String(m.ec || "").trim()];
+          return (o && o.reason) || null;
+        };
+        // Visible-week window — used to drop managers who left BEFORE this
+        // week entirely. A manager whose leftDate is within the week still
+        // shows so the ROM can see the last few days of cover.
+        const _weekEndYmd = weekDays[weekDays.length - 1] && weekDays[weekDays.length - 1].ymd;
         managers.forEach(m => {
-          if (!m.branch || m.onMat || m.leftDate) return;
-          if (mgrByBranch[m.branch]) mgrByBranch[m.branch].push(m);
+          if (!m.branch || m.onMat) return;
+          const ld = _resolveLeftDate(m);
+          // Drop managers who left strictly before this visible week.
+          if (ld && _weekEndYmd && ld < weekDays[0].ymd) return;
+          if (mgrByBranch[m.branch]) mgrByBranch[m.branch].push(ld ? { ...m, _offGhost: true, _offLeftDate: ld, _offReason: _resolveLeftReason(m) } : m);
         });
         // Pool of every staff record we might match a grid EC against —
         // try managers first, fall back to techs/all-staff if a row in the
@@ -22340,6 +22362,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // bottom regardless of role.
         const _roleRank = (r) => r === "SSM" ? 0 : r === "SM" ? 1 : r === "AM" ? 2 : 3;
         Object.keys(mgrByBranch).forEach(b => mgrByBranch[b].sort((a, b) => {
+          // Off-boarded managers go to the very bottom (under maternity),
+          // mirroring the Schedule tab's row ordering.
+          const ao = a._offGhost ? 1 : 0;
+          const bo = b._offGhost ? 1 : 0;
+          if (ao !== bo) return ao - bo;
           const am = _isOnMat(a) ? 1 : 0;
           const bm = _isOnMat(b) ? 1 : 0;
           if (am !== bm) return am - bm;
@@ -22628,7 +22655,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }
           };
         };
-        const renderCell = (cellVal, key, branchName, role, ymd, ec, isGuest, mgrYm, mgrName, dom, dow) => {
+        const renderCell = (cellVal, key, branchName, role, ymd, ec, isGuest, mgrYm, mgrName, dom, dow, leftDate) => {
+          // Off-boarded manager — every cell AFTER their last working day
+          // renders as a locked grey "TERMINATED" chip. Days on or before
+          // leftDate stay normal so the final stretch of cover still shows.
+          if (leftDate && ymd && ymd > leftDate) {
+            return (
+              <td key={key} title={`${mgrName} · left ${leftDate} — no longer covering`} style={{ background: "#f3f4f6", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", cursor: "not-allowed", userSelect: "none", WebkitUserSelect: "none", textAlign: "center" }}>
+                <div style={{ minHeight: 56, display: "flex", alignItems: "center", justifyContent: "center", color: "#9ca3af", fontSize: 10, fontStyle: "italic", letterSpacing: "0.04em" }}>—</div>
+              </td>
+            );
+          }
           const clockedIn = ec && ymd && _clockedInByEcYmd[String(ec).trim()] && _clockedInByEcYmd[String(ec).trim()][ymd];
           const isPast = ymd && ymd < (function () { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
           const _dragDraggable = _isSrcDraggable(cellVal);
@@ -22877,15 +22914,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                     <td colSpan={8} style={{ padding: "10px 14px", color: "#9ca3af", fontStyle: "italic", fontSize: 12 }}>No active managers at this branch.</td>
                                   </tr>
                                 ) : mgrs.map(m => {
+                                  const _isOff = !!m._offGhost;
                                   return (
-                                    <tr key={m.ec}>
-                                      <td style={{ padding: "6px 14px", fontWeight: 700, color: "#831843", fontSize: 12, borderBottom: "1px solid #FCE7F3" }}>
+                                    <tr key={m.ec} style={{ opacity: _isOff ? 0.55 : 1 }}>
+                                      <td style={{ padding: "6px 14px", fontWeight: 700, color: _isOff ? "#9ca3af" : "#831843", fontSize: 12, borderBottom: "1px solid #FCE7F3", background: _isOff ? "#f9fafb" : undefined, textDecoration: _isOff ? "line-through" : "none" }}>
                                         {_effectiveRole(m) === "SSM" ? "💎 " : _effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}
                                         <span style={{ marginLeft: 6, fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{_effectiveRole(m) || ""}{m.role === "AM" && _effectiveRole(m) === "SM" ? " (trial)" : ""}</span>
+                                        {_isOff && (
+                                          <div style={{ display: "inline-block", marginLeft: 6, background: "#fee2e2", color: "#991b1b", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>
+                                            👋 LEFT {m._offLeftDate}{m._offReason ? " · " + m._offReason : ""}
+                                          </div>
+                                        )}
                                       </td>
                                       {weekDays.map(d => {
                                         const v = readWithFallback(b, m.ec, d);
-                                        return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow);
+                                        return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow, m._offLeftDate || m.leftDate || null);
                                       })}
                                     </tr>
                                   );
@@ -22921,21 +22964,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       if (rows.length === 0) return (
                         <tr><td colSpan={8} style={{ padding: 30, textAlign: "center", color: "#9ca3af", fontStyle: "italic" }}>No managers in scope.</td></tr>
                       );
-                      return rows.map(({ m, b, r }) => (
-                        <tr key={m.ec + "-" + b}>
-                          <td style={{ padding: "6px 14px", borderBottom: "1px solid #FCE7F3" }}>
-                            <div style={{ fontWeight: 700, color: "#831843", fontSize: 12.5 }}>{_effectiveRole(m) === "SSM" ? "💎 " : _effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}</div>
+                      return rows.map(({ m, b, r }) => {
+                        const _isOff = !!m._offGhost;
+                        return (
+                        <tr key={m.ec + "-" + b} style={{ opacity: _isOff ? 0.55 : 1 }}>
+                          <td style={{ padding: "6px 14px", borderBottom: "1px solid #FCE7F3", background: _isOff ? "#f9fafb" : undefined }}>
+                            <div style={{ fontWeight: 700, color: _isOff ? "#9ca3af" : "#831843", fontSize: 12.5, textDecoration: _isOff ? "line-through" : "none" }}>{_effectiveRole(m) === "SSM" ? "💎 " : _effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}</div>
                             <div style={{ fontSize: 10, color: "#9ca3af" }}>
                               📍 {b} <span style={{ background: r.bg, color: r.color, padding: "1px 6px", borderRadius: 4, fontWeight: 700, marginLeft: 4 }}>{r.label}</span>
                               <span style={{ marginLeft: 6, fontFamily: "monospace" }}>{_effectiveRole(m) || ""}{m.role === "AM" && _effectiveRole(m) === "SM" ? " (trial)" : ""}</span>
                             </div>
+                            {_isOff && (
+                              <div style={{ marginTop: 2, fontSize: 10, color: "#991b1b", fontWeight: 700 }}>
+                                👋 LEFT {m._offLeftDate}{m._offReason ? " · " + m._offReason : ""}
+                              </div>
+                            )}
                           </td>
                           {weekDays.map(d => {
                             const v = readWithFallback(b, m.ec, d);
-                            return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow);
+                            return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow, m._offLeftDate || m.leftDate || null);
                           })}
                         </tr>
-                      ));
+                        );
+                      });
                     })()}
                   </tbody>
                 </table>
