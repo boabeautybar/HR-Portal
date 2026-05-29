@@ -816,7 +816,7 @@
     return (res.data && res.data.value) || {};
   }
 
-  async function recordEarlyLeave(ym, dayKey, ec, hours, recordedBy) {
+  async function recordEarlyLeave(ym, dayKey, ec, hours, recordedBy, opts) {
     var c = client(); if (!c) throw new Error("Supabase not configured");
     var h = Number(hours);
     if (!isFinite(h) || h <= 0) throw new Error("Hours must be a positive number.");
@@ -826,10 +826,17 @@
     var existing = await getEarlyLeaves(ym);
     var data = JSON.parse(JSON.stringify(existing || {}));
     if (!data[dayKey]) data[dayKey] = {};
+    // Optional reason / note added later for managers' early-out picker.
+    // Older rows just have { hours, recordedAt, recordedBy } — the new
+    // fields are appended and the HR portal treats them as optional.
+    var reasonCode = opts && opts.reasonCode ? String(opts.reasonCode) : null;
+    var reasonNote = opts && opts.reasonNote ? String(opts.reasonNote).trim() : null;
     data[dayKey][ec] = {
       hours:       h,
       recordedAt:  new Date().toISOString(),
-      recordedBy:  (recordedBy || "").trim() || null
+      recordedBy:  (recordedBy || "").trim() || null,
+      reasonCode:  reasonCode,
+      reasonNote:  reasonNote || null
     };
     var res = await c.from("app_state").upsert({ key: earlyKey(ym), value: data });
     if (res.error) throw res.error;
@@ -1329,8 +1336,58 @@
     activeSmTrialEcs: activeSmTrialEcs,
     listAllManagers: listAllManagers, listTodayManagerClockins: listTodayManagerClockins,
     addManagerClockinWithMeta: addManagerClockinWithMeta,
-    loadClockinMeta: loadClockinMeta, listRecentManagerClockins: listRecentManagerClockins
+    loadClockinMeta: loadClockinMeta, listRecentManagerClockins: listRecentManagerClockins,
+
+    // Manager-side absence reasons (set by the ROM via the HR portal). The
+    // kiosk reads today's rows so the "haven't clocked in" warning can
+    // suppress itself once a ROM has tagged a reason.
+    listManagerDayStatusesToday: listManagerDayStatusesToday,
+
+    // Manager overtime — submitted from the kiosk, approved on the portal.
+    submitOvertimeRequest: submitOvertimeRequest
   };
+
+  async function listManagerDayStatusesToday() {
+    var c = client(); if (!c) return [];
+    var today = todayStr();
+    var res = await c.from("manager_day_status").select("staff_id,status").eq("date", today);
+    if (res.error) { console.error("listManagerDayStatusesToday:", res.error); return []; }
+    return res.data || [];
+  }
+
+  // Append a single OT entry to the boa_overtime_v1 list (created by the
+  // HR portal's Overtime tab). Status defaults to "pending" — the entry
+  // shows up under "Pending approval" on the portal until an admin acts.
+  async function submitOvertimeRequest(p) {
+    var c = client(); if (!c) throw new Error("Supabase not configured");
+    if (!p || !p.ec || !p.date || !p.hours || !p.reason) {
+      throw new Error("ec, date, hours and reason are required.");
+    }
+    var h = Number(p.hours);
+    if (!isFinite(h) || h <= 0) throw new Error("Hours must be a positive number.");
+    if (h > 12) throw new Error("Hours can't exceed 12 — please double-check.");
+    h = Math.round(h * 2) / 2;
+    var prior = await c.from("app_state").select("value").eq("key", "boa_overtime_v1").maybeSingle();
+    var list = (prior.data && Array.isArray(prior.data.value)) ? prior.data.value.slice() : [];
+    list.push({
+      id:           "ot_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+      ec:           String(p.ec).trim(),
+      name:         (p.name || "").trim(),
+      branch:       (p.branch || branch() || "").trim(),
+      date:         String(p.date),
+      hours:        h,
+      reason:       String(p.reason).trim(),
+      status:       "pending",
+      submittedAt:  new Date().toISOString(),
+      submittedBy:  (p.submittedBy || "").trim() || null,
+      decidedAt:    null,
+      decidedBy:    null,
+      decisionNote: null
+    });
+    var res = await c.from("app_state").upsert({ key: "boa_overtime_v1", value: list });
+    if (res.error) throw res.error;
+    return list[list.length - 1];
+  }
 
   async function listRecentManagerClockins(daysBack) {
     var c = client(); if (!c) return [];

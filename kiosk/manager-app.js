@@ -944,7 +944,33 @@
       recent = await window.APP_DATA.listRecentManagerClockins(7);
     }
 
+    // Pull today's manager schedule + ROM-tagged absences so we can decide
+    // who's overdue to clock in. Both are best-effort — if either fetch
+    // fails we just don't show the warning rather than blocking the screen.
     var thisBranch = (cfg.branchName || "");
+    var mgrTodaySched = {};      // ec → schedule code for today
+    var mgrTaggedStaffIds = {};  // staff_id → true (ROM already explained today)
+    try {
+      var _now = new Date();
+      var _ym = _now.getFullYear() + "-" + String(_now.getMonth() + 1).padStart(2, "0");
+      if (window.APP_DATA.getSchedule) {
+        var schedRes = await window.APP_DATA.getSchedule(_ym, "mgr");
+        var schedGrid = (schedRes && schedRes.grid) || {};
+        var _dom = _now.getDate();
+        var _ymd = todayK;
+        Object.keys(schedGrid).forEach(function (ec) {
+          var row = schedGrid[ec] || {};
+          var v = row[_ymd] != null ? row[_ymd] : row[_dom];
+          if (v != null) mgrTodaySched[ec] = v;
+        });
+      }
+      if (window.APP_DATA.listManagerDayStatusesToday) {
+        var tagged = await window.APP_DATA.listManagerDayStatusesToday();
+        (tagged || []).forEach(function (r) { if (r && r.staff_id) mgrTaggedStaffIds[r.staff_id] = true; });
+      }
+    } catch (e) { console.warn("warning-banner data load failed:", e); }
+
+
     mgrs.sort(function (a, b) {
       var aHere = a.branch === thisBranch ? 0 : 1;
       var bHere = b.branch === thisBranch ? 0 : 1;
@@ -977,6 +1003,17 @@
     }
     document.getElementById("mc-warn").innerHTML = warnHtml;
 
+    // "Haven't clocked in yet" warning gate. A scheduled-today manager at
+    // this branch who hasn't clocked in and hasn't been tagged absent by
+    // the ROM, after the configured cutoff time, gets a blinking pill so
+    // colleagues at the tablet see it as a reminder. Disappears as soon
+    // as they clock in, OR a ROM tags an absence on the HR portal.
+    var _warnCutH = (cfg.clockInWarningCutoffHour != null ? cfg.clockInWarningCutoffHour : 9);
+    var _warnCutM = (cfg.clockInWarningCutoffMinute != null ? cfg.clockInWarningCutoffMinute : 30);
+    var _nowMins  = (new Date()).getHours() * 60 + (new Date()).getMinutes();
+    var _pastWarnCutoff = _nowMins >= (_warnCutH * 60 + _warnCutM);
+    var _isWorkingCode = function (v) { return v === "W" || v === "WL" || v === "WE" || v === "WB" || v === "WM" || v === "E"; };
+
     function mgrRowHtml(m) {
       var ec = m.employee_code || "";
       var has = !!pins[ec];
@@ -1000,19 +1037,30 @@
         lastLabel += ' <span class="pill pill-mute">clocked in ' + fmtTime(inTodayByEc[ec].ts) + '</span>';
       }
       var autoBadge = autoYesterday[ec] ? ' <span class="pill" style="background:#fee2e2;color:#7f1d1d">⚠ auto-out yesterday</span>' : "";
+      // Blinking nag: scheduled, no clock-in today, not ROM-tagged, past
+      // the warning cutoff time. Only nag for THIS branch's managers.
+      var _nagBadge = "";
+      if (m.branch === thisBranch
+          && _pastWarnCutoff
+          && !inTodayByEc[ec]
+          && _isWorkingCode(mgrTodaySched[ec])
+          && !mgrTaggedStaffIds[m.id]) {
+        _nagBadge = ' <span class="mgr-clockin-nag" title="No clock-in recorded yet today. No clock-in = unpaid day. Clock in now, or ask the ROM to tag the absence reason.">⚠ HAVEN\'T CLOCKED IN</span>';
+      }
       var rowCls = m.branch === thisBranch ? "" : " staff-inactive";
       return '<div class="staff-row' + rowCls + '" data-id="' + m.id + '" data-ec="' + esc(ec) + '" data-name="' + esc(m.name) + '">' +
         '<div class="staff-row-main">' +
         '<div class="staff-name">' + esc(m.name) +
         rolePill +
         (m.branch !== thisBranch ? ' <span class="pill pill-mute">' + esc(m.branch || "—") + "</span>" : "") +
-        (has ? "" : ' <span class="pill pill-warn">NO PIN</span>') + autoBadge +
+        (has ? "" : ' <span class="pill pill-warn">NO PIN</span>') + autoBadge + _nagBadge +
         '</div>' +
         '<div class="staff-code" style="margin-top:3px">' + lastLabel + '</div>' +
         '</div>' +
         '<div class="staff-row-actions">' +
         '<button class="btn btn-primary" data-act="clockin"  ' + (has && !inDone ? "" : 'disabled') + (inDone ? ' title="Already clocked in today"' : '') + '>Clock In</button>' +
         '<button class="link-btn"       data-act="clockout" ' + (has ? "" : 'disabled') + '>Clock Out</button>' +
+        '<button class="link-btn"       data-act="overtime" ' + (has ? "" : 'disabled') + ' title="Submit overtime for ROM approval">⏱️ OT</button>' +
         '</div>' +
         '</div>';
     }
@@ -1139,6 +1187,22 @@
             return;
           }
         }
+        // 1b. Early-clock-out picker. Leaving before earlyClockOutCutoffHour
+        // needs a reason — sick / appointment / personal / other — saved to
+        // the early-leave sidecar so payroll can deduct the short hours.
+        // Hours = cutoff time − now (rounded to 0.5h), capped at 12.
+        var earlyOpts = null;
+        if (type === "out") {
+          var earlyCutH = (cfg.earlyClockOutCutoffHour != null ? cfg.earlyClockOutCutoffHour : 17);
+          var nowD = new Date();
+          if (nowD.getHours() < earlyCutH) {
+            var minsShort = (earlyCutH * 60) - (nowD.getHours() * 60 + nowD.getMinutes());
+            var rawHours  = Math.max(0.5, Math.round((minsShort / 60) * 2) / 2);
+            var hoursShort = Math.min(12, rawHours);
+            earlyOpts = await openMgrEarlyClockoutModal({ name: name, defaultHours: hoursShort });
+            if (!earlyOpts) return;          // user cancelled
+          }
+        }
         // 2. PIN
         var entered = prompt("Enter " + name + "'s 6-digit personal PIN:");
         if (entered == null) return;
@@ -1184,16 +1248,193 @@
         if (!dataUrl) return;        // user cancelled
         meta.photoDataUrl = dataUrl;
 
-        // 6. Save
+        // 6. Save. Clock-in/out goes first; early-leave reason is best-effort
+        // and won't roll back the clock-out if writing the sidecar fails (we
+        // surface the error but the clock-out already landed).
         try {
           await window.APP_DATA.addManagerClockinWithMeta(id, type, meta);
-          renderMgrClockin();
         } catch (e) {
           alert("Could not record: " + (e.message || e));
+          return;
         }
+        if (earlyOpts) {
+          try {
+            // dayKey + ym match the sidecar's convention: cycle uses START-
+            // month, dayKey is the day-of-month (1–31).
+            var _now2  = new Date();
+            var _y = _now2.getFullYear(), _m = _now2.getMonth() + 1, _d = _now2.getDate();
+            var _ym2; if (_d > 24) { var nm = _m + 1, ny = _y; if (nm > 12) { nm = 1; ny += 1; } _ym2 = ny + "-" + String(nm).padStart(2, "0"); } else { _ym2 = _y + "-" + String(_m).padStart(2, "0"); }
+            await window.APP_DATA.recordEarlyLeave(_ym2, String(_d), ec, earlyOpts.hours, name, {
+              reasonCode: earlyOpts.reasonCode,
+              reasonNote: earlyOpts.reasonNote
+            });
+          } catch (e) {
+            alert("Clock-out saved, but the early-leave reason couldn't be recorded: " + (e.message || e) + "\n\nAsk the ROM to record it manually from the HR portal.");
+          }
+        }
+        renderMgrClockin();
       };
       if (inBtn) inBtn.onclick = function () { doClock("in"); };
       if (outBtn) outBtn.onclick = function () { doClock("out"); };
+      var otBtn = row.querySelector('[data-act="overtime"]');
+      if (otBtn) otBtn.onclick = async function () {
+        // PIN-gate the submission so a colleague can't tap OT for someone
+        // else and get them paid extra.
+        var entered = prompt("Enter " + name + "'s 6-digit personal PIN to submit overtime:");
+        if (entered == null) return;
+        entered = (entered || "").trim();
+        if (!/^\d{6}$/.test(entered)) { alert("PIN must be exactly 6 digits."); return; }
+        if (entered !== pins[ec]) { alert("Wrong PIN."); return; }
+        var result = await openMgrOvertimeModal({ name: name });
+        if (!result) return;
+        try {
+          await window.APP_DATA.submitOvertimeRequest({
+            ec: ec,
+            name: name,
+            branch: thisBranch,
+            date: result.date,
+            hours: result.hours,
+            reason: result.reason,
+            submittedBy: name
+          });
+          alert("✓ Overtime submitted for ROM approval.\n\n" + result.hours + "h on " + result.date + " — you'll see it as Approved on the HR portal once a ROM signs off.");
+        } catch (e) {
+          alert("Could not submit overtime: " + (e.message || e));
+        }
+      };
+    });
+  }
+
+  // ---------------- Early-clock-out reason modal (manager) ----------------
+  // Resolves to { reasonCode, reasonNote, hours } or null if cancelled.
+  // The default hours equals (cutoff − now) so the modal opens with the
+  // expected short-hours pre-filled; the manager can edit.
+  function openMgrEarlyClockoutModal(opts) {
+    return new Promise(function (resolve) {
+      var prev = document.getElementById("boa-mgr-early-modal");
+      if (prev) prev.remove();
+      var REASONS = [
+        { code: "sick",        label: "🤒 Sick" },
+        { code: "appointment", label: "🩺 Doctor / appointment" },
+        { code: "personal",    label: "🏠 Personal" },
+        { code: "other",       label: "✍ Other" }
+      ];
+      var modal = document.createElement("div");
+      modal.id = "boa-mgr-early-modal";
+      modal.className = "boa-modal-backdrop";
+      var buttons = REASONS.map(function (r) {
+        return '<button type="button" class="link-btn mgr-early-reason" data-code="' + r.code + '" ' +
+               'style="padding:10px 12px;border-radius:9px;font-size:13px;font-weight:700;border:1px solid #FBCFE8;background:#fff;color:#831843;text-align:left">' +
+               r.label + '</button>';
+      }).join("");
+      modal.innerHTML =
+        '<div class="boa-modal-card">' +
+          '<h2 class="boa-modal-title">🏃 Leaving early — ' + esc(opts.name) + '</h2>' +
+          '<p class="boa-modal-body">' +
+            'Why are you leaving before the end of your shift? Pick a reason. ' +
+            'The hours short will be deducted from this pay cycle.' +
+          '</p>' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">' + buttons + '</div>' +
+          '<label class="lbl" style="margin-top:14px">Hours short (30-minute intervals)</label>' +
+          '<input id="boa-mgr-early-hours" type="number" class="input" min="0.5" max="12" step="0.5" ' +
+            'value="' + esc(String(opts.defaultHours || 0.5)) + '" autocomplete="off">' +
+          '<label class="lbl" style="margin-top:10px">Note (optional)</label>' +
+          '<textarea id="boa-mgr-early-note" class="input" rows="2" ' +
+            'placeholder="e.g. doctor at 14:30, feeling dizzy, etc."></textarea>' +
+          '<div id="boa-mgr-early-err" class="err-line"></div>' +
+          '<div class="btn-row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">' +
+            '<button type="button" class="link-btn link-btn-dark" id="boa-mgr-early-cancel">Cancel clock-out</button>' +
+            '<button type="button" class="btn btn-primary" id="boa-mgr-early-save" disabled>Continue clock-out</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(modal);
+
+      var chosen = null;
+      var saveBtn = document.getElementById("boa-mgr-early-save");
+      var cancelBtn = document.getElementById("boa-mgr-early-cancel");
+      var hoursEl = document.getElementById("boa-mgr-early-hours");
+      var noteEl  = document.getElementById("boa-mgr-early-note");
+      var errEl   = document.getElementById("boa-mgr-early-err");
+      function close(result) { modal.remove(); resolve(result); }
+      cancelBtn.onclick = function () { close(null); };
+      modal.addEventListener("click", function (e) { if (e.target === modal) close(null); });
+
+      var reasonBtns = modal.querySelectorAll(".mgr-early-reason");
+      Array.prototype.forEach.call(reasonBtns, function (b) {
+        b.onclick = function () {
+          chosen = b.dataset.code;
+          Array.prototype.forEach.call(reasonBtns, function (x) {
+            var isMe = x === b;
+            x.style.background = isMe ? "#FCE7F3" : "#fff";
+            x.style.border = isMe ? "2px solid #BE185D" : "1px solid #FBCFE8";
+          });
+          saveBtn.disabled = false;
+        };
+      });
+
+      saveBtn.onclick = function () {
+        errEl.textContent = "";
+        if (!chosen) { errEl.textContent = "Pick a reason first."; return; }
+        var h = Number((hoursEl.value || "").trim());
+        if (!isFinite(h) || h <= 0) { errEl.textContent = "Hours must be a positive number (e.g. 1.5)."; return; }
+        if (h > 12) { errEl.textContent = "12 hours is the max — please double-check."; return; }
+        close({ reasonCode: chosen, reasonNote: noteEl.value || "", hours: h });
+      };
+    });
+  }
+
+  // ---------------- Overtime submission modal (manager) ----------------
+  // Submits an OT entry to the boa_overtime_v1 list (status = pending).
+  // The HR portal Overtime tab approves or rejects.
+  function openMgrOvertimeModal(opts) {
+    return new Promise(function (resolve) {
+      var prev = document.getElementById("boa-mgr-ot-modal");
+      if (prev) prev.remove();
+      var modal = document.createElement("div");
+      modal.id = "boa-mgr-ot-modal";
+      modal.className = "boa-modal-backdrop";
+      var todayIso = (new Date()).toISOString().slice(0, 10);
+      modal.innerHTML =
+        '<div class="boa-modal-card">' +
+          '<h2 class="boa-modal-title">⏱️ Submit overtime — ' + esc(opts.name) + '</h2>' +
+          '<p class="boa-modal-body">' +
+            'Submit overtime hours for ROM approval. Only approved hours are paid. ' +
+            'Clocking in early doesn\'t count as overtime — only extra time after your shift.' +
+          '</p>' +
+          '<label class="lbl" style="margin-top:10px">Date</label>' +
+          '<input id="boa-mgr-ot-date" type="date" class="input" value="' + esc(todayIso) + '">' +
+          '<label class="lbl" style="margin-top:10px">Hours (30-minute intervals)</label>' +
+          '<input id="boa-mgr-ot-hours" type="number" class="input" min="0.5" max="12" step="0.5" placeholder="e.g. 2">' +
+          '<label class="lbl" style="margin-top:10px">Reason</label>' +
+          '<textarea id="boa-mgr-ot-reason" class="input" rows="2" placeholder="Why was extra time needed?"></textarea>' +
+          '<div id="boa-mgr-ot-err" class="err-line"></div>' +
+          '<div class="btn-row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">' +
+            '<button type="button" class="link-btn link-btn-dark" id="boa-mgr-ot-cancel">Cancel</button>' +
+            '<button type="button" class="btn btn-primary" id="boa-mgr-ot-save">Submit for approval</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(modal);
+
+      var saveBtn = document.getElementById("boa-mgr-ot-save");
+      var cancelBtn = document.getElementById("boa-mgr-ot-cancel");
+      var dateEl = document.getElementById("boa-mgr-ot-date");
+      var hrsEl  = document.getElementById("boa-mgr-ot-hours");
+      var rsnEl  = document.getElementById("boa-mgr-ot-reason");
+      var errEl  = document.getElementById("boa-mgr-ot-err");
+      function close(result) { modal.remove(); resolve(result); }
+      cancelBtn.onclick = function () { close(null); };
+      modal.addEventListener("click", function (e) { if (e.target === modal) close(null); });
+      saveBtn.onclick = function () {
+        errEl.textContent = "";
+        var d = (dateEl.value || "").trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) { errEl.textContent = "Pick a valid date."; return; }
+        var h = Number((hrsEl.value || "").trim());
+        if (!isFinite(h) || h <= 0) { errEl.textContent = "Hours must be a positive number."; return; }
+        if (h > 12) { errEl.textContent = "12 hours is the max."; return; }
+        var r = (rsnEl.value || "").trim();
+        if (!r) { errEl.textContent = "Add a short reason so the approver knows the context."; return; }
+        close({ date: d, hours: h, reason: r });
+      };
     });
   }
 

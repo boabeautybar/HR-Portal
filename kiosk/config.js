@@ -130,6 +130,16 @@
     autoClockOutHour:    18,
     autoClockOutMinute:  30,                           // 18:30 — anyone still clocked in at this time gets auto-clocked-out
 
+    // Manager early-clock-out reason picker. Clocking out before this
+    // time triggers the "Why are you leaving early?" modal.
+    earlyClockOutCutoffHour: 17,
+
+    // Manager "haven't clocked in yet" blinking warning. Triggers when a
+    // scheduled-today manager has no clock-in past this time AND no ROM
+    // has tagged them absent for today.
+    clockInWarningCutoffHour:   9,
+    clockInWarningCutoffMinute: 30,
+
     // Supabase project (same one as the BOA HR admin portal)
     supabase: {
       url:     "https://kcinqpwkwpzbosxtkwyl.supabase.co",
