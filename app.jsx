@@ -22426,6 +22426,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         // Coverage per branch per day — count managers scheduled to work.
         // Uses readWithFallback so published-only schedules still count.
+        // Off-boarded managers don't count on days STRICTLY AFTER their
+        // leftDate — those cells are locked as TERMINATED and the manager
+        // isn't actually covering anymore, so the coverage pill needs to
+        // drop them or the warning banner mis-reads "✓ 2" when one of the
+        // two has already left.
         const coverageByBranchDay = {};
         scopedBranches.forEach(s => {
           coverageByBranchDay[s.name] = weekDays.map(d => {
@@ -22433,6 +22438,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const aGrid = _approvedFallbackCache[s.name + "|" + d.mgrYm];
             let count = 0;
             (mgrByBranch[s.name] || []).forEach(m => {
+              const ld = m._offLeftDate || m.leftDate;
+              if (ld && d.ymd > ld) return;       // already gone — don't count
               if (isWorking(readWithFallback(s.name, m.ec, d))) count++;
             });
             return { count, gridLoaded: !!(wGrid || aGrid) };
