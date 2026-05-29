@@ -8514,6 +8514,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [mgrClockinDay, setMgrClockinDay] = useState(() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); });
   const [mgrClockinPhoto, setMgrClockinPhoto] = useState(null);   // {url, name, ts, ...}
   const [mgrClockinSchedCache, setMgrClockinSchedCache] = useState({});  // {branch|ym: grid}
+  // Manual clock-in modal — opened from the Manager Check-ins no-show
+  // cards or the "+ Log manual shift" button so a ROM can backfill a
+  // forgotten clock-in. Shape:
+  //   { staffId, ec, name, branch, ymd, time, note, _saving, _err }
+  const [manualMgrClockinModal, setManualMgrClockinModal] = useState(null);
 
   // ── Manager Coverage tab state ─────────────────────────────────────
   // Week-at-a-glance roster of every manager grouped by branch (and
@@ -8542,6 +8547,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // defined any groups yet. Stored per signed-in user PIN.
   const [mgrCoverageGroups, setMgrCoverageGroups] = useState(null);   // null = loading; [] = none; [{id,name,branches:[]}]
   const [mgrCoverageGroupsEditor, setMgrCoverageGroupsEditor] = useState(null);   // null = closed; {groups, newName}
+  // Cell-edit popover on the Manager Coverage view. Lets a ROM change a
+  // shift code or loan the manager to another store for that day.
+  const [mgrCellEditor, setMgrCellEditor] = useState(null);     // null | { branch, mgrYm, ec, name, role, ymd, dom, currentCell }
+  // Loaded manager loan records, keyed for fast (ec,date) lookup. Refreshed
+  // when the coverage tab opens and whenever a save completes.
+  const [mgrLoanRows, setMgrLoanRows] = useState([]);
+  // Manager Coverage DRAFT mode. Drag-and-drop and popover edits write
+  // here first; nothing is persisted until the ROM clicks "Apply to live"
+  // on the banner at the top of the coverage tab. Shape:
+  //   mgrCoverageDraft       = { "<branch>|<ym>": { [ec]: { [dom]: code|"" } } }
+  //   mgrCoverageDraftLoans  = [{ _op:"upsert"|"remove", ec, name, date, fromBranch, toBranch, note }]
+  const [mgrCoverageDraft, setMgrCoverageDraft] = useState({});
+  const [mgrCoverageDraftLoans, setMgrCoverageDraftLoans] = useState([]);
+  const [mgrCoverageDraftApplying, setMgrCoverageDraftApplying] = useState(false);
 
   // ── Daily Check-ins (nail tech) state ──────────────────────────────
   // Loaded once when the Check-ins tab or the Attendance tab opens, so the
@@ -9280,7 +9299,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   useEffect(() => {
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     if (!window.BOA_DB.loadManagerDayStatuses) return;
-    if (tab !== "dashboard" && tab !== "mgrclockins" && tab !== "attendance") return;
+    if (tab !== "dashboard" && tab !== "mgrclockins" && tab !== "attendance" && tab !== "mgrCoverage") return;
     let cancelled = false;
     window.BOA_DB.loadManagerDayStatuses(60).then(rows => {
       if (!cancelled) setMgrDayStatuses(rows || []);
@@ -9409,6 +9428,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     })();
     return () => { cancelled = true; };
   }, [tab, mgrCoverageWeekStart]);
+
+  // Load cross-store manager loans when the coverage tab opens. Used to
+  // render "↪ <destination>" on a home-branch loan_out cell and to drive
+  // the kiosk's expected-manager list.
+  useEffect(() => {
+    if (tab !== "mgrCoverage" && tab !== "mgrclockins" && tab !== "attendance" && tab !== "scheduling") return;
+    if (!window.BOA_DB || !window.BOA_DB.loadMgrLoans) return;
+    let cancelled = false;
+    window.BOA_DB.loadMgrLoans().then(rows => {
+      if (!cancelled) setMgrLoanRows(Array.isArray(rows) ? rows : []);
+    });
+    return () => { cancelled = true; };
+  }, [tab]);
 
   // Load custom Manager Coverage branch groupings for the signed-in user
   // when the tab opens. Stored per PIN under boa_mgrcov_groups_<pin>.
@@ -19079,8 +19111,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               for (const x of result.dates) if (newGrid[m.ec][x.d] == null) newGrid[m.ec][x.d] = "W";
             }
           }
-          for (const ec of Object.keys(newGrid)) if (!result.managers.find(m => m.ec === ec)) delete newGrid[ec];
-          result = { ...result, grid: newGrid, _loadedFromSaved: true };
+          // Drop unknown-EC rows that don't resolve to any manager record,
+          // but PRESERVE rows for managers from other branches — those come
+          // from cross-store loans set up on Manager Coverage, and we want
+          // them to surface here as guest rows so the SM/AM can see who is
+          // visiting on a given day.
+          const _allMgrsByEc = {};
+          (managers || []).forEach(mm => {
+            const _ec = String(mm.ec || "").trim();
+            if (_ec) _allMgrsByEc[_ec] = mm;
+          });
+          const _guestEcs = [];
+          for (const ec of Object.keys(newGrid)) {
+            if (result.managers.find(m => m.ec === ec)) continue;
+            const gm = _allMgrsByEc[String(ec).trim()];
+            if (gm && !gm.leftDate && gm.branch !== branch) _guestEcs.push(String(ec).trim());
+            else delete newGrid[ec];
+          }
+          result = { ...result, grid: newGrid, _loadedFromSaved: true, _guestRowEcs: _guestEcs };
           // Recompute dayTotals + conflicts from merged grid. On-mat
           // managers are skipped entirely - they never count as working,
           // off, or on-leave for coverage purposes.
@@ -19700,6 +19748,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const rank = (r) => r === "SSM" ? 0 : r === "SM" ? 1 : 2;
           return rank(a.role) - rank(b.role) || (a.name || "").localeCompare(b.name || "");
         });
+        // Guest rows for cross-store loans — managers whose home is another
+        // branch but whose schedule grid here was populated by a loan from
+        // Manager Coverage. They render below the home managers and are
+        // marked read-only (drag/double-click disabled) so loans stay
+        // managed from Manager Coverage.
+        const _guestMgrsRender = (() => {
+          if (!Array.isArray(result._guestRowEcs) || result._guestRowEcs.length === 0) return [];
+          const byEc = {};
+          (managers || []).forEach(mm => {
+            const _ec = String(mm.ec || "").trim();
+            if (_ec) byEc[_ec] = mm;
+          });
+          const seen = new Set(sortedMgrs.map(m => String(m.ec || "").trim()));
+          return result._guestRowEcs
+            .filter(ec => !seen.has(ec))
+            .map(ec => byEc[ec])
+            .filter(Boolean)
+            .map(gm => ({ ...gm, _guestFromBranch: gm.branch }));
+        })();
+        const sortedMgrsRender = [...sortedMgrs, ..._guestMgrsRender];
 
         return (
           <div>
@@ -20083,13 +20151,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedMgrs.length === 0 && (
+                  {sortedMgrsRender.length === 0 && (
                     <tr><td colSpan={result.dates.length + 1} style={{ padding: 30, textAlign: "center", color: "#9ca3af", fontStyle: "italic" }}>No managers at {branch}.</td></tr>
                   )}
-                  {sortedMgrs.map(mg => (
+                  {sortedMgrsRender.map(mg => (
                     <tr key={mg.ec}>
-                      <td style={{ position: "sticky", left: 0, background: mg._offGhost ? "#f9fafb" : (mg._onMat ? "#f5e1ed" : (mg.isShadow ? "#eff6ff" : (mg.transferring ? "#fffbeb" : (mg._obStarting ? "#fefce8" : "#fff")))), padding: "6px 10px", borderBottom: "1px solid #FCE7F3", borderRight: "2px solid #FBCFE8", zIndex: 2, minWidth: 200, opacity: mg._offGhost || mg._onMat ? 0.55 : 1 }}>
-                        <div style={{ fontSize: 12, fontWeight: 700, color: mg._offGhost ? "#9ca3af" : mg._onMat ? "#7A4258" : "#831843", textDecoration: mg._offGhost ? "line-through" : "none", fontStyle: (mg._offGhost || mg._onMat) ? "italic" : "normal" }}>{mg._onMat ? "🤱 " : ""}{mg.name}</div>
+                      <td style={{ position: "sticky", left: 0, background: mg._guestFromBranch ? "#eff6ff" : (mg._offGhost ? "#f9fafb" : (mg._onMat ? "#f5e1ed" : (mg.isShadow ? "#eff6ff" : (mg.transferring ? "#fffbeb" : (mg._obStarting ? "#fefce8" : "#fff"))))), padding: "6px 10px", borderBottom: "1px solid #FCE7F3", borderRight: "2px solid #FBCFE8", zIndex: 2, minWidth: 200, opacity: mg._offGhost || mg._onMat ? 0.55 : 1 }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: mg._guestFromBranch ? "#1e40af" : (mg._offGhost ? "#9ca3af" : mg._onMat ? "#7A4258" : "#831843"), textDecoration: mg._offGhost ? "line-through" : "none", fontStyle: (mg._offGhost || mg._onMat) ? "italic" : "normal" }}>{mg._onMat ? "🤱 " : ""}{mg._guestFromBranch ? "↪ " : ""}{mg.name}</div>
+                        {mg._guestFromBranch && (
+                          <div style={{ fontSize: 9, color: "#1e40af", fontWeight: 700, marginTop: 1 }}>↪ ON LOAN FROM {mg._guestFromBranch}</div>
+                        )}
                         {mg.isShadow && mg.transferFrom && (
                           <div style={{ fontSize: 9, color: "#1e40af", fontWeight: 700, marginTop: 1 }}>🔄 FROM {mg.transferFrom}{mg.transferDate ? " · " + new Date(mg.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</div>
                         )}
@@ -20125,19 +20196,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         const xferOther = xferEdge === "in" ? (mg.transferFrom || "")
                           : xferEdge === "out" ? (mg.transferTo || "")
                             : null;
+                        // Cross-store loan: cell value "loan_out" means the
+                        // manager is loaned to another branch on this day.
+                        // Resolve the destination from mgrLoanRows and render
+                        // the same "→{dest}" chip we use for the tech schedule.
+                        const isLoanOut = v === "loan_out";
+                        const _loanRec = isLoanOut ? (mgrLoanRows || []).find(l => l && String(l.ec).trim() === String(mg.ec).trim() && l.date === dy.d) : null;
+                        const loanToBranch = _loanRec ? _loanRec.toBranch : (isLoanOut ? "Other store" : null);
                         const bg = xferEdge === "out" ? "#fef3c7"
                           : xferEdge === "in" ? "#dbeafe"
+                            : isLoanOut ? "#dbeafe"
                             : (cellBg[v] || "#fff");
                         const fg = xferEdge === "out" ? "#92400e"
                           : xferEdge === "in" ? "#1e40af"
+                            : isLoanOut ? "#1e40af"
                             : (cellColor[v] || "#9ca3af");
-                        const txt = xferEdge ? null : (cellTxt[v] || "");
+                        const txt = xferEdge || isLoanOut ? null : (cellTxt[v] || "");
                         const isMon = dy.dow === 1;
                         // WE / WM / WL (Sandown early / middle / late) are
                         // working cells just like W, so they're draggable
                         // for the same-week swap. R stays included from PR #105.
-                        // Transfer-locked cells aren't draggable.
-                        const draggable = !xferEdge && (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "O" || v === "E" || v === "R");
+                        // Transfer-locked + loan_out cells aren't draggable —
+                        // loan_out is managed from the Manager Coverage tab.
+                        // Guest rows (cross-store loans) are read-only here —
+                        // they should be edited from Manager Coverage instead
+                        // so the loan record + both branches stay in sync.
+                        const draggable = !xferEdge && !isLoanOut && !mg._guestFromBranch && (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "O" || v === "E" || v === "R");
                         return (
                           <td key={dy.d}
                             draggable={draggable}
@@ -20150,13 +20234,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 if (data.ec === mg.ec && data.d !== dy.d) dragSwap(mg.ec, data.d, dy.d);
                               } catch (_) { }
                             }}
-                            onDoubleClick={xferEdge ? undefined : () => toggleReq(mg.ec, dy.d)}
+                            onDoubleClick={xferEdge || isLoanOut || mg._guestFromBranch ? undefined : () => toggleReq(mg.ec, dy.d)}
                             title={xferEdge === "out" ? `${mg.name} · ${dy.d} · transferring to ${xferOther} on ${_xferDate} — fill remaining days on the destination schedule`
                               : xferEdge === "in" ? `${mg.name} · ${dy.d} · arriving from ${xferOther} on ${_xferDate} — pre-transfer days are still on the source schedule`
+                                : isLoanOut ? `${mg.name} · ${dy.d} · loaned to ${loanToBranch} this day — manage from Manager Coverage tab`
+                                : mg._guestFromBranch ? `${mg.name} · ${dy.d} · on loan from ${mg._guestFromBranch} — edit on Manager Coverage tab`
                                 : dy.d + ": " + (txt || "—") + (draggable ? " · drag to swap, double-click OFF→REQ→EXT" : "")}
                             style={{ padding: "4px 0", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: isMon ? "3px solid #E84B9B" : "1px solid #FCE7F3", background: bg, color: fg, fontSize: 10, fontWeight: 700, cursor: draggable ? "grab" : "default", userSelect: "none" }}>
                             {xferEdge === "out" ? <span style={{ fontSize: 9, fontWeight: 800 }}>→{xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0, 4)}</span>
                               : xferEdge === "in" ? <span style={{ fontSize: 9, fontWeight: 800 }}>←{xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0, 4)}</span>
+                                : isLoanOut ? <span style={{ fontSize: 9, fontWeight: 800 }}>→{loanToBranch === "Green Point" ? "GP" : (loanToBranch || "").slice(0, 4)}</span>
                                 : txt}
                           </td>
                         );
@@ -21227,7 +21314,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <div key={i} style={{ background: "#fff", borderRadius: 7, padding: "7px 10px", border: "1px solid " + palette.cardBorder, fontSize: 12 }}>
                           <div style={{ fontWeight: 700, color: palette.text }}>{ns.name}</div>
                           <div style={{ fontSize: 11, color: palette.text, opacity: 0.85 }}>{ns.branch} · {new Date(ns.ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", weekday: "short" })}</div>
-                          <div style={{ marginTop: 6 }}>
+                          <div style={{ marginTop: 6, display: "flex", gap: 4, flexWrap: "wrap" }}>
                             {existing
                               ? <button
                                   onClick={() => setMgrReasonModal({ staffId: ns.staffId, ec: ns.ec, name: ns.name, branch: ns.branch, date: ns.ymd, existing })}
@@ -21242,6 +21329,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   Mark reason
                                 </button>
                             }
+                            {!existing && ns.staffId && (
+                              <button
+                                onClick={() => setManualMgrClockinModal({ staffId: ns.staffId, ec: ns.ec, name: ns.name, branch: ns.branch, ymd: ns.ymd, time: "09:00", note: "" })}
+                                title="Manually log a clock-in for this manager — use when they forgot to tap the kiosk"
+                                style={{ background: "#fff", color: "#15803D", border: "1px solid #86efac", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                                ✓ Manual clock-in
+                              </button>
+                            )}
                           </div>
                         </div>
                       );
@@ -21281,6 +21376,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 title="Tag a manager absence — for early sick calls, called-out days, etc."
                 style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "9px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: "0.03em", alignSelf: "flex-end" }}>
                 ➕ Tag absence
+              </button>
+              <button
+                onClick={() => setManualMgrClockinModal({
+                  staffId: "", ec: "", name: "",
+                  branch: mgrClockinFilterBranch !== "All" ? mgrClockinFilterBranch : ((managers.filter(m => !_hasStoreScope || scopedSalonNames.has(m.branch))[0] || {}).branch || ""),
+                  ymd: mgrClockinDay,
+                  time: "09:00",
+                  note: ""
+                })}
+                title="Manually log a clock-in for a manager who forgot to tap the kiosk. The entry shows up on Manager Coverage and feeds the same attendance views."
+                style={{ background: "#15803D", color: "#fff", border: "none", borderRadius: 8, padding: "9px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: "0.03em", alignSelf: "flex-end" }}>
+                ✓ Manual clock-in
               </button>
               <div style={{ fontSize: 12, color: "#831843", textAlign: "right" }}><div style={{ fontWeight: 700 }}>{mDayLabel(mgrClockinDay)}</div><strong>{filtered.length}</strong> clock-in record{filtered.length !== 1 ? "s" : ""}</div>
             </div>
@@ -21537,7 +21644,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             isToday: ymdToStr(d) === todayYmd,
             isWeekend: i >= 5,
             // Start-month ym for this date — used to look up schedule cache.
-            mgrYm: (() => { let y = d.getFullYear(), m = d.getMonth() + 1; if (d.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + _p2(m); })()
+            mgrYm: (() => { let y = d.getFullYear(), m = d.getMonth() + 1; if (d.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + _p2(m); })(),
+            dow: d.getDay()      // 0=Sun, 1=Mon, …, 6=Sat — used by shiftTimes for per-branch + per-DOW hour tables
           });
         }
         const lastDay = weekDays[6];
@@ -21546,21 +21654,48 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // 12 saturated shades so its working blocks read as a single solid
         // colour across the week, the way Connecteam groups stores by hue.
         // Deterministic so the colour stays stable across reloads.
+        // One distinct dark colour per store, ordered to maximise contrast
+        // between adjacent SALONS entries (so the By-Branch grid never has
+        // two neighbours blending). 28 slots covers the 17 seeded WC stores
+        // plus the JHB/KZN imports plus a buffer; we wrap with modulo if
+        // SALONS ever grows past that.
         const BRANCH_PALETTE = [
-          { bg: "#9F1239", fg: "#FFFFFF" },   // rose
-          { bg: "#7C2D12", fg: "#FFFFFF" },   // amber-deep
-          { bg: "#365314", fg: "#FFFFFF" },   // olive
-          { bg: "#581C87", fg: "#FFFFFF" },   // purple
-          { bg: "#155E75", fg: "#FFFFFF" },   // sky-deep
-          { bg: "#7E22CE", fg: "#FFFFFF" },   // violet
-          { bg: "#92400E", fg: "#FFFFFF" },   // brown
-          { bg: "#831843", fg: "#FFFFFF" },   // pink-deep
-          { bg: "#166534", fg: "#FFFFFF" },   // emerald
-          { bg: "#9A3412", fg: "#FFFFFF" },   // orange-deep
-          { bg: "#1E3A8A", fg: "#FFFFFF" },   // blue-deep
-          { bg: "#0F766E", fg: "#FFFFFF" }    // teal
+          { bg: "#9F1239", fg: "#FFFFFF" },   // 0  rose
+          { bg: "#0F766E", fg: "#FFFFFF" },   // 1  teal
+          { bg: "#9A3412", fg: "#FFFFFF" },   // 2  orange-deep
+          { bg: "#3730A3", fg: "#FFFFFF" },   // 3  indigo
+          { bg: "#4D7C0F", fg: "#FFFFFF" },   // 4  olive
+          { bg: "#A21CAF", fg: "#FFFFFF" },   // 5  fuchsia
+          { bg: "#1E3A8A", fg: "#FFFFFF" },   // 6  blue-deep
+          { bg: "#B45309", fg: "#FFFFFF" },   // 7  amber-dark
+          { bg: "#155E75", fg: "#FFFFFF" },   // 8  sky-deep
+          { bg: "#831843", fg: "#FFFFFF" },   // 9  pink-deep
+          { bg: "#15803D", fg: "#FFFFFF" },   // 10 green-dark
+          { bg: "#6D28D9", fg: "#FFFFFF" },   // 11 violet
+          { bg: "#86198F", fg: "#FFFFFF" },   // 12 plum (swapped from cyan-deep — too close to Riverlands)
+          { bg: "#7F1D1D", fg: "#FFFFFF" },   // 13 maroon
+          { bg: "#365314", fg: "#FFFFFF" },   // 14 lime-dark
+          { bg: "#7E22CE", fg: "#FFFFFF" },   // 15 purple
+          { bg: "#78350F", fg: "#FFFFFF" },   // 16 brown
+          { bg: "#334155", fg: "#FFFFFF" },   // 17 slate
+          { bg: "#BE185D", fg: "#FFFFFF" },   // 18 magenta
+          { bg: "#047857", fg: "#FFFFFF" },   // 19 emerald-deep
+          { bg: "#C2410C", fg: "#FFFFFF" },   // 20 orange
+          { bg: "#1D4ED8", fg: "#FFFFFF" },   // 21 blue
+          { bg: "#0E7490", fg: "#FFFFFF" },   // 22 cyan-deep (moved from slot 12)
+          { bg: "#166534", fg: "#FFFFFF" },   // 23 forest
+          { bg: "#0369A1", fg: "#FFFFFF" },   // 24 ocean
+          { bg: "#854D0E", fg: "#FFFFFF" },   // 25 dark-mustard
+          { bg: "#4338CA", fg: "#FFFFFF" },   // 26 royal
+          { bg: "#5B21B6", fg: "#FFFFFF" }    // 27 dark-violet
         ];
+        const _salonIdxByName = {};
+        SALONS.forEach((s, i) => { _salonIdxByName[s.name] = i; });
         const branchColour = (name) => {
+          const idx = _salonIdxByName[name];
+          if (idx != null) return BRANCH_PALETTE[idx % BRANCH_PALETTE.length];
+          // Unknown branch (legacy data) — fall back to a stable hash so the
+          // colour at least doesn't change between renders.
           let h = 0;
           for (let i = 0; i < name.length; i++) h = ((h << 5) - h + name.charCodeAt(i)) | 0;
           return BRANCH_PALETTE[Math.abs(h) % BRANCH_PALETTE.length];
@@ -21572,21 +21707,89 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Cell code → suffix the role-default shift times. Lets us show
         // "9:00a - 6:30p" inside a manager's working block the way
         // Connecteam does, without needing per-shift data on each cell.
-        const shiftTimes = (role, code) => {
+        // Resolve the visible shift hours for a cell. Times match the
+        // banners on the Manager Schedule editor (app.jsx:20086-20134)
+        // and are written in 24-hour format the same way the banners do
+        // (08:00 - 17:00, 09:00 - 18:00, etc.) so the coverage view
+        // reads the same as the schedule.
+        //   dow: 0=Sun, 1=Mon, …, 6=Sat (matches Date#getDay)
+        const shiftTimes = (role, code, branch, dow) => {
           const r = (role || "").toUpperCase();
-          if (r === "SM" || r === "SSM") {
-            if (code === "WL") return "8:30a - 5:30p";
-            if (code === "WE") return "7:30a - 4:30p";
-            if (code === "WM") return "8:00a - 1:00p";
-            return "8:00a - 5:00p";
+          const isSM = r === "SM" || r === "SSM";
+          const _b = branch || "";
+
+          // Sandown / Table Bay share the same Mon-Fri split (and
+          // Table Bay extends it to Saturday). SM is a flat 08:00-17:00
+          // every working day.
+          if (_b === "Sandown" || _b === "Table Bay") {
+            if (isSM) return "08:00 - 17:00";
+            if (dow === 0) {                                // Sunday
+              if (code === "WE") return "08:00 - 17:00";
+              if (code === "WL") return "09:00 - 18:00";
+              return "09:00 - 18:00";
+            }
+            if (dow === 6 && _b === "Sandown") {            // Sandown Saturday
+              if (code === "WE") return "08:00 - 17:00";
+              if (code === "WL") return "10:00 - 19:00";
+              return "10:00 - 19:00";
+            }
+            // Mon-Fri (and Mon-Sat for Table Bay)
+            if (code === "WE") return "08:00 - 17:00";
+            if (code === "WM") return "09:00 - 18:00";
+            if (code === "WL") return "11:00 - 20:00";
+            return "11:00 - 20:00";
           }
-          // AM and others default
-          if (code === "WL") return "10:00a - 7:00p";
-          if (code === "WE") return "8:30a - 6:00p";
-          if (code === "WM") return "9:00a - 1:00p";
-          if (code === "WB") return "8:00a - 7:00p";
-          if (code === "E")  return "9:00a - 6:30p";
-          return "9:00a - 6:30p";
+
+          // Riverlands — Mon-Fri split, Sat/Sun single shift.
+          if (_b === "Riverlands") {
+            if (dow === 6) return "09:00 - 18:00";          // Sat single WE
+            if (dow === 0) return "08:00 - 17:00";          // Sun single WE
+            if (isSM) return "08:00 - 17:00";
+            if (code === "WE") return "09:00 - 18:00";      // AM opener
+            if (code === "WB") return "08:00 - 17:00";      // 4+ bonus opener
+            if (code === "WL") return "10:00 - 19:00";
+            return "10:00 - 19:00";
+          }
+
+          // Ballito / Mall of the South — SM-only WE opener, AM closers.
+          if (_b === "Ballito" || _b === "Mall of the South") {
+            if (isSM) return "08:00 - 17:00";
+            if (dow === 0) return "08:00 - 17:00";          // Sunday single WE
+            if (code === "WE") return "08:00 - 17:00";
+            if (code === "WM") return "09:00 - 18:00";
+            if (code === "WL") return "10:00 - 19:00";
+            return "10:00 - 19:00";
+          }
+
+          // Fourways — store hours differ; SM rotates opener/closer.
+          if (_b === "Fourways") {
+            if (isSM) {
+              if (code === "WL") return "11:00 - 20:00";
+              return "08:00 - 17:00";
+            }
+            if (dow === 0) {                                // Sunday (store 09-19)
+              if (code === "WE") return "08:00 - 17:00";
+              if (code === "WL") return "10:00 - 19:00";
+              return "10:00 - 19:00";
+            }
+            if (code === "WM") return "10:00 - 19:00";
+            if (code === "WL") return "11:00 - 20:00";
+            return "11:00 - 20:00";
+          }
+
+          // Generic stores — generic SM 08-17 / AM 09:30-18:30 hours.
+          if (isSM) {
+            if (code === "WL") return "08:30 - 17:30";
+            if (code === "WE") return "07:30 - 16:30";
+            if (code === "WM") return "08:00 - 13:00";
+            return "08:00 - 17:00";
+          }
+          if (code === "WL") return "10:00 - 19:00";
+          if (code === "WE") return "08:30 - 18:00";
+          if (code === "WM") return "09:00 - 13:00";
+          if (code === "WB") return "08:00 - 19:00";
+          if (code === "E")  return "09:00 - 18:30";
+          return "09:30 - 18:30";
         };
         const isWorking = (v) => v === "W" || v === "WE" || v === "WL" || v === "WM" || v === "WB" || v === "E";
 
@@ -21607,8 +21810,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // to the working draft. mgrApprovedFallbackCache is built lazily
         // below as branches need it.
         const _approvedFallbackCache = mgrApprovedFallbackCache || {};
+        // Apply draft patches on top of a base grid to get the effective
+        // view. A draft cell value of "" (or null) means "clear this day".
+        const _draftKey = (b, ym) => b + "|" + ym;
+        const _mergeDraft = (base, draftBranch) => {
+          if (!draftBranch || Object.keys(draftBranch).length === 0) return base || {};
+          const out = { ...(base || {}) };
+          Object.entries(draftBranch).forEach(([ec, dRow]) => {
+            const baseRow = { ...(out[ec] || {}) };
+            Object.entries(dRow).forEach(([key, v]) => {
+              if (v) baseRow[key] = v;
+              else delete baseRow[key];
+            });
+            if (Object.keys(baseRow).length === 0) delete out[ec];
+            else out[ec] = baseRow;
+          });
+          return out;
+        };
+        const _gridForView = (branchName, ym) => {
+          const k = _draftKey(branchName, ym);
+          return _mergeDraft(mgrClockinSchedCache[k], mgrCoverageDraft[k]);
+        };
         const readWithFallback = (branchName, ec, d) => {
-          const grid = mgrClockinSchedCache[branchName + "|" + d.mgrYm];
+          const grid = _gridForView(branchName, d.mgrYm);
           const v = readCell(grid, ec, d);
           if (v) return v;
           const ag = _approvedFallbackCache[branchName + "|" + d.mgrYm];
@@ -21660,6 +21884,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
           return out;
         })();
+        // AMs on an active 3-month SM trial are treated as SMs on the
+        // coverage cells too — mirroring what the Schedule tab does
+        // when it builds allMgrs (app.jsx:18706-18712). So their
+        // working blocks pick the SM hours from shiftTimes and the
+        // role badge reads "SM · WE / WL / …" rather than "AM · …".
+        const _smTrialEcs = new Set((smTrialList || []).filter(t => t && t.status === "active" && t.ec).map(t => t.ec));
+        const _effectiveRole = (mg) => (mg && mg.role === "AM" && mg.ec && _smTrialEcs.has(mg.ec)) ? "SM" : (mg && mg.role);
+
         // Per-EC manager lookup so we can join schedule-grid keys back
         // to a manager record even when the schedule lists them at a
         // store that isn't their home branch (e.g. Tanita scheduled at
@@ -21680,31 +21912,90 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (!m.branch || m.onMat || m.leftDate) return;
           if (mgrByBranch[m.branch]) mgrByBranch[m.branch].push(m);
         });
+        // Pool of every staff record we might match a grid EC against —
+        // try managers first, fall back to techs/all-staff if a row in the
+        // grid belongs to a nail tech covering manager hours.
+        const ecToPerson = {};
+        managers.forEach(m => {
+          const _ec = String(m.ec || "").trim();
+          if (_ec && !m.onMat && !m.leftDate) ecToPerson[_ec] = m;
+        });
+        (enriched || []).forEach(s => {
+          const _ec = String(s.ec || "").trim();
+          if (_ec && !ecToPerson[_ec] && !s.onMat && !s.leftDate) ecToPerson[_ec] = { ec: s.ec, name: s.name, branch: s.branch, role: s.role || "NT" };
+        });
+        // Build the per-branch guest list AND a small diagnostic
+        // summary (how many ECs found, how many resolved) so it's
+        // obvious when a branch's grid is empty vs has unmatched ECs.
+        const _branchDiag = {};
         scopedBranches.forEach(s => {
           const _seen = new Set(mgrByBranch[s.name].map(m => String(m.ec || "").trim()));
+          let _gridEcsCount = 0, _resolvedCount = 0, _unresolved = [];
+          let _ymsSeen = new Set();
           weekDays.forEach(d => {
-            const wGrid = mgrClockinSchedCache[s.name + "|" + d.mgrYm];
+            // Use the draft-merged view so cross-store loans staged in the
+            // editor's draft mode also surface the receiving manager on the
+            // destination branch's row list before the user clicks Apply.
+            const wGrid = _gridForView(s.name, d.mgrYm);
             const aGrid = _approvedFallbackCache[s.name + "|" + d.mgrYm];
+            if ((wGrid && Object.keys(wGrid).length) || aGrid) _ymsSeen.add(d.mgrYm);
             [wGrid, aGrid].forEach(grid => {
               if (!grid) return;
               for (const _ec in grid) {
                 const ecKey = String(_ec).trim();
+                if (!ecKey) continue;
+                _gridEcsCount++;
                 if (_seen.has(ecKey)) continue;
+                // Accept ANY non-empty cell so a cross-store shift is
+                // surfaced even if its code isn't W (e.g. WL / WE / E
+                // typed differently, or even an OFF code marking a
+                // requested day at this branch).
                 const cell = grid[_ec][d.ymd] || grid[_ec][d.dom] || grid[_ec][String(d.dom)];
-                if (!isWorking(cell)) continue;     // only flag a guest mgr when there's an actual working cell
-                const mgr = mgrByEc[ecKey];
-                if (!mgr) continue;                  // unknown ec — skip
-                if (mgr.onMat || mgr.leftDate) continue;
+                if (!cell) continue;
+                const person = ecToPerson[ecKey];
+                if (!person) { _unresolved.push(ecKey); continue; }
                 _seen.add(ecKey);
-                mgrByBranch[s.name].push({ ...mgr, _guestFromBranch: mgr.branch });
+                _resolvedCount++;
+                mgrByBranch[s.name].push({ ...person, _guestFromBranch: person.branch || "?" });
               }
             });
           });
+          _branchDiag[s.name] = {
+            ymsLoaded: Array.from(_ymsSeen),
+            gridEcsCount: _gridEcsCount,
+            resolvedCount: _resolvedCount,
+            unresolvedEcs: Array.from(new Set(_unresolved)).slice(0, 8)
+          };
         });
-        Object.keys(mgrByBranch).forEach(b => mgrByBranch[b].sort((a, b) =>
-          (a.role === "SM" ? 0 : a.role === "AM" ? 1 : 2) - (b.role === "SM" ? 0 : b.role === "AM" ? 1 : 2)
-          || (a.name || "").localeCompare(b.name || "")
-        ));
+        // Sort: maternity-leave managers pinned at the bottom, then
+        // SM → AM → other, then name. Maternity status is resolved the
+        // same way mgrSched does it — EC match against onMatEcs, with a
+        // case-insensitive name fallback for orphan mat records whose
+        // EC drifted from the manager record.
+        const _matNames = new Set(
+          (matRecs || [])
+            .filter(r => r && (r.matStatus === "on_mat" || r.matStatus === "dates_tbc") && r.name)
+            .map(r => r.name.trim().toLowerCase())
+        );
+        const _isOnMat = (mg) => {
+          if (!mg) return false;
+          if (mg.onMat || mg._onMat) return true;
+          const ec = String(mg.ec || "").trim();
+          if (ec && onMatEcs.has(ec)) return true;
+          const nm = String(mg.name || "").trim().toLowerCase();
+          return !!(nm && _matNames.has(nm));
+        };
+        // Order within a store: SSM → SM (or AM-on-SM-trial) → AM → other,
+        // then by name. Maternity-leave managers always pinned at the
+        // bottom regardless of role.
+        const _roleRank = (r) => r === "SSM" ? 0 : r === "SM" ? 1 : r === "AM" ? 2 : 3;
+        Object.keys(mgrByBranch).forEach(b => mgrByBranch[b].sort((a, b) => {
+          const am = _isOnMat(a) ? 1 : 0;
+          const bm = _isOnMat(b) ? 1 : 0;
+          if (am !== bm) return am - bm;
+          return _roleRank(_effectiveRole(a)) - _roleRank(_effectiveRole(b))
+            || (a.name || "").localeCompare(b.name || "");
+        }));
 
         // Manager clock-in lookup keyed by ec → ymd → true. Powers the
         // small green dot we render on cells where the manager actually
@@ -21719,6 +22010,42 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const _ymd = _d.getFullYear() + "-" + String(_d.getMonth() + 1).padStart(2, "0") + "-" + String(_d.getDate()).padStart(2, "0");
           (_clockedInByEcYmd[_ec] = _clockedInByEcYmd[_ec] || {})[_ymd] = true;
         });
+
+        // Cross-store loan lookup. Keyed by "<ec>|<ymd>" → {fromBranch,toBranch,name}.
+        // Used to render "↪ <destination>" on a home-branch loan_out cell.
+        const _loansByEcYmd = {};
+        (mgrLoanRows || []).forEach(lo => {
+          if (!lo || !lo.ec || !lo.date) return;
+          _loansByEcYmd[String(lo.ec).trim() + "|" + lo.date] = lo;
+        });
+
+        // Manager absence tags from the ROM "Mark reason" flow on the
+        // Check-ins tab. Keyed "<ec>|<ymd>" → {status, note, proof}.
+        // mgrDayStatuses uses staff_id, so build a staff_id → ec lookup
+        // first via the managers list.
+        const _ecByStaffId = {};
+        (managers || []).forEach(mm => {
+          const sid = mm._id || mm.id;
+          const _ec = String(mm.ec || "").trim();
+          if (sid && _ec) _ecByStaffId[sid] = _ec;
+        });
+        const _absByEcYmd = {};
+        (mgrDayStatuses || []).forEach(s => {
+          if (!s || !s.staff_id || !s.date || !s.status) return;
+          const _ec = _ecByStaffId[s.staff_id];
+          if (!_ec) return;
+          _absByEcYmd[_ec + "|" + s.date] = s;
+        });
+        // Visual treatment per reason code — colours match the
+        // MGR_REASON_OPTIONS labels (sick/frl/absent/no-show). Order is
+        // small-icon + short label so it fits inside the W block.
+        const _ABS_STYLE = {
+          sick_n: { bg: "#FEE2E2", fg: "#7F1D1D", lbl: "🤒 SICK + NOTE" },
+          sick:   { bg: "#FEE2E2", fg: "#7F1D1D", lbl: "🤒 SICK" },
+          frl:    { bg: "#FEF3C7", fg: "#92400E", lbl: "👪 FRL" },
+          absent: { bg: "#FECDD3", fg: "#9F1239", lbl: "🚫 ABSENT" },
+          no:     { bg: "#7F1D1D", fg: "#FFFFFF", lbl: "⛔ NO SHOW" }
+        };
 
         // Coverage per branch per day — count managers scheduled to work.
         // Uses readWithFallback so published-only schedules still count.
@@ -21745,34 +22072,283 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Connecteam-style colored blocks branded by branch with the shift
         // times and role · branch label; non-working cells fall back to a
         // small muted pill (OFF / LEAVE / REQ / MATERNITY) or blank.
-        const renderCell = (cellVal, key, branchName, role, ymd, ec, isGuest) => {
+        const openCellEditor = (branchName, mgrYm, dom, ymd, ec, name, role, currentCell) => {
+          if (!ec) return;
+          setMgrCellEditor({ branch: branchName, mgrYm, ec, name: name || "", role: role || "", ymd, dom, currentCell: currentCell || "" });
+        };
+
+        // ── Draft-mode mutations ────────────────────────────────────
+        // All drag/drop and popover edits stage changes into mgrCoverageDraft
+        // / mgrCoverageDraftLoans. Nothing is persisted until the ROM clicks
+        // "Apply to live" on the banner at the top of this tab.
+        //
+        // Cells are written under BOTH dom and ymd keys because saved grids
+        // historically use either format and readCell prefers ymd — writing
+        // only dom would let an older ymd-keyed saved cell mask the draft.
+        const _setDraftCell = (branchName, mgrYm, ec, dom, ymd, value) => {
+          setMgrCoverageDraft(prev => {
+            const k = _draftKey(branchName, mgrYm);
+            const branch = { ...(prev[k] || {}) };
+            const row = { ...(branch[ec] || {}) };
+            const v = value || "";
+            row[dom] = v;
+            if (ymd) row[ymd] = v;
+            branch[ec] = row;
+            return { ...prev, [k]: branch };
+          });
+        };
+        // Same-row drag swap — move a shift from src day to tgt day inside
+        // one manager's row. Reads the effective view so chained drags
+        // compose correctly.
+        const _draftSwapSameRow = (branchName, mgrYm, ec, srcDom, srcYmd, tgtDom, tgtYmd) => {
+          const grid = _gridForView(branchName, mgrYm);
+          const row = grid[ec] || {};
+          const srcVal = row[srcYmd] ?? row[srcDom] ?? row[String(srcDom)] ?? "";
+          const tgtVal = row[tgtYmd] ?? row[tgtDom] ?? row[String(tgtDom)] ?? "";
+          setMgrCoverageDraft(prev => {
+            const k = _draftKey(branchName, mgrYm);
+            const branch = { ...(prev[k] || {}) };
+            const dRow = { ...(branch[ec] || {}) };
+            dRow[srcDom] = tgtVal || ""; dRow[srcYmd] = tgtVal || "";
+            dRow[tgtDom] = srcVal || ""; dRow[tgtYmd] = srcVal || "";
+            branch[ec] = dRow;
+            return { ...prev, [k]: branch };
+          });
+        };
+        // Cross-store loan via drag — drag a manager's shift from their
+        // home-branch row to ANY day cell on a DIFFERENT branch's row.
+        // Source becomes "loan_out" at the home branch; destination gets
+        // the original code (or "W" by default); a loan record is staged
+        // for Apply.
+        const _draftCrossStoreLoan = (srcBranch, mgrYm, ec, srcDom, srcYmd, srcCode, srcName, dstBranch, dstDom, dstYmd) => {
+          setMgrCoverageDraft(prev => {
+            const next = { ...prev };
+            // Home: mark loan_out on the source day.
+            const sk = _draftKey(srcBranch, mgrYm);
+            const srcBranchD = { ...(next[sk] || {}) };
+            const srcRow = { ...(srcBranchD[ec] || {}) };
+            srcRow[srcDom] = "loan_out"; srcRow[srcYmd] = "loan_out";
+            srcBranchD[ec] = srcRow;
+            next[sk] = srcBranchD;
+            // Destination: insert ec row with the shift code on dst day.
+            const dk = _draftKey(dstBranch, mgrYm);
+            const dstBranchD = { ...(next[dk] || {}) };
+            const dstRow = { ...(dstBranchD[ec] || {}) };
+            const code = (srcCode && srcCode !== "loan_out") ? srcCode : "W";
+            dstRow[dstDom] = code; dstRow[dstYmd] = code;
+            dstBranchD[ec] = dstRow;
+            next[dk] = dstBranchD;
+            return next;
+          });
+          setMgrCoverageDraftLoans(prev => [
+            ...prev.filter(l => !(String(l.ec).trim() === ec && l.date === dstYmd)),
+            { _op: "upsert", ec, name: srcName || "", date: dstYmd, fromBranch: srcBranch, toBranch: dstBranch, note: "" }
+          ]);
+        };
+
+        const _applyDraft = async () => {
+          if (!window.BOA_DB || !window.BOA_DB.saveSchedule) { window.alert("Not connected — try again."); return; }
+          setMgrCoverageDraftApplying(true);
+          try {
+            const entries = Object.entries(mgrCoverageDraft);
+            for (const [key, draftBranch] of entries) {
+              const [branchName, ym] = key.split("|");
+              const base = mgrClockinSchedCache[key] || {};
+              const merged = _mergeDraft(base, draftBranch);
+              await window.BOA_DB.saveSchedule(branchName, ym, merged, true);
+              setMgrClockinSchedCache(prev => ({ ...prev, [key]: merged }));
+            }
+            // Commit loan record changes.
+            if (mgrCoverageDraftLoans.length > 0 && window.BOA_DB.saveMgrLoans) {
+              const existing = (mgrLoanRows || []).slice();
+              mgrCoverageDraftLoans.forEach(dl => {
+                const idx = existing.findIndex(l => l && String(l.ec).trim() === String(dl.ec).trim() && l.date === dl.date);
+                if (dl._op === "remove") { if (idx >= 0) existing.splice(idx, 1); return; }
+                const rec = {
+                  _id: idx >= 0 ? existing[idx]._id : ("l_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7)),
+                  ec: dl.ec, name: dl.name || "", date: dl.date,
+                  fromBranch: dl.fromBranch, toBranch: dl.toBranch,
+                  note: dl.note || "",
+                  createdBy: (currentUser && currentUser.name) || "",
+                  createdAt: idx >= 0 ? existing[idx].createdAt : new Date().toISOString()
+                };
+                if (idx >= 0) existing[idx] = rec; else existing.push(rec);
+              });
+              await window.BOA_DB.saveMgrLoans(existing);
+              setMgrLoanRows(existing);
+            }
+            setMgrCoverageDraft({});
+            setMgrCoverageDraftLoans([]);
+          } catch (err) {
+            window.alert("Apply failed: " + ((err && err.message) || err));
+          } finally {
+            setMgrCoverageDraftApplying(false);
+          }
+        };
+        const _discardDraft = () => {
+          if (Object.keys(mgrCoverageDraft).length === 0 && mgrCoverageDraftLoans.length === 0) return;
+          if (!window.confirm("Discard all pending shift changes?")) return;
+          setMgrCoverageDraft({});
+          setMgrCoverageDraftLoans([]);
+        };
+        const _draftChangeCount = (() => {
+          let n = 0;
+          Object.values(mgrCoverageDraft).forEach(br => {
+            Object.values(br).forEach(row => { n += Object.keys(row).length; });
+          });
+          return n;
+        })();
+
+        // Drag handler factory — attached to every cell <td> so a ROM can
+        // pick a shift up and drop it on another day (swap within the same
+        // manager) OR on a different branch's row (cross-store loan).
+        const _isSrcDraggable = (cellVal) =>
+          cellVal === "W" || cellVal === "WE" || cellVal === "WL" || cellVal === "WM" || cellVal === "WB" || cellVal === "E" || cellVal === "O" || cellVal === "R";
+        // Cancel an existing cross-store loan. Clears the destination guest
+        // cell, restores the source manager's home cell (or sets it to the
+        // returned shift code), and stages the loan record for removal.
+        // Used when the user drags a guest cell back to the manager's home
+        // branch.
+        const _draftReturnLoan = (loanBranch, mgrYm, ec, loanDom, loanYmd, returnCode, homeBranch, homeDom, homeYmd) => {
+          setMgrCoverageDraft(prev => {
+            const next = { ...prev };
+            // Clear the borrow store's cell.
+            const lk = _draftKey(loanBranch, mgrYm);
+            const lBranch = { ...(next[lk] || {}) };
+            const lRow = { ...(lBranch[ec] || {}) };
+            lRow[loanDom] = ""; lRow[loanYmd] = "";
+            lBranch[ec] = lRow;
+            next[lk] = lBranch;
+            // Restore home cell with the returned code (defaults to W).
+            const hk = _draftKey(homeBranch, mgrYm);
+            const hBranch = { ...(next[hk] || {}) };
+            const hRow = { ...(hBranch[ec] || {}) };
+            const code = (returnCode && returnCode !== "loan_out") ? returnCode : "W";
+            hRow[homeDom] = code; hRow[homeYmd] = code;
+            hBranch[ec] = hRow;
+            next[hk] = hBranch;
+            return next;
+          });
+          // Stage loan record removal (or drop a pending upsert) so Apply
+          // doesn't re-create the loan.
+          setMgrCoverageDraftLoans(prev => {
+            const filtered = prev.filter(l => !(String(l.ec).trim() === ec && l.date === loanYmd));
+            const hadLive = (mgrLoanRows || []).some(l => l && String(l.ec).trim() === ec && l.date === loanYmd);
+            return hadLive ? [...filtered, { _op: "remove", ec, date: loanYmd }] : filtered;
+          });
+        };
+        const _dragHandlers = (cellVal, branchName, mgrYm, ec, dom, ymd, mgrName) => {
+          if (!ec) return {};
+          const isSrc = _isSrcDraggable(cellVal);
+          return {
+            draggable: isSrc,
+            onDragStart: isSrc ? (e) => {
+              try { e.dataTransfer.setData("text/plain", JSON.stringify({ kind: "mgrCov", branch: branchName, mgrYm, ec, dom, ymd, code: cellVal, name: mgrName || "" })); } catch (_) { }
+              e.dataTransfer.effectAllowed = "move";
+            } : undefined,
+            onDragOver: (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; },
+            onDrop: (e) => {
+              e.preventDefault();
+              try {
+                const data = JSON.parse(e.dataTransfer.getData("text/plain"));
+                if (!data || data.kind !== "mgrCov") return;
+                if (data.mgrYm !== mgrYm) return; // can't move across cycles by drag — too easy to misclick
+                if (data.branch === branchName) {
+                  // Same branch: only meaningful as a same-row swap.
+                  if (data.ec !== ec) return;
+                  if (data.dom === dom) return;
+                  _draftSwapSameRow(branchName, mgrYm, ec, data.dom, data.ymd, dom, ymd);
+                } else {
+                  // Cross-branch drop. Two sub-cases:
+                  //   a) Source is the manager's home branch → create a
+                  //      new loan to this destination.
+                  //   b) Source is a guest position (manager loaned to
+                  //      that branch) and target is the manager's actual
+                  //      home → undo the loan, clearing the borrow cell
+                  //      and restoring the home shift.
+                  const _person = ecToPerson[String(data.ec).trim()];
+                  const _personHome = _person && _person.branch;
+                  if (_personHome && data.branch !== _personHome && branchName === _personHome) {
+                    _draftReturnLoan(data.branch, mgrYm, data.ec, data.dom, data.ymd, data.code, branchName, dom, ymd);
+                  } else {
+                    _draftCrossStoreLoan(data.branch, mgrYm, data.ec, data.dom, data.ymd, data.code, data.name, branchName, dom, ymd);
+                  }
+                }
+              } catch (_) { }
+            }
+          };
+        };
+        const renderCell = (cellVal, key, branchName, role, ymd, ec, isGuest, mgrYm, mgrName, dom, dow) => {
           const clockedIn = ec && ymd && _clockedInByEcYmd[String(ec).trim()] && _clockedInByEcYmd[String(ec).trim()][ymd];
-          // Did this day already pass? (Today still in flight, so absence
-          // can't be inferred yet.)
           const isPast = ymd && ymd < (function () { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
-          // Blank / empty day cell.
+          const _dragDraggable = _isSrcDraggable(cellVal);
+          const tdStyle = { background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", cursor: ec ? (_dragDraggable ? "grab" : "pointer") : "default", userSelect: "none", WebkitUserSelect: "none" };
+          const _dh = _dragHandlers(cellVal, branchName, mgrYm, ec, dom, ymd, mgrName);
+          const onCellClick = () => openCellEditor(branchName, mgrYm, dom, ymd, ec, mgrName, role, cellVal || "");
+          // Blank / empty day cell — also clickable so a ROM can add a shift.
           if (!cellVal) {
             return (
-              <td key={key} style={{ background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", textAlign: "center" }}>
-                <div style={{ minHeight: 56, display: "flex", alignItems: "center", justifyContent: "center", color: "#e5e7eb", fontSize: 18 }}>·</div>
+              <td key={key} {..._dh} onClick={ec ? onCellClick : undefined} title={ec ? "Click to add a shift · drop a dragged shift here" : ""} style={{ ...tdStyle, textAlign: "center" }}>
+                <div style={{ minHeight: 56, display: "flex", alignItems: "center", justifyContent: "center", color: ec ? "#FBCFE8" : "#e5e7eb", fontSize: 18, transition: "color 0.15s" }}>＋</div>
+              </td>
+            );
+          }
+          // Cross-store loan cell at home branch — render as an "AWAY"
+          // hatch so it's obvious this manager isn't covering the home
+          // store that day. The destination branch's row shows them
+          // working normally; only the home side reads as away.
+          if (cellVal === "loan_out") {
+            const lo = _loansByEcYmd[String(ec).trim() + "|" + ymd];
+            const draftLo = (mgrCoverageDraftLoans || []).find(l => String(l.ec).trim() === String(ec).trim() && l.date === ymd && l._op !== "remove");
+            const destLbl = (draftLo && draftLo.toBranch) || (lo && lo.toBranch) || "Other store";
+            return (
+              <td key={key} {..._dh} onClick={onCellClick} title={"Not covering " + branchName + " — on loan to " + destLbl + " this day"} style={{ ...tdStyle, textAlign: "center" }}>
+                <div style={{
+                  background: "repeating-linear-gradient(135deg, #f3f4f6, #f3f4f6 5px, #e5e7eb 5px, #e5e7eb 10px)",
+                  color: "#1e3a8a",
+                  border: "1px dashed #93c5fd",
+                  borderRadius: 6,
+                  padding: "6px 6px",
+                  lineHeight: 1.15,
+                  minHeight: 56,
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center"
+                }}>
+                  <div style={{ fontSize: 9, fontWeight: 800, color: "#6b7280", letterSpacing: "0.08em" }}>AWAY</div>
+                  <div style={{ fontSize: 11, fontWeight: 800, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>↪ {destLbl}</div>
+                  <div style={{ fontSize: 8, fontWeight: 700, color: "#6b7280", marginTop: 1, letterSpacing: "0.04em" }}>on loan</div>
+                </div>
               </td>
             );
           }
           // Working cell → solid branch-coloured block with times + role.
           if (isWorking(cellVal)) {
             const pal = branchColour(branchName);
-            const time = shiftTimes(role, cellVal);
+            const time = shiftTimes(role, cellVal, branchName, dow);
             const subtle = cellVal !== "W" ? { borderLeft: "4px solid rgba(255,255,255,0.5)" } : {};
-            const dotColor = clockedIn ? "#22c55e" : (isPast ? "#ef4444" : null);
+            // Was this day tagged with an absence reason by the ROM? If so
+            // the block desaturates and a coloured pill at the top calls
+            // out WHY they weren't in — replaces the plain red "absent" dot
+            // so the reason is visible at a glance.
+            const _abs = ec && ymd ? _absByEcYmd[String(ec).trim() + "|" + ymd] : null;
+            const _absStyle = _abs ? _ABS_STYLE[_abs.status] : null;
+            const dotColor = _abs ? null : (clockedIn ? "#22c55e" : (isPast ? "#ef4444" : null));
             const dotTitle = clockedIn ? "✓ Clocked in" : (isPast ? "✗ Absent — did not clock in" : null);
             return (
-              <td key={key} style={{ background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle" }}>
-                <div title={(role || "") + " · " + branchName + " · " + cellVal + " · " + time + (dotTitle ? "\n" + dotTitle : "") + (isGuest ? "\nGuest from " + isGuest : "")}
-                  style={{ position: "relative", background: pal.bg, color: pal.fg, borderRadius: 6, padding: "8px 6px", textAlign: "left", lineHeight: 1.25, minHeight: 56, boxShadow: "inset 0 -2px 0 rgba(0,0,0,0.18)", ...subtle }}>
+              <td key={key} {..._dh} onClick={onCellClick} style={tdStyle}>
+                <div title={(role || "") + " · " + branchName + " · " + cellVal + " · " + time + (dotTitle ? "\n" + dotTitle : "") + (_abs && _absStyle ? "\n" + _absStyle.lbl + (_abs.note ? " — " + _abs.note : "") + (_abs.recorded_by ? " (by " + _abs.recorded_by + ")" : "") : "") + (isGuest ? "\nGuest from " + isGuest : "") + "\n\nClick to edit · drag to swap days or loan to another store"}
+                  style={{ position: "relative", background: pal.bg, color: pal.fg, borderRadius: 6, padding: "8px 6px", textAlign: "left", lineHeight: 1.25, minHeight: 56, boxShadow: "inset 0 -2px 0 rgba(0,0,0,0.18)", opacity: _abs ? 0.55 : 1, ...subtle }}>
+                  {_abs && _absStyle && (
+                    <div style={{ position: "absolute", top: 3, left: 3, right: 3, background: _absStyle.bg, color: _absStyle.fg, borderRadius: 4, padding: "1px 5px", fontSize: 9, fontWeight: 800, letterSpacing: "0.05em", textAlign: "center", boxShadow: "0 1px 2px rgba(0,0,0,0.18)", opacity: 1 }}>
+                      {_absStyle.lbl}{_abs.proof ? " 📎" : ""}
+                    </div>
+                  )}
                   {dotColor && (
                     <span title={dotTitle} style={{ position: "absolute", top: 4, right: 4, width: 9, height: 9, borderRadius: 9, background: dotColor, border: "2px solid #fff", boxShadow: "0 0 0 1px rgba(0,0,0,0.12)" }} />
                   )}
-                  <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.01em", whiteSpace: "nowrap" }}>{time}</div>
+                  <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.01em", whiteSpace: "nowrap", marginTop: _abs ? 16 : 0 }}>{time}</div>
                   <div style={{ fontSize: 10, fontWeight: 600, opacity: 0.95, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{branchName}{isGuest ? " ↪" : ""}</div>
                   <div style={{ fontSize: 9, fontWeight: 800, opacity: 0.92, letterSpacing: "0.06em", marginTop: 1 }}>
                     {(role || "").toUpperCase()}{cellVal !== "W" ? " · " + cellVal : ""}
@@ -21786,7 +22362,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const fg = NON_WORK_FG[cellVal] || "#374151";
           const lbl = NON_WORK_LBL[cellVal] || cellVal;
           return (
-            <td key={key} style={{ background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", textAlign: "center" }}>
+            <td key={key} {..._dh} onClick={onCellClick} title={ec ? "Click to edit · drag to swap or loan" : ""} style={{ ...tdStyle, textAlign: "center" }}>
               <div style={{ background: bg, color: fg, borderRadius: 6, padding: "8px 6px", fontSize: 10, fontWeight: 800, letterSpacing: "0.05em", minHeight: 56, display: "flex", alignItems: "center", justifyContent: "center" }}>
                 {lbl}
               </div>
@@ -21877,6 +22453,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
             )}
 
+            {/* Draft banner — pending changes from drag/drop or popover
+                edits sit here until the ROM commits with "Apply to live".
+                Until then nothing is written to BOA_DB.saveSchedule /
+                saveMgrLoans, so the kiosk and Scheduling tab keep showing
+                the live state. */}
+            {(_draftChangeCount > 0 || mgrCoverageDraftLoans.length > 0) && (
+              <div style={{ background: "#FFFBEB", border: "1px solid #FCD34D", borderRadius: 11, padding: "10px 14px", marginBottom: 14, display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "#92400E" }}>
+                    📝 {_draftChangeCount} pending shift change{_draftChangeCount === 1 ? "" : "s"}
+                    {mgrCoverageDraftLoans.filter(l => l._op !== "remove").length > 0 ? (
+                      <> · {mgrCoverageDraftLoans.filter(l => l._op !== "remove").length} cross-store loan{mgrCoverageDraftLoans.filter(l => l._op !== "remove").length === 1 ? "" : "s"}</>
+                    ) : null}
+                  </div>
+                  <div style={{ fontSize: 11, color: "#92400E", marginTop: 2, opacity: 0.85 }}>
+                    Showing as a preview. Nothing is saved to the kiosk or Scheduling tab yet — click "Apply to live" to commit, or "Discard" to revert.
+                  </div>
+                </div>
+                <button onClick={_discardDraft} disabled={mgrCoverageDraftApplying}
+                  style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 8, padding: "8px 14px", cursor: mgrCoverageDraftApplying ? "not-allowed" : "pointer", fontSize: 12, fontWeight: 700, opacity: mgrCoverageDraftApplying ? 0.6 : 1 }}>
+                  ↺ Discard
+                </button>
+                <button onClick={_applyDraft} disabled={mgrCoverageDraftApplying}
+                  style={{ background: mgrCoverageDraftApplying ? "#FBCFE8" : "#16A34A", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", cursor: mgrCoverageDraftApplying ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 800 }}>
+                  {mgrCoverageDraftApplying ? "Applying…" : "✓ Apply to live"}
+                </button>
+              </div>
+            )}
+
             {mgrCoverageView === "byBranch" ? (
               <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 13, overflow: "auto" }}>
                 {effectiveGroups.map(r => {
@@ -21894,7 +22499,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: "#1f2937", tableLayout: "auto", minWidth: 1100 }}>
                               <thead>
                                 <tr style={{ background: "#FCE7F3" }}>
-                                  <th style={{ textAlign: "left", padding: "8px 14px", fontSize: 13, fontWeight: 800, color: "#831843", width: 240, borderBottom: "1px solid #FBCFE8" }}>📍 {b}</th>
+                                  <th style={{ textAlign: "left", padding: "8px 14px", fontSize: 13, fontWeight: 800, color: "#831843", width: 240, borderBottom: "1px solid #FBCFE8" }}>
+                                    📍 {b}
+                                    {(() => {
+                                      const dg = _branchDiag[b];
+                                      if (!dg) return null;
+                                      const noSchedule = !dg.ymsLoaded || dg.ymsLoaded.length === 0 || dg.gridEcsCount === 0;
+                                      if (noSchedule) return <div style={{ fontSize: 10, fontWeight: 600, color: "#7f1d1d", marginTop: 2 }}>⚠ No manager schedule published for this branch in the visible cycle.</div>;
+                                      if (dg.unresolvedEcs.length > 0) return <div style={{ fontSize: 10, fontWeight: 600, color: "#92400e", marginTop: 2 }}>⚠ {dg.unresolvedEcs.length} EC{dg.unresolvedEcs.length === 1 ? "" : "s"} in schedule not on staff list: {dg.unresolvedEcs.join(", ")}</div>;
+                                      return null;
+                                    })()}
+                                  </th>
                                   {weekDays.map(dayHeader)}
                                 </tr>
                                 <tr style={{ background: "#FDEEF5" }}>
@@ -21915,12 +22530,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   return (
                                     <tr key={m.ec}>
                                       <td style={{ padding: "6px 14px", fontWeight: 700, color: "#831843", fontSize: 12, borderBottom: "1px solid #FCE7F3" }}>
-                                        {m.role === "SM" ? "👑 " : m.role === "AM" ? "⭐ " : ""}{m.name}
-                                        <span style={{ marginLeft: 6, fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{m.role || ""}</span>
+                                        {_effectiveRole(m) === "SSM" ? "💎 " : _effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}
+                                        <span style={{ marginLeft: 6, fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{_effectiveRole(m) || ""}{m.role === "AM" && _effectiveRole(m) === "SM" ? " (trial)" : ""}</span>
                                       </td>
                                       {weekDays.map(d => {
                                         const v = readWithFallback(b, m.ec, d);
-                                        return renderCell(v, m.ec + "-" + d.ymd, b, m.role, d.ymd, m.ec, m._guestFromBranch || null);
+                                        return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow);
                                       })}
                                     </tr>
                                   );
@@ -21959,15 +22574,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       return rows.map(({ m, b, r }) => (
                         <tr key={m.ec + "-" + b}>
                           <td style={{ padding: "6px 14px", borderBottom: "1px solid #FCE7F3" }}>
-                            <div style={{ fontWeight: 700, color: "#831843", fontSize: 12.5 }}>{m.role === "SM" ? "👑 " : m.role === "AM" ? "⭐ " : ""}{m.name}</div>
+                            <div style={{ fontWeight: 700, color: "#831843", fontSize: 12.5 }}>{_effectiveRole(m) === "SSM" ? "💎 " : _effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}</div>
                             <div style={{ fontSize: 10, color: "#9ca3af" }}>
                               📍 {b} <span style={{ background: r.bg, color: r.color, padding: "1px 6px", borderRadius: 4, fontWeight: 700, marginLeft: 4 }}>{r.label}</span>
-                              <span style={{ marginLeft: 6, fontFamily: "monospace" }}>{m.role || ""}</span>
+                              <span style={{ marginLeft: 6, fontFamily: "monospace" }}>{_effectiveRole(m) || ""}{m.role === "AM" && _effectiveRole(m) === "SM" ? " (trial)" : ""}</span>
                             </div>
                           </td>
                           {weekDays.map(d => {
                             const v = readWithFallback(b, m.ec, d);
-                            return renderCell(v, m.ec + "-" + d.ymd, b, m.role, d.ymd, m.ec, m._guestFromBranch || null);
+                            return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow);
                           })}
                         </tr>
                       ));
@@ -22353,8 +22968,163 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           organise stores into clusters that matter for them (e.g.
           Cape Town city bowl, Southern suburbs) and reorder freely.
           Saved per user PIN so each ROM has their own view. */}
+      {/* Manager Coverage — cell editor. Click any manager-day cell on
+          the coverage tab to change the shift code, clear it, or loan
+          the manager to another store. Writes through to the working
+          schedule grid via BOA_DB.saveSchedule and to the mgr_loans
+          row when it's a cross-store move — both are read by the
+          Scheduling tab and the kiosk on next refresh. */}
+      {mgrCellEditor && (() => {
+        const E = mgrCellEditor;
+        const _close = () => setMgrCellEditor(null);
+        const _isCrossStore = (E._draftCode === "loan_out") || (E._draftDest && E._draftDest !== E.branch);
+        // Stage edit into mgrCoverageDraft / mgrCoverageDraftLoans — NOT
+        // written to the backend here. The "Apply to live" banner at the
+        // top of the coverage tab is what actually persists. Lets a ROM
+        // play with several moves and undo / apply as a batch.
+        const _save = () => {
+          const homeBranch = E.branch;
+          const ym = E.mgrYm;
+          const ec = String(E.ec).trim();
+          const dom = E.dom;
+          const ymd = E.ymd;
+          const draftCode = E._draftCode != null ? E._draftCode : E.currentCell;
+          const dest = E._draftDest || "";
+          const _dk = (b, y) => b + "|" + y;
+          // Look up the existing loan destination (live or pending draft)
+          // so we can clear the OLD destination cell when the user reverts
+          // a loan or re-routes it to a different store. Otherwise the old
+          // destination keeps a stale guest row.
+          const _oldLoan = (mgrLoanRows || []).find(l => l && String(l.ec).trim() === ec && l.date === ymd);
+          const _pendingLoan = (mgrCoverageDraftLoans || []).find(l => l && String(l.ec).trim() === ec && l.date === ymd && l._op !== "remove");
+          const oldDest = (_pendingLoan && _pendingLoan.toBranch) || (_oldLoan && _oldLoan.toBranch) || null;
+          setMgrCoverageDraft(prev => {
+            const next = { ...prev };
+            // Clear the OLD destination's cell first if we're reverting or
+            // re-routing — same edit, different draft branch.
+            if (oldDest && oldDest !== dest) {
+              const oldDk = _dk(oldDest, ym);
+              const odBranch = { ...(next[oldDk] || {}) };
+              const odRow = { ...(odBranch[ec] || {}) };
+              odRow[dom] = ""; if (ymd) odRow[ymd] = "";
+              odBranch[ec] = odRow;
+              next[oldDk] = odBranch;
+            }
+            // Home cell — loan_out marker or the explicit code (or clear).
+            const hk = _dk(homeBranch, ym);
+            const hb = { ...(next[hk] || {}) };
+            const hr = { ...(hb[ec] || {}) };
+            const homeVal = dest && dest !== homeBranch ? "loan_out" : (draftCode || "");
+            hr[dom] = homeVal; if (ymd) hr[ymd] = homeVal;
+            hb[ec] = hr;
+            next[hk] = hb;
+            // New destination cell.
+            if (dest && dest !== homeBranch) {
+              const ddk = _dk(dest, ym);
+              const db = { ...(next[ddk] || {}) };
+              const dr = { ...(db[ec] || {}) };
+              const destVal = draftCode && draftCode !== "loan_out" ? draftCode : "W";
+              dr[dom] = destVal; if (ymd) dr[ymd] = destVal;
+              db[ec] = dr;
+              next[ddk] = db;
+            }
+            return next;
+          });
+          if (dest && dest !== homeBranch) {
+            setMgrCoverageDraftLoans(prev => [
+              ...prev.filter(l => !(String(l.ec).trim() === ec && l.date === ymd)),
+              { _op: "upsert", ec, name: E.name || "", date: ymd, fromBranch: homeBranch, toBranch: dest, note: E._draftNote || "" }
+            ]);
+          } else {
+            // Cleared destination — drop any pending draft loan for the
+            // same (ec,date) and stage a removal if a live loan exists.
+            const hadLive = (mgrLoanRows || []).some(l => String(l.ec).trim() === ec && l.date === ymd);
+            setMgrCoverageDraftLoans(prev => {
+              const filtered = prev.filter(l => !(String(l.ec).trim() === ec && l.date === ymd));
+              return hadLive ? [...filtered, { _op: "remove", ec, date: ymd }] : filtered;
+            });
+          }
+          _close();
+        };
+        const _setDraft = (next) => setMgrCellEditor(prev => prev ? { ...prev, ...next } : null);
+        const _opts = [
+          { code: "W",  lbl: "Work · standard" },
+          { code: "WE", lbl: "Work early" },
+          { code: "WL", lbl: "Work late" },
+          { code: "WM", lbl: "Work morning (half)" },
+          { code: "WB", lbl: "Work both shifts" },
+          { code: "E",  lbl: "Extra cover" },
+          { code: "O",  lbl: "Off" },
+          { code: "R",  lbl: "Requested off" },
+          { code: "L",  lbl: "Annual leave" },
+          { code: "",   lbl: "(clear cell)" }
+        ];
+        const otherBranches = SALONS.map(s => s.name).filter(b => b !== E.branch);
+        const draftCode = E._draftCode != null ? E._draftCode : E.currentCell;
+        const draftDest = E._draftDest || "";
+        return (
+          <div onClick={_close} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <div onClick={ev => ev.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "20px 22px", width: "100%", maxWidth: 500 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                <div>
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, color: "#831843", fontWeight: 700 }}>Edit shift</div>
+                  <div style={{ fontSize: 12, color: "#9ca3af" }}>
+                    {E.name} {E.role ? "· " + E.role : ""} · 📍 {E.branch} · {new Date(E.ymd + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short", year: "numeric" })}
+                  </div>
+                </div>
+                <button onClick={_close} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
+              </div>
+
+              <div style={{ marginTop: 14 }}>
+                <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>SHIFT CODE</label>
+                <select value={draftCode || ""} onChange={ev => _setDraft({ _draftCode: ev.target.value })}
+                  style={{ display: "block", width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff" }}>
+                  {_opts.map(o => <option key={o.code} value={o.code}>{o.code ? o.code + " — " + o.lbl : o.lbl}</option>)}
+                </select>
+              </div>
+
+              <div style={{ marginTop: 12 }}>
+                <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>OR LOAN TO ANOTHER STORE (optional)</label>
+                <select value={draftDest} onChange={ev => _setDraft({ _draftDest: ev.target.value })}
+                  style={{ display: "block", width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff" }}>
+                  <option value="">— Stay at {E.branch} —</option>
+                  {otherBranches.map(b => <option key={b} value={b}>{b}</option>)}
+                </select>
+                {draftDest && (
+                  <div style={{ marginTop: 6, padding: "8px 10px", background: "#dbeafe", border: "1px solid #93c5fd", borderRadius: 8, fontSize: 12, color: "#1e3a8a" }}>
+                    ↪ {E.name} will be loaned to <strong>{draftDest}</strong> on this day. {E.branch}'s schedule will show "↪ Loaned to {draftDest}".
+                  </div>
+                )}
+              </div>
+
+              <div style={{ marginTop: 12 }}>
+                <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>NOTE (optional)</label>
+                <input value={E._draftNote || ""} onChange={ev => _setDraft({ _draftNote: ev.target.value })} placeholder="e.g. covering for Charlene who's sick"
+                  style={{ display: "block", width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+              </div>
+
+              {E._err && (
+                <div style={{ marginTop: 10, background: "#fee2e2", border: "1px solid #fca5a5", color: "#7f1d1d", borderRadius: 8, padding: "8px 10px", fontSize: 12 }}>{E._err}</div>
+              )}
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+                <button onClick={_close} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", color: "#831843", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Cancel</button>
+                <button onClick={_save}
+                  title="Stages the change in your draft — click 'Apply to live' on the coverage tab to commit"
+                  style={{ padding: "9px 20px", borderRadius: 9, border: "none", background: "#BE185D", color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+                  ＋ Add to draft
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {mgrCoverageGroupsEditor && (() => {
         const e = mgrCoverageGroupsEditor;
+        // hasCustomGroups is declared inside the Manager Coverage tab IIFE
+        // and isn't in scope at this top-level modal; recompute it here.
+        const hasCustomGroups = Array.isArray(mgrCoverageGroups) && mgrCoverageGroups.length > 0;
         const scopedBranchNames = SALONS
           .filter(s => !_hasStoreScope || scopedSalonNames.has(s.name))
           .map(s => s.name)
@@ -22494,6 +23264,118 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <button onClick={() => setMgrCoverageGroupsEditor(null)} style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 9, padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>Cancel</button>
                   <button onClick={save} style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 9, padding: "9px 20px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>💾 Save groups</button>
                 </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Manual manager clock-in modal — logs a clock-in into the same
+          `clockins` table the kiosk writes to, so the entry flows
+          naturally into Manager Coverage's green dot, the no-show
+          banner check, and the dashboard manager-attendance tile. */}
+      {manualMgrClockinModal && (() => {
+        const m = manualMgrClockinModal;
+        const _close = () => setManualMgrClockinModal(null);
+        const scopedBranches = SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name));
+        const branchManagers = managers
+          .filter(mg => mg.branch === m.branch && !mg.leftDate && !mg._onMat)
+          .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+        const _set = (patch) => setManualMgrClockinModal({ ...m, ...patch });
+        const _todayY = (() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
+        const ymdMax = _todayY;
+        const _save = async () => {
+          if (!m.staffId) { _set({ _err: "Pick a manager." }); return; }
+          if (!m.ymd) { _set({ _err: "Pick a date." }); return; }
+          if (!m.time || !/^\d{2}:\d{2}$/.test(m.time)) { _set({ _err: "Pick a time (HH:MM)." }); return; }
+          if (!window.BOA_DB || !window.BOA_DB.recordManualManagerClockin) { _set({ _err: "Not connected." }); return; }
+          _set({ _saving: true, _err: "" });
+          try {
+            // Build a local-timezone ISO so the row's day-of-week / day-of-month
+            // matches what the ROM picked on the form.
+            const [yy, mm, dd] = m.ymd.split("-").map(Number);
+            const [hh, mn] = m.time.split(":").map(Number);
+            const local = new Date(yy, mm - 1, dd, hh, mn, 0, 0);
+            const tsIso = local.toISOString();
+            await window.BOA_DB.recordManualManagerClockin({
+              staffId: m.staffId,
+              branch: m.branch,
+              type: "in",
+              ts: tsIso,
+              note: m.note || null,
+              recordedBy: (currentUser && (currentUser.name || currentUser.pin)) || null
+            });
+            // Refresh the clock-in window so the new row hits every
+            // downstream view immediately. listRecentManagerClockins
+            // covers the configured window (default 31 days).
+            if (window.BOA_DB.listRecentManagerClockins) {
+              const fresh = await window.BOA_DB.listRecentManagerClockins(mgrClockinDays || 31);
+              setMgrClockinRows(fresh || []);
+            }
+            _close();
+          } catch (err) {
+            setManualMgrClockinModal(prev => prev ? { ...prev, _saving: false, _err: (err && err.message) || String(err) } : null);
+          }
+        };
+        const inp = { display: "block", width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff", boxSizing: "border-box" };
+        const lbl = { fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" };
+        return (
+          <div onClick={_close} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <div onClick={ev => ev.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "20px 22px", width: "100%", maxWidth: 480 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                <div>
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 19, color: "#831843", fontWeight: 700 }}>✓ Manual manager clock-in</div>
+                  <div style={{ fontSize: 12, color: "#9ca3af" }}>Use when a manager forgot to tap the kiosk. Writes into the same clock-in log — Manager Coverage gets the green dot, no-show banner drops them.</div>
+                </div>
+                <button onClick={_close} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
+              </div>
+
+              <div style={{ marginTop: 14 }}>
+                <label style={lbl}>BRANCH</label>
+                <select value={m.branch || ""} onChange={ev => _set({ branch: ev.target.value, staffId: "", ec: "", name: "" })} style={inp}>
+                  <option value="">— pick a branch —</option>
+                  {scopedBranches.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                </select>
+              </div>
+
+              <div style={{ marginTop: 12 }}>
+                <label style={lbl}>MANAGER</label>
+                <select value={m.staffId || ""} onChange={ev => {
+                  const mg = branchManagers.find(x => (x._id || x.id) === ev.target.value);
+                  _set({ staffId: ev.target.value, ec: (mg && mg.ec) || "", name: (mg && mg.name) || "" });
+                }} disabled={!m.branch} style={inp}>
+                  <option value="">{m.branch ? "— pick a manager —" : "Pick a branch first"}</option>
+                  {branchManagers.map(mg => <option key={mg._id || mg.id} value={mg._id || mg.id}>{mg.name} · {mg.role || "AM"}</option>)}
+                </select>
+              </div>
+
+              <div style={{ marginTop: 12, display: "flex", gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <label style={lbl}>DATE</label>
+                  <input type="date" value={m.ymd || ""} max={ymdMax} onChange={ev => ev.target.value && _set({ ymd: ev.target.value })} style={inp} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={lbl}>CLOCK-IN TIME</label>
+                  <input type="time" value={m.time || "09:00"} onChange={ev => _set({ time: ev.target.value })} style={inp} />
+                </div>
+              </div>
+
+              <div style={{ marginTop: 12 }}>
+                <label style={lbl}>NOTE (optional)</label>
+                <input value={m.note || ""} onChange={ev => _set({ note: ev.target.value })} placeholder="e.g. forgot to tap — verified arrival 9:00"
+                  style={{ ...inp, fontFamily: "inherit" }} />
+              </div>
+
+              {m._err && (
+                <div style={{ marginTop: 10, background: "#fee2e2", border: "1px solid #fca5a5", color: "#7f1d1d", borderRadius: 8, padding: "8px 10px", fontSize: 12 }}>{m._err}</div>
+              )}
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+                <button onClick={_close} disabled={!!m._saving} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", color: "#831843", fontWeight: 700, fontSize: 13, cursor: m._saving ? "not-allowed" : "pointer" }}>Cancel</button>
+                <button onClick={_save} disabled={!!m._saving}
+                  style={{ padding: "9px 20px", borderRadius: 9, border: "none", background: m._saving ? "#FBCFE8" : "#15803D", color: "#fff", fontWeight: 700, fontSize: 13, cursor: m._saving ? "not-allowed" : "pointer" }}>
+                  {m._saving ? "Logging…" : "💾 Log clock-in"}
+                </button>
               </div>
             </div>
           </div>

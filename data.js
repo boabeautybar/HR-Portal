@@ -1136,6 +1136,38 @@
     return (res.data && res.data.value) || null;
   }
 
+  // Manually log a manager clock-in from the HR portal — used when a
+  // manager forgot to clock in on the kiosk. Writes the same row shape
+  // the kiosk uses, so it flows naturally into every downstream view
+  // (Manager Check-ins list, no-show banner, Manager Coverage green
+  // dot, dashboard tile). Mirrors the kiosk's `addManagerClockinWithMeta`
+  // without GPS/photo metadata, and tags the meta row so an audit can
+  // tell manual entries from real kiosk taps.
+  async function recordManualManagerClockin(opts) {
+    if (!opts || !opts.staffId) throw new Error("staffId required");
+    var type = opts.type || "in";
+    var row = {
+      staff_id: opts.staffId,
+      branch: opts.branch || null,
+      type: type
+    };
+    if (opts.ts) row.ts = opts.ts;
+    var ins = await sb.from("clockins").insert(row).select().single();
+    if (ins.error) throw ins.error;
+    try {
+      await sb.from("app_state").upsert({
+        key: "boa_mgrclockin_meta_" + ins.data.id,
+        value: {
+          source: "hr_portal_manual",
+          recordedBy: opts.recordedBy || null,
+          note: opts.note || null,
+          createdAt: new Date().toISOString()
+        }
+      });
+    } catch (e) { console.warn("manual clock-in meta save:", e); }
+    return ins.data;
+  }
+
   // ---------- Manager personal PIN registry (boa_mgr_pins_v1) ----------
   // Map of {employee_code: 6-digit-pin}. Used by the check-in app's
   // Clock-in tab so each manager can confirm their own attendance.
@@ -1220,6 +1252,22 @@
   async function saveTechLoans(records) {
     var res = await sb.from("app_state").upsert({ key: "boa_tech_loans_v1", value: records || [] });
     if (res.error) { console.error("saveTechLoans:", res.error); throw res.error; }
+    return records;
+  }
+
+  // ---------- Manager day-loans (boa_mgr_loans_v1) ----------
+  // Mirror of the tech loan model for managers — one record per
+  // (manager, day) cross-store assignment. Same shape as tech loans
+  // so the kiosk and reports can reuse the same lookup pattern.
+  async function loadMgrLoans() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_mgr_loans_v1").maybeSingle();
+    if (res.error) { console.error("loadMgrLoans:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveMgrLoans(records) {
+    var res = await sb.from("app_state").upsert({ key: "boa_mgr_loans_v1", value: records || [] });
+    if (res.error) { console.error("saveMgrLoans:", res.error); throw res.error; }
     return records;
   }
 
@@ -1406,6 +1454,7 @@
 
     // Manager clock-ins viewer
     listRecentManagerClockins: listRecentManagerClockins,
+    recordManualManagerClockin: recordManualManagerClockin,
     listRecentTechClockins: listRecentTechClockins,
     listRecentAttendanceCheckins: listRecentAttendanceCheckins,
     listRecentKioskCheckins: listRecentKioskCheckins,
@@ -1434,6 +1483,8 @@
     // Unpaid legal-status leave
     loadTechLoans: loadTechLoans,
     saveTechLoans: saveTechLoans,
+    loadMgrLoans: loadMgrLoans,
+    saveMgrLoans: saveMgrLoans,
     loadDailyTasks: loadDailyTasks,
     saveDailyTasks: saveDailyTasks,
     loadComplianceActions: loadComplianceActions,
