@@ -34,7 +34,10 @@ const STAFF_USERS = {
     hideTabs: ["staff"],
     readOnlyTabs: ["locations", "onboard", "offboard", "recruitment"]
   },
-  "1111": { name: "Demo", role: "Training Demo", demo: true }
+  "1111": { name: "Demo", role: "Training Demo", demo: true },
+  // Voucher Entry: a stripped utility login. Sees ONLY the Voucher Entry grid
+  // (no nav, tabs or categories) — see VoucherEntryApp + the AppGate branch.
+  "6666": { name: "Vouchers", role: "Voucher Entry", voucherEntryOnly: true }
 };
 const PIN_SESSION_KEY = "boa_hr_current_user_v1";
 const APP_USERS_KEY = "boa_app_users_v1";
@@ -6162,7 +6165,7 @@ function PinLogin(props) {
       setPin("");
       return;
     }
-    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, isOwner: !!u.isOwner, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], readOnlyTabs: u.readOnlyTabs || [], stores: Array.isArray(u.stores) ? u.stores.slice() : [], signedInAt: new Date().toISOString() };
+    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, isOwner: !!u.isOwner, voucherEntryOnly: !!u.voucherEntryOnly, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], readOnlyTabs: u.readOnlyTabs || [], stores: Array.isArray(u.stores) ? u.stores.slice() : [], signedInAt: new Date().toISOString() };
     try { sessionStorage.setItem(PIN_SESSION_KEY, JSON.stringify(session)); } catch (_) { }
     window.BOA_CURRENT_USER = session;
     onUnlock(session);
@@ -6192,6 +6195,152 @@ function PinLogin(props) {
         </button>
         <div style={{ fontSize: 10, color: "#9CA3AF", marginTop: 14 }}>Each action you take is logged with your name.</div>
       </form>
+    </div>
+  );
+}
+
+// ─── VOUCHER ENTRY (restricted PIN) ─────────────────────────────────────────
+// Bare, stripped view for the "Voucher Entry" login (PIN 6666). No nav, tabs or
+// categories — just a spreadsheet-style grid for capturing Shopify→Fresha
+// vouchers, which bulk-insert into the Supabase `vouchers` table. The same
+// table is read by the kiosk manager voucher lookup.
+const VOUCHER_BLANK_ROWS = 25;
+function blankVoucherRow() { return { last4: "", fresha: "", amount: "", expiry: "", order: "" }; }
+function makeBlankVoucherRows(n) {
+  const rows = [];
+  for (let i = 0; i < n; i++) rows.push(blankVoucherRow());
+  return rows;
+}
+function VoucherEntryApp({ user, onSignOut }) {
+  const [rows, setRows] = React.useState(() => makeBlankVoucherRows(VOUCHER_BLANK_ROWS));
+  const [saving, setSaving] = React.useState(false);
+  const [result, setResult] = React.useState(null); // { ok, msg }
+  const [errorRows, setErrorRows] = React.useState(() => new Set());
+
+  const setCell = (idx, key, val) => {
+    setRows(prev => prev.map((r, i) => (i === idx ? { ...r, [key]: val } : r)));
+    if (errorRows.size) setErrorRows(new Set());
+    if (result) setResult(null);
+  };
+  const addRow = () => setRows(prev => prev.concat(blankVoucherRow()));
+
+  const isBlankRow = (r) => !(r.last4 + r.fresha + r.amount + r.expiry + r.order).trim();
+  // Required: last4, fresha, amount, order. Expiry is optional.
+  const isComplete = (r) => !!(r.last4.trim() && r.fresha.trim() && r.amount.trim() && r.order.trim());
+
+  const submit = async () => {
+    if (saving) return;
+    setResult(null);
+    const bad = new Set();
+    const toSave = [];
+    rows.forEach((r, i) => {
+      if (isBlankRow(r)) return;          // skip entirely-empty rows
+      if (!isComplete(r)) { bad.add(i); return; }
+      toSave.push({
+        last4: r.last4, fresha_code: r.fresha, amount: r.amount,
+        order_number: r.order, expiry_date: r.expiry
+      });
+    });
+    if (bad.size) {
+      setErrorRows(bad);
+      setResult({ ok: false, msg: "Some rows are missing required fields (last 4, Fresha code, amount, order #). Fix the highlighted rows or clear them." });
+      return;
+    }
+    if (!toSave.length) {
+      setResult({ ok: false, msg: "Nothing to save — enter at least one voucher." });
+      return;
+    }
+    if (!window.BOA_DB || !window.BOA_DB.bulkInsertVouchers) {
+      setResult({ ok: false, msg: "Database not available. Reload and try again." });
+      return;
+    }
+    setSaving(true);
+    try {
+      const inserted = await window.BOA_DB.bulkInsertVouchers(toSave);
+      const n = (inserted && inserted.length) || toSave.length;
+      setRows(makeBlankVoucherRows(VOUCHER_BLANK_ROWS));
+      setErrorRows(new Set());
+      setResult({ ok: true, msg: n + " voucher" + (n === 1 ? "" : "s") + " saved." });
+    } catch (e) {
+      setResult({ ok: false, msg: "Could not save: " + ((e && e.message) || String(e)) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const th = { textAlign: "left", fontSize: 11, fontWeight: 700, color: "#831843", textTransform: "uppercase", letterSpacing: "0.04em", padding: "8px 10px", borderBottom: "2px solid #FBCFE8", whiteSpace: "nowrap" };
+  const cellInput = { width: "100%", padding: "7px 8px", fontSize: 13, border: "1px solid #FBCFE8", borderRadius: 7, fontFamily: "inherit", color: "#831843", boxSizing: "border-box" };
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#FFF5FA", fontFamily: "'Outfit',system-ui,sans-serif" }}>
+      <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "14px 20px", background: "#fff", borderBottom: "1px solid #FBCFE8", position: "sticky", top: 0, zIndex: 10 }}>
+        <div style={{ fontSize: 16, fontWeight: 800, color: "#831843" }}>🎟️ Voucher Entry</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ fontSize: 11, color: "#9F1A4F" }}>Signed in as {user && user.name}</span>
+          <button onClick={onSignOut}
+            style={{ background: "#fff", border: "1px solid #FBCFE8", color: "#831843", borderRadius: 7, padding: "5px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit" }}>
+            Sign out
+          </button>
+        </div>
+      </header>
+
+      <div style={{ maxWidth: 900, margin: "0 auto", padding: "20px 16px 60px" }}>
+        <div style={{ fontSize: 13, color: "#6B7280", lineHeight: 1.5, marginBottom: 14 }}>
+          Enter the <strong>last 4 digits</strong> of the Shopify voucher code, the matching
+          <strong> Fresha code</strong>, the <strong>amount</strong> and the <strong>order number</strong>.
+          Expiry date is optional. Blank rows are ignored. Press <strong>Submit</strong> to save them all.
+        </div>
+
+        <div style={{ overflowX: "auto", background: "#fff", border: "1px solid #FBCFE8", borderRadius: 12 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+            <thead>
+              <tr>
+                <th style={{ ...th, width: 40, textAlign: "center" }}>#</th>
+                <th style={th}>Last 4</th>
+                <th style={th}>Fresha Code</th>
+                <th style={th}>Amount</th>
+                <th style={th}>Expiry <span style={{ color: "#9CA3AF", fontWeight: 600 }}>(optional)</span></th>
+                <th style={th}>Order #</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => {
+                const isErr = errorRows.has(i);
+                const errStyle = isErr ? { borderColor: "#dc2626", background: "#fff1f2" } : null;
+                return (
+                  <tr key={i} style={isErr ? { background: "#fff5f5" } : null}>
+                    <td style={{ padding: "5px 8px", textAlign: "center", color: "#9CA3AF", fontSize: 12 }}>{i + 1}</td>
+                    <td style={{ padding: "5px 8px" }}><input style={{ ...cellInput, ...errStyle }} value={r.last4} maxLength={8} onChange={e => setCell(i, "last4", e.target.value)} /></td>
+                    <td style={{ padding: "5px 8px" }}><input style={{ ...cellInput, ...errStyle }} value={r.fresha} onChange={e => setCell(i, "fresha", e.target.value)} /></td>
+                    <td style={{ padding: "5px 8px" }}><input style={{ ...cellInput, ...errStyle }} value={r.amount} inputMode="decimal" onChange={e => setCell(i, "amount", e.target.value)} /></td>
+                    <td style={{ padding: "5px 8px" }}><input style={{ ...cellInput }} type="date" value={r.expiry} onChange={e => setCell(i, "expiry", e.target.value)} /></td>
+                    <td style={{ padding: "5px 8px" }}><input style={{ ...cellInput, ...errStyle }} value={r.order} onChange={e => setCell(i, "order", e.target.value)} /></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 14, flexWrap: "wrap" }}>
+          <button onClick={addRow} disabled={saving}
+            style={{ background: "#fff", border: "1px solid #FBCFE8", color: "#831843", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit" }}>
+            + Add row
+          </button>
+          <button onClick={submit} disabled={saving}
+            style={{ background: saving ? "#FBCFE8" : "#BE185D", color: saving ? "#9F1A4F" : "#fff", border: "none", borderRadius: 8, padding: "9px 22px", cursor: saving ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit", letterSpacing: "0.04em" }}>
+            {saving ? "Saving…" : "Submit"}
+          </button>
+        </div>
+
+        {result && (
+          <div style={{ marginTop: 14, padding: "11px 14px", borderRadius: 9, fontSize: 13, fontWeight: 600,
+            background: result.ok ? "#dcfce7" : "#fef2f2", border: "1px solid " + (result.ok ? "#86efac" : "#fecaca"),
+            color: result.ok ? "#14532d" : "#991b1b" }}>
+            {result.ok ? "✓ " : "⚠️ "}{result.msg}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -6293,6 +6442,7 @@ function AppGate() {
               ...s,
               name: u.name, role: u.role,
               demo: !!u.demo, isOwner: !!u.isOwner,
+              voucherEntryOnly: !!u.voucherEntryOnly,
               hideCategories: u.hideCategories || [],
               hideTabs: u.hideTabs || [],
               readOnlyTabs: u.readOnlyTabs || [],
@@ -6371,6 +6521,11 @@ function AppGate() {
 
   if (!currentUser) {
     return <PinLogin users={appUsers} onUnlock={(s) => setCurrentUser(s)} />;
+  }
+
+  // Voucher-entry login: bare, stripped view — no nav, tabs or categories.
+  if (currentUser.voucherEntryOnly) {
+    return <VoucherEntryApp user={currentUser} onSignOut={signOut} />;
   }
 
   return <App currentUser={currentUser} onSignOut={signOut} appUsers={appUsers} onUsersUpdate={onUsersUpdate} />;

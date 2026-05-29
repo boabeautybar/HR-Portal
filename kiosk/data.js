@@ -1427,7 +1427,11 @@
   // Data lives in a `vouchers` table: { last4 text, amount text, fresha_code
   // text }. `last4` is NOT unique (collisions are expected — that's why amount
   // is shown). Store last4 as TEXT so leading zeros (e.g. "0042") survive.
-  async function lookupFreshaVoucher(typed) {
+  function _normAmt(a) {
+    var n = parseFloat(String(a == null ? "" : a).replace(/[^0-9.]/g, ""));
+    return isNaN(n) ? null : n;
+  }
+  async function lookupFreshaVoucher(typed, amount) {
     var c = client(); if (!c) throw new Error("Supabase not configured");
     // Strip spaces / dashes so a 16-char code pasted as "ABCD EFGH IJKL MNOP"
     // still counts. Shopify codes are 16 chars; force the manager to enter the
@@ -1444,6 +1448,12 @@
     var matches = (res.data || [])
       .map(function (r) { return { fresha: r.fresha_code, amount: r.amount }; })
       .filter(function (m) { return m.fresha; });
+    // Disambiguate same-last4 collisions by amount: keep only rows whose amount
+    // matches what the manager entered (tolerant of "500" vs "500.00" vs "R500").
+    var want = _normAmt(amount);
+    if (want != null) {
+      matches = matches.filter(function (m) { return _normAmt(m.amount) === want; });
+    }
     return { found: matches.length > 0, matches: matches, last4: last4, tooShort: false };
   }
   async function listAllManagers() {

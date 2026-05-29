@@ -502,12 +502,14 @@
           '<button class="link-btn link-btn-dark" id="back-home">← Back</button>' +
         '</div>' +
         '<div style="font-size:13px;color:#6b7280;margin-bottom:14px;line-height:1.5">' +
-          'Enter the client\'s <strong>full 16-character Shopify voucher code</strong> exactly as it appears, then press <strong>Find</strong>. ' +
-          'The matching Fresha code only appears once the complete code is entered.' +
+          'Enter the client\'s <strong>full 16-character Shopify voucher code</strong> and the <strong>voucher amount</strong>, then press <strong>Find</strong>. ' +
+          'The matching Fresha code only appears once both are entered.' +
         '</div>' +
         '<form id="vc-form" autocomplete="off">' +
           '<label class="lbl" for="vc-input">Full Shopify voucher code (16 characters)</label>' +
           '<input id="vc-input" class="input" type="text" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="Type or paste the full code…">' +
+          '<label class="lbl" for="vc-amount" style="margin-top:12px">Voucher amount</label>' +
+          '<input id="vc-amount" class="input" type="number" inputmode="decimal" step="0.01" min="0" autocomplete="off" placeholder="e.g. 500">' +
           '<div class="btn-row" style="margin-top:12px"><button class="btn btn-primary" id="vc-find" type="submit">Find Fresha code</button></div>' +
         '</form>' +
         '<div id="vc-result" style="margin-top:16px"></div>' +
@@ -515,14 +517,16 @@
     );
     document.getElementById("back-home").onclick = renderManagerLanding;
 
-    var input   = document.getElementById("vc-input");
-    var form    = document.getElementById("vc-form");
-    var resEl   = document.getElementById("vc-result");
-    var findBtn = document.getElementById("vc-find");
+    var input    = document.getElementById("vc-input");
+    var amountEl = document.getElementById("vc-amount");
+    var form     = document.getElementById("vc-form");
+    var resEl    = document.getElementById("vc-result");
+    var findBtn  = document.getElementById("vc-find");
 
-    // Clear any previous result the instant the code is edited, so a stale
-    // Fresha code is never left on screen against a different / partial entry.
+    // Clear any previous result the instant the code or amount is edited, so a
+    // stale Fresha code is never left on screen against a different / partial entry.
     input.addEventListener("input", function () { resEl.innerHTML = ""; });
+    amountEl.addEventListener("input", function () { resEl.innerHTML = ""; });
 
     function wireCopies() {
       Array.prototype.forEach.call(resEl.querySelectorAll(".vc-copy"), function (btn) {
@@ -538,14 +542,16 @@
     form.addEventListener("submit", async function (e) {
       e.preventDefault();
       var code = (input.value || "").trim();
+      var amount = (amountEl.value || "").trim();
       if (!code) { resEl.innerHTML = '<div class="warn">Type the full voucher code first.</div>'; return; }
+      if (!amount) { resEl.innerHTML = '<div class="warn">Enter the voucher amount too.</div>'; return; }
       findBtn.disabled = true; findBtn.textContent = "Searching…";
       try {
-        var r = await window.APP_DATA.lookupFreshaVoucher(code);
+        var r = await window.APP_DATA.lookupFreshaVoucher(code, amount);
         if (r.tooShort) {
           resEl.innerHTML = '<div class="warn">Enter the client\'s <strong>full</strong> voucher code (at least ' + r.minLen + ' characters).</div>';
         } else if (!r.found) {
-          resEl.innerHTML = '<div class="warn">No matching Fresha voucher found. Double-check the full code was entered correctly.</div>';
+          resEl.innerHTML = '<div class="warn">No matching Fresha voucher found. Double-check the full code <strong>and the amount</strong> were entered correctly.</div>';
         } else if (r.matches.length === 1) {
           resEl.innerHTML = _voucherCard(r.matches[0]);
           wireCopies();
