@@ -2175,6 +2175,12 @@
         showStill();
       }
 
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        alert("Camera not available on this device/browser.\n\nA photo of the Yoco balances is required. Open the kiosk over HTTPS in a supported browser, then try again.");
+        cleanup(null);
+        return;
+      }
+
       navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 960 } },
         audio: false
@@ -2461,7 +2467,13 @@
       bankingBox.style.display = "none";
     }
 
-    document.getElementById("cu-submit").disabled = !(hasAmt && name.length >= 2 && bankingOk && manualOk && !!yocoPhotoDataUrl);
+    // recalc() is module-scoped (not nested in renderCashup), so it cannot see
+    // the yocoPhotoDataUrl closure var — read the captured-photo state from the
+    // DOM instead, the same way banking-slip presence is checked above.
+    var yocoPrev = document.getElementById("cu-yoco-photo-preview");
+    var hasYocoPhoto = !!(yocoPrev && yocoPrev.querySelector("img"));
+
+    document.getElementById("cu-submit").disabled = !(hasAmt && name.length >= 2 && bankingOk && manualOk && hasYocoPhoto);
   }
 
   // ---------------- helpers ----------------
