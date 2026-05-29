@@ -1387,6 +1387,30 @@
     if (r.error) throw r.error;
   }
 
+  // Bulk-insert Shopify→Fresha vouchers (entered via the HR-portal Voucher
+  // Entry login). Each input row is { last4, fresha_code, amount, order_number,
+  // expiry_date }. last4 is normalised to the last 4 alphanumerics, uppercased,
+  // to match how the kiosk lookup keys on it. Rows missing a required field
+  // (last4 / fresha_code / amount / order_number) are dropped; expiry optional.
+  async function bulkInsertVouchers(rows) {
+    var clean = (rows || []).map(function (r) {
+      r = r || {};
+      return {
+        last4:        String(r.last4 || "").replace(/[^A-Za-z0-9]/g, "").slice(-4).toUpperCase(),
+        fresha_code:  String(r.fresha_code || "").trim(),
+        amount:       String(r.amount || "").trim(),
+        order_number: String(r.order_number || "").trim(),
+        expiry_date:  String(r.expiry_date || "").trim() || null
+      };
+    }).filter(function (r) {
+      return r.last4 && r.fresha_code && r.amount && r.order_number;
+    });
+    if (!clean.length) throw new Error("No complete voucher rows to save.");
+    var res = await sb.from("vouchers").insert(clean).select();
+    if (res.error) throw res.error;
+    return res.data || [];
+  }
+
   window.BOA_DB = {
     isReady:       true,
     sb:            sb,
@@ -1395,6 +1419,9 @@
     saveStaff:     saveStaff,    deleteStaff:   deleteStaff,
     saveManager:   saveManager,  deleteManager: deleteManager,
     saveMat:       saveMat,      deleteMat:     deleteMat,
+
+    // Vouchers (Shopify→Fresha lookup table; entered via Voucher Entry login)
+    bulkInsertVouchers: bulkInsertVouchers,
 
     // Schedules
     loadSchedule: loadSchedule,
