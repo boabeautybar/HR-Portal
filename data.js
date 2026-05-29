@@ -736,6 +736,19 @@
     return res.data;
   }
 
+  // Hard-delete a single (staff_id, date) row. Used when a ROM-tagged
+  // reason is stale — e.g. the schedule was later corrected to OFF and
+  // the absence reason no longer applies.
+  async function deleteManagerDayStatus(p) {
+    if (!p || !p.staffId || !p.date) throw new Error("staffId and date are required");
+    var res = await sb.from("manager_day_status")
+      .delete()
+      .eq("staff_id", p.staffId)
+      .eq("date", p.date);
+    if (res.error) { console.error("deleteManagerDayStatus:", res.error); throw res.error; }
+    return true;
+  }
+
   // Soft-delete a cash-up so the store can submit a fresh one for the
   // same date from the kiosk. The kiosk's todaysCashup() filters
   // archived rows out, so a reopened row falls off the "already
@@ -1478,6 +1491,7 @@
     reopenCashup: reopenCashup,
     loadManagerDayStatuses: loadManagerDayStatuses,
     saveManagerDayStatus: saveManagerDayStatus,
+    deleteManagerDayStatus: deleteManagerDayStatus,
 
     // Manager clock-ins viewer
     listRecentManagerClockins: listRecentManagerClockins,

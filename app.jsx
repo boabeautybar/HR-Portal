@@ -254,6 +254,20 @@ function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose,
     }
   }
 
+  async function clearStatus() {
+    if (!existing) return;
+    if (locked) return;
+    if (!window.confirm("Remove the recorded absence reason for this day?\n\nUse this when the schedule was corrected (e.g. day is actually OFF) and the tagged reason no longer applies.")) return;
+    setSaving(true);
+    try {
+      await window.BOA_DB.deleteManagerDayStatus({ staffId: modal.staffId, date: modal.date });
+      await onSaved();
+    } catch (e) {
+      window.alert("Could not clear: " + ((e && e.message) || e));
+      setSaving(false);
+    }
+  }
+
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
       <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "20px 22px", width: "100%", maxWidth: 480, maxHeight: "90vh", overflow: "auto" }}>
@@ -317,12 +331,22 @@ function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose,
           </div>
         )}
 
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
-          <button onClick={onClose} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", color: "#831843", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Cancel</button>
-          <button onClick={save} disabled={!canSave || saving}
-            style={{ padding: "9px 20px", borderRadius: 9, border: "none", background: canSave && !saving ? "#BE185D" : "#FBCFE8", color: "#fff", fontWeight: 700, fontSize: 13, cursor: canSave && !saving ? "pointer" : "not-allowed" }}>
-            {saving ? "Saving…" : sickWillDowngrade ? "💾 Save as Sick NO note (unpaid)" : (existing ? "💾 Update" : "💾 Save reason")}
-          </button>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
+          <div>
+            {existing && !locked && (
+              <button onClick={clearStatus} disabled={saving}
+                style={{ padding: "9px 14px", borderRadius: 9, border: "1px solid #fecaca", background: "#fff", color: "#7f1d1d", fontWeight: 700, fontSize: 12, cursor: saving ? "not-allowed" : "pointer" }}>
+                🗑 Clear reason
+              </button>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={onClose} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", color: "#831843", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Cancel</button>
+            <button onClick={save} disabled={!canSave || saving}
+              style={{ padding: "9px 20px", borderRadius: 9, border: "none", background: canSave && !saving ? "#BE185D" : "#FBCFE8", color: "#fff", fontWeight: 700, fontSize: 13, cursor: canSave && !saving ? "pointer" : "not-allowed" }}>
+              {saving ? "Saving…" : sickWillDowngrade ? "💾 Save as Sick NO note (unpaid)" : (existing ? "💾 Update" : "💾 Save reason")}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -16286,11 +16310,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Helpers
         const mirrorSuppressed = !!(attMeta && attMeta.mirrorSuppressed);
         const getStatus = (ec, d) => {
+          // If the schedule was later corrected to OFF for this day, any
+          // stale ROM-recorded reason (sick / absent / FRL / etc.) is
+          // irrelevant — the manager isn't supposed to work that day. The
+          // sidecar row stays in the DB so admin can clear it from the
+          // absence-reason modal, but it's hidden from the grid.
+          const _schedV = attSched[ec] && attSched[ec][d];
+          const _scheduledOff = _schedV === "O" || _schedV === "R";
           // ROM-managed manager-absence overlay. When a regional has
           // recorded a reason (sick + note / FRL + proof / annual / etc.)
           // for a manager's missed day, that's the source of truth for
           // payroll and overrides any schedule mirror / attGrid value.
-          if (_mgrStatusByEcYmd[ec]) {
+          if (!_scheduledOff && _mgrStatusByEcYmd[ec]) {
             const _do = days.find(x => x.d === d);
             const _v = _do && _mgrStatusByEcYmd[ec][_do.ymd];
             if (_v) return _v;
@@ -16367,8 +16398,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // ROM-recorded manager status (sick/absent/frl/etc.), the
           // auto-absent overlay and approved leave from the Leave Planner
           // all count as solid overrides — render with the proper STAT
-          // colour band, not faded schedule italics.
-          if (dayObj && (_mgrStatusByEcYmd[ec] || {})[dayObj.ymd]) return true;
+          // colour band, not faded schedule italics. Skipped on days the
+          // schedule was later corrected to OFF — see getStatus().
+          const _hoSched = attSched[ec] && attSched[ec][d];
+          const _hoOff = _hoSched === "O" || _hoSched === "R";
+          if (!_hoOff && dayObj && (_mgrStatusByEcYmd[ec] || {})[dayObj.ymd]) return true;
           if (dayObj && _isMgrAutoAbsent(ec, dayObj.ymd, d)) return true;
           if (dayObj && (_onLeaveByEcYmd[String(ec).trim()] || {})[dayObj.ymd] && !(attGrid[ec] && attGrid[ec][d])) return true;
           const v = attGrid[ec] && attGrid[ec][d];
@@ -17845,9 +17879,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const mgrNote = s.role !== "NT" ? ((_mgrNoteByEcYmd[s.ec] || {})[dy.ymd] || null) : null;
                           const mgrRecorder = s.role !== "NT" ? ((_mgrRecorderByEcYmd[s.ec] || {})[dy.ymd] || null) : null;
                           const mgrCheckedIn = s.role !== "NT" && ((_mgrCheckedInByEcYmd[s.ec] || {})[dy.ymd]);
+                          const _mgrStatusStale = mgrStatus && (hint === "off");
                           if (s.role !== "NT") {
-                            if (mgrStatus) {
+                            if (mgrStatus && !_mgrStatusStale) {
                               kioskLine = "ROM marked " + lbl(mgrStatus) + (mgrRecorder ? " (by " + mgrRecorder + ")" : "") + (mgrNote ? " — " + mgrNote : "");
+                            } else if (_mgrStatusStale) {
+                              kioskLine = "Stale: ROM had marked " + lbl(mgrStatus) + (mgrRecorder ? " (by " + mgrRecorder + ")" : "") + " — day is now scheduled OFF, reason ignored. Open the cell to clear it.";
                             } else if (mgrCheckedIn) {
                               kioskLine = "Clocked in via kiosk";
                             } else if (!isPastOrToday) {
