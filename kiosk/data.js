@@ -483,7 +483,8 @@
       amount_banked: Number(payload.amount_banked) || 0,
       banking_ref:   (payload.banking_ref || "").trim() || null,
       banked_by:     (payload.banked_by   || "").trim() || null,
-      banking_slip:  payload.banking_slip || null
+      banking_slip:  payload.banking_slip || null,
+      yoco_photo:    payload.yoco_photo || null
     };
     var res = await c.from("cashups").insert(row).select().single();
     if (res.error) throw res.error;

@@ -2114,6 +2114,79 @@
     }
   }
 
+  // ---- Yoco balance photo capture (rear camera) ----
+  // Opens a full-screen camera overlay (rear-facing) so the staff member can
+  // photograph the Yoco machine screen showing the day's transaction totals.
+  // Returns Promise<dataUrl|null>. Cancel / camera-denied returns null.
+  function captureYocoPhoto() {
+    return new Promise(function (resolve) {
+      var overlay = document.createElement("div");
+      overlay.id = "yoco-cam-overlay";
+      overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;font-family:inherit";
+      overlay.innerHTML =
+        '<div style="color:#fff;font-size:15px;font-weight:700;margin-bottom:6px;text-align:center">📸 Photograph the Yoco Balances</div>' +
+        '<div style="color:#9ca3af;font-size:12px;margin-bottom:14px;text-align:center;max-width:420px;line-height:1.5">' +
+          'Point the camera at the Yoco machine screen showing today\'s transaction totals, then tap <strong style="color:#fff">Capture</strong>.' +
+        '</div>' +
+        '<div style="position:relative;background:#000;border-radius:12px;overflow:hidden;max-width:520px;width:100%">' +
+          '<video id="yoco-cam-video" autoplay playsinline muted style="display:block;width:100%;max-height:60vh;background:#000"></video>' +
+          '<canvas id="yoco-cam-still" style="display:none;width:100%;max-height:60vh"></canvas>' +
+        '</div>' +
+        '<div id="yoco-cam-controls" style="margin-top:14px;display:flex;gap:10px"></div>';
+      document.body.appendChild(overlay);
+
+      var stream = null;
+      var videoEl = document.getElementById("yoco-cam-video");
+      var stillEl = document.getElementById("yoco-cam-still");
+      var controls = document.getElementById("yoco-cam-controls");
+      var lastDataUrl = null;
+
+      function cleanup(result) {
+        try { if (stream) stream.getTracks().forEach(function (t) { t.stop(); }); } catch (_e) { }
+        if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+        resolve(result);
+      }
+      function showLive() {
+        videoEl.style.display = "block";
+        stillEl.style.display = "none";
+        controls.innerHTML =
+          '<button id="yoco-cam-cancel" style="padding:10px 18px;border-radius:9px;border:1px solid rgba(255,255,255,0.3);background:transparent;color:#fff;font-family:inherit;font-size:13px;cursor:pointer">Cancel</button>' +
+          '<button id="yoco-cam-capture" style="padding:10px 22px;border-radius:9px;border:none;background:#BE185D;color:#fff;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer">📸 Capture</button>';
+        document.getElementById("yoco-cam-cancel").onclick = function () { cleanup(null); };
+        document.getElementById("yoco-cam-capture").onclick = doCapture;
+      }
+      function showStill() {
+        videoEl.style.display = "none";
+        stillEl.style.display = "block";
+        controls.innerHTML =
+          '<button id="yoco-cam-retake" style="padding:10px 18px;border-radius:9px;border:1px solid rgba(255,255,255,0.3);background:transparent;color:#fff;font-family:inherit;font-size:13px;cursor:pointer">↺ Retake</button>' +
+          '<button id="yoco-cam-confirm" style="padding:10px 22px;border-radius:9px;border:none;background:#16a34a;color:#fff;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer">✓ Confirm</button>';
+        document.getElementById("yoco-cam-retake").onclick = showLive;
+        document.getElementById("yoco-cam-confirm").onclick = function () { cleanup(lastDataUrl); };
+      }
+      function doCapture() {
+        var vw = videoEl.videoWidth || 640, vh = videoEl.videoHeight || 480;
+        var maxDim = 1200;
+        var ratio = Math.min(maxDim / vw, maxDim / vh, 1);
+        var w = Math.round(vw * ratio), h = Math.round(vh * ratio);
+        stillEl.width = w; stillEl.height = h;
+        stillEl.getContext("2d").drawImage(videoEl, 0, 0, w, h);
+        lastDataUrl = stillEl.toDataURL("image/jpeg", 0.8);
+        showStill();
+      }
+
+      navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 960 } },
+        audio: false
+      })
+        .then(function (s) { stream = s; videoEl.srcObject = s; showLive(); })
+        .catch(function (err) {
+          alert("Camera access denied: " + (err.message || err) + "\n\nA photo of the Yoco balances is required. Allow camera in browser settings, then try again.");
+          cleanup(null);
+        });
+    });
+  }
+
   // ---------------- Cash-up ----------------
   async function renderCashup() {
     setSublabel("Cash Up");
@@ -2168,6 +2241,14 @@
                 ) +
               '</div>'
             : "") +
+          (existing.yoco_photo
+            ? '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--pink-100)">' +
+                '<div class="lbl" style="margin-bottom:6px">📸 Yoco Machine Balances</div>' +
+                '<a href="' + existing.yoco_photo + '" target="_blank" rel="noopener">' +
+                  '<img src="' + existing.yoco_photo + '" alt="Yoco balances" style="max-width:100%;max-height:240px;border-radius:8px;border:1px solid var(--pink-100);display:block">' +
+                '</a>' +
+              '</div>'
+            : "") +
         '</div>';
       return;
     }
@@ -2219,6 +2300,13 @@
         '<label class="lbl">Notes (optional)</label>' +
         '<textarea id="cu-notes" class="input" rows="3" placeholder="Till shortage, banking done, anything unusual…"></textarea>' +
 
+        '<div style="margin-top:14px;padding:14px;border:2px solid var(--pink-200);border-radius:10px;background:#fff7fb">' +
+          '<div class="lbl" style="margin-bottom:4px">📸 Yoco Machine Balances <span style="color:#b53">required</span></div>' +
+          '<div class="cashup-fineprint" style="margin-bottom:10px">Take a photo of the Yoco machine screen showing today\'s transaction totals before submitting.</div>' +
+          '<div id="cu-yoco-photo-preview" style="margin-bottom:10px"></div>' +
+          '<button type="button" class="btn btn-primary" id="cu-yoco-photo-btn" style="width:100%">📸 Take Photo of Yoco Balances</button>' +
+        '</div>' +
+
         '<label class="lbl">Your full name (sign-off)</label>' +
         '<input id="cu-name" class="input" type="text" autocomplete="name" placeholder="Type your name to sign off">' +
         '<div class="cashup-fineprint">🔒 By entering your name you confirm these figures are accurate and complete.</div>' +
@@ -2254,6 +2342,21 @@
       });
     });
 
+    var yocoPhotoDataUrl = null;
+    document.getElementById("cu-yoco-photo-btn").onclick = async function () {
+      var btn = this;
+      var photo = await captureYocoPhoto();
+      if (photo) {
+        yocoPhotoDataUrl = photo;
+        document.getElementById("cu-yoco-photo-preview").innerHTML =
+          '<img src="' + photo + '" alt="Yoco balances" style="max-width:100%;max-height:240px;border-radius:8px;border:1px solid var(--pink-100);display:block">';
+        btn.textContent = "↺ Retake Photo";
+        btn.style.background = "#f3f4f6";
+        btn.style.color = "#374151";
+      }
+      recalc();
+    };
+
     function onBankedToggle() {
       var yes = document.getElementById("cu-banked-yes").checked;
       document.getElementById("cu-bank-yes").style.display = yes ? "" : "none";
@@ -2283,7 +2386,8 @@
           amount_banked: cashBankedYes ? val("amount_banked") : 0,
           banking_ref:   cashBankedYes ? document.getElementById("cu-banking-ref").value : "",
           banked_by:     cashBankedYes ? document.getElementById("cu-banked-by").value  : "",
-          banking_slip:  cashBankedYes ? bankingSlipDataUrl : null
+          banking_slip:  cashBankedYes ? bankingSlipDataUrl : null,
+          yoco_photo:    yocoPhotoDataUrl
         });
         resEl.innerHTML = '<div class="result-card result-ok"><div class="result-icon">✓</div><div class="result-title">Cash-up saved. Thank you!</div></div>';
         setTimeout(renderCashup, 800);
@@ -2357,7 +2461,7 @@
       bankingBox.style.display = "none";
     }
 
-    document.getElementById("cu-submit").disabled = !(hasAmt && name.length >= 2 && bankingOk && manualOk);
+    document.getElementById("cu-submit").disabled = !(hasAmt && name.length >= 2 && bankingOk && manualOk && !!yocoPhotoDataUrl);
   }
 
   // ---------------- helpers ----------------
