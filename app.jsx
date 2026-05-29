@@ -22294,6 +22294,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (ld && _weekEndYmd && ld < weekDays[0].ymd) return;
           if (mgrByBranch[m.branch]) mgrByBranch[m.branch].push(ld ? { ...m, _offGhost: true, _offLeftDate: ld, _offReason: _resolveLeftReason(m) } : m);
         });
+        // Mid-month branch transfer: a manager with `transferring=true` +
+        // `transferTo` + `transferDate` set appears as a shadow row at the
+        // destination branch (so the ROM can fill in their post-transfer
+        // shifts before the move). The source-branch row still renders —
+        // its cells AFTER transferDate render as locked '→Dst' badges via
+        // `transferring && transferTo` in renderCell below. Mirrors the
+        // shadow-row logic the Schedule tab applies via enrichedManagers.
+        managers.forEach(m => {
+          if (!m || !m.transferring || !m.transferTo || !m.transferDate) return;
+          if (m.onMat || m.leftDate || m.offboarded) return;
+          if (m.transferTo === m.branch) return;            // no-op move
+          if (!mgrByBranch[m.transferTo]) return;            // dst out of scope
+          // Skip if the destination row already has the manager (would
+          // happen if the active record has already been moved over).
+          const alreadyThere = mgrByBranch[m.transferTo].some(x => String(x.ec || "").trim() === String(m.ec || "").trim());
+          if (alreadyThere) return;
+          mgrByBranch[m.transferTo].push({
+            ...m,
+            isShadow: true,
+            branch: m.transferTo,
+            transferFrom: m.branch,
+          });
+        });
         // Pool of every staff record we might match a grid EC against —
         // try managers first, fall back to techs/all-staff if a row in the
         // grid belongs to a nail tech covering manager hours.
@@ -22672,10 +22695,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }
           };
         };
-        const renderCell = (cellVal, key, branchName, role, ymd, ec, isGuest, mgrYm, mgrName, dom, dow, leftDate) => {
+        const renderCell = (cellVal, key, branchName, role, ymd, ec, isGuest, mgrYm, mgrName, dom, dow, manager) => {
           // Off-boarded manager — every cell AFTER their last working day
           // renders as a locked grey "TERMINATED" chip. Days on or before
           // leftDate stay normal so the final stretch of cover still shows.
+          const leftDate = (manager && (manager._offLeftDate || manager.leftDate)) || null;
           if (leftDate && ymd && ymd > leftDate) {
             return (
               <td key={key} title={`${mgrName} · left ${leftDate} — no longer covering`} style={{ background: "#f3f4f6", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", cursor: "not-allowed", userSelect: "none", WebkitUserSelect: "none", textAlign: "center" }}>
@@ -22686,9 +22710,40 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const clockedIn = ec && ymd && _clockedInByEcYmd[String(ec).trim()] && _clockedInByEcYmd[String(ec).trim()][ymd];
           const isPast = ymd && ymd < (function () { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
           const _dragDraggable = _isSrcDraggable(cellVal);
-          const tdStyle = { background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", cursor: ec ? (_dragDraggable ? "grab" : "pointer") : "default", userSelect: "none", WebkitUserSelect: "none" };
-          const _dh = _dragHandlers(cellVal, branchName, mgrYm, ec, dom, ymd, mgrName);
+          // Transfer-edge: mid-month branch move. A shadow row at the
+          // destination branch shows '←Src' for days BEFORE transferDate
+          // (still on the source schedule); the source-side row shows
+          // '→Dst' for days ON OR AFTER transferDate (already at the new
+          // branch). Both render as locked, branch-coloured chips and
+          // skip the cell editor — the active range is filled on the
+          // OTHER side of the transfer.
+          const _xferDate = (manager && manager.transferDate) || null;
+          const xferEdge = !_xferDate ? null
+            : (manager && manager.isShadow && ymd && ymd < _xferDate) ? "in"
+              : (manager && !manager.isShadow && manager.transferring && manager.transferTo && manager.transferTo !== branchName && ymd && ymd >= _xferDate) ? "out"
+                : null;
+          const xferOther = xferEdge === "in" ? (manager.transferFrom || "")
+            : xferEdge === "out" ? (manager.transferTo || "")
+              : null;
+          const tdStyle = { background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", cursor: ec && !xferEdge ? (_dragDraggable ? "grab" : "pointer") : "default", userSelect: "none", WebkitUserSelect: "none" };
+          const _dh = xferEdge ? {} : _dragHandlers(cellVal, branchName, mgrYm, ec, dom, ymd, mgrName);
           const onCellClick = () => openCellEditor(branchName, mgrYm, dom, ymd, ec, mgrName, role, cellVal || "");
+          if (xferEdge) {
+            const otherLbl = xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0, 4);
+            const bg = xferEdge === "in" ? "#dbeafe" : "#fef3c7";
+            const fg = xferEdge === "in" ? "#1e40af" : "#92400e";
+            const arrow = xferEdge === "in" ? "←" : "→";
+            const titleMsg = xferEdge === "in"
+              ? `${mgrName} · arriving from ${xferOther || "—"} on ${_xferDate} — pre-transfer days stay on ${xferOther || "the source"} schedule`
+              : `${mgrName} · transferring to ${xferOther || "—"} on ${_xferDate} — fill these days on the destination branch`;
+            return (
+              <td key={key} title={titleMsg} style={{ ...tdStyle, textAlign: "center", background: bg, color: fg, cursor: "not-allowed" }}>
+                <div style={{ minHeight: 56, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800, letterSpacing: "0.04em" }}>
+                  {arrow}{otherLbl}
+                </div>
+              </td>
+            );
+          }
           // Blank / empty day cell — also clickable so a ROM can add a shift.
           if (!cellVal) {
             return (
@@ -22933,10 +22988,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 ) : mgrs.map(m => {
                                   const _isOff = !!m._offGhost;
                                   return (
-                                    <tr key={m.ec} style={{ opacity: _isOff ? 0.55 : 1 }}>
-                                      <td style={{ padding: "6px 14px", fontWeight: 700, color: _isOff ? "#9ca3af" : "#831843", fontSize: 12, borderBottom: "1px solid #FCE7F3", background: _isOff ? "#f9fafb" : undefined, textDecoration: _isOff ? "line-through" : "none" }}>
+                                    <tr key={m.ec + (m.isShadow ? "-shadow" : "")} style={{ opacity: _isOff ? 0.55 : 1 }}>
+                                      <td style={{ padding: "6px 14px", fontWeight: 700, color: _isOff ? "#9ca3af" : "#831843", fontSize: 12, borderBottom: "1px solid #FCE7F3", background: _isOff ? "#f9fafb" : (m.isShadow ? "#eff6ff" : (m.transferring ? "#fffbeb" : undefined)), textDecoration: _isOff ? "line-through" : "none" }}>
                                         {_effectiveRole(m) === "SSM" ? "💎 " : _effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}
                                         <span style={{ marginLeft: 6, fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{_effectiveRole(m) || ""}{m.role === "AM" && _effectiveRole(m) === "SM" ? " (trial)" : ""}</span>
+                                        {m.isShadow && m.transferFrom && (
+                                          <span style={{ marginLeft: 6, background: "#dbeafe", color: "#1e40af", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>🔄 FROM {m.transferFrom}{m.transferDate ? " · " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>
+                                        )}
+                                        {!m.isShadow && m.transferring && m.transferTo && (
+                                          <span style={{ marginLeft: 6, background: "#fef3c7", color: "#92400e", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>🔄 → {m.transferTo}{m.transferDate ? " · " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>
+                                        )}
                                         {_isOff && (
                                           <div style={{ display: "inline-block", marginLeft: 6, background: "#fee2e2", color: "#991b1b", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>
                                             👋 LEFT {m._offLeftDate}{m._offReason ? " · " + m._offReason : ""}
@@ -22945,7 +23006,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       </td>
                                       {weekDays.map(d => {
                                         const v = readWithFallback(b, m.ec, d);
-                                        return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow, m._offLeftDate || m.leftDate || null);
+                                        return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow, m);
                                       })}
                                     </tr>
                                   );
@@ -22984,9 +23045,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       return rows.map(({ m, b, r }) => {
                         const _isOff = !!m._offGhost;
                         return (
-                        <tr key={m.ec + "-" + b} style={{ opacity: _isOff ? 0.55 : 1 }}>
-                          <td style={{ padding: "6px 14px", borderBottom: "1px solid #FCE7F3", background: _isOff ? "#f9fafb" : undefined }}>
-                            <div style={{ fontWeight: 700, color: _isOff ? "#9ca3af" : "#831843", fontSize: 12.5, textDecoration: _isOff ? "line-through" : "none" }}>{_effectiveRole(m) === "SSM" ? "💎 " : _effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}</div>
+                        <tr key={m.ec + "-" + b + (m.isShadow ? "-shadow" : "")} style={{ opacity: _isOff ? 0.55 : 1 }}>
+                          <td style={{ padding: "6px 14px", borderBottom: "1px solid #FCE7F3", background: _isOff ? "#f9fafb" : (m.isShadow ? "#eff6ff" : (m.transferring ? "#fffbeb" : undefined)) }}>
+                            <div style={{ fontWeight: 700, color: _isOff ? "#9ca3af" : "#831843", fontSize: 12.5, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", textDecoration: _isOff ? "line-through" : "none" }}>
+                              <span>{_effectiveRole(m) === "SSM" ? "💎 " : _effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}</span>
+                              {m.isShadow && m.transferFrom && (
+                                <span style={{ background: "#dbeafe", color: "#1e40af", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>🔄 FROM {m.transferFrom}{m.transferDate ? " · " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>
+                              )}
+                              {!m.isShadow && m.transferring && m.transferTo && (
+                                <span style={{ background: "#fef3c7", color: "#92400e", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>🔄 → {m.transferTo}{m.transferDate ? " · " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>
+                              )}
+                            </div>
                             <div style={{ fontSize: 10, color: "#9ca3af" }}>
                               📍 {b} <span style={{ background: r.bg, color: r.color, padding: "1px 6px", borderRadius: 4, fontWeight: 700, marginLeft: 4 }}>{r.label}</span>
                               <span style={{ marginLeft: 6, fontFamily: "monospace" }}>{_effectiveRole(m) || ""}{m.role === "AM" && _effectiveRole(m) === "SM" ? " (trial)" : ""}</span>
@@ -22999,7 +23068,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           </td>
                           {weekDays.map(d => {
                             const v = readWithFallback(b, m.ec, d);
-                            return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow, m._offLeftDate || m.leftDate || null);
+                            return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow, m);
                           })}
                         </tr>
                         );
