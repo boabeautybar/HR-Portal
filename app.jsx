@@ -211,10 +211,16 @@ function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose,
   const needsProof = !!(opt && opt.needsProof);
   const needsNote  = !!(opt && opt.needsNote);
   const noteTrim   = (note || "").trim();
+  // For "Sick + note" specifically we no longer block save when there's
+  // no proof — we just downgrade to "Sick NO note" (unpaid) on save.
+  // FRL still requires its proof photo to qualify for paid Family
+  // Responsibility Leave.
+  const proofGate = !needsProof || !!proof || status === "sick_n";
   const canSave = !locked
     && !!status
-    && (!needsProof || !!proof)
+    && proofGate
     && (!needsNote || noteTrim.length >= 3);
+  const sickWillDowngrade = status === "sick_n" && !proof;
 
   async function handleFile(e) {
     setProofErr("");
@@ -228,12 +234,17 @@ function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose,
     if (!canSave) return;
     setSaving(true);
     try {
+      // "Sick + note" without a doctor's note → downgrade to "Sick NO
+      // note" (unpaid). Keeps the absence on the manager's record but
+      // doesn't burn a paid sick day without a medical certificate.
+      const effectiveStatus = sickWillDowngrade ? "sick" : status;
+      const effectiveProof = (sickWillDowngrade || !needsProof) ? null : proof;
       await window.BOA_DB.saveManagerDayStatus({
         staffId: modal.staffId,
         date: modal.date,
-        status,
+        status: effectiveStatus,
         note,
-        proof: needsProof ? proof : null,
+        proof: effectiveProof,
         recordedBy: currentUserName
       });
       await onSaved();
@@ -278,11 +289,16 @@ function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose,
 
         {needsProof && (
           <div style={{ marginTop: 14 }}>
-            <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>{opt.code === "sick_n" ? "DOCTOR'S NOTE (required for Sick + note)" : "PROOF PHOTO (required for FRL)"}</label>
+            <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>{opt.code === "sick_n" ? "DOCTOR'S NOTE (required for paid Sick + note)" : "PROOF PHOTO (required for FRL)"}</label>
             <input type="file" accept="image/*" capture="environment" onChange={handleFile} disabled={locked}
               style={{ display: "block", marginTop: 4, fontSize: 13 }} />
             {proofErr && <div style={{ fontSize: 11, color: "#7f1d1d", marginTop: 4 }}>{proofErr}</div>}
             {proof && <img src={proof} alt="proof" style={{ marginTop: 8, maxWidth: "100%", maxHeight: 180, borderRadius: 8, border: "1px solid #FBCFE8", display: "block" }} />}
+            {sickWillDowngrade && (
+              <div style={{ marginTop: 8, background: "#fef3c7", border: "1px solid #fcd34d", color: "#92400e", borderRadius: 8, padding: "8px 10px", fontSize: 11, fontWeight: 600 }}>
+                ⚠ No doctor's note uploaded — saving will mark this day as <strong>Sick NO note (unpaid)</strong> on the attendance sheet. Upload the medical certificate to keep it paid.
+              </div>
+            )}
           </div>
         )}
 
@@ -305,7 +321,7 @@ function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose,
           <button onClick={onClose} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", color: "#831843", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Cancel</button>
           <button onClick={save} disabled={!canSave || saving}
             style={{ padding: "9px 20px", borderRadius: 9, border: "none", background: canSave && !saving ? "#BE185D" : "#FBCFE8", color: "#fff", fontWeight: 700, fontSize: 13, cursor: canSave && !saving ? "pointer" : "not-allowed" }}>
-            {saving ? "Saving…" : (existing ? "💾 Update" : "💾 Save reason")}
+            {saving ? "Saving…" : sickWillDowngrade ? "💾 Save as Sick NO note (unpaid)" : (existing ? "💾 Update" : "💾 Save reason")}
           </button>
         </div>
       </div>
