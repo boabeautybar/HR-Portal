@@ -211,10 +211,16 @@ function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose,
   const needsProof = !!(opt && opt.needsProof);
   const needsNote  = !!(opt && opt.needsNote);
   const noteTrim   = (note || "").trim();
+  // For "Sick + note" specifically we no longer block save when there's
+  // no proof — we just downgrade to "Sick NO note" (unpaid) on save.
+  // FRL still requires its proof photo to qualify for paid Family
+  // Responsibility Leave.
+  const proofGate = !needsProof || !!proof || status === "sick_n";
   const canSave = !locked
     && !!status
-    && (!needsProof || !!proof)
+    && proofGate
     && (!needsNote || noteTrim.length >= 3);
+  const sickWillDowngrade = status === "sick_n" && !proof;
 
   async function handleFile(e) {
     setProofErr("");
@@ -228,12 +234,17 @@ function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose,
     if (!canSave) return;
     setSaving(true);
     try {
+      // "Sick + note" without a doctor's note → downgrade to "Sick NO
+      // note" (unpaid). Keeps the absence on the manager's record but
+      // doesn't burn a paid sick day without a medical certificate.
+      const effectiveStatus = sickWillDowngrade ? "sick" : status;
+      const effectiveProof = (sickWillDowngrade || !needsProof) ? null : proof;
       await window.BOA_DB.saveManagerDayStatus({
         staffId: modal.staffId,
         date: modal.date,
-        status,
+        status: effectiveStatus,
         note,
-        proof: needsProof ? proof : null,
+        proof: effectiveProof,
         recordedBy: currentUserName
       });
       await onSaved();
@@ -278,11 +289,16 @@ function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose,
 
         {needsProof && (
           <div style={{ marginTop: 14 }}>
-            <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>PROOF PHOTO (required for {opt.code === "sick_n" ? "Sick + note" : "FRL"})</label>
+            <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>{opt.code === "sick_n" ? "DOCTOR'S NOTE (required for paid Sick + note)" : "PROOF PHOTO (required for FRL)"}</label>
             <input type="file" accept="image/*" capture="environment" onChange={handleFile} disabled={locked}
               style={{ display: "block", marginTop: 4, fontSize: 13 }} />
             {proofErr && <div style={{ fontSize: 11, color: "#7f1d1d", marginTop: 4 }}>{proofErr}</div>}
             {proof && <img src={proof} alt="proof" style={{ marginTop: 8, maxWidth: "100%", maxHeight: 180, borderRadius: 8, border: "1px solid #FBCFE8", display: "block" }} />}
+            {sickWillDowngrade && (
+              <div style={{ marginTop: 8, background: "#fef3c7", border: "1px solid #fcd34d", color: "#92400e", borderRadius: 8, padding: "8px 10px", fontSize: 11, fontWeight: 600 }}>
+                ⚠ No doctor's note uploaded — saving will mark this day as <strong>Sick NO note (unpaid)</strong> on the attendance sheet. Upload the medical certificate to keep it paid.
+              </div>
+            )}
           </div>
         )}
 
@@ -305,7 +321,7 @@ function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose,
           <button onClick={onClose} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", color: "#831843", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Cancel</button>
           <button onClick={save} disabled={!canSave || saving}
             style={{ padding: "9px 20px", borderRadius: 9, border: "none", background: canSave && !saving ? "#BE185D" : "#FBCFE8", color: "#fff", fontWeight: 700, fontSize: 13, cursor: canSave && !saving ? "pointer" : "not-allowed" }}>
-            {saving ? "Saving…" : (existing ? "💾 Update" : "💾 Save reason")}
+            {saving ? "Saving…" : sickWillDowngrade ? "💾 Save as Sick NO note (unpaid)" : (existing ? "💾 Update" : "💾 Save reason")}
           </button>
         </div>
       </div>
@@ -23417,6 +23433,44 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div style={{ marginTop: 10, background: "#fee2e2", border: "1px solid #fca5a5", color: "#7f1d1d", borderRadius: 8, padding: "8px 10px", fontSize: 12 }}>{E._err}</div>
               )}
 
+              {(() => {
+                // "Mark absence reason" shortcut. Saves directly to
+                // manager_day_status (the same store the dashboard no-show
+                // banner writes to) so a doctor's note for a future date
+                // can be entered straight from the coverage cell editor —
+                // no need to wait for the day to arrive. The cell's shift
+                // code stays as the schedule said (e.g. W); the absence
+                // reason overlays it on the attendance grid for payroll.
+                const _mgr = (managers || []).find(m => m && String(m.ec || "").trim() === String(E.ec || "").trim());
+                const sid = _mgr && (_mgr._id || _mgr.id);
+                const ex = (mgrDayStatuses || []).find(s => s && sid && s.staff_id === sid && s.date === E.ymd) || null;
+                const lbl = ex ? (MGR_REASON_OPTIONS.find(o => o.code === ex.status) || { label: ex.status }).label : null;
+                return (
+                  <div style={{ marginTop: 14, padding: "10px 12px", background: "#FDEEF5", border: "1px solid #FBCFE8", borderRadius: 9 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 11, fontWeight: 800, color: "#831843", letterSpacing: "0.04em" }}>ABSENCE REASON</div>
+                        <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>
+                          {ex
+                            ? <>Tagged: <strong style={{ color: "#831843" }}>{lbl}</strong>{ex.proof ? " 📎" : ""}{ex.note ? " — " + ex.note : ""}</>
+                            : "Use this when the manager has a doctor's note / FRL proof for this day (works for future dates too)."}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => {
+                          if (!sid) { window.alert("Cannot find this manager's staff record — refresh and try again."); return; }
+                          _close();
+                          setMgrReasonModal({ staffId: sid, ec: E.ec, name: E.name, branch: E.branch, date: E.ymd, existing: ex });
+                        }}
+                        disabled={!sid}
+                        style={{ background: sid ? "#fff" : "#FBCFE8", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "7px 12px", fontSize: 12, fontWeight: 700, cursor: sid ? "pointer" : "not-allowed", whiteSpace: "nowrap" }}>
+                        🤒 {ex ? "Edit reason" : "Mark absence reason"}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
+
               <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
                 <button onClick={_close} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", color: "#831843", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Cancel</button>
                 <button onClick={_save}
@@ -23760,7 +23814,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const m = mgrReasonModal;
         const existing = m.existing || null;
         const todayY = new Date(); const t0 = todayY.getFullYear() + "-" + String(todayY.getMonth() + 1).padStart(2, "0") + "-" + String(todayY.getDate()).padStart(2, "0");
-        const locked = payrollYmFor(m.date) !== payrollYmFor(t0);
+        // Lock CLOSED (past) payroll cycles only — a doctor's note for a
+        // future date (e.g. a manager handing one in for next Monday)
+        // needs to be recordable in advance. Future cycles stay open.
+        const locked = payrollYmFor(m.date) < payrollYmFor(t0);
         return (
           <MgrReasonModalBody
             modal={m}
