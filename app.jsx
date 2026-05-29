@@ -17692,7 +17692,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // be misread as confirmed off-days when the user uploads mid-month.
                           const scheduleSaysOff = hint === "off";
                           const freshaCoversThisDay = !mirrorSuppressed && !!effectiveFreshaThrough && dy.ymd <= effectiveFreshaThrough;
-                          const allMatchOff = s.role === "NT" && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn && freshaCoversThisDay && !freshaWorkedCell;
+                          // Manager equivalent: scheduled off + no clock-in
+                          // + day is within the loaded clock-in window →
+                          // confirmed off, no warning. Mirrors the tech
+                          // 'allMatchOff' but without the Fresha gate since
+                          // managers don't have appointment data.
+                          const mgrSchedOff = s.role !== "NT" && _mgrEcToStaffId[s.ec] && scheduleSaysOff && !isWorking && !isLate && !((_mgrCheckedInByEcYmd[s.ec] || {})[dy.ymd]) && isPastOrToday && dy.ymd >= _mgrCheckinFromYmd;
+                          const allMatchOff = (s.role === "NT" && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn && freshaCoversThisDay && !freshaWorkedCell)
+                            || mgrSchedOff;
                           // Cross-source rules across Schedule × Kiosk × Fresha:
                           //  • allAgreeAbsent — scheduled to work, kiosk marked the tech absent
                           //    (any reason: sick / no-show / frl / off / unpaid / …), AND Fresha
