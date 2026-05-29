@@ -9163,9 +9163,33 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         else if (st && ABSENT[st]) { tAbsent++; techByEc[ec] = "absent"; }
         else { techByEc[ec] = "pending"; }          // scheduled, neither present nor absent
       }
-      for (const ec in mgrGrid) {
-        // manager grid is keyed by YMD strings (mgrSched line 141)
-        const v = mgrGrid[ec][ymd] || mgrGrid[ec][todayDay];
+      // Only flag managers who are genuinely active at this branch and
+      // not on approved leave. The raw schedule grid can carry guest /
+      // loan cells for managers from other stores, and a cleared cell
+      // saved as "" while a stale day-of-month key still says "W"
+      // would otherwise read as "scheduled to work". Gating + YMD-first
+      // resolution stops both leaks.
+      const _branchMgrEcs = new Set(
+        (managers || [])
+          .filter(m => m && m.branch === sl.name && !m.onMat && !m.offboarded && !(m.leftDate && ymd > m.leftDate))
+          .map(m => String(m.ec || "").trim())
+          .filter(Boolean)
+      );
+      const _mgrOnLeaveEcs = new Set();
+      (leaveRecs || []).forEach(lv => {
+        if (lv && lv.ec && lv.startDate && lv.endDate && ymd >= lv.startDate && ymd <= lv.endDate) {
+          _mgrOnLeaveEcs.add(String(lv.ec).trim());
+        }
+      });
+      for (const ec of _branchMgrEcs) {
+        if (_mgrOnLeaveEcs.has(ec)) continue;       // approved leave — not a no-show
+        const row = mgrGrid[ec];
+        if (!row) continue;
+        // YMD-first; only fall back to day-of-month when the YMD key is
+        // entirely absent. An empty-string YMD means the cell was
+        // explicitly cleared and a stale day-of-month value must NOT
+        // bleed through as "scheduled to work".
+        const v = Object.prototype.hasOwnProperty.call(row, ymd) ? row[ymd] : row[todayDay];
         if (isWorking(v)) { count++; mgrsScheduled.push(ec); }
       }
       return [sl.name, count, mgrsScheduled, { scheduled: tScheduled, checkedIn: tCheckedIn, notCheckedIn: tScheduled - tCheckedIn - tAbsent, absent: tAbsent, techByEc }];
