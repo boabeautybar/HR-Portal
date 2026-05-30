@@ -831,12 +831,14 @@
     // fields are appended and the HR portal treats them as optional.
     var reasonCode = opts && opts.reasonCode ? String(opts.reasonCode) : null;
     var reasonNote = opts && opts.reasonNote ? String(opts.reasonNote).trim() : null;
+    var approver   = opts && opts.approver   ? String(opts.approver).trim()   : null;
     data[dayKey][ec] = {
       hours:       h,
       recordedAt:  new Date().toISOString(),
       recordedBy:  (recordedBy || "").trim() || null,
       reasonCode:  reasonCode,
-      reasonNote:  reasonNote || null
+      reasonNote:  reasonNote || null,
+      approver:    approver || null
     };
     var res = await c.from("app_state").upsert({ key: earlyKey(ym), value: data });
     if (res.error) throw res.error;

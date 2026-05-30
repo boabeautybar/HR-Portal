@@ -1528,7 +1528,8 @@
             var _ym2; if (_d > 24) { var nm = _m + 1, ny = _y; if (nm > 12) { nm = 1; ny += 1; } _ym2 = ny + "-" + String(nm).padStart(2, "0"); } else { _ym2 = _y + "-" + String(_m).padStart(2, "0"); }
             await window.APP_DATA.recordEarlyLeave(_ym2, String(_d), ec, earlyOpts.hours, name, {
               reasonCode: earlyOpts.reasonCode,
-              reasonNote: earlyOpts.reasonNote
+              reasonNote: earlyOpts.reasonNote,
+              approver:   earlyOpts.approver
             });
           } catch (e) {
             alert("Clock-out saved, but the early-leave reason couldn't be recorded: " + (e.message || e) + "\n\nAsk the ROM to record it manually from the HR portal.");
@@ -1575,72 +1576,64 @@
     return new Promise(function (resolve) {
       var prev = document.getElementById("boa-mgr-early-modal");
       if (prev) prev.remove();
-      var REASONS = [
-        { code: "sick",        label: "🤒 Sick" },
-        { code: "appointment", label: "🩺 Doctor / appointment" },
-        { code: "personal",    label: "🏠 Personal" },
-        { code: "other",       label: "✍ Other" }
-      ];
       var modal = document.createElement("div");
       modal.id = "boa-mgr-early-modal";
       modal.className = "boa-modal-backdrop";
-      var buttons = REASONS.map(function (r) {
-        return '<button type="button" class="link-btn mgr-early-reason" data-code="' + r.code + '" ' +
-               'style="padding:10px 12px;border-radius:9px;font-size:13px;font-weight:700;border:1px solid #FBCFE8;background:#fff;color:#831843;text-align:left">' +
-               r.label + '</button>';
-      }).join("");
       modal.innerHTML =
         '<div class="boa-modal-card">' +
           '<h2 class="boa-modal-title">🏃 Leaving early — ' + esc(opts.name) + '</h2>' +
           '<p class="boa-modal-body">' +
-            'Why are you leaving before the end of your shift? Pick a reason. ' +
-            'The hours short will be deducted from this pay cycle.' +
+            'You\'re clocking out before the end of your shift. The hours short are ' +
+            'deducted from this pay cycle — describe why, and name the ROM or ' +
+            'manager who approved going home early.' +
           '</p>' +
-          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">' + buttons + '</div>' +
-          '<label class="lbl" style="margin-top:14px">Hours short (30-minute intervals)</label>' +
+          '<label class="lbl" style="margin-top:14px">Explanation</label>' +
+          '<textarea id="boa-mgr-early-note" class="input" rows="3" ' +
+            'placeholder="e.g. doctor at 14:30, feeling dizzy, kids sick, etc." autocomplete="off"></textarea>' +
+          '<label class="lbl" style="margin-top:10px">Approved by</label>' +
+          '<input id="boa-mgr-early-approver" type="text" class="input" ' +
+            'placeholder="ROM or manager name" autocomplete="off">' +
+          '<label class="lbl" style="margin-top:10px">Hours short (30-minute intervals)</label>' +
           '<input id="boa-mgr-early-hours" type="number" class="input" min="0.5" max="12" step="0.5" ' +
             'value="' + esc(String(opts.defaultHours || 0.5)) + '" autocomplete="off">' +
-          '<label class="lbl" style="margin-top:10px">Note (optional)</label>' +
-          '<textarea id="boa-mgr-early-note" class="input" rows="2" ' +
-            'placeholder="e.g. doctor at 14:30, feeling dizzy, etc."></textarea>' +
           '<div id="boa-mgr-early-err" class="err-line"></div>' +
           '<div class="btn-row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">' +
             '<button type="button" class="link-btn link-btn-dark" id="boa-mgr-early-cancel">Cancel clock-out</button>' +
-            '<button type="button" class="btn btn-primary" id="boa-mgr-early-save" disabled>Continue clock-out</button>' +
+            '<button type="button" class="btn btn-primary" id="boa-mgr-early-save">Continue clock-out</button>' +
           '</div>' +
         '</div>';
       document.body.appendChild(modal);
 
-      var chosen = null;
       var saveBtn = document.getElementById("boa-mgr-early-save");
       var cancelBtn = document.getElementById("boa-mgr-early-cancel");
       var hoursEl = document.getElementById("boa-mgr-early-hours");
       var noteEl  = document.getElementById("boa-mgr-early-note");
+      var approverEl = document.getElementById("boa-mgr-early-approver");
       var errEl   = document.getElementById("boa-mgr-early-err");
       function close(result) { modal.remove(); resolve(result); }
       cancelBtn.onclick = function () { close(null); };
       modal.addEventListener("click", function (e) { if (e.target === modal) close(null); });
-
-      var reasonBtns = modal.querySelectorAll(".mgr-early-reason");
-      Array.prototype.forEach.call(reasonBtns, function (b) {
-        b.onclick = function () {
-          chosen = b.dataset.code;
-          Array.prototype.forEach.call(reasonBtns, function (x) {
-            var isMe = x === b;
-            x.style.background = isMe ? "#FCE7F3" : "#fff";
-            x.style.border = isMe ? "2px solid #BE185D" : "1px solid #FBCFE8";
-          });
-          saveBtn.disabled = false;
-        };
-      });
+      setTimeout(function () { try { noteEl.focus(); } catch (_e) {} }, 50);
 
       saveBtn.onclick = function () {
         errEl.textContent = "";
-        if (!chosen) { errEl.textContent = "Pick a reason first."; return; }
+        var explanation = (noteEl.value || "").trim();
+        if (explanation.length < 3) { errEl.textContent = "Add a short explanation so payroll knows why."; return; }
+        var approver = (approverEl.value || "").trim();
+        if (approver.length < 2) { errEl.textContent = "Add the name of the ROM / manager who approved this."; return; }
         var h = Number((hoursEl.value || "").trim());
         if (!isFinite(h) || h <= 0) { errEl.textContent = "Hours must be a positive number (e.g. 1.5)."; return; }
         if (h > 12) { errEl.textContent = "12 hours is the max — please double-check."; return; }
-        close({ reasonCode: chosen, reasonNote: noteEl.value || "", hours: h });
+        // Persist both fields combined into reasonNote so existing readers
+        // (HR portal short-hours summary) pick them up without a schema
+        // change. approver is kept on its own field too for any future UI
+        // that wants to surface it separately.
+        close({
+          reasonCode: "early_leave",
+          reasonNote: explanation + " · approved by " + approver,
+          approver:   approver,
+          hours:      h
+        });
       };
     });
   }
