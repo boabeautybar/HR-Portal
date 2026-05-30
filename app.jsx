@@ -21886,11 +21886,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               (leaveRecs || []).forEach(lv => {
                 if (lv && lv.ec && lv.startDate && lv.endDate && ymd >= lv.startDate && ymd <= lv.endDate) _onLeaveEcs.add(String(lv.ec).trim());
               });
+              // Off-boarded managers (in offList with a leftDate on/before
+              // the day being viewed) are excluded — a resigned manager
+              // shouldn't appear as a no-show.
+              const _offByEcBanner = new Map((offList || []).filter(o => o && o.ec).map(o => [String(o.ec).trim(), o]));
+              const _hasLeftBanner = (ec) => {
+                const o = _offByEcBanner.get(String(ec || "").trim());
+                return !!(o && o.leftDate && o.leftDate <= ymd);
+              };
               const noShows = [];
               for (const branchName of branchesToCheck) {
                 const grid = mgrClockinSchedCache[branchName + "|" + ymOf];
                 if (!grid) continue;        // schedule not loaded yet
-                for (const m of managers.filter(mm => mm.branch === branchName)) {
+                for (const m of managers.filter(mm => mm.branch === branchName && !mm.onMat && !mm.leftDate && !mm.offboarded)) {
+                  if (_hasLeftBanner(m.ec)) continue;                             // resigned
                   if (_onLeaveEcs.has(String(m.ec || "").trim())) continue;    // on annual leave
                   const cell = (grid[m.ec]) ? (grid[m.ec][ymd] || grid[m.ec][_dom]) : undefined;
                   if (cell !== "W" && cell !== "WL" && cell !== "WE" && cell !== "WM" && cell !== "WB" && cell !== "E") continue;     // not scheduled to work
@@ -22015,13 +22024,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // whitespace — without it a manager who clocked in could
               // appear as "Not in yet". Matches the dashboard's approach.
               const inByEc = {};
+              const outByEc = {};   // latest out / out_auto per ec for today
               mgrClockinRows.forEach(r => {
                 if (!r.staff || !r.staff.employee_code) return;
-                if (r.type !== "in") return;
                 if (mLocalYmd(r.ts) !== mgrClockinDay) return;
                 const _ec = String(r.staff.employee_code).trim();
-                if (!inByEc[_ec] || r.ts < inByEc[_ec].ts) inByEc[_ec] = r;
+                if (r.type === "in") {
+                  if (!inByEc[_ec] || r.ts < inByEc[_ec].ts) inByEc[_ec] = r;
+                } else if (r.type === "out" || r.type === "out_auto") {
+                  if (!outByEc[_ec] || r.ts > outByEc[_ec].ts) outByEc[_ec] = r;
+                }
               });
+              // Off-boarded managers are filtered out below — the raw
+              // `managers` list doesn't carry the leftDate merge from the
+              // off-board sidecar (offList), so resigned managers (e.g.
+              // Crysteblle Johnson) were still appearing as "Not in yet".
+              // offByEcMap mirrors the helper pattern used elsewhere
+              // (Locations card, dashboard absences) and treats anyone
+              // whose leftDate is on/before TODAY as off-boarded.
+              const offByEcMap = new Map((offList || []).filter(o => o && o.ec).map(o => [String(o.ec).trim(), o]));
+              const _todayYmdMC = (() => { const d = new Date(); const p = z => String(z).padStart(2, "0"); return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()); })();
+              const _hasLeftMC = (ec) => {
+                const o = offByEcMap.get(String(ec || "").trim());
+                return !!(o && o.leftDate && o.leftDate <= _todayYmdMC);
+              };
               const statByKey = {};
               (mgrDayStatuses || []).forEach(s => { statByKey[s.staff_id + "|" + s.date] = s; });
               const statLabel = code => (MGR_REASON_OPTIONS.find(o => o.code === code) || { label: code }).label;
@@ -22074,7 +22100,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const loanedOut = [];          // home-branch view: managers loaned out today
               scopedBranches.forEach(b => {
                 const grid = mgrClockinSchedCache[b + "|" + ymOf];
-                const branchMgrs = managers.filter(m => m.branch === b && !m.onMat && !m.leftDate && !_onLeaveEcs.has(String(m.ec || "").trim()));
+                const branchMgrs = managers.filter(m => m.branch === b && !m.onMat && !m.leftDate && !m.offboarded && !_hasLeftMC(m.ec) && !_onLeaveEcs.has(String(m.ec || "").trim()));
                 const scheduleHasToday = !!grid && branchMgrs.some(m => _readCell(grid, m.ec) != null);
                 if (!scheduleHasToday) {
                   // No schedule data for today at this branch — fall back to
@@ -22106,6 +22132,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 (loanedInByBranch[b] || []).forEach(lo => {
                   const m = managers.find(mm => mm && String(mm.ec || "").trim() === String(lo.ec).trim());
                   if (!m) return;
+                  if (m.onMat || m.leftDate || m.offboarded || _hasLeftMC(m.ec)) return;
                   if (_onLeaveEcs.has(String(m.ec || "").trim())) return;
                   list.push({ ...m, _loanedInFrom: lo.fromBranch || "(home)" });
                   allScheduled.push(m);
@@ -22118,22 +22145,46 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const totalTagged = allScheduled.filter(m => statByKey[(m._id || m.id) + "|" + ymd]).length;
               const totalPending = allScheduled.length - totalIn - totalTagged;
               const branchNames = Object.keys(scheduledByBranch).sort();
+              // Build the clock-status pill — shows both IN and OUT (or
+              // AUTO-OUT) so the clock-in time doesn't disappear once the
+              // manager clocks out. Without this, the card would only show
+              // OUT and the IN timestamp would be lost from the overview.
+              const _fmtTime = (iso) => new Date(iso).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" });
+              const buildClockPill = (ec) => {
+                const _ec = String(ec || "").trim();
+                const _in = inByEc[_ec];
+                const _out = outByEc[_ec];
+                if (!_in && !_out) return null;
+                if (_in && _out) {
+                  const _isAuto = _out.type === "out_auto";
+                  return (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: _isAuto ? "#fef3c7" : "#dcfce7", color: _isAuto ? "#92400e" : "#14532d", padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>
+                      <span>IN {_fmtTime(_in.ts)}</span>
+                      <span style={{ opacity: 0.6 }}>→</span>
+                      <span>{_isAuto ? "⚠ AUTO-OUT" : "OUT"} {_fmtTime(_out.ts)}</span>
+                    </span>
+                  );
+                }
+                if (_in) {
+                  return <span style={{ background: "#dcfce7", color: "#14532d", padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>✅ IN {_fmtTime(_in.ts)}</span>;
+                }
+                // OUT without IN — odd but record it so the ROM can investigate.
+                return <span style={{ background: "#fef3c7", color: "#92400e", padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>OUT {_fmtTime(_out.ts)} (no IN)</span>;
+              };
+
               const renderCard = (m) => {
                 const sid = m._id || m.id;
                 const tagged = statByKey[sid + "|" + ymd];
                 const clockin = inByEc[String(m.ec || "").trim()];
-                const inTime = clockin ? new Date(clockin.ts).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }) : null;
-                let pill;
-                if (clockin) {
-                  pill = <span style={{ background: "#dcfce7", color: "#14532d", padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>✅ IN {inTime}</span>;
-                } else if (tagged) {
+                let pill = buildClockPill(m.ec);
+                if (!pill && tagged) {
                   pill = <button
                     onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: ymd, existing: tagged })}
                     title={(tagged.note || "") + (tagged.recorded_by ? "\n— " + tagged.recorded_by : "")}
                     style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
                     {statLabel(tagged.status)}{tagged.proof ? " 📎" : ""} ✎
                   </button>;
-                } else {
+                } else if (!pill) {
                   pill = <button
                     onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: ymd, existing: null })}
                     style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
@@ -22163,18 +22214,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const sid = m._id || m.id;
                 const tagged = statByKey[sid + "|" + ymd];
                 const clockin = inByEc[String(m.ec || "").trim()];
-                const inTime = clockin ? new Date(clockin.ts).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }) : null;
-                let pill;
-                if (clockin) {
-                  pill = <span style={{ background: "#dcfce7", color: "#14532d", padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>✅ IN {inTime}</span>;
-                } else if (tagged) {
+                let pill = buildClockPill(m.ec);
+                if (!pill && tagged) {
                   pill = <button
                     onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: ymd, existing: tagged })}
                     title={(tagged.note || "") + (tagged.recorded_by ? "\n— " + tagged.recorded_by : "")}
                     style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
                     {statLabel(tagged.status)}{tagged.proof ? " 📎" : ""} ✎
                   </button>;
-                } else {
+                } else if (!pill) {
                   pill = <button
                     onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: ymd, existing: null })}
                     style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
