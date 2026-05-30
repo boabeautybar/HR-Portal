@@ -6385,6 +6385,57 @@ function VoucherEntryApp({ user, onSignOut }) {
   );
 }
 
+// ─── INSTALL TO DEVICE (PWA) ────────────────────────────────────────────────
+// "Install to Device" pill for the header. The browser's install prompt is
+// captured before React mounts (see index.html → __BOA_HR_INSTALL_PROMPT);
+// this component reads it and listens for the custom installable/installed
+// events. It renders nothing once the app is installed / running standalone,
+// or when the browser can't offer an install (and it isn't iOS Safari).
+function InstallButton() {
+  const isStandalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
+  const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+  const [promptEvt, setPromptEvt] = React.useState(window.__BOA_HR_INSTALL_PROMPT || null);
+  const [installed, setInstalled] = React.useState(false);
+
+  React.useEffect(() => {
+    const onAvail = () => setPromptEvt(window.__BOA_HR_INSTALL_PROMPT || null);
+    const onInstalled = () => { setInstalled(true); setPromptEvt(null); };
+    window.addEventListener('boa-hr-installable', onAvail);
+    window.addEventListener('boa-hr-installed', onInstalled);
+    window.addEventListener('appinstalled', onInstalled);
+    return () => {
+      window.removeEventListener('boa-hr-installable', onAvail);
+      window.removeEventListener('boa-hr-installed', onInstalled);
+      window.removeEventListener('appinstalled', onInstalled);
+    };
+  }, []);
+
+  // Already installed / launched from home screen → nothing to show.
+  if (installed || isStandalone) return null;
+  // Chrome/Edge/Android only show the button once the prompt is available.
+  // iOS Safari never fires the prompt, so show it there with manual steps.
+  if (!promptEvt && !isIos) return null;
+
+  const onClick = async () => {
+    if (isIos && !promptEvt) {
+      alert("To install BOA HR on your iPhone/iPad:\n\n1. Tap the Share button (the square with an up arrow)\n2. Choose “Add to Home Screen”");
+      return;
+    }
+    if (!promptEvt) return;
+    promptEvt.prompt();
+    try { await promptEvt.userChoice; } catch (_) { }
+    window.__BOA_HR_INSTALL_PROMPT = null;
+    setPromptEvt(null);
+  };
+
+  return (
+    <button onClick={onClick} title="Install BOA HR to this device"
+      style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#fff", color: "#BE185D", border: "1px solid rgba(255,255,255,0.7)", borderRadius: 9, padding: "8px 14px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 12, boxShadow: "0 1px 4px rgba(131,24,67,0.18)" }}>
+      <span>⬇️</span> Install to Device
+    </button>
+  );
+}
+
 // ─── APP GATE ─────────────────────────────────────────────────────────────────
 // Mounts the PIN sign-in screen until a valid user is set. Once unlocked, the
 // real <App/> mounts. Done as a wrapper so <App/>'s hooks always run in the
@@ -10702,6 +10753,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
             </div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <InstallButton />
               {stats.vacancies > 0 && <div style={{ background: "#374151", color: "#fbbf24", borderRadius: 20, padding: "4px 12px", fontSize: 11, fontWeight: 700 }}>🪑 {stats.vacancies} vacancies</div>}
               <button onClick={() => setStaffModal({ ec: "", name: "", branch: "Sea Point", contract: "Permanent", permit: "sa_citizen", level: "" })}
                 style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 9, padding: "8px 14px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 12 }}>+ Add Staff</button>
