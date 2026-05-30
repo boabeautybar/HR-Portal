@@ -9310,12 +9310,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const cycStartYmd = cycStart.getFullYear() + "-" + pp(cycStart.getMonth() + 1) + "-" + pp(cycStart.getDate());
     const cycEndYmd = cycEnd.getFullYear() + "-" + pp(cycEnd.getMonth() + 1) + "-" + pp(cycEnd.getDate());
     const targets = new Set();
-    (techLoans || []).forEach(l => {
+    const _addTarget = (l) => {
       if (!l || !l.date) return;
       if (l.fromBranch !== attBranch || !l.toBranch || l.toBranch === attBranch) return;
       if (l.date < cycStartYmd || l.date > cycEndYmd) return;
       targets.add(l.toBranch);
-    });
+    };
+    (techLoans || []).forEach(_addTarget);
+    (mgrLoanRows || []).forEach(_addTarget);
     if (targets.size === 0) { setCrossBranchAttGrids({}); return; }
     let cancelled = false;
     Promise.all([...targets].map(async (br) => {
@@ -9330,7 +9332,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setCrossBranchAttGrids(next);
     });
     return () => { cancelled = true; };
-  }, [tab, attBranch, attYM, techLoans]);
+  }, [tab, attBranch, attYM, techLoans, mgrLoanRows]);
 
   // ── Dashboard: count staff scheduled to work today across all branches ──
   const [dashScheduledToday, setDashScheduledToday] = useState(null); // null = loading
@@ -16405,14 +16407,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // even though she clocked in at Bree. The receiving branch doesn't
         // see the guest at all - she's purely a home-branch payroll row.
         const _loansInCycle = (techLoans || []).filter(l => l && l.date && l.date >= cycStartYmd && l.date <= cycEndYmd);
+        // Mirror the same loan-out lookup for managers. Manager loans use
+        // the boa_mgr_loans_v1 list (loaded into mgrLoanRows) and share
+        // the same {ec, date, fromBranch, toBranch} shape, so they slot
+        // into outgoingLoanMap unchanged — getStatus's loan-out fallback
+        // then fires for managers too and the cell stops rendering blank.
+        const _mgrLoansInCycle = (mgrLoanRows || []).filter(l => l && l.date && l.date >= cycStartYmd && l.date <= cycEndYmd);
         const outgoingLoanMap = {};
-        _loansInCycle.forEach(l => {
+        const _mgrLoanedOutSet = new Set();    // "ec|d" pairs — managers loaned OUT this cycle
+        _loansInCycle.concat(_mgrLoansInCycle).forEach(l => {
           if (!l.ec) return;
           const dy = days.find(x => x.ymd === l.date);
           if (!dy) return;
           if (l.fromBranch === attBranch && l.toBranch && l.toBranch !== attBranch) {
             (outgoingLoanMap[l.ec] = outgoingLoanMap[l.ec] || {})[dy.d] = l.toBranch;
           }
+        });
+        _mgrLoansInCycle.forEach(l => {
+          if (!l.ec || !l.fromBranch || l.fromBranch !== attBranch) return;
+          const dy = days.find(x => x.ymd === l.date);
+          if (dy) _mgrLoanedOutSet.add(String(l.ec).trim() + "|" + dy.d);
         });
 
         const attStaff = [
@@ -16556,6 +16570,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const recvGrid = crossBranchAttGrids[toBranch];
             const recvVal = recvGrid && recvGrid[ec] && recvGrid[ec][d];
             if (recvVal) return recvVal.indexOf("~") === 0 ? recvVal.slice(1) : recvVal;
+            // Manager fallback: managers don't have rows in the receiving
+            // branch's attendance grid (the kiosk records their workday
+            // straight into the clockins table, not the att sidecar). If
+            // a manager loaned out clocked in on this day at any branch
+            // we render the home cell as 'On Time' so the payroll row
+            // shows a worked day instead of staying blank.
+            const _do = days.find(x => x.d === d);
+            if (_do && _mgrEcToStaffId[ec] && _mgrCheckedInByEcYmd[ec] && _mgrCheckedInByEcYmd[ec][_do.ymd]) {
+              return "on";
+            }
             return "loan_out";
           }
 
@@ -16632,6 +16656,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (sv === "ML") return "mat";
           if (sv === "X") return "term";
           if (sv === "E") return "ext";
+          // Manager loaned to another store — she IS scheduled to work, just
+          // not at this branch. Render the schedule banner green so the row
+          // reads as a worked day at a glance.
+          if (sv === "loan_out") return "on";
           return null;
         };
 
@@ -22025,10 +22053,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // grid for this cycle hasn't been published — better to show
               // everyone with a "schedule not published" notice than show
               // nothing while 51 managers clocked in.
+              // Cross-store manager loans active today. Each row is one
+              // {ec, date, fromBranch, toBranch} — so "loanedOutByEc" lets
+              // us suppress the surprise-clock-in flag at HOME (the manager
+              // is expected at the destination, not here), and "loanedInByBranch"
+              // lets us render an extra section per RECEIVING branch.
+              const _loansToday = (mgrLoanRows || []).filter(l => l && l.ec && l.date === ymd);
+              const loanedOutByEc = {};
+              const loanedInByBranch = {};
+              _loansToday.forEach(l => {
+                loanedOutByEc[String(l.ec).trim()] = l;
+                if (l.toBranch) {
+                  (loanedInByBranch[l.toBranch] = loanedInByBranch[l.toBranch] || []).push(l);
+                }
+              });
               const scheduledByBranch = {};
               const fallbackBranches = [];
               const allScheduled = [];
               const surpriseClockIns = [];   // clocked in but scheduled off today
+              const loanedOut = [];          // home-branch view: managers loaned out today
               scopedBranches.forEach(b => {
                 const grid = mgrClockinSchedCache[b + "|" + ymOf];
                 const branchMgrs = managers.filter(m => m.branch === b && !m.onMat && !m.leftDate && !_onLeaveEcs.has(String(m.ec || "").trim()));
@@ -22046,13 +22089,31 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const list = [];
                 branchMgrs.forEach(m => {
                   const cell = _readCell(grid, m.ec);
+                  const _loan = loanedOutByEc[String(m.ec || "").trim()];
+                  // Manager loaned to another store today. Skip the surprise
+                  // check (their clock-in lives at the destination, not here)
+                  // and surface them in the "Loaned out" panel instead.
+                  if (cell === "loan_out" || _loan) {
+                    loanedOut.push({ m, toBranch: (_loan && _loan.toBranch) || "(unknown)" });
+                    return;
+                  }
                   if (_isWorking(cell)) { list.push(m); allScheduled.push(m); }
                   else if (inByEc[String(m.ec || "").trim()]) { surpriseClockIns.push({ m, cell: cell || "—" }); }
+                });
+                // Inbound loans — add managers loaned INTO this branch today
+                // to the same per-branch scheduled list so the ROM viewing
+                // this branch sees them with a "↪ from <home>" tag.
+                (loanedInByBranch[b] || []).forEach(lo => {
+                  const m = managers.find(mm => mm && String(mm.ec || "").trim() === String(lo.ec).trim());
+                  if (!m) return;
+                  if (_onLeaveEcs.has(String(m.ec || "").trim())) return;
+                  list.push({ ...m, _loanedInFrom: lo.fromBranch || "(home)" });
+                  allScheduled.push(m);
                 });
                 list.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
                 if (list.length > 0) scheduledByBranch[b] = list;
               });
-              if (allScheduled.length === 0 && fallbackBranches.length === 0 && surpriseClockIns.length === 0) return null;
+              if (allScheduled.length === 0 && fallbackBranches.length === 0 && surpriseClockIns.length === 0 && loanedOut.length === 0) return null;
               const totalIn = allScheduled.filter(m => inByEc[String(m.ec || "").trim()]).length;
               const totalTagged = allScheduled.filter(m => statByKey[(m._id || m.id) + "|" + ymd]).length;
               const totalPending = allScheduled.length - totalIn - totalTagged;
@@ -22082,8 +22143,49 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 return (
                   <div key={sid} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, background: clockin ? "#f0fdf4" : (tagged ? "#fffbeb" : "#fef2f2"), border: "1px solid " + (clockin ? "#bbf7d0" : (tagged ? "#fde68a" : "#fecaca")), borderRadius: 8, padding: "7px 10px" }}>
                     <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 12.5, fontWeight: 700, color: "#831843", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.name}</div>
+                      <div style={{ fontSize: 12.5, fontWeight: 700, color: "#831843", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {m.name}
+                        {m._loanedInFrom && (
+                          <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#1e40af", background: "#dbeafe", border: "1px solid #bfdbfe", padding: "1px 6px", borderRadius: 999, letterSpacing: "0.03em" }}>↪ from {m._loanedInFrom}</span>
+                        )}
+                      </div>
                       <div style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{m.ec} {m.role ? "· " + m.role : ""}</div>
+                    </div>
+                    <div>{pill}</div>
+                  </div>
+                );
+              };
+
+              // "Loaned out today" card. Same look-up as renderCard but
+              // shows the destination instead of the role/EC line.
+              const renderLoanedOutCard = (entry) => {
+                const m = entry.m;
+                const sid = m._id || m.id;
+                const tagged = statByKey[sid + "|" + ymd];
+                const clockin = inByEc[String(m.ec || "").trim()];
+                const inTime = clockin ? new Date(clockin.ts).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }) : null;
+                let pill;
+                if (clockin) {
+                  pill = <span style={{ background: "#dcfce7", color: "#14532d", padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>✅ IN {inTime}</span>;
+                } else if (tagged) {
+                  pill = <button
+                    onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: ymd, existing: tagged })}
+                    title={(tagged.note || "") + (tagged.recorded_by ? "\n— " + tagged.recorded_by : "")}
+                    style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                    {statLabel(tagged.status)}{tagged.proof ? " 📎" : ""} ✎
+                  </button>;
+                } else {
+                  pill = <button
+                    onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: ymd, existing: null })}
+                    style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                    ⏳ Not in yet · Mark reason
+                  </button>;
+                }
+                return (
+                  <div key={sid} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, background: clockin ? "#f0fdf4" : (tagged ? "#fffbeb" : "#eff6ff"), border: "1px solid " + (clockin ? "#bbf7d0" : (tagged ? "#fde68a" : "#bfdbfe")), borderRadius: 8, padding: "7px 10px" }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 700, color: "#831843", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.name}</div>
+                      <div style={{ fontSize: 10, color: "#1e40af", fontWeight: 600 }}>↪ at {entry.toBranch}</div>
                     </div>
                     <div>{pill}</div>
                   </div>
@@ -22104,12 +22206,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   )}
                   {branchNames.map(b => (
                     <div key={b} style={{ marginBottom: 10 }}>
-                      <div style={{ fontSize: 11, fontWeight: 800, color: "#831843", marginBottom: 4, letterSpacing: "0.05em" }}>📍 {b} · {scheduledByBranch[b].length} scheduled</div>
+                      <div style={{ fontSize: 11, fontWeight: 800, color: "#831843", marginBottom: 4, letterSpacing: "0.05em" }}>📍 {b} · {scheduledByBranch[b].length} scheduled{(loanedInByBranch[b] || []).length > 0 ? " (incl. " + (loanedInByBranch[b].length) + " loaned in)" : ""}</div>
                       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 6 }}>
                         {scheduledByBranch[b].map(renderCard)}
                       </div>
                     </div>
                   ))}
+                  {loanedOut.length > 0 && (
+                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed #FBCFE8" }}>
+                      <div style={{ fontSize: 11, fontWeight: 800, color: "#1e40af", marginBottom: 4, letterSpacing: "0.05em" }}>↪ Loaned out today · {loanedOut.length}</div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 6 }}>
+                        {loanedOut.map(renderLoanedOutCard)}
+                      </div>
+                      <div style={{ marginTop: 6, fontSize: 10.5, color: "#6b7280", fontStyle: "italic" }}>
+                        These managers are scheduled at another store today — their clock-in is recorded at the destination kiosk.
+                      </div>
+                    </div>
+                  )}
                   {surpriseClockIns.length > 0 && (
                     <div style={{ marginTop: 4, fontSize: 11.5, color: "#6b7280" }}>
                       🟦 {surpriseClockIns.length} manager{surpriseClockIns.length === 1 ? "" : "s"} clocked in but were not scheduled to work today: <strong>{surpriseClockIns.map(s => s.m.name + " (" + (s.cell || "—") + ")").join(", ")}</strong>. Check the schedule.
