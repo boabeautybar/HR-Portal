@@ -536,7 +536,22 @@
         if (d.isToday) classes += ' sched-today';
         if (weekStartAt(d, i)) classes += ' sched-week-start';
         if (cell) {
-          html += '<td class="sched-cell sched-st-' + cell + classes + '">' + cell + '</td>';
+          // Manager schedule: stamp the working cell with its hours so
+          // SM/SSM and AM rows show e.g. "8–17" or "9:30–18:30" under
+          // the W code. Times come from the same shiftTimes() rules the
+          // HR portal uses — see the comment on _shiftTimes above.
+          var _hoursHtml = '';
+          if (isMgr && (cell === "W" || cell === "WE" || cell === "WL" || cell === "WM" || cell === "WB" || cell === "E")) {
+            var _dt = new Date(d.year, d.monthIdx, d.day);
+            var _hrs = _shiftTimes(s.role, cell, thisBranch, _dt.getDay());
+            if (_hrs) {
+              _hoursHtml = '<div class="sched-cell-hours" title="' + esc(_hrs) + '">' + esc(_compactShift(_hrs)) + '</div>';
+            }
+          }
+          html += '<td class="sched-cell sched-st-' + cell + classes + '">' +
+                    '<div class="sched-cell-code">' + cell + '</div>' +
+                    _hoursHtml +
+                  '</td>';
         } else {
           html += '<td class="' + classes.trim() + '"></td>';
         }
@@ -2497,6 +2512,86 @@
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
     });
+  }
+  // Mirror of the HR portal's shiftTimes() so the kiosk Manager Schedule
+  // view can stamp each working cell with its actual hours. Kept in sync
+  // with the portal copy (app.jsx Manager Coverage) and with the
+  // equivalent helper in manager-app.js — those two are the source of
+  // truth, this one just renders the schedule grid.
+  //   role: "SM" | "SSM" | "AM"
+  //   code: W / WE / WL / WM / WB / E
+  //   branchName: store name (APP_CONFIG.branchName)
+  //   dow: 0=Sun … 6=Sat
+  function _shiftTimes(role, code, branchName, dow) {
+    var r = (role || "").toUpperCase();
+    var isSM = r === "SM" || r === "SSM";
+    var b = branchName || "";
+
+    if (b === "Sandown" || b === "Table Bay") {
+      if (isSM) return "08:00 - 17:00";
+      if (dow === 0) {
+        if (code === "WE") return "08:00 - 17:00";
+        return "09:00 - 18:00";
+      }
+      if (dow === 6 && b === "Sandown") {
+        if (code === "WE") return "08:00 - 17:00";
+        return "10:00 - 19:00";
+      }
+      if (code === "WE") return "08:00 - 17:00";
+      if (code === "WM") return "09:00 - 18:00";
+      return "11:00 - 20:00";
+    }
+    if (b === "Riverlands") {
+      if (dow === 6) return "09:00 - 18:00";
+      if (dow === 0) return "08:00 - 17:00";
+      if (isSM) return "08:00 - 17:00";
+      if (code === "WE") return "09:00 - 18:00";
+      if (code === "WB") return "08:00 - 17:00";
+      return "10:00 - 19:00";
+    }
+    if (b === "Ballito" || b === "Mall of the South") {
+      if (isSM) return "08:00 - 17:00";
+      if (dow === 0) return "08:00 - 17:00";
+      if (code === "WE") return "08:00 - 17:00";
+      if (code === "WM") return "09:00 - 18:00";
+      return "10:00 - 19:00";
+    }
+    if (b === "Fourways") {
+      if (isSM) {
+        if (code === "WL") return "11:00 - 20:00";
+        return "08:00 - 17:00";
+      }
+      if (dow === 0) {
+        if (code === "WE") return "08:00 - 17:00";
+        return "10:00 - 19:00";
+      }
+      if (code === "WM") return "10:00 - 19:00";
+      return "11:00 - 20:00";
+    }
+    // Generic stores. SM flat 08-17 on weekends. AM Sat 09-18, Sun 8:30-17.
+    if (isSM) {
+      if (dow === 0 || dow === 6) return "08:00 - 17:00";
+      if (code === "WL") return "08:30 - 17:30";
+      if (code === "WE") return "07:30 - 16:30";
+      if (code === "WM") return "08:00 - 13:00";
+      return "08:00 - 17:00";
+    }
+    if (dow === 6) return "09:00 - 18:00";
+    if (dow === 0) return "08:30 - 17:00";
+    if (code === "WL") return "10:00 - 19:00";
+    if (code === "WE") return "08:30 - 18:00";
+    if (code === "WM") return "09:00 - 13:00";
+    if (code === "WB") return "08:00 - 19:00";
+    if (code === "E")  return "09:00 - 18:30";
+    return "09:30 - 18:30";
+  }
+  // Compact a "HH:MM - HH:MM" range so it fits in a narrow grid cell:
+  //   "09:00 - 18:00" → "9–18"
+  //   "08:30 - 17:00" → "8:30–17"
+  //   "09:30 - 18:30" → "9:30–18:30"
+  function _compactShift(s) {
+    if (!s) return "";
+    return String(s).replace(/0(\d):00/g, "$1").replace(/(\d\d):00/g, "$1").replace(/\s*-\s*/, "–");
   }
   // A staff row is a manager if it's tagged as one in the DB, OR its employee
   // code follows the manager convention. Branch managers use codes ending in
