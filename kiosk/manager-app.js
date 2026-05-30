@@ -1139,7 +1139,7 @@
       var _results = await Promise.all([
         window.APP_DATA.loadManagerPins(),
         window.APP_DATA.listAllManagers(),
-        window.APP_DATA.listRecentManagerClockins(7),
+        window.APP_DATA.listRecentManagerClockins(2),
         window.APP_DATA.activeSmTrialEcs ? window.APP_DATA.activeSmTrialEcs() : Promise.resolve({}),
         window.APP_DATA.listTrialCandidates ? window.APP_DATA.listTrialCandidates() : Promise.resolve([]),
         window.APP_DATA.getSchedule ? window.APP_DATA.getSchedule(_curEndYm, "mgr").catch(function () { return null; }) : Promise.resolve(null),
@@ -1191,7 +1191,7 @@
     var autoYesterday = await ensureAutoOuts(recent, _schedLookup, mgrByEc);
     if (Object.keys(autoYesterday).length > 0) {
       // Rebuild recent so the per-row "today" status reflects the new auto-outs
-      recent = await window.APP_DATA.listRecentManagerClockins(7);
+      recent = await window.APP_DATA.listRecentManagerClockins(2);
     }
 
     // Today's schedule lookup for per-row hours + the "haven't clocked in" check.
