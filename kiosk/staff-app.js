@@ -527,7 +527,18 @@
       var _xfer = (s.transferring && s.transfer_date) ? s.transfer_date : null;
       var _outgoing = !!_xfer && s.transfer_to && s.transfer_to !== thisBranch;
       var _incoming = !!_xfer && s.transfer_to === thisBranch && s.branch !== thisBranch;
-      html += '<tr><td class="sched-name" title="' + esc(s.name) + '">' + esc(s.name) + '</td>';
+      // Manager schedule: subtitle under each name showing this manager's
+      // hours pattern, so the cells stay clean (just the W code) while the
+      // time info travels with the name. Skipped for tech rows (techs use
+      // a different rule set that lives in the tech check-in flow).
+      var _nameSub = "";
+      if (isMgr) {
+        var _patt = _hoursSubtitle(s.role, thisBranch);
+        if (_patt) _nameSub = '<div class="sched-name-sub">' + esc(_patt) + '</div>';
+      }
+      html += '<tr><td class="sched-name" title="' + esc(s.name) + '">' +
+                '<div class="sched-name-main">' + esc(s.name) + '</div>' + _nameSub +
+              '</td>';
       days.forEach(function (d, i) {
         var _ymd = _ymdOf(d);
         var blanked = (_outgoing && _ymd >= _xfer) || (_incoming && _ymd < _xfer);
@@ -536,22 +547,15 @@
         if (d.isToday) classes += ' sched-today';
         if (weekStartAt(d, i)) classes += ' sched-week-start';
         if (cell) {
-          // Manager schedule: stamp the working cell with its hours so
-          // SM/SSM and AM rows show e.g. "8–17" or "9:30–18:30" under
-          // the W code. Times come from the same shiftTimes() rules the
-          // HR portal uses — see the comment on _shiftTimes above.
-          var _hoursHtml = '';
+          // Hover-only full time on Manager view so the cell stays
+          // visually clean but the exact hours are reachable on tap.
+          var _title = "";
           if (isMgr && (cell === "W" || cell === "WE" || cell === "WL" || cell === "WM" || cell === "WB" || cell === "E")) {
             var _dt = new Date(d.year, d.monthIdx, d.day);
             var _hrs = _shiftTimes(s.role, cell, thisBranch, _dt.getDay());
-            if (_hrs) {
-              _hoursHtml = '<div class="sched-cell-hours" title="' + esc(_hrs) + '">' + esc(_compactShift(_hrs)) + '</div>';
-            }
+            if (_hrs) _title = ' title="' + esc(_hrs) + '"';
           }
-          html += '<td class="sched-cell sched-st-' + cell + classes + '">' +
-                    '<div class="sched-cell-code">' + cell + '</div>' +
-                    _hoursHtml +
-                  '</td>';
+          html += '<td class="sched-cell sched-st-' + cell + classes + '"' + _title + '>' + cell + '</td>';
         } else {
           html += '<td class="' + classes.trim() + '"></td>';
         }
@@ -2592,6 +2596,22 @@
   function _compactShift(s) {
     if (!s) return "";
     return String(s).replace(/0(\d):00/g, "$1").replace(/(\d\d):00/g, "$1").replace(/\s*-\s*/, "–");
+  }
+  // Short per-role + per-branch hours summary shown under each manager's
+  // name on the schedule view. Generic stores get the Wkd / Sat / Sun
+  // triple. Special stores fall back to a generic "varies by shift" label
+  // since their codes (WE/WL/WM) drive the time, not the day of week.
+  function _hoursSubtitle(role, branchName) {
+    var r = (role || "").toUpperCase();
+    var isSM = r === "SM" || r === "SSM";
+    var b = branchName || "";
+    var special = (b === "Sandown" || b === "Table Bay" || b === "Riverlands" || b === "Ballito" || b === "Mall of the South" || b === "Fourways");
+    if (special) {
+      if (isSM) return r + " · 8–17";
+      return r + " · varies by shift (hover for time)";
+    }
+    if (isSM) return r + " · 8–17 every day";
+    return r + " · Wkd 9:30–18:30 · Sat 9–18 · Sun 8:30–17";
   }
   // A staff row is a manager if it's tagged as one in the DB, OR its employee
   // code follows the manager convention. Branch managers use codes ending in

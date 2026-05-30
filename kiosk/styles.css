@@ -699,12 +699,14 @@ textarea.input { resize: vertical; min-height: 64px; }
 .sched-name-h { text-align: left; min-width: 110px; padding: 6px 10px !important; }
 .sched-name { text-align: left; padding: 6px 10px !important; font-weight: 600; color: var(--pink-900); background: #fff; position: sticky; left: 0; }
 .sched-cell { font-weight: 800; }
-.sched-cell-code { font-weight: 800; line-height: 1.1; }
-/* Hours line under the W/WL/WE/etc. code on the Manager Schedule view.
-   Smaller font + lighter weight so the code stays the dominant marker. */
-.sched-cell-hours {
-  font-size: 9px; font-weight: 700; line-height: 1.1; margin-top: 2px;
-  opacity: 0.85; letter-spacing: 0.02em; font-variant-numeric: tabular-nums;
+/* Hours subtitle under each manager's name. Keeps the grid cells clean
+   (just the W/WL/etc. code) while the time pattern travels with the
+   row label. Stays in the sticky name column so it scrolls horizontally
+   with the names, not the day cells. */
+.sched-name-main { font-weight: 600; color: var(--pink-900); line-height: 1.15; }
+.sched-name-sub {
+  font-size: 10px; font-weight: 600; color: var(--pink-500);
+  margin-top: 2px; letter-spacing: 0.01em; font-variant-numeric: tabular-nums;
 }
 .sched-today { outline: 2px solid var(--pink-500); outline-offset: -2px; }
 /* Working states — all greens (different shades) so any working day reads as
