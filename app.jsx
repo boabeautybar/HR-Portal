@@ -22551,6 +22551,43 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       ⚠ The <strong>{ymOf}</strong> cycle's manager schedule isn't published for {fallbackBranches.length} branch{fallbackBranches.length === 1 ? "" : "es"}: <strong>{fallbackBranches.join(", ")}</strong>. Showing all active managers there as a fallback — publish the schedule in <em>Operations → Scheduling → Managers</em> to filter out off-day managers.
                     </div>
                   )}
+                  {/* Auto-out summary — managers whose kiosk session was
+                      closed by the kiosk's auto-out routine (they forgot
+                      to clock out before scheduled shift end + 1h). Each
+                      is flagged with their IN time and the scheduled end
+                      timestamp the auto-out used. */}
+                  {(() => {
+                    const _autoOuts = [];
+                    Object.keys(outByEc).forEach(ec => {
+                      const o = outByEc[ec];
+                      if (!o || o.type !== "out_auto") return;
+                      const i = inByEc[ec];
+                      const m = managers.find(mm => mm && String(mm.ec || "").trim() === String(ec).trim());
+                      if (!m) return;
+                      _autoOuts.push({ name: m.name, branch: m.branch, inTs: i ? i.ts : null, outTs: o.ts });
+                    });
+                    if (_autoOuts.length === 0) return null;
+                    _autoOuts.sort((a, b) => (a.branch || "").localeCompare(b.branch || "") || (a.name || "").localeCompare(b.name || ""));
+                    const _fmt = (ts) => ts ? new Date(ts).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }) : "—";
+                    return (
+                      <div style={{ background: "#fee2e2", border: "1px solid #fca5a5", color: "#7f1d1d", borderRadius: 8, padding: "8px 12px", fontSize: 11.5, marginBottom: 8 }}>
+                        <div style={{ fontWeight: 800, marginBottom: 4 }}>
+                          ⚠ {_autoOuts.length} manager{_autoOuts.length === 1 ? "" : "s"} auto-clocked-out today — forgot to clock out
+                        </div>
+                        <div style={{ fontSize: 11, lineHeight: 1.5 }}>
+                          {_autoOuts.map((a, i) => (
+                            <span key={i}>
+                              {i > 0 ? " · " : ""}
+                              <strong>{a.name}</strong> <span style={{ opacity: 0.75 }}>({a.branch}) IN {_fmt(a.inTs)} → AUTO-OUT {_fmt(a.outTs)}</span>
+                            </span>
+                          ))}
+                        </div>
+                        <div style={{ fontSize: 10.5, opacity: 0.8, marginTop: 4 }}>
+                          End time = their scheduled shift end (not the moment the kiosk closed the session), so no overtime is credited.
+                        </div>
+                      </div>
+                    );
+                  })()}
                   {branchNames.map(b => (
                     <div key={b} style={{ marginBottom: 10 }}>
                       <div style={{ fontSize: 11, fontWeight: 800, color: "#831843", marginBottom: 4, letterSpacing: "0.05em" }}>📍 {b} · {scheduledByBranch[b].length} scheduled{(loanedInByBranch[b] || []).length > 0 ? " (incl. " + (loanedInByBranch[b].length) + " loaned in)" : ""}</div>
