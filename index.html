@@ -5,6 +5,35 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="robots" content="noindex,nofollow" />
 <title>BOA HR Dashboard</title>
+
+<!-- PWA: installable to device -->
+<link rel="manifest" href="manifest.webmanifest" />
+<meta name="theme-color" content="#BE185D" />
+<link rel="apple-touch-icon" href="BOA.png" />
+<link rel="icon" href="BOA.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="BOA HR" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+<!-- Capture the install prompt before React mounts; React's InstallButton
+     reads __BOA_HR_INSTALL_PROMPT and listens for these custom events. -->
+<script>
+  window.__BOA_HR_INSTALL_PROMPT = null;
+  window.addEventListener('beforeinstallprompt', function (e) {
+    e.preventDefault();
+    window.__BOA_HR_INSTALL_PROMPT = e;
+    window.dispatchEvent(new Event('boa-hr-installable'));
+  });
+  window.addEventListener('appinstalled', function () {
+    window.__BOA_HR_INSTALL_PROMPT = null;
+    window.dispatchEvent(new Event('boa-hr-installed'));
+  });
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('./sw.js').catch(function () {});
+    });
+  }
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700;800;900&family=Playfair+Display:wght@400;500;600;700;800&display=swap" rel="stylesheet" />

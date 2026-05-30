@@ -1500,10 +1500,17 @@
       return { found: false, matches: [], last4: "", tooShort: true, minLen: minLen };
     }
     var last4 = full.slice(-4).toUpperCase();
-    var res = await c.from("vouchers").select("fresha_code, amount").eq("last4", last4);
+    var res = await c.from("vouchers").select("fresha_code, amount, balance, used_total, txn_count, last_used_at, txns").eq("last4", last4);
     if (res.error) { console.error("lookupFreshaVoucher:", res.error); throw res.error; }
     var matches = (res.data || [])
-      .map(function (r) { return { fresha: r.fresha_code, amount: r.amount }; })
+      .map(function (r) {
+        return {
+          fresha: r.fresha_code, amount: r.amount,
+          balance: r.balance, used_total: r.used_total,
+          txn_count: r.txn_count, last_used_at: r.last_used_at,
+          txns: Array.isArray(r.txns) ? r.txns : []
+        };
+      })
       .filter(function (m) { return m.fresha; });
     // Disambiguate same-last4 collisions by amount: keep only rows whose amount
     // matches what the manager entered (tolerant of "500" vs "500.00" vs "R500").

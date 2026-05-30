@@ -503,7 +503,15 @@
       var dt = new Date(d.year, d.monthIdx, d.day);
       return dt.getDay() === 1; // Monday
     };
-    var html = '<div class="sched-wrap"><table class="sched-table">';
+    // Branch-aware "manager hours" banner shown once above the grid on
+    // the Manager Schedule view. Keeps the rows visually clean — no
+    // repeated subtitle under each name. The cells themselves still
+    // expose the exact time as a hover tooltip via the title attr below.
+    var html = '';
+    if (isMgr) {
+      html += _hoursBannerHtml(thisBranch);
+    }
+    html += '<div class="sched-wrap"><table class="sched-table">';
     html += '<thead><tr><th class="sched-name-h">Staff</th>';
     days.forEach(function (d, i) {
       var dt = new Date(d.year, d.monthIdx, d.day);
@@ -536,7 +544,15 @@
         if (d.isToday) classes += ' sched-today';
         if (weekStartAt(d, i)) classes += ' sched-week-start';
         if (cell) {
-          html += '<td class="sched-cell sched-st-' + cell + classes + '">' + cell + '</td>';
+          // Hover-only full time on Manager view so the cell stays
+          // visually clean but the exact hours are reachable on tap.
+          var _title = "";
+          if (isMgr && (cell === "W" || cell === "WE" || cell === "WL" || cell === "WM" || cell === "WB" || cell === "E")) {
+            var _dt = new Date(d.year, d.monthIdx, d.day);
+            var _hrs = _shiftTimes(s.role, cell, thisBranch, _dt.getDay());
+            if (_hrs) _title = ' title="' + esc(_hrs) + '"';
+          }
+          html += '<td class="sched-cell sched-st-' + cell + classes + '"' + _title + '>' + cell + '</td>';
         } else {
           html += '<td class="' + classes.trim() + '"></td>';
         }
@@ -2497,6 +2513,128 @@
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
     });
+  }
+  // Mirror of the HR portal's shiftTimes() so the kiosk Manager Schedule
+  // view can stamp each working cell with its actual hours. Kept in sync
+  // with the portal copy (app.jsx Manager Coverage) and with the
+  // equivalent helper in manager-app.js — those two are the source of
+  // truth, this one just renders the schedule grid.
+  //   role: "SM" | "SSM" | "AM"
+  //   code: W / WE / WL / WM / WB / E
+  //   branchName: store name (APP_CONFIG.branchName)
+  //   dow: 0=Sun … 6=Sat
+  function _shiftTimes(role, code, branchName, dow) {
+    var r = (role || "").toUpperCase();
+    var isSM = r === "SM" || r === "SSM";
+    var b = branchName || "";
+
+    if (b === "Sandown" || b === "Table Bay") {
+      if (isSM) return "08:00 - 17:00";
+      if (dow === 0) {
+        if (code === "WE") return "08:00 - 17:00";
+        return "09:00 - 18:00";
+      }
+      if (dow === 6 && b === "Sandown") {
+        if (code === "WE") return "08:00 - 17:00";
+        return "10:00 - 19:00";
+      }
+      if (code === "WE") return "08:00 - 17:00";
+      if (code === "WM") return "09:00 - 18:00";
+      return "11:00 - 20:00";
+    }
+    if (b === "Riverlands") {
+      if (dow === 6) return "09:00 - 18:00";
+      if (dow === 0) return "08:00 - 17:00";
+      if (isSM) return "08:00 - 17:00";
+      if (code === "WE") return "09:00 - 18:00";
+      if (code === "WB") return "08:00 - 17:00";
+      return "10:00 - 19:00";
+    }
+    if (b === "Ballito" || b === "Mall of the South") {
+      if (isSM) return "08:00 - 17:00";
+      if (dow === 0) return "08:00 - 17:00";
+      if (code === "WE") return "08:00 - 17:00";
+      if (code === "WM") return "09:00 - 18:00";
+      return "10:00 - 19:00";
+    }
+    if (b === "Fourways") {
+      if (isSM) {
+        if (code === "WL") return "11:00 - 20:00";
+        return "08:00 - 17:00";
+      }
+      if (dow === 0) {
+        if (code === "WE") return "08:00 - 17:00";
+        return "10:00 - 19:00";
+      }
+      if (code === "WM") return "10:00 - 19:00";
+      return "11:00 - 20:00";
+    }
+    // Generic stores. SM flat 08-17 on weekends. AM Sat 09-18, Sun 8:30-17.
+    if (isSM) {
+      if (dow === 0 || dow === 6) return "08:00 - 17:00";
+      if (code === "WL") return "08:30 - 17:30";
+      if (code === "WE") return "07:30 - 16:30";
+      if (code === "WM") return "08:00 - 13:00";
+      return "08:00 - 17:00";
+    }
+    if (dow === 6) return "09:00 - 18:00";
+    if (dow === 0) return "08:30 - 17:00";
+    if (code === "WL") return "10:00 - 19:00";
+    if (code === "WE") return "08:30 - 18:00";
+    if (code === "WM") return "09:00 - 13:00";
+    if (code === "WB") return "08:00 - 19:00";
+    if (code === "E")  return "09:00 - 18:30";
+    return "09:30 - 18:30";
+  }
+  // Compact a "HH:MM - HH:MM" range so it fits in a narrow grid cell:
+  //   "09:00 - 18:00" → "9–18"
+  //   "08:30 - 17:00" → "8:30–17"
+  //   "09:30 - 18:30" → "9:30–18:30"
+  function _compactShift(s) {
+    if (!s) return "";
+    return String(s).replace(/0(\d):00/g, "$1").replace(/(\d\d):00/g, "$1").replace(/\s*-\s*/, "–");
+  }
+  // One-shot info banner shown above the Manager Schedule grid. Lists
+  // SM/SSM and AM hours for this branch so the rows themselves stay
+  // clean (just W/WL/O codes). Generic stores get the Mon-Fri / Sat /
+  // Sun triple. Special stores spell out the per-code times since at
+  // those branches the code drives the shift, not the day of week.
+  function _hoursBannerHtml(branchName) {
+    var b = branchName || "";
+    var lines = [];
+    if (b === "Sandown") {
+      lines.push("SM / SSM — 08:00–17:00 every day");
+      lines.push("AM Mon–Fri · WE 08:00–17:00 · WM 09:00–18:00 · WL 11:00–20:00");
+      lines.push("AM Saturday · WE 08:00–17:00 · WL 10:00–19:00");
+      lines.push("AM Sunday · WE 08:00–17:00 · WL 09:00–18:00");
+    } else if (b === "Table Bay") {
+      lines.push("SM / SSM — 08:00–17:00 every day");
+      lines.push("AM Mon–Sat · WE 08:00–17:00 · WM 09:00–18:00 · WL 11:00–20:00");
+      lines.push("AM Sunday · WE 08:00–17:00 · WL 09:00–18:00");
+    } else if (b === "Riverlands") {
+      lines.push("SM — 08:00–17:00 Mon–Fri");
+      lines.push("AM Mon–Fri · WE 09:00–18:00 · WL 10:00–19:00 · WB 08:00–17:00");
+      lines.push("Saturday — single 09:00–18:00 shift");
+      lines.push("Sunday — single 08:00–17:00 shift");
+    } else if (b === "Ballito" || b === "Mall of the South") {
+      lines.push("SM — 08:00–17:00 every day");
+      lines.push("AM Mon–Sat · WM 09:00–18:00 · WL 10:00–19:00");
+      lines.push("Sunday — single 08:00–17:00 shift");
+    } else if (b === "Fourways") {
+      lines.push("SM / SSM — WE 08:00–17:00 · WL 11:00–20:00 (rotated when 2+ on duty)");
+      lines.push("AM Mon–Sat · WM 10:00–19:00 · WL 11:00–20:00");
+      lines.push("AM Sunday · WE 08:00–17:00 · WL 10:00–19:00");
+    } else {
+      lines.push("SM / SSM — 08:00–17:00 every day");
+      lines.push("AM Mon–Fri — 09:30–18:30");
+      lines.push("AM Saturday — 09:00–18:00");
+      lines.push("AM Sunday — 08:30–17:00");
+    }
+    var rows = lines.map(function (l) { return '<div>' + esc(l) + '</div>'; }).join("");
+    return '<div class="sched-hours-banner">' +
+             '<div class="sched-hours-banner-title">🕐 Manager hours · ' + esc(b || "this store") + '</div>' +
+             '<div class="sched-hours-banner-rows">' + rows + '</div>' +
+           '</div>';
   }
   // A staff row is a manager if it's tagged as one in the DB, OR its employee
   // code follows the manager convention. Branch managers use codes ending in

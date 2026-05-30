@@ -6385,6 +6385,207 @@ function VoucherEntryApp({ user, onSignOut }) {
   );
 }
 
+// ─── INSTALL TO DEVICE (PWA) ────────────────────────────────────────────────
+// "Install to Device" pill for the header. The browser's install prompt is
+// captured before React mounts (see index.html → __BOA_HR_INSTALL_PROMPT);
+// this component reads it and listens for the custom installable/installed
+// events. It renders nothing once the app is installed / running standalone,
+// or when the browser can't offer an install (and it isn't iOS Safari).
+function InstallButton() {
+  const isStandalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
+  const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+  const [promptEvt, setPromptEvt] = React.useState(window.__BOA_HR_INSTALL_PROMPT || null);
+  const [installed, setInstalled] = React.useState(false);
+
+  React.useEffect(() => {
+    const onAvail = () => setPromptEvt(window.__BOA_HR_INSTALL_PROMPT || null);
+    const onInstalled = () => { setInstalled(true); setPromptEvt(null); };
+    window.addEventListener('boa-hr-installable', onAvail);
+    window.addEventListener('boa-hr-installed', onInstalled);
+    window.addEventListener('appinstalled', onInstalled);
+    return () => {
+      window.removeEventListener('boa-hr-installable', onAvail);
+      window.removeEventListener('boa-hr-installed', onInstalled);
+      window.removeEventListener('appinstalled', onInstalled);
+    };
+  }, []);
+
+  // Already installed / launched from home screen → nothing to show.
+  if (installed || isStandalone) return null;
+  // Chrome/Edge/Android only show the button once the prompt is available.
+  // iOS Safari never fires the prompt, so show it there with manual steps.
+  if (!promptEvt && !isIos) return null;
+
+  const onClick = async () => {
+    if (isIos && !promptEvt) {
+      alert("To install BOA HR on your iPhone/iPad:\n\n1. Tap the Share button (the square with an up arrow)\n2. Choose “Add to Home Screen”");
+      return;
+    }
+    if (!promptEvt) return;
+    promptEvt.prompt();
+    try { await promptEvt.userChoice; } catch (_) { }
+    window.__BOA_HR_INSTALL_PROMPT = null;
+    setPromptEvt(null);
+  };
+
+  return (
+    <button onClick={onClick} title="Install BOA HR to this device"
+      style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#fff", color: "#BE185D", border: "1px solid rgba(255,255,255,0.7)", borderRadius: 9, padding: "8px 14px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 12, boxShadow: "0 1px 4px rgba(131,24,67,0.18)" }}>
+      <span>⬇️</span> Install to Device
+    </button>
+  );
+}
+
+// ─── VOUCHER ADMIN (Owner / Master Admin) ───────────────────────────────────
+// Upload the Fresha "Gift Card Transactions" CSV → store in Supabase and
+// refresh each voucher's remaining balance + transaction history. Re-uploads
+// are deduped by transaction ID, so only new transactions are added.
+
+// Minimal RFC-4180-ish CSV parser (handles quoted fields / embedded commas).
+function parseCsvRows(text) {
+  const rows = [];
+  let row = [], field = "", inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQ = false; }
+      else field += c;
+    } else if (c === '"') { inQ = true; }
+    else if (c === ',') { row.push(field); field = ""; }
+    else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ""; }
+    else if (c === '\r') { /* ignore */ }
+    else field += c;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+function parseCsvObjects(text) {
+  text = String(text || "").replace(/^﻿/, ""); // strip UTF-8 BOM if present
+  const rows = parseCsvRows(text).filter(r => r.length > 1 || (r[0] || "").trim() !== "");
+  if (!rows.length) return [];
+  const headers = rows[0].map(h => String(h || "").trim().toLowerCase());
+  return rows.slice(1).map(r => {
+    const o = {};
+    headers.forEach((h, i) => { o[h] = r[i] != null ? r[i] : ""; });
+    return o;
+  });
+}
+
+function VoucherAdmin({ currentUser }) {
+  const [busy, setBusy] = React.useState(false);
+  const [progress, setProgress] = React.useState(null); // { phase, done, total }
+  const [result, setResult] = React.useState(null);     // { ok, msg }
+  const [stats, setStats] = React.useState(null);       // { count, lastPaymentDate }
+  const fileRef = React.useRef(null);
+
+  const loadStats = React.useCallback(async () => {
+    try {
+      if (window.BOA_DB && window.BOA_DB.giftCardTxnStats) setStats(await window.BOA_DB.giftCardTxnStats());
+    } catch (_) { /* table may not exist yet */ }
+  }, []);
+  React.useEffect(() => { loadStats(); }, [loadStats]);
+
+  const onFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (e.target) e.target.value = ""; // allow re-selecting the same file
+    if (!file) return;
+    if (!window.BOA_DB || !window.BOA_DB.importGiftCardTransactions) {
+      setResult({ ok: false, msg: "Database not ready. Reload and try again." });
+      return;
+    }
+    setBusy(true); setResult(null); setProgress({ phase: "Reading file…", done: 0, total: 0 });
+    try {
+      const text = await file.text();
+      const objs = parseCsvObjects(text);
+      if (!objs.length) throw new Error("No rows found in that CSV.");
+      const mapped = objs.map(r => ({
+        id: r["id"], gift_card: r["gift card"], payment_date: r["payment date"],
+        location: r["location"], amount: r["amount"], txn_type: r["transaction type"],
+        client_name: r["client name"], appointment_ref: r["appointment ref"]
+      }));
+      setProgress({ phase: "Uploading transactions…", done: 0, total: mapped.length });
+      const imp = await window.BOA_DB.importGiftCardTransactions(mapped, (done, total) => setProgress({ phase: "Uploading transactions…", done, total }));
+      setProgress({ phase: "Updating voucher balances…", done: 0, total: 0 });
+      const rec = await window.BOA_DB.recomputeVoucherBalancesForCodes(imp.codes, (done, total) => setProgress({ phase: "Updating voucher balances…", done, total }));
+      setResult({ ok: true, msg: imp.saved.toLocaleString() + " transactions imported · balances updated for " + rec.vouchers + " voucher" + (rec.vouchers === 1 ? "" : "s") + "." });
+      loadStats();
+    } catch (err) {
+      setResult({ ok: false, msg: "Import failed: " + ((err && err.message) || String(err)) });
+    } finally {
+      setBusy(false); setProgress(null);
+    }
+  };
+
+  const recomputeAll = async () => {
+    if (busy || !window.BOA_DB || !window.BOA_DB.recomputeAllVoucherBalances) return;
+    setBusy(true); setResult(null); setProgress({ phase: "Recomputing all balances…", done: 0, total: 0 });
+    try {
+      const rec = await window.BOA_DB.recomputeAllVoucherBalances((done, total) => setProgress({ phase: "Recomputing all balances…", done, total }));
+      setResult({ ok: true, msg: "Recomputed balances for " + rec.vouchers + " voucher" + (rec.vouchers === 1 ? "" : "s") + "." });
+    } catch (err) {
+      setResult({ ok: false, msg: "Recompute failed: " + ((err && err.message) || String(err)) });
+    } finally {
+      setBusy(false); setProgress(null);
+    }
+  };
+
+  const card = { background: "#fff", border: "1px solid #FBCFE8", borderRadius: 12, padding: "18px 20px", marginBottom: 16 };
+  const pct = progress && progress.total ? Math.round((progress.done / progress.total) * 100) : null;
+
+  return (
+    <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", color: "#831843", maxWidth: 760 }}>
+      <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, fontWeight: 700, marginBottom: 2 }}>💳 Voucher Admin</div>
+      <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 16 }}>
+        Upload the Fresha “Gift Card Transactions” report to keep voucher balances up to date. Re-uploads only add new transactions.
+      </div>
+
+      <div style={card}>
+        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 4 }}>Upload Gift Card Transactions (CSV)</div>
+        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 12 }}>
+          Export from Fresha → Gift Card Transactions, then choose the CSV here. Existing transactions are skipped automatically.
+        </div>
+        <input ref={fileRef} type="file" accept=".csv,text/csv" disabled={busy} onChange={onFile}
+          style={{ fontSize: 13, fontFamily: "inherit" }} />
+        {stats && (
+          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 12 }}>
+            Stored: <strong style={{ color: "#831843" }}>{(stats.count || 0).toLocaleString()}</strong> transactions
+            {stats.lastPaymentDate ? <> · latest payment <strong style={{ color: "#831843" }}>{new Date(stats.lastPaymentDate).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" })}</strong></> : null}
+          </div>
+        )}
+      </div>
+
+      <div style={card}>
+        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 4 }}>Recompute balances</div>
+        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 12 }}>
+          Balances refresh automatically on upload and when vouchers are entered. Use this if you need to rebuild every voucher’s balance from scratch.
+        </div>
+        <button onClick={recomputeAll} disabled={busy}
+          style={{ background: busy ? "#FBCFE8" : "#fff", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 8, padding: "9px 16px", cursor: busy ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit" }}>
+          Recompute all balances
+        </button>
+      </div>
+
+      {progress && (
+        <div style={{ ...card, marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>{progress.phase}{pct != null ? " " + pct + "%" : ""}</div>
+          <div style={{ height: 8, background: "#FCE7F3", borderRadius: 6, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: (pct != null ? pct : 100) + "%", background: "#BE185D", borderRadius: 6, transition: "width 0.2s", opacity: pct != null ? 1 : 0.5 }} />
+          </div>
+          {progress.total ? <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 6 }}>{progress.done.toLocaleString()} / {progress.total.toLocaleString()}</div> : null}
+        </div>
+      )}
+
+      {result && (
+        <div style={{ padding: "11px 14px", borderRadius: 9, fontSize: 13, fontWeight: 600,
+          background: result.ok ? "#dcfce7" : "#fef2f2", border: "1px solid " + (result.ok ? "#86efac" : "#fecaca"),
+          color: result.ok ? "#14532d" : "#991b1b" }}>
+          {result.ok ? "✓ " : "⚠️ "}{result.msg}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── APP GATE ─────────────────────────────────────────────────────────────────
 // Mounts the PIN sign-in screen until a valid user is set. Once unlocked, the
 // real <App/> mounts. Done as a wrapper so <App/>'s hooks always run in the
@@ -6600,11 +6801,13 @@ const SETTINGS_TABS = [
   { t: "cashups", l: "Cash Ups", cat: "Operations", icon: "💰" },
   { t: "attendance", l: "Attendance / Payroll", cat: "Payroll", icon: "📕" },
   { t: "payrollProgress", l: "Payroll Progress", cat: "Payroll", icon: "📊" },
+  { t: "overtime", l: "Overtime", cat: "Payroll", icon: "⏱️" },
   { t: "alerts", l: "Alerts", cat: "Insights", icon: "🔔" },
   { t: "activity", l: "Activity Log", cat: "Insights", icon: "📜" },
   { t: "kioskPins", l: "Kiosk PINs", cat: "Admin", icon: "🔑" },
   { t: "managerPins", l: "Manager PINs", cat: "Admin", icon: "🆔" },
-  { t: "storeAllocation", l: "Store Allocation", cat: "Admin", icon: "🏬" }
+  { t: "storeAllocation", l: "Store Allocation", cat: "Admin", icon: "🏬" },
+  { t: "voucherAdmin", l: "Voucher Admin", cat: "Admin", icon: "💳" }
 ];
 const SETTINGS_CATS = ["Home/Dashboard", "People", "Operations", "Payroll", "Insights", "Admin"];
 
@@ -8674,9 +8877,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const NAV_TAB_TO_CATEGORY = {
     onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
     scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
-    attendance: "Payroll", payrollProgress: "Payroll",
+    attendance: "Payroll", payrollProgress: "Payroll", overtime: "Payroll",
     alerts: "Insights", activity: "Insights",
-    settings: "Admin"
+    settings: "Admin", voucherAdmin: "Admin"
   };
   useEffect(() => {
     // Manager Planner is a virtual tab that lives at recruitment+mgrRecruit+planner
@@ -8818,6 +9021,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // ── Leave Planner state ────────────────────────────────────────────
   const [leaveRecs, setLeaveRecs] = useState([]);
+  const [overtimeReqs, setOvertimeReqs] = useState([]);
+  const [overtimeShortCache, setOvertimeShortCache] = useState({});    // { ec|cycleYm: hours } from early-leave sidecar
+  const [overtimeShortLoading, setOvertimeShortLoading] = useState(false);
+  const [otForm, setOtForm] = useState({ ec: "", date: "", hours: "", reason: "" });
   const [leaveBranch, setLeaveBranch] = useState(_myStores[0] || SALONS[0].name);
   const [leaveYM, setLeaveYM] = useState(window.BOA_DB ? window.BOA_DB.currentSchedYm() : "2026-05");
   const [leaveForm, setLeaveForm] = useState({ ec: "", startDate: "", endDate: "", emergency: false, emergencyNote: "" });
@@ -9108,12 +9315,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const cycStartYmd = cycStart.getFullYear() + "-" + pp(cycStart.getMonth() + 1) + "-" + pp(cycStart.getDate());
     const cycEndYmd = cycEnd.getFullYear() + "-" + pp(cycEnd.getMonth() + 1) + "-" + pp(cycEnd.getDate());
     const targets = new Set();
-    (techLoans || []).forEach(l => {
+    const _addTarget = (l) => {
       if (!l || !l.date) return;
       if (l.fromBranch !== attBranch || !l.toBranch || l.toBranch === attBranch) return;
       if (l.date < cycStartYmd || l.date > cycEndYmd) return;
       targets.add(l.toBranch);
-    });
+    };
+    (techLoans || []).forEach(_addTarget);
+    (mgrLoanRows || []).forEach(_addTarget);
     if (targets.size === 0) { setCrossBranchAttGrids({}); return; }
     let cancelled = false;
     Promise.all([...targets].map(async (br) => {
@@ -9128,7 +9337,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setCrossBranchAttGrids(next);
     });
     return () => { cancelled = true; };
-  }, [tab, attBranch, attYM, techLoans]);
+  }, [tab, attBranch, attYM, techLoans, mgrLoanRows]);
 
   // ── Dashboard: count staff scheduled to work today across all branches ──
   const [dashScheduledToday, setDashScheduledToday] = useState(null); // null = loading
@@ -9311,8 +9520,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadManagerPins(),
       window.BOA_DB.loadHRTasks(),
       window.BOA_DB.loadTrialPeriod(),
-      window.BOA_DB.loadSmTrial ? window.BOA_DB.loadSmTrial() : Promise.resolve([])
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial]) => {
+      window.BOA_DB.loadSmTrial ? window.BOA_DB.loadSmTrial() : Promise.resolve([]),
+      window.BOA_DB.loadOvertimeRequests ? window.BOA_DB.loadOvertimeRequests() : Promise.resolve([])
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot]) => {
       setStaff(d.staff);
       setManagers(d.managers);
       setMatRecs(d.matRecs);
@@ -9323,6 +9533,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setHrTasks(Array.isArray(tasks) ? tasks : []);
       setTrialList(Array.isArray(trial) ? trial : []);
       setSmTrialList(Array.isArray(smTrial) ? smTrial : []);
+      setOvertimeReqs(Array.isArray(ot) ? ot : []);
       setLoading(false);
     }).catch((err) => {
       setLoadError("Could not load data: " + (err.message || err));
@@ -10702,6 +10913,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
             </div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <InstallButton />
               {stats.vacancies > 0 && <div style={{ background: "#374151", color: "#fbbf24", borderRadius: 20, padding: "4px 12px", fontSize: 11, fontWeight: 700 }}>🪑 {stats.vacancies} vacancies</div>}
               <button onClick={() => setStaffModal({ ec: "", name: "", branch: "Sea Point", contract: "Permanent", permit: "sa_citizen", level: "" })}
                 style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 9, padding: "8px 14px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 12 }}>+ Add Staff</button>
@@ -10768,7 +10980,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 color: { bg: "#DCFCE7", bgActive: "#BBF7D0", ink: "#14532d" },
                 items: [
                   { t: "attendance", l: "📕 Attendance" },
-                  { t: "payrollProgress", l: "📊 Payroll Progress" }
+                  { t: "payrollProgress", l: "📊 Payroll Progress" },
+                  { t: "overtime", l: "⏱️ Overtime" }
                 ]
               },
               {
@@ -10799,6 +11012,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 }
                 if (currentUser?.isOwner || isNationalOps) {
                   adminItems.push({ t: "storeAllocation", l: "🏬 Store Allocation" });
+                }
+                if (currentUser?.isOwner || currentUser?.role === "Master Admin") {
+                  adminItems.push({ t: "voucherAdmin", l: "💳 Voucher Admin" });
                 }
                 return adminItems.length > 0 ? [{
                   key: "Admin", icon: "🛡️", title: "Admin",
@@ -16199,14 +16415,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // even though she clocked in at Bree. The receiving branch doesn't
         // see the guest at all - she's purely a home-branch payroll row.
         const _loansInCycle = (techLoans || []).filter(l => l && l.date && l.date >= cycStartYmd && l.date <= cycEndYmd);
+        // Mirror the same loan-out lookup for managers. Manager loans use
+        // the boa_mgr_loans_v1 list (loaded into mgrLoanRows) and share
+        // the same {ec, date, fromBranch, toBranch} shape, so they slot
+        // into outgoingLoanMap unchanged — getStatus's loan-out fallback
+        // then fires for managers too and the cell stops rendering blank.
+        const _mgrLoansInCycle = (mgrLoanRows || []).filter(l => l && l.date && l.date >= cycStartYmd && l.date <= cycEndYmd);
         const outgoingLoanMap = {};
-        _loansInCycle.forEach(l => {
+        const _mgrLoanedOutSet = new Set();    // "ec|d" pairs — managers loaned OUT this cycle
+        _loansInCycle.concat(_mgrLoansInCycle).forEach(l => {
           if (!l.ec) return;
           const dy = days.find(x => x.ymd === l.date);
           if (!dy) return;
           if (l.fromBranch === attBranch && l.toBranch && l.toBranch !== attBranch) {
             (outgoingLoanMap[l.ec] = outgoingLoanMap[l.ec] || {})[dy.d] = l.toBranch;
           }
+        });
+        _mgrLoansInCycle.forEach(l => {
+          if (!l.ec || !l.fromBranch || l.fromBranch !== attBranch) return;
+          const dy = days.find(x => x.ymd === l.date);
+          if (dy) _mgrLoanedOutSet.add(String(l.ec).trim() + "|" + dy.d);
         });
 
         const attStaff = [
@@ -16350,6 +16578,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const recvGrid = crossBranchAttGrids[toBranch];
             const recvVal = recvGrid && recvGrid[ec] && recvGrid[ec][d];
             if (recvVal) return recvVal.indexOf("~") === 0 ? recvVal.slice(1) : recvVal;
+            // Manager fallback: managers don't have rows in the receiving
+            // branch's attendance grid (the kiosk records their workday
+            // straight into the clockins table, not the att sidecar). If
+            // a manager loaned out clocked in on this day at any branch
+            // we render the home cell as 'On Time' so the payroll row
+            // shows a worked day instead of staying blank.
+            const _do = days.find(x => x.d === d);
+            if (_do && _mgrEcToStaffId[ec] && _mgrCheckedInByEcYmd[ec] && _mgrCheckedInByEcYmd[ec][_do.ymd]) {
+              return "on";
+            }
             return "loan_out";
           }
 
@@ -16426,6 +16664,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (sv === "ML") return "mat";
           if (sv === "X") return "term";
           if (sv === "E") return "ext";
+          // Manager loaned to another store — she IS scheduled to work, just
+          // not at this branch. Render the schedule banner green so the row
+          // reads as a worked day at a glance.
+          if (sv === "loan_out") return "on";
           return null;
         };
 
@@ -18204,6 +18446,299 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         );
       })()}
 
+      {/* ── OVERTIME TAB ── */}
+      {/* Manager overtime tracker.
+          - Managers (or admin on their behalf) submit OT entries with date,
+            hours and reason. Status starts as "pending".
+          - Admin approves or rejects. Only approved hours count for payout.
+          - Per pay cycle (25 → 24) approved hours are offset against short
+            hours pulled from the boa_early_* sidecar (early-leave records).
+            Net payable = max(0, approvedOT - shortHours). Any short hours
+            beyond approved OT are simply unpaid — they do NOT subtract
+            from base salary, they just zero-out the payable OT.
+          - Early clock-ins are intentionally NOT counted as OT. */}
+      {tab === "overtime" && (() => {
+        const ym = attYM;
+        const ymPretty = (() => {
+          try {
+            const [yy, mm] = ym.split("-").map(Number);
+            const startD = new Date(yy, mm - 2, 25);
+            const endD   = new Date(yy, mm - 1, 24);
+            const f = d => d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short" });
+            return f(startD) + " → " + f(endD) + " " + endD.getFullYear();
+          } catch (_) { return ym; }
+        })();
+
+        const cycleOf = (date) => date ? payrollYmFor(date) : "";
+        const inCycle = (r) => cycleOf(r.date) === ym;
+        const f = otForm;
+        const submitOvertime = async () => {
+          const ec = (f.ec || "").trim();
+          const m = managers.find(x => x.ec === ec);
+          if (!m) { alert("Pick a manager from the list."); return; }
+          const date = (f.date || "").trim();
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { alert("Pick a valid date."); return; }
+          const hours = Math.round(Number(f.hours) * 2) / 2;
+          if (!isFinite(hours) || hours <= 0) { alert("Hours must be a positive number (0.5 step)."); return; }
+          if (hours > 12) { alert("Hours can't exceed 12 — double-check."); return; }
+          const reason = (f.reason || "").trim();
+          if (!reason) { alert("Add a short reason so the approver knows the context."); return; }
+          const newReq = {
+            id: "ot_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+            ec: m.ec,
+            name: m.name,
+            branch: m.branch,
+            date,
+            hours,
+            reason,
+            status: "pending",
+            submittedAt: new Date().toISOString(),
+            submittedBy: (currentUser && currentUser.name) || "(unknown)",
+            decidedAt: null,
+            decidedBy: null,
+            decisionNote: null
+          };
+          const next = [...overtimeReqs, newReq];
+          setOvertimeReqs(next);
+          setOtForm({ ec: "", date: "", hours: "", reason: "" });
+          try { await window.BOA_DB.saveOvertimeRequests(next); }
+          catch (e) { alert("Save failed: " + (e.message || e)); setOvertimeReqs(overtimeReqs); }
+        };
+        const decide = async (id, status) => {
+          let note = null;
+          if (status === "rejected") {
+            note = window.prompt("Reason for rejecting (shown to the manager):", "");
+            if (note === null) return;
+          }
+          const next = overtimeReqs.map(r => r.id === id ? {
+            ...r,
+            status,
+            decidedAt: new Date().toISOString(),
+            decidedBy: (currentUser && currentUser.name) || "(unknown)",
+            decisionNote: note
+          } : r);
+          setOvertimeReqs(next);
+          try { await window.BOA_DB.saveOvertimeRequests(next); }
+          catch (e) { alert("Save failed: " + (e.message || e)); setOvertimeReqs(overtimeReqs); }
+        };
+        const deleteReq = async (id) => {
+          if (!confirm("Delete this overtime entry? This can't be undone.")) return;
+          const next = overtimeReqs.filter(r => r.id !== id);
+          setOvertimeReqs(next);
+          try { await window.BOA_DB.saveOvertimeRequests(next); }
+          catch (e) { alert("Save failed: " + (e.message || e)); setOvertimeReqs(overtimeReqs); }
+        };
+
+        // Pull short-hours totals per (ec, cycleYm) from the early-leave
+        // sidecar. Loaded on demand — one Supabase call per branch. The
+        // sidecar key uses START-month ym, which matches payrollYmFor's
+        // result, so we can look up directly by ym.
+        const loadShortHours = async () => {
+          if (!window.BOA_DB || !window.BOA_DB.loadEarlyLeaves) return;
+          setOvertimeShortLoading(true);
+          try {
+            const branches = Array.from(new Set(managers.map(m => m.branch).filter(Boolean)));
+            const next = { ...overtimeShortCache };
+            for (const b of branches) {
+              const data = await window.BOA_DB.loadEarlyLeaves(b, ym);
+              // data shape: { [dayKey]: { [ec]: { hours, ... } } }
+              if (!data || typeof data !== "object") continue;
+              Object.values(data).forEach(perDay => {
+                if (!perDay || typeof perDay !== "object") return;
+                Object.entries(perDay).forEach(([ec, rec]) => {
+                  const h = Number(rec && rec.hours);
+                  if (!isFinite(h) || h <= 0) return;
+                  const key = ec + "|" + ym;
+                  next[key] = (next[key] || 0) + h;
+                });
+              });
+            }
+            setOvertimeShortCache(next);
+          } catch (e) {
+            alert("Could not load short-hours: " + (e.message || e));
+          } finally {
+            setOvertimeShortLoading(false);
+          }
+        };
+
+        const cycleRows = overtimeReqs.filter(inCycle);
+        const pending  = cycleRows.filter(r => r.status === "pending");
+        const approved = cycleRows.filter(r => r.status === "approved");
+        const rejected = cycleRows.filter(r => r.status === "rejected");
+        const pendingAll = overtimeReqs.filter(r => r.status === "pending");
+
+        // Per-manager summary for this cycle.
+        const summaryByEc = {};
+        cycleRows.forEach(r => {
+          const s = summaryByEc[r.ec] || { ec: r.ec, name: r.name, branch: r.branch, submitted: 0, approved: 0, rejected: 0, pending: 0 };
+          s.submitted += r.hours;
+          s[r.status] = (s[r.status] || 0) + r.hours;
+          summaryByEc[r.ec] = s;
+        });
+        const summary = Object.values(summaryByEc).map(s => {
+          const short = overtimeShortCache[s.ec + "|" + ym] || 0;
+          const net = Math.max(0, s.approved - short);
+          return { ...s, short, net };
+        }).sort((a, b) => (b.net - a.net) || a.name.localeCompare(b.name));
+
+        const card = (r) => {
+          const pill = r.status === "pending"
+            ? { bg: "#fef3c7", fg: "#92400e", lbl: "PENDING" }
+            : r.status === "approved"
+              ? { bg: "#dcfce7", fg: "#14532d", lbl: "APPROVED" }
+              : { bg: "#fee2e2", fg: "#7f1d1d", lbl: "REJECTED" };
+          return (
+            <div key={r.id} style={{ background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 13, color: "#831843", fontWeight: 700 }}>
+                  {r.name} <span style={{ fontSize: 11, color: "#9d4d6e", fontWeight: 500 }}>· {r.branch} · {r.date}</span>
+                </div>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <span style={{ background: pill.bg, color: pill.fg, fontSize: 10, fontWeight: 800, padding: "2px 8px", borderRadius: 12, letterSpacing: "0.05em" }}>{pill.lbl}</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>+{r.hours}h</span>
+                </div>
+              </div>
+              <div style={{ fontSize: 12, color: "#374151", marginBottom: 4 }}>{r.reason}</div>
+              <div style={{ fontSize: 10, color: "#9ca3af" }}>
+                Submitted {new Date(r.submittedAt).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })} by {r.submittedBy}
+                {r.decidedAt && <> · {r.status === "approved" ? "Approved" : "Rejected"} {new Date(r.decidedAt).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })} by {r.decidedBy}</>}
+              </div>
+              {r.decisionNote && <div style={{ fontSize: 11, color: "#7f1d1d", marginTop: 4, fontStyle: "italic" }}>Rejection note: {r.decisionNote}</div>}
+              <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                {r.status === "pending" && (
+                  <>
+                    <button onClick={() => decide(r.id, "approved")} style={{ background: "#14532d", color: "#fff", border: "none", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>✓ Approve</button>
+                    <button onClick={() => decide(r.id, "rejected")} style={{ background: "#7f1d1d", color: "#fff", border: "none", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>✕ Reject</button>
+                  </>
+                )}
+                {r.status !== "pending" && (
+                  <button onClick={() => decide(r.id, "pending")} style={{ background: "transparent", color: "#831843", border: "1px solid #F9A8D4", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>↺ Reopen</button>
+                )}
+                <button onClick={() => deleteReq(r.id)} style={{ background: "transparent", color: "#9ca3af", border: "1px solid #e5e7eb", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontSize: 11 }}>Delete</button>
+              </div>
+            </div>
+          );
+        };
+
+        return (
+          <div style={{ padding: "0 24px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, gap: 12, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700, marginBottom: 4 }}>⏱️ Overtime</div>
+                <div style={{ fontSize: 12, color: "#9d4d6e" }}>
+                  Pay cycle <strong>{ymPretty}</strong>. Approved overtime is offset against short hours from early clock-outs; any remaining short hours are simply unpaid. Early clock-ins don't count as overtime.
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <button onClick={() => setAttYM(window.BOA_DB.shiftYm(ym, -1))} style={{ background: "transparent", border: "1px solid #F9A8D4", color: "#831843", borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontWeight: 700 }}>‹</button>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", minWidth: 90, textAlign: "center" }}>{ym}</div>
+                <button onClick={() => setAttYM(window.BOA_DB.shiftYm(ym, +1))} style={{ background: "transparent", border: "1px solid #F9A8D4", color: "#831843", borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontWeight: 700 }}>›</button>
+              </div>
+            </div>
+
+            {/* Submit form */}
+            <div style={{ padding: "14px 16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, marginBottom: 14 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 10 }}>Submit overtime for a manager</div>
+              <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 2fr auto", gap: 8, alignItems: "end" }}>
+                <div>
+                  <div style={{ fontSize: 10, color: "#9d4d6e", marginBottom: 3, fontWeight: 700, letterSpacing: "0.04em" }}>MANAGER</div>
+                  <select value={f.ec} onChange={e => setOtForm({ ...f, ec: e.target.value })} style={{ width: "100%", padding: "6px 8px", border: "1px solid #F9A8D4", borderRadius: 6, fontSize: 12 }}>
+                    <option value="">Pick a manager…</option>
+                    {managers.slice().sort((a, b) => (a.branch || "").localeCompare(b.branch || "") || a.name.localeCompare(b.name)).map(m => (
+                      <option key={m.ec} value={m.ec}>{m.name} · {m.branch}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, color: "#9d4d6e", marginBottom: 3, fontWeight: 700, letterSpacing: "0.04em" }}>DATE</div>
+                  <input type="date" value={f.date} onChange={e => setOtForm({ ...f, date: e.target.value })} style={{ width: "100%", padding: "6px 8px", border: "1px solid #F9A8D4", borderRadius: 6, fontSize: 12 }} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, color: "#9d4d6e", marginBottom: 3, fontWeight: 700, letterSpacing: "0.04em" }}>HOURS</div>
+                  <input type="number" step="0.5" min="0.5" max="12" value={f.hours} onChange={e => setOtForm({ ...f, hours: e.target.value })} placeholder="e.g. 2" style={{ width: "100%", padding: "6px 8px", border: "1px solid #F9A8D4", borderRadius: 6, fontSize: 12 }} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, color: "#9d4d6e", marginBottom: 3, fontWeight: 700, letterSpacing: "0.04em" }}>REASON</div>
+                  <input type="text" value={f.reason} onChange={e => setOtForm({ ...f, reason: e.target.value })} placeholder="Why was extra time needed?" style={{ width: "100%", padding: "6px 8px", border: "1px solid #F9A8D4", borderRadius: 6, fontSize: 12 }} />
+                </div>
+                <button onClick={submitOvertime} style={{ background: "#831843", color: "#fff", border: "none", borderRadius: 6, padding: "7px 14px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>+ Submit</button>
+              </div>
+            </div>
+
+            {/* Cycle summary */}
+            <div style={{ padding: "14px 16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, marginBottom: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 12, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>Cycle summary — {ymPretty}</div>
+                <button onClick={loadShortHours} disabled={overtimeShortLoading} style={{ background: "transparent", border: "1px solid #F9A8D4", color: "#831843", borderRadius: 6, padding: "5px 11px", cursor: overtimeShortLoading ? "default" : "pointer", fontSize: 11, fontWeight: 700, opacity: overtimeShortLoading ? 0.6 : 1 }}>
+                  {overtimeShortLoading ? "Loading short-hours…" : "↻ Load short-hours"}
+                </button>
+              </div>
+              {summary.length === 0 ? (
+                <div style={{ fontSize: 12, color: "#9d4d6e", padding: "8px 0" }}>No overtime entries in this cycle yet.</div>
+              ) : (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ background: "#FDEEF5", color: "#831843" }}>
+                      <th style={{ padding: "8px 10px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Manager</th>
+                      <th style={{ padding: "8px 10px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Branch</th>
+                      <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Approved OT</th>
+                      <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Pending</th>
+                      <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Short hours</th>
+                      <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Net payable</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {summary.map(s => (
+                      <tr key={s.ec}>
+                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FDEEF5", color: "#831843", fontWeight: 600 }}>{s.name}</td>
+                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FDEEF5", color: "#9d4d6e" }}>{s.branch}</td>
+                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: "#14532d", fontWeight: 700 }}>{s.approved || 0}h</td>
+                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: s.pending > 0 ? "#92400e" : "#9ca3af", fontWeight: 600 }}>{s.pending || 0}h</td>
+                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: s.short > 0 ? "#7f1d1d" : "#9ca3af", fontWeight: 600 }}>−{s.short || 0}h</td>
+                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: s.net > 0 ? "#14532d" : "#9ca3af", fontWeight: 800 }}>{s.net}h</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              <div style={{ marginTop: 10, fontSize: 11, color: "#9ca3af" }}>
+                Short hours come from the kiosk's "Left work early" log for this cycle. Click <strong>Load short-hours</strong> to pull the latest. Net = max(0, approved OT − short hours).
+              </div>
+            </div>
+
+            {/* Pending */}
+            <div style={{ padding: "14px 16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, marginBottom: 14 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 10 }}>
+                ⏳ Pending approval — {pending.length} in cycle{pendingAll.length > pending.length ? " (" + (pendingAll.length - pending.length) + " in other cycles)" : ""}
+              </div>
+              {pending.length === 0 ? (
+                <div style={{ fontSize: 12, color: "#9d4d6e", padding: "8px 0" }}>Nothing pending. ✨</div>
+              ) : pending.map(card)}
+            </div>
+
+            {/* Approved */}
+            <div style={{ padding: "14px 16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, marginBottom: 14 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 10 }}>
+                ✓ Approved — {approved.length}
+              </div>
+              {approved.length === 0 ? (
+                <div style={{ fontSize: 12, color: "#9d4d6e", padding: "8px 0" }}>No approved entries this cycle.</div>
+              ) : approved.map(card)}
+            </div>
+
+            {/* Rejected */}
+            {rejected.length > 0 && (
+              <div style={{ padding: "14px 16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, marginBottom: 14 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 10 }}>
+                  ✕ Rejected — {rejected.length}
+                </div>
+                {rejected.map(card)}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {/* ── LEAVE PLANNER TAB ── */}
       {tab === "leave" && (() => {
         const br = leaveBranch;
@@ -19886,7 +20421,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 ? "Starts " + mg._obStartDate
                 : _hideHours
                   ? (mg.role === "SM" ? "Store Manager" : mg.role === "SSM" ? "Senior Store Manager" : "Assistant Manager")
-                  : (mg.role === "SM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · 9:30–18:30");
+                  : (mg.role === "SM" || mg.role === "SSM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · Wkd 9:30–18:30 · Sat 9:00–18:00 · Sun 8:30–17:00");
             return { ec: mg.ec, name: mg.name, sub, cells };
           });
           const totals = columns.map(c => {
@@ -20125,26 +20660,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const rank = (r) => r === "SSM" ? 0 : r === "SM" ? 1 : 2;
           return rank(a.role) - rank(b.role) || (a.name || "").localeCompare(b.name || "");
         });
-        // Guest rows for cross-store loans — managers whose home is another
-        // branch but whose schedule grid here was populated by a loan from
-        // Manager Coverage. They render below the home managers and are
-        // marked read-only (drag/double-click disabled) so loans stay
-        // managed from Manager Coverage.
-        const _guestMgrsRender = (() => {
-          if (!Array.isArray(result._guestRowEcs) || result._guestRowEcs.length === 0) return [];
-          const byEc = {};
-          (managers || []).forEach(mm => {
-            const _ec = String(mm.ec || "").trim();
-            if (_ec) byEc[_ec] = mm;
-          });
-          const seen = new Set(sortedMgrs.map(m => String(m.ec || "").trim()));
-          return result._guestRowEcs
-            .filter(ec => !seen.has(ec))
-            .map(ec => byEc[ec])
-            .filter(Boolean)
-            .map(gm => ({ ...gm, _guestFromBranch: gm.branch }));
-        })();
-        const sortedMgrsRender = [...sortedMgrs, ..._guestMgrsRender];
+        // Guest rows are deliberately NOT rendered on the Schedule editor.
+        // Cross-store loans are managed from the Manager Coverage tab —
+        // here we only show home-branch managers. The home branch still
+        // surfaces the loan on its own row via a "→ <dest>" chip on the
+        // loaned cell (see the cellChip render below), so the workday
+        // isn't lost. The loan data stays in the saved grid (Manager
+        // Coverage writes the guest EC entries via the loan flow); we
+        // just don't surface duplicate guest rows in the editor.
+        const sortedMgrsRender = sortedMgrs;
 
         return (
           <div>
@@ -20509,6 +21033,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <span><strong>Sunday</strong> · single shift 08:00–17:00 (WE)</span>
               </div>
             )}
+            {mgrSchedDraft && (branch !== "Sandown" && branch !== "Table Bay" && branch !== "Riverlands" && branch !== "Ballito" && branch !== "Fourways" && branch !== "Mall of the South") && (
+              <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 14px", marginBottom: 10, fontSize: 12, color: "#065f46", display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center" }}>
+                <span style={{ fontSize: 11, fontWeight: 800, color: "#065f46", letterSpacing: "0.08em", textTransform: "uppercase" }}>🕐 {branch} manager shifts</span>
+                <span><strong>SM / SSM (every day)</strong> · 08:00–17:00</span>
+                <span><strong>Mon–Fri</strong> · AM 09:30–18:30 (WL 10:00–19:00, WE 08:30–18:00)</span>
+                <span><strong>Saturday</strong> · AM 09:00–18:00</span>
+                <span><strong>Sunday</strong> · AM 08:30–17:00</span>
+              </div>
+            )}
 
             {/* Schedule grid */}
             {mgrSchedDraft && <div style={{ background: "#FFFFFF", borderRadius: 11, border: "1px solid #FBCFE8", overflow: "auto" }}>
@@ -20552,7 +21085,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               ? null
                               : (branch === "Sandown" || branch === "Table Bay" || branch === "Riverlands" || branch === "Ballito" || branch === "Fourways" || branch === "Mall of the South")
                                 ? <div style={{ fontSize: 9, color: "#BE185D", marginTop: 1 }}>{mg.role === "SM" ? "Store Manager" : mg.role === "SSM" ? "Senior Store Manager" : "Assistant Manager"}</div>
-                                : <div style={{ fontSize: 9, color: "#BE185D", marginTop: 1 }}>{mg.role === "SM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · 9:30–18:30"}</div>
+                                : <div style={{ fontSize: 9, color: "#BE185D", marginTop: 1 }}>{mg.role === "SM" || mg.role === "SSM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · Wkd 9:30–18:30 · Sat 9:00–18:00 · Sun 8:30–17:00"}</div>
                         }
                       </td>
                       {result.dates.map((dy, di) => {
@@ -21652,11 +22185,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               (leaveRecs || []).forEach(lv => {
                 if (lv && lv.ec && lv.startDate && lv.endDate && ymd >= lv.startDate && ymd <= lv.endDate) _onLeaveEcs.add(String(lv.ec).trim());
               });
+              // Off-boarded managers (in offList with a leftDate on/before
+              // the day being viewed) are excluded — a resigned manager
+              // shouldn't appear as a no-show.
+              const _offByEcBanner = new Map((offList || []).filter(o => o && o.ec).map(o => [String(o.ec).trim(), o]));
+              const _hasLeftBanner = (ec) => {
+                const o = _offByEcBanner.get(String(ec || "").trim());
+                return !!(o && o.leftDate && o.leftDate <= ymd);
+              };
               const noShows = [];
               for (const branchName of branchesToCheck) {
                 const grid = mgrClockinSchedCache[branchName + "|" + ymOf];
                 if (!grid) continue;        // schedule not loaded yet
-                for (const m of managers.filter(mm => mm.branch === branchName)) {
+                for (const m of managers.filter(mm => mm.branch === branchName && !mm.onMat && !mm.leftDate && !mm.offboarded)) {
+                  if (_hasLeftBanner(m.ec)) continue;                             // resigned
                   if (_onLeaveEcs.has(String(m.ec || "").trim())) continue;    // on annual leave
                   const cell = (grid[m.ec]) ? (grid[m.ec][ymd] || grid[m.ec][_dom]) : undefined;
                   if (cell !== "W" && cell !== "WL" && cell !== "WE" && cell !== "WM" && cell !== "WB" && cell !== "E") continue;     // not scheduled to work
@@ -21781,13 +22323,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // whitespace — without it a manager who clocked in could
               // appear as "Not in yet". Matches the dashboard's approach.
               const inByEc = {};
+              const outByEc = {};   // latest out / out_auto per ec for today
               mgrClockinRows.forEach(r => {
                 if (!r.staff || !r.staff.employee_code) return;
-                if (r.type !== "in") return;
                 if (mLocalYmd(r.ts) !== mgrClockinDay) return;
                 const _ec = String(r.staff.employee_code).trim();
-                if (!inByEc[_ec] || r.ts < inByEc[_ec].ts) inByEc[_ec] = r;
+                if (r.type === "in") {
+                  if (!inByEc[_ec] || r.ts < inByEc[_ec].ts) inByEc[_ec] = r;
+                } else if (r.type === "out" || r.type === "out_auto") {
+                  if (!outByEc[_ec] || r.ts > outByEc[_ec].ts) outByEc[_ec] = r;
+                }
               });
+              // Off-boarded managers are filtered out below — the raw
+              // `managers` list doesn't carry the leftDate merge from the
+              // off-board sidecar (offList), so resigned managers (e.g.
+              // Crysteblle Johnson) were still appearing as "Not in yet".
+              // offByEcMap mirrors the helper pattern used elsewhere
+              // (Locations card, dashboard absences) and treats anyone
+              // whose leftDate is on/before TODAY as off-boarded.
+              const offByEcMap = new Map((offList || []).filter(o => o && o.ec).map(o => [String(o.ec).trim(), o]));
+              const _todayYmdMC = (() => { const d = new Date(); const p = z => String(z).padStart(2, "0"); return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()); })();
+              const _hasLeftMC = (ec) => {
+                const o = offByEcMap.get(String(ec || "").trim());
+                return !!(o && o.leftDate && o.leftDate <= _todayYmdMC);
+              };
               const statByKey = {};
               (mgrDayStatuses || []).forEach(s => { statByKey[s.staff_id + "|" + s.date] = s; });
               const statLabel = code => (MGR_REASON_OPTIONS.find(o => o.code === code) || { label: code }).label;
@@ -21819,13 +22378,28 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // grid for this cycle hasn't been published — better to show
               // everyone with a "schedule not published" notice than show
               // nothing while 51 managers clocked in.
+              // Cross-store manager loans active today. Each row is one
+              // {ec, date, fromBranch, toBranch} — so "loanedOutByEc" lets
+              // us suppress the surprise-clock-in flag at HOME (the manager
+              // is expected at the destination, not here), and "loanedInByBranch"
+              // lets us render an extra section per RECEIVING branch.
+              const _loansToday = (mgrLoanRows || []).filter(l => l && l.ec && l.date === ymd);
+              const loanedOutByEc = {};
+              const loanedInByBranch = {};
+              _loansToday.forEach(l => {
+                loanedOutByEc[String(l.ec).trim()] = l;
+                if (l.toBranch) {
+                  (loanedInByBranch[l.toBranch] = loanedInByBranch[l.toBranch] || []).push(l);
+                }
+              });
               const scheduledByBranch = {};
               const fallbackBranches = [];
               const allScheduled = [];
               const surpriseClockIns = [];   // clocked in but scheduled off today
+              const loanedOut = [];          // home-branch view: managers loaned out today
               scopedBranches.forEach(b => {
                 const grid = mgrClockinSchedCache[b + "|" + ymOf];
-                const branchMgrs = managers.filter(m => m.branch === b && !m.onMat && !m.leftDate && !_onLeaveEcs.has(String(m.ec || "").trim()));
+                const branchMgrs = managers.filter(m => m.branch === b && !m.onMat && !m.leftDate && !m.offboarded && !_hasLeftMC(m.ec) && !_onLeaveEcs.has(String(m.ec || "").trim()));
                 const scheduleHasToday = !!grid && branchMgrs.some(m => _readCell(grid, m.ec) != null);
                 if (!scheduleHasToday) {
                   // No schedule data for today at this branch — fall back to
@@ -21840,33 +22414,76 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const list = [];
                 branchMgrs.forEach(m => {
                   const cell = _readCell(grid, m.ec);
+                  const _loan = loanedOutByEc[String(m.ec || "").trim()];
+                  // Manager loaned to another store today. Skip the surprise
+                  // check (their clock-in lives at the destination, not here)
+                  // and surface them in the "Loaned out" panel instead.
+                  if (cell === "loan_out" || _loan) {
+                    loanedOut.push({ m, toBranch: (_loan && _loan.toBranch) || "(unknown)" });
+                    return;
+                  }
                   if (_isWorking(cell)) { list.push(m); allScheduled.push(m); }
                   else if (inByEc[String(m.ec || "").trim()]) { surpriseClockIns.push({ m, cell: cell || "—" }); }
+                });
+                // Inbound loans — add managers loaned INTO this branch today
+                // to the same per-branch scheduled list so the ROM viewing
+                // this branch sees them with a "↪ from <home>" tag.
+                (loanedInByBranch[b] || []).forEach(lo => {
+                  const m = managers.find(mm => mm && String(mm.ec || "").trim() === String(lo.ec).trim());
+                  if (!m) return;
+                  if (m.onMat || m.leftDate || m.offboarded || _hasLeftMC(m.ec)) return;
+                  if (_onLeaveEcs.has(String(m.ec || "").trim())) return;
+                  list.push({ ...m, _loanedInFrom: lo.fromBranch || "(home)" });
+                  allScheduled.push(m);
                 });
                 list.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
                 if (list.length > 0) scheduledByBranch[b] = list;
               });
-              if (allScheduled.length === 0 && fallbackBranches.length === 0 && surpriseClockIns.length === 0) return null;
+              if (allScheduled.length === 0 && fallbackBranches.length === 0 && surpriseClockIns.length === 0 && loanedOut.length === 0) return null;
               const totalIn = allScheduled.filter(m => inByEc[String(m.ec || "").trim()]).length;
               const totalTagged = allScheduled.filter(m => statByKey[(m._id || m.id) + "|" + ymd]).length;
               const totalPending = allScheduled.length - totalIn - totalTagged;
               const branchNames = Object.keys(scheduledByBranch).sort();
+              // Build the clock-status pill — shows both IN and OUT (or
+              // AUTO-OUT) so the clock-in time doesn't disappear once the
+              // manager clocks out. Without this, the card would only show
+              // OUT and the IN timestamp would be lost from the overview.
+              const _fmtTime = (iso) => new Date(iso).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" });
+              const buildClockPill = (ec) => {
+                const _ec = String(ec || "").trim();
+                const _in = inByEc[_ec];
+                const _out = outByEc[_ec];
+                if (!_in && !_out) return null;
+                if (_in && _out) {
+                  const _isAuto = _out.type === "out_auto";
+                  return (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: _isAuto ? "#fef3c7" : "#dcfce7", color: _isAuto ? "#92400e" : "#14532d", padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>
+                      <span>IN {_fmtTime(_in.ts)}</span>
+                      <span style={{ opacity: 0.6 }}>→</span>
+                      <span>{_isAuto ? "⚠ AUTO-OUT" : "OUT"} {_fmtTime(_out.ts)}</span>
+                    </span>
+                  );
+                }
+                if (_in) {
+                  return <span style={{ background: "#dcfce7", color: "#14532d", padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>✅ IN {_fmtTime(_in.ts)}</span>;
+                }
+                // OUT without IN — odd but record it so the ROM can investigate.
+                return <span style={{ background: "#fef3c7", color: "#92400e", padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>OUT {_fmtTime(_out.ts)} (no IN)</span>;
+              };
+
               const renderCard = (m) => {
                 const sid = m._id || m.id;
                 const tagged = statByKey[sid + "|" + ymd];
                 const clockin = inByEc[String(m.ec || "").trim()];
-                const inTime = clockin ? new Date(clockin.ts).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }) : null;
-                let pill;
-                if (clockin) {
-                  pill = <span style={{ background: "#dcfce7", color: "#14532d", padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>✅ IN {inTime}</span>;
-                } else if (tagged) {
+                let pill = buildClockPill(m.ec);
+                if (!pill && tagged) {
                   pill = <button
                     onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: ymd, existing: tagged })}
                     title={(tagged.note || "") + (tagged.recorded_by ? "\n— " + tagged.recorded_by : "")}
                     style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
                     {statLabel(tagged.status)}{tagged.proof ? " 📎" : ""} ✎
                   </button>;
-                } else {
+                } else if (!pill) {
                   pill = <button
                     onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: ymd, existing: null })}
                     style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
@@ -21876,8 +22493,46 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 return (
                   <div key={sid} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, background: clockin ? "#f0fdf4" : (tagged ? "#fffbeb" : "#fef2f2"), border: "1px solid " + (clockin ? "#bbf7d0" : (tagged ? "#fde68a" : "#fecaca")), borderRadius: 8, padding: "7px 10px" }}>
                     <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 12.5, fontWeight: 700, color: "#831843", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.name}</div>
+                      <div style={{ fontSize: 12.5, fontWeight: 700, color: "#831843", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {m.name}
+                        {m._loanedInFrom && (
+                          <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#1e40af", background: "#dbeafe", border: "1px solid #bfdbfe", padding: "1px 6px", borderRadius: 999, letterSpacing: "0.03em" }}>↪ from {m._loanedInFrom}</span>
+                        )}
+                      </div>
                       <div style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{m.ec} {m.role ? "· " + m.role : ""}</div>
+                    </div>
+                    <div>{pill}</div>
+                  </div>
+                );
+              };
+
+              // "Loaned out today" card. Same look-up as renderCard but
+              // shows the destination instead of the role/EC line.
+              const renderLoanedOutCard = (entry) => {
+                const m = entry.m;
+                const sid = m._id || m.id;
+                const tagged = statByKey[sid + "|" + ymd];
+                const clockin = inByEc[String(m.ec || "").trim()];
+                let pill = buildClockPill(m.ec);
+                if (!pill && tagged) {
+                  pill = <button
+                    onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: ymd, existing: tagged })}
+                    title={(tagged.note || "") + (tagged.recorded_by ? "\n— " + tagged.recorded_by : "")}
+                    style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                    {statLabel(tagged.status)}{tagged.proof ? " 📎" : ""} ✎
+                  </button>;
+                } else if (!pill) {
+                  pill = <button
+                    onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: ymd, existing: null })}
+                    style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                    ⏳ Not in yet · Mark reason
+                  </button>;
+                }
+                return (
+                  <div key={sid} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, background: clockin ? "#f0fdf4" : (tagged ? "#fffbeb" : "#eff6ff"), border: "1px solid " + (clockin ? "#bbf7d0" : (tagged ? "#fde68a" : "#bfdbfe")), borderRadius: 8, padding: "7px 10px" }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 700, color: "#831843", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.name}</div>
+                      <div style={{ fontSize: 10, color: "#1e40af", fontWeight: 600 }}>↪ at {entry.toBranch}</div>
                     </div>
                     <div>{pill}</div>
                   </div>
@@ -21898,12 +22553,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   )}
                   {branchNames.map(b => (
                     <div key={b} style={{ marginBottom: 10 }}>
-                      <div style={{ fontSize: 11, fontWeight: 800, color: "#831843", marginBottom: 4, letterSpacing: "0.05em" }}>📍 {b} · {scheduledByBranch[b].length} scheduled</div>
+                      <div style={{ fontSize: 11, fontWeight: 800, color: "#831843", marginBottom: 4, letterSpacing: "0.05em" }}>📍 {b} · {scheduledByBranch[b].length} scheduled{(loanedInByBranch[b] || []).length > 0 ? " (incl. " + (loanedInByBranch[b].length) + " loaned in)" : ""}</div>
                       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 6 }}>
                         {scheduledByBranch[b].map(renderCard)}
                       </div>
                     </div>
                   ))}
+                  {loanedOut.length > 0 && (
+                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed #FBCFE8" }}>
+                      <div style={{ fontSize: 11, fontWeight: 800, color: "#1e40af", marginBottom: 4, letterSpacing: "0.05em" }}>↪ Loaned out today · {loanedOut.length}</div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 6 }}>
+                        {loanedOut.map(renderLoanedOutCard)}
+                      </div>
+                      <div style={{ marginTop: 6, fontSize: 10.5, color: "#6b7280", fontStyle: "italic" }}>
+                        These managers are scheduled at another store today — their clock-in is recorded at the destination kiosk.
+                      </div>
+                    </div>
+                  )}
                   {surpriseClockIns.length > 0 && (
                     <div style={{ marginTop: 4, fontSize: 11.5, color: "#6b7280" }}>
                       🟦 {surpriseClockIns.length} manager{surpriseClockIns.length === 1 ? "" : "s"} clocked in but were not scheduled to work today: <strong>{surpriseClockIns.map(s => s.m.name + " (" + (s.cell || "—") + ")").join(", ")}</strong>. Check the schedule.
@@ -22155,12 +22821,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
 
           // Generic stores — generic SM 08-17 / AM 09:30-18:30 hours.
+          // Weekend override: SM/SSM stays on a flat 08:00-17:00 Sat & Sun
+          // (no early/late split applies at these stores on weekends).
+          // AMs switch to the shorter weekend day: Sat 09:00-18:00,
+          // Sun 08:30-17:00. Weekdays keep the existing per-code times.
           if (isSM) {
+            if (dow === 0 || dow === 6) return "08:00 - 17:00";
             if (code === "WL") return "08:30 - 17:30";
             if (code === "WE") return "07:30 - 16:30";
             if (code === "WM") return "08:00 - 13:00";
             return "08:00 - 17:00";
           }
+          if (dow === 6) return "09:00 - 18:00";        // Saturday AM
+          if (dow === 0) return "08:30 - 17:00";        // Sunday AM
           if (code === "WL") return "10:00 - 19:00";
           if (code === "WE") return "08:30 - 18:00";
           if (code === "WM") return "09:00 - 13:00";
@@ -23026,9 +23699,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   const _isOff = !!m._offGhost;
                                   return (
                                     <tr key={m.ec + (m.isShadow ? "-shadow" : "")} style={{ opacity: _isOff ? 0.55 : 1 }}>
-                                      <td style={{ padding: "6px 14px", fontWeight: 700, color: _isOff ? "#9ca3af" : "#831843", fontSize: 12, borderBottom: "1px solid #FCE7F3", background: _isOff ? "#f9fafb" : (m.isShadow ? "#eff6ff" : (m.transferring ? "#fffbeb" : undefined)), textDecoration: _isOff ? "line-through" : "none" }}>
+                                      <td style={{ padding: "6px 14px", fontWeight: 700, color: _isOff ? "#9ca3af" : "#831843", fontSize: 12, borderBottom: "1px solid #FCE7F3", background: _isOff ? "#f9fafb" : (m._guestFromBranch ? "#eff6ff" : (m.isShadow ? "#eff6ff" : (m.transferring ? "#fffbeb" : undefined))), textDecoration: _isOff ? "line-through" : "none" }}>
                                         {_effectiveRole(m) === "SSM" ? "💎 " : _effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}
                                         <span style={{ marginLeft: 6, fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{_effectiveRole(m) || ""}{m.role === "AM" && _effectiveRole(m) === "SM" ? " (trial)" : ""}</span>
+                                        {m._guestFromBranch && (
+                                          <span title={"Guest manager — home branch is " + m._guestFromBranch} style={{ marginLeft: 6, background: "#dbeafe", color: "#1e40af", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>↪ GUEST FROM {m._guestFromBranch}</span>
+                                        )}
                                         {m.isShadow && m.transferFrom && (
                                           <span style={{ marginLeft: 6, background: "#dbeafe", color: "#1e40af", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>🔄 FROM {m.transferFrom}{m.transferDate ? " · " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>
                                         )}
@@ -23083,9 +23759,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         const _isOff = !!m._offGhost;
                         return (
                         <tr key={m.ec + "-" + b + (m.isShadow ? "-shadow" : "")} style={{ opacity: _isOff ? 0.55 : 1 }}>
-                          <td style={{ padding: "6px 14px", borderBottom: "1px solid #FCE7F3", background: _isOff ? "#f9fafb" : (m.isShadow ? "#eff6ff" : (m.transferring ? "#fffbeb" : undefined)) }}>
+                          <td style={{ padding: "6px 14px", borderBottom: "1px solid #FCE7F3", background: _isOff ? "#f9fafb" : (m._guestFromBranch ? "#eff6ff" : (m.isShadow ? "#eff6ff" : (m.transferring ? "#fffbeb" : undefined))) }}>
                             <div style={{ fontWeight: 700, color: _isOff ? "#9ca3af" : "#831843", fontSize: 12.5, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", textDecoration: _isOff ? "line-through" : "none" }}>
                               <span>{_effectiveRole(m) === "SSM" ? "💎 " : _effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}</span>
+                              {m._guestFromBranch && (
+                                <span title={"Guest manager — home branch is " + m._guestFromBranch} style={{ background: "#dbeafe", color: "#1e40af", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>↪ GUEST FROM {m._guestFromBranch}</span>
+                              )}
                               {m.isShadow && m.transferFrom && (
                                 <span style={{ background: "#dbeafe", color: "#1e40af", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>🔄 FROM {m.transferFrom}{m.transferDate ? " · " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>
                               )}
@@ -23358,6 +24037,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           /></div>
         );
       })()}
+
+      {tab === "voucherAdmin" && (currentUser?.isOwner || currentUser?.role === "Master Admin") && (
+        <div style={{ padding: "0 24px" }}><VoucherAdmin currentUser={currentUser} /></div>
+      )}
 
       {tab === "dailyTasks" && (
         <div style={{ padding: "0 24px" }}><DailyTasksAdmin

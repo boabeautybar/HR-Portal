@@ -1400,17 +1400,34 @@
     if (r.error) throw r.error;
   }
 
+  // ---- Vouchers + Fresha gift-card transaction balances ----
+  var _GC_CHUNK = 500;   // upsert batch size for transactions
+
+  function _upperCode(s) { return String(s == null ? "" : s).trim().toUpperCase(); }
+  function _money(s) { var n = parseFloat(String(s == null ? "" : s).replace(/[^0-9.\-]/g, "")); return isNaN(n) ? 0 : n; }
+
+  // Parse Fresha "M/D/YYYY H:MM:SS" (US month/day order) → ISO string, or null.
+  function _parseFreshaDate(s) {
+    s = String(s == null ? "" : s).trim();
+    if (!s) return null;
+    var m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+    if (!m) { var d0 = new Date(s); return isNaN(d0.getTime()) ? null : d0.toISOString(); }
+    var d = new Date(+m[3], (+m[1]) - 1, +m[2], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  }
+
   // Bulk-insert Shopify→Fresha vouchers (entered via the HR-portal Voucher
   // Entry login). Each input row is { last4, fresha_code, amount, order_number,
   // expiry_date }. last4 is normalised to the last 4 alphanumerics, uppercased,
-  // to match how the kiosk lookup keys on it. Rows missing a required field
-  // (last4 / fresha_code / amount / order_number) are dropped; expiry optional.
+  // to match how the kiosk lookup keys on it. fresha_code is uppercased so it
+  // joins cleanly to gift_card_transactions.gift_card. Rows missing a required
+  // field (last4 / fresha_code / amount / order_number) are dropped; expiry optional.
   async function bulkInsertVouchers(rows) {
     var clean = (rows || []).map(function (r) {
       r = r || {};
       return {
         last4:        String(r.last4 || "").replace(/[^A-Za-z0-9]/g, "").slice(-4).toUpperCase(),
-        fresha_code:  String(r.fresha_code || "").trim(),
+        fresha_code:  _upperCode(r.fresha_code),
         amount:       String(r.amount || "").trim(),
         order_number: String(r.order_number || "").trim(),
         expiry_date:  String(r.expiry_date || "").trim() || null
@@ -1421,7 +1438,77 @@
     if (!clean.length) throw new Error("No complete voucher rows to save.");
     var res = await sb.from("vouchers").insert(clean).select();
     if (res.error) throw res.error;
+    // Backfill balances for the just-entered codes from any existing transactions.
+    try {
+      await recomputeVoucherBalancesForCodes(clean.map(function (r) { return r.fresha_code; }));
+    } catch (e) { console.warn("[BOA DB] voucher balance backfill after insert failed:", e); }
     return res.data || [];
+  }
+
+  // Import Fresha "Gift Card Transactions". `rows` are objects with keys
+  // { id, gift_card, payment_date, location, amount, txn_type }. Upserts in
+  // chunks keyed on `id`, so re-uploading the same/extended report only adds
+  // new rows. Returns { saved, codes: [distinct uppercased codes seen] }.
+  async function importGiftCardTransactions(rows, onProgress) {
+    var clean = (rows || []).map(function (r) {
+      r = r || {};
+      return {
+        id:              String(r.id || "").trim(),
+        gift_card:       _upperCode(r.gift_card),
+        payment_date:    _parseFreshaDate(r.payment_date),
+        location:        String(r.location || "").trim() || null,
+        amount:          (r.amount === "" || r.amount == null) ? null : _money(r.amount),
+        txn_type:        String(r.txn_type || "").trim() || null,
+        client_name:     String(r.client_name || "").trim() || null,
+        appointment_ref: String(r.appointment_ref || "").trim() || null
+      };
+    }).filter(function (r) { return r.id && r.gift_card; });
+    if (!clean.length) throw new Error("No transactions found in the file.");
+
+    var codeSet = {};
+    clean.forEach(function (r) { codeSet[r.gift_card] = true; });
+
+    var saved = 0;
+    for (var i = 0; i < clean.length; i += _GC_CHUNK) {
+      var slice = clean.slice(i, i + _GC_CHUNK);
+      var res = await sb.from("gift_card_transactions").upsert(slice, { onConflict: "id" });
+      if (res.error) throw res.error;
+      saved += slice.length;
+      if (typeof onProgress === "function") onProgress(saved, clean.length);
+    }
+    return { saved: saved, codes: Object.keys(codeSet) };
+  }
+
+  // Recompute the rollup (used_total / balance / txn_count / last_used_at / txns)
+  // for the given fresha codes. Done server-side in a single Postgres statement
+  // via the `recompute_voucher_balances` RPC, so it's fast and finishes on
+  // Supabase even if the browser/laptop sleeps. Returns { vouchers: rowsUpdated }.
+  async function recomputeVoucherBalancesForCodes(codes, onProgress) {
+    var seen = {}, list = [];
+    (codes || []).forEach(function (c) { var u = _upperCode(c); if (u && !seen[u]) { seen[u] = true; list.push(u); } });
+    if (!list.length) return { vouchers: 0 };
+    if (typeof onProgress === "function") onProgress(0, 0);
+    var res = await sb.rpc("recompute_voucher_balances", { p_codes: list });
+    if (res.error) throw res.error;
+    return { vouchers: (typeof res.data === "number") ? res.data : 0 };
+  }
+
+  // Recompute balances for EVERY voucher (admin "recompute all"). Same RPC with
+  // no code filter — Postgres rebuilds all rollups in one pass.
+  async function recomputeAllVoucherBalances(onProgress) {
+    if (typeof onProgress === "function") onProgress(0, 0);
+    var res = await sb.rpc("recompute_voucher_balances", { p_codes: null });
+    if (res.error) throw res.error;
+    return { vouchers: (typeof res.data === "number") ? res.data : 0 };
+  }
+
+  // Summary for the admin panel: total transactions + latest payment date.
+  async function giftCardTxnStats() {
+    var c = await sb.from("gift_card_transactions").select("id", { count: "exact", head: true });
+    if (c.error) throw c.error;
+    var last = await sb.from("gift_card_transactions").select("payment_date").order("payment_date", { ascending: false }).limit(1);
+    if (last.error) throw last.error;
+    return { count: c.count || 0, lastPaymentDate: (last.data && last.data[0] && last.data[0].payment_date) || null };
   }
 
   window.BOA_DB = {
@@ -1435,6 +1522,10 @@
 
     // Vouchers (Shopify→Fresha lookup table; entered via Voucher Entry login)
     bulkInsertVouchers: bulkInsertVouchers,
+    importGiftCardTransactions: importGiftCardTransactions,
+    recomputeVoucherBalancesForCodes: recomputeVoucherBalancesForCodes,
+    recomputeAllVoucherBalances: recomputeAllVoucherBalances,
+    giftCardTxnStats: giftCardTxnStats,
 
     // Schedules
     loadSchedule: loadSchedule,
@@ -1534,8 +1625,33 @@
     saveUnpaidLegalRecords: saveUnpaidLegalRecords,
     loadKioskSecurityLogs: loadKioskSecurityLogs,
     saveKioskSecurityLogs: saveKioskSecurityLogs,
-    saveKioskDevices: saveKioskDevices
+    saveKioskDevices: saveKioskDevices,
+
+    // Manager overtime tracker (HR portal Payroll tab)
+    loadOvertimeRequests: loadOvertimeRequests,
+    saveOvertimeRequests: saveOvertimeRequests
   };
+
+  // ── Overtime requests ────────────────────────────────────────────────
+  // Single app_state row "boa_overtime_v1" holding the full list of
+  // submitted overtime entries (newest last). Each entry:
+  //   { id, ec, name, branch, date (YYYY-MM-DD), hours, reason,
+  //     status: "pending"|"approved"|"rejected",
+  //     submittedAt, submittedBy, decidedAt, decidedBy, decisionNote }
+  // The HR portal Overtime tab groups by pay cycle (25 → 24) and offsets
+  // approved hours against short hours pulled from the boa_early_*
+  // sidecar to compute net payable overtime.
+  async function loadOvertimeRequests() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_overtime_v1").maybeSingle();
+    if (res.error) { console.error("loadOvertimeRequests:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveOvertimeRequests(list) {
+    var res = await sb.from("app_state").upsert({ key: "boa_overtime_v1", value: Array.isArray(list) ? list : [] });
+    if (res.error) { console.error("saveOvertimeRequests:", res.error); throw res.error; }
+    return list;
+  }
 
   // ── Custom locations ─────────────────────────────────────────────────
   // Persists branches added via the Locations tab. Stored as a single

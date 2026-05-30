@@ -482,15 +482,66 @@
   // no partial / live search — but the match is on the last 4 only. When two
   // vouchers share the same last 4, every match is shown with its amount so
   // the manager picks the one whose amount matches the client's voucher.
+  function _fmtTxnDateTime(iso) {
+    try {
+      var d = new Date(iso);
+      if (isNaN(d.getTime())) return { date: String(iso || ""), time: "" };
+      return {
+        date: d.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }),
+        time: d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      };
+    } catch (_e) { return { date: String(iso || ""), time: "" }; }
+  }
   function _voucherCard(m) {
-    return '<div style="background:#dcfce7;border:1px solid #86efac;border-radius:12px;padding:14px 16px;margin-top:10px">' +
+    var hasRollup = (m.txn_count != null && Number(m.txn_count) > 0);
+    var face = parseFloat(String(m.amount != null ? m.amount : "").replace(/[^0-9.\-]/g, ""));
+    if (isNaN(face)) face = 0;
+    var balance = (m.balance != null) ? Number(m.balance) : face;
+    var used    = (m.used_total != null) ? Number(m.used_total) : 0;
+    var balColor = balance <= 0 ? "#b91c1c" : "#065f46";
+
+    var html = '<div style="background:#dcfce7;border:1px solid #86efac;border-radius:12px;padding:14px 16px;margin-top:10px">' +
       (m.amount ? '<div style="font-size:13px;font-weight:800;color:#14532d">Amount: ' + esc(String(m.amount)) + '</div>' : '') +
       '<div style="font-size:11px;font-weight:700;color:#14532d;text-transform:uppercase;letter-spacing:0.06em;margin-top:' + (m.amount ? '6' : '0') + 'px">Fresha voucher code</div>' +
       '<div style="display:flex;align-items:center;gap:12px;margin-top:4px;flex-wrap:wrap">' +
         '<code style="font-size:22px;font-weight:800;color:#065f46;letter-spacing:0.04em">' + esc(m.fresha) + '</code>' +
         '<button type="button" class="vc-copy" data-code="' + esc(m.fresha) + '" style="background:#fff;border:1px solid #86efac;color:#065f46;border-radius:8px;padding:6px 12px;font-weight:700;cursor:pointer">Copy</button>' +
-      '</div>' +
-    '</div>';
+      '</div>';
+
+    html += '<div style="margin-top:12px;padding-top:12px;border-top:1px solid #86efac">' +
+      '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">' +
+        '<span style="font-size:12px;font-weight:700;color:#14532d;text-transform:uppercase;letter-spacing:0.05em">Balance remaining</span>' +
+        '<span style="font-size:20px;font-weight:800;color:' + balColor + '">' + fmtMoney(balance) + '</span>' +
+      '</div>';
+
+    if (hasRollup) {
+      html += '<div style="font-size:11px;color:#4b5563;margin-top:2px">Used ' + fmtMoney(used) + ' across ' + m.txn_count + ' transaction' + (Number(m.txn_count) === 1 ? '' : 's') + '</div>' +
+        '<div style="margin-top:10px;overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">' +
+        '<thead><tr>' +
+          '<th style="text-align:left;padding:4px 6px;color:#14532d;border-bottom:1px solid #86efac">Date</th>' +
+          '<th style="text-align:left;padding:4px 6px;color:#14532d;border-bottom:1px solid #86efac">Time</th>' +
+          '<th style="text-align:left;padding:4px 6px;color:#14532d;border-bottom:1px solid #86efac">Client</th>' +
+          '<th style="text-align:left;padding:4px 6px;color:#14532d;border-bottom:1px solid #86efac">Branch</th>' +
+          '<th style="text-align:left;padding:4px 6px;color:#14532d;border-bottom:1px solid #86efac">Appt ref</th>' +
+          '<th style="text-align:right;padding:4px 6px;color:#14532d;border-bottom:1px solid #86efac">Amount</th>' +
+        '</tr></thead><tbody>';
+      (m.txns || []).forEach(function (t) {
+        var dt = _fmtTxnDateTime(t.d);
+        html += '<tr>' +
+          '<td style="padding:4px 6px;border-bottom:1px solid #d1fae5">' + esc(dt.date) + '</td>' +
+          '<td style="padding:4px 6px;border-bottom:1px solid #d1fae5">' + esc(dt.time) + '</td>' +
+          '<td style="padding:4px 6px;border-bottom:1px solid #d1fae5">' + esc(String(t.c || "")) + '</td>' +
+          '<td style="padding:4px 6px;border-bottom:1px solid #d1fae5">' + esc(String(t.b || "")) + '</td>' +
+          '<td style="padding:4px 6px;border-bottom:1px solid #d1fae5"><code style="font-size:11px">' + esc(String(t.ap || "")) + '</code></td>' +
+          '<td style="padding:4px 6px;border-bottom:1px solid #d1fae5;text-align:right">' + fmtMoney(t.a) + '</td>' +
+        '</tr>';
+      });
+      html += '</tbody></table></div>';
+    } else {
+      html += '<div style="font-size:11px;color:#4b5563;margin-top:2px">Not used yet — full balance.</div>';
+    }
+    html += '</div></div>';
+    return html;
   }
   async function renderVoucherLookup() {
     setSublabel("Voucher Code");
@@ -978,6 +1029,27 @@
       return (a.name || "").localeCompare(b.name || "");
     });
 
+    // Pull today's schedule for each manager so the row can show their
+    // shift hours next to the name. Best-effort: if the load fails we just
+    // skip the hours rather than blocking the clock-in screen.
+    var mgrTodaySched = {};
+    try {
+      var _nowD = new Date();
+      var _schedYm = _nowD.getFullYear() + "-" + String(_nowD.getMonth() + 1).padStart(2, "0");
+      if (window.APP_DATA.getSchedule) {
+        var schedRes = await window.APP_DATA.getSchedule(_schedYm, "mgr");
+        var schedGrid = (schedRes && schedRes.grid) || {};
+        var _dom = _nowD.getDate();
+        var _ymd = _nowD.getFullYear() + "-" + String(_nowD.getMonth() + 1).padStart(2, "0") + "-" + String(_nowD.getDate()).padStart(2, "0");
+        Object.keys(schedGrid).forEach(function (ec) {
+          var row = schedGrid[ec] || {};
+          var v = row[_ymd] != null ? row[_ymd] : row[_dom];
+          if (v != null) mgrTodaySched[ec] = v;
+        });
+      }
+    } catch (e) { console.warn("today-schedule load failed:", e); }
+    var _todayDow = (new Date()).getDay();
+
     // Last clock-in TODAY per ec
     var todayK = (function () {
       var d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
@@ -1048,6 +1120,18 @@
         _nagBadge = ' <span class="mgr-clockin-nag" title="No clock-in recorded yet today. No clock-in = unpaid day. Clock in now, or ask the ROM to tag the absence reason.">⚠ HAVEN\'T CLOCKED IN</span>';
       }
       var rowCls = m.branch === thisBranch ? "" : " staff-inactive";
+      // Shift hours for today, computed from the schedule code and
+      // role. Only shown for managers based at this branch on a day
+      // the schedule says they're working — silent otherwise so we
+      // don't tell an off-duty manager "your shift is X" by mistake.
+      var _schedCodeToday = mgrTodaySched[ec];
+      var _isWorkingToday = _schedCodeToday === "W" || _schedCodeToday === "WL" || _schedCodeToday === "WE" || _schedCodeToday === "WM" || _schedCodeToday === "WB" || _schedCodeToday === "E";
+      var shiftLine = "";
+      if (m.branch === thisBranch && _isWorkingToday) {
+        var _effRole = onSmTrial ? "SM" : (m.role || "");
+        var _hrs = shiftTimes(_effRole, _schedCodeToday, thisBranch, _todayDow);
+        shiftLine = '<div class="staff-shift-hours" style="font-size:11px;color:var(--pink-700);font-weight:700;letter-spacing:0.02em;margin-top:2px">🕐 Today · ' + esc(_hrs) + '</div>';
+      }
       return '<div class="staff-row' + rowCls + '" data-id="' + m.id + '" data-ec="' + esc(ec) + '" data-name="' + esc(m.name) + '">' +
         '<div class="staff-row-main">' +
         '<div class="staff-name">' + esc(m.name) +
@@ -1055,6 +1139,7 @@
         (m.branch !== thisBranch ? ' <span class="pill pill-mute">' + esc(m.branch || "—") + "</span>" : "") +
         (has ? "" : ' <span class="pill pill-warn">NO PIN</span>') + autoBadge + _nagBadge +
         '</div>' +
+        shiftLine +
         '<div class="staff-code" style="margin-top:3px">' + lastLabel + '</div>' +
         '</div>' +
         '<div class="staff-row-actions">' +
@@ -1516,6 +1601,77 @@
   function fmtTime(iso) {
     try { return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
     catch (_e) { return iso; }
+  }
+  // Mirror of the HR portal's shiftTimes() (Manager Coverage tab) so the
+  // kiosk can show each manager their shift hours for today. Keep these
+  // two implementations in sync — the portal one is the source of truth.
+  //   role: "SM" | "SSM" | "AM"
+  //   code: schedule cell value for today (W / WE / WL / WM / WB / E …)
+  //   branchName: store name (matches APP_CONFIG.branchName)
+  //   dow: 0=Sun … 6=Sat (Date#getDay)
+  function shiftTimes(role, code, branchName, dow) {
+    var r = (role || "").toUpperCase();
+    var isSM = r === "SM" || r === "SSM";
+    var b = branchName || "";
+
+    if (b === "Sandown" || b === "Table Bay") {
+      if (isSM) return "08:00 - 17:00";
+      if (dow === 0) {
+        if (code === "WE") return "08:00 - 17:00";
+        return "09:00 - 18:00";
+      }
+      if (dow === 6 && b === "Sandown") {
+        if (code === "WE") return "08:00 - 17:00";
+        return "10:00 - 19:00";
+      }
+      if (code === "WE") return "08:00 - 17:00";
+      if (code === "WM") return "09:00 - 18:00";
+      return "11:00 - 20:00";
+    }
+    if (b === "Riverlands") {
+      if (dow === 6) return "09:00 - 18:00";
+      if (dow === 0) return "08:00 - 17:00";
+      if (isSM) return "08:00 - 17:00";
+      if (code === "WE") return "09:00 - 18:00";
+      if (code === "WB") return "08:00 - 17:00";
+      return "10:00 - 19:00";
+    }
+    if (b === "Ballito" || b === "Mall of the South") {
+      if (isSM) return "08:00 - 17:00";
+      if (dow === 0) return "08:00 - 17:00";
+      if (code === "WE") return "08:00 - 17:00";
+      if (code === "WM") return "09:00 - 18:00";
+      return "10:00 - 19:00";
+    }
+    if (b === "Fourways") {
+      if (isSM) {
+        if (code === "WL") return "11:00 - 20:00";
+        return "08:00 - 17:00";
+      }
+      if (dow === 0) {
+        if (code === "WE") return "08:00 - 17:00";
+        return "10:00 - 19:00";
+      }
+      if (code === "WM") return "10:00 - 19:00";
+      return "11:00 - 20:00";
+    }
+    // Generic stores. Weekend override: SM flat 08:00-17:00 Sat & Sun.
+    // AM Sat 09:00-18:00, Sun 08:30-17:00. Weekdays keep code-specific.
+    if (isSM) {
+      if (dow === 0 || dow === 6) return "08:00 - 17:00";
+      if (code === "WL") return "08:30 - 17:30";
+      if (code === "WE") return "07:30 - 16:30";
+      if (code === "WM") return "08:00 - 13:00";
+      return "08:00 - 17:00";
+    }
+    if (dow === 6) return "09:00 - 18:00";
+    if (dow === 0) return "08:30 - 17:00";
+    if (code === "WL") return "10:00 - 19:00";
+    if (code === "WE") return "08:30 - 18:00";
+    if (code === "WM") return "09:00 - 13:00";
+    if (code === "WB") return "08:00 - 19:00";
+    if (code === "E")  return "09:00 - 18:30";
+    return "09:30 - 18:30";
   }
   function fmtDate(s) {
     try {
