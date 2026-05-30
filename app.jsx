@@ -20660,26 +20660,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const rank = (r) => r === "SSM" ? 0 : r === "SM" ? 1 : 2;
           return rank(a.role) - rank(b.role) || (a.name || "").localeCompare(b.name || "");
         });
-        // Guest rows for cross-store loans — managers whose home is another
-        // branch but whose schedule grid here was populated by a loan from
-        // Manager Coverage. They render below the home managers and are
-        // marked read-only (drag/double-click disabled) so loans stay
-        // managed from Manager Coverage.
-        const _guestMgrsRender = (() => {
-          if (!Array.isArray(result._guestRowEcs) || result._guestRowEcs.length === 0) return [];
-          const byEc = {};
-          (managers || []).forEach(mm => {
-            const _ec = String(mm.ec || "").trim();
-            if (_ec) byEc[_ec] = mm;
-          });
-          const seen = new Set(sortedMgrs.map(m => String(m.ec || "").trim()));
-          return result._guestRowEcs
-            .filter(ec => !seen.has(ec))
-            .map(ec => byEc[ec])
-            .filter(Boolean)
-            .map(gm => ({ ...gm, _guestFromBranch: gm.branch }));
-        })();
-        const sortedMgrsRender = [...sortedMgrs, ..._guestMgrsRender];
+        // Guest rows are deliberately NOT rendered on the Schedule editor.
+        // Cross-store loans are managed from the Manager Coverage tab —
+        // here we only show home-branch managers. The home branch still
+        // surfaces the loan on its own row via a "→ <dest>" chip on the
+        // loaned cell (see the cellChip render below), so the workday
+        // isn't lost. The loan data stays in the saved grid (Manager
+        // Coverage writes the guest EC entries via the loan flow); we
+        // just don't surface duplicate guest rows in the editor.
+        const sortedMgrsRender = sortedMgrs;
 
         return (
           <div>
