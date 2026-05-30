@@ -1104,13 +1104,62 @@
     document.getElementById("back-home").onclick = renderManagerLanding;
     document.getElementById("mc-refresh").onclick = renderMgrClockin;
 
-    var pins, mgrs, recent, smTrialEcs, trialCand;
+    var pins, mgrs, recent, smTrialEcs, trialCand, mgrTaggedStaffIds = {};
+    var schedByEcYmd = {};
+    // Resolve current + previous cycle ym (25th-of-month convention) up
+    // front so we can fire the schedule loads in parallel below.
+    var _nowD0 = new Date();
+    var todayK = _ymdToday(_nowD0);
+    var _todayDow = _nowD0.getDay();
+    var _curCycleY = _nowD0.getFullYear(), _curCycleM = _nowD0.getMonth() + 1;
+    if (_nowD0.getDate() < 25) { _curCycleM -= 1; if (_curCycleM < 1) { _curCycleM = 12; _curCycleY -= 1; } }
+    var _curCycleYm = _curCycleY + "-" + String(_curCycleM).padStart(2, "0");
+    var _prevCycleY = _curCycleY, _prevCycleM = _curCycleM - 1;
+    if (_prevCycleM < 1) { _prevCycleM = 12; _prevCycleY -= 1; }
+    var _prevCycleYm = _prevCycleY + "-" + String(_prevCycleM).padStart(2, "0");
+    function _ingestSched(ym, res) {
+      var grid = (res && res.grid) || {};
+      var ymP = ym.split("-").map(Number);
+      var startY = ymP[0], startM = ymP[1];
+      Object.keys(grid).forEach(function (ec) {
+        var row = grid[ec] || {};
+        Object.keys(row).forEach(function (k) {
+          var v = row[k]; if (!v) return;
+          var ymd;
+          if (/^\d{4}-\d{2}-\d{2}$/.test(k)) {
+            ymd = k;
+          } else {
+            var dom = parseInt(k, 10);
+            if (!isFinite(dom)) return;
+            var y = startY, m = startM;
+            if (dom < 25) { m += 1; if (m > 12) { m = 1; y += 1; } }
+            ymd = y + "-" + String(m).padStart(2, "0") + "-" + String(dom).padStart(2, "0");
+          }
+          (schedByEcYmd[ec] = schedByEcYmd[ec] || {})[ymd] = v;
+        });
+      });
+    }
+    // Fire every independent read in parallel — load time is the slowest
+    // single call instead of the sum of all of them.
     try {
-      pins = await window.APP_DATA.loadManagerPins();
-      mgrs = await window.APP_DATA.listAllManagers();
-      recent = await window.APP_DATA.listRecentManagerClockins(7);
-      smTrialEcs = window.APP_DATA.activeSmTrialEcs ? await window.APP_DATA.activeSmTrialEcs() : {};
-      trialCand = window.APP_DATA.listTrialCandidates ? await window.APP_DATA.listTrialCandidates() : [];
+      var _results = await Promise.all([
+        window.APP_DATA.loadManagerPins(),
+        window.APP_DATA.listAllManagers(),
+        window.APP_DATA.listRecentManagerClockins(7),
+        window.APP_DATA.activeSmTrialEcs ? window.APP_DATA.activeSmTrialEcs() : Promise.resolve({}),
+        window.APP_DATA.listTrialCandidates ? window.APP_DATA.listTrialCandidates() : Promise.resolve([]),
+        window.APP_DATA.getSchedule ? window.APP_DATA.getSchedule(_curCycleYm, "mgr").catch(function () { return null; }) : Promise.resolve(null),
+        window.APP_DATA.getSchedule ? window.APP_DATA.getSchedule(_prevCycleYm, "mgr").catch(function () { return null; }) : Promise.resolve(null),
+        window.APP_DATA.listManagerDayStatusesToday ? window.APP_DATA.listManagerDayStatusesToday().catch(function () { return []; }) : Promise.resolve([])
+      ]);
+      pins        = _results[0];
+      mgrs        = _results[1];
+      recent      = _results[2];
+      smTrialEcs  = _results[3];
+      trialCand   = _results[4];
+      _ingestSched(_curCycleYm, _results[5]);
+      _ingestSched(_prevCycleYm, _results[6]);
+      (_results[7] || []).forEach(function (r) { if (r && r.staff_id) mgrTaggedStaffIds[r.staff_id] = true; });
     } catch (e) {
       document.getElementById("mc-body").innerHTML =
         '<div class="warn">Could not load: ' + esc(e.message || e) + '</div>';
@@ -1137,50 +1186,6 @@
       return (a.name || "").localeCompare(b.name || "");
     });
 
-    var _nowD0 = new Date();
-    var todayK = _ymdToday(_nowD0);
-    var _todayDow = _nowD0.getDay();
-
-    // Schedule lookup spanning the current cycle + the previous one, so
-    // auto-out can resolve a manager's shift end on any day in the last
-    // ~30 days. Best-effort — falls back to default cutoff if a cell is
-    // missing. schedByEcYmd: { ec: { ymd: code } }.
-    var schedByEcYmd = {};
-    async function _loadSchedCycle(ym) {
-      if (!window.APP_DATA.getSchedule) return;
-      try {
-        var res = await window.APP_DATA.getSchedule(ym, "mgr");
-        var grid = (res && res.grid) || {};
-        var ymP = ym.split("-").map(Number);
-        var startY = ymP[0], startM = ymP[1];
-        Object.keys(grid).forEach(function (ec) {
-          var row = grid[ec] || {};
-          Object.keys(row).forEach(function (k) {
-            var v = row[k]; if (!v) return;
-            var ymd;
-            if (/^\d{4}-\d{2}-\d{2}$/.test(k)) {
-              ymd = k;
-            } else {
-              var dom = parseInt(k, 10);
-              if (!isFinite(dom)) return;
-              var y = startY, m = startM;
-              if (dom < 25) { m += 1; if (m > 12) { m = 1; y += 1; } }
-              ymd = y + "-" + String(m).padStart(2, "0") + "-" + String(dom).padStart(2, "0");
-            }
-            (schedByEcYmd[ec] = schedByEcYmd[ec] || {})[ymd] = v;
-          });
-        });
-      } catch (e) { console.warn("sched load failed for", ym, e); }
-    }
-    // Resolve current + previous cycle ym (25th-of-month convention).
-    var _curCycleY = _nowD0.getFullYear(), _curCycleM = _nowD0.getMonth() + 1;
-    if (_nowD0.getDate() < 25) { _curCycleM -= 1; if (_curCycleM < 1) { _curCycleM = 12; _curCycleY -= 1; } }
-    var _curCycleYm = _curCycleY + "-" + String(_curCycleM).padStart(2, "0");
-    var _prevCycleY = _curCycleY, _prevCycleM = _curCycleM - 1;
-    if (_prevCycleM < 1) { _prevCycleM = 12; _prevCycleY -= 1; }
-    var _prevCycleYm = _prevCycleY + "-" + String(_prevCycleM).padStart(2, "0");
-    await Promise.all([_loadSchedCycle(_curCycleYm), _loadSchedCycle(_prevCycleYm)]);
-
     var mgrByEc = {};
     mgrs.forEach(function (m) { if (m.employee_code) mgrByEc[String(m.employee_code).trim()] = m; });
     var _schedLookup = function (ec, ymd) {
@@ -1194,16 +1199,6 @@
       // Rebuild recent so the per-row "today" status reflects the new auto-outs
       recent = await window.APP_DATA.listRecentManagerClockins(7);
     }
-
-    // Today's ROM-tagged absences — used to suppress the "haven't clocked
-    // in" nag once a ROM has explained the absence on the HR portal.
-    var mgrTaggedStaffIds = {};
-    try {
-      if (window.APP_DATA.listManagerDayStatusesToday) {
-        var tagged = await window.APP_DATA.listManagerDayStatusesToday();
-        (tagged || []).forEach(function (r) { if (r && r.staff_id) mgrTaggedStaffIds[r.staff_id] = true; });
-      }
-    } catch (e) { console.warn("manager-day-statuses load failed:", e); }
 
     // Today's schedule lookup for per-row hours + the "haven't clocked in" check.
     var mgrTodaySched = {};
