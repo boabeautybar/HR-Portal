@@ -1420,21 +1420,25 @@
     return list[list.length - 1];
   }
 
-  async function listRecentManagerClockins(daysBack) {
+  // When `mgrIds` is provided, the clockins query is filtered server-side
+  // via .in("staff_id", mgrIds) so only manager rows come back. This is a
+  // regular column filter (not the broken embedded one) and it's
+  // dramatically faster on the kiosk because clockins is dominated by
+  // nail-tech rows. Falls back to the unfiltered HR-portal-style query
+  // when no IDs are passed.
+  async function listRecentManagerClockins(daysBack, mgrIds) {
     var c = client(); if (!c) return [];
     var since = new Date();
     since.setHours(0, 0, 0, 0);
     since.setDate(since.getDate() - (daysBack || 7));
-    // Match the HR portal's working query exactly: select("*", staff JOIN)
-    // with a client-side role_type filter. Earlier attempts here tried to
-    // optimize by listing specific clockin columns (id,ts,type,flags,…)
-    // and an embedded `staff.role_type=manager` filter — both silently
-    // returned zero rows on this project's schema, so the kiosk saw no
-    // clock-ins and every manager rendered as "HAVEN'T CLOCKED IN".
-    var res = await c.from("clockins")
+    var q = c.from("clockins")
       .select("*, staff:staff_id ( id, name, employee_code, role_type, role, branch )")
       .gte("ts", since.toISOString())
       .order("ts", { ascending: true });
+    if (Array.isArray(mgrIds) && mgrIds.length > 0) {
+      q = q.in("staff_id", mgrIds);
+    }
+    var res = await q;
     if (res.error) { console.error("listRecentManagerClockins:", res.error); return []; }
     return (res.data || []).filter(function (r) { return r.staff && r.staff.role_type === "manager"; });
   }

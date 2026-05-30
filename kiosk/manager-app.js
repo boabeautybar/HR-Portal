@@ -1133,27 +1133,33 @@
         });
       });
     }
-    // Fire every independent read in parallel — load time is the slowest
-    // single call instead of the sum of all of them.
+    // Load managers FIRST so the clockins query can filter server-side
+    // by their staff_ids — clockins is dominated by nail-tech rows and
+    // the previous unfiltered query was downloading hundreds of irrelevant
+    // rows per render. Everything else fires in parallel after the IDs
+    // are known.
     try {
-      var _results = await Promise.all([
+      var _stage1 = await Promise.all([
         window.APP_DATA.loadManagerPins(),
         window.APP_DATA.listAllManagers(),
-        window.APP_DATA.listRecentManagerClockins(2),
         window.APP_DATA.activeSmTrialEcs ? window.APP_DATA.activeSmTrialEcs() : Promise.resolve({}),
-        window.APP_DATA.listTrialCandidates ? window.APP_DATA.listTrialCandidates() : Promise.resolve([]),
+        window.APP_DATA.listTrialCandidates ? window.APP_DATA.listTrialCandidates() : Promise.resolve([])
+      ]);
+      pins       = _stage1[0];
+      mgrs       = _stage1[1];
+      smTrialEcs = _stage1[2];
+      trialCand  = _stage1[3];
+      var _mgrIds = (mgrs || []).map(function (m) { return m.id; }).filter(Boolean);
+      var _stage2 = await Promise.all([
+        window.APP_DATA.listRecentManagerClockins(2, _mgrIds),
         window.APP_DATA.getSchedule ? window.APP_DATA.getSchedule(_curEndYm, "mgr").catch(function () { return null; }) : Promise.resolve(null),
         window.APP_DATA.getSchedule ? window.APP_DATA.getSchedule(_prevEndYm, "mgr").catch(function () { return null; }) : Promise.resolve(null),
         window.APP_DATA.listManagerDayStatusesToday ? window.APP_DATA.listManagerDayStatusesToday().catch(function () { return []; }) : Promise.resolve([])
       ]);
-      pins        = _results[0];
-      mgrs        = _results[1];
-      recent      = _results[2];
-      smTrialEcs  = _results[3];
-      trialCand   = _results[4];
-      _ingestSched(_curCycleYm, _results[5]);
-      _ingestSched(_prevCycleYm, _results[6]);
-      (_results[7] || []).forEach(function (r) { if (r && r.staff_id) mgrTaggedStaffIds[r.staff_id] = true; });
+      recent = _stage2[0];
+      _ingestSched(_curCycleYm, _stage2[1]);
+      _ingestSched(_prevCycleYm, _stage2[2]);
+      (_stage2[3] || []).forEach(function (r) { if (r && r.staff_id) mgrTaggedStaffIds[r.staff_id] = true; });
     } catch (e) {
       document.getElementById("mc-body").innerHTML =
         '<div class="warn">Could not load: ' + esc(e.message || e) + '</div>';
