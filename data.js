@@ -1625,8 +1625,33 @@
     saveUnpaidLegalRecords: saveUnpaidLegalRecords,
     loadKioskSecurityLogs: loadKioskSecurityLogs,
     saveKioskSecurityLogs: saveKioskSecurityLogs,
-    saveKioskDevices: saveKioskDevices
+    saveKioskDevices: saveKioskDevices,
+
+    // Manager overtime tracker (HR portal Payroll tab)
+    loadOvertimeRequests: loadOvertimeRequests,
+    saveOvertimeRequests: saveOvertimeRequests
   };
+
+  // ── Overtime requests ────────────────────────────────────────────────
+  // Single app_state row "boa_overtime_v1" holding the full list of
+  // submitted overtime entries (newest last). Each entry:
+  //   { id, ec, name, branch, date (YYYY-MM-DD), hours, reason,
+  //     status: "pending"|"approved"|"rejected",
+  //     submittedAt, submittedBy, decidedAt, decidedBy, decisionNote }
+  // The HR portal Overtime tab groups by pay cycle (25 → 24) and offsets
+  // approved hours against short hours pulled from the boa_early_*
+  // sidecar to compute net payable overtime.
+  async function loadOvertimeRequests() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_overtime_v1").maybeSingle();
+    if (res.error) { console.error("loadOvertimeRequests:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveOvertimeRequests(list) {
+    var res = await sb.from("app_state").upsert({ key: "boa_overtime_v1", value: Array.isArray(list) ? list : [] });
+    if (res.error) { console.error("saveOvertimeRequests:", res.error); throw res.error; }
+    return list;
+  }
 
   // ── Custom locations ─────────────────────────────────────────────────
   // Persists branches added via the Locations tab. Stored as a single

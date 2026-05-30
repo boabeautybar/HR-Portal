@@ -6801,6 +6801,7 @@ const SETTINGS_TABS = [
   { t: "cashups", l: "Cash Ups", cat: "Operations", icon: "💰" },
   { t: "attendance", l: "Attendance / Payroll", cat: "Payroll", icon: "📕" },
   { t: "payrollProgress", l: "Payroll Progress", cat: "Payroll", icon: "📊" },
+  { t: "overtime", l: "Overtime", cat: "Payroll", icon: "⏱️" },
   { t: "alerts", l: "Alerts", cat: "Insights", icon: "🔔" },
   { t: "activity", l: "Activity Log", cat: "Insights", icon: "📜" },
   { t: "kioskPins", l: "Kiosk PINs", cat: "Admin", icon: "🔑" },
@@ -8876,7 +8877,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const NAV_TAB_TO_CATEGORY = {
     onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
     scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
-    attendance: "Payroll", payrollProgress: "Payroll",
+    attendance: "Payroll", payrollProgress: "Payroll", overtime: "Payroll",
     alerts: "Insights", activity: "Insights",
     settings: "Admin", voucherAdmin: "Admin"
   };
@@ -9020,6 +9021,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // ── Leave Planner state ────────────────────────────────────────────
   const [leaveRecs, setLeaveRecs] = useState([]);
+  const [overtimeReqs, setOvertimeReqs] = useState([]);
+  const [overtimeShortCache, setOvertimeShortCache] = useState({});    // { ec|cycleYm: hours } from early-leave sidecar
+  const [overtimeShortLoading, setOvertimeShortLoading] = useState(false);
+  const [otForm, setOtForm] = useState({ ec: "", date: "", hours: "", reason: "" });
   const [leaveBranch, setLeaveBranch] = useState(_myStores[0] || SALONS[0].name);
   const [leaveYM, setLeaveYM] = useState(window.BOA_DB ? window.BOA_DB.currentSchedYm() : "2026-05");
   const [leaveForm, setLeaveForm] = useState({ ec: "", startDate: "", endDate: "", emergency: false, emergencyNote: "" });
@@ -9515,8 +9520,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadManagerPins(),
       window.BOA_DB.loadHRTasks(),
       window.BOA_DB.loadTrialPeriod(),
-      window.BOA_DB.loadSmTrial ? window.BOA_DB.loadSmTrial() : Promise.resolve([])
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial]) => {
+      window.BOA_DB.loadSmTrial ? window.BOA_DB.loadSmTrial() : Promise.resolve([]),
+      window.BOA_DB.loadOvertimeRequests ? window.BOA_DB.loadOvertimeRequests() : Promise.resolve([])
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot]) => {
       setStaff(d.staff);
       setManagers(d.managers);
       setMatRecs(d.matRecs);
@@ -9527,6 +9533,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setHrTasks(Array.isArray(tasks) ? tasks : []);
       setTrialList(Array.isArray(trial) ? trial : []);
       setSmTrialList(Array.isArray(smTrial) ? smTrial : []);
+      setOvertimeReqs(Array.isArray(ot) ? ot : []);
       setLoading(false);
     }).catch((err) => {
       setLoadError("Could not load data: " + (err.message || err));
@@ -10973,7 +10980,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 color: { bg: "#DCFCE7", bgActive: "#BBF7D0", ink: "#14532d" },
                 items: [
                   { t: "attendance", l: "📕 Attendance" },
-                  { t: "payrollProgress", l: "📊 Payroll Progress" }
+                  { t: "payrollProgress", l: "📊 Payroll Progress" },
+                  { t: "overtime", l: "⏱️ Overtime" }
                 ]
               },
               {
@@ -18434,6 +18442,299 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 );
               })()}
             </div>
+          </div>
+        );
+      })()}
+
+      {/* ── OVERTIME TAB ── */}
+      {/* Manager overtime tracker.
+          - Managers (or admin on their behalf) submit OT entries with date,
+            hours and reason. Status starts as "pending".
+          - Admin approves or rejects. Only approved hours count for payout.
+          - Per pay cycle (25 → 24) approved hours are offset against short
+            hours pulled from the boa_early_* sidecar (early-leave records).
+            Net payable = max(0, approvedOT - shortHours). Any short hours
+            beyond approved OT are simply unpaid — they do NOT subtract
+            from base salary, they just zero-out the payable OT.
+          - Early clock-ins are intentionally NOT counted as OT. */}
+      {tab === "overtime" && (() => {
+        const ym = attYM;
+        const ymPretty = (() => {
+          try {
+            const [yy, mm] = ym.split("-").map(Number);
+            const startD = new Date(yy, mm - 2, 25);
+            const endD   = new Date(yy, mm - 1, 24);
+            const f = d => d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short" });
+            return f(startD) + " → " + f(endD) + " " + endD.getFullYear();
+          } catch (_) { return ym; }
+        })();
+
+        const cycleOf = (date) => date ? payrollYmFor(date) : "";
+        const inCycle = (r) => cycleOf(r.date) === ym;
+        const f = otForm;
+        const submitOvertime = async () => {
+          const ec = (f.ec || "").trim();
+          const m = managers.find(x => x.ec === ec);
+          if (!m) { alert("Pick a manager from the list."); return; }
+          const date = (f.date || "").trim();
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { alert("Pick a valid date."); return; }
+          const hours = Math.round(Number(f.hours) * 2) / 2;
+          if (!isFinite(hours) || hours <= 0) { alert("Hours must be a positive number (0.5 step)."); return; }
+          if (hours > 12) { alert("Hours can't exceed 12 — double-check."); return; }
+          const reason = (f.reason || "").trim();
+          if (!reason) { alert("Add a short reason so the approver knows the context."); return; }
+          const newReq = {
+            id: "ot_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+            ec: m.ec,
+            name: m.name,
+            branch: m.branch,
+            date,
+            hours,
+            reason,
+            status: "pending",
+            submittedAt: new Date().toISOString(),
+            submittedBy: (currentUser && currentUser.name) || "(unknown)",
+            decidedAt: null,
+            decidedBy: null,
+            decisionNote: null
+          };
+          const next = [...overtimeReqs, newReq];
+          setOvertimeReqs(next);
+          setOtForm({ ec: "", date: "", hours: "", reason: "" });
+          try { await window.BOA_DB.saveOvertimeRequests(next); }
+          catch (e) { alert("Save failed: " + (e.message || e)); setOvertimeReqs(overtimeReqs); }
+        };
+        const decide = async (id, status) => {
+          let note = null;
+          if (status === "rejected") {
+            note = window.prompt("Reason for rejecting (shown to the manager):", "");
+            if (note === null) return;
+          }
+          const next = overtimeReqs.map(r => r.id === id ? {
+            ...r,
+            status,
+            decidedAt: new Date().toISOString(),
+            decidedBy: (currentUser && currentUser.name) || "(unknown)",
+            decisionNote: note
+          } : r);
+          setOvertimeReqs(next);
+          try { await window.BOA_DB.saveOvertimeRequests(next); }
+          catch (e) { alert("Save failed: " + (e.message || e)); setOvertimeReqs(overtimeReqs); }
+        };
+        const deleteReq = async (id) => {
+          if (!confirm("Delete this overtime entry? This can't be undone.")) return;
+          const next = overtimeReqs.filter(r => r.id !== id);
+          setOvertimeReqs(next);
+          try { await window.BOA_DB.saveOvertimeRequests(next); }
+          catch (e) { alert("Save failed: " + (e.message || e)); setOvertimeReqs(overtimeReqs); }
+        };
+
+        // Pull short-hours totals per (ec, cycleYm) from the early-leave
+        // sidecar. Loaded on demand — one Supabase call per branch. The
+        // sidecar key uses START-month ym, which matches payrollYmFor's
+        // result, so we can look up directly by ym.
+        const loadShortHours = async () => {
+          if (!window.BOA_DB || !window.BOA_DB.loadEarlyLeaves) return;
+          setOvertimeShortLoading(true);
+          try {
+            const branches = Array.from(new Set(managers.map(m => m.branch).filter(Boolean)));
+            const next = { ...overtimeShortCache };
+            for (const b of branches) {
+              const data = await window.BOA_DB.loadEarlyLeaves(b, ym);
+              // data shape: { [dayKey]: { [ec]: { hours, ... } } }
+              if (!data || typeof data !== "object") continue;
+              Object.values(data).forEach(perDay => {
+                if (!perDay || typeof perDay !== "object") return;
+                Object.entries(perDay).forEach(([ec, rec]) => {
+                  const h = Number(rec && rec.hours);
+                  if (!isFinite(h) || h <= 0) return;
+                  const key = ec + "|" + ym;
+                  next[key] = (next[key] || 0) + h;
+                });
+              });
+            }
+            setOvertimeShortCache(next);
+          } catch (e) {
+            alert("Could not load short-hours: " + (e.message || e));
+          } finally {
+            setOvertimeShortLoading(false);
+          }
+        };
+
+        const cycleRows = overtimeReqs.filter(inCycle);
+        const pending  = cycleRows.filter(r => r.status === "pending");
+        const approved = cycleRows.filter(r => r.status === "approved");
+        const rejected = cycleRows.filter(r => r.status === "rejected");
+        const pendingAll = overtimeReqs.filter(r => r.status === "pending");
+
+        // Per-manager summary for this cycle.
+        const summaryByEc = {};
+        cycleRows.forEach(r => {
+          const s = summaryByEc[r.ec] || { ec: r.ec, name: r.name, branch: r.branch, submitted: 0, approved: 0, rejected: 0, pending: 0 };
+          s.submitted += r.hours;
+          s[r.status] = (s[r.status] || 0) + r.hours;
+          summaryByEc[r.ec] = s;
+        });
+        const summary = Object.values(summaryByEc).map(s => {
+          const short = overtimeShortCache[s.ec + "|" + ym] || 0;
+          const net = Math.max(0, s.approved - short);
+          return { ...s, short, net };
+        }).sort((a, b) => (b.net - a.net) || a.name.localeCompare(b.name));
+
+        const card = (r) => {
+          const pill = r.status === "pending"
+            ? { bg: "#fef3c7", fg: "#92400e", lbl: "PENDING" }
+            : r.status === "approved"
+              ? { bg: "#dcfce7", fg: "#14532d", lbl: "APPROVED" }
+              : { bg: "#fee2e2", fg: "#7f1d1d", lbl: "REJECTED" };
+          return (
+            <div key={r.id} style={{ background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 13, color: "#831843", fontWeight: 700 }}>
+                  {r.name} <span style={{ fontSize: 11, color: "#9d4d6e", fontWeight: 500 }}>· {r.branch} · {r.date}</span>
+                </div>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <span style={{ background: pill.bg, color: pill.fg, fontSize: 10, fontWeight: 800, padding: "2px 8px", borderRadius: 12, letterSpacing: "0.05em" }}>{pill.lbl}</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>+{r.hours}h</span>
+                </div>
+              </div>
+              <div style={{ fontSize: 12, color: "#374151", marginBottom: 4 }}>{r.reason}</div>
+              <div style={{ fontSize: 10, color: "#9ca3af" }}>
+                Submitted {new Date(r.submittedAt).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })} by {r.submittedBy}
+                {r.decidedAt && <> · {r.status === "approved" ? "Approved" : "Rejected"} {new Date(r.decidedAt).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })} by {r.decidedBy}</>}
+              </div>
+              {r.decisionNote && <div style={{ fontSize: 11, color: "#7f1d1d", marginTop: 4, fontStyle: "italic" }}>Rejection note: {r.decisionNote}</div>}
+              <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                {r.status === "pending" && (
+                  <>
+                    <button onClick={() => decide(r.id, "approved")} style={{ background: "#14532d", color: "#fff", border: "none", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>✓ Approve</button>
+                    <button onClick={() => decide(r.id, "rejected")} style={{ background: "#7f1d1d", color: "#fff", border: "none", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>✕ Reject</button>
+                  </>
+                )}
+                {r.status !== "pending" && (
+                  <button onClick={() => decide(r.id, "pending")} style={{ background: "transparent", color: "#831843", border: "1px solid #F9A8D4", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>↺ Reopen</button>
+                )}
+                <button onClick={() => deleteReq(r.id)} style={{ background: "transparent", color: "#9ca3af", border: "1px solid #e5e7eb", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontSize: 11 }}>Delete</button>
+              </div>
+            </div>
+          );
+        };
+
+        return (
+          <div style={{ padding: "0 24px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, gap: 12, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700, marginBottom: 4 }}>⏱️ Overtime</div>
+                <div style={{ fontSize: 12, color: "#9d4d6e" }}>
+                  Pay cycle <strong>{ymPretty}</strong>. Approved overtime is offset against short hours from early clock-outs; any remaining short hours are simply unpaid. Early clock-ins don't count as overtime.
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <button onClick={() => setAttYM(window.BOA_DB.shiftYm(ym, -1))} style={{ background: "transparent", border: "1px solid #F9A8D4", color: "#831843", borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontWeight: 700 }}>‹</button>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", minWidth: 90, textAlign: "center" }}>{ym}</div>
+                <button onClick={() => setAttYM(window.BOA_DB.shiftYm(ym, +1))} style={{ background: "transparent", border: "1px solid #F9A8D4", color: "#831843", borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontWeight: 700 }}>›</button>
+              </div>
+            </div>
+
+            {/* Submit form */}
+            <div style={{ padding: "14px 16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, marginBottom: 14 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 10 }}>Submit overtime for a manager</div>
+              <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 2fr auto", gap: 8, alignItems: "end" }}>
+                <div>
+                  <div style={{ fontSize: 10, color: "#9d4d6e", marginBottom: 3, fontWeight: 700, letterSpacing: "0.04em" }}>MANAGER</div>
+                  <select value={f.ec} onChange={e => setOtForm({ ...f, ec: e.target.value })} style={{ width: "100%", padding: "6px 8px", border: "1px solid #F9A8D4", borderRadius: 6, fontSize: 12 }}>
+                    <option value="">Pick a manager…</option>
+                    {managers.slice().sort((a, b) => (a.branch || "").localeCompare(b.branch || "") || a.name.localeCompare(b.name)).map(m => (
+                      <option key={m.ec} value={m.ec}>{m.name} · {m.branch}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, color: "#9d4d6e", marginBottom: 3, fontWeight: 700, letterSpacing: "0.04em" }}>DATE</div>
+                  <input type="date" value={f.date} onChange={e => setOtForm({ ...f, date: e.target.value })} style={{ width: "100%", padding: "6px 8px", border: "1px solid #F9A8D4", borderRadius: 6, fontSize: 12 }} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, color: "#9d4d6e", marginBottom: 3, fontWeight: 700, letterSpacing: "0.04em" }}>HOURS</div>
+                  <input type="number" step="0.5" min="0.5" max="12" value={f.hours} onChange={e => setOtForm({ ...f, hours: e.target.value })} placeholder="e.g. 2" style={{ width: "100%", padding: "6px 8px", border: "1px solid #F9A8D4", borderRadius: 6, fontSize: 12 }} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, color: "#9d4d6e", marginBottom: 3, fontWeight: 700, letterSpacing: "0.04em" }}>REASON</div>
+                  <input type="text" value={f.reason} onChange={e => setOtForm({ ...f, reason: e.target.value })} placeholder="Why was extra time needed?" style={{ width: "100%", padding: "6px 8px", border: "1px solid #F9A8D4", borderRadius: 6, fontSize: 12 }} />
+                </div>
+                <button onClick={submitOvertime} style={{ background: "#831843", color: "#fff", border: "none", borderRadius: 6, padding: "7px 14px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>+ Submit</button>
+              </div>
+            </div>
+
+            {/* Cycle summary */}
+            <div style={{ padding: "14px 16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, marginBottom: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 12, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>Cycle summary — {ymPretty}</div>
+                <button onClick={loadShortHours} disabled={overtimeShortLoading} style={{ background: "transparent", border: "1px solid #F9A8D4", color: "#831843", borderRadius: 6, padding: "5px 11px", cursor: overtimeShortLoading ? "default" : "pointer", fontSize: 11, fontWeight: 700, opacity: overtimeShortLoading ? 0.6 : 1 }}>
+                  {overtimeShortLoading ? "Loading short-hours…" : "↻ Load short-hours"}
+                </button>
+              </div>
+              {summary.length === 0 ? (
+                <div style={{ fontSize: 12, color: "#9d4d6e", padding: "8px 0" }}>No overtime entries in this cycle yet.</div>
+              ) : (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ background: "#FDEEF5", color: "#831843" }}>
+                      <th style={{ padding: "8px 10px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Manager</th>
+                      <th style={{ padding: "8px 10px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Branch</th>
+                      <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Approved OT</th>
+                      <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Pending</th>
+                      <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Short hours</th>
+                      <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Net payable</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {summary.map(s => (
+                      <tr key={s.ec}>
+                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FDEEF5", color: "#831843", fontWeight: 600 }}>{s.name}</td>
+                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FDEEF5", color: "#9d4d6e" }}>{s.branch}</td>
+                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: "#14532d", fontWeight: 700 }}>{s.approved || 0}h</td>
+                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: s.pending > 0 ? "#92400e" : "#9ca3af", fontWeight: 600 }}>{s.pending || 0}h</td>
+                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: s.short > 0 ? "#7f1d1d" : "#9ca3af", fontWeight: 600 }}>−{s.short || 0}h</td>
+                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: s.net > 0 ? "#14532d" : "#9ca3af", fontWeight: 800 }}>{s.net}h</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              <div style={{ marginTop: 10, fontSize: 11, color: "#9ca3af" }}>
+                Short hours come from the kiosk's "Left work early" log for this cycle. Click <strong>Load short-hours</strong> to pull the latest. Net = max(0, approved OT − short hours).
+              </div>
+            </div>
+
+            {/* Pending */}
+            <div style={{ padding: "14px 16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, marginBottom: 14 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 10 }}>
+                ⏳ Pending approval — {pending.length} in cycle{pendingAll.length > pending.length ? " (" + (pendingAll.length - pending.length) + " in other cycles)" : ""}
+              </div>
+              {pending.length === 0 ? (
+                <div style={{ fontSize: 12, color: "#9d4d6e", padding: "8px 0" }}>Nothing pending. ✨</div>
+              ) : pending.map(card)}
+            </div>
+
+            {/* Approved */}
+            <div style={{ padding: "14px 16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, marginBottom: 14 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 10 }}>
+                ✓ Approved — {approved.length}
+              </div>
+              {approved.length === 0 ? (
+                <div style={{ fontSize: 12, color: "#9d4d6e", padding: "8px 0" }}>No approved entries this cycle.</div>
+              ) : approved.map(card)}
+            </div>
+
+            {/* Rejected */}
+            {rejected.length > 0 && (
+              <div style={{ padding: "14px 16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, marginBottom: 14 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 10 }}>
+                  ✕ Rejected — {rejected.length}
+                </div>
+                {rejected.map(card)}
+              </div>
+            )}
           </div>
         );
       })()}
