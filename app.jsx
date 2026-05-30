@@ -23710,9 +23710,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   const _isOff = !!m._offGhost;
                                   return (
                                     <tr key={m.ec + (m.isShadow ? "-shadow" : "")} style={{ opacity: _isOff ? 0.55 : 1 }}>
-                                      <td style={{ padding: "6px 14px", fontWeight: 700, color: _isOff ? "#9ca3af" : "#831843", fontSize: 12, borderBottom: "1px solid #FCE7F3", background: _isOff ? "#f9fafb" : (m.isShadow ? "#eff6ff" : (m.transferring ? "#fffbeb" : undefined)), textDecoration: _isOff ? "line-through" : "none" }}>
+                                      <td style={{ padding: "6px 14px", fontWeight: 700, color: _isOff ? "#9ca3af" : "#831843", fontSize: 12, borderBottom: "1px solid #FCE7F3", background: _isOff ? "#f9fafb" : (m._guestFromBranch ? "#eff6ff" : (m.isShadow ? "#eff6ff" : (m.transferring ? "#fffbeb" : undefined))), textDecoration: _isOff ? "line-through" : "none" }}>
                                         {_effectiveRole(m) === "SSM" ? "💎 " : _effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}
                                         <span style={{ marginLeft: 6, fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{_effectiveRole(m) || ""}{m.role === "AM" && _effectiveRole(m) === "SM" ? " (trial)" : ""}</span>
+                                        {m._guestFromBranch && (
+                                          <span title={"Guest manager — home branch is " + m._guestFromBranch} style={{ marginLeft: 6, background: "#dbeafe", color: "#1e40af", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>↪ GUEST FROM {m._guestFromBranch}</span>
+                                        )}
                                         {m.isShadow && m.transferFrom && (
                                           <span style={{ marginLeft: 6, background: "#dbeafe", color: "#1e40af", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>🔄 FROM {m.transferFrom}{m.transferDate ? " · " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>
                                         )}
@@ -23767,9 +23770,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         const _isOff = !!m._offGhost;
                         return (
                         <tr key={m.ec + "-" + b + (m.isShadow ? "-shadow" : "")} style={{ opacity: _isOff ? 0.55 : 1 }}>
-                          <td style={{ padding: "6px 14px", borderBottom: "1px solid #FCE7F3", background: _isOff ? "#f9fafb" : (m.isShadow ? "#eff6ff" : (m.transferring ? "#fffbeb" : undefined)) }}>
+                          <td style={{ padding: "6px 14px", borderBottom: "1px solid #FCE7F3", background: _isOff ? "#f9fafb" : (m._guestFromBranch ? "#eff6ff" : (m.isShadow ? "#eff6ff" : (m.transferring ? "#fffbeb" : undefined))) }}>
                             <div style={{ fontWeight: 700, color: _isOff ? "#9ca3af" : "#831843", fontSize: 12.5, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", textDecoration: _isOff ? "line-through" : "none" }}>
                               <span>{_effectiveRole(m) === "SSM" ? "💎 " : _effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}</span>
+                              {m._guestFromBranch && (
+                                <span title={"Guest manager — home branch is " + m._guestFromBranch} style={{ background: "#dbeafe", color: "#1e40af", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>↪ GUEST FROM {m._guestFromBranch}</span>
+                              )}
                               {m.isShadow && m.transferFrom && (
                                 <span style={{ background: "#dbeafe", color: "#1e40af", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>🔄 FROM {m.transferFrom}{m.transferDate ? " · " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>
                               )}
