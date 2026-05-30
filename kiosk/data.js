@@ -1425,15 +1425,14 @@
     var since = new Date();
     since.setHours(0, 0, 0, 0);
     since.setDate(since.getDate() - (daysBack || 7));
-    // Client-side filter on role_type. A previous iteration tried an
-    // embedded-resource filter (`.eq("staff.role_type", "manager")` with
-    // `staff:staff_id!inner(...)`) but PostgREST silently dropped every
-    // row, so the kiosk saw NO clock-ins and every scheduled manager
-    // showed the "HAVEN'T CLOCKED IN" pill on the Manager Clock-in
-    // screen. Project only the clockin columns we use to keep the
-    // payload light without trusting the embedded filter.
+    // Match the HR portal's working query exactly: select("*", staff JOIN)
+    // with a client-side role_type filter. Earlier attempts here tried to
+    // optimize by listing specific clockin columns (id,ts,type,flags,…)
+    // and an embedded `staff.role_type=manager` filter — both silently
+    // returned zero rows on this project's schema, so the kiosk saw no
+    // clock-ins and every manager rendered as "HAVEN'T CLOCKED IN".
     var res = await c.from("clockins")
-      .select("id,ts,type,flags,staff_id,staff:staff_id(id,name,employee_code,role_type,role,branch)")
+      .select("*, staff:staff_id ( id, name, employee_code, role_type, role, branch )")
       .gte("ts", since.toISOString())
       .order("ts", { ascending: true });
     if (res.error) { console.error("listRecentManagerClockins:", res.error); return []; }
