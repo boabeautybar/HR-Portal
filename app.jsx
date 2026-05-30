@@ -211,10 +211,16 @@ function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose,
   const needsProof = !!(opt && opt.needsProof);
   const needsNote  = !!(opt && opt.needsNote);
   const noteTrim   = (note || "").trim();
+  // For "Sick + note" specifically we no longer block save when there's
+  // no proof — we just downgrade to "Sick NO note" (unpaid) on save.
+  // FRL still requires its proof photo to qualify for paid Family
+  // Responsibility Leave.
+  const proofGate = !needsProof || !!proof || status === "sick_n";
   const canSave = !locked
     && !!status
-    && (!needsProof || !!proof)
+    && proofGate
     && (!needsNote || noteTrim.length >= 3);
+  const sickWillDowngrade = status === "sick_n" && !proof;
 
   async function handleFile(e) {
     setProofErr("");
@@ -228,17 +234,36 @@ function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose,
     if (!canSave) return;
     setSaving(true);
     try {
+      // "Sick + note" without a doctor's note → downgrade to "Sick NO
+      // note" (unpaid). Keeps the absence on the manager's record but
+      // doesn't burn a paid sick day without a medical certificate.
+      const effectiveStatus = sickWillDowngrade ? "sick" : status;
+      const effectiveProof = (sickWillDowngrade || !needsProof) ? null : proof;
       await window.BOA_DB.saveManagerDayStatus({
         staffId: modal.staffId,
         date: modal.date,
-        status,
+        status: effectiveStatus,
         note,
-        proof: needsProof ? proof : null,
+        proof: effectiveProof,
         recordedBy: currentUserName
       });
       await onSaved();
     } catch (e) {
       window.alert("Could not save: " + ((e && e.message) || e));
+      setSaving(false);
+    }
+  }
+
+  async function clearStatus() {
+    if (!existing) return;
+    if (locked) return;
+    if (!window.confirm("Remove the recorded absence reason for this day?\n\nUse this when the schedule was corrected (e.g. day is actually OFF) and the tagged reason no longer applies.")) return;
+    setSaving(true);
+    try {
+      await window.BOA_DB.deleteManagerDayStatus({ staffId: modal.staffId, date: modal.date });
+      await onSaved();
+    } catch (e) {
+      window.alert("Could not clear: " + ((e && e.message) || e));
       setSaving(false);
     }
   }
@@ -278,11 +303,16 @@ function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose,
 
         {needsProof && (
           <div style={{ marginTop: 14 }}>
-            <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>PROOF PHOTO (required for {opt.code === "sick_n" ? "Sick + note" : "FRL"})</label>
+            <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>{opt.code === "sick_n" ? "DOCTOR'S NOTE (required for paid Sick + note)" : "PROOF PHOTO (required for FRL)"}</label>
             <input type="file" accept="image/*" capture="environment" onChange={handleFile} disabled={locked}
               style={{ display: "block", marginTop: 4, fontSize: 13 }} />
             {proofErr && <div style={{ fontSize: 11, color: "#7f1d1d", marginTop: 4 }}>{proofErr}</div>}
             {proof && <img src={proof} alt="proof" style={{ marginTop: 8, maxWidth: "100%", maxHeight: 180, borderRadius: 8, border: "1px solid #FBCFE8", display: "block" }} />}
+            {sickWillDowngrade && (
+              <div style={{ marginTop: 8, background: "#fef3c7", border: "1px solid #fcd34d", color: "#92400e", borderRadius: 8, padding: "8px 10px", fontSize: 11, fontWeight: 600 }}>
+                ⚠ No doctor's note uploaded — saving will mark this day as <strong>Sick NO note (unpaid)</strong> on the attendance sheet. Upload the medical certificate to keep it paid.
+              </div>
+            )}
           </div>
         )}
 
@@ -301,12 +331,22 @@ function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose,
           </div>
         )}
 
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
-          <button onClick={onClose} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", color: "#831843", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Cancel</button>
-          <button onClick={save} disabled={!canSave || saving}
-            style={{ padding: "9px 20px", borderRadius: 9, border: "none", background: canSave && !saving ? "#BE185D" : "#FBCFE8", color: "#fff", fontWeight: 700, fontSize: 13, cursor: canSave && !saving ? "pointer" : "not-allowed" }}>
-            {saving ? "Saving…" : (existing ? "💾 Update" : "💾 Save reason")}
-          </button>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
+          <div>
+            {existing && !locked && (
+              <button onClick={clearStatus} disabled={saving}
+                style={{ padding: "9px 14px", borderRadius: 9, border: "1px solid #fecaca", background: "#fff", color: "#7f1d1d", fontWeight: 700, fontSize: 12, cursor: saving ? "not-allowed" : "pointer" }}>
+                🗑 Clear reason
+              </button>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={onClose} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", color: "#831843", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Cancel</button>
+            <button onClick={save} disabled={!canSave || saving}
+              style={{ padding: "9px 20px", borderRadius: 9, border: "none", background: canSave && !saving ? "#BE185D" : "#FBCFE8", color: "#fff", fontWeight: 700, fontSize: 13, cursor: canSave && !saving ? "pointer" : "not-allowed" }}>
+              {saving ? "Saving…" : sickWillDowngrade ? "💾 Save as Sick NO note (unpaid)" : (existing ? "💾 Update" : "💾 Save reason")}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -9147,9 +9187,33 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         else if (st && ABSENT[st]) { tAbsent++; techByEc[ec] = "absent"; }
         else { techByEc[ec] = "pending"; }          // scheduled, neither present nor absent
       }
-      for (const ec in mgrGrid) {
-        // manager grid is keyed by YMD strings (mgrSched line 141)
-        const v = mgrGrid[ec][ymd] || mgrGrid[ec][todayDay];
+      // Only flag managers who are genuinely active at this branch and
+      // not on approved leave. The raw schedule grid can carry guest /
+      // loan cells for managers from other stores, and a cleared cell
+      // saved as "" while a stale day-of-month key still says "W"
+      // would otherwise read as "scheduled to work". Gating + YMD-first
+      // resolution stops both leaks.
+      const _branchMgrEcs = new Set(
+        (managers || [])
+          .filter(m => m && m.branch === sl.name && !m.onMat && !m.offboarded && !(m.leftDate && ymd > m.leftDate))
+          .map(m => String(m.ec || "").trim())
+          .filter(Boolean)
+      );
+      const _mgrOnLeaveEcs = new Set();
+      (leaveRecs || []).forEach(lv => {
+        if (lv && lv.ec && lv.startDate && lv.endDate && ymd >= lv.startDate && ymd <= lv.endDate) {
+          _mgrOnLeaveEcs.add(String(lv.ec).trim());
+        }
+      });
+      for (const ec of _branchMgrEcs) {
+        if (_mgrOnLeaveEcs.has(ec)) continue;       // approved leave — not a no-show
+        const row = mgrGrid[ec];
+        if (!row) continue;
+        // YMD-first; only fall back to day-of-month when the YMD key is
+        // entirely absent. An empty-string YMD means the cell was
+        // explicitly cleared and a stale day-of-month value must NOT
+        // bleed through as "scheduled to work".
+        const v = Object.prototype.hasOwnProperty.call(row, ymd) ? row[ymd] : row[todayDay];
         if (isWorking(v)) { count++; mgrsScheduled.push(ec); }
       }
       return [sl.name, count, mgrsScheduled, { scheduled: tScheduled, checkedIn: tCheckedIn, notCheckedIn: tScheduled - tCheckedIn - tAbsent, absent: tAbsent, techByEc }];
@@ -9464,7 +9528,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // Load recent manager clock-ins when the viewer tab opens.
   useEffect(() => {
-    if (tab !== "mgrclockins" && tab !== "mgrCoverage") return;
+    if (tab !== "mgrclockins" && tab !== "mgrCoverage" && tab !== "attendance") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     let cancelled = false;
     (async () => {
@@ -16169,31 +16233,111 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const _mgrEcToStaffId = {};
         managers.forEach(m => { if (m.ec && (m._id || m.id)) _mgrEcToStaffId[m.ec] = m._id || m.id; });
         const _mgrStatusByEcYmd = {};
+        const _mgrProofByEcYmd = {};
+        const _mgrNoteByEcYmd = {};
+        const _mgrRecorderByEcYmd = {};
+        const _mgrRecordedAtByEcYmd = {};
         (mgrDayStatuses || []).forEach(r => {
           for (const ec in _mgrEcToStaffId) {
             if (_mgrEcToStaffId[ec] === r.staff_id) {
               (_mgrStatusByEcYmd[ec] = _mgrStatusByEcYmd[ec] || {})[r.date] = r.status;
+              if (r.proof) (_mgrProofByEcYmd[ec] = _mgrProofByEcYmd[ec] || {})[r.date] = r.proof;
+              if (r.note) (_mgrNoteByEcYmd[ec] = _mgrNoteByEcYmd[ec] || {})[r.date] = r.note;
+              (_mgrRecorderByEcYmd[ec] = _mgrRecorderByEcYmd[ec] || {})[r.date] = r.updated_by || r.recorded_by || null;
+              (_mgrRecordedAtByEcYmd[ec] = _mgrRecordedAtByEcYmd[ec] || {})[r.date] = r.updated_at || r.created_at || null;
               break;
             }
           }
         });
+        // Manager clock-in lookup. Sourced from mgrClockinRows (loaded for the
+        // attendance tab), capped at `mgrClockinDays` days back from today.
+        // Used to detect 'scheduled manager day with no clock-in + no reason'
+        // and auto-flag those cells as 'absent + needs review' on the grid —
+        // same shape as the missing-checkin warning for nail techs.
+        const _mgrCheckedInByEcYmd = {};
+        const _mLocalYmd = (ts) => { const d = new Date(ts); return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()); };
+        (mgrClockinRows || []).forEach(r => {
+          if (!r || !r.staff || r.staff.role_type !== "manager") return;
+          if (r.type !== "in") return;
+          const ec = String(r.staff.employee_code || "").trim();
+          if (!ec) return;
+          (_mgrCheckedInByEcYmd[ec] = _mgrCheckedInByEcYmd[ec] || {})[_mLocalYmd(r.ts)] = true;
+        });
+        const _todayYmdAtt = (() => { const d = new Date(); return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()); })();
+        const _mgrCheckinFromYmd = (() => {
+          const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - (mgrClockinDays || 31));
+          return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate());
+        })();
+        // Is this (ec, ymd) a manager day that should auto-render as 'absent
+        // + needs review' because they were scheduled to work but didn't
+        // clock in and no ROM tagged a reason? Only true for the past
+        // `mgrClockinDays` window so we never mis-flag days we have no
+        // clock-in cache for.
+        const _isMgrAutoAbsent = (ec, ymd, d) => {
+          if (!_mgrEcToStaffId[ec]) return false;
+          if (ymd > _todayYmdAtt) return false;
+          if (ymd < _mgrCheckinFromYmd) return false;
+          if ((_onLeaveByEcYmd[String(ec).trim()] || {})[ymd]) return false; // on approved leave
+          if ((_mgrStatusByEcYmd[ec] || {})[ymd]) return false;     // ROM already explained it
+          if ((attGrid[ec] || {})[d]) return false;                 // admin already set the cell
+          if ((_mgrCheckedInByEcYmd[ec] || {})[ymd]) return false;  // they did clock in
+          const sv = (attSched[ec] || {})[d];
+          return sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL" || sv === "E";
+        };
         // For a given (ec, ymd), is this day strictly AFTER their last day?
         const isPostLeftDate = (ec, ymd) => {
           const ld = offByEc[ec];
           return !!ld && ymd > ld;       // strictly after — leftDate itself is the "last day worked"
         };
+        // Leave Planner overlay. The Leave Planner stores approved leave on
+        // the leaveRecs collection; the Schedule component patches "L" into
+        // the saved schedule grid only when the user re-opens & saves that
+        // store's schedule. Until then the attendance grid (and the Manager
+        // Coverage grid, see below) would still read the old W/WL/WE for
+        // those days. Overlay leave directly from leaveRecs so an approved
+        // leave day shows as 'Annual' regardless of whether the schedule was
+        // re-saved.
+        const _onLeaveByEcYmd = {};
+        (leaveRecs || []).forEach(lv => {
+          if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return;
+          const ec = String(lv.ec).trim();
+          for (let cur = new Date(lv.startDate + "T00:00:00"); cur <= new Date(lv.endDate + "T00:00:00"); cur.setDate(cur.getDate() + 1)) {
+            const ymd = cur.getFullYear() + "-" + p2(cur.getMonth() + 1) + "-" + p2(cur.getDate());
+            (_onLeaveByEcYmd[ec] = _onLeaveByEcYmd[ec] || {})[ymd] = true;
+          }
+        });
 
         // Helpers
         const mirrorSuppressed = !!(attMeta && attMeta.mirrorSuppressed);
         const getStatus = (ec, d) => {
+          // If the schedule was later corrected to OFF for this day, any
+          // stale ROM-recorded reason (sick / absent / FRL / etc.) is
+          // irrelevant — the manager isn't supposed to work that day. The
+          // sidecar row stays in the DB so admin can clear it from the
+          // absence-reason modal, but it's hidden from the grid.
+          const _schedV = attSched[ec] && attSched[ec][d];
+          const _scheduledOff = _schedV === "O" || _schedV === "R";
           // ROM-managed manager-absence overlay. When a regional has
           // recorded a reason (sick + note / FRL + proof / annual / etc.)
           // for a manager's missed day, that's the source of truth for
           // payroll and overrides any schedule mirror / attGrid value.
-          if (_mgrStatusByEcYmd[ec]) {
+          if (!_scheduledOff && _mgrStatusByEcYmd[ec]) {
             const _do = days.find(x => x.d === d);
             const _v = _do && _mgrStatusByEcYmd[ec][_do.ymd];
             if (_v) return _v;
+          }
+          // Leave Planner overlay. Approved leave is always 'Annual' on the
+          // attendance grid regardless of what the schedule grid still says,
+          // so a leave day granted after the schedule was published doesn't
+          // get mis-rendered as a working day.
+          {
+            const _do = days.find(x => x.d === d);
+            if (_do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd]) {
+              // Admin-edited cell still wins (e.g. "Sick + note" on top of a
+              // pre-approved leave day shouldn't get reverted).
+              const _gv = attGrid[ec] && attGrid[ec][d];
+              if (!_gv) return "al";
+            }
           }
           // Tech-loan override: the home branch's loaned-out cell mirrors
           // the status the receiving branch's kiosk recorded that day so
@@ -16228,6 +16372,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // After a Total Reset the schedule mirror is suppressed so the
           // grid reads as truly empty until the admin runs Auto-fill.
           if (mirrorSuppressed) return "";
+          // Manager-auto-absent overlay: scheduled to work but no kiosk
+          // clock-in and no ROM-recorded reason → render as 'Absent' so
+          // the existing absent-needs-review warning + red ⚠ kick in.
+          if (dayObj && _isMgrAutoAbsent(ec, dayObj.ymd, d)) return "absent";
           // Fall back to schedule hint
           const sv = attSched[ec] && attSched[ec][d];
           if (sv === "O" || sv === "R") return "off";
@@ -16247,12 +16395,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // mirrored from the receiving branch) - render as a solid override
           // so the cell isn't italicised like a schedule hint.
           if (outgoingLoanMap[ec] && outgoingLoanMap[ec][d]) return true;
+          // ROM-recorded manager status (sick/absent/frl/etc.), the
+          // auto-absent overlay and approved leave from the Leave Planner
+          // all count as solid overrides — render with the proper STAT
+          // colour band, not faded schedule italics. Skipped on days the
+          // schedule was later corrected to OFF — see getStatus().
+          const _hoSched = attSched[ec] && attSched[ec][d];
+          const _hoOff = _hoSched === "O" || _hoSched === "R";
+          if (!_hoOff && dayObj && (_mgrStatusByEcYmd[ec] || {})[dayObj.ymd]) return true;
+          if (dayObj && _isMgrAutoAbsent(ec, dayObj.ymd, d)) return true;
+          if (dayObj && (_onLeaveByEcYmd[String(ec).trim()] || {})[dayObj.ymd] && !(attGrid[ec] && attGrid[ec][d])) return true;
           const v = attGrid[ec] && attGrid[ec][d];
           return !!v && v.indexOf("~") !== 0;
         };
         const schedHint = (ec, d) => {
           if (mirrorSuppressed) return null;        // hide schedule signal after a Total Reset
           if (onMatEcs.has(ec)) return "mat";       // maternity row — every day mirrors as 'mat'
+          // Leave Planner overlay — same idea as in getStatus. A leave day
+          // granted via the planner reads as 'al' on the schedule strip even
+          // if the saved schedule grid still has W/WL/WE for that day.
+          {
+            const _do = days.find(x => x.d === d);
+            if (_do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd]) return "al";
+          }
           const sv = attSched[ec] && attSched[ec][d];
           if (!sv) return null;
           if (sv === "W" || sv === "WE" || sv === "WL") return "on";
@@ -17205,7 +17370,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const t0Ymd = todayY.getFullYear() + "-" + p2(todayY.getMonth() + 1) + "-" + p2(todayY.getDate());
           const reviewedMap = (attMeta && attMeta.reviewedWarnings) || {};
           for (const s of attStaff) {
-            if (s.role !== "NT") continue;
             for (const dy of days) {
               const isPastOrToday = dy.ymd <= t0Ymd;
               if (!isPastOrToday) continue;        // future days never warn
@@ -17215,8 +17379,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const scheduleSaysWork = hint === "on" || hint === "ext";
               const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i";
               const isLate = bareV === "late";
-              const kioskAbs = ((kioskAbsentByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null;
-              const checkin = ((checkInsByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null;
+              // Kiosk audit log + check-ins are tech-only signals — managers
+              // have their own clock-in source (handled via the mgr-overlay
+              // upstream). Skip the lookups for them so we never mix tech
+              // kiosk hits into a manager warning.
+              const kioskAbs = s.role === "NT" ? (((kioskAbsentByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null) : null;
+              const checkin = s.role === "NT" ? (((checkInsByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null) : null;
               const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
               const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
               const freshaWorkedCell = !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
@@ -17598,7 +17766,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // be misread as confirmed off-days when the user uploads mid-month.
                           const scheduleSaysOff = hint === "off";
                           const freshaCoversThisDay = !mirrorSuppressed && !!effectiveFreshaThrough && dy.ymd <= effectiveFreshaThrough;
-                          const allMatchOff = s.role === "NT" && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn && freshaCoversThisDay && !freshaWorkedCell;
+                          // Manager equivalent: scheduled off + no clock-in
+                          // + day is within the loaded clock-in window →
+                          // confirmed off, no warning. Mirrors the tech
+                          // 'allMatchOff' but without the Fresha gate since
+                          // managers don't have appointment data.
+                          const mgrSchedOff = s.role !== "NT" && _mgrEcToStaffId[s.ec] && scheduleSaysOff && !isWorking && !isLate && !((_mgrCheckedInByEcYmd[s.ec] || {})[dy.ymd]) && isPastOrToday && dy.ymd >= _mgrCheckinFromYmd;
+                          const allMatchOff = (s.role === "NT" && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn && freshaCoversThisDay && !freshaWorkedCell)
+                            || mgrSchedOff;
                           // Cross-source rules across Schedule × Kiosk × Fresha:
                           //  • allAgreeAbsent — scheduled to work, kiosk marked the tech absent
                           //    (any reason: sick / no-show / frl / off / unpaid / …), AND Fresha
@@ -17700,8 +17875,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const cellLine = (st.lbl || "—") + (deviation ? "  (deviation from schedule)" : "") + (isFutureSwap ? "  (future placeholder)" : "");
                           const schedLine = hint ? lbl(hint) : "—";
                           let kioskLine;
+                          const mgrStatus = s.role !== "NT" ? ((_mgrStatusByEcYmd[s.ec] || {})[dy.ymd] || null) : null;
+                          const mgrNote = s.role !== "NT" ? ((_mgrNoteByEcYmd[s.ec] || {})[dy.ymd] || null) : null;
+                          const mgrRecorder = s.role !== "NT" ? ((_mgrRecorderByEcYmd[s.ec] || {})[dy.ymd] || null) : null;
+                          const mgrCheckedIn = s.role !== "NT" && ((_mgrCheckedInByEcYmd[s.ec] || {})[dy.ymd]);
+                          const _mgrStatusStale = mgrStatus && (hint === "off");
                           if (s.role !== "NT") {
-                            kioskLine = null; // managers: no kiosk
+                            if (mgrStatus && !_mgrStatusStale) {
+                              kioskLine = "ROM marked " + lbl(mgrStatus) + (mgrRecorder ? " (by " + mgrRecorder + ")" : "") + (mgrNote ? " — " + mgrNote : "");
+                            } else if (_mgrStatusStale) {
+                              kioskLine = "Stale: ROM had marked " + lbl(mgrStatus) + (mgrRecorder ? " (by " + mgrRecorder + ")" : "") + " — day is now scheduled OFF, reason ignored. Open the cell to clear it.";
+                            } else if (mgrCheckedIn) {
+                              kioskLine = "Clocked in via kiosk";
+                            } else if (!isPastOrToday) {
+                              kioskLine = "—";
+                            } else if (dy.ymd < _mgrCheckinFromYmd) {
+                              kioskLine = null; // outside loaded clock-in window — don't claim anything
+                            } else {
+                              kioskLine = "No manager clock-in recorded";
+                            }
                           } else if (kioskAbs) {
                             kioskLine = "Marked " + lbl(kioskAbs.status) + (kioskAbs.markedBy ? " (by " + kioskAbs.markedBy + ")" : "") + (kioskAbs.note ? " — " + kioskAbs.note : "");
                           } else if (checkinHasIn) {
@@ -17807,9 +17999,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   // and only then click Confirm to record the review.
                                   const isProofStatus = bareV === "sick_n" || bareV === "frl";
                                   const kioskProofKey = kioskAbs && kioskAbs.proofKey;
-                                  if (isProofStatus && !reviewed && s.role === "NT") {
+                                  const isMgrRow = !!_mgrEcToStaffId[s.ec];
+                                  if (isProofStatus && !reviewed) {
                                     const openProofModal = (e) => {
                                       e.stopPropagation();
+                                      // Managers: the proof image lives on the
+                                      // manager_day_status row that the ROM
+                                      // uploaded — no kiosk proof key. Just
+                                      // hand the dataUrl straight to the modal.
+                                      if (isMgrRow) {
+                                        const mgrProof = (_mgrProofByEcYmd[s.ec] || {})[dy.ymd] || null;
+                                        const mgrNote = (_mgrNoteByEcYmd[s.ec] || {})[dy.ymd] || null;
+                                        const mgrRecorder = (_mgrRecorderByEcYmd[s.ec] || {})[dy.ymd] || null;
+                                        setProofModal({
+                                          loading: false,
+                                          name: s.name,
+                                          ymd: dy.ymd,
+                                          status: bareV === "sick_n" ? "Sick + note" : "FRL + proof",
+                                          note: mgrNote ? (mgrNote + (mgrRecorder ? "  (recorded by " + mgrRecorder + ")" : "")) : (mgrRecorder ? "Recorded by " + mgrRecorder : null),
+                                          dataUrl: mgrProof,
+                                          onConfirm: async () => { await autoRecordReview(s.ec, dy.d, v); }
+                                        });
+                                        return;
+                                      }
                                       const proofKey = kioskProofKey || ("boa_proof_" + attBranch + "_" + attYM + "_" + s.ec + "_" + dy.d);
                                       setProofModal({
                                         loading: !!proofKey,
@@ -19469,16 +19681,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             setTimeout(() => alert("⚠ Coverage warning — below 2 managers on shift:\n\n" + warns.join("\n") + "\n\nSwap applied (not saved yet — click Save). Use Undo to revert."), 50);
           }
         };
+        // Quick-cycle the cell value with a double-click. Steps through
+        // the common manager codes in order: blank → W → O → R → E → blank.
+        // Lets a ROM flip an OFF day straight to W without having to drag
+        // a Work cell over. Specialised working codes (WE / WL / WM / WB)
+        // aren't in the cycle — those are still set by drag-swap or via
+        // the Manager Coverage cell editor — and the function alerts when
+        // it encounters one rather than silently overwriting it.
         const toggleReq = (ec, d) => {
-          const cur = (result.grid[ec] && result.grid[ec][d]) || "W";
-          if (cur !== "O" && cur !== "R" && cur !== "E") {
-            alert("Only Off (OFF) cells can be cycled. Drag to make it Off first, then double-click to cycle OFF → REQ → EXT.");
+          const cur = (result.grid[ec] && result.grid[ec][d]) || "";
+          const cycle = ["", "W", "O", "R", "E"];
+          const idx = cycle.indexOf(cur);
+          if (idx < 0) {
+            alert("This cell is using a specific shift code (" + cur + "). Drag another day onto it to swap, or edit it from the Manager Coverage tab.");
             return;
           }
-          const next = cur === "O" ? "R" : cur === "R" ? "E" : "O";
+          const next = cycle[(idx + 1) % cycle.length];
           const newGrid = JSON.parse(JSON.stringify(result.grid));
           if (!newGrid[ec]) newGrid[ec] = {};
-          newGrid[ec][d] = next;
+          if (next) newGrid[ec][d] = next;
+          else delete newGrid[ec][d];
           setMgrSchedHist(h => {
             const updated = { ...h };
             const arr = (updated[editKey] || []).slice(-49);
@@ -20394,7 +20616,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               : xferEdge === "in" ? `${mg.name} · ${dy.d} · arriving from ${xferOther} on ${_xferDate} — pre-transfer days are still on the source schedule`
                                 : isLoanOut ? `${mg.name} · ${dy.d} · loaned to ${loanToBranch} this day — manage from Manager Coverage tab`
                                 : mg._guestFromBranch ? `${mg.name} · ${dy.d} · on loan from ${mg._guestFromBranch} — edit on Manager Coverage tab`
-                                : dy.d + ": " + (txt || "—") + (draggable ? " · drag to swap, double-click OFF→REQ→EXT" : "")}
+                                : dy.d + ": " + (txt || "—") + " · double-click cycles blank → W → OFF → REQ → EXT" + (draggable ? " · drag to swap days" : "")}
                             style={{ padding: "4px 0", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: isMon ? "3px solid #E84B9B" : "1px solid #FCE7F3", background: bg, color: fg, fontSize: 10, fontWeight: 700, cursor: draggable ? "grab" : "default", userSelect: "none" }}>
                             {xferEdge === "out" ? <span style={{ fontSize: 9, fontWeight: 800 }}>→{xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0, 4)}</span>
                               : xferEdge === "in" ? <span style={{ fontSize: 9, fontWeight: 800 }}>←{xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0, 4)}</span>
@@ -21986,7 +22208,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const k = _draftKey(branchName, ym);
           return _mergeDraft(mgrClockinSchedCache[k], mgrCoverageDraft[k]);
         };
+        // Leave Planner overlay (same idea as the attendance grid version).
+        // A manager granted leave through the Leave Planner reads as 'L' on
+        // every covered day regardless of whether the schedule was re-saved
+        // afterwards — so the coverage view stops treating that day as
+        // 'scheduled to work'.
+        const _onLeaveByEcYmdCov = {};
+        (leaveRecs || []).forEach(lv => {
+          if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return;
+          const ec = String(lv.ec).trim();
+          for (let cur = new Date(lv.startDate + "T00:00:00"); cur <= new Date(lv.endDate + "T00:00:00"); cur.setDate(cur.getDate() + 1)) {
+            const ymd = cur.getFullYear() + "-" + String(cur.getMonth() + 1).padStart(2, "0") + "-" + String(cur.getDate()).padStart(2, "0");
+            (_onLeaveByEcYmdCov[ec] = _onLeaveByEcYmdCov[ec] || {})[ymd] = true;
+          }
+        });
         const readWithFallback = (branchName, ec, d) => {
+          // Leave overlay wins over the saved grid + draft. Drafts can still
+          // override leave on purpose (ROM manually re-stamps a shift on top
+          // of a leave day) — those land in `mgrCoverageDraft` and we let
+          // them through.
+          const draftCell = readCell(mgrCoverageDraft[_draftKey(branchName, d.mgrYm)], ec, d);
+          if (!draftCell && ec && d && d.ymd && (_onLeaveByEcYmdCov[String(ec).trim()] || {})[d.ymd]) return "L";
           const grid = _gridForView(branchName, d.mgrYm);
           const v = readCell(grid, ec, d);
           if (v) return v;
@@ -22063,9 +22305,54 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // shift is on Betty's schedule.
         const mgrByBranch = {};
         scopedBranches.forEach(s => { mgrByBranch[s.name] = []; });
+        // Off-board lookup: leftDate + reason from offList, used to surface
+        // resigned managers on the coverage view with a "👋 LEFT" chip and
+        // a greyed row — matches what the Schedule tab does for the same
+        // record. A manager carries leftDate either on the live record or
+        // (more reliably for post-leftDate days) on the off-board record.
+        const _offByEcCov = {};
+        (offList || []).forEach(o => { if (o && o.ec) _offByEcCov[String(o.ec).trim()] = o; });
+        const _resolveLeftDate = (m) => {
+          const o = _offByEcCov[String(m.ec || "").trim()];
+          return (o && o.leftDate) || m.leftDate || null;
+        };
+        const _resolveLeftReason = (m) => {
+          const o = _offByEcCov[String(m.ec || "").trim()];
+          return (o && o.reason) || null;
+        };
+        // Visible-week window — used to drop managers who left BEFORE this
+        // week entirely. A manager whose leftDate is within the week still
+        // shows so the ROM can see the last few days of cover.
+        const _weekEndYmd = weekDays[weekDays.length - 1] && weekDays[weekDays.length - 1].ymd;
         managers.forEach(m => {
-          if (!m.branch || m.onMat || m.leftDate) return;
-          if (mgrByBranch[m.branch]) mgrByBranch[m.branch].push(m);
+          if (!m.branch || m.onMat) return;
+          const ld = _resolveLeftDate(m);
+          // Drop managers who left strictly before this visible week.
+          if (ld && _weekEndYmd && ld < weekDays[0].ymd) return;
+          if (mgrByBranch[m.branch]) mgrByBranch[m.branch].push(ld ? { ...m, _offGhost: true, _offLeftDate: ld, _offReason: _resolveLeftReason(m) } : m);
+        });
+        // Mid-month branch transfer: a manager with `transferring=true` +
+        // `transferTo` + `transferDate` set appears as a shadow row at the
+        // destination branch (so the ROM can fill in their post-transfer
+        // shifts before the move). The source-branch row still renders —
+        // its cells AFTER transferDate render as locked '→Dst' badges via
+        // `transferring && transferTo` in renderCell below. Mirrors the
+        // shadow-row logic the Schedule tab applies via enrichedManagers.
+        managers.forEach(m => {
+          if (!m || !m.transferring || !m.transferTo || !m.transferDate) return;
+          if (m.onMat || m.leftDate || m.offboarded) return;
+          if (m.transferTo === m.branch) return;            // no-op move
+          if (!mgrByBranch[m.transferTo]) return;            // dst out of scope
+          // Skip if the destination row already has the manager (would
+          // happen if the active record has already been moved over).
+          const alreadyThere = mgrByBranch[m.transferTo].some(x => String(x.ec || "").trim() === String(m.ec || "").trim());
+          if (alreadyThere) return;
+          mgrByBranch[m.transferTo].push({
+            ...m,
+            isShadow: true,
+            branch: m.transferTo,
+            transferFrom: m.branch,
+          });
         });
         // Pool of every staff record we might match a grid EC against —
         // try managers first, fall back to techs/all-staff if a row in the
@@ -22145,6 +22432,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // bottom regardless of role.
         const _roleRank = (r) => r === "SSM" ? 0 : r === "SM" ? 1 : r === "AM" ? 2 : 3;
         Object.keys(mgrByBranch).forEach(b => mgrByBranch[b].sort((a, b) => {
+          // Off-boarded managers go to the very bottom (under maternity),
+          // mirroring the Schedule tab's row ordering.
+          const ao = a._offGhost ? 1 : 0;
+          const bo = b._offGhost ? 1 : 0;
+          if (ao !== bo) return ao - bo;
           const am = _isOnMat(a) ? 1 : 0;
           const bm = _isOnMat(b) ? 1 : 0;
           if (am !== bm) return am - bm;
@@ -22204,6 +22496,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         // Coverage per branch per day — count managers scheduled to work.
         // Uses readWithFallback so published-only schedules still count.
+        // Off-boarded managers don't count on days STRICTLY AFTER their
+        // leftDate — those cells are locked as TERMINATED and the manager
+        // isn't actually covering anymore, so the coverage pill needs to
+        // drop them or the warning banner mis-reads "✓ 2" when one of the
+        // two has already left.
         const coverageByBranchDay = {};
         scopedBranches.forEach(s => {
           coverageByBranchDay[s.name] = weekDays.map(d => {
@@ -22211,6 +22508,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const aGrid = _approvedFallbackCache[s.name + "|" + d.mgrYm];
             let count = 0;
             (mgrByBranch[s.name] || []).forEach(m => {
+              const ld = m._offLeftDate || m.leftDate;
+              if (ld && d.ymd > ld) return;       // already gone — don't count
               if (isWorking(readWithFallback(s.name, m.ec, d))) count++;
             });
             return { count, gridLoaded: !!(wGrid || aGrid) };
@@ -22433,13 +22732,55 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }
           };
         };
-        const renderCell = (cellVal, key, branchName, role, ymd, ec, isGuest, mgrYm, mgrName, dom, dow) => {
+        const renderCell = (cellVal, key, branchName, role, ymd, ec, isGuest, mgrYm, mgrName, dom, dow, manager) => {
+          // Off-boarded manager — every cell AFTER their last working day
+          // renders as a locked grey "TERMINATED" chip. Days on or before
+          // leftDate stay normal so the final stretch of cover still shows.
+          const leftDate = (manager && (manager._offLeftDate || manager.leftDate)) || null;
+          if (leftDate && ymd && ymd > leftDate) {
+            return (
+              <td key={key} title={`${mgrName} · left ${leftDate} — no longer covering`} style={{ background: "#f3f4f6", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", cursor: "not-allowed", userSelect: "none", WebkitUserSelect: "none", textAlign: "center" }}>
+                <div style={{ minHeight: 56, display: "flex", alignItems: "center", justifyContent: "center", color: "#9ca3af", fontSize: 10, fontStyle: "italic", letterSpacing: "0.04em" }}>—</div>
+              </td>
+            );
+          }
           const clockedIn = ec && ymd && _clockedInByEcYmd[String(ec).trim()] && _clockedInByEcYmd[String(ec).trim()][ymd];
           const isPast = ymd && ymd < (function () { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
           const _dragDraggable = _isSrcDraggable(cellVal);
-          const tdStyle = { background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", cursor: ec ? (_dragDraggable ? "grab" : "pointer") : "default", userSelect: "none", WebkitUserSelect: "none" };
-          const _dh = _dragHandlers(cellVal, branchName, mgrYm, ec, dom, ymd, mgrName);
+          // Transfer-edge: mid-month branch move. A shadow row at the
+          // destination branch shows '←Src' for days BEFORE transferDate
+          // (still on the source schedule); the source-side row shows
+          // '→Dst' for days ON OR AFTER transferDate (already at the new
+          // branch). Both render as locked, branch-coloured chips and
+          // skip the cell editor — the active range is filled on the
+          // OTHER side of the transfer.
+          const _xferDate = (manager && manager.transferDate) || null;
+          const xferEdge = !_xferDate ? null
+            : (manager && manager.isShadow && ymd && ymd < _xferDate) ? "in"
+              : (manager && !manager.isShadow && manager.transferring && manager.transferTo && manager.transferTo !== branchName && ymd && ymd >= _xferDate) ? "out"
+                : null;
+          const xferOther = xferEdge === "in" ? (manager.transferFrom || "")
+            : xferEdge === "out" ? (manager.transferTo || "")
+              : null;
+          const tdStyle = { background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", cursor: ec && !xferEdge ? (_dragDraggable ? "grab" : "pointer") : "default", userSelect: "none", WebkitUserSelect: "none" };
+          const _dh = xferEdge ? {} : _dragHandlers(cellVal, branchName, mgrYm, ec, dom, ymd, mgrName);
           const onCellClick = () => openCellEditor(branchName, mgrYm, dom, ymd, ec, mgrName, role, cellVal || "");
+          if (xferEdge) {
+            const otherLbl = xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0, 4);
+            const bg = xferEdge === "in" ? "#dbeafe" : "#fef3c7";
+            const fg = xferEdge === "in" ? "#1e40af" : "#92400e";
+            const arrow = xferEdge === "in" ? "←" : "→";
+            const titleMsg = xferEdge === "in"
+              ? `${mgrName} · arriving from ${xferOther || "—"} on ${_xferDate} — pre-transfer days stay on ${xferOther || "the source"} schedule`
+              : `${mgrName} · transferring to ${xferOther || "—"} on ${_xferDate} — fill these days on the destination branch`;
+            return (
+              <td key={key} title={titleMsg} style={{ ...tdStyle, textAlign: "center", background: bg, color: fg, cursor: "not-allowed" }}>
+                <div style={{ minHeight: 56, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800, letterSpacing: "0.04em" }}>
+                  {arrow}{otherLbl}
+                </div>
+              </td>
+            );
+          }
           // Blank / empty day cell — also clickable so a ROM can add a shift.
           if (!cellVal) {
             return (
@@ -22682,15 +23023,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                     <td colSpan={8} style={{ padding: "10px 14px", color: "#9ca3af", fontStyle: "italic", fontSize: 12 }}>No active managers at this branch.</td>
                                   </tr>
                                 ) : mgrs.map(m => {
+                                  const _isOff = !!m._offGhost;
                                   return (
-                                    <tr key={m.ec}>
-                                      <td style={{ padding: "6px 14px", fontWeight: 700, color: "#831843", fontSize: 12, borderBottom: "1px solid #FCE7F3" }}>
+                                    <tr key={m.ec + (m.isShadow ? "-shadow" : "")} style={{ opacity: _isOff ? 0.55 : 1 }}>
+                                      <td style={{ padding: "6px 14px", fontWeight: 700, color: _isOff ? "#9ca3af" : "#831843", fontSize: 12, borderBottom: "1px solid #FCE7F3", background: _isOff ? "#f9fafb" : (m.isShadow ? "#eff6ff" : (m.transferring ? "#fffbeb" : undefined)), textDecoration: _isOff ? "line-through" : "none" }}>
                                         {_effectiveRole(m) === "SSM" ? "💎 " : _effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}
                                         <span style={{ marginLeft: 6, fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{_effectiveRole(m) || ""}{m.role === "AM" && _effectiveRole(m) === "SM" ? " (trial)" : ""}</span>
+                                        {m.isShadow && m.transferFrom && (
+                                          <span style={{ marginLeft: 6, background: "#dbeafe", color: "#1e40af", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>🔄 FROM {m.transferFrom}{m.transferDate ? " · " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>
+                                        )}
+                                        {!m.isShadow && m.transferring && m.transferTo && (
+                                          <span style={{ marginLeft: 6, background: "#fef3c7", color: "#92400e", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>🔄 → {m.transferTo}{m.transferDate ? " · " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>
+                                        )}
+                                        {_isOff && (
+                                          <div style={{ display: "inline-block", marginLeft: 6, background: "#fee2e2", color: "#991b1b", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>
+                                            👋 LEFT {m._offLeftDate}{m._offReason ? " · " + m._offReason : ""}
+                                          </div>
+                                        )}
                                       </td>
                                       {weekDays.map(d => {
                                         const v = readWithFallback(b, m.ec, d);
-                                        return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow);
+                                        return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow, m);
                                       })}
                                     </tr>
                                   );
@@ -22726,21 +23079,37 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       if (rows.length === 0) return (
                         <tr><td colSpan={8} style={{ padding: 30, textAlign: "center", color: "#9ca3af", fontStyle: "italic" }}>No managers in scope.</td></tr>
                       );
-                      return rows.map(({ m, b, r }) => (
-                        <tr key={m.ec + "-" + b}>
-                          <td style={{ padding: "6px 14px", borderBottom: "1px solid #FCE7F3" }}>
-                            <div style={{ fontWeight: 700, color: "#831843", fontSize: 12.5 }}>{_effectiveRole(m) === "SSM" ? "💎 " : _effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}</div>
+                      return rows.map(({ m, b, r }) => {
+                        const _isOff = !!m._offGhost;
+                        return (
+                        <tr key={m.ec + "-" + b + (m.isShadow ? "-shadow" : "")} style={{ opacity: _isOff ? 0.55 : 1 }}>
+                          <td style={{ padding: "6px 14px", borderBottom: "1px solid #FCE7F3", background: _isOff ? "#f9fafb" : (m.isShadow ? "#eff6ff" : (m.transferring ? "#fffbeb" : undefined)) }}>
+                            <div style={{ fontWeight: 700, color: _isOff ? "#9ca3af" : "#831843", fontSize: 12.5, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", textDecoration: _isOff ? "line-through" : "none" }}>
+                              <span>{_effectiveRole(m) === "SSM" ? "💎 " : _effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}</span>
+                              {m.isShadow && m.transferFrom && (
+                                <span style={{ background: "#dbeafe", color: "#1e40af", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>🔄 FROM {m.transferFrom}{m.transferDate ? " · " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>
+                              )}
+                              {!m.isShadow && m.transferring && m.transferTo && (
+                                <span style={{ background: "#fef3c7", color: "#92400e", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>🔄 → {m.transferTo}{m.transferDate ? " · " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>
+                              )}
+                            </div>
                             <div style={{ fontSize: 10, color: "#9ca3af" }}>
                               📍 {b} <span style={{ background: r.bg, color: r.color, padding: "1px 6px", borderRadius: 4, fontWeight: 700, marginLeft: 4 }}>{r.label}</span>
                               <span style={{ marginLeft: 6, fontFamily: "monospace" }}>{_effectiveRole(m) || ""}{m.role === "AM" && _effectiveRole(m) === "SM" ? " (trial)" : ""}</span>
                             </div>
+                            {_isOff && (
+                              <div style={{ marginTop: 2, fontSize: 10, color: "#991b1b", fontWeight: 700 }}>
+                                👋 LEFT {m._offLeftDate}{m._offReason ? " · " + m._offReason : ""}
+                              </div>
+                            )}
                           </td>
                           {weekDays.map(d => {
                             const v = readWithFallback(b, m.ec, d);
-                            return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow);
+                            return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow, m);
                           })}
                         </tr>
-                      ));
+                        );
+                      });
                     })()}
                   </tbody>
                 </table>
@@ -23262,6 +23631,44 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div style={{ marginTop: 10, background: "#fee2e2", border: "1px solid #fca5a5", color: "#7f1d1d", borderRadius: 8, padding: "8px 10px", fontSize: 12 }}>{E._err}</div>
               )}
 
+              {(() => {
+                // "Mark absence reason" shortcut. Saves directly to
+                // manager_day_status (the same store the dashboard no-show
+                // banner writes to) so a doctor's note for a future date
+                // can be entered straight from the coverage cell editor —
+                // no need to wait for the day to arrive. The cell's shift
+                // code stays as the schedule said (e.g. W); the absence
+                // reason overlays it on the attendance grid for payroll.
+                const _mgr = (managers || []).find(m => m && String(m.ec || "").trim() === String(E.ec || "").trim());
+                const sid = _mgr && (_mgr._id || _mgr.id);
+                const ex = (mgrDayStatuses || []).find(s => s && sid && s.staff_id === sid && s.date === E.ymd) || null;
+                const lbl = ex ? (MGR_REASON_OPTIONS.find(o => o.code === ex.status) || { label: ex.status }).label : null;
+                return (
+                  <div style={{ marginTop: 14, padding: "10px 12px", background: "#FDEEF5", border: "1px solid #FBCFE8", borderRadius: 9 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 11, fontWeight: 800, color: "#831843", letterSpacing: "0.04em" }}>ABSENCE REASON</div>
+                        <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>
+                          {ex
+                            ? <>Tagged: <strong style={{ color: "#831843" }}>{lbl}</strong>{ex.proof ? " 📎" : ""}{ex.note ? " — " + ex.note : ""}</>
+                            : "Use this when the manager has a doctor's note / FRL proof for this day (works for future dates too)."}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => {
+                          if (!sid) { window.alert("Cannot find this manager's staff record — refresh and try again."); return; }
+                          _close();
+                          setMgrReasonModal({ staffId: sid, ec: E.ec, name: E.name, branch: E.branch, date: E.ymd, existing: ex });
+                        }}
+                        disabled={!sid}
+                        style={{ background: sid ? "#fff" : "#FBCFE8", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "7px 12px", fontSize: 12, fontWeight: 700, cursor: sid ? "pointer" : "not-allowed", whiteSpace: "nowrap" }}>
+                        🤒 {ex ? "Edit reason" : "Mark absence reason"}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
+
               <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
                 <button onClick={_close} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", color: "#831843", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Cancel</button>
                 <button onClick={_save}
@@ -23605,7 +24012,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const m = mgrReasonModal;
         const existing = m.existing || null;
         const todayY = new Date(); const t0 = todayY.getFullYear() + "-" + String(todayY.getMonth() + 1).padStart(2, "0") + "-" + String(todayY.getDate()).padStart(2, "0");
-        const locked = payrollYmFor(m.date) !== payrollYmFor(t0);
+        // Lock CLOSED (past) payroll cycles only — a doctor's note for a
+        // future date (e.g. a manager handing one in for next Monday)
+        // needs to be recordable in advance. Future cycles stay open.
+        const locked = payrollYmFor(m.date) < payrollYmFor(t0);
         return (
           <MgrReasonModalBody
             modal={m}
