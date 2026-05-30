@@ -410,12 +410,17 @@
       var hereMgrs = (mgrs || []).filter(function (m) { return m && m.branch === thisBranch; });
       if (hereMgrs.length === 0) { slot.style.display = "none"; return; }
 
-      // Today's schedule for this branch's managers.
+      // Today's schedule for this branch's managers. getSchedule expects
+      // an END-month ym (see the comment in renderMgrClockin) so we pass
+      // currentMonth+1 if we're past the 25th, else just currentMonth —
+      // the helper subtracts one internally to land on the right cycle
+      // row. Without this we read last month's cell at this day-of-month
+      // and a manager who was scheduled to WORK on the same date last
+      // cycle but is OFF today incorrectly flagged as "not clocked in".
       var schedByEc = {};
-      var ymP = nowD.getDate() < 25
-        ? [nowD.getFullYear(), nowD.getMonth()]    // previous cycle
-        : [nowD.getFullYear(), nowD.getMonth() + 1];
-      var schedYm = ymP[0] + "-" + String(ymP[1]).padStart(2, "0");
+      var _endY = nowD.getFullYear(), _endM = nowD.getMonth() + 1;
+      if (nowD.getDate() >= 25) { _endM += 1; if (_endM > 12) { _endM = 1; _endY += 1; } }
+      var schedYm = _endY + "-" + String(_endM).padStart(2, "0");
       try {
         if (window.APP_DATA.getSchedule) {
           var res = await window.APP_DATA.getSchedule(schedYm, "mgr");
@@ -1087,12 +1092,25 @@
     var _nowD0 = new Date();
     var todayK = _ymdToday(_nowD0);
     var _todayDow = _nowD0.getDay();
+    // Start-month YM for the current + previous cycle (25 → 24 convention).
+    // _curCycleYm = "2026-05" means the May 25 → June 24 cycle.
     var _curCycleY = _nowD0.getFullYear(), _curCycleM = _nowD0.getMonth() + 1;
     if (_nowD0.getDate() < 25) { _curCycleM -= 1; if (_curCycleM < 1) { _curCycleM = 12; _curCycleY -= 1; } }
     var _curCycleYm = _curCycleY + "-" + String(_curCycleM).padStart(2, "0");
     var _prevCycleY = _curCycleY, _prevCycleM = _curCycleM - 1;
     if (_prevCycleM < 1) { _prevCycleM = 12; _prevCycleY -= 1; }
     var _prevCycleYm = _prevCycleY + "-" + String(_prevCycleM).padStart(2, "0");
+    // getSchedule(ym, "mgr") expects an END-month ym (tech convention) and
+    // does endYm − 1 internally to compute the manager start-month key.
+    // We hold start-month YMs above (so _ingestSched re-keys cells against
+    // the right cycle), so pass END = startMonth + 1 to the loader.
+    function _endYmOf(startYm) {
+      var p = startYm.split("-"); var y = +p[0], m = +p[1] + 1;
+      if (m > 12) { m = 1; y += 1; }
+      return y + "-" + String(m).padStart(2, "0");
+    }
+    var _curEndYm  = _endYmOf(_curCycleYm);
+    var _prevEndYm = _endYmOf(_prevCycleYm);
     function _ingestSched(ym, res) {
       var grid = (res && res.grid) || {};
       var ymP = ym.split("-").map(Number);
@@ -1124,8 +1142,8 @@
         window.APP_DATA.listRecentManagerClockins(7),
         window.APP_DATA.activeSmTrialEcs ? window.APP_DATA.activeSmTrialEcs() : Promise.resolve({}),
         window.APP_DATA.listTrialCandidates ? window.APP_DATA.listTrialCandidates() : Promise.resolve([]),
-        window.APP_DATA.getSchedule ? window.APP_DATA.getSchedule(_curCycleYm, "mgr").catch(function () { return null; }) : Promise.resolve(null),
-        window.APP_DATA.getSchedule ? window.APP_DATA.getSchedule(_prevCycleYm, "mgr").catch(function () { return null; }) : Promise.resolve(null),
+        window.APP_DATA.getSchedule ? window.APP_DATA.getSchedule(_curEndYm, "mgr").catch(function () { return null; }) : Promise.resolve(null),
+        window.APP_DATA.getSchedule ? window.APP_DATA.getSchedule(_prevEndYm, "mgr").catch(function () { return null; }) : Promise.resolve(null),
         window.APP_DATA.listManagerDayStatusesToday ? window.APP_DATA.listManagerDayStatusesToday().catch(function () { return []; }) : Promise.resolve([])
       ]);
       pins        = _results[0];

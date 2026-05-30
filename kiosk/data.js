@@ -1425,8 +1425,13 @@
     var since = new Date();
     since.setHours(0, 0, 0, 0);
     since.setDate(since.getDate() - (daysBack || 7));
+    // Filter staff by role_type at the database (inner join) so the
+    // response only carries manager clockins. Without this we were
+    // downloading every tech's clockin too — far more rows per day —
+    // and discarding them on the client.
     var res = await c.from("clockins")
-      .select("*, staff:staff_id ( id, name, employee_code, role_type, role, branch )")
+      .select("id,ts,type,flags,staff_id,staff:staff_id!inner(id,name,employee_code,role_type,role,branch)")
+      .eq("staff.role_type", "manager")
       .gte("ts", since.toISOString())
       .order("ts", { ascending: true });
     if (res.error) { console.error("listRecentManagerClockins:", res.error); return []; }
@@ -1553,7 +1558,14 @@
   }
   async function listAllManagers() {
     var c = client(); if (!c) return [];
-    var res = await c.from("staff").select("*").eq("active", true).order("name", { ascending: true });
+    // Project only the columns the Manager Clock-in screen needs. The
+    // staff table carries photo blobs + several other heavy fields that
+    // we don't use here, so `select("*")` was loading 100s of KB per call
+    // and dominating the kiosk's screen-render time.
+    var res = await c.from("staff")
+      .select("id,name,employee_code,role,role_type,branch,active")
+      .eq("active", true)
+      .order("name", { ascending: true });
     if (res.error) { console.error("listAllManagers:", res.error); return []; }
     return (res.data || []).filter(isManagerRow);
   }
