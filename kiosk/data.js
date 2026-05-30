@@ -1346,8 +1346,37 @@
     listManagerDayStatusesToday: listManagerDayStatusesToday,
 
     // Manager overtime — submitted from the kiosk, approved on the portal.
-    submitOvertimeRequest: submitOvertimeRequest
+    submitOvertimeRequest: submitOvertimeRequest,
+
+    // Witness reports — a manager naming a colleague who left early without
+    // clocking out. Stored as a single growing list for ROM review.
+    submitEarlyLeaveReport: submitEarlyLeaveReport
   };
+
+  async function submitEarlyLeaveReport(p) {
+    var c = client(); if (!c) throw new Error("Supabase not configured");
+    if (!p || !p.names) throw new Error("names is required.");
+    var nowD = new Date();
+    var ymd = nowD.getFullYear() + "-" + String(nowD.getMonth() + 1).padStart(2, "0") + "-" + String(nowD.getDate()).padStart(2, "0");
+    var prior = await c.from("app_state").select("value").eq("key", "boa_mgr_early_reports_v1").maybeSingle();
+    var list = (prior.data && Array.isArray(prior.data.value)) ? prior.data.value.slice() : [];
+    list.push({
+      id:             "elr_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+      branch:         branch() || "",
+      ymd:            ymd,
+      reportedAt:     nowD.toISOString(),
+      reportedByEc:   String(p.reportedByEc || "").trim() || null,
+      reportedByName: String(p.reportedByName || "").trim() || null,
+      names:          String(p.names).trim(),
+      note:           String(p.note || "").trim() || null,
+      reviewed:       false
+    });
+    // Cap so the row doesn't grow unbounded forever — keep last ~5k.
+    if (list.length > 5000) list = list.slice(-5000);
+    var res = await c.from("app_state").upsert({ key: "boa_mgr_early_reports_v1", value: list });
+    if (res.error) throw res.error;
+    return list[list.length - 1];
+  }
 
   async function listManagerDayStatusesToday() {
     var c = client(); if (!c) return [];

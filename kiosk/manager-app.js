@@ -1530,6 +1530,23 @@
             alert("Clock-out saved, but the early-leave reason couldn't be recorded: " + (e.message || e) + "\n\nAsk the ROM to record it manually from the HR portal.");
           }
         }
+        // Post-clock-out witness prompt: catch colleagues who walked out
+        // without clocking out (so no early-leave reason was logged). The
+        // clocking-out manager names them; the report goes to boa_mgr_early_reports_v1
+        // for ROM review. Skipped on clock-in.
+        if (type === "out") {
+          try {
+            var report = await openMgrEarlyLeaveReportModal({ name: name });
+            if (report && report.names) {
+              await window.APP_DATA.submitEarlyLeaveReport({
+                reportedByEc:   ec,
+                reportedByName: name,
+                names:          report.names,
+                note:           report.note || ""
+              });
+            }
+          } catch (e) { console.warn("early-leave report save failed:", e); }
+        }
         renderMgrClockin();
       };
       if (inBtn) inBtn.onclick = function () { doClock("in"); };
@@ -1629,6 +1646,74 @@
           approver:   approver,
           hours:      h
         });
+      };
+    });
+  }
+
+  // ---------------- Witness "did anyone leave early?" prompt ----------------
+  // Asked after a manager successfully clocks out, so a colleague who
+  // walked out without clocking out (no reason logged, no short-hours
+  // deducted) still gets reported. Resolves to:
+  //   { names: "Jane Doe, Sam Smith", note: "left around 14:00" }
+  //   null  → user picked "No" or dismissed
+  function openMgrEarlyLeaveReportModal(opts) {
+    return new Promise(function (resolve) {
+      var prev = document.getElementById("boa-mgr-early-report-modal");
+      if (prev) prev.remove();
+      var modal = document.createElement("div");
+      modal.id = "boa-mgr-early-report-modal";
+      modal.className = "boa-modal-backdrop";
+      modal.innerHTML =
+        '<div class="boa-modal-card">' +
+          '<h2 class="boa-modal-title">👀 Did anyone else leave early today?</h2>' +
+          '<p class="boa-modal-body">' +
+            'Thanks for clocking out, ' + esc(opts.name) + '. Before you go — ' +
+            'did any other manager leave their shift early today without clocking out? ' +
+            'A quick yes/no helps payroll catch missed deductions.' +
+          '</p>' +
+          '<div class="btn-row" style="justify-content:center;gap:10px;margin-top:12px">' +
+            '<button type="button" class="link-btn link-btn-dark" id="boa-mgr-er-no">No, everyone stayed</button>' +
+            '<button type="button" class="btn btn-primary" id="boa-mgr-er-yes">Yes, name them</button>' +
+          '</div>' +
+          '<div id="boa-mgr-er-detail" style="display:none;margin-top:14px">' +
+            '<label class="lbl">Who left early?</label>' +
+            '<input id="boa-mgr-er-names" type="text" class="input" ' +
+              'placeholder="Comma-separated names" autocomplete="off">' +
+            '<label class="lbl" style="margin-top:10px">Note (optional — when they left, why if you know)</label>' +
+            '<textarea id="boa-mgr-er-note" class="input" rows="2" ' +
+              'placeholder="e.g. around 14:00, said she was sick"></textarea>' +
+            '<div id="boa-mgr-er-err" class="err-line"></div>' +
+            '<div class="btn-row" style="justify-content:space-between;gap:8px;margin-top:10px">' +
+              '<button type="button" class="link-btn link-btn-dark" id="boa-mgr-er-cancel">Skip</button>' +
+              '<button type="button" class="btn btn-primary" id="boa-mgr-er-save">Submit report</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(modal);
+
+      var noBtn   = document.getElementById("boa-mgr-er-no");
+      var yesBtn  = document.getElementById("boa-mgr-er-yes");
+      var detail  = document.getElementById("boa-mgr-er-detail");
+      var namesEl = document.getElementById("boa-mgr-er-names");
+      var noteEl  = document.getElementById("boa-mgr-er-note");
+      var errEl   = document.getElementById("boa-mgr-er-err");
+      var saveBtn = document.getElementById("boa-mgr-er-save");
+      var cancelBtn = document.getElementById("boa-mgr-er-cancel");
+      function close(result) { modal.remove(); resolve(result); }
+      noBtn.onclick     = function () { close(null); };
+      cancelBtn.onclick = function () { close(null); };
+      modal.addEventListener("click", function (e) { if (e.target === modal) close(null); });
+      yesBtn.onclick = function () {
+        detail.style.display = "block";
+        yesBtn.style.display = "none";
+        noBtn.style.display  = "none";
+        setTimeout(function () { try { namesEl.focus(); } catch (_e) {} }, 50);
+      };
+      saveBtn.onclick = function () {
+        errEl.textContent = "";
+        var names = (namesEl.value || "").trim();
+        if (names.length < 2) { errEl.textContent = "Add at least one name."; return; }
+        close({ names: names, note: (noteEl.value || "").trim() });
       };
     });
   }
