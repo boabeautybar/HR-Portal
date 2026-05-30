@@ -1425,13 +1425,15 @@
     var since = new Date();
     since.setHours(0, 0, 0, 0);
     since.setDate(since.getDate() - (daysBack || 7));
-    // Filter staff by role_type at the database (inner join) so the
-    // response only carries manager clockins. Without this we were
-    // downloading every tech's clockin too — far more rows per day —
-    // and discarding them on the client.
+    // Client-side filter on role_type. A previous iteration tried an
+    // embedded-resource filter (`.eq("staff.role_type", "manager")` with
+    // `staff:staff_id!inner(...)`) but PostgREST silently dropped every
+    // row, so the kiosk saw NO clock-ins and every scheduled manager
+    // showed the "HAVEN'T CLOCKED IN" pill on the Manager Clock-in
+    // screen. Project only the clockin columns we use to keep the
+    // payload light without trusting the embedded filter.
     var res = await c.from("clockins")
-      .select("id,ts,type,flags,staff_id,staff:staff_id!inner(id,name,employee_code,role_type,role,branch)")
-      .eq("staff.role_type", "manager")
+      .select("id,ts,type,flags,staff_id,staff:staff_id(id,name,employee_code,role_type,role,branch)")
       .gte("ts", since.toISOString())
       .order("ts", { ascending: true });
     if (res.error) { console.error("listRecentManagerClockins:", res.error); return []; }
