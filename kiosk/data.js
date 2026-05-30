@@ -1420,15 +1420,25 @@
     return list[list.length - 1];
   }
 
-  async function listRecentManagerClockins(daysBack) {
+  // When `mgrIds` is provided, the clockins query is filtered server-side
+  // via .in("staff_id", mgrIds) so only manager rows come back. This is a
+  // regular column filter (not the broken embedded one) and it's
+  // dramatically faster on the kiosk because clockins is dominated by
+  // nail-tech rows. Falls back to the unfiltered HR-portal-style query
+  // when no IDs are passed.
+  async function listRecentManagerClockins(daysBack, mgrIds) {
     var c = client(); if (!c) return [];
     var since = new Date();
     since.setHours(0, 0, 0, 0);
     since.setDate(since.getDate() - (daysBack || 7));
-    var res = await c.from("clockins")
+    var q = c.from("clockins")
       .select("*, staff:staff_id ( id, name, employee_code, role_type, role, branch )")
       .gte("ts", since.toISOString())
       .order("ts", { ascending: true });
+    if (Array.isArray(mgrIds) && mgrIds.length > 0) {
+      q = q.in("staff_id", mgrIds);
+    }
+    var res = await q;
     if (res.error) { console.error("listRecentManagerClockins:", res.error); return []; }
     return (res.data || []).filter(function (r) { return r.staff && r.staff.role_type === "manager"; });
   }
@@ -1553,7 +1563,14 @@
   }
   async function listAllManagers() {
     var c = client(); if (!c) return [];
-    var res = await c.from("staff").select("*").eq("active", true).order("name", { ascending: true });
+    // Project only the columns the Manager Clock-in screen needs. The
+    // staff table carries photo blobs + several other heavy fields that
+    // we don't use here, so `select("*")` was loading 100s of KB per call
+    // and dominating the kiosk's screen-render time.
+    var res = await c.from("staff")
+      .select("id,name,employee_code,role,role_type,branch,active")
+      .eq("active", true)
+      .order("name", { ascending: true });
     if (res.error) { console.error("listAllManagers:", res.error); return []; }
     return (res.data || []).filter(isManagerRow);
   }

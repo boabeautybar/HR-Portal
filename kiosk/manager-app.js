@@ -410,12 +410,17 @@
       var hereMgrs = (mgrs || []).filter(function (m) { return m && m.branch === thisBranch; });
       if (hereMgrs.length === 0) { slot.style.display = "none"; return; }
 
-      // Today's schedule for this branch's managers.
+      // Today's schedule for this branch's managers. getSchedule expects
+      // an END-month ym (see the comment in renderMgrClockin) so we pass
+      // currentMonth+1 if we're past the 25th, else just currentMonth —
+      // the helper subtracts one internally to land on the right cycle
+      // row. Without this we read last month's cell at this day-of-month
+      // and a manager who was scheduled to WORK on the same date last
+      // cycle but is OFF today incorrectly flagged as "not clocked in".
       var schedByEc = {};
-      var ymP = nowD.getDate() < 25
-        ? [nowD.getFullYear(), nowD.getMonth()]    // previous cycle
-        : [nowD.getFullYear(), nowD.getMonth() + 1];
-      var schedYm = ymP[0] + "-" + String(ymP[1]).padStart(2, "0");
+      var _endY = nowD.getFullYear(), _endM = nowD.getMonth() + 1;
+      if (nowD.getDate() >= 25) { _endM += 1; if (_endM > 12) { _endM = 1; _endY += 1; } }
+      var schedYm = _endY + "-" + String(_endM).padStart(2, "0");
       try {
         if (window.APP_DATA.getSchedule) {
           var res = await window.APP_DATA.getSchedule(schedYm, "mgr");
@@ -1087,12 +1092,25 @@
     var _nowD0 = new Date();
     var todayK = _ymdToday(_nowD0);
     var _todayDow = _nowD0.getDay();
+    // Start-month YM for the current + previous cycle (25 → 24 convention).
+    // _curCycleYm = "2026-05" means the May 25 → June 24 cycle.
     var _curCycleY = _nowD0.getFullYear(), _curCycleM = _nowD0.getMonth() + 1;
     if (_nowD0.getDate() < 25) { _curCycleM -= 1; if (_curCycleM < 1) { _curCycleM = 12; _curCycleY -= 1; } }
     var _curCycleYm = _curCycleY + "-" + String(_curCycleM).padStart(2, "0");
     var _prevCycleY = _curCycleY, _prevCycleM = _curCycleM - 1;
     if (_prevCycleM < 1) { _prevCycleM = 12; _prevCycleY -= 1; }
     var _prevCycleYm = _prevCycleY + "-" + String(_prevCycleM).padStart(2, "0");
+    // getSchedule(ym, "mgr") expects an END-month ym (tech convention) and
+    // does endYm − 1 internally to compute the manager start-month key.
+    // We hold start-month YMs above (so _ingestSched re-keys cells against
+    // the right cycle), so pass END = startMonth + 1 to the loader.
+    function _endYmOf(startYm) {
+      var p = startYm.split("-"); var y = +p[0], m = +p[1] + 1;
+      if (m > 12) { m = 1; y += 1; }
+      return y + "-" + String(m).padStart(2, "0");
+    }
+    var _curEndYm  = _endYmOf(_curCycleYm);
+    var _prevEndYm = _endYmOf(_prevCycleYm);
     function _ingestSched(ym, res) {
       var grid = (res && res.grid) || {};
       var ymP = ym.split("-").map(Number);
@@ -1115,27 +1133,33 @@
         });
       });
     }
-    // Fire every independent read in parallel — load time is the slowest
-    // single call instead of the sum of all of them.
+    // Load managers FIRST so the clockins query can filter server-side
+    // by their staff_ids — clockins is dominated by nail-tech rows and
+    // the previous unfiltered query was downloading hundreds of irrelevant
+    // rows per render. Everything else fires in parallel after the IDs
+    // are known.
     try {
-      var _results = await Promise.all([
+      var _stage1 = await Promise.all([
         window.APP_DATA.loadManagerPins(),
         window.APP_DATA.listAllManagers(),
-        window.APP_DATA.listRecentManagerClockins(7),
         window.APP_DATA.activeSmTrialEcs ? window.APP_DATA.activeSmTrialEcs() : Promise.resolve({}),
-        window.APP_DATA.listTrialCandidates ? window.APP_DATA.listTrialCandidates() : Promise.resolve([]),
-        window.APP_DATA.getSchedule ? window.APP_DATA.getSchedule(_curCycleYm, "mgr").catch(function () { return null; }) : Promise.resolve(null),
-        window.APP_DATA.getSchedule ? window.APP_DATA.getSchedule(_prevCycleYm, "mgr").catch(function () { return null; }) : Promise.resolve(null),
+        window.APP_DATA.listTrialCandidates ? window.APP_DATA.listTrialCandidates() : Promise.resolve([])
+      ]);
+      pins       = _stage1[0];
+      mgrs       = _stage1[1];
+      smTrialEcs = _stage1[2];
+      trialCand  = _stage1[3];
+      var _mgrIds = (mgrs || []).map(function (m) { return m.id; }).filter(Boolean);
+      var _stage2 = await Promise.all([
+        window.APP_DATA.listRecentManagerClockins(2, _mgrIds),
+        window.APP_DATA.getSchedule ? window.APP_DATA.getSchedule(_curEndYm, "mgr").catch(function () { return null; }) : Promise.resolve(null),
+        window.APP_DATA.getSchedule ? window.APP_DATA.getSchedule(_prevEndYm, "mgr").catch(function () { return null; }) : Promise.resolve(null),
         window.APP_DATA.listManagerDayStatusesToday ? window.APP_DATA.listManagerDayStatusesToday().catch(function () { return []; }) : Promise.resolve([])
       ]);
-      pins        = _results[0];
-      mgrs        = _results[1];
-      recent      = _results[2];
-      smTrialEcs  = _results[3];
-      trialCand   = _results[4];
-      _ingestSched(_curCycleYm, _results[5]);
-      _ingestSched(_prevCycleYm, _results[6]);
-      (_results[7] || []).forEach(function (r) { if (r && r.staff_id) mgrTaggedStaffIds[r.staff_id] = true; });
+      recent = _stage2[0];
+      _ingestSched(_curCycleYm, _stage2[1]);
+      _ingestSched(_prevCycleYm, _stage2[2]);
+      (_stage2[3] || []).forEach(function (r) { if (r && r.staff_id) mgrTaggedStaffIds[r.staff_id] = true; });
     } catch (e) {
       document.getElementById("mc-body").innerHTML =
         '<div class="warn">Could not load: ' + esc(e.message || e) + '</div>';
@@ -1173,7 +1197,7 @@
     var autoYesterday = await ensureAutoOuts(recent, _schedLookup, mgrByEc);
     if (Object.keys(autoYesterday).length > 0) {
       // Rebuild recent so the per-row "today" status reflects the new auto-outs
-      recent = await window.APP_DATA.listRecentManagerClockins(7);
+      recent = await window.APP_DATA.listRecentManagerClockins(2);
     }
 
     // Today's schedule lookup for per-row hours + the "haven't clocked in" check.
@@ -1184,8 +1208,15 @@
     });
     var byEc = {};
     var inTodayByEc = {};   // earliest "in" record today per ec — only one clock-in/day allowed
+    // Trim ECs on BOTH sides of the lookup. Some staff records carry
+    // trailing whitespace on employee_code (e.g. "B620-M ") and the
+    // raw value comes back differently between listAllManagers (often
+    // clean) and the staff JOIN on clockins. Without the trim the row
+    // lookup misses and a manager who clocked in renders as "HAVEN'T
+    // CLOCKED IN" — matches the HR portal's mLocalYmd / trim pattern.
     recent.forEach(function (r) {
-      var ec = r.staff && r.staff.employee_code; if (!ec) return;
+      var ec = r.staff && r.staff.employee_code ? String(r.staff.employee_code).trim() : "";
+      if (!ec) return;
       if (dateKeyOf(r.ts) !== todayK) return;
       if (!byEc[ec] || r.ts > byEc[ec].ts) byEc[ec] = r;
       if (r.type === "in" && (!inTodayByEc[ec] || r.ts < inTodayByEc[ec].ts)) inTodayByEc[ec] = r;
@@ -1193,7 +1224,7 @@
 
     // Yesterday-auto-out summary banner
     var warnHtml = "";
-    var autoNames = mgrs.filter(function (m) { return autoYesterday[m.employee_code]; }).map(function (m) { return m.name; });
+    var autoNames = mgrs.filter(function (m) { return autoYesterday[String(m.employee_code || "").trim()]; }).map(function (m) { return m.name; });
     if (autoNames.length > 0) {
       warnHtml =
         '<div class="warn" style="margin-bottom:14px;background:#fee2e2;border:1px solid #fca5a5;color:#7f1d1d;border-radius:11px;padding:12px 14px;font-size:13px;line-height:1.5">' +
@@ -1215,8 +1246,15 @@
     var _isWorkingCode = function (v) { return v === "W" || v === "WL" || v === "WE" || v === "WB" || v === "WM" || v === "E"; };
 
     function mgrRowHtml(m) {
-      var ec = m.employee_code || "";
-      var has = !!pins[ec];
+      // ec is the trimmed key used for every lookup table built above.
+      // The raw m.employee_code might carry trailing whitespace, which
+      // would mismatch against the trimmed keys in inTodayByEc / byEc /
+      // mgrTodaySched and leave the manager rendering as "not clocked
+      // in" even when they did. pins is keyed by raw EC (its data layer
+      // doesn't trim), so we fall back to either form for the PIN check.
+      var ecRaw = m.employee_code || "";
+      var ec = String(ecRaw).trim();
+      var has = !!(pins[ec] || pins[ecRaw]);
       var last = byEc[ec];
       var inDone = !!inTodayByEc[ec];   // already clocked in today → no second clock-in
       // An AM on an active SM trial is shown as "SM · on trial", mirroring
