@@ -1003,6 +1003,27 @@
       return (a.name || "").localeCompare(b.name || "");
     });
 
+    // Pull today's schedule for each manager so the row can show their
+    // shift hours next to the name. Best-effort: if the load fails we just
+    // skip the hours rather than blocking the clock-in screen.
+    var mgrTodaySched = {};
+    try {
+      var _nowD = new Date();
+      var _schedYm = _nowD.getFullYear() + "-" + String(_nowD.getMonth() + 1).padStart(2, "0");
+      if (window.APP_DATA.getSchedule) {
+        var schedRes = await window.APP_DATA.getSchedule(_schedYm, "mgr");
+        var schedGrid = (schedRes && schedRes.grid) || {};
+        var _dom = _nowD.getDate();
+        var _ymd = _nowD.getFullYear() + "-" + String(_nowD.getMonth() + 1).padStart(2, "0") + "-" + String(_nowD.getDate()).padStart(2, "0");
+        Object.keys(schedGrid).forEach(function (ec) {
+          var row = schedGrid[ec] || {};
+          var v = row[_ymd] != null ? row[_ymd] : row[_dom];
+          if (v != null) mgrTodaySched[ec] = v;
+        });
+      }
+    } catch (e) { console.warn("today-schedule load failed:", e); }
+    var _todayDow = (new Date()).getDay();
+
     // Last clock-in TODAY per ec
     var todayK = (function () {
       var d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
@@ -1052,6 +1073,18 @@
       }
       var autoBadge = autoYesterday[ec] ? ' <span class="pill" style="background:#fee2e2;color:#7f1d1d">⚠ auto-out yesterday</span>' : "";
       var rowCls = m.branch === thisBranch ? "" : " staff-inactive";
+      // Shift hours for today, computed from the schedule code and
+      // role. Only shown for managers based at this branch on a day
+      // the schedule says they're working — silent otherwise so we
+      // don't tell an off-duty manager "your shift is X" by mistake.
+      var _schedCodeToday = mgrTodaySched[ec];
+      var _isWorkingToday = _schedCodeToday === "W" || _schedCodeToday === "WL" || _schedCodeToday === "WE" || _schedCodeToday === "WM" || _schedCodeToday === "WB" || _schedCodeToday === "E";
+      var shiftLine = "";
+      if (m.branch === thisBranch && _isWorkingToday) {
+        var _effRole = onSmTrial ? "SM" : (m.role || "");
+        var _hrs = shiftTimes(_effRole, _schedCodeToday, thisBranch, _todayDow);
+        shiftLine = '<div class="staff-shift-hours" style="font-size:11px;color:var(--pink-700);font-weight:700;letter-spacing:0.02em;margin-top:2px">🕐 Today · ' + esc(_hrs) + '</div>';
+      }
       return '<div class="staff-row' + rowCls + '" data-id="' + m.id + '" data-ec="' + esc(ec) + '" data-name="' + esc(m.name) + '">' +
         '<div class="staff-row-main">' +
         '<div class="staff-name">' + esc(m.name) +
@@ -1059,6 +1092,7 @@
         (m.branch !== thisBranch ? ' <span class="pill pill-mute">' + esc(m.branch || "—") + "</span>" : "") +
         (has ? "" : ' <span class="pill pill-warn">NO PIN</span>') + autoBadge +
         '</div>' +
+        shiftLine +
         '<div class="staff-code" style="margin-top:3px">' + lastLabel + '</div>' +
         '</div>' +
         '<div class="staff-row-actions">' +
@@ -1326,6 +1360,77 @@
   function fmtTime(iso) {
     try { return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
     catch (_e) { return iso; }
+  }
+  // Mirror of the HR portal's shiftTimes() (Manager Coverage tab) so the
+  // kiosk can show each manager their shift hours for today. Keep these
+  // two implementations in sync — the portal one is the source of truth.
+  //   role: "SM" | "SSM" | "AM"
+  //   code: schedule cell value for today (W / WE / WL / WM / WB / E …)
+  //   branchName: store name (matches APP_CONFIG.branchName)
+  //   dow: 0=Sun … 6=Sat (Date#getDay)
+  function shiftTimes(role, code, branchName, dow) {
+    var r = (role || "").toUpperCase();
+    var isSM = r === "SM" || r === "SSM";
+    var b = branchName || "";
+
+    if (b === "Sandown" || b === "Table Bay") {
+      if (isSM) return "08:00 - 17:00";
+      if (dow === 0) {
+        if (code === "WE") return "08:00 - 17:00";
+        return "09:00 - 18:00";
+      }
+      if (dow === 6 && b === "Sandown") {
+        if (code === "WE") return "08:00 - 17:00";
+        return "10:00 - 19:00";
+      }
+      if (code === "WE") return "08:00 - 17:00";
+      if (code === "WM") return "09:00 - 18:00";
+      return "11:00 - 20:00";
+    }
+    if (b === "Riverlands") {
+      if (dow === 6) return "09:00 - 18:00";
+      if (dow === 0) return "08:00 - 17:00";
+      if (isSM) return "08:00 - 17:00";
+      if (code === "WE") return "09:00 - 18:00";
+      if (code === "WB") return "08:00 - 17:00";
+      return "10:00 - 19:00";
+    }
+    if (b === "Ballito" || b === "Mall of the South") {
+      if (isSM) return "08:00 - 17:00";
+      if (dow === 0) return "08:00 - 17:00";
+      if (code === "WE") return "08:00 - 17:00";
+      if (code === "WM") return "09:00 - 18:00";
+      return "10:00 - 19:00";
+    }
+    if (b === "Fourways") {
+      if (isSM) {
+        if (code === "WL") return "11:00 - 20:00";
+        return "08:00 - 17:00";
+      }
+      if (dow === 0) {
+        if (code === "WE") return "08:00 - 17:00";
+        return "10:00 - 19:00";
+      }
+      if (code === "WM") return "10:00 - 19:00";
+      return "11:00 - 20:00";
+    }
+    // Generic stores. Weekend override: SM flat 08:00-17:00 Sat & Sun.
+    // AM Sat 09:00-18:00, Sun 08:30-17:00. Weekdays keep code-specific.
+    if (isSM) {
+      if (dow === 0 || dow === 6) return "08:00 - 17:00";
+      if (code === "WL") return "08:30 - 17:30";
+      if (code === "WE") return "07:30 - 16:30";
+      if (code === "WM") return "08:00 - 13:00";
+      return "08:00 - 17:00";
+    }
+    if (dow === 6) return "09:00 - 18:00";
+    if (dow === 0) return "08:30 - 17:00";
+    if (code === "WL") return "10:00 - 19:00";
+    if (code === "WE") return "08:30 - 18:00";
+    if (code === "WM") return "09:00 - 13:00";
+    if (code === "WB") return "08:00 - 19:00";
+    if (code === "E")  return "09:00 - 18:30";
+    return "09:30 - 18:30";
   }
   function fmtDate(s) {
     try {
