@@ -482,15 +482,66 @@
   // no partial / live search — but the match is on the last 4 only. When two
   // vouchers share the same last 4, every match is shown with its amount so
   // the manager picks the one whose amount matches the client's voucher.
+  function _fmtTxnDateTime(iso) {
+    try {
+      var d = new Date(iso);
+      if (isNaN(d.getTime())) return { date: String(iso || ""), time: "" };
+      return {
+        date: d.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }),
+        time: d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      };
+    } catch (_e) { return { date: String(iso || ""), time: "" }; }
+  }
   function _voucherCard(m) {
-    return '<div style="background:#dcfce7;border:1px solid #86efac;border-radius:12px;padding:14px 16px;margin-top:10px">' +
+    var hasRollup = (m.txn_count != null && Number(m.txn_count) > 0);
+    var face = parseFloat(String(m.amount != null ? m.amount : "").replace(/[^0-9.\-]/g, ""));
+    if (isNaN(face)) face = 0;
+    var balance = (m.balance != null) ? Number(m.balance) : face;
+    var used    = (m.used_total != null) ? Number(m.used_total) : 0;
+    var balColor = balance <= 0 ? "#b91c1c" : "#065f46";
+
+    var html = '<div style="background:#dcfce7;border:1px solid #86efac;border-radius:12px;padding:14px 16px;margin-top:10px">' +
       (m.amount ? '<div style="font-size:13px;font-weight:800;color:#14532d">Amount: ' + esc(String(m.amount)) + '</div>' : '') +
       '<div style="font-size:11px;font-weight:700;color:#14532d;text-transform:uppercase;letter-spacing:0.06em;margin-top:' + (m.amount ? '6' : '0') + 'px">Fresha voucher code</div>' +
       '<div style="display:flex;align-items:center;gap:12px;margin-top:4px;flex-wrap:wrap">' +
         '<code style="font-size:22px;font-weight:800;color:#065f46;letter-spacing:0.04em">' + esc(m.fresha) + '</code>' +
         '<button type="button" class="vc-copy" data-code="' + esc(m.fresha) + '" style="background:#fff;border:1px solid #86efac;color:#065f46;border-radius:8px;padding:6px 12px;font-weight:700;cursor:pointer">Copy</button>' +
-      '</div>' +
-    '</div>';
+      '</div>';
+
+    html += '<div style="margin-top:12px;padding-top:12px;border-top:1px solid #86efac">' +
+      '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">' +
+        '<span style="font-size:12px;font-weight:700;color:#14532d;text-transform:uppercase;letter-spacing:0.05em">Balance remaining</span>' +
+        '<span style="font-size:20px;font-weight:800;color:' + balColor + '">' + fmtMoney(balance) + '</span>' +
+      '</div>';
+
+    if (hasRollup) {
+      html += '<div style="font-size:11px;color:#4b5563;margin-top:2px">Used ' + fmtMoney(used) + ' across ' + m.txn_count + ' transaction' + (Number(m.txn_count) === 1 ? '' : 's') + '</div>' +
+        '<div style="margin-top:10px;overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">' +
+        '<thead><tr>' +
+          '<th style="text-align:left;padding:4px 6px;color:#14532d;border-bottom:1px solid #86efac">Date</th>' +
+          '<th style="text-align:left;padding:4px 6px;color:#14532d;border-bottom:1px solid #86efac">Time</th>' +
+          '<th style="text-align:left;padding:4px 6px;color:#14532d;border-bottom:1px solid #86efac">Client</th>' +
+          '<th style="text-align:left;padding:4px 6px;color:#14532d;border-bottom:1px solid #86efac">Branch</th>' +
+          '<th style="text-align:left;padding:4px 6px;color:#14532d;border-bottom:1px solid #86efac">Appt ref</th>' +
+          '<th style="text-align:right;padding:4px 6px;color:#14532d;border-bottom:1px solid #86efac">Amount</th>' +
+        '</tr></thead><tbody>';
+      (m.txns || []).forEach(function (t) {
+        var dt = _fmtTxnDateTime(t.d);
+        html += '<tr>' +
+          '<td style="padding:4px 6px;border-bottom:1px solid #d1fae5">' + esc(dt.date) + '</td>' +
+          '<td style="padding:4px 6px;border-bottom:1px solid #d1fae5">' + esc(dt.time) + '</td>' +
+          '<td style="padding:4px 6px;border-bottom:1px solid #d1fae5">' + esc(String(t.c || "")) + '</td>' +
+          '<td style="padding:4px 6px;border-bottom:1px solid #d1fae5">' + esc(String(t.b || "")) + '</td>' +
+          '<td style="padding:4px 6px;border-bottom:1px solid #d1fae5"><code style="font-size:11px">' + esc(String(t.ap || "")) + '</code></td>' +
+          '<td style="padding:4px 6px;border-bottom:1px solid #d1fae5;text-align:right">' + fmtMoney(t.a) + '</td>' +
+        '</tr>';
+      });
+      html += '</tbody></table></div>';
+    } else {
+      html += '<div style="font-size:11px;color:#4b5563;margin-top:2px">Not used yet — full balance.</div>';
+    }
+    html += '</div></div>';
+    return html;
   }
   async function renderVoucherLookup() {
     setSublabel("Voucher Code");
