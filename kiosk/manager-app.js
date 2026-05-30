@@ -1202,8 +1202,15 @@
     });
     var byEc = {};
     var inTodayByEc = {};   // earliest "in" record today per ec — only one clock-in/day allowed
+    // Trim ECs on BOTH sides of the lookup. Some staff records carry
+    // trailing whitespace on employee_code (e.g. "B620-M ") and the
+    // raw value comes back differently between listAllManagers (often
+    // clean) and the staff JOIN on clockins. Without the trim the row
+    // lookup misses and a manager who clocked in renders as "HAVEN'T
+    // CLOCKED IN" — matches the HR portal's mLocalYmd / trim pattern.
     recent.forEach(function (r) {
-      var ec = r.staff && r.staff.employee_code; if (!ec) return;
+      var ec = r.staff && r.staff.employee_code ? String(r.staff.employee_code).trim() : "";
+      if (!ec) return;
       if (dateKeyOf(r.ts) !== todayK) return;
       if (!byEc[ec] || r.ts > byEc[ec].ts) byEc[ec] = r;
       if (r.type === "in" && (!inTodayByEc[ec] || r.ts < inTodayByEc[ec].ts)) inTodayByEc[ec] = r;
@@ -1211,7 +1218,7 @@
 
     // Yesterday-auto-out summary banner
     var warnHtml = "";
-    var autoNames = mgrs.filter(function (m) { return autoYesterday[m.employee_code]; }).map(function (m) { return m.name; });
+    var autoNames = mgrs.filter(function (m) { return autoYesterday[String(m.employee_code || "").trim()]; }).map(function (m) { return m.name; });
     if (autoNames.length > 0) {
       warnHtml =
         '<div class="warn" style="margin-bottom:14px;background:#fee2e2;border:1px solid #fca5a5;color:#7f1d1d;border-radius:11px;padding:12px 14px;font-size:13px;line-height:1.5">' +
@@ -1233,8 +1240,15 @@
     var _isWorkingCode = function (v) { return v === "W" || v === "WL" || v === "WE" || v === "WB" || v === "WM" || v === "E"; };
 
     function mgrRowHtml(m) {
-      var ec = m.employee_code || "";
-      var has = !!pins[ec];
+      // ec is the trimmed key used for every lookup table built above.
+      // The raw m.employee_code might carry trailing whitespace, which
+      // would mismatch against the trimmed keys in inTodayByEc / byEc /
+      // mgrTodaySched and leave the manager rendering as "not clocked
+      // in" even when they did. pins is keyed by raw EC (its data layer
+      // doesn't trim), so we fall back to either form for the PIN check.
+      var ecRaw = m.employee_code || "";
+      var ec = String(ecRaw).trim();
+      var has = !!(pins[ec] || pins[ecRaw]);
       var last = byEc[ec];
       var inDone = !!inTodayByEc[ec];   // already clocked in today → no second clock-in
       // An AM on an active SM trial is shown as "SM · on trial", mirroring
