@@ -1621,10 +1621,10 @@
       modal.className = "boa-modal-backdrop";
       modal.innerHTML =
         '<div class="boa-modal-card">' +
-          '<h2 class="boa-modal-title">👀 Did anyone else leave early today?</h2>' +
+          '<h2 class="boa-modal-title">👀 Did anyone leave early today?</h2>' +
           '<p class="boa-modal-body">' +
             'Thanks for clocking out, ' + esc(opts.name) + '. Before you go — ' +
-            'did any other manager leave their shift early today without clocking out? ' +
+            'did any manager leave their shift early today without clocking out? ' +
             'A quick yes/no helps payroll catch missed deductions.' +
           '</p>' +
           '<div class="btn-row" style="justify-content:center;gap:10px;margin-top:12px">' +
