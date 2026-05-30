@@ -389,6 +389,89 @@
       console.warn("loadKioskReminders failed:", e);
     });
   }
+  // Home-screen "haven't clocked in" nag — surfaces the same warning
+  // the Manager Clock-in screen already shows per-row, here as a single
+  // banner above the tiles so a manager passing the home screen sees
+  // their colleagues' missing clock-ins without drilling in.
+  async function loadMgrClockinNagIntoPanel() {
+    var slot = document.getElementById("mgr-clockin-nag-slot");
+    if (!slot) return;
+    if (!window.APP_DATA || !window.APP_DATA.listAllManagers) return;
+    try {
+      var nowD = new Date();
+      var todayK = _ymdToday(nowD);
+      var cutH = (cfg.clockInWarningCutoffHour != null ? cfg.clockInWarningCutoffHour : 9);
+      var cutM = (cfg.clockInWarningCutoffMinute != null ? cfg.clockInWarningCutoffMinute : 30);
+      var nowMins = nowD.getHours() * 60 + nowD.getMinutes();
+      if (nowMins < cutH * 60 + cutM) { slot.style.display = "none"; return; }
+
+      var thisBranch = (cfg.branchName || "");
+      var mgrs = await window.APP_DATA.listAllManagers();
+      var hereMgrs = (mgrs || []).filter(function (m) { return m && m.branch === thisBranch; });
+      if (hereMgrs.length === 0) { slot.style.display = "none"; return; }
+
+      // Today's schedule for this branch's managers.
+      var schedByEc = {};
+      var ymP = nowD.getDate() < 25
+        ? [nowD.getFullYear(), nowD.getMonth()]    // previous cycle
+        : [nowD.getFullYear(), nowD.getMonth() + 1];
+      var schedYm = ymP[0] + "-" + String(ymP[1]).padStart(2, "0");
+      try {
+        if (window.APP_DATA.getSchedule) {
+          var res = await window.APP_DATA.getSchedule(schedYm, "mgr");
+          var grid = (res && res.grid) || {};
+          Object.keys(grid).forEach(function (ec) {
+            var row = grid[ec] || {};
+            var v = row[todayK] != null ? row[todayK] : row[nowD.getDate()];
+            if (v != null) schedByEc[ec] = v;
+          });
+        }
+      } catch (_) {}
+      var isWorking = function (v) { return v === "W" || v === "WL" || v === "WE" || v === "WB" || v === "WM" || v === "E"; };
+
+      // Who clocked in already, who's been ROM-tagged.
+      var clockedInEcs = {};
+      try {
+        var recent = await window.APP_DATA.listRecentManagerClockins(2);
+        (recent || []).forEach(function (r) {
+          if (!r || !r.staff || r.type !== "in") return;
+          var k = (function () { var d = new Date(r.ts); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
+          if (k !== todayK) return;
+          clockedInEcs[String(r.staff.employee_code || "").trim()] = true;
+        });
+      } catch (_) {}
+      var taggedStaffIds = {};
+      try {
+        if (window.APP_DATA.listManagerDayStatusesToday) {
+          var tagged = await window.APP_DATA.listManagerDayStatusesToday();
+          (tagged || []).forEach(function (r) { if (r && r.staff_id) taggedStaffIds[r.staff_id] = true; });
+        }
+      } catch (_) {}
+
+      var missing = hereMgrs.filter(function (m) {
+        var ec = String(m.employee_code || "").trim();
+        if (!isWorking(schedByEc[ec])) return false;     // not scheduled today
+        if (clockedInEcs[ec]) return false;              // already in
+        if (taggedStaffIds[m.id]) return false;          // ROM explained
+        return true;
+      });
+
+      if (missing.length === 0) { slot.style.display = "none"; return; }
+      var names = missing.map(function (m) { return esc(m.name); }).join(", ");
+      slot.innerHTML =
+        '<div class="mgr-home-nag">' +
+          '<div class="mgr-home-nag-icon">⚠</div>' +
+          '<div class="mgr-home-nag-body">' +
+            '<div class="mgr-home-nag-title">Manager' + (missing.length === 1 ? "" : "s") + " not clocked in yet</div>" +
+            '<div class="mgr-home-nag-sub">' + names + " &mdash; no clock-in means an unpaid day. Open <strong>Manager Check-in</strong> to clock in.</div>" +
+          '</div>' +
+        '</div>';
+      slot.style.display = "block";
+    } catch (e) {
+      console.warn("mgr-clockin-nag load failed:", e);
+      slot.style.display = "none";
+    }
+  }
   // Wire every '✓ Mark done' / 'tap to undo' button on the reminders
   // panel. Tapping disables the button while the Supabase write is in
   // flight, then re-renders the panel from a fresh listKioskReminders
@@ -432,6 +515,11 @@
       // Hidden by default; only flips visible when there's at least one
       // reminder firing today for this branch.
       '<div id="kiosk-reminders" style="display:none"></div>' +
+      // "Haven't clocked in" nag — same logic as the per-row pill on the
+      // Manager Clock-in screen, surfaced here on the home screen so it
+      // catches a manager who walks in, opens the tablet, and stops at
+      // the landing. Populated async by loadMgrClockinNagIntoPanel.
+      '<div id="mgr-clockin-nag-slot" style="display:none"></div>' +
       '<div class="tile-grid tile-grid-4">' +
       '<button class="tile tile-big" id="tile-nailtech" type="button">' +
       '<div class="tile-icon">✍️</div>' +
@@ -461,6 +549,7 @@
       '</div>'
     );
     loadKioskRemindersIntoPanel();
+    loadMgrClockinNagIntoPanel();
     if (window.BOA_FLOWS) window.BOA_FLOWS.refreshCheckinNag();
     document.getElementById("tile-nailtech").onclick = function () {
       if (window.BOA_FLOWS) window.BOA_FLOWS.renderCheckin();
@@ -883,12 +972,39 @@
     });
   }
 
-  // Strip 18:30 from now (or 18:30 from a given date) — used for auto-out ts
+  // Fallback auto-out ts when we don't have a manager's scheduled end —
+  // e.g. the schedule isn't published yet, or the cell is empty. Used as
+  // a safety net only; the normal path resolves to the exact shift end.
   function eveningTs(yyyy_mm_dd) {
     var p = (yyyy_mm_dd || "").split("-");
     var d = new Date(+p[0], +p[1] - 1, +p[2]);
     d.setHours(cfg.autoClockOutHour || 18, cfg.autoClockOutMinute || 30, 0, 0);
     return d.toISOString();
+  }
+  // Parse "HH:MM - HH:MM" → { startH, startM, endH, endM } using the end.
+  function _parseShiftEnd(rangeStr) {
+    if (!rangeStr) return null;
+    var m = /(\d{1,2}):(\d{2})\s*$/.exec(rangeStr);
+    if (!m) return null;
+    return { h: +m[1], m: +m[2] };
+  }
+  // Build a Date for a (ymd, role, code, branch) tuple at the manager's
+  // scheduled shift END time. Returns null if we can't resolve it (no
+  // schedule code, unknown role, etc.) — callers fall back to the
+  // configured cutoff.
+  function _scheduledEndDate(ymd, role, code, branchName) {
+    if (!ymd || !code) return null;
+    if (typeof shiftTimes !== "function") return null;
+    var p = ymd.split("-");
+    var d = new Date(+p[0], +p[1] - 1, +p[2]);
+    var range = shiftTimes(role, code, branchName, d.getDay());
+    var hm = _parseShiftEnd(range);
+    if (!hm) return null;
+    d.setHours(hm.h, hm.m, 0, 0);
+    return d;
+  }
+  function _ymdToday(d) {
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
   }
   function dateKeyOf(iso) {
     var d = new Date(iso);
@@ -899,7 +1015,18 @@
   // after them, where the day is in the past OR (the day is today AND
   // current time >= 18:30). Returns a Set of EC codes that got auto-outed
   // YESTERDAY (used for the warning banner today).
-  async function ensureAutoOuts(recentRows) {
+  // Auto-out logic:
+  //   1. Find each manager's last "in" today / on past days with no out.
+  //   2. Look up their SCHEDULED shift end (role + code + branch + dow).
+  //   3. Trigger the auto-out only AFTER scheduledEnd + 1 hour grace, but
+  //      stamp the recorded ts at scheduledEnd EXACTLY — managers can't
+  //      sneak in overtime by simply leaving the kiosk and forgetting
+  //      to clock out.
+  //   4. When the schedule isn't available (no published cell, unknown
+  //      role, etc.) fall back to the legacy 18:30 cutoff.
+  // schedLookup: optional fn (ec, ymd) → schedule code, mgrByEc: optional
+  // map ec → manager record carrying role + branch.
+  async function ensureAutoOuts(recentRows, schedLookup, mgrByEc) {
     var groups = {};                                 // {ec: {ymd: [rows...]}}
     recentRows.forEach(function (r) {
       var ec = r.staff && r.staff.employee_code; if (!ec) return;
@@ -909,11 +1036,12 @@
       groups[ec][k].push(r);
     });
     var now = new Date();
-    var todayK = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0") + "-" + String(now.getDate()).padStart(2, "0");
-    var cutoffPassed = (now.getHours() > (cfg.autoClockOutHour || 18)) ||
+    var todayK = _ymdToday(now);
+    var legacyCutoffPassed = (now.getHours() > (cfg.autoClockOutHour || 18)) ||
       (now.getHours() === (cfg.autoClockOutHour || 18) && now.getMinutes() >= (cfg.autoClockOutMinute || 30));
+    var graceMs = ((cfg.autoClockOutGraceHours != null ? cfg.autoClockOutGraceHours : 1) * 60 * 60 * 1000);
     var yesterdayDate = new Date(now); yesterdayDate.setDate(yesterdayDate.getDate() - 1);
-    var yesterdayK = yesterdayDate.getFullYear() + "-" + String(yesterdayDate.getMonth() + 1).padStart(2, "0") + "-" + String(yesterdayDate.getDate()).padStart(2, "0");
+    var yesterdayK = _ymdToday(yesterdayDate);
     var autoOutedYesterday = {};
     for (var ec in groups) {
       for (var k in groups[ec]) {
@@ -923,17 +1051,30 @@
           if ((last.type === "out_auto") && k === yesterdayK) autoOutedYesterday[ec] = last;
           continue;
         }
-        // last is "in" and not closed
+        // last is "in" and not closed — figure out the right end time.
+        var mgr = mgrByEc && mgrByEc[String(ec).trim()];
+        var schedCode = schedLookup ? schedLookup(ec, k) : null;
+        var schedEnd = (mgr && schedCode) ? _scheduledEndDate(k, mgr.role, schedCode, mgr.branch || (last.staff && last.staff.branch)) : null;
+        var endIso, fireCutoff;
+        if (schedEnd) {
+          // Auto-out only past (scheduled end + grace). Record at scheduled end.
+          fireCutoff = new Date(schedEnd.getTime() + graceMs);
+          endIso = schedEnd.toISOString();
+        } else {
+          // Fallback: legacy 18:30 hard cutoff.
+          fireCutoff = new Date(k.split("-").map(Number)[0], k.split("-").map(Number)[1] - 1, k.split("-").map(Number)[2],
+            (cfg.autoClockOutHour || 18), (cfg.autoClockOutMinute || 30), 0, 0);
+          endIso = eveningTs(k);
+        }
         var isPast = k < todayK;
-        var isTodayAndCutoff = (k === todayK) && cutoffPassed;
-        if (!isPast && !isTodayAndCutoff) continue;
-        // Insert out_auto with ts = that day's 18:30
+        var isTodayAndPastCutoff = (k === todayK) && (now >= fireCutoff);
+        if (!isPast && !isTodayAndPastCutoff) continue;
         try {
           await window.APP_DATA.addManagerClockinWithMeta(last.staff_id, "out_auto", {
-            tsOverride: eveningTs(k),
+            tsOverride: endIso,
             flags: ["auto_clockout"]
           });
-          if (k === yesterdayK) autoOutedYesterday[ec] = { type: "out_auto", ts: eveningTs(k) };
+          if (k === yesterdayK) autoOutedYesterday[ec] = { type: "out_auto", ts: endIso };
         } catch (e) { console.warn("Auto-out failed for", ec, k, e); }
       }
     }
@@ -988,40 +1129,7 @@
       return;
     }
 
-    // Run auto-out routine and find anyone auto-outed yesterday
-    var autoYesterday = await ensureAutoOuts(recent);
-    if (Object.keys(autoYesterday).length > 0) {
-      // Rebuild recent so the per-row "today" status reflects the new auto-outs
-      recent = await window.APP_DATA.listRecentManagerClockins(7);
-    }
-
-    // Pull today's manager schedule + ROM-tagged absences so we can decide
-    // who's overdue to clock in. Both are best-effort — if either fetch
-    // fails we just don't show the warning rather than blocking the screen.
     var thisBranch = (cfg.branchName || "");
-    var mgrTodaySched = {};      // ec → schedule code for today
-    var mgrTaggedStaffIds = {};  // staff_id → true (ROM already explained today)
-    try {
-      var _now = new Date();
-      var _ym = _now.getFullYear() + "-" + String(_now.getMonth() + 1).padStart(2, "0");
-      if (window.APP_DATA.getSchedule) {
-        var schedRes = await window.APP_DATA.getSchedule(_ym, "mgr");
-        var schedGrid = (schedRes && schedRes.grid) || {};
-        var _dom = _now.getDate();
-        var _ymd = todayK;
-        Object.keys(schedGrid).forEach(function (ec) {
-          var row = schedGrid[ec] || {};
-          var v = row[_ymd] != null ? row[_ymd] : row[_dom];
-          if (v != null) mgrTodaySched[ec] = v;
-        });
-      }
-      if (window.APP_DATA.listManagerDayStatusesToday) {
-        var tagged = await window.APP_DATA.listManagerDayStatusesToday();
-        (tagged || []).forEach(function (r) { if (r && r.staff_id) mgrTaggedStaffIds[r.staff_id] = true; });
-      }
-    } catch (e) { console.warn("warning-banner data load failed:", e); }
-
-
     mgrs.sort(function (a, b) {
       var aHere = a.branch === thisBranch ? 0 : 1;
       var bHere = b.branch === thisBranch ? 0 : 1;
@@ -1029,31 +1137,80 @@
       return (a.name || "").localeCompare(b.name || "");
     });
 
-    // Pull today's schedule for each manager so the row can show their
-    // shift hours next to the name. Best-effort: if the load fails we just
-    // skip the hours rather than blocking the clock-in screen.
-    var mgrTodaySched = {};
-    try {
-      var _nowD = new Date();
-      var _schedYm = _nowD.getFullYear() + "-" + String(_nowD.getMonth() + 1).padStart(2, "0");
-      if (window.APP_DATA.getSchedule) {
-        var schedRes = await window.APP_DATA.getSchedule(_schedYm, "mgr");
-        var schedGrid = (schedRes && schedRes.grid) || {};
-        var _dom = _nowD.getDate();
-        var _ymd = _nowD.getFullYear() + "-" + String(_nowD.getMonth() + 1).padStart(2, "0") + "-" + String(_nowD.getDate()).padStart(2, "0");
-        Object.keys(schedGrid).forEach(function (ec) {
-          var row = schedGrid[ec] || {};
-          var v = row[_ymd] != null ? row[_ymd] : row[_dom];
-          if (v != null) mgrTodaySched[ec] = v;
-        });
-      }
-    } catch (e) { console.warn("today-schedule load failed:", e); }
-    var _todayDow = (new Date()).getDay();
+    var _nowD0 = new Date();
+    var todayK = _ymdToday(_nowD0);
+    var _todayDow = _nowD0.getDay();
 
-    // Last clock-in TODAY per ec
-    var todayK = (function () {
-      var d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-    })();
+    // Schedule lookup spanning the current cycle + the previous one, so
+    // auto-out can resolve a manager's shift end on any day in the last
+    // ~30 days. Best-effort — falls back to default cutoff if a cell is
+    // missing. schedByEcYmd: { ec: { ymd: code } }.
+    var schedByEcYmd = {};
+    async function _loadSchedCycle(ym) {
+      if (!window.APP_DATA.getSchedule) return;
+      try {
+        var res = await window.APP_DATA.getSchedule(ym, "mgr");
+        var grid = (res && res.grid) || {};
+        var ymP = ym.split("-").map(Number);
+        var startY = ymP[0], startM = ymP[1];
+        Object.keys(grid).forEach(function (ec) {
+          var row = grid[ec] || {};
+          Object.keys(row).forEach(function (k) {
+            var v = row[k]; if (!v) return;
+            var ymd;
+            if (/^\d{4}-\d{2}-\d{2}$/.test(k)) {
+              ymd = k;
+            } else {
+              var dom = parseInt(k, 10);
+              if (!isFinite(dom)) return;
+              var y = startY, m = startM;
+              if (dom < 25) { m += 1; if (m > 12) { m = 1; y += 1; } }
+              ymd = y + "-" + String(m).padStart(2, "0") + "-" + String(dom).padStart(2, "0");
+            }
+            (schedByEcYmd[ec] = schedByEcYmd[ec] || {})[ymd] = v;
+          });
+        });
+      } catch (e) { console.warn("sched load failed for", ym, e); }
+    }
+    // Resolve current + previous cycle ym (25th-of-month convention).
+    var _curCycleY = _nowD0.getFullYear(), _curCycleM = _nowD0.getMonth() + 1;
+    if (_nowD0.getDate() < 25) { _curCycleM -= 1; if (_curCycleM < 1) { _curCycleM = 12; _curCycleY -= 1; } }
+    var _curCycleYm = _curCycleY + "-" + String(_curCycleM).padStart(2, "0");
+    var _prevCycleY = _curCycleY, _prevCycleM = _curCycleM - 1;
+    if (_prevCycleM < 1) { _prevCycleM = 12; _prevCycleY -= 1; }
+    var _prevCycleYm = _prevCycleY + "-" + String(_prevCycleM).padStart(2, "0");
+    await Promise.all([_loadSchedCycle(_curCycleYm), _loadSchedCycle(_prevCycleYm)]);
+
+    var mgrByEc = {};
+    mgrs.forEach(function (m) { if (m.employee_code) mgrByEc[String(m.employee_code).trim()] = m; });
+    var _schedLookup = function (ec, ymd) {
+      var row = schedByEcYmd[String(ec).trim()];
+      return row ? row[ymd] : null;
+    };
+
+    // Run auto-out routine (schedule-aware) and find anyone auto-outed yesterday
+    var autoYesterday = await ensureAutoOuts(recent, _schedLookup, mgrByEc);
+    if (Object.keys(autoYesterday).length > 0) {
+      // Rebuild recent so the per-row "today" status reflects the new auto-outs
+      recent = await window.APP_DATA.listRecentManagerClockins(7);
+    }
+
+    // Today's ROM-tagged absences — used to suppress the "haven't clocked
+    // in" nag once a ROM has explained the absence on the HR portal.
+    var mgrTaggedStaffIds = {};
+    try {
+      if (window.APP_DATA.listManagerDayStatusesToday) {
+        var tagged = await window.APP_DATA.listManagerDayStatusesToday();
+        (tagged || []).forEach(function (r) { if (r && r.staff_id) mgrTaggedStaffIds[r.staff_id] = true; });
+      }
+    } catch (e) { console.warn("manager-day-statuses load failed:", e); }
+
+    // Today's schedule lookup for per-row hours + the "haven't clocked in" check.
+    var mgrTodaySched = {};
+    Object.keys(schedByEcYmd).forEach(function (ec) {
+      var v = schedByEcYmd[ec][todayK];
+      if (v != null) mgrTodaySched[ec] = v;
+    });
     var byEc = {};
     var inTodayByEc = {};   // earliest "in" record today per ec — only one clock-in/day allowed
     recent.forEach(function (r) {
@@ -1070,7 +1227,7 @@
       warnHtml =
         '<div class="warn" style="margin-bottom:14px;background:#fee2e2;border:1px solid #fca5a5;color:#7f1d1d;border-radius:11px;padding:12px 14px;font-size:13px;line-height:1.5">' +
         '<strong>⚠ Forgot to clock out yesterday — this is an offence.</strong><br>' +
-        'The following managers were auto-clocked-out at 18:30 and need to remember to clock out manually today: <strong>' + autoNames.map(esc).join(", ") + '</strong>.' +
+        'The following managers were auto-clocked-out at their scheduled shift end yesterday and need to remember to clock out manually today: <strong>' + autoNames.map(esc).join(", ") + '</strong>.' +
         '</div>';
     }
     document.getElementById("mc-warn").innerHTML = warnHtml;
@@ -1272,18 +1429,38 @@
             return;
           }
         }
-        // 1b. Early-clock-out picker. Leaving before earlyClockOutCutoffHour
-        // needs a reason — sick / appointment / personal / other — saved to
-        // the early-leave sidecar so payroll can deduct the short hours.
-        // Hours = cutoff time − now (rounded to 0.5h), capped at 12.
+        // 1b. Early-clock-out picker. Resolve THIS manager's scheduled
+        // shift end for today (role + code + branch + dow). If they're
+        // clocking out more than `earlyClockOutGraceMinutes` (default 20)
+        // before that end time → prompt for a reason. The short hours
+        // saved to the early-leave sidecar = scheduledEnd − now.
+        // Fallback when we can't resolve the schedule (no published cell,
+        // unknown role, etc.) is the legacy fixed-hour cutoff so we
+        // never let a too-early clock-out slip through silently.
         var earlyOpts = null;
         if (type === "out") {
-          var earlyCutH = (cfg.earlyClockOutCutoffHour != null ? cfg.earlyClockOutCutoffHour : 17);
           var nowD = new Date();
-          if (nowD.getHours() < earlyCutH) {
-            var minsShort = (earlyCutH * 60) - (nowD.getHours() * 60 + nowD.getMinutes());
-            var rawHours  = Math.max(0.5, Math.round((minsShort / 60) * 2) / 2);
-            var hoursShort = Math.min(12, rawHours);
+          var graceMin = (cfg.earlyClockOutGraceMinutes != null ? cfg.earlyClockOutGraceMinutes : 20);
+          var schedCodeToday = mgrTodaySched[ec];
+          var _mForOut = mgrByEc[String(ec).trim()];
+          var schedEndToday = (_mForOut && schedCodeToday) ? _scheduledEndDate(todayK, _mForOut.role, schedCodeToday, _mForOut.branch || thisBranch) : null;
+          var promptForReason = false;
+          var hoursShort = 0;
+          if (schedEndToday) {
+            var minsToEnd = Math.round((schedEndToday.getTime() - nowD.getTime()) / 60000);
+            if (minsToEnd > graceMin) {
+              promptForReason = true;
+              hoursShort = Math.min(12, Math.max(0.5, Math.round((minsToEnd / 60) * 2) / 2));
+            }
+          } else {
+            var earlyCutH = (cfg.earlyClockOutCutoffHour != null ? cfg.earlyClockOutCutoffHour : 17);
+            if (nowD.getHours() < earlyCutH) {
+              promptForReason = true;
+              var minsShort = (earlyCutH * 60) - (nowD.getHours() * 60 + nowD.getMinutes());
+              hoursShort = Math.min(12, Math.max(0.5, Math.round((minsShort / 60) * 2) / 2));
+            }
+          }
+          if (promptForReason) {
             earlyOpts = await openMgrEarlyClockoutModal({ name: name, defaultHours: hoursShort });
             if (!earlyOpts) return;          // user cancelled
           }

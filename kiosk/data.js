@@ -1395,7 +1395,7 @@
     since.setHours(0, 0, 0, 0);
     since.setDate(since.getDate() - (daysBack || 7));
     var res = await c.from("clockins")
-      .select("*, staff:staff_id ( id, name, employee_code, role_type, branch )")
+      .select("*, staff:staff_id ( id, name, employee_code, role_type, role, branch )")
       .gte("ts", since.toISOString())
       .order("ts", { ascending: true });
     if (res.error) { console.error("listRecentManagerClockins:", res.error); return []; }
