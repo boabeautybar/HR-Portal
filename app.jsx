@@ -16450,6 +16450,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (sv === "ML") return "mat";
           if (sv === "X") return "term";
           if (sv === "E") return "ext";
+          // Manager loaned to another store — she IS scheduled to work, just
+          // not at this branch. Render the schedule banner green so the row
+          // reads as a worked day at a glance.
+          if (sv === "loan_out") return "on";
           return null;
         };
 
