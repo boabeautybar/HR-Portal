@@ -6436,6 +6436,156 @@ function InstallButton() {
   );
 }
 
+// ─── VOUCHER ADMIN (Owner / Master Admin) ───────────────────────────────────
+// Upload the Fresha "Gift Card Transactions" CSV → store in Supabase and
+// refresh each voucher's remaining balance + transaction history. Re-uploads
+// are deduped by transaction ID, so only new transactions are added.
+
+// Minimal RFC-4180-ish CSV parser (handles quoted fields / embedded commas).
+function parseCsvRows(text) {
+  const rows = [];
+  let row = [], field = "", inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQ = false; }
+      else field += c;
+    } else if (c === '"') { inQ = true; }
+    else if (c === ',') { row.push(field); field = ""; }
+    else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ""; }
+    else if (c === '\r') { /* ignore */ }
+    else field += c;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+function parseCsvObjects(text) {
+  text = String(text || "").replace(/^﻿/, ""); // strip UTF-8 BOM if present
+  const rows = parseCsvRows(text).filter(r => r.length > 1 || (r[0] || "").trim() !== "");
+  if (!rows.length) return [];
+  const headers = rows[0].map(h => String(h || "").trim().toLowerCase());
+  return rows.slice(1).map(r => {
+    const o = {};
+    headers.forEach((h, i) => { o[h] = r[i] != null ? r[i] : ""; });
+    return o;
+  });
+}
+
+function VoucherAdmin({ currentUser }) {
+  const [busy, setBusy] = React.useState(false);
+  const [progress, setProgress] = React.useState(null); // { phase, done, total }
+  const [result, setResult] = React.useState(null);     // { ok, msg }
+  const [stats, setStats] = React.useState(null);       // { count, lastPaymentDate }
+  const fileRef = React.useRef(null);
+
+  const loadStats = React.useCallback(async () => {
+    try {
+      if (window.BOA_DB && window.BOA_DB.giftCardTxnStats) setStats(await window.BOA_DB.giftCardTxnStats());
+    } catch (_) { /* table may not exist yet */ }
+  }, []);
+  React.useEffect(() => { loadStats(); }, [loadStats]);
+
+  const onFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (e.target) e.target.value = ""; // allow re-selecting the same file
+    if (!file) return;
+    if (!window.BOA_DB || !window.BOA_DB.importGiftCardTransactions) {
+      setResult({ ok: false, msg: "Database not ready. Reload and try again." });
+      return;
+    }
+    setBusy(true); setResult(null); setProgress({ phase: "Reading file…", done: 0, total: 0 });
+    try {
+      const text = await file.text();
+      const objs = parseCsvObjects(text);
+      if (!objs.length) throw new Error("No rows found in that CSV.");
+      const mapped = objs.map(r => ({
+        id: r["id"], gift_card: r["gift card"], payment_date: r["payment date"],
+        location: r["location"], amount: r["amount"], txn_type: r["transaction type"],
+        client_name: r["client name"], appointment_ref: r["appointment ref"]
+      }));
+      setProgress({ phase: "Uploading transactions…", done: 0, total: mapped.length });
+      const imp = await window.BOA_DB.importGiftCardTransactions(mapped, (done, total) => setProgress({ phase: "Uploading transactions…", done, total }));
+      setProgress({ phase: "Updating voucher balances…", done: 0, total: 0 });
+      const rec = await window.BOA_DB.recomputeVoucherBalancesForCodes(imp.codes, (done, total) => setProgress({ phase: "Updating voucher balances…", done, total }));
+      setResult({ ok: true, msg: imp.saved.toLocaleString() + " transactions imported · balances updated for " + rec.vouchers + " voucher" + (rec.vouchers === 1 ? "" : "s") + "." });
+      loadStats();
+    } catch (err) {
+      setResult({ ok: false, msg: "Import failed: " + ((err && err.message) || String(err)) });
+    } finally {
+      setBusy(false); setProgress(null);
+    }
+  };
+
+  const recomputeAll = async () => {
+    if (busy || !window.BOA_DB || !window.BOA_DB.recomputeAllVoucherBalances) return;
+    setBusy(true); setResult(null); setProgress({ phase: "Recomputing all balances…", done: 0, total: 0 });
+    try {
+      const rec = await window.BOA_DB.recomputeAllVoucherBalances((done, total) => setProgress({ phase: "Recomputing all balances…", done, total }));
+      setResult({ ok: true, msg: "Recomputed balances for " + rec.vouchers + " voucher" + (rec.vouchers === 1 ? "" : "s") + "." });
+    } catch (err) {
+      setResult({ ok: false, msg: "Recompute failed: " + ((err && err.message) || String(err)) });
+    } finally {
+      setBusy(false); setProgress(null);
+    }
+  };
+
+  const card = { background: "#fff", border: "1px solid #FBCFE8", borderRadius: 12, padding: "18px 20px", marginBottom: 16 };
+  const pct = progress && progress.total ? Math.round((progress.done / progress.total) * 100) : null;
+
+  return (
+    <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", color: "#831843", maxWidth: 760 }}>
+      <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, fontWeight: 700, marginBottom: 2 }}>💳 Voucher Admin</div>
+      <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 16 }}>
+        Upload the Fresha “Gift Card Transactions” report to keep voucher balances up to date. Re-uploads only add new transactions.
+      </div>
+
+      <div style={card}>
+        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 4 }}>Upload Gift Card Transactions (CSV)</div>
+        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 12 }}>
+          Export from Fresha → Gift Card Transactions, then choose the CSV here. Existing transactions are skipped automatically.
+        </div>
+        <input ref={fileRef} type="file" accept=".csv,text/csv" disabled={busy} onChange={onFile}
+          style={{ fontSize: 13, fontFamily: "inherit" }} />
+        {stats && (
+          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 12 }}>
+            Stored: <strong style={{ color: "#831843" }}>{(stats.count || 0).toLocaleString()}</strong> transactions
+            {stats.lastPaymentDate ? <> · latest payment <strong style={{ color: "#831843" }}>{new Date(stats.lastPaymentDate).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" })}</strong></> : null}
+          </div>
+        )}
+      </div>
+
+      <div style={card}>
+        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 4 }}>Recompute balances</div>
+        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 12 }}>
+          Balances refresh automatically on upload and when vouchers are entered. Use this if you need to rebuild every voucher’s balance from scratch.
+        </div>
+        <button onClick={recomputeAll} disabled={busy}
+          style={{ background: busy ? "#FBCFE8" : "#fff", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 8, padding: "9px 16px", cursor: busy ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit" }}>
+          Recompute all balances
+        </button>
+      </div>
+
+      {progress && (
+        <div style={{ ...card, marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>{progress.phase}{pct != null ? " " + pct + "%" : ""}</div>
+          <div style={{ height: 8, background: "#FCE7F3", borderRadius: 6, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: (pct != null ? pct : 100) + "%", background: "#BE185D", borderRadius: 6, transition: "width 0.2s", opacity: pct != null ? 1 : 0.5 }} />
+          </div>
+          {progress.total ? <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 6 }}>{progress.done.toLocaleString()} / {progress.total.toLocaleString()}</div> : null}
+        </div>
+      )}
+
+      {result && (
+        <div style={{ padding: "11px 14px", borderRadius: 9, fontSize: 13, fontWeight: 600,
+          background: result.ok ? "#dcfce7" : "#fef2f2", border: "1px solid " + (result.ok ? "#86efac" : "#fecaca"),
+          color: result.ok ? "#14532d" : "#991b1b" }}>
+          {result.ok ? "✓ " : "⚠️ "}{result.msg}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── APP GATE ─────────────────────────────────────────────────────────────────
 // Mounts the PIN sign-in screen until a valid user is set. Once unlocked, the
 // real <App/> mounts. Done as a wrapper so <App/>'s hooks always run in the
@@ -6655,7 +6805,8 @@ const SETTINGS_TABS = [
   { t: "activity", l: "Activity Log", cat: "Insights", icon: "📜" },
   { t: "kioskPins", l: "Kiosk PINs", cat: "Admin", icon: "🔑" },
   { t: "managerPins", l: "Manager PINs", cat: "Admin", icon: "🆔" },
-  { t: "storeAllocation", l: "Store Allocation", cat: "Admin", icon: "🏬" }
+  { t: "storeAllocation", l: "Store Allocation", cat: "Admin", icon: "🏬" },
+  { t: "voucherAdmin", l: "Voucher Admin", cat: "Admin", icon: "💳" }
 ];
 const SETTINGS_CATS = ["Home/Dashboard", "People", "Operations", "Payroll", "Insights", "Admin"];
 
@@ -8727,7 +8878,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
     attendance: "Payroll", payrollProgress: "Payroll",
     alerts: "Insights", activity: "Insights",
-    settings: "Admin"
+    settings: "Admin", voucherAdmin: "Admin"
   };
   useEffect(() => {
     // Manager Planner is a virtual tab that lives at recruitment+mgrRecruit+planner
@@ -10851,6 +11002,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 }
                 if (currentUser?.isOwner || isNationalOps) {
                   adminItems.push({ t: "storeAllocation", l: "🏬 Store Allocation" });
+                }
+                if (currentUser?.isOwner || currentUser?.role === "Master Admin") {
+                  adminItems.push({ t: "voucherAdmin", l: "💳 Voucher Admin" });
                 }
                 return adminItems.length > 0 ? [{
                   key: "Admin", icon: "🛡️", title: "Admin",
@@ -23410,6 +23564,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           /></div>
         );
       })()}
+
+      {tab === "voucherAdmin" && (currentUser?.isOwner || currentUser?.role === "Master Admin") && (
+        <div style={{ padding: "0 24px" }}><VoucherAdmin currentUser={currentUser} /></div>
+      )}
 
       {tab === "dailyTasks" && (
         <div style={{ padding: "0 24px" }}><DailyTasksAdmin

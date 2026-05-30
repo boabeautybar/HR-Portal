@@ -1,3 +1,7 @@
 node_modules/
 .DS_Store
 .venv/
+
+# Fresha exports — contain client PII; imported into Supabase, never committed
+*.csv
+Gift Card Transactions.csv
