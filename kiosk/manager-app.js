@@ -3,7 +3,7 @@
    ------------------------------------------------------------
    Landing: 4 big tiles
      1. Nail Tech Check-in   (daily attendance grid — shared with staff)
-     2. Manager Check-in     (PIN + selfie + GPS clock-in/out)
+     2. Manager Check-in     (PIN + selfie clock-in/out)
      3. Cash Up              (daily totals form — shared with staff)
      4. Request <next month> Off  (off-day request — shared with staff)
 
@@ -868,38 +868,14 @@
 
   // ---------------- Manager Clock-in (this tab) ----------------
   // Each manager uses their own 6-digit personal PIN to clock in/out for
-  // the day. After PIN, we capture a selfie + GPS coords (anti-buddy-punch
-  // measures), gate clock-IN to 08:00+, and auto-clock-OUT anyone still
-  // clocked in at 18:30.
+  // the day. After PIN, we capture a selfie (anti-buddy-punch), gate
+  // clock-IN to 08:00+, and auto-clock-OUT anyone still clocked in past
+  // their scheduled shift end + 1h grace.
 
-  // Haversine distance in meters between two {lat,lng} points
-  function distMeters(a, b) {
-    var R = 6371000;
-    var toRad = function (d) { return d * Math.PI / 180; };
-    var dLat = toRad(b.lat - a.lat);
-    var dLng = toRad(b.lng - a.lng);
-    var s = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) *
-      Math.sin(dLng / 2) * Math.sin(dLng / 2);
-    return Math.round(2 * R * Math.asin(Math.sqrt(s)));
-  }
-
-  function getGPS() {
-    return new Promise(function (resolve) {
-      if (!navigator.geolocation) { resolve(null); return; }
-      var done = false;
-      var timer = setTimeout(function () {
-        if (done) return; done = true; resolve({ error: "timeout" });
-      }, 12000);
-      navigator.geolocation.getCurrentPosition(function (pos) {
-        if (done) return; done = true; clearTimeout(timer);
-        resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy });
-      }, function (err) {
-        if (done) return; done = true; clearTimeout(timer);
-        resolve({ error: err.message || ("code " + err.code) });
-      }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 });
-    });
-  }
+  // GPS capture used to live here (haversine + navigator.geolocation
+  // wrappers). Removed when manager clock-in/out switched to selfie-only
+  // proof — the geolocation prompt added seconds of latency on flaky
+  // tablet links and the photo timestamp already covers the audit.
 
   // Camera modal — returns Promise<dataUrl|null>. Manager taps Capture
   // (freezes a still frame) then either Retake or Confirm. Cancel returns null.
@@ -1096,7 +1072,7 @@
       '<div id="mc-warn"></div>' +
       '<div id="mc-hint" style="font-size:13px;color:#9ca3af;margin-bottom:12px">' +
       'Tap Clock In or Clock Out → enter your 6-digit PIN → take a quick selfie. ' +
-      'Earliest clock-in is 08:00. Anyone still clocked in at 18:30 is auto-clocked-out.' +
+      'Earliest clock-in is 08:00. Anyone still clocked in past their shift end + 1h grace is auto-clocked-out at their scheduled end time.' +
       '</div>' +
       '<div id="mc-body">Loading…</div>' +
       '</section>'
@@ -1311,7 +1287,7 @@
     // Trial AMs use the same daily-status buttons as the trial check-in
     // on the nail-tech side. They have no PIN during the trial weeks; once
     // they pass and get a real employee code they'll appear in the manager
-    // list above with PIN + photo + GPS.
+    // list above with PIN + photo.
     var trialStatusButtons = [
       { code: "on",     label: "On Time"     },
       { code: "late",   label: "Late"        },
@@ -1476,31 +1452,11 @@
         if (type === "out" && last && last.type === "out") {
           if (!confirm(name + " is already clocked out today (" + fmtTime(last.ts) + "). Record another clock-out anyway?")) return;
         }
-        // 4. Get GPS (best-effort — graceful if denied/unavailable)
-        var gps = await getGPS();
+        // 4. Photo — the selfie alone is enough proof for manager clock-in/out.
+        // GPS was previously captured here too but added latency on flaky
+        // tablet connections (the geolocation prompt blocks for seconds)
+        // and the photo timestamp + clock-in time already cover the audit.
         var meta = { flags: [] };
-        var distanceMeters = null, outOfRange = false;
-        if (gps && !gps.error) {
-          meta.lat = gps.lat; meta.lng = gps.lng; meta.accuracy = gps.accuracy;
-          if (cfg.geo && cfg.geo.lat !== undefined) {
-            distanceMeters = distMeters({ lat: gps.lat, lng: gps.lng }, cfg.geo);
-            outOfRange = distanceMeters > (cfg.radiusMeters || 1000);
-            meta.distanceMeters = distanceMeters;
-            meta.outOfRange = outOfRange;
-            if (outOfRange && cfg.enforceGeo) {
-              alert("Out of range — your tablet reports being " + distanceMeters + "m from " + cfg.branchName + " (max " + cfg.radiusMeters + "m).\n\nClock-in is only allowed at the store.");
-              return;
-            }
-            if (outOfRange) meta.flags.push("out_of_range");
-          }
-        } else if (gps && gps.error) {
-          if (cfg.enforceGeo) {
-            alert("Could not get location: " + gps.error + "\n\nLocation is required for clock-in. Enable location in browser settings and try again.");
-            return;
-          }
-          meta.flags.push("no_gps:" + gps.error);
-        }
-        // 5. Photo
         var dataUrl = await capturePhoto(name);
         if (!dataUrl) return;        // user cancelled
         meta.photoDataUrl = dataUrl;
