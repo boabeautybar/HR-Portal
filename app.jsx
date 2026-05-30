@@ -20421,7 +20421,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 ? "Starts " + mg._obStartDate
                 : _hideHours
                   ? (mg.role === "SM" ? "Store Manager" : mg.role === "SSM" ? "Senior Store Manager" : "Assistant Manager")
-                  : (mg.role === "SM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · 9:30–18:30");
+                  : (mg.role === "SM" || mg.role === "SSM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · Wkd 9:30–18:30 · Sat 9:00–18:00 · Sun 8:30–17:00");
             return { ec: mg.ec, name: mg.name, sub, cells };
           });
           const totals = columns.map(c => {
@@ -21044,6 +21044,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <span><strong>Sunday</strong> · single shift 08:00–17:00 (WE)</span>
               </div>
             )}
+            {mgrSchedDraft && (branch !== "Sandown" && branch !== "Table Bay" && branch !== "Riverlands" && branch !== "Ballito" && branch !== "Fourways" && branch !== "Mall of the South") && (
+              <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 14px", marginBottom: 10, fontSize: 12, color: "#065f46", display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center" }}>
+                <span style={{ fontSize: 11, fontWeight: 800, color: "#065f46", letterSpacing: "0.08em", textTransform: "uppercase" }}>🕐 {branch} manager shifts</span>
+                <span><strong>SM / SSM (every day)</strong> · 08:00–17:00</span>
+                <span><strong>Mon–Fri</strong> · AM 09:30–18:30 (WL 10:00–19:00, WE 08:30–18:00)</span>
+                <span><strong>Saturday</strong> · AM 09:00–18:00</span>
+                <span><strong>Sunday</strong> · AM 08:30–17:00</span>
+              </div>
+            )}
 
             {/* Schedule grid */}
             {mgrSchedDraft && <div style={{ background: "#FFFFFF", borderRadius: 11, border: "1px solid #FBCFE8", overflow: "auto" }}>
@@ -21087,7 +21096,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               ? null
                               : (branch === "Sandown" || branch === "Table Bay" || branch === "Riverlands" || branch === "Ballito" || branch === "Fourways" || branch === "Mall of the South")
                                 ? <div style={{ fontSize: 9, color: "#BE185D", marginTop: 1 }}>{mg.role === "SM" ? "Store Manager" : mg.role === "SSM" ? "Senior Store Manager" : "Assistant Manager"}</div>
-                                : <div style={{ fontSize: 9, color: "#BE185D", marginTop: 1 }}>{mg.role === "SM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · 9:30–18:30"}</div>
+                                : <div style={{ fontSize: 9, color: "#BE185D", marginTop: 1 }}>{mg.role === "SM" || mg.role === "SSM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · Wkd 9:30–18:30 · Sat 9:00–18:00 · Sun 8:30–17:00"}</div>
                         }
                       </td>
                       {result.dates.map((dy, di) => {
@@ -22823,12 +22832,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
 
           // Generic stores — generic SM 08-17 / AM 09:30-18:30 hours.
+          // Weekend override: SM/SSM stays on a flat 08:00-17:00 Sat & Sun
+          // (no early/late split applies at these stores on weekends).
+          // AMs switch to the shorter weekend day: Sat 09:00-18:00,
+          // Sun 08:30-17:00. Weekdays keep the existing per-code times.
           if (isSM) {
+            if (dow === 0 || dow === 6) return "08:00 - 17:00";
             if (code === "WL") return "08:30 - 17:30";
             if (code === "WE") return "07:30 - 16:30";
             if (code === "WM") return "08:00 - 13:00";
             return "08:00 - 17:00";
           }
+          if (dow === 6) return "09:00 - 18:00";        // Saturday AM
+          if (dow === 0) return "08:30 - 17:00";        // Sunday AM
           if (code === "WL") return "10:00 - 19:00";
           if (code === "WE") return "08:30 - 18:00";
           if (code === "WM") return "09:00 - 13:00";
