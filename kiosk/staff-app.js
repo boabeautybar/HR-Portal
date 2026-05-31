@@ -510,6 +510,8 @@
     var html = '';
     if (isMgr) {
       html += _hoursBannerHtml(thisBranch);
+    } else {
+      html += _techHoursBannerHtml(thisBranch);
     }
     html += '<div class="sched-wrap"><table class="sched-table">';
     html += '<thead><tr><th class="sched-name-h">Staff</th>';
@@ -2633,6 +2635,30 @@
     var rows = lines.map(function (l) { return '<div>' + esc(l) + '</div>'; }).join("");
     return '<div class="sched-hours-banner">' +
              '<div class="sched-hours-banner-title">🕐 Manager hours · ' + esc(b || "this store") + '</div>' +
+             '<div class="sched-hours-banner-rows">' + rows + '</div>' +
+           '</div>';
+  }
+  // Same banner pattern, but for the Nail Tech schedule view. Only the
+  // stores that publish a known tech-side WL split are listed; anything
+  // else gets an empty string so we don't render a banner at all.
+  function _techHoursBannerHtml(branchName) {
+    var b = branchName || "";
+    var lines = [];
+    if (b === "Fourways") {
+      lines.push("Mon–Fri · W 09:30–18:30 · WL 11:00–20:00 (4 techs)");
+      lines.push("Saturday · W 09:00–18:00 · WL 11:00–20:00 (4 techs)");
+      lines.push("Sunday · W 09:00–18:00 · WL 10:00–19:00 (2–3 techs, alternates by parity)");
+    } else if (b === "Sandown") {
+      lines.push("Mon–Fri · WE 08:00–17:15 · WL 11:00–20:00");
+      lines.push("Saturday · WE 08:15–17:15 · WL 10:00–19:00");
+      lines.push("Sunday · all shifts 09:00–18:00 (no early/late split)");
+    } else if (b === "Table Bay") {
+      lines.push("Up to 3 nail techs per day on the late shift (WL).");
+    }
+    if (lines.length === 0) return "";
+    var rows = lines.map(function (l) { return '<div>' + esc(l) + '</div>'; }).join("");
+    return '<div class="sched-hours-banner">' +
+             '<div class="sched-hours-banner-title">🕐 Nail tech hours · ' + esc(b) + '</div>' +
              '<div class="sched-hours-banner-rows">' + rows + '</div>' +
            '</div>';
   }
