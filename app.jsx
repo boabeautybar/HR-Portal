@@ -9367,72 +9367,95 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     if (_mgrM < 1) { _mgrM = 12; _mgrY--; }
     const mgrYm = _mgrY + "-" + String(_mgrM).padStart(2, "0");
     const safe = (p) => p.catch(() => null);
+    // Today's tech loans, keyed by (trimmed) EC → { from, to }. Used in
+    // the post-processing pass to resolve a loaned-out tech's check-in
+    // status from the DESTINATION branch's att grid — otherwise a Betty
+    // tech who clocked in at Bree reads as "not checked in" on Betty's
+    // tile because Betty's own att grid never saw a status for them.
+    const todayLoansByEc = new Map();
+    (techLoans || []).forEach(l => {
+      if (!l || !l.ec || l.date !== ymd) return;
+      if (!l.fromBranch || !l.toBranch || l.fromBranch === l.toBranch) return;
+      todayLoansByEc.set(String(l.ec).trim(), { from: l.fromBranch, to: l.toBranch });
+    });
     Promise.all(SALONS.map(async (sl) => {
       const [tech, mgr, att] = await Promise.all([
         safe(window.BOA_DB.loadSchedule(sl.name, ym, false)),
         safe(window.BOA_DB.loadSchedule(sl.name, mgrYm, true)),
         safe(window.BOA_DB.loadAttendance(sl.name, mgrYm))   // attendance is keyed by the START-month ym
       ]);
-      const techGrid = (tech && tech.grid) || {};
-      const mgrGrid = (mgr && mgr.grid) || {};
-      const attGrid = (att && att.grid) || {};
+      // Return raw grids so the .then() pass can cross-reference loans
+      // against destination branches' att grids.
+      return { name: sl.name, techGrid: (tech && tech.grid) || {}, mgrGrid: (mgr && mgr.grid) || {}, attGrid: (att && att.grid) || {} };
+    })).then(rows => {
+      if (cancelled) return;
       const isWorking = (v) => v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E";
-      // Confirmed (no "~" prefix) statuses. Present = actually checked in;
-      // absent = no-show / sick / FRL / explicit absent. Anything else on a
-      // scheduled tech = hasn't checked in.
       const PRESENT = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1 };
       const ABSENT = { absent: 1, no: 1, sick: 1, sick_n: 1, frl: 1 };
-      let count = 0;
-      let tScheduled = 0, tCheckedIn = 0, tAbsent = 0;
-      const techByEc = {};   // ec -> "in" | "absent" | "pending" (deduped & offboard-filtered at render)
-      const mgrsScheduled = [];
-      for (const ec in techGrid) {
-        const v = techGrid[ec][todayDay];
-        if (!isWorking(v)) continue;
-        count++; tScheduled++;
-        let st = attGrid[ec] && attGrid[ec][todayDay];
-        if (st && st.indexOf("~") === 0) st = "";   // unconfirmed mirror ≠ a real check-in
-        if (st && PRESENT[st]) { tCheckedIn++; techByEc[ec] = "in"; }
-        else if (st && ABSENT[st]) { tAbsent++; techByEc[ec] = "absent"; }
-        else { techByEc[ec] = "pending"; }          // scheduled, neither present nor absent
-      }
-      // Only flag managers who are genuinely active at this branch and
-      // not on approved leave. The raw schedule grid can carry guest /
-      // loan cells for managers from other stores, and a cleared cell
-      // saved as "" while a stale day-of-month key still says "W"
-      // would otherwise read as "scheduled to work". Gating + YMD-first
-      // resolution stops both leaks.
-      const _branchMgrEcs = new Set(
-        (managers || [])
-          .filter(m => m && m.branch === sl.name && !m.onMat && !m.offboarded && !(m.leftDate && ymd > m.leftDate))
-          .map(m => String(m.ec || "").trim())
-          .filter(Boolean)
-      );
-      const _mgrOnLeaveEcs = new Set();
-      (leaveRecs || []).forEach(lv => {
-        if (lv && lv.ec && lv.startDate && lv.endDate && ymd >= lv.startDate && ymd <= lv.endDate) {
-          _mgrOnLeaveEcs.add(String(lv.ec).trim());
-        }
-      });
-      for (const ec of _branchMgrEcs) {
-        if (_mgrOnLeaveEcs.has(ec)) continue;       // approved leave — not a no-show
-        const row = mgrGrid[ec];
-        if (!row) continue;
-        // YMD-first; only fall back to day-of-month when the YMD key is
-        // entirely absent. An empty-string YMD means the cell was
-        // explicitly cleared and a stale day-of-month value must NOT
-        // bleed through as "scheduled to work".
-        const v = Object.prototype.hasOwnProperty.call(row, ymd) ? row[ymd] : row[todayDay];
-        if (isWorking(v)) { count++; mgrsScheduled.push(ec); }
-      }
-      return [sl.name, count, mgrsScheduled, { scheduled: tScheduled, checkedIn: tCheckedIn, notCheckedIn: tScheduled - tCheckedIn - tAbsent, absent: tAbsent, techByEc }];
-    })).then(quads => {
-      if (cancelled) return;
+      // Branch → attGrid lookup so the per-branch compute below can
+      // peek at a loaned-out tech's status at the destination branch.
+      const attByBranch = {};
+      for (const r of rows) attByBranch[r.name] = r.attGrid;
       const map = {};
       const mgrMap = {};
       const techMap = {};
       let total = 0;
-      for (const [name, c, mgrs, tech] of quads) { map[name] = c; mgrMap[name] = mgrs; techMap[name] = tech; total += c; }
+      for (const r of rows) {
+        const { name, techGrid, mgrGrid, attGrid } = r;
+        let count = 0;
+        let tScheduled = 0, tCheckedIn = 0, tAbsent = 0;
+        const techByEc = {};
+        for (const ec in techGrid) {
+          const v = techGrid[ec][todayDay];
+          if (!isWorking(v)) continue;
+          count++; tScheduled++;
+          let st = attGrid[ec] && attGrid[ec][todayDay];
+          if (st && st.indexOf("~") === 0) st = "";   // unconfirmed mirror ≠ a real check-in
+          // Loan resolution: if there's no status at home AND this tech
+          // is loaned out today, check the destination's att grid.
+          if (!st) {
+            const _loan = todayLoansByEc.get(String(ec).trim());
+            if (_loan && _loan.from === name) {
+              const destGrid = attByBranch[_loan.to] || {};
+              let destSt = destGrid[ec] && destGrid[ec][todayDay];
+              if (destSt && destSt.indexOf("~") === 0) destSt = "";
+              if (destSt) st = destSt;
+            }
+          }
+          if (st && PRESENT[st]) { tCheckedIn++; techByEc[ec] = "in"; }
+          else if (st && ABSENT[st]) { tAbsent++; techByEc[ec] = "absent"; }
+          else { techByEc[ec] = "pending"; }
+        }
+        // Only flag managers who are genuinely active at this branch and
+        // not on approved leave. The raw schedule grid can carry guest /
+        // loan cells for managers from other stores, and a cleared cell
+        // saved as "" while a stale day-of-month key still says "W"
+        // would otherwise read as "scheduled to work".
+        const _branchMgrEcs = new Set(
+          (managers || [])
+            .filter(m => m && m.branch === name && !m.onMat && !m.offboarded && !(m.leftDate && ymd > m.leftDate))
+            .map(m => String(m.ec || "").trim())
+            .filter(Boolean)
+        );
+        const _mgrOnLeaveEcs = new Set();
+        (leaveRecs || []).forEach(lv => {
+          if (lv && lv.ec && lv.startDate && lv.endDate && ymd >= lv.startDate && ymd <= lv.endDate) {
+            _mgrOnLeaveEcs.add(String(lv.ec).trim());
+          }
+        });
+        const mgrsScheduled = [];
+        for (const ec of _branchMgrEcs) {
+          if (_mgrOnLeaveEcs.has(ec)) continue;
+          const row2 = mgrGrid[ec];
+          if (!row2) continue;
+          const v = Object.prototype.hasOwnProperty.call(row2, ymd) ? row2[ymd] : row2[todayDay];
+          if (isWorking(v)) { count++; mgrsScheduled.push(ec); }
+        }
+        map[name] = count;
+        mgrMap[name] = mgrsScheduled;
+        techMap[name] = { scheduled: tScheduled, checkedIn: tCheckedIn, notCheckedIn: tScheduled - tCheckedIn - tAbsent, absent: tAbsent, techByEc };
+        total += count;
+      }
       setDashByBranch(map);
       setDashSchedMgrsByBranch(mgrMap);
       setDashTechByBranch(techMap);
@@ -9460,7 +9483,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setDashTodayMgrClockinEcs(new Set());
     }
     return () => { cancelled = true; };
-  }, [tab, staff, managers]);
+  }, [tab, staff, managers, techLoans, leaveRecs]);
 
   // ── Upcoming-cycle schedule check ── flags branches whose tech / manager
   // schedule for the coming month hasn't been saved. Deadline is the 15th.
