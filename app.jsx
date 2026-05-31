@@ -9378,16 +9378,45 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (!l.fromBranch || !l.toBranch || l.fromBranch === l.toBranch) return;
       todayLoansByEc.set(String(l.ec).trim(), { from: l.fromBranch, to: l.toBranch });
     });
-    Promise.all(SALONS.map(async (sl) => {
-      const [tech, mgr, att] = await Promise.all([
-        safe(window.BOA_DB.loadSchedule(sl.name, ym, false)),
-        safe(window.BOA_DB.loadSchedule(sl.name, mgrYm, true)),
-        safe(window.BOA_DB.loadAttendance(sl.name, mgrYm))   // attendance is keyed by the START-month ym
-      ]);
-      // Return raw grids so the .then() pass can cross-reference loans
-      // against destination branches' att grids.
-      return { name: sl.name, techGrid: (tech && tech.grid) || {}, mgrGrid: (mgr && mgr.grid) || {}, attGrid: (att && att.grid) || {} };
-    })).then(rows => {
+    // Daily sign-off lookup: branches whose kiosk Daily Check-in has been
+    // submitted for today (boa_dly_<branch>_<ymd> row exists with
+    // signedBy). The dashboard only counts att-grid statuses for SIGNED-OFF
+    // branches — a store that tagged every status but never tapped Submit
+    // now correctly reads as all-pending instead of all-checked-in, which
+    // matches the Daily Check-ins tab's behaviour.
+    const _dlyKeys = SALONS.map(sl => "boa_dly_" + sl.name + "_" + ymd);
+    const _loadSignedOff = (async () => {
+      const set = new Set();
+      if (!window.BOA_DB.sb) return set;
+      const CHUNK = 60;
+      for (let i = 0; i < _dlyKeys.length; i += CHUNK) {
+        try {
+          const slice = _dlyKeys.slice(i, i + CHUNK);
+          const res = await window.BOA_DB.sb.from("app_state").select("key,value").in("key", slice);
+          if (res.error) { console.warn("daily sign-off load:", res.error); continue; }
+          (res.data || []).forEach(row => {
+            if (row && row.value && row.value.signedBy) {
+              const _b = row.key.replace(/^boa_dly_/, "").replace("_" + ymd, "");
+              set.add(_b);
+            }
+          });
+        } catch (e) { console.warn("daily sign-off load threw:", e); }
+      }
+      return set;
+    })();
+    Promise.all([
+      _loadSignedOff,
+      Promise.all(SALONS.map(async (sl) => {
+        const [tech, mgr, att] = await Promise.all([
+          safe(window.BOA_DB.loadSchedule(sl.name, ym, false)),
+          safe(window.BOA_DB.loadSchedule(sl.name, mgrYm, true)),
+          safe(window.BOA_DB.loadAttendance(sl.name, mgrYm))   // attendance is keyed by the START-month ym
+        ]);
+        // Return raw grids so the .then() pass can cross-reference loans
+        // against destination branches' att grids.
+        return { name: sl.name, techGrid: (tech && tech.grid) || {}, mgrGrid: (mgr && mgr.grid) || {}, attGrid: (att && att.grid) || {} };
+      }))
+    ]).then(([signedOffSet, rows]) => {
       if (cancelled) return;
       const isWorking = (v) => v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E";
       const PRESENT = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1 };
@@ -9405,17 +9434,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         let count = 0;
         let tScheduled = 0, tCheckedIn = 0, tAbsent = 0;
         const techByEc = {};
+        // Gate on the kiosk Daily Check-in sign-off: until the manager
+        // taps "Submit today's check-in" on the kiosk (writes
+        // boa_dly_<branch>_<ymd> with signedBy), the att-grid taps are
+        // treated as a live draft — every scheduled tech reads as
+        // "pending" on the dashboard tile. Mirrors the Daily Check-ins
+        // tab, which already hides unsubmitted days. Loan resolution
+        // honours the same rule against the DESTINATION branch.
+        const _branchSubmitted = signedOffSet.has(name);
         for (const ec in techGrid) {
           const v = techGrid[ec][todayDay];
           if (!isWorking(v)) continue;
           count++; tScheduled++;
-          let st = attGrid[ec] && attGrid[ec][todayDay];
+          let st = _branchSubmitted ? (attGrid[ec] && attGrid[ec][todayDay]) : null;
           if (st && st.indexOf("~") === 0) st = "";   // unconfirmed mirror ≠ a real check-in
           // Loan resolution: if there's no status at home AND this tech
-          // is loaned out today, check the destination's att grid.
+          // is loaned out today, check the destination's att grid — but
+          // only if the destination has also submitted its kiosk check-in.
           if (!st) {
             const _loan = todayLoansByEc.get(String(ec).trim());
-            if (_loan && _loan.from === name) {
+            if (_loan && _loan.from === name && signedOffSet.has(_loan.to)) {
               const destGrid = attByBranch[_loan.to] || {};
               let destSt = destGrid[ec] && destGrid[ec][todayDay];
               if (destSt && destSt.indexOf("~") === 0) destSt = "";
