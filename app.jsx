@@ -22748,7 +22748,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 if (_hasStoreScope && !scopedSalonNames.has(r.branch)) return false;
                 return true;
               });
-              if (_scope.length === 0) return null;
+              // Always render the panel — even with zero matches — so the
+              // ROM knows the feature is alive and can rule out "did
+              // anyone report something today?" at a glance.
               _scope.sort((a, b) => (a.branch || "").localeCompare(b.branch || "") || String(b.reportedAt || "").localeCompare(String(a.reportedAt || "")));
               const _fmtTime = (iso) => { try { return new Date(iso).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; } };
               return (
@@ -22759,23 +22761,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 8, fontStyle: "italic" }}>
                     Submitted via the kiosk's clock-out witness prompt. Use these to chase a missed early-leave deduction with the named colleague.
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 8 }}>
-                    {_scope.map(r => (
-                      <div key={r.id} style={{ background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8, padding: "8px 10px" }}>
-                        <div style={{ fontSize: 12.5, fontWeight: 700, color: "#92400e", marginBottom: 2 }}>
-                          {r.names || "(no name)"}
-                        </div>
-                        <div style={{ fontSize: 10.5, color: "#92400e", opacity: 0.85, fontFamily: "monospace" }}>
-                          📍 {r.branch || "(no branch)"} · reported by {r.reportedByName || r.reportedByEc || "?"}{r.reportedAt ? " at " + _fmtTime(r.reportedAt) : ""}
-                        </div>
-                        {r.note && (
-                          <div style={{ fontSize: 11, color: "#78350f", marginTop: 4, fontStyle: "italic", lineHeight: 1.4 }}>
-                            "{r.note}"
+                  {_scope.length === 0 ? (
+                    <div style={{ background: "#FDF2F8", border: "1px dashed #FBCFE8", borderRadius: 8, padding: "12px 14px", textAlign: "center", color: "#9ca3af", fontSize: 12 }}>
+                      No witness reports submitted for this day yet.
+                    </div>
+                  ) : (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 8 }}>
+                      {_scope.map(r => (
+                        <div key={r.id} style={{ background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8, padding: "8px 10px" }}>
+                          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#92400e", marginBottom: 2 }}>
+                            {r.names || "(no name)"}
                           </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
+                          <div style={{ fontSize: 10.5, color: "#92400e", opacity: 0.85, fontFamily: "monospace" }}>
+                            📍 {r.branch || "(no branch)"} · reported by {r.reportedByName || r.reportedByEc || "?"}{r.reportedAt ? " at " + _fmtTime(r.reportedAt) : ""}
+                          </div>
+                          {r.note && (
+                            <div style={{ fontSize: 11, color: "#78350f", marginTop: 4, fontStyle: "italic", lineHeight: 1.4 }}>
+                              "{r.note}"
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               );
             })()}
