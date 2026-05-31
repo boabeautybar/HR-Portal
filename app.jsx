@@ -16667,7 +16667,31 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (onMatEcs.has(ec)) return "mat";
 
           const v = attGrid[ec] && attGrid[ec][d];
-          if (v) return v.indexOf("~") === 0 ? v.slice(1) : v;
+          if (v) {
+            const _bareV = v.indexOf("~") === 0 ? v.slice(1) : v;
+            // Extra-day stickiness: when the kiosk recorded an Extra Day
+            // for this tech (kioskAbs.status === "ext"), an on/late status
+            // tapped later by the manager would silently mask the Extra
+            // flag and the cell would render as plain green "On Time".
+            // The user explicitly wants Extra Day to win in that case —
+            // whether the tech showed up On Time or Late is less important
+            // than the fact that it was an Extra Day at all. Anything
+            // else (sick, absent, FRL, swap, etc.) still wins over ext
+            // because those are real anomalies the admin must see.
+            if (_bareV === "on" || _bareV === "late") {
+              // Path 1: kiosk audit log marked the day as Extra.
+              const _dayObjExt = days.find(x => x.d === d);
+              const _ka = _dayObjExt ? ((kioskAbsentByBranch[attBranch] || {})[ec] || {})[_dayObjExt.ymd] : null;
+              if (_ka && _ka.status === "ext") return "ext";
+              // Path 2: the SCHEDULE code itself is "E" (extra cover) for
+              // this day. When the manager taps On Time / Late later, the
+              // attGrid status would mask the schedule's Extra signal and
+              // the EXT totals column wouldn't count it. Promote to "ext"
+              // so the cell renders as Extra Day and t.ext++ on this row.
+              if (_schedV === "E") return "ext";
+            }
+            return _bareV;
+          }
           // After a Total Reset the schedule mirror is suppressed so the
           // grid reads as truly empty until the admin runs Auto-fill.
           if (mirrorSuppressed) return "";
