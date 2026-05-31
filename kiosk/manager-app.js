@@ -1437,6 +1437,22 @@
             alert("Earliest clock-in is " + String(earliest).padStart(2, "0") + ":00.\n\nIt's only " + new Date().toLocaleTimeString() + " — wait until " + String(earliest).padStart(2, "0") + ":00 then try again.");
             return;
           }
+          // 1a. Store-open gate. The kiosk boot screen shows the gate when
+          // the store hasn't been opened today, but it only fires on the
+          // initial boot — a tablet left running from yesterday lets
+          // managers tap "Manager Clock-in" and clock in BEFORE anyone
+          // marks the store as open. Re-check here so opening the store
+          // is genuinely the first action of the day.
+          try {
+            var opened = await window.APP_DATA.getStoreOpenedToday();
+            if (!opened || !opened.openedAt) {
+              alert("Open the store first.\n\nNobody has marked " + (cfg.branchName || "this store") + " as open yet today. Tap ← Back and open the store before clocking in.");
+              return;
+            }
+          } catch (e) {
+            // Don't block on transient network errors — log and proceed.
+            console.warn("store-open check failed; allowing clock-in:", e);
+          }
         }
         // 1b. Early-clock-out picker. Resolve THIS manager's scheduled
         // shift end for today (role + code + branch + dow). If they're
