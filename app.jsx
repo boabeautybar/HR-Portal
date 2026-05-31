@@ -4136,10 +4136,12 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
         }
       });
     } else if (branch === "Fourways") {
-      // Fourways: 4 late workers Mon–Sat, plus 3 late on Sundays
-      // (Sunday is still a trading day with extended hours per HR).
-      // Mall of the South and Ballito share the Mon–Sat-only variant
-      // below — Fourways is the outlier with a Sunday late shift.
+      // Fourways: 4 late workers Mon–Sat, 2-3 late on Sundays (Sunday is
+      // still a trading day with extended hours per HR). The Sunday count
+      // alternates between 2 and 3 by Sunday-date parity so consecutive
+      // Sundays don't sit at the same staffing level. Falls back to fewer
+      // when there aren't enough techs scheduled to work that day.
+      // Mall of the South and Ballito share the Mon–Sat-only variant below.
       sortedTechs.forEach(s => { lateShiftCount[s.ec] = 0; });
       days.forEach(dy => {
         const workers = sortedTechs.filter(s => newGrid[s.ec][dy.d] === "W");
@@ -4147,7 +4149,7 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
           (lateShiftCount[a.ec] - lateShiftCount[b.ec]) ||
           a.ec.localeCompare(b.ec)
         );
-        const cap = dy.dow === 0 ? 3 : 4;
+        const cap = dy.dow === 0 ? (sundayDateParity(dy.d) === "A" ? 3 : 2) : 4;
         const need = Math.min(cap, workers.length);
         for (let i = 0; i < need; i++) {
           newGrid[workers[i].ec][dy.d] = "WL";
@@ -5790,6 +5792,13 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
             <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 14px", marginBottom: 10, fontSize: 12, color: "#065f46", display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center" }}>
               <span style={{ fontSize: 11, fontWeight: 800, color: "#065f46", letterSpacing: "0.08em", textTransform: "uppercase" }}>🕐 Table Bay shift times</span>
               <span>Up to 3 nail techs per day on the late shift (WL).</span>
+            </div>
+          )}
+          {branch === "Fourways" && (
+            <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 14px", marginBottom: 10, fontSize: 12, color: "#065f46", display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center" }}>
+              <span style={{ fontSize: 11, fontWeight: 800, color: "#065f46", letterSpacing: "0.08em", textTransform: "uppercase" }}>🕐 Fourways shift times</span>
+              <span><strong>Mon–Sat</strong> · 4 techs on WL late shift</span>
+              <span><strong>Sunday</strong> · 2–3 techs on WL late shift (alternates by parity, falls back to fewer when fewer techs work)</span>
             </div>
           )}
           <div style={{ overflowX: "auto", border: "1px solid #FBCFE8", borderRadius: 10, background: "#fff" }}>
