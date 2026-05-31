@@ -2912,12 +2912,21 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
     // to the move date.
     const regularTechs = allStaff
       .filter(s => s.branch === branch && !s.isShadow)
-      // Off-boarding visibility rule: a tech with a leftDate stays on the
-      // grid for the cycle they leave in (greyed-out row + X cells after
-      // leftDate, handled at render and in PHASE 18). From the next cycle
-      // onward — once their leftDate falls strictly before the period
-      // start — they vanish from the schedule entirely.
-      .filter(s => !s.leftDate || !_periodStartYmdForTechs || s.leftDate >= _periodStartYmdForTechs);
+      // Off-boarding visibility rule:
+      //   • not offboarded → always show
+      //   • offboarded WITH leftDate in/after the cycle start → show (cells
+      //     after leftDate get stamped X by the auto-fill / PHASE 18)
+      //   • offboarded WITH leftDate strictly before the cycle → drop
+      //   • offboarded WITHOUT a leftDate → drop too. We don't know when
+      //     they left, so it's safer to hide them than to leave a stray
+      //     row that the auto-fill can't reason about. (Otherwise techs
+      //     like Imtethal showed up on Fourways' grid forever after they
+      //     resigned because off.leftDate was never filled in.)
+      .filter(s => {
+        if (!s.offboarded) return true;
+        if (!s.leftDate) return false;
+        return !_periodStartYmdForTechs || s.leftDate >= _periodStartYmdForTechs;
+      });
     // Arriving techs — derived from any real record whose transferring
     // flag points HERE. Derivation (rather than relying on the local
     // shadow record handleTransfer creates) means the arriving row
