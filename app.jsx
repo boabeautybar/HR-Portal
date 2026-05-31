@@ -9349,6 +9349,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Per-branch nail-tech breakdown for today: { branch: { scheduled, checkedIn, notCheckedIn, absent } }
   const [dashTechByBranch, setDashTechByBranch] = useState(null); // null = loading
   const [dashTodayMgrClockinEcs, setDashTodayMgrClockinEcs] = useState(null); // null = loading, Set<ec> once loaded
+  // Branches whose Nail Tech Check-in for today is not signed off yet
+  // (manager tapped statuses but never hit "Submit"). Drives the red
+  // flashing banner that fires once past CHECKIN_SUBMIT_NAG_HOUR.
+  const [dashUnsubmittedCheckins, setDashUnsubmittedCheckins] = useState(null); // null = loading, [] otherwise
   useEffect(() => {
     if (tab !== "dashboard") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
@@ -9484,6 +9488,49 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     }
     return () => { cancelled = true; };
   }, [tab, staff, managers, techLoans, leaveRecs]);
+
+  // ── Daily Check-in sign-off load ── reads boa_dly_<branch>_<ymd> for each
+  // scoped branch. The dashboard banner uses this to flag stores that
+  // have tagged statuses (so the att grid looks "done") but never hit
+  // "Submit" on the kiosk's Daily Check-in. The Daily Check-ins tab on
+  // the HR portal silently ignores unsubmitted days, which is what made
+  // a store like Mushroom invisible there even after every status was
+  // tapped.
+  useEffect(() => {
+    if (tab !== "dashboard") return;
+    if (!window.BOA_DB || !window.BOA_DB.sb) return;
+    let cancelled = false;
+    const today = new Date();
+    const ymd = today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0") + "-" + String(today.getDate()).padStart(2, "0");
+    const keys = SALONS.map(sl => "boa_dly_" + sl.name + "_" + ymd);
+    setDashUnsubmittedCheckins(null);
+    (async () => {
+      try {
+        const signed = new Set();
+        // Chunk in batches of 60 so the IN clause doesn't blow up on
+        // deployments with many salons.
+        const CHUNK = 60;
+        for (let i = 0; i < keys.length; i += CHUNK) {
+          const slice = keys.slice(i, i + CHUNK);
+          const res = await window.BOA_DB.sb.from("app_state").select("key,value").in("key", slice);
+          if (res.error) { console.warn("sign-off load:", res.error); continue; }
+          (res.data || []).forEach(row => {
+            if (row && row.value && row.value.signedBy) signed.add(row.key);
+          });
+        }
+        if (cancelled) return;
+        const missing = [];
+        SALONS.forEach(sl => {
+          if (!signed.has("boa_dly_" + sl.name + "_" + ymd)) missing.push(sl.name);
+        });
+        setDashUnsubmittedCheckins(missing);
+      } catch (e) {
+        if (!cancelled) setDashUnsubmittedCheckins([]);
+        console.warn("daily sign-off check failed:", e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [tab]);
 
   // ── Upcoming-cycle schedule check ── flags branches whose tech / manager
   // schedule for the coming month hasn't been saved. Deadline is the 15th.
@@ -11495,6 +11542,48 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 11, color: PINK.deep, marginTop: 6, fontWeight: 500, letterSpacing: "0.04em" }}>Signed in as <span style={{ color: PINK.accent, fontWeight: 700 }}>{currentUser.role}</span></div>
                 </div>
               </div>
+
+              {/* ── UNSUBMITTED DAILY CHECK-IN nag ──
+                  Red flashing banner that fires past CHECKIN_SUBMIT_NAG_HOUR
+                  (10:00) when one or more stores have not signed off
+                  today's Nail Tech Check-in. The Daily Check-ins tab
+                  silently hides unsubmitted days, so without this prompt
+                  a store that taps every status but forgets the Submit
+                  button leaves HR blind to its check-in list. Only counts
+                  scoped, open, currently-trading branches. */}
+              {(() => {
+                const CHECKIN_SUBMIT_NAG_HOUR = 10;
+                const _nowD = new Date();
+                if (_nowD.getHours() < CHECKIN_SUBMIT_NAG_HOUR) return null;
+                if (!Array.isArray(dashUnsubmittedCheckins) || dashUnsubmittedCheckins.length === 0) return null;
+                if (!dashTechByBranch) return null;
+                // Only nag for stores that ACTUALLY have techs scheduled
+                // today AND are in the active scope. A closed/no-show
+                // store hasn't failed to submit, it had nothing to submit.
+                const _openScoped = new Set(openSalons.map(sl => sl.name));
+                const missing = dashUnsubmittedCheckins.filter(b => {
+                  if (!_openScoped.has(b)) return false;
+                  const stats = dashTechByBranch[b];
+                  return !!(stats && stats.scheduled > 0);
+                }).sort((a, b) => a.localeCompare(b));
+                if (missing.length === 0) return null;
+                return (
+                  <>
+                    <style>{`@keyframes _ciNagBlink { 0%,49%{opacity:1} 50%,100%{opacity:0.35} }@keyframes _ciNagGlow { 0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,0)} 50%{box-shadow:0 0 26px 6px rgba(220,38,38,0.6)} }`}</style>
+                    <div style={{ background: "#fee2e2", border: "3px solid #7f1d1d", borderRadius: 16, padding: "16px 20px", marginBottom: 18, display: "flex", alignItems: "center", gap: 16, animation: "_ciNagBlink 1.1s steps(1,end) infinite,_ciNagGlow 1.6s ease-in-out infinite" }}>
+                      <div style={{ fontSize: 38, lineHeight: 1, flex: "0 0 auto" }}>🚨</div>
+                      <div style={{ flex: "1 1 auto" }}>
+                        <div style={{ fontSize: 14, fontWeight: 800, color: "#7f1d1d", letterSpacing: "0.05em", textTransform: "uppercase" }}>
+                          {missing.length === 1 ? "1 store hasn't submitted today's Nail Tech Check-in" : missing.length + " stores haven't submitted today's Nail Tech Check-in"}
+                        </div>
+                        <div style={{ fontSize: 13, color: "#7f1d1d", fontWeight: 600, marginTop: 4, lineHeight: 1.45 }}>
+                          {missing.join(" · ")} — tagged statuses don't appear on the HR portal's Daily Check-ins tab until the kiosk's <strong>Submit today's check-in</strong> button is tapped. Ask the manager to open the kiosk and submit.
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
 
               {/* Shared scope toggle (My / Other / All). Renders nothing
                   when the user has no store scope. Same control is wired
