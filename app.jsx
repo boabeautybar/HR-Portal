@@ -304,8 +304,14 @@ function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose,
         {needsProof && (
           <div style={{ marginTop: 14 }}>
             <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>{opt.code === "sick_n" ? "DOCTOR'S NOTE (required for paid Sick + note)" : "PROOF PHOTO (required for FRL)"}</label>
-            <input type="file" accept="image/*" capture="environment" onChange={handleFile} disabled={locked}
+            {/* No `capture="environment"` here — that attribute force-opens
+                the camera on mobile, but ROMs usually already have the
+                doctor's note in their photo library (forwarded by the
+                manager via WhatsApp/email). Dropping it lets the mobile
+                file picker offer both Camera and Photo Library options. */}
+            <input type="file" accept="image/*" onChange={handleFile} disabled={locked}
               style={{ display: "block", marginTop: 4, fontSize: 13 }} />
+            <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 4, fontStyle: "italic" }}>📷 Take a new photo, or 🖼 pick one your phone already has — both work.</div>
             {proofErr && <div style={{ fontSize: 11, color: "#7f1d1d", marginTop: 4 }}>{proofErr}</div>}
             {proof && <img src={proof} alt="proof" style={{ marginTop: 8, maxWidth: "100%", maxHeight: 180, borderRadius: 8, border: "1px solid #FBCFE8", display: "block" }} />}
             {sickWillDowngrade && (
