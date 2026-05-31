@@ -16679,9 +16679,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // else (sick, absent, FRL, swap, etc.) still wins over ext
             // because those are real anomalies the admin must see.
             if (_bareV === "on" || _bareV === "late") {
+              // Path 1: kiosk audit log marked the day as Extra.
               const _dayObjExt = days.find(x => x.d === d);
               const _ka = _dayObjExt ? ((kioskAbsentByBranch[attBranch] || {})[ec] || {})[_dayObjExt.ymd] : null;
               if (_ka && _ka.status === "ext") return "ext";
+              // Path 2: the SCHEDULE code itself is "E" (extra cover) for
+              // this day. When the manager taps On Time / Late later, the
+              // attGrid status would mask the schedule's Extra signal and
+              // the EXT totals column wouldn't count it. Promote to "ext"
+              // so the cell renders as Extra Day and t.ext++ on this row.
+              if (_schedV === "E") return "ext";
             }
             return _bareV;
           }
