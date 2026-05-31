@@ -11364,10 +11364,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 if (!er) continue;   // no current staff record — deleted/unknown, skip stale grid key
                 if (isOffToday(er, ecKey)) continue;
                 const eff = effBranchOf(er);
-                if (eff && branchSet.has(eff) && b !== eff) continue;   // stale / wrong-branch grid entry
+                // Wrong-branch filter: a staff record pointing at a different
+                // recognized branch normally means this grid entry is stale.
+                // BUT only drop it if the staff's home branch ALSO has the
+                // tech scheduled today — otherwise the tile silently swallows
+                // them and the user sees the dashboard disagree with the
+                // schedule editor (Plumstead / Green Point were missing 12+
+                // techs whose staff records hadn't been updated to match the
+                // schedule's intended branch).
+                if (eff && eff !== b && branchSet.has(eff)) {
+                  const effTb = (dashTechByBranch[eff] || {}).techByEc || {};
+                  if (effTb[ec]) continue;   // double-booked → count at the home branch instead
+                  // Otherwise fall through and count at THIS grid's branch.
+                }
                 const status = tb[ec];
                 const cur = byEc[ec];
-                if (!cur || rank[status] > rank[cur.status]) byEc[ec] = { status, branch: eff || b };
+                // Branch attribution: prefer this grid's branch when the
+                // staff record disagrees, so the tile groups the tech where
+                // the schedule actually places them today.
+                const _resolvedBranch = (eff && eff === b) ? eff : b;
+                if (!cur || rank[status] > rank[cur.status]) byEc[ec] = { status, branch: _resolvedBranch };
               }
             }
             const a = { scheduled: 0, checkedIn: 0, notCheckedIn: 0, absent: 0, notCheckedInList: [] };
