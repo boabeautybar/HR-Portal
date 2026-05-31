@@ -5797,8 +5797,8 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
           {branch === "Fourways" && (
             <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 14px", marginBottom: 10, fontSize: 12, color: "#065f46", display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center" }}>
               <span style={{ fontSize: 11, fontWeight: 800, color: "#065f46", letterSpacing: "0.08em", textTransform: "uppercase" }}>🕐 Fourways shift times</span>
-              <span><strong>Mon–Sat</strong> · 4 techs on WL late shift</span>
-              <span><strong>Sunday</strong> · 2–3 techs on WL late shift (alternates by parity, falls back to fewer when fewer techs work)</span>
+              <span><strong>Mon–Sat</strong> · W 09:00–18:00 · WL 11:00–20:00 (4 techs)</span>
+              <span><strong>Sunday</strong> · W 09:00–18:00 · WL 10:00–19:00 (2–3 techs, alternates by parity)</span>
             </div>
           )}
           <div style={{ overflowX: "auto", border: "1px solid #FBCFE8", borderRadius: 10, background: "#fff" }}>
