@@ -1629,7 +1629,13 @@
 
     // Manager overtime tracker (HR portal Payroll tab)
     loadOvertimeRequests: loadOvertimeRequests,
-    saveOvertimeRequests: saveOvertimeRequests
+    saveOvertimeRequests: saveOvertimeRequests,
+
+    // Witness reports — a clocking-out manager naming a colleague who
+    // left early without clocking out. Submitted from the kiosk
+    // (kiosk/data.js submitEarlyLeaveReport); the HR portal reads them
+    // here to surface on the Manager Check-ins tab.
+    loadEarlyLeaveReports: loadEarlyLeaveReports
   };
 
   // ── Overtime requests ────────────────────────────────────────────────
@@ -1651,6 +1657,12 @@
     var res = await sb.from("app_state").upsert({ key: "boa_overtime_v1", value: Array.isArray(list) ? list : [] });
     if (res.error) { console.error("saveOvertimeRequests:", res.error); throw res.error; }
     return list;
+  }
+  async function loadEarlyLeaveReports() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_mgr_early_reports_v1").maybeSingle();
+    if (res.error) { console.error("loadEarlyLeaveReports:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
   }
 
   // ── Custom locations ─────────────────────────────────────────────────
