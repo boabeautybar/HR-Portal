@@ -226,6 +226,15 @@ textarea.input { resize: vertical; min-height: 64px; }
 .btn-primary:not(:disabled):hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(236,72,153,0.28); }
 .btn-warn { background: linear-gradient(135deg, var(--amber-700), #D97706); color: #fff; }
 .btn-warn:not(:disabled):hover { transform: translateY(-1px); }
+/* Solid outline button for the Clock Out action on the Manager Check-in
+   screen. Distinct from .btn-primary (Clock In's pink gradient) so the
+   two actions read as two different choices, and visibly bolder than
+   .link-btn so it doesn't fade into the row background. */
+.btn-out {
+  background: #fff; color: var(--pink-700);
+  border: 2px solid var(--pink-500);
+}
+.btn-out:not(:disabled):hover { background: var(--pink-50); transform: translateY(-1px); box-shadow: 0 6px 16px rgba(190,24,93,0.18); }
 .btn-row { display: flex; gap: 10px; margin-top: 14px; }
 
 /* ===== Result cards ===== */

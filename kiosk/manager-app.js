@@ -1310,7 +1310,7 @@
         '</div>' +
         '<div class="staff-row-actions">' +
         '<button class="btn btn-primary" data-act="clockin"  ' + (has && !inDone ? "" : 'disabled') + (inDone ? ' title="Already clocked in today"' : '') + '>Clock In</button>' +
-        '<button class="link-btn"       data-act="clockout" ' + (has ? "" : 'disabled') + '>Clock Out</button>' +
+        '<button class="btn btn-out"     data-act="clockout" ' + (has ? "" : 'disabled') + '>Clock Out</button>' +
         '<button class="link-btn"       data-act="overtime" ' + (has ? "" : 'disabled') + ' title="Submit overtime for ROM approval">⏱️ OT</button>' +
         '</div>' +
         '</div>';
