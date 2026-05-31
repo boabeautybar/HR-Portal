@@ -8926,6 +8926,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [mgrClockinFilterBranch, setMgrClockinFilterBranch] = useState("All");
   const [mgrClockinDays, setMgrClockinDays] = useState(31);        // how far back rows are loaded
   const [mgrClockinDay, setMgrClockinDay] = useState(() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); });
+  // Witness reports submitted via the kiosk's clock-out "Did anyone leave
+  // early today?" prompt. Loaded on the Manager Check-ins tab so they
+  // surface alongside today's roster.
+  const [mgrEarlyLeaveReports, setMgrEarlyLeaveReports] = useState([]);
   const [mgrClockinPhoto, setMgrClockinPhoto] = useState(null);   // {url, name, ts, ...}
   const [mgrClockinSchedCache, setMgrClockinSchedCache] = useState({});  // {branch|ym: grid}
   // Manual clock-in modal — opened from the Manager Check-ins no-show
@@ -9813,6 +9817,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     });
     return () => { cancelled = true; };
   }, [tab]);
+
+  // Load witness reports submitted via the kiosk's clock-out prompt.
+  // Fired whenever the Manager Check-ins tab is open OR the user steps to
+  // a different day, so reports for past days show up too.
+  useEffect(() => {
+    if (tab !== "mgrclockins") return;
+    if (!window.BOA_DB || !window.BOA_DB.loadEarlyLeaveReports) return;
+    let cancelled = false;
+    window.BOA_DB.loadEarlyLeaveReports().then(rows => {
+      if (!cancelled) setMgrEarlyLeaveReports(Array.isArray(rows) ? rows : []);
+    });
+    return () => { cancelled = true; };
+  }, [tab, mgrClockinDay]);
 
   // Load recent manager clock-ins when the viewer tab opens.
   useEffect(() => {
@@ -22711,6 +22728,60 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   {surpriseClockIns.length > 0 && (
                     <div style={{ marginTop: 4, fontSize: 11.5, color: "#6b7280" }}>
                       🟦 {surpriseClockIns.length} manager{surpriseClockIns.length === 1 ? "" : "s"} clocked in but were not scheduled to work today: <strong>{surpriseClockIns.map(s => s.m.name + " (" + (s.cell || "—") + ")").join(", ")}</strong>. Check the schedule.
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* ── Witness reports from the kiosk clock-out prompt ──
+                "Did anyone leave early today?" answers submitted by a
+                manager when they clocked out. Filtered to the day being
+                viewed + the active branch scope. The reports name a
+                colleague who walked out without clocking out (so no
+                early-leave reason got logged), letting payroll catch
+                the missed deduction. */}
+            {(() => {
+              const _scope = (mgrEarlyLeaveReports || []).filter(r => {
+                if (!r || r.ymd !== mgrClockinDay) return false;
+                if (mgrClockinFilterBranch !== "All" && r.branch !== mgrClockinFilterBranch) return false;
+                if (_hasStoreScope && !scopedSalonNames.has(r.branch)) return false;
+                return true;
+              });
+              // Always render the panel — even with zero matches — so the
+              // ROM knows the feature is alive and can rule out "did
+              // anyone report something today?" at a glance.
+              _scope.sort((a, b) => (a.branch || "").localeCompare(b.branch || "") || String(b.reportedAt || "").localeCompare(String(a.reportedAt || "")));
+              const _fmtTime = (iso) => { try { return new Date(iso).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; } };
+              return (
+                <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 13, padding: "12px 14px", marginBottom: 14 }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "#831843", letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 8 }}>
+                    ↪ Reported early leavers · {_scope.length}
+                  </div>
+                  <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 8, fontStyle: "italic" }}>
+                    Submitted via the kiosk's clock-out witness prompt. Use these to chase a missed early-leave deduction with the named colleague.
+                  </div>
+                  {_scope.length === 0 ? (
+                    <div style={{ background: "#FDF2F8", border: "1px dashed #FBCFE8", borderRadius: 8, padding: "12px 14px", textAlign: "center", color: "#9ca3af", fontSize: 12 }}>
+                      No witness reports submitted for this day yet.
+                    </div>
+                  ) : (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 8 }}>
+                      {_scope.map(r => (
+                        <div key={r.id} style={{ background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8, padding: "8px 10px" }}>
+                          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#92400e", marginBottom: 2 }}>
+                            {r.names || "(no name)"}
+                          </div>
+                          <div style={{ fontSize: 10.5, color: "#92400e", opacity: 0.85, fontFamily: "monospace" }}>
+                            📍 {r.branch || "(no branch)"} · reported by {r.reportedByName || r.reportedByEc || "?"}{r.reportedAt ? " at " + _fmtTime(r.reportedAt) : ""}
+                          </div>
+                          {r.note && (
+                            <div style={{ fontSize: 11, color: "#78350f", marginTop: 4, fontStyle: "italic", lineHeight: 1.4 }}>
+                              "{r.note}"
+                            </div>
+                          )}
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
