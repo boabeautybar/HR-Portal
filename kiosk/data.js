@@ -800,18 +800,19 @@
   //     - recordedBy     manager name (optional, free text)
   //   The HR portal should subtract `hours` from each tech's day total on
   //   the attendance / payroll grid. Clearing the entry restores the day.
-  function earlyKey(ym) {
+  function earlyKey(ym, branchOverride) {
     // Mirror attKey's end-month → start-month conversion so the HR portal
     // (which uses start-month for everything) finds our writes.
     var p = ym.split("-");
     var y = +p[0], m = +p[1] - 1;
     if (m < 1) { m = 12; y -= 1; }
-    return "boa_early_" + branch() + "_" + y + "-" + String(m).padStart(2, "0");
+    var br = (branchOverride && String(branchOverride).trim()) || branch();
+    return "boa_early_" + br + "_" + y + "-" + String(m).padStart(2, "0");
   }
 
-  async function getEarlyLeaves(ym) {
+  async function getEarlyLeaves(ym, branchOverride) {
     var c = client(); if (!c) return {};
-    var res = await c.from("app_state").select("value").eq("key", earlyKey(ym)).maybeSingle();
+    var res = await c.from("app_state").select("value").eq("key", earlyKey(ym, branchOverride)).maybeSingle();
     if (res.error) { console.error("getEarlyLeaves:", res.error); return {}; }
     return (res.data && res.data.value) || {};
   }
@@ -823,7 +824,13 @@
     if (h > 12) throw new Error("Hours can't exceed 12 — please double-check.");
     // Round to 30-minute intervals (0.5h) to keep payroll numbers clean.
     h = Math.round(h * 2) / 2;
-    var existing = await getEarlyLeaves(ym);
+    // branchOverride lets a manager who clocks out at a LOAN-store kiosk
+    // route their short-hours to their HOME branch's attendance sheet,
+    // so each manager keeps exactly one row on the HR portal grid (no
+    // duplicate "guest" row appearing on a loan branch). The kiosk audit
+    // log mirror below honours the same override.
+    var brOverride = (opts && opts.branchOverride && String(opts.branchOverride).trim()) || null;
+    var existing = await getEarlyLeaves(ym, brOverride);
     var data = JSON.parse(JSON.stringify(existing || {}));
     if (!data[dayKey]) data[dayKey] = {};
     // Optional reason / note added later for managers' early-out picker.
@@ -833,14 +840,18 @@
     var reasonNote = opts && opts.reasonNote ? String(opts.reasonNote).trim() : null;
     var approver   = opts && opts.approver   ? String(opts.approver).trim()   : null;
     data[dayKey][ec] = {
-      hours:       h,
-      recordedAt:  new Date().toISOString(),
-      recordedBy:  (recordedBy || "").trim() || null,
-      reasonCode:  reasonCode,
-      reasonNote:  reasonNote || null,
-      approver:    approver || null
+      hours:        h,
+      recordedAt:   new Date().toISOString(),
+      recordedBy:   (recordedBy || "").trim() || null,
+      reasonCode:   reasonCode,
+      reasonNote:   reasonNote || null,
+      approver:     approver || null,
+      // Where the kiosk write physically happened (the manager might be
+      // clocking out at a loan store). HR portal reports can use this to
+      // distinguish the recording location from the home-branch row above.
+      recordedAtBranch: branch() || null
     };
-    var res = await c.from("app_state").upsert({ key: earlyKey(ym), value: data });
+    var res = await c.from("app_state").upsert({ key: earlyKey(ym, brOverride), value: data });
     if (res.error) throw res.error;
     // Mirror into the kiosk audit log so the HR portal's Daily Check-ins tab
     // can show the deduction inline next to the tech's status for that day.
@@ -851,7 +862,8 @@
       var sY = +sp[0], sM = +sp[1] - 1;
       if (sM < 1) { sM = 12; sY -= 1; }
       var startYm = sY + "-" + String(sM).padStart(2, "0");
-      var logKey  = "boa_kiosk_log_" + branch() + "_" + startYm;
+      var logBranch = brOverride || branch();
+      var logKey  = "boa_kiosk_log_" + logBranch + "_" + startYm;
       // Compute the actual calendar date the dayKey falls on within this
       // start-month cycle: 25..31 → start month itself; 1..24 → next month.
       var dayN = parseInt(dayKey, 10);
@@ -865,7 +877,7 @@
       log.push({
         ec: ec, dayKey: String(dayKey), ymd: ymd,
         status:   "left_early",
-        note:     "Left " + h + "h early" + (data[dayKey][ec].recordedBy ? " · recorded by " + data[dayKey][ec].recordedBy : ""),
+        note:     "Left " + h + "h early" + (data[dayKey][ec].recordedBy ? " · recorded by " + data[dayKey][ec].recordedBy : "") + (brOverride && brOverride !== branch() ? " · clocked out at " + branch() : ""),
         hours:    h,
         hasProof: false, proofKey: null,
         ts: new Date().toISOString()
