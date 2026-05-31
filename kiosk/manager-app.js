@@ -1531,10 +1531,16 @@
             var _now2  = new Date();
             var _y = _now2.getFullYear(), _m = _now2.getMonth() + 1, _d = _now2.getDate();
             var _ym2; if (_d > 24) { var nm = _m + 1, ny = _y; if (nm > 12) { nm = 1; ny += 1; } _ym2 = ny + "-" + String(nm).padStart(2, "0"); } else { _ym2 = _y + "-" + String(_m).padStart(2, "0"); }
+            // Route the early-leave entry to the manager's HOME branch so
+            // each manager keeps exactly one row on the HR portal attendance
+            // sheet, even when they clocked out at a loan-store kiosk.
+            // mgrByEc[ec] is the staff record loaded earlier in this render.
+            var _mHomeBranch = (mgrByEc[String(ec).trim()] && mgrByEc[String(ec).trim()].branch) || null;
             await window.APP_DATA.recordEarlyLeave(_ym2, String(_d), ec, earlyOpts.hours, name, {
               reasonCode: earlyOpts.reasonCode,
               reasonNote: earlyOpts.reasonNote,
-              approver:   earlyOpts.approver
+              approver:   earlyOpts.approver,
+              branchOverride: _mHomeBranch
             });
           } catch (e) {
             alert("Clock-out saved, but the early-leave reason couldn't be recorded: " + (e.message || e) + "\n\nAsk the ROM to record it manually from the HR portal.");
