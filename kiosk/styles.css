@@ -747,6 +747,11 @@ textarea.input { resize: vertical; min-height: 64px; }
 .sched-legend > span > span { display: inline-block; padding: 2px 6px; border-radius: 4px; font-weight: 700; min-width: 22px; text-align: center; }
 .sched-legend-note { color: var(--pink-700) !important; font-style: italic; }
 
+/* Trial nail-tech ghost rows (10 trial working days, yellow) */
+.sched-cell-trial { background: #fef08a; color: #854d0e; font-weight: 800; }
+.sched-trial-row .sched-name { background: #fefce8; color: #854d0e; font-style: italic; }
+.sched-trial-tag { background: #fef08a; color: #854d0e; padding: 1px 5px; border-radius: 4px; font-size: 9px; font-weight: 800; letter-spacing: 0.04em; font-style: normal; }
+
 /* Custom shift hours (per-manager, per-day overrides from the HR portal) */
 .sched-cell-custom { outline: 2px solid #f59e0b; outline-offset: -2px; }
 .sched-cust-star { color: #b45309; font-size: 9px; vertical-align: super; margin-left: 1px; }
