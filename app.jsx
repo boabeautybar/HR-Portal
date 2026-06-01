@@ -16257,14 +16257,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const cycleEnd = days.length ? ymdOf(days[days.length - 1]) : null;
               const start = obForm.startDate;
               if (cycleEnd && start && start <= cycleEnd) {
+                // Default roster mirrors the salon rule rather than a flat
+                // 6-day week: two off-days per Mon–Sun week, with every second
+                // Sunday off. Monday is the standing off-day (quietest); on
+                // "off-Sunday" weeks the 2nd off is that Sunday, otherwise it's
+                // the Tuesday. Days before the start date are marked X.
+                let _sIdx = -1;
+                const offSunday = new Set();
+                days.forEach(d => { if (d.dow === 0) { _sIdx++; if (_sIdx % 2 === 0) offSunday.add(ymdOf(d)); } });
                 const fromLbl = start > cycleStart ? start : "the start of the cycle";
-                if (window.confirm("Add " + obForm.name + " to the current schedule (" + ym + ") now?\n\nThey'll be dropped in with a default Mon–Sat working pattern (Sundays off) from " + fromLbl + ". You can fine-tune it on the Scheduling tab.")) {
+                if (window.confirm("Add " + obForm.name + " to the current schedule (" + ym + ") now?\n\nThey'll be dropped in on the standard roster — two off-days a week, every second Sunday off — from " + fromLbl + ". You can fine-tune it on the Scheduling tab.")) {
                   const sched = await window.BOA_DB.loadSchedule(obForm.branch, ym, false);
                   const grid = (sched && sched.grid) || {};
                   const row = {};
                   days.forEach(d => {
                     const dy = ymdOf(d);
-                    row[d.d] = dy < start ? "X" : (d.dow === 0 ? "O" : "W");
+                    if (dy < start) { row[d.d] = "X"; return; }
+                    let off = false;
+                    if (d.dow === 1) off = true;                       // Monday — standing off-day
+                    else if (d.dow === 0) off = offSunday.has(dy);     // every second Sunday off
+                    else if (d.dow === 2) {                            // Tuesday off when that week's Sunday is worked
+                      const sd = new Date(d.year, d.monthIdx, d.d); sd.setDate(sd.getDate() + 5);
+                      off = !offSunday.has(sd.getFullYear() + "-" + _pad(sd.getMonth() + 1) + "-" + _pad(sd.getDate()));
+                    }
+                    row[d.d] = off ? "O" : "W";
                   });
                   grid[obForm.ec] = row;
                   await window.BOA_DB.saveSchedule(obForm.branch, ym, grid, false);
