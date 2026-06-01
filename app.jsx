@@ -17282,6 +17282,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (sv === "X") return "term";
           if (sv === "E") return "ext";
           if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL") return "on";
+          // Manager clock-in fallback. A manager whose kiosk clock-in is
+          // recorded for this day (in the manager clock-in table) but whose
+          // cell has no schedule code and no other status resolving it is
+          // still a real worked day — render it as 'On Time'. Without this a
+          // manager's worked day shows blank whenever the manager schedule
+          // for the cycle hasn't been published yet (e.g. the new month's
+          // grid isn't generated), which is why today's clock-ins weren't
+          // surfacing on the attendance sheet even though they appear under
+          // Manager Check-ins.
+          if (dayObj && _mgrEcToStaffId[ec] && (_mgrCheckedInByEcYmd[ec] || {})[dayObj.ymd]) return "on";
           return "";
         };
         const hasOverride = (ec, d) => {
@@ -17302,6 +17312,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const _hoOff = _hoSched === "O" || _hoSched === "R";
           if (!_hoOff && dayObj && (_mgrStatusByEcYmd[ec] || {})[dayObj.ymd]) return true;
           if (dayObj && _isMgrAutoAbsent(ec, dayObj.ymd, d)) return true;
+          // Manager clock-in with no schedule code backing it is still a real
+          // worked day (see the matching fallback in getStatus) — render it
+          // solid, not as a faded schedule hint.
+          if (dayObj && _mgrEcToStaffId[ec] && !_hoSched && (_mgrCheckedInByEcYmd[ec] || {})[dayObj.ymd]) return true;
           if (dayObj && (_onLeaveByEcYmd[String(ec).trim()] || {})[dayObj.ymd] && !(attGrid[ec] && attGrid[ec][d])) return true;
           const v = attGrid[ec] && attGrid[ec][d];
           return !!v && v.indexOf("~") !== 0;
