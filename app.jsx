@@ -15401,6 +15401,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         };
         const fmtDate = ymd => ymd ? new Date(ymd + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : "—";
 
+        // Trial-day progress: working days (Mon–Fri, excl. SA public holidays)
+        // elapsed since the start date, capped at the 10-day trial length.
+        const trialDayProgress = (startDate) => {
+          if (!startDate) return { done: 0, total: 10 };
+          const start = new Date(startDate + "T12:00:00");
+          if (isNaN(start)) return { done: 0, total: 10 };
+          const today = new Date(); today.setHours(12, 0, 0, 0);
+          const _p2 = n => String(n).padStart(2, "0");
+          let done = 0; const cur = new Date(start);
+          for (let g = 0; g < 60 && done < 10; g++) {
+            if (cur > today) break;
+            const y = cur.getFullYear(), m = cur.getMonth() + 1, d = cur.getDate();
+            const ymd = y + "-" + _p2(m) + "-" + _p2(d), dow = cur.getDay();
+            if (dow !== 0 && dow !== 6 && !(saHolidays(y) || {})[ymd]) done++;
+            cur.setDate(cur.getDate() + 1);
+          }
+          return { done, total: 10 };
+        };
+        const nextMilestone = {
+          induction: "Begin Trial Week 1",
+          trial_w1: "Mid-trial review",
+          pending_mid_review: "Complete the mid-review",
+          trial_w2: "Final review",
+          pending_final_review: "Final decision — pass / fail"
+        };
+
         const persistTrial = async (next) => {
           setTrialList(next);
           try { await window.BOA_DB.saveTrialPeriod(next); }
@@ -15611,6 +15637,49 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               ))}
             </div>
+
+            {/* Pipeline overview — at-a-glance progress for everyone still in
+                trial: trial-day counter, current stage, the next milestone,
+                and readiness chips (on schedule / induction / reviews / Fresha). */}
+            {activeTrials.length > 0 && (
+              <div style={{ background: "#fff", borderRadius: 16, border: "1px solid #ede9fe", padding: "18px 20px", marginBottom: 24, boxShadow: "0 2px 10px rgba(124,58,237,0.05)" }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: "#6b21a8", letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 14 }}>📊 Trial pipeline · {activeTrials.length} in progress</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
+                  {activeTrials.slice().sort((a, b) => (a.startDate || "").localeCompare(b.startDate || "")).map(r => {
+                    const prog = trialDayProgress(r.startDate);
+                    const ds = daysInStage(r);
+                    const stale = ds > 10;
+                    const stg = TRIAL_STAGES.find(s => s.key === r.status) || { label: r.status, color: "#6b7280", emoji: "•" };
+                    const pct = Math.min(100, Math.round((prog.done / prog.total) * 100));
+                    const chip = (ok, label) => <span style={{ display: "inline-flex", alignItems: "center", gap: 3, background: ok ? "#dcfce7" : "#f3f4f6", color: ok ? "#166534" : "#9ca3af", padding: "2px 7px", borderRadius: 5, fontSize: 10, fontWeight: 700 }}>{ok ? "✓" : "○"} {label}</span>;
+                    return (
+                      <div key={r._id} style={{ border: `1.5px solid ${stale ? "#fca5a5" : "#ede9fe"}`, borderRadius: 12, padding: "12px 14px", background: stale ? "#fff5f5" : "#fafafa" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>{r.name}</div>
+                          {stale && <span style={{ fontSize: 9, fontWeight: 800, color: "#991b1b", background: "#fee2e2", padding: "1px 6px", borderRadius: 4, whiteSpace: "nowrap" }}>⚠ {ds}d in stage</span>}
+                        </div>
+                        <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 8 }}>📍 {r.branch}{r.startDate ? " · started " + fmtDate(r.startDate) : ""}</div>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, fontWeight: 700, color: "#6b21a8", marginBottom: 3 }}>
+                          <span>Trial day {prog.done} / {prog.total}</span>
+                          <span>{stg.emoji} {stg.label}</span>
+                        </div>
+                        <div style={{ height: 6, background: "#ede9fe", borderRadius: 99, overflow: "hidden", marginBottom: 8 }}>
+                          <div style={{ width: pct + "%", height: "100%", background: "#7c3aed" }} />
+                        </div>
+                        <div style={{ fontSize: 10, color: "#7c3aed", fontWeight: 700, marginBottom: 8 }}>Next: {nextMilestone[r.status] || "—"}</div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                          {chip(!!r.startDate, "On schedule")}
+                          {trialSubTab === "nt" && chip(!!r.inductionPassDate, "Induction")}
+                          {chip(!!(r.midEval && r.midEval.submittedAt), "Mid-review")}
+                          {chip(!!(r.finalEval && r.finalEval.submittedAt), "Final review")}
+                          {chip(!!r.freshaTrialOpened, "Fresha")}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Add Trainee Form */}
             {tForm._open && (
