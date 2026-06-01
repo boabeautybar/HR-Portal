@@ -9368,8 +9368,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     try {
       const ymds = [];
       for (let cur = new Date(start); ymdOf(cur) <= endYmd; cur.setDate(cur.getDate() + 1)) ymds.push(ymdOf(cur));
-      // Cycles (25→24, keyed by START-month) that the range touches.
-      const cycles = Array.from(new Set(ymds.map(payrollYmFor)));
+      // Attendance grids are saved under the START-month ym of the 25th→24th
+      // cycle (cycle 25 May → 24 Jun lives at "2026-05"), matching
+      // currentAttYm() — NOT payrollYmFor()'s end-month convention. Use the
+      // start-month key or the tech grids load empty.
+      const attYmForYmd = (ymd) => {
+        const [y, m, d] = ymd.split("-").map(Number);
+        let yy = y, mm = m;
+        if (d <= 24) { mm -= 1; if (mm < 1) { mm = 12; yy--; } }
+        return yy + "-" + String(mm).padStart(2, "0");
+      };
+      const cycles = Array.from(new Set(ymds.map(attYmForYmd)));
       // Attendance grids for every branch × touched cycle (tech absences).
       const gridByKey = {};
       await Promise.all(SALONS.flatMap(sl => cycles.map(async ym => {
@@ -9449,7 +9458,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         ymds.forEach(ymd => {
           if (ld && ymd > ld) return;
           if (leaveSet.has(ecT + "|" + ymd)) return;
-          const ym = payrollYmFor(ymd), dom = parseInt(ymd.slice(8, 10), 10);
+          const ym = attYmForYmd(ymd), dom = parseInt(ymd.slice(8, 10), 10);
           const g = gridByKey[s.branch + "|" + ym] || {};
           let v = (g[ec] || g[ecT] || {})[dom];
           if (!v) return;
