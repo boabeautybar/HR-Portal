@@ -17371,9 +17371,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (dy) _mgrLoanedOutSet.add(String(l.ec).trim() + "|" + dy.d);
         });
 
+        // AMs currently on an active Store-Manager trial (per the SM Trials
+        // tab). They work SM shifts, so surface "SM · on trial" on the grid.
+        const _smTrialEcSet = new Set((smTrialList || []).filter(t => t && t.status === "active" && t.ec).map(t => String(t.ec).trim()));
         const attStaff = [
           ...enriched.filter(s => s.branch === attBranch && stillInCycle(s.ec)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat })),
-          ...managers.filter(m => m.branch === attBranch && stillInCycle(m.ec)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", onMat: !!m.onMat }))
+          ...managers.filter(m => m.branch === attBranch && stillInCycle(m.ec)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", onMat: !!m.onMat, smTrial: _smTrialEcSet.has(String(m.ec).trim()) }))
         ].sort((a, b) => {
           // Maternity-leave staff go to the very bottom of the grid so the
           // active roster stays at the top. Within each group, sort by
@@ -18910,8 +18913,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const dataRow = (
                       <tr key={s.ec} style={isMgr ? { background: "#fffaf0" } : undefined}>
                         <td style={{ position: "sticky", left: 0, background: isMgr ? "#fffaf0" : "#FFFFFF", padding: "6px 10px", borderBottom: "1px solid #FCE7F3", borderRight: "2px solid #FBCFE8", zIndex: 2, minWidth: 170 }}>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: "#831843" }}>{isMgr ? (s.role === "SM" ? "👑 " : s.role === "SSM" ? "💎 " : "⭐ ") : ""}{s.name}</div>
-                          <div style={{ fontSize: 9, color: "#9ca3af" }}>{s.ec} · {s.role}</div>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: "#831843", display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                            <span>{isMgr ? (s.role === "SM" ? "👑 " : s.role === "SSM" ? "💎 " : "⭐ ") : ""}{s.name}</span>
+                            {s.smTrial && <span title="On a Store-Manager trial (SM Trials tab) — works SM shifts" style={{ background: "#FFEDD5", color: "#9A3412", border: "1px solid #FED7AA", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>⭐ SM TRIAL</span>}
+                          </div>
+                          <div style={{ fontSize: 9, color: "#9ca3af" }}>{s.ec} · {s.smTrial ? "SM · on trial" : s.role}</div>
                         </td>
                         {days.map(dy => {
                           const v = getStatus(s.ec, dy.d);
