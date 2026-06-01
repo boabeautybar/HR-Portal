@@ -9892,6 +9892,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     };
     (techLoans || []).forEach(_addTarget);
     (mgrLoanRows || []).forEach(_addTarget);
+    // Incoming mid-cycle transfers: their pre-transfer loan-outs were made from
+    // their OLD branch, so we also need the RECEIVING branches' grids to mirror
+    // those loan-day statuses in this destination view (matches the old branch).
+    const _incoming = (staff || []).filter(s => s && s.ec && s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= cycEndYmd && s.branch && s.branch !== attBranch);
+    if (_incoming.length) {
+      const incByEc = {}; _incoming.forEach(s => { incByEc[s.ec] = s; });
+      (techLoans || []).forEach(l => {
+        if (!l || !l.ec || !l.date || !l.toBranch || l.toBranch === attBranch) return;
+        if (l.date < cycStartYmd || l.date > cycEndYmd) return;
+        const inc = incByEc[l.ec];
+        if (inc && l.fromBranch === inc.branch && l.date < inc.transferDate) targets.add(l.toBranch);
+      });
+    }
     if (targets.size === 0) { setCrossBranchAttGrids({}); return; }
     let cancelled = false;
     Promise.all([...targets].map(async (br) => {
@@ -9906,7 +9919,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setCrossBranchAttGrids(next);
     });
     return () => { cancelled = true; };
-  }, [tab, attBranch, attYM, techLoans, mgrLoanRows]);
+  }, [tab, attBranch, attYM, techLoans, mgrLoanRows, staff]);
 
   // ── Dashboard: count staff scheduled to work today across all branches ──
   const [dashScheduledToday, setDashScheduledToday] = useState(null); // null = loading
@@ -17399,13 +17412,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const _mgrLoansInCycle = (mgrLoanRows || []).filter(l => l && l.date && l.date >= cycStartYmd && l.date <= cycEndYmd);
         const outgoingLoanMap = {};
         const _mgrLoanedOutSet = new Set();    // "ec|d" pairs — managers loaned OUT this cycle
+        // Incoming mid-cycle transfers (arriving at this branch). Their
+        // pre-transfer loan-outs were made from their OLD branch, so carry them
+        // into this destination view — the loan arrow + the receiving branch's
+        // mirrored status then render exactly as they did at the old branch.
+        const _incomingByEc = {};
+        (enriched || []).forEach(s => {
+          if (s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= cycEndYmd && s.branch && s.branch !== attBranch && stillInCycle(s.ec)) {
+            _incomingByEc[s.ec] = { movedFrom: s.branch, transferDate: s.transferDate };
+          }
+        });
+        // Check-ins are indexed by the staff record's branch. A transferred
+        // tech's record still points at the OLD branch, so ALL their clock-ins
+        // (before AND after the move) live under it — look check-ins up there
+        // for incoming techs so their worked days show and genuine missed days
+        // can be told apart from worked-but-unstamped ones.
+        const _cinBranchFor = (ec) => (_incomingByEc[ec] && _incomingByEc[ec].movedFrom) || attBranch;
         _loansInCycle.concat(_mgrLoansInCycle).forEach(l => {
           if (!l.ec) return;
           const dy = days.find(x => x.ymd === l.date);
           if (!dy) return;
+          let toB = null;
           if (l.fromBranch === attBranch && l.toBranch && l.toBranch !== attBranch) {
-            (outgoingLoanMap[l.ec] = outgoingLoanMap[l.ec] || {})[dy.d] = l.toBranch;
+            toB = l.toBranch;
+          } else {
+            const inc = _incomingByEc[l.ec];
+            if (inc && l.fromBranch === inc.movedFrom && l.toBranch && l.date < inc.transferDate) toB = l.toBranch;
           }
+          if (toB) (outgoingLoanMap[l.ec] = outgoingLoanMap[l.ec] || {})[dy.d] = toB;
         });
         _mgrLoansInCycle.forEach(l => {
           if (!l.ec || !l.fromBranch || l.fromBranch !== attBranch) return;
@@ -17642,7 +17676,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               if (_isExtraDay(ec, d)) return "ext";
               // Path 1: kiosk audit log marked the day as Extra.
               const _dayObjExt = days.find(x => x.d === d);
-              const _ka = _dayObjExt ? ((kioskAbsentByBranch[attBranch] || {})[ec] || {})[_dayObjExt.ymd] : null;
+              const _ka = _dayObjExt ? ((kioskAbsentByBranch[_cinBranchFor(ec)] || {})[ec] || {})[_dayObjExt.ymd] : null;
               if (_ka && _ka.status === "ext") return "ext";
               // Path 2: the SCHEDULE code itself is "E" (extra cover) for
               // this day. When the manager taps On Time / Late later, the
@@ -18569,8 +18603,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const hint = schedHint(ec, dy.d);
             const scheduleSaysWork = hint === "on" || hint === "ext";
             const freshaWorkedCell = !!((((attMeta || {}).freshaWorked || {})[ec] || {})[dy.d]);
-            const checkin = ((checkInsByBranch[attBranch] || {})[ec] || {})[dy.ymd] || null;
-            const kioskAbs = ((kioskAbsentByBranch[attBranch] || {})[ec] || {})[dy.ymd] || null;
+            const checkin = ((checkInsByBranch[_cinBranchFor(ec)] || {})[ec] || {})[dy.ymd] || null;
+            const kioskAbs = ((kioskAbsentByBranch[_cinBranchFor(ec)] || {})[ec] || {})[dy.ymd] || null;
             const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
             const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
             const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i" || bareV === "late";
@@ -18685,8 +18719,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // have their own clock-in source (handled via the mgr-overlay
               // upstream). Skip the lookups for them so we never mix tech
               // kiosk hits into a manager warning.
-              const kioskAbs = s.role === "NT" ? (((kioskAbsentByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null) : null;
-              const checkin = s.role === "NT" ? (((checkInsByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null) : null;
+              const kioskAbs = s.role === "NT" ? (((kioskAbsentByBranch[_cinBranchFor(s.ec)] || {})[s.ec] || {})[dy.ymd] || null) : null;
+              const checkin = s.role === "NT" ? (((checkInsByBranch[_cinBranchFor(s.ec)] || {})[s.ec] || {})[dy.ymd] || null) : null;
               const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
               const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
               const freshaWorkedCell = !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
@@ -18997,7 +19031,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // entries are advance planning, not actual check-ins, so ignore
                           // them here.
                           const checkin = (s.role === "NT" && isPastOrToday && !mirrorSuppressed)
-                            ? ((checkInsByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null
+                            ? ((checkInsByBranch[_cinBranchFor(s.ec)] || {})[s.ec] || {})[dy.ymd] || null
                             : null;
                           // Discrepancy logic:
                           //  - Tech checked in but attendance marks them OFF / Annual /
@@ -19018,7 +19052,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // so they don't trigger "checked in" / mismatch signals on days
                           // that haven't happened yet.
                           const kioskAbs = (s.role === "NT" && isPastOrToday && !mirrorSuppressed)
-                            ? ((kioskAbsentByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null
+                            ? ((kioskAbsentByBranch[_cinBranchFor(s.ec)] || {})[s.ec] || {})[dy.ymd] || null
                             : null;
                           // swap_o explicitly means "took today off, owes a day back" — the
                           // tech was NOT present, even if a PIN-clockin record happened to
