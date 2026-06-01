@@ -6928,6 +6928,7 @@ const SETTINGS_TABS = [
   { t: "cashups", l: "Cash Ups", cat: "Operations", icon: "💰" },
   { t: "attendance", l: "Attendance / Payroll", cat: "Payroll", icon: "📕" },
   { t: "payrollProgress", l: "Payroll Progress", cat: "Payroll", icon: "📊" },
+  { t: "payrollReports", l: "Reports", cat: "Payroll", icon: "📈" },
   { t: "overtime", l: "Overtime", cat: "Payroll", icon: "⏱️" },
   { t: "alerts", l: "Alerts", cat: "Insights", icon: "🔔" },
   { t: "activity", l: "Activity Log", cat: "Insights", icon: "📜" },
@@ -9055,7 +9056,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const NAV_TAB_TO_CATEGORY = {
     onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
     scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
-    attendance: "Payroll", payrollProgress: "Payroll", overtime: "Payroll",
+    attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll",
     alerts: "Insights", activity: "Insights",
     settings: "Admin", voucherAdmin: "Admin"
   };
@@ -9341,6 +9342,245 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // admin review per branch for the active cycle. Lives at component scope
   // so it can be triggered from the dedicated Payroll Progress tab.
   const [payrollOverview, setPayrollOverview] = useState(null);   // null | { loading, ym, byBranch }
+
+  // ── Attendance / Absenteeism Reports (Payroll → Reports) ───────────
+  // Cross-branch overview of who is missing the most work, who attends
+  // best, and recurring patterns (Monday / weekend / month-end clusters)
+  // that flag possible sick-leave abuse. Annual leave + maternity are
+  // never counted as missed days.
+  const [reportRange, setReportRange] = useState("cycle");        // "cycle" | "week" | "mtd"
+  const [reportsData, setReportsData] = useState(null);           // null | { loading, ... }
+  const loadAttendanceReports = async (rangeKey) => {
+    const _p2r = z => String(z).padStart(2, "0");
+    const ymdOf = d => d.getFullYear() + "-" + _p2r(d.getMonth() + 1) + "-" + _p2r(d.getDate());
+    // Resolve [start, end] for the chosen range. Week and month-to-date end
+    // today; the pay cycle spans the FULL 25th→24th window (e.g. 25 May →
+    // 24 Jun) even mid-cycle — future days simply carry no data yet.
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    let start, end = today;
+    if (rangeKey === "week") { start = new Date(today); start.setDate(start.getDate() - 6); }
+    else if (rangeKey === "mtd") { start = new Date(today.getFullYear(), today.getMonth(), 1); }
+    else { // pay cycle 25th → 24th containing today
+      let y = today.getFullYear(), m = today.getMonth();
+      if (today.getDate() < 25) { m -= 1; if (m < 0) { m = 11; y -= 1; } }
+      start = new Date(y, m, 25);
+      end = new Date(y, m + 1, 24);                  // 24th of the following month
+    }
+    const startYmd = ymdOf(start), endYmd = ymdOf(end);
+    setReportsData({ loading: true, range: rangeKey, startYmd, endYmd });
+    try {
+      const ymds = [];
+      for (let cur = new Date(start); ymdOf(cur) <= endYmd; cur.setDate(cur.getDate() + 1)) ymds.push(ymdOf(cur));
+      // Attendance grids are saved under the START-month ym of the 25th→24th
+      // cycle (cycle 25 May → 24 Jun lives at "2026-05"), matching
+      // currentAttYm() — NOT payrollYmFor()'s end-month convention. Use the
+      // start-month key or the tech grids load empty.
+      const attYmForYmd = (ymd) => {
+        const [y, m, d] = ymd.split("-").map(Number);
+        let yy = y, mm = m;
+        if (d <= 24) { mm -= 1; if (mm < 1) { mm = 12; yy--; } }
+        return yy + "-" + String(mm).padStart(2, "0");
+      };
+      const cycles = Array.from(new Set(ymds.map(attYmForYmd)));
+      // Attendance grids for every branch × touched cycle (tech absences).
+      const gridByKey = {};
+      await Promise.all(SALONS.flatMap(sl => cycles.map(async ym => {
+        try { const att = await window.BOA_DB.loadAttendance(sl.name, ym); gridByKey[sl.name + "|" + ym] = (att && att.grid) || {}; }
+        catch (_) { gridByKey[sl.name + "|" + ym] = {}; }
+      })));
+      // Manager absences live in manager_day_status; worked days come from
+      // their kiosk clock-ins. Pull a window wide enough to reach the range.
+      const daysBack = Math.max(10, Math.ceil((Date.now() - start.getTime()) / 86400000) + 2);
+      let mgrStatuses = [], mgrClock = [];
+      try { mgrStatuses = (await window.BOA_DB.loadManagerDayStatuses(daysBack)) || []; } catch (_) { }
+      try { mgrClock = (await window.BOA_DB.listRecentManagerClockins(daysBack)) || []; } catch (_) { }
+      const mgrStatusByIdYmd = {};
+      mgrStatuses.forEach(r => { if (r && r.staff_id && r.date && r.status) (mgrStatusByIdYmd[String(r.staff_id)] = mgrStatusByIdYmd[String(r.staff_id)] || {})[r.date] = r.status; });
+      const mgrClockByIdYmd = {};
+      mgrClock.forEach(r => {
+        if (!r || r.type !== "in" || !r.ts) return;
+        const d = new Date(r.ts); const k = ymdOf(d);
+        const sid = r.staff_id != null ? String(r.staff_id) : (r.staff && r.staff.id != null ? String(r.staff.id) : null);
+        if (sid) (mgrClockByIdYmd[sid] = mgrClockByIdYmd[sid] || {})[k] = true;
+      });
+      // Exclusions: terminated before the range, maternity, approved annual leave.
+      const offByEc = {}; (offList || []).forEach(o => { if (o && o.ec && o.leftDate) offByEc[o.ec] = o.leftDate; });
+      const leaveSet = new Set();
+      (leaveRecs || []).forEach(lv => {
+        if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return;
+        const ecT = String(lv.ec).trim();
+        for (let cur = new Date(lv.startDate + "T00:00:00"); ymdOf(cur) <= lv.endDate; cur.setDate(cur.getDate() + 1)) leaveSet.add(ecT + "|" + ymdOf(cur));
+      });
+      const blank = (s, role) => ({
+        ec: s.ec, name: s.name, branch: s.branch || "", role,
+        sickNoNote: 0, sickNote: 0, noShow: 0, absent: 0, frl: 0, unpaid: 0, late: 0,
+        worked: 0, missed: 0, monthEnd: 0, byDow: [0, 0, 0, 0, 0, 0, 0]
+      });
+      const markPattern = (rec, ymd) => {
+        const dow = new Date(ymd + "T00:00:00").getDay();
+        rec.byDow[dow]++;
+        const dom = parseInt(ymd.slice(8, 10), 10);
+        if (dom >= 26 || dom <= 3) rec.monthEnd++;     // around month boundary / payday
+      };
+      const classify = (rec, bare, ymd) => {
+        switch (bare) {
+          case "sick": rec.sickNoNote++; rec.missed++; markPattern(rec, ymd); break;
+          case "sick_n": rec.sickNote++; rec.missed++; markPattern(rec, ymd); break;
+          case "no": rec.noShow++; rec.missed++; markPattern(rec, ymd); break;
+          case "absent": rec.absent++; rec.missed++; markPattern(rec, ymd); break;
+          case "unpaid": rec.unpaid++; rec.missed++; markPattern(rec, ymd); break;
+          case "frl": rec.frl++; rec.missed++; break;                 // legitimate — counted, not pattern-flagged
+          case "late": rec.late++; rec.worked++; break;
+          case "on": case "ext": case "trial": case "swap_i": rec.worked++; break;
+          default: break;                                              // al / mat / ph / off / term / swap_o / loan_out / deduct → ignore
+        }
+      };
+      const finish = (rec) => {
+        const base = rec.sickNoNote + rec.sickNote + rec.noShow + rec.absent + rec.unpaid;   // missed excl. FRL → pattern denominator
+        const flags = [];
+        if (base >= 3) {
+          const mon = rec.byDow[1], fri = rec.byDow[5], wknd = rec.byDow[0] + rec.byDow[6];
+          if (mon >= 2 && mon / base >= 0.4) flags.push("Monday-heavy");
+          if (fri >= 2 && fri / base >= 0.4) flags.push("Friday-heavy");
+          if (wknd >= 2 && wknd / base >= 0.5) flags.push("Weekend-heavy");
+          if (rec.monthEnd >= 2 && rec.monthEnd / base >= 0.5) flags.push("Month-end cluster");
+          if (rec.sickNoNote >= 3 && rec.sickNoNote >= rec.sickNote) flags.push("Frequent no-note sick");
+        }
+        rec.flags = flags;
+        rec.concerning = rec.sickNoNote + rec.noShow + rec.absent;
+        rec.attendanceRate = (rec.worked + rec.missed) > 0 ? rec.worked / (rec.worked + rec.missed) : null;
+        return rec;
+      };
+      const techRecs = [], mgrRecs = [];
+      (staff || []).forEach(s => {
+        const ec = s.ec; if (!ec) return;
+        const ecT = String(ec).trim();
+        if (onMatEcs.has(ecT)) return;
+        const ld = offByEc[ec]; if (ld && ld < startYmd) return;
+        const rec = blank(s, "NT");
+        ymds.forEach(ymd => {
+          if (ld && ymd > ld) return;
+          if (leaveSet.has(ecT + "|" + ymd)) return;
+          const ym = attYmForYmd(ymd), dom = parseInt(ymd.slice(8, 10), 10);
+          const g = gridByKey[s.branch + "|" + ym] || {};
+          let v = (g[ec] || g[ecT] || {})[dom];
+          if (!v) return;
+          classify(rec, v.charAt(0) === "~" ? v.slice(1) : v, ymd);
+        });
+        if (rec.worked + rec.missed > 0) techRecs.push(finish(rec));
+      });
+      (managers || []).forEach(m => {
+        const ec = m.ec; if (!ec) return;
+        const ecT = String(ec).trim();
+        if (onMatEcs.has(ecT)) return;
+        const ld = offByEc[ec]; if (ld && ld < startYmd) return;
+        const sid = String(m._id || m.id || "");
+        const rec = blank(m, m.role || "AM");
+        ymds.forEach(ymd => {
+          if (ld && ymd > ld) return;
+          if (leaveSet.has(ecT + "|" + ymd)) return;
+          const st = (mgrStatusByIdYmd[sid] || {})[ymd];
+          if (st) { classify(rec, st, ymd); return; }
+          if ((mgrClockByIdYmd[sid] || {})[ymd]) rec.worked++;
+        });
+        if (rec.worked + rec.missed > 0) mgrRecs.push(finish(rec));
+      });
+      const sumTotals = (arr, t) => arr.forEach(r => { t.sickNoNote += r.sickNoNote; t.sickNote += r.sickNote; t.noShow += r.noShow; t.absent += r.absent; t.frl += r.frl; t.unpaid += r.unpaid; t.late += r.late; });
+      const totals = { sickNoNote: 0, sickNote: 0, noShow: 0, absent: 0, frl: 0, unpaid: 0, late: 0 };
+      sumTotals(techRecs, totals); sumTotals(mgrRecs, totals);
+      const byMissed = (a, b) => b.missed - a.missed || b.concerning - a.concerning || a.name.localeCompare(b.name);
+      const byBest = (a, b) => (b.attendanceRate - a.attendanceRate) || (b.worked - a.worked) || a.missed - b.missed;
+      const bestAttenders = techRecs.concat(mgrRecs).filter(r => r.worked >= 3 && r.attendanceRate != null).sort(byBest).slice(0, 10);
+      const flagged = techRecs.concat(mgrRecs).filter(r => r.flags.length > 0).sort((a, b) => b.concerning - a.concerning || b.missed - a.missed);
+      setReportsData({
+        loading: false, range: rangeKey, startYmd, endYmd, totals,
+        topMgrs: mgrRecs.filter(r => r.missed > 0).sort(byMissed).slice(0, 10),
+        topTechs: techRecs.filter(r => r.missed > 0).sort(byMissed).slice(0, 10),
+        bestAttenders, flagged, mgrCount: mgrRecs.length, techCount: techRecs.length
+      });
+    } catch (e) {
+      console.error("attendance reports load:", e);
+      setReportsData({ loading: false, range: rangeKey, startYmd, endYmd, error: (e && e.message) || String(e) });
+    }
+  };
+
+  // Multi-cycle trend: missed days per person across the last N pay cycles,
+  // so you can see who is trending worse/better month over month.
+  const [reportsView, setReportsView] = useState("snapshot");     // "snapshot" | "trend"
+  const [trendData, setTrendData] = useState(null);
+  const loadAttendanceTrend = async () => {
+    const N = 6;
+    const _p2 = z => String(z).padStart(2, "0");
+    const ymdOf = d => d.getFullYear() + "-" + _p2(d.getMonth() + 1) + "-" + _p2(d.getDate());
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const todayYmd = ymdOf(today);
+    const attYmOf = (d) => { let y = d.getFullYear(), m = d.getMonth() + 1; if (d.getDate() <= 24) { m--; if (m < 1) { m = 12; y--; } } return y + "-" + _p2(m); };
+    const [cy, cm] = attYmOf(today).split("-").map(Number);
+    const cycleYms = [];
+    for (let i = N - 1; i >= 0; i--) { let yy = cy, mm = cm - i; while (mm < 1) { mm += 12; yy--; } cycleYms.push(yy + "-" + _p2(mm)); }
+    setTrendData({ loading: true, cycleYms });
+    try {
+      const gridByKey = {};
+      await Promise.all(SALONS.flatMap(sl => cycleYms.map(async ym => {
+        try { const att = await window.BOA_DB.loadAttendance(sl.name, ym); gridByKey[sl.name + "|" + ym] = (att && att.grid) || {}; }
+        catch (_) { gridByKey[sl.name + "|" + ym] = {}; }
+      })));
+      const oldestStart = new Date(Number(cycleYms[0].split("-")[0]), Number(cycleYms[0].split("-")[1]) - 1, 25);
+      const daysBack = Math.max(40, Math.ceil((Date.now() - oldestStart.getTime()) / 86400000) + 2);
+      let mgrStatuses = [], mgrClock = [];
+      try { mgrStatuses = (await window.BOA_DB.loadManagerDayStatuses(daysBack)) || []; } catch (_) { }
+      const mgrStatusByIdYmd = {};
+      mgrStatuses.forEach(r => { if (r && r.staff_id && r.date && r.status) (mgrStatusByIdYmd[String(r.staff_id)] = mgrStatusByIdYmd[String(r.staff_id)] || {})[r.date] = r.status; });
+      const offByEc = {}; (offList || []).forEach(o => { if (o && o.ec && o.leftDate) offByEc[o.ec] = o.leftDate; });
+      const leaveSet = new Set();
+      (leaveRecs || []).forEach(lv => { if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return; const ecT = String(lv.ec).trim(); for (let cur = new Date(lv.startDate + "T00:00:00"); ymdOf(cur) <= lv.endDate; cur.setDate(cur.getDate() + 1)) leaveSet.add(ecT + "|" + ymdOf(cur)); });
+      const MISSED = { sick: 1, sick_n: 1, no: 1, absent: 1, unpaid: 1, frl: 1 };
+      const CONCERN = { sick: 1, no: 1, absent: 1 };
+      const WORKED = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1 };
+      const cycleDays = (ym) => { const [yy, mm] = ym.split("-").map(Number); const s = new Date(yy, mm - 1, 25), e = new Date(yy, mm, 24); const out = []; for (let cur = new Date(s); cur <= e; cur.setDate(cur.getDate() + 1)) { const yd = ymdOf(cur); if (yd > todayYmd) break; out.push(yd); } return out; };
+      const cycleDaysMap = {}; cycleYms.forEach(ym => cycleDaysMap[ym] = cycleDays(ym));
+      const recs = {};
+      const ensure = (s, role) => { const k = s.ec; if (!recs[k]) recs[k] = { ec: s.ec, name: s.name, branch: s.branch || "", role, missed: new Array(N).fill(0), concern: new Array(N).fill(0), active: new Array(N).fill(false) }; return recs[k]; };
+      (staff || []).forEach(s => {
+        const ec = s.ec; if (!ec) return; const ecT = String(ec).trim(); if (onMatEcs.has(ecT)) return; const ld = offByEc[ec];
+        cycleYms.forEach((ym, ci) => {
+          const g = gridByKey[s.branch + "|" + ym] || {}; const row = g[ec] || g[ecT]; if (!row) return;
+          cycleDaysMap[ym].forEach(ymd => {
+            if (ld && ymd > ld) return; if (leaveSet.has(ecT + "|" + ymd)) return;
+            const dom = parseInt(ymd.slice(8, 10), 10); let v = row[dom]; if (!v) return;
+            const bare = v.charAt(0) === "~" ? v.slice(1) : v;
+            if (MISSED[bare]) { const r = ensure(s, "NT"); r.missed[ci]++; if (CONCERN[bare]) r.concern[ci]++; r.active[ci] = true; }
+            else if (WORKED[bare]) { ensure(s, "NT").active[ci] = true; }
+          });
+        });
+      });
+      (managers || []).forEach(m => {
+        const ec = m.ec; if (!ec) return; const ecT = String(ec).trim(); if (onMatEcs.has(ecT)) return; const ld = offByEc[ec]; const sid = String(m._id || m.id || "");
+        cycleYms.forEach((ym, ci) => {
+          cycleDaysMap[ym].forEach(ymd => {
+            if (ld && ymd > ld) return; if (leaveSet.has(ecT + "|" + ymd)) return;
+            const st = (mgrStatusByIdYmd[sid] || {})[ymd];
+            if (st && MISSED[st]) { const r = ensure(m, m.role || "AM"); r.missed[ci]++; if (CONCERN[st]) r.concern[ci]++; r.active[ci] = true; }
+          });
+        });
+      });
+      const all = Object.values(recs).map(r => {
+        const total = r.missed.reduce((a, b) => a + b, 0);
+        const recent = r.missed[N - 1];
+        const priorAvg = (N - 1) > 0 ? r.missed.slice(0, N - 1).reduce((a, b) => a + b, 0) / (N - 1) : 0;
+        let trend = "flat";
+        if (recent > priorAvg + 0.75) trend = "up"; else if (recent < priorAvg - 0.75) trend = "down";
+        return { ...r, total, recent, priorAvg, trend };
+      }).filter(r => r.total > 0);
+      all.sort((a, b) => (b.recent - a.recent) || (b.total - a.total) || a.name.localeCompare(b.name));
+      const orgMissed = new Array(N).fill(0);
+      Object.values(recs).forEach(r => r.missed.forEach((v, i) => orgMissed[i] += v));
+      setTrendData({ loading: false, cycleYms, rows: all, orgMissed });
+    } catch (e) {
+      console.error("attendance trend load:", e);
+      setTrendData({ loading: false, cycleYms, error: (e && e.message) || String(e) });
+    }
+  };
   const loadPayrollOverviewForCycle = async (ymForLoad) => {
     try {
       const ym = ymForLoad;
@@ -11312,6 +11552,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 items: [
                   { t: "attendance", l: "📕 Attendance" },
                   { t: "payrollProgress", l: "📊 Payroll Progress" },
+                  { t: "payrollReports", l: "📈 Reports" },
                   { t: "overtime", l: "⏱️ Overtime" }
                 ]
               },
@@ -19151,6 +19392,236 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 );
               })()}
             </div>
+          </div>
+        );
+      })()}
+
+      {/* ── PAYROLL REPORTS TAB ── */}
+      {tab === "payrollReports" && (currentUser.hideCategories || []).includes("Payroll") && (
+        <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 14, padding: "30px 26px", textAlign: "center", color: "#831843" }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>🔒</div>
+          <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 14, fontWeight: 700 }}>Payroll is not available for your account.</div>
+        </div>
+      )}
+      {tab === "payrollReports" && !((currentUser.hideCategories || []).includes("Payroll")) && (() => {
+        const rd = reportsData;
+        const ready = rd && !rd.loading && rd.range === reportRange && !rd.error;
+        const rangeLabel = (k) => k === "week" ? "Last 7 days" : k === "mtd" ? "Month to date" : "Pay cycle (25th → 24th)";
+        const fmtD = (ymd) => { try { return new Date(ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }); } catch (_) { return ymd; } };
+        const chip = (lbl, n, bg, fg) => n > 0 ? <span key={lbl} style={{ background: bg, color: fg, padding: "1px 7px", borderRadius: 6, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" }}>{lbl} {n}</span> : null;
+        const breakdownChips = (r) => [
+          chip("Sick(no note)", r.sickNoNote, "#fee2e2", "#7f1d1d"),
+          chip("Sick+note", r.sickNote, "#dcfce7", "#166534"),
+          chip("No-show", r.noShow, "#e9d5ff", "#581c87"),
+          chip("Absent", r.absent, "#fca5a5", "#7f1d1d"),
+          chip("FRL", r.frl, "#fed7aa", "#7c2d12"),
+          chip("Unpaid", r.unpaid, "#ede9fe", "#5b21b6"),
+          chip("Late", r.late, "#e5e7eb", "#374151")
+        ].filter(Boolean);
+        const flagChip = (f) => <span key={f} style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d", padding: "1px 7px", borderRadius: 6, fontSize: 10, fontWeight: 800, whiteSpace: "nowrap" }}>⚠ {f}</span>;
+        const personRow = (r, i, accent) => (
+          <div key={r.ec + i} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "9px 12px", borderBottom: "1px solid #FDEEF5" }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: accent, minWidth: 22, textAlign: "right" }}>{i + 1}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{r.name}</span>
+                <span style={{ fontSize: 10, color: "#9d4d6e" }}>{r.branch}{r.role && r.role !== "NT" ? " · " + r.role : ""}</span>
+              </div>
+              <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 5 }}>
+                {breakdownChips(r)}
+                {r.flags.map(flagChip)}
+              </div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 18, fontWeight: 800, color: accent, lineHeight: 1 }}>{r.missed}</div>
+              <div style={{ fontSize: 9, color: "#9d4d6e", marginTop: 2 }}>missed</div>
+            </div>
+          </div>
+        );
+        const totalCard = (lbl, n, bg, fg) => (
+          <div style={{ background: bg, borderRadius: 10, padding: "10px 14px", minWidth: 92, flex: "1 1 92px" }}>
+            <div style={{ fontSize: 22, fontWeight: 800, color: fg, lineHeight: 1 }}>{n}</div>
+            <div style={{ fontSize: 10, fontWeight: 700, color: fg, opacity: 0.85, marginTop: 3 }}>{lbl}</div>
+          </div>
+        );
+        return (
+          <div style={{ padding: "0 24px" }}>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700, marginBottom: 4 }}>📈 Attendance Reports</div>
+              <div style={{ fontSize: 12, color: "#9d4d6e" }}>Who misses the most work, who attends best, and recurring patterns (Monday / weekend / month-end clusters) that flag possible sick-leave abuse. Annual leave &amp; maternity are never counted as missed days.</div>
+            </div>
+
+            {/* View toggle: snapshot vs multi-cycle trend */}
+            <div style={{ display: "flex", gap: 6, marginBottom: 14, borderBottom: "1px solid #FBCFE8", paddingBottom: 12 }}>
+              {[{ k: "snapshot", l: "📋 Snapshot" }, { k: "trend", l: "📉 Trend vs previous months" }].map(v => (
+                <button key={v.k} onClick={() => setReportsView(v.k)}
+                  style={{ background: reportsView === v.k ? "#FCE7F3" : "transparent", color: "#831843", border: "1px solid " + (reportsView === v.k ? "#F472B6" : "transparent"), borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                  {v.l}
+                </button>
+              ))}
+            </div>
+
+            {reportsView === "snapshot" && (<div>
+            {/* Range selector + load */}
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
+              {["cycle", "week", "mtd"].map(k => (
+                <button key={k} onClick={() => { setReportRange(k); loadAttendanceReports(k); }}
+                  style={{ background: reportRange === k ? "#831843" : "#fff", color: reportRange === k ? "#fff" : "#831843", border: "1px solid #F9A8D4", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                  {rangeLabel(k)}
+                </button>
+              ))}
+              <button onClick={() => loadAttendanceReports(reportRange)} style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700, marginLeft: 4 }}>
+                {rd && rd.loading ? "Loading…" : (ready ? "↻ Refresh" : "Load now")}
+              </button>
+              {ready && <span style={{ fontSize: 11, color: "#9d4d6e" }}>{fmtD(rd.startYmd)} → {fmtD(rd.endYmd)} · {rd.techCount + rd.mgrCount} active staff</span>}
+            </div>
+
+            {!rd && <div style={{ padding: "16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, fontSize: 13, color: "#831843" }}>Pick a range and click <strong>Load now</strong> to pull every branch.</div>}
+            {rd && rd.loading && <div style={{ padding: "16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, fontSize: 13, color: "#831843" }}>Crunching attendance across {SALONS.length} branches…</div>}
+            {rd && rd.error && <div style={{ padding: "16px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 10, fontSize: 13, color: "#7f1d1d" }}>Couldn’t load: {rd.error}</div>}
+
+            {ready && (() => {
+              const t = rd.totals;
+              return (
+                <div>
+                  {/* Totals */}
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+                    {totalCard("No-shows", t.noShow, "#f5f3ff", "#581c87")}
+                    {totalCard("Sick · no note", t.sickNoNote, "#fef2f2", "#7f1d1d")}
+                    {totalCard("Sick · +note", t.sickNote, "#f0fdf4", "#166534")}
+                    {totalCard("Absent", t.absent, "#fef2f2", "#7f1d1d")}
+                    {totalCard("FRL", t.frl, "#fff7ed", "#7c2d12")}
+                    {totalCard("Unpaid", t.unpaid, "#f5f3ff", "#5b21b6")}
+                    {totalCard("Late", t.late, "#f9fafb", "#374151")}
+                  </div>
+
+                  {/* Pattern insights */}
+                  <div style={{ background: rd.flagged.length ? "#fffbeb" : "#f0fdf4", border: "1px solid " + (rd.flagged.length ? "#fcd34d" : "#bbf7d0"), borderRadius: 11, padding: "12px 16px", marginBottom: 16 }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: rd.flagged.length ? "#92400e" : "#166534", marginBottom: rd.flagged.length ? 8 : 0 }}>
+                      {rd.flagged.length ? "⚠ " + rd.flagged.length + " staff with attendance patterns to review" : "✓ No recurring absence patterns detected in this range"}
+                    </div>
+                    {rd.flagged.length > 0 && (
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 8 }}>
+                        {rd.flagged.slice(0, 12).map((r, i) => (
+                          <div key={r.ec + i} style={{ background: "#fff", border: "1px solid #fcd34d", borderRadius: 8, padding: "8px 10px" }}>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: "#831843" }}>{r.name} <span style={{ fontSize: 10, fontWeight: 500, color: "#9d4d6e" }}>· {r.branch}{r.role && r.role !== "NT" ? " · " + r.role : ""}</span></div>
+                            <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 5 }}>{r.flags.map(flagChip)}</div>
+                            <div style={{ fontSize: 10, color: "#9d4d6e", marginTop: 5 }}>{r.concerning} concerning day{r.concerning === 1 ? "" : "s"} (sick-no-note + no-show + absent) of {r.missed} missed</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Top absentees: managers + techs */}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, marginBottom: 16 }}>
+                    <div style={{ background: "#fff", border: "1px solid #F9A8D4", borderRadius: 11, overflow: "hidden" }}>
+                      <div style={{ background: "#F5F3FF", padding: "10px 14px", fontSize: 12, fontWeight: 800, color: "#5b21b6", letterSpacing: "0.04em" }}>👑 MANAGERS · MOST MISSED DAYS</div>
+                      {rd.topMgrs.length === 0 ? <div style={{ padding: "14px", fontSize: 12, color: "#9d4d6e", fontStyle: "italic" }}>No manager absences in this range.</div> : rd.topMgrs.map((r, i) => personRow(r, i, "#7c3aed"))}
+                    </div>
+                    <div style={{ background: "#fff", border: "1px solid #F9A8D4", borderRadius: 11, overflow: "hidden" }}>
+                      <div style={{ background: "#FDEEF5", padding: "10px 14px", fontSize: 12, fontWeight: 800, color: "#831843", letterSpacing: "0.04em" }}>💅 NAIL TECHS · MOST MISSED DAYS</div>
+                      {rd.topTechs.length === 0 ? <div style={{ padding: "14px", fontSize: 12, color: "#9d4d6e", fontStyle: "italic" }}>No nail-tech absences in this range.</div> : rd.topTechs.map((r, i) => personRow(r, i, "#BE185D"))}
+                    </div>
+                  </div>
+
+                  {/* Best attendance */}
+                  <div style={{ background: "#fff", border: "1px solid #bbf7d0", borderRadius: 11, overflow: "hidden" }}>
+                    <div style={{ background: "#f0fdf4", padding: "10px 14px", fontSize: 12, fontWeight: 800, color: "#166534", letterSpacing: "0.04em" }}>🏆 ATTENDING BEST (most days worked, fewest missed)</div>
+                    {rd.bestAttenders.length === 0 ? <div style={{ padding: "14px", fontSize: 12, color: "#9d4d6e", fontStyle: "italic" }}>Not enough recorded days yet to rank.</div> : (
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 0 }}>
+                        {rd.bestAttenders.map((r, i) => (
+                          <div key={r.ec + i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: "1px solid #f0fdf4" }}>
+                            <div style={{ fontSize: 13, fontWeight: 800, color: "#16a34a", minWidth: 20 }}>{i + 1}</div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 12, fontWeight: 700, color: "#831843" }}>{r.name}</div>
+                              <div style={{ fontSize: 10, color: "#9d4d6e" }}>{r.branch}{r.role && r.role !== "NT" ? " · " + r.role : ""} · {r.worked} worked{r.missed > 0 ? " · " + r.missed + " missed" : ""}</div>
+                            </div>
+                            <div style={{ fontSize: 13, fontWeight: 800, color: "#16a34a" }}>{Math.round(r.attendanceRate * 100)}%</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ marginTop: 14, fontSize: 11, color: "#9d4d6e", lineHeight: 1.5 }}>
+                    Missed days exclude annual leave and maternity. Manager absences are read from the regional-recorded reasons; nail-tech absences from the attendance grid. Patterns flag when ≥3 concerning days cluster on a weekday/weekend/month-end (≥40–50% share). “Concerning” = sick-without-note + no-show + absent.
+                  </div>
+                </div>
+              );
+            })()}
+            </div>)}
+
+            {reportsView === "trend" && (<div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
+                <button onClick={loadAttendanceTrend} style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                  {trendData && trendData.loading ? "Loading…" : (trendData && !trendData.loading ? "↻ Refresh" : "Load now")}
+                </button>
+                <span style={{ fontSize: 11, color: "#9d4d6e" }}>Last 6 pay cycles · missed days per person (annual leave &amp; maternity excluded)</span>
+              </div>
+              {!trendData && <div style={{ padding: "16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, fontSize: 13, color: "#831843" }}>Click <strong>Load now</strong> to compare the last 6 pay cycles across every branch.</div>}
+              {trendData && trendData.loading && <div style={{ padding: "16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, fontSize: 13, color: "#831843" }}>Crunching 6 cycles across {SALONS.length} branches…</div>}
+              {trendData && trendData.error && <div style={{ padding: "16px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 10, fontSize: 13, color: "#7f1d1d" }}>Couldn’t load: {trendData.error}</div>}
+              {trendData && !trendData.loading && !trendData.error && (() => {
+                const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+                const cyLabel = (ym) => { const m = Number(ym.split("-")[1]); return months[m - 1]; };
+                const cyTitle = (ym) => { const [y, m] = ym.split("-").map(Number); const em = m === 12 ? 1 : m + 1; const ey = m === 12 ? y + 1 : y; return "25 " + months[m - 1] + " → 24 " + months[em - 1] + " " + ey; };
+                const maxOrg = Math.max(1, ...trendData.orgMissed);
+                const cellColor = (n) => n === 0 ? { bg: "#f0fdf4", fg: "#9ca3af" } : n <= 2 ? { bg: "#fef9c3", fg: "#854d0e" } : n <= 4 ? { bg: "#fed7aa", fg: "#7c2d12" } : { bg: "#fecaca", fg: "#7f1d1d" };
+                const ti = (t) => t === "up" ? { c: "#dc2626", s: "▲" } : t === "down" ? { c: "#16a34a", s: "▼" } : { c: "#9ca3af", s: "▬" };
+                const N = trendData.cycleYms.length;
+                return (
+                  <div>
+                    <div style={{ background: "#fff", border: "1px solid #F9A8D4", borderRadius: 11, padding: "14px 16px", marginBottom: 16 }}>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: "#831843", marginBottom: 12, letterSpacing: "0.04em" }}>TOTAL MISSED DAYS PER CYCLE · ALL STAFF</div>
+                      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", height: 130 }}>
+                        {trendData.cycleYms.map((ym, i) => (
+                          <div key={ym} title={cyTitle(ym)} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, justifyContent: "flex-end", height: "100%" }}>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: "#831843" }}>{trendData.orgMissed[i]}</div>
+                            <div style={{ width: "100%", maxWidth: 48, height: Math.max(4, Math.round(86 * trendData.orgMissed[i] / maxOrg)), background: i === N - 1 ? "#BE185D" : "#F9A8D4", borderRadius: "6px 6px 0 0" }} />
+                            <div style={{ fontSize: 10, color: "#9d4d6e", fontWeight: 700 }}>{cyLabel(ym)}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div style={{ background: "#fff", border: "1px solid #F9A8D4", borderRadius: 11, overflow: "hidden" }}>
+                      <div style={{ background: "#FDEEF5", padding: "10px 14px", fontSize: 12, fontWeight: 800, color: "#831843", letterSpacing: "0.04em" }}>MISSED DAYS PER PERSON · LAST {N} CYCLES (newest on the right)</div>
+                      {trendData.rows.length === 0 ? <div style={{ padding: "14px", fontSize: 12, color: "#9d4d6e", fontStyle: "italic" }}>No absences across these cycles.</div> : (
+                        <div style={{ overflowX: "auto" }}>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                            <thead>
+                              <tr style={{ background: "#FDEEF5", color: "#831843" }}>
+                                <th style={{ padding: "8px 12px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #F9A8D4", position: "sticky", left: 0, background: "#FDEEF5" }}>Staff</th>
+                                {trendData.cycleYms.map(ym => <th key={ym} title={cyTitle(ym)} style={{ padding: "8px 10px", textAlign: "center", fontWeight: 700, borderBottom: "1px solid #F9A8D4", minWidth: 44 }}>{cyLabel(ym)}</th>)}
+                                <th style={{ padding: "8px 12px", textAlign: "center", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Trend</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {trendData.rows.slice(0, 50).map((r, ri) => {
+                                const tt = ti(r.trend);
+                                return (
+                                  <tr key={r.ec + ri}>
+                                    <td style={{ padding: "7px 12px", borderBottom: "1px solid #FDEEF5", position: "sticky", left: 0, background: "#fff" }}>
+                                      <div style={{ fontSize: 12, fontWeight: 700, color: "#831843" }}>{r.name}</div>
+                                      <div style={{ fontSize: 10, color: "#9d4d6e" }}>{r.branch}{r.role && r.role !== "NT" ? " · " + r.role : ""}</div>
+                                    </td>
+                                    {r.missed.map((n, ci) => { const c = cellColor(n); return <td key={ci} style={{ padding: "5px 6px", borderBottom: "1px solid #FDEEF5", textAlign: "center" }}><span style={{ display: "inline-block", minWidth: 22, padding: "2px 6px", borderRadius: 6, background: c.bg, color: c.fg, fontWeight: 700, fontSize: 11 }}>{n}</span></td>; })}
+                                    <td style={{ padding: "5px 12px", borderBottom: "1px solid #FDEEF5", textAlign: "center", color: tt.c, fontWeight: 800, fontSize: 14 }} title={r.trend === "up" ? "More absences than prior-cycle average" : r.trend === "down" ? "Fewer absences than prior-cycle average" : "About the same"}>{tt.s}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ marginTop: 14, fontSize: 11, color: "#9d4d6e", lineHeight: 1.5 }}>
+                      Each column is one pay cycle (25th→24th); hover a column for its dates. ▲ = the latest cycle is worse than this person’s prior-cycle average, ▼ = better, ▬ = about the same. Cell colour: green 0, yellow 1–2, orange 3–4, red 5+. Annual leave &amp; maternity are excluded; the current cycle counts only days up to today.
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>)}
           </div>
         );
       })()}
