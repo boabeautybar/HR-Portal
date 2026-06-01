@@ -10042,7 +10042,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     let cancelled = false;
     (async () => {
       try {
-        const rows = await window.BOA_DB.listRecentManagerClockins(mgrClockinDays);
+        // Default look-back is mgrClockinDays. On the Attendance tab the user
+        // can be viewing ANY cycle (25th→24th), so widen the window to always
+        // reach the start of the viewed cycle — otherwise a relative "last N
+        // days" load silently drops the cycle's early days (or the whole cycle
+        // when viewing a past month), which reads as missing clock-ins.
+        let effDays = mgrClockinDays;
+        if (tab === "attendance" && attYM) {
+          const ap = attYM.split("-").map(Number);
+          const cyStart = new Date(ap[0], ap[1] - 1, 25);
+          const spanDays = Math.ceil((Date.now() - cyStart.getTime()) / 86400000) + 2;
+          if (spanDays > effDays) effDays = spanDays;
+        }
+        const rows = await window.BOA_DB.listRecentManagerClockins(effDays);
         if (cancelled) return;
         setMgrClockinRows(rows || []);
         // Photo/GPS metadata is loaded per selected day (see the effect below)
@@ -10087,7 +10099,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       } catch (e) { console.error("mgr clockins load:", e); }
     })();
     return () => { cancelled = true; };
-  }, [tab, mgrClockinDays]);
+  }, [tab, mgrClockinDays, attYM]);
 
   // Manager Coverage tab: load manager schedules for every branch for
   // the cycle(s) the visible week touches. Reuses mgrClockinSchedCache
@@ -17099,20 +17111,31 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // and auto-flag those cells as 'absent + needs review' on the grid —
         // same shape as the missing-checkin warning for nail techs.
         const _mgrCheckedInByEcYmd = {};
+        const _mgrCheckedInByIdYmd = {};
         const _mLocalYmd = (ts) => { const d = new Date(ts); return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()); };
         (mgrClockinRows || []).forEach(r => {
           if (!r || !r.staff || r.staff.role_type !== "manager") return;
           if (r.type !== "in") return;
+          const ymdK = _mLocalYmd(r.ts);
+          // Index every clock-in by BOTH employee-code and staff_id. EC keys
+          // are matched against the staff list, which can carry trailing spaces
+          // or formatting differences; staff_id is a stable join key, so the
+          // id index is the reliable match and the EC index is a fallback.
           const ec = String(r.staff.employee_code || "").trim();
-          if (!ec) return;
-          (_mgrCheckedInByEcYmd[ec] = _mgrCheckedInByEcYmd[ec] || {})[_mLocalYmd(r.ts)] = true;
+          if (ec) (_mgrCheckedInByEcYmd[ec] = _mgrCheckedInByEcYmd[ec] || {})[ymdK] = true;
+          const sid = r.staff_id != null ? String(r.staff_id) : (r.staff && r.staff.id != null ? String(r.staff.id) : null);
+          if (sid) (_mgrCheckedInByIdYmd[sid] = _mgrCheckedInByIdYmd[sid] || {})[ymdK] = true;
         });
-        // EC keys on the clock-in map above are trimmed, but staff / schedule
-        // rows can carry a trailing space. The schedule grid (keyed by the raw
-        // EC) still renders, so a spaced EC silently misses its OWN clock-in —
-        // the schedule strip shows but the clock-in never matches. Always trim
-        // on lookup so the date+EC match is robust regardless of stray spaces.
-        const _mgrCheckedIn = (ec, ymd) => !!(_mgrCheckedInByEcYmd[String(ec || "").trim()] || {})[ymd];
+        // A manager is "checked in" for (ec, ymd) if either index matches.
+        // staff_id (resolved via _mgrEcToStaffId, the same map the schedule
+        // uses) is the primary key so a spaced/odd EC can't make a manager
+        // silently miss their own clock-in; trimmed EC is the fallback.
+        const _mgrCheckedIn = (ec, ymd) => {
+          const t = String(ec || "").trim();
+          if ((_mgrCheckedInByEcYmd[t] || {})[ymd]) return true;
+          const sid = _mgrEcToStaffId[ec] != null ? String(_mgrEcToStaffId[ec]) : null;
+          return !!(sid && (_mgrCheckedInByIdYmd[sid] || {})[ymd]);
+        };
         const _todayYmdAtt = (() => { const d = new Date(); return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()); })();
         const _mgrCheckinFromYmd = (() => {
           const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - (mgrClockinDays || 31));
