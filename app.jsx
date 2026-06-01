@@ -11899,7 +11899,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   return { first, last };
                 };
                 const fmt = ymd => ymd ? new Date(ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : "—";
-                const stageLbl = { induction: "Induction", trial_w1: "Trial week 1", pending_mid_review: "⏰ Mid-review due", trial_w2: "Trial week 2", pending_final_review: "⏰ Final review due" };
+                const stageLbl = { induction: "Induction", trial_w1: "Trial weeks 1 & 2", trial_w2: "Trial weeks 1 & 2", pending_mid_review: "⏰ Mid-review due", pending_final_review: "⏰ Final review due" };
                 const needTrial = activeTrials.filter(c => !c.freshaTrialOpened).length;
                 const openerNames = (freshaCfg.openerPins || []).map(p => (appUsers && appUsers[p] && appUsers[p].name) || p).join(" or ");
                 const pill = (bg, fg, txt) => <span style={{ background: bg, color: fg, padding: "2px 8px", borderRadius: 6, fontSize: 10, fontWeight: 800, letterSpacing: "0.03em" }}>{txt}</span>;
