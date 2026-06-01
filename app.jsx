@@ -9836,36 +9836,43 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           safe(window.BOA_DB.loadAttendance(br, attYM)),
           safe(window.BOA_DB.loadSchedule(br, techYm, false))
         ]);
-        return [br, (sAtt && sAtt.grid) || {}, (sSch && sSch.grid) || {}];
+        return [br, (sAtt && sAtt.grid) || {}, (sSch && sSch.grid) || {}, (sAtt && sAtt.freshaWorked) || {}];
       }))
     ]).then(([att, sch, mgrSch, early, extras, srcData]) => {
       const mergedGrid = { ...((att && att.grid) || {}) };
       const techGrid = (sch && sch.grid) || {};
       const mgrGrid = ymdReKey((mgrSch && mgrSch.grid) || {});
       const mergedSched = { ...techGrid, ...mgrGrid };
-      // Overlay each incoming tech's pre-transfer cells from their old branch.
+      const mergedFresha = { ...((att && att.freshaWorked) || {}) };
+      // Overlay each incoming tech's pre-transfer cells from their old branch —
+      // grid, schedule AND the Fresha-worked flags, so a later Fresha check
+      // validates her earlier (old-branch) cells the same as everyone else.
       if (incoming.length) {
-        const srcMap = {}; (srcData || []).forEach(([br, g, sg]) => { srcMap[br] = { g: g || {}, sg: sg || {} }; });
+        const srcMap = {}; (srcData || []).forEach(([br, g, sg, fw]) => { srcMap[br] = { g: g || {}, sg: sg || {}, fw: fw || {} }; });
         incoming.forEach(s => {
           const src = srcMap[s.branch]; if (!src) return;
           const ec = s.ec, ecT = String(ec).trim();
           const srcRow = src.g[ec] || src.g[ecT] || {};
           const srcSchRow = src.sg[ec] || src.sg[ecT] || {};
+          const srcFwRow = src.fw[ec] || src.fw[ecT] || {};
           const gRow = { ...(mergedGrid[ec] || {}) };
           const sRow = { ...(mergedSched[ec] || {}) };
+          const fRow = { ...(mergedFresha[ec] || {}) };
           for (let cur = new Date(cycStartE); cur <= cycEndE; cur.setDate(cur.getDate() + 1)) {
             const ymd = cur.getFullYear() + "-" + pp(cur.getMonth() + 1) + "-" + pp(cur.getDate());
             if (ymd >= s.transferDate) continue;                 // only pre-transfer days
             const dom = cur.getDate();
             if (gRow[dom] == null && srcRow[dom] != null) gRow[dom] = srcRow[dom];
             if (sRow[dom] == null && srcSchRow[dom] != null) sRow[dom] = srcSchRow[dom];
+            if (fRow[dom] == null && srcFwRow[dom] != null) fRow[dom] = srcFwRow[dom];
           }
           mergedGrid[ec] = gRow;
           mergedSched[ec] = sRow;
+          mergedFresha[ec] = fRow;
         });
       }
       setAttGrid(mergedGrid);
-      setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null, freshaWorked: att.freshaWorked || {}, reviewedWarnings: att.reviewedWarnings || {}, mirrorSuppressed: !!att.mirrorSuppressed } : { freshaWorked: {}, reviewedWarnings: {}, mirrorSuppressed: false });
+      setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null, freshaWorked: mergedFresha, reviewedWarnings: att.reviewedWarnings || {}, mirrorSuppressed: !!att.mirrorSuppressed } : { freshaWorked: mergedFresha, reviewedWarnings: {}, mirrorSuppressed: false });
       setAttSched(mergedSched);
       setAttEarly(early || {});
       setAttExtras(extras || {});
@@ -19160,13 +19167,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // 'allMatchOff' but without the Fresha gate since
                           // managers don't have appointment data.
                           const mgrSchedOff = s.role !== "NT" && _mgrEcToStaffId[s.ec] && scheduleSaysOff && !isWorking && !isLate && !_mgrCheckedIn(s.ec, dy.ymd) && isPastOrToday && dy.ymd >= _mgrCheckinFromYmd;
-                          // Transferred-in tech: their old (pre-transfer) and new
-                          // (post-transfer) branches both carry no Fresha here, so
-                          // a scheduled-off day they weren't in still reads OFF —
-                          // confirm it without the Fresha gate the way managers do.
-                          const transferSchedOff = !!s.movedFrom && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn && isPastOrToday;
-                          const allMatchOff = (s.role === "NT" && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn && freshaCoversThisDay && !freshaWorkedCell)
-                            || mgrSchedOff || transferSchedOff;
+                          // Scheduled off, nobody clocked in, and no Fresha
+                          // appointment → a confirmed OFF day. Shown for any
+                          // past/today day rather than only once a Fresha import
+                          // has covered it, so today's off cells fill in straight
+                          // away (previously they stayed blank until Fresha ran).
+                          // A later Fresha import that shows an appointment flips
+                          // the day off OFF via freshaWorkedCell. Works the same
+                          // for transferred-in techs (their merged old/new cells
+                          // carry no Fresha here either).
+                          const allMatchOff = (s.role === "NT" && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn && !freshaWorkedCell && isPastOrToday)
+                            || mgrSchedOff;
                           // Cross-source rules across Schedule × Kiosk × Fresha:
                           //  • allAgreeAbsent — scheduled to work, kiosk marked the tech absent
                           //    (any reason: sick / no-show / frl / off / unpaid / …), AND Fresha
