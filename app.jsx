@@ -4858,7 +4858,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   const trialGhostRows = useMemo(() => {
     const active = (trialList || []).filter(c =>
       c && c.branch === branch &&
-      (c.role || "nt") !== "am" &&                       // nail techs only
+      String(c.role || "nt").toLowerCase() === "nt" &&   // nail techs only (excludes AM/SM/managers, any case)
       c.status !== "passed" && c.status !== "failed" && c.status !== "hired" &&
       c.startDate
     );
@@ -11899,11 +11899,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   || (freshaCfg.viewerPins || []).includes(currentUser?.pin)
                   || (freshaCfg.viewerRoles || []).some(roleMatch);
                 if (!isOpener && !isViewer) return null;
-                const _nt = (c) => c && (c.role || "nt") !== "am";
+                const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
+                const canAct = isOpener || !!currentUser?.isOwner;   // owners can tick items done too
+                // Only surface "open for the month" for techs who passed / were
+                // promoted recently. Older ones have long since been handled and
+                // would otherwise linger on the dashboard forever.
+                const _recent = (c) => { const t = Date.parse(c.promotedAt || c.updatedAt || c.addedAt || ""); return !!t && (Date.now() - t) < 45 * 86400000; };
                 const activeTrials = (trialList || []).filter(c => _nt(c) && c.startDate
                   && c.status !== "passed" && c.status !== "failed" && c.status !== "hired");
                 const monthPending = (trialList || []).filter(c => _nt(c)
-                  && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened);
+                  && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c));
                 if (activeTrials.length === 0 && monthPending.length === 0) return null;
                 const _pad = n => String(n).padStart(2, "0");
                 const trialWindow = (startDate) => {
@@ -11937,7 +11942,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <button onClick={() => tryChangeTab("trialPeriod")} style={{ background: "#fff", color: "#6b21a8", border: "1px solid #d8b4fe", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>Open Trial Period →</button>
                     </div>
                     <div style={{ fontSize: 11, color: "#9333ea", marginBottom: 8, fontStyle: "italic" }}>
-                      {isOpener ? `You open trial techs on Fresha — tick each one once it's done.` : `Opened by ${openerNames || "the assigned team"}.`}
+                      {canAct ? `Tick each tech once they're opened on Fresha — it clears the reminder.` : `Opened by ${openerNames || "the assigned team"}.`}
                     </div>
                     {activeTrials.map(c => {
                       const w = trialWindow(c.startDate);
@@ -11950,8 +11955,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           </div>
                           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                             {opened
-                              ? <>{pill("#dcfce7", "#166534", "✓ Fresha opened" + (c.freshaTrialOpenedBy ? " · " + c.freshaTrialOpenedBy : ""))}{isOpener && undoBtn(() => setTrialFresha(c._id, "freshaTrialOpened", false))}</>
-                              : (isOpener ? actionBtn("Mark opened on Fresha", () => setTrialFresha(c._id, "freshaTrialOpened", true)) : pill("#fef3c7", "#92400e", "⏳ awaiting Fresha"))}
+                              ? <>{pill("#dcfce7", "#166534", "✓ Fresha opened" + (c.freshaTrialOpenedBy ? " · " + c.freshaTrialOpenedBy : ""))}{canAct && undoBtn(() => setTrialFresha(c._id, "freshaTrialOpened", false))}</>
+                              : (canAct ? actionBtn("Mark opened on Fresha", () => setTrialFresha(c._id, "freshaTrialOpened", true)) : pill("#fef3c7", "#92400e", "⏳ awaiting Fresha"))}
                           </div>
                         </div>
                       );
@@ -11963,7 +11968,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <div style={{ fontSize: 11, color: "#15803d", fontWeight: 700, marginTop: 1 }}>✅ Passed trial — open on Fresha for the rest of the month (after the schedule is synced)</div>
                         </div>
                         <div>
-                          {isOpener ? actionBtn("Mark month opened", () => setTrialFresha(c._id, "freshaMonthOpened", true)) : pill("#fef3c7", "#92400e", "⏳ awaiting Fresha")}
+                          {canAct ? actionBtn("Mark month opened", () => setTrialFresha(c._id, "freshaMonthOpened", true)) : pill("#fef3c7", "#92400e", "⏳ awaiting Fresha")}
                         </div>
                       </div>
                     ))}

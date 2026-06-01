@@ -565,7 +565,7 @@
       var trialCands = (await window.APP_DATA.listTrialCandidates()) || [];
       trialCands.forEach(function (c) {
         if (!c || c.branch !== thisBranch) return;
-        if ((c.role || "nt") === "am") return;                       // nail techs only
+        if (String(c.role || "nt").toLowerCase() !== "nt") return;   // nail techs only (excludes AM/SM/managers, any case)
         if (c.status === "passed" || c.status === "failed" || c.status === "hired") return;
         if (!c.startDate) return;
         var daySet = _trialDaySet(c.startDate);
@@ -1151,7 +1151,7 @@
     var myTrialCand = trialCand.filter(function(c) {
       // Trial AMs live on the Manager Clock-in page instead — they don't
       // belong with the nail-tech roster.
-      if ((c.role || "nt") === "am") return false;
+      if (String(c.role || "nt").toLowerCase() !== "nt") return false;
       return c.branch === myBranch && c.status && c.status.indexOf("trial") === 0;
     });
 
