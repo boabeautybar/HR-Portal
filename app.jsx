@@ -9382,12 +9382,38 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         return yy + "-" + String(mm).padStart(2, "0");
       };
       const cycles = Array.from(new Set(ymds.map(attYmForYmd)));
-      // Attendance grids for every branch × touched cycle (tech absences).
-      const gridByKey = {};
+      const todayYmd = ymdOf(today);
+      const endMonthYm = (ym) => { let [y, m] = ym.split("-").map(Number); m += 1; if (m > 12) { m = 1; y++; } return y + "-" + String(m).padStart(2, "0"); };
+      // Per branch × touched cycle, load every source the attendance sheet
+      // uses to render a day, so the report counts the SAME extra days the
+      // sheet shows: the attendance grid, the kiosk extras sidecar, the tech
+      // schedule (END-month ym) and the manager schedule (START-month ym).
+      // Extra days can sit in any of these (a scheduled "E", a kiosk extra,
+      // or a manual "ext" stamp) — reading only the grid undercounts them.
+      const gridByKey = {}, extrasByKey = {}, techSchByKey = {}, mgrSchByKey = {};
       await Promise.all(SALONS.flatMap(sl => cycles.map(async ym => {
-        try { const att = await window.BOA_DB.loadAttendance(sl.name, ym); gridByKey[sl.name + "|" + ym] = (att && att.grid) || {}; }
-        catch (_) { gridByKey[sl.name + "|" + ym] = {}; }
+        const k = sl.name + "|" + ym;
+        const [att, ex, tsch, msch] = await Promise.all([
+          window.BOA_DB.loadAttendance(sl.name, ym).catch(() => null),
+          window.BOA_DB.loadExtras ? window.BOA_DB.loadExtras(sl.name, ym).catch(() => ({})) : Promise.resolve({}),
+          window.BOA_DB.loadSchedule(sl.name, endMonthYm(ym), false).catch(() => null),
+          window.BOA_DB.loadSchedule(sl.name, ym, true).catch(() => null)
+        ]);
+        gridByKey[k] = (att && att.grid) || {};
+        extrasByKey[k] = ex || {};
+        techSchByKey[k] = (tsch && tsch.grid) || {};
+        mgrSchByKey[k] = (msch && msch.grid) || {};
       })));
+      // Is this (ec, day) an extra day worked? Mirrors the attendance sheet:
+      // grid "ext", a kiosk extras-sidecar entry, or a scheduled "E".
+      const isExtraDay = (k, ec, ecT, ymd, dom, gridBare) => {
+        if (gridBare === "ext") return true;
+        const ex = extrasByKey[k] || {}; const exDay = ex[dom] || ex[String(dom)] || {};
+        if (exDay[ec] || exDay[ecT]) return true;
+        const ts = techSchByKey[k] || {}; const tv = (ts[ec] || ts[ecT] || {})[dom]; if (tv === "E") return true;
+        const ms = mgrSchByKey[k] || {}; const mrow = ms[ec] || ms[ecT] || {}; if (mrow[ymd] === "E" || mrow[dom] === "E" || mrow[String(dom)] === "E") return true;
+        return false;
+      };
       // Manager absences live in manager_day_status; worked days come from
       // their kiosk clock-ins. Pull a window wide enough to reach the range.
       const daysBack = Math.max(10, Math.ceil((Date.now() - start.getTime()) / 86400000) + 2);
@@ -9452,6 +9478,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         rec.attendanceRate = (rec.worked + rec.missed) > 0 ? rec.worked / (rec.worked + rec.missed) : null;
         return rec;
       };
+      const MISSEDSET = { sick: 1, sick_n: 1, no: 1, absent: 1, unpaid: 1, frl: 1 };
       const techRecs = [], mgrRecs = [];
       (staff || []).forEach(s => {
         const ec = s.ec; if (!ec) return;
@@ -9460,13 +9487,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const ld = offByEc[ec]; if (ld && ld < startYmd) return;
         const rec = blank(s, "NT");
         ymds.forEach(ymd => {
+          if (ymd > todayYmd) return;                         // don't count days that haven't happened
           if (ld && ymd > ld) return;
           if (leaveSet.has(ecT + "|" + ymd)) return;
-          const ym = attYmForYmd(ymd), dom = parseInt(ymd.slice(8, 10), 10);
-          const g = gridByKey[s.branch + "|" + ym] || {};
-          let v = (g[ec] || g[ecT] || {})[dom];
-          if (!v) return;
-          classify(rec, v.charAt(0) === "~" ? v.slice(1) : v, ymd);
+          const ym = attYmForYmd(ymd), dom = parseInt(ymd.slice(8, 10), 10), k = s.branch + "|" + ym;
+          const g = gridByKey[k] || {};
+          const v = (g[ec] || g[ecT] || {})[dom];
+          const bare = v ? (v.charAt(0) === "~" ? v.slice(1) : v) : "";
+          if (bare && MISSEDSET[bare]) { classify(rec, bare, ymd); return; }   // a recorded absence wins over an extra flag
+          if (isExtraDay(k, ec, ecT, ymd, dom, bare)) { rec.extra++; rec.worked++; return; }
+          if (bare) classify(rec, bare, ymd);
         });
         if (rec.worked + rec.missed > 0) techRecs.push(finish(rec));
       });
@@ -9478,9 +9508,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const sid = String(m._id || m.id || "");
         const rec = blank(m, m.role || "AM");
         ymds.forEach(ymd => {
+          if (ymd > todayYmd) return;
           if (ld && ymd > ld) return;
           if (leaveSet.has(ecT + "|" + ymd)) return;
+          const ym = attYmForYmd(ymd), dom = parseInt(ymd.slice(8, 10), 10), k = m.branch + "|" + ym;
           const st = (mgrStatusByIdYmd[sid] || {})[ymd];
+          if (st && MISSEDSET[st]) { classify(rec, st, ymd); return; }          // ROM-recorded absence wins
+          const g = gridByKey[k] || {};
+          const gv = (g[ec] || g[ecT] || {})[dom];
+          const gBare = gv ? (gv.charAt(0) === "~" ? gv.slice(1) : gv) : "";
+          if (isExtraDay(k, ec, ecT, ymd, dom, gBare)) { rec.extra++; rec.worked++; return; }
           if (st) { classify(rec, st, ymd); return; }
           if ((mgrClockByIdYmd[sid] || {})[ymd]) rec.worked++;
         });
