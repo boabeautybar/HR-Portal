@@ -4858,7 +4858,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   const trialGhostRows = useMemo(() => {
     const active = (trialList || []).filter(c =>
       c && c.branch === branch &&
-      (c.role || "nt") !== "am" &&                       // nail techs only
+      String(c.role || "nt").toLowerCase() === "nt" &&   // nail techs only (excludes AM/SM/managers, any case)
       c.status !== "passed" && c.status !== "failed" && c.status !== "hired" &&
       c.startDate
     );
@@ -11899,7 +11899,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   || (freshaCfg.viewerPins || []).includes(currentUser?.pin)
                   || (freshaCfg.viewerRoles || []).some(roleMatch);
                 if (!isOpener && !isViewer) return null;
-                const _nt = (c) => c && (c.role || "nt") !== "am";
+                const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
                 const activeTrials = (trialList || []).filter(c => _nt(c) && c.startDate
                   && c.status !== "passed" && c.status !== "failed" && c.status !== "hired");
                 const monthPending = (trialList || []).filter(c => _nt(c)
