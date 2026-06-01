@@ -15446,6 +15446,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             : r));
         };
         const promoteToOnboarding = (r) => {
+          // Pre-promotion readiness checklist — surface anything still
+          // outstanding so a tech isn't promoted with gaps. Non-blocking:
+          // the user can override after seeing what's missing.
+          const ci = (r.checkins && typeof r.checkins === "object" && !Array.isArray(r.checkins))
+            ? Object.values(r.checkins).filter(st => st === "on" || st === "late").length : 0;
+          const checks = [
+            [!!r.inductionPassDate, "Induction passed"],
+            [!!(r.midEval && r.midEval.submittedAt), "Mid-trial review done"],
+            [!!(r.finalEval && r.finalEval.submittedAt), "Final review done"],
+            [ci >= 5, "At least 5 trial check-ins (has " + ci + ")"],
+            [!!r.freshaTrialOpened, "Opened on Fresha for the trial"]
+          ];
+          const outstanding = checks.filter(c => !c[0]);
+          const lines = checks.map(c => (c[0] ? "✅ " : "⚠️ ") + c[1]).join("\n");
+          const head = "Promote " + (r.name || "this tech") + " to onboarding?\n\n"
+            + (outstanding.length ? "Some steps are still outstanding:\n\n" : "All checks complete:\n\n");
+          if (!window.confirm(head + lines + (outstanding.length ? "\n\nPromote anyway?" : ""))) return;
           // Pre-fill the onboarding form and switch to onboarding tab
           const allEcs = [...staff.map(s => s.ec), ...managers.map(m => m.ec), ...obList.map(o => o.ec)].filter(Boolean);
           const maxNum = allEcs.reduce((max, ec) => {
@@ -16222,6 +16239,39 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             setTrialList(updatedTrial);
             try { await window.BOA_DB.saveTrialPeriod(updatedTrial); } catch (e) { }
           }
+
+          // 2b. Auto-sync into the current schedule cycle. A freshly-onboarded
+          // nail tech is now a schedule row but has no shifts yet — easy to
+          // forget once the trial ends. If their start date falls within the
+          // current cycle we offer to drop them straight onto it with a
+          // default Mon–Sat working pattern (Sundays off; days before they
+          // start marked X) for the manager to fine-tune on the Scheduling tab.
+          try {
+            const isTech = obForm.position !== "AM" && obForm.position !== "SM";
+            if (isTech && obForm.branch && window.BOA_DB.currentSchedYm && window.BOA_DB.periodDays && window.BOA_DB.loadSchedule && window.BOA_DB.saveSchedule) {
+              const ym = window.BOA_DB.currentSchedYm();
+              const days = window.BOA_DB.periodDays(ym) || [];
+              const _pad = n => String(n).padStart(2, "0");
+              const ymdOf = d => d.year + "-" + _pad(d.monthIdx + 1) + "-" + _pad(d.d);
+              const cycleStart = days.length ? ymdOf(days[0]) : null;
+              const cycleEnd = days.length ? ymdOf(days[days.length - 1]) : null;
+              const start = obForm.startDate;
+              if (cycleEnd && start && start <= cycleEnd) {
+                const fromLbl = start > cycleStart ? start : "the start of the cycle";
+                if (window.confirm("Add " + obForm.name + " to the current schedule (" + ym + ") now?\n\nThey'll be dropped in with a default Mon–Sat working pattern (Sundays off) from " + fromLbl + ". You can fine-tune it on the Scheduling tab.")) {
+                  const sched = await window.BOA_DB.loadSchedule(obForm.branch, ym, false);
+                  const grid = (sched && sched.grid) || {};
+                  const row = {};
+                  days.forEach(d => {
+                    const dy = ymdOf(d);
+                    row[d.d] = dy < start ? "X" : (d.dow === 0 ? "O" : "W");
+                  });
+                  grid[obForm.ec] = row;
+                  await window.BOA_DB.saveSchedule(obForm.branch, ym, grid, false);
+                }
+              }
+            }
+          } catch (e) { console.warn("schedule auto-sync (continuing):", e); }
 
           // 3. Add to onboarding history (for the UI grid and historical data)
           const obRecord = {
