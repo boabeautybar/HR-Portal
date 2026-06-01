@@ -9493,7 +9493,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const sumField = (arr, f) => arr.reduce((a, r) => a + r[f], 0);
       const split = {
         techMissed: sumField(techRecs, "missed"), mgrMissed: sumField(mgrRecs, "missed"),
-        techExtra: sumField(techRecs, "extra"), mgrExtra: sumField(mgrRecs, "extra")
+        techExtra: sumField(techRecs, "extra"), mgrExtra: sumField(mgrRecs, "extra"),
+        mgrWithMissed: mgrRecs.filter(r => r.missed > 0).length    // forfeit the R1,000 bonus this cycle
       };
       const byMissed = (a, b) => b.missed - a.missed || b.concerning - a.concerning || a.name.localeCompare(b.name);
       const byBest = (a, b) => (b.attendanceRate - a.attendanceRate) || (b.worked - a.worked) || a.missed - b.missed;
@@ -9581,8 +9582,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       }).filter(r => r.total > 0);
       all.sort((a, b) => (b.recent - a.recent) || (b.total - a.total) || a.name.localeCompare(b.name));
       const orgMissed = new Array(N).fill(0);
-      Object.values(recs).forEach(r => r.missed.forEach((v, i) => orgMissed[i] += v));
-      setTrendData({ loading: false, cycleYms, rows: all, orgMissed });
+      // Managers who had at least one missed day in a cycle forfeit the
+      // R1,000 attendance bonus that cycle — count them per cycle.
+      const mgrIneligible = new Array(N).fill(0);
+      Object.values(recs).forEach(r => {
+        r.missed.forEach((v, i) => orgMissed[i] += v);
+        if (r.role !== "NT") r.missed.forEach((v, i) => { if (v > 0) mgrIneligible[i]++; });
+      });
+      setTrendData({ loading: false, cycleYms, rows: all, orgMissed, mgrIneligible });
     } catch (e) {
       console.error("attendance trend load:", e);
       setTrendData({ loading: false, cycleYms, error: (e && e.message) || String(e) });
@@ -19510,6 +19517,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     {splitCard("EXTRA DAYS WORKED", "➕", sp.techExtra, sp.mgrExtra, "#166534", "#f0fdf4")}
                   </div>
 
+                  {/* Manager attendance-bonus forfeit for this range */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 12, padding: "14px 18px", marginBottom: 16 }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: "#166534" }}>👑 Managers forfeiting the R1,000 attendance bonus{rd.range === "cycle" ? " this cycle" : " in this range"}</div>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginLeft: "auto" }}>
+                      <span style={{ fontSize: 28, fontWeight: 800, color: "#166534", lineHeight: 1 }}>{sp.mgrWithMissed}</span>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "#15803d" }}>of {rd.mgrCount} manager{rd.mgrCount === 1 ? "" : "s"}</span>
+                    </div>
+                    <div style={{ background: "#166534", color: "#fff", borderRadius: 9, padding: "8px 16px", fontSize: 16, fontWeight: 800 }}>R{(sp.mgrWithMissed * 1000).toLocaleString("en-ZA")} saved</div>
+                  </div>
+
                   {/* Breakdown of missed-day categories (all staff) */}
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
                     {totalCard("No-shows", t.noShow, "#f5f3ff", "#581c87")}
@@ -19609,6 +19626,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             <div style={{ fontSize: 10, color: "#9d4d6e", fontWeight: 700 }}>{cyLabel(ym)}</div>
                           </div>
                         ))}
+                      </div>
+                    </div>
+                    {/* Manager attendance-bonus forfeit per cycle (R1,000 each) */}
+                    <div style={{ background: "#fff", border: "1px solid #bbf7d0", borderRadius: 11, padding: "14px 16px", marginBottom: 16 }}>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: "#166534", marginBottom: 4, letterSpacing: "0.04em" }}>👑 MANAGERS LOSING THE R1,000 ATTENDANCE BONUS · PER CYCLE</div>
+                      <div style={{ fontSize: 11, color: "#9d4d6e", marginBottom: 12 }}>Any manager with ≥1 missed day in a cycle forfeits the R1,000 attendance bonus that cycle.</div>
+                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                        {trendData.cycleYms.map((ym, i) => {
+                          const c = (trendData.mgrIneligible || [])[i] || 0;
+                          return (
+                            <div key={ym} title={cyTitle(ym)} style={{ flex: "1 1 110px", background: i === N - 1 ? "#dcfce7" : "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 9, padding: "10px 12px", textAlign: "center" }}>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: "#166534", marginBottom: 4 }}>{cyLabel(ym)}</div>
+                              <div style={{ fontSize: 22, fontWeight: 800, color: "#166534", lineHeight: 1 }}>{c}</div>
+                              <div style={{ fontSize: 9, color: "#15803d", marginTop: 2 }}>manager{c === 1 ? "" : "s"}</div>
+                              <div style={{ fontSize: 12, fontWeight: 800, color: "#166534", marginTop: 6 }}>R{(c * 1000).toLocaleString("en-ZA")}</div>
+                              <div style={{ fontSize: 8, color: "#15803d" }}>saved</div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                     <div style={{ background: "#fff", border: "1px solid #F9A8D4", borderRadius: 11, overflow: "hidden" }}>
