@@ -957,6 +957,18 @@
     if (res.error) { console.error("loadEarlyLeaves:", res.error); return {}; }
     return (res.data && res.data.value) || {};
   }
+  // ---------- Extra-day sidecar (kiosk) ----------
+  // The kiosk's "Extra Day" approval writes to boa_extras_<branch>_<ym> as a
+  // nested map { [dayKey]: { [ec]: { approvedBy, recordedAt } } } (dayKey is
+  // YYYY-MM-DD). The Extra Day flag lives ONLY here — independent of the
+  // tech's on-the-day attendance code — so the HR portal must cross-reference
+  // it to render those days as "Extra Day" on the attendance sheet.
+  async function loadExtras(branch, ym) {
+    var key = "boa_extras_" + branch + "_" + ym;
+    var res = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
+    if (res.error) { console.error("loadExtras:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
   // Delete the boa_early_<branch>_<ym> sidecar entirely. Called by the
   // Attendance Total Reset so the 'left early' orange overlay clears
   // along with the rest of the display state. The next Import Check-ins
@@ -1628,6 +1640,7 @@
     reopenDailyCheckin: reopenDailyCheckin,
     listStoreOpenings: listStoreOpenings,
     loadEarlyLeaves: loadEarlyLeaves,
+    loadExtras: loadExtras,
     deleteEarlyLeaves: deleteEarlyLeaves,
     loadKioskProof: loadKioskProof,
     probeRecentClockinsRaw: probeRecentClockinsRaw,
