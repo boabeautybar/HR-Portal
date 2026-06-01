@@ -9503,6 +9503,84 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setReportsData({ loading: false, range: rangeKey, startYmd, endYmd, error: (e && e.message) || String(e) });
     }
   };
+
+  // Multi-cycle trend: missed days per person across the last N pay cycles,
+  // so you can see who is trending worse/better month over month.
+  const [reportsView, setReportsView] = useState("snapshot");     // "snapshot" | "trend"
+  const [trendData, setTrendData] = useState(null);
+  const loadAttendanceTrend = async () => {
+    const N = 6;
+    const _p2 = z => String(z).padStart(2, "0");
+    const ymdOf = d => d.getFullYear() + "-" + _p2(d.getMonth() + 1) + "-" + _p2(d.getDate());
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const todayYmd = ymdOf(today);
+    const attYmOf = (d) => { let y = d.getFullYear(), m = d.getMonth() + 1; if (d.getDate() <= 24) { m--; if (m < 1) { m = 12; y--; } } return y + "-" + _p2(m); };
+    const [cy, cm] = attYmOf(today).split("-").map(Number);
+    const cycleYms = [];
+    for (let i = N - 1; i >= 0; i--) { let yy = cy, mm = cm - i; while (mm < 1) { mm += 12; yy--; } cycleYms.push(yy + "-" + _p2(mm)); }
+    setTrendData({ loading: true, cycleYms });
+    try {
+      const gridByKey = {};
+      await Promise.all(SALONS.flatMap(sl => cycleYms.map(async ym => {
+        try { const att = await window.BOA_DB.loadAttendance(sl.name, ym); gridByKey[sl.name + "|" + ym] = (att && att.grid) || {}; }
+        catch (_) { gridByKey[sl.name + "|" + ym] = {}; }
+      })));
+      const oldestStart = new Date(Number(cycleYms[0].split("-")[0]), Number(cycleYms[0].split("-")[1]) - 1, 25);
+      const daysBack = Math.max(40, Math.ceil((Date.now() - oldestStart.getTime()) / 86400000) + 2);
+      let mgrStatuses = [], mgrClock = [];
+      try { mgrStatuses = (await window.BOA_DB.loadManagerDayStatuses(daysBack)) || []; } catch (_) { }
+      const mgrStatusByIdYmd = {};
+      mgrStatuses.forEach(r => { if (r && r.staff_id && r.date && r.status) (mgrStatusByIdYmd[String(r.staff_id)] = mgrStatusByIdYmd[String(r.staff_id)] || {})[r.date] = r.status; });
+      const offByEc = {}; (offList || []).forEach(o => { if (o && o.ec && o.leftDate) offByEc[o.ec] = o.leftDate; });
+      const leaveSet = new Set();
+      (leaveRecs || []).forEach(lv => { if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return; const ecT = String(lv.ec).trim(); for (let cur = new Date(lv.startDate + "T00:00:00"); ymdOf(cur) <= lv.endDate; cur.setDate(cur.getDate() + 1)) leaveSet.add(ecT + "|" + ymdOf(cur)); });
+      const MISSED = { sick: 1, sick_n: 1, no: 1, absent: 1, unpaid: 1, frl: 1 };
+      const CONCERN = { sick: 1, no: 1, absent: 1 };
+      const WORKED = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1 };
+      const cycleDays = (ym) => { const [yy, mm] = ym.split("-").map(Number); const s = new Date(yy, mm - 1, 25), e = new Date(yy, mm, 24); const out = []; for (let cur = new Date(s); cur <= e; cur.setDate(cur.getDate() + 1)) { const yd = ymdOf(cur); if (yd > todayYmd) break; out.push(yd); } return out; };
+      const cycleDaysMap = {}; cycleYms.forEach(ym => cycleDaysMap[ym] = cycleDays(ym));
+      const recs = {};
+      const ensure = (s, role) => { const k = s.ec; if (!recs[k]) recs[k] = { ec: s.ec, name: s.name, branch: s.branch || "", role, missed: new Array(N).fill(0), concern: new Array(N).fill(0), active: new Array(N).fill(false) }; return recs[k]; };
+      (staff || []).forEach(s => {
+        const ec = s.ec; if (!ec) return; const ecT = String(ec).trim(); if (onMatEcs.has(ecT)) return; const ld = offByEc[ec];
+        cycleYms.forEach((ym, ci) => {
+          const g = gridByKey[s.branch + "|" + ym] || {}; const row = g[ec] || g[ecT]; if (!row) return;
+          cycleDaysMap[ym].forEach(ymd => {
+            if (ld && ymd > ld) return; if (leaveSet.has(ecT + "|" + ymd)) return;
+            const dom = parseInt(ymd.slice(8, 10), 10); let v = row[dom]; if (!v) return;
+            const bare = v.charAt(0) === "~" ? v.slice(1) : v;
+            if (MISSED[bare]) { const r = ensure(s, "NT"); r.missed[ci]++; if (CONCERN[bare]) r.concern[ci]++; r.active[ci] = true; }
+            else if (WORKED[bare]) { ensure(s, "NT").active[ci] = true; }
+          });
+        });
+      });
+      (managers || []).forEach(m => {
+        const ec = m.ec; if (!ec) return; const ecT = String(ec).trim(); if (onMatEcs.has(ecT)) return; const ld = offByEc[ec]; const sid = String(m._id || m.id || "");
+        cycleYms.forEach((ym, ci) => {
+          cycleDaysMap[ym].forEach(ymd => {
+            if (ld && ymd > ld) return; if (leaveSet.has(ecT + "|" + ymd)) return;
+            const st = (mgrStatusByIdYmd[sid] || {})[ymd];
+            if (st && MISSED[st]) { const r = ensure(m, m.role || "AM"); r.missed[ci]++; if (CONCERN[st]) r.concern[ci]++; r.active[ci] = true; }
+          });
+        });
+      });
+      const all = Object.values(recs).map(r => {
+        const total = r.missed.reduce((a, b) => a + b, 0);
+        const recent = r.missed[N - 1];
+        const priorAvg = (N - 1) > 0 ? r.missed.slice(0, N - 1).reduce((a, b) => a + b, 0) / (N - 1) : 0;
+        let trend = "flat";
+        if (recent > priorAvg + 0.75) trend = "up"; else if (recent < priorAvg - 0.75) trend = "down";
+        return { ...r, total, recent, priorAvg, trend };
+      }).filter(r => r.total > 0);
+      all.sort((a, b) => (b.recent - a.recent) || (b.total - a.total) || a.name.localeCompare(b.name));
+      const orgMissed = new Array(N).fill(0);
+      Object.values(recs).forEach(r => r.missed.forEach((v, i) => orgMissed[i] += v));
+      setTrendData({ loading: false, cycleYms, rows: all, orgMissed });
+    } catch (e) {
+      console.error("attendance trend load:", e);
+      setTrendData({ loading: false, cycleYms, error: (e && e.message) || String(e) });
+    }
+  };
   const loadPayrollOverviewForCycle = async (ymForLoad) => {
     try {
       const ym = ymForLoad;
@@ -19373,6 +19451,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ fontSize: 12, color: "#9d4d6e" }}>Who misses the most work, who attends best, and recurring patterns (Monday / weekend / month-end clusters) that flag possible sick-leave abuse. Annual leave &amp; maternity are never counted as missed days.</div>
             </div>
 
+            {/* View toggle: snapshot vs multi-cycle trend */}
+            <div style={{ display: "flex", gap: 6, marginBottom: 14, borderBottom: "1px solid #FBCFE8", paddingBottom: 12 }}>
+              {[{ k: "snapshot", l: "📋 Snapshot" }, { k: "trend", l: "📉 Trend vs previous months" }].map(v => (
+                <button key={v.k} onClick={() => setReportsView(v.k)}
+                  style={{ background: reportsView === v.k ? "#FCE7F3" : "transparent", color: "#831843", border: "1px solid " + (reportsView === v.k ? "#F472B6" : "transparent"), borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                  {v.l}
+                </button>
+              ))}
+            </div>
+
+            {reportsView === "snapshot" && (<div>
             {/* Range selector + load */}
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
               {["cycle", "week", "mtd"].map(k => (
@@ -19461,6 +19550,78 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               );
             })()}
+            </div>)}
+
+            {reportsView === "trend" && (<div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
+                <button onClick={loadAttendanceTrend} style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                  {trendData && trendData.loading ? "Loading…" : (trendData && !trendData.loading ? "↻ Refresh" : "Load now")}
+                </button>
+                <span style={{ fontSize: 11, color: "#9d4d6e" }}>Last 6 pay cycles · missed days per person (annual leave &amp; maternity excluded)</span>
+              </div>
+              {!trendData && <div style={{ padding: "16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, fontSize: 13, color: "#831843" }}>Click <strong>Load now</strong> to compare the last 6 pay cycles across every branch.</div>}
+              {trendData && trendData.loading && <div style={{ padding: "16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, fontSize: 13, color: "#831843" }}>Crunching 6 cycles across {SALONS.length} branches…</div>}
+              {trendData && trendData.error && <div style={{ padding: "16px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 10, fontSize: 13, color: "#7f1d1d" }}>Couldn’t load: {trendData.error}</div>}
+              {trendData && !trendData.loading && !trendData.error && (() => {
+                const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+                const cyLabel = (ym) => { const m = Number(ym.split("-")[1]); return months[m - 1]; };
+                const cyTitle = (ym) => { const [y, m] = ym.split("-").map(Number); const em = m === 12 ? 1 : m + 1; const ey = m === 12 ? y + 1 : y; return "25 " + months[m - 1] + " → 24 " + months[em - 1] + " " + ey; };
+                const maxOrg = Math.max(1, ...trendData.orgMissed);
+                const cellColor = (n) => n === 0 ? { bg: "#f0fdf4", fg: "#9ca3af" } : n <= 2 ? { bg: "#fef9c3", fg: "#854d0e" } : n <= 4 ? { bg: "#fed7aa", fg: "#7c2d12" } : { bg: "#fecaca", fg: "#7f1d1d" };
+                const ti = (t) => t === "up" ? { c: "#dc2626", s: "▲" } : t === "down" ? { c: "#16a34a", s: "▼" } : { c: "#9ca3af", s: "▬" };
+                const N = trendData.cycleYms.length;
+                return (
+                  <div>
+                    <div style={{ background: "#fff", border: "1px solid #F9A8D4", borderRadius: 11, padding: "14px 16px", marginBottom: 16 }}>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: "#831843", marginBottom: 12, letterSpacing: "0.04em" }}>TOTAL MISSED DAYS PER CYCLE · ALL STAFF</div>
+                      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", height: 130 }}>
+                        {trendData.cycleYms.map((ym, i) => (
+                          <div key={ym} title={cyTitle(ym)} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, justifyContent: "flex-end", height: "100%" }}>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: "#831843" }}>{trendData.orgMissed[i]}</div>
+                            <div style={{ width: "100%", maxWidth: 48, height: Math.max(4, Math.round(86 * trendData.orgMissed[i] / maxOrg)), background: i === N - 1 ? "#BE185D" : "#F9A8D4", borderRadius: "6px 6px 0 0" }} />
+                            <div style={{ fontSize: 10, color: "#9d4d6e", fontWeight: 700 }}>{cyLabel(ym)}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div style={{ background: "#fff", border: "1px solid #F9A8D4", borderRadius: 11, overflow: "hidden" }}>
+                      <div style={{ background: "#FDEEF5", padding: "10px 14px", fontSize: 12, fontWeight: 800, color: "#831843", letterSpacing: "0.04em" }}>MISSED DAYS PER PERSON · LAST {N} CYCLES (newest on the right)</div>
+                      {trendData.rows.length === 0 ? <div style={{ padding: "14px", fontSize: 12, color: "#9d4d6e", fontStyle: "italic" }}>No absences across these cycles.</div> : (
+                        <div style={{ overflowX: "auto" }}>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                            <thead>
+                              <tr style={{ background: "#FDEEF5", color: "#831843" }}>
+                                <th style={{ padding: "8px 12px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #F9A8D4", position: "sticky", left: 0, background: "#FDEEF5" }}>Staff</th>
+                                {trendData.cycleYms.map(ym => <th key={ym} title={cyTitle(ym)} style={{ padding: "8px 10px", textAlign: "center", fontWeight: 700, borderBottom: "1px solid #F9A8D4", minWidth: 44 }}>{cyLabel(ym)}</th>)}
+                                <th style={{ padding: "8px 12px", textAlign: "center", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Trend</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {trendData.rows.slice(0, 50).map((r, ri) => {
+                                const tt = ti(r.trend);
+                                return (
+                                  <tr key={r.ec + ri}>
+                                    <td style={{ padding: "7px 12px", borderBottom: "1px solid #FDEEF5", position: "sticky", left: 0, background: "#fff" }}>
+                                      <div style={{ fontSize: 12, fontWeight: 700, color: "#831843" }}>{r.name}</div>
+                                      <div style={{ fontSize: 10, color: "#9d4d6e" }}>{r.branch}{r.role && r.role !== "NT" ? " · " + r.role : ""}</div>
+                                    </td>
+                                    {r.missed.map((n, ci) => { const c = cellColor(n); return <td key={ci} style={{ padding: "5px 6px", borderBottom: "1px solid #FDEEF5", textAlign: "center" }}><span style={{ display: "inline-block", minWidth: 22, padding: "2px 6px", borderRadius: 6, background: c.bg, color: c.fg, fontWeight: 700, fontSize: 11 }}>{n}</span></td>; })}
+                                    <td style={{ padding: "5px 12px", borderBottom: "1px solid #FDEEF5", textAlign: "center", color: tt.c, fontWeight: 800, fontSize: 14 }} title={r.trend === "up" ? "More absences than prior-cycle average" : r.trend === "down" ? "Fewer absences than prior-cycle average" : "About the same"}>{tt.s}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ marginTop: 14, fontSize: 11, color: "#9d4d6e", lineHeight: 1.5 }}>
+                      Each column is one pay cycle (25th→24th); hover a column for its dates. ▲ = the latest cycle is worse than this person’s prior-cycle average, ▼ = better, ▬ = about the same. Cell colour: green 0, yellow 1–2, orange 3–4, red 5+. Annual leave &amp; maternity are excluded; the current cycle counts only days up to today.
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>)}
           </div>
         );
       })()}
