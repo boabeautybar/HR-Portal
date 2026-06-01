@@ -1319,7 +1319,6 @@
         '<div class="staff-row-actions">' +
         '<button class="btn btn-primary" data-act="clockin"  ' + (has && !inDone ? "" : 'disabled') + (inDone ? ' title="Already clocked in today"' : '') + '>Clock In</button>' +
         '<button class="btn btn-out"     data-act="clockout" ' + (has ? "" : 'disabled') + '>Clock Out</button>' +
-        '<button class="link-btn"       data-act="overtime" ' + (has ? "" : 'disabled') + ' title="Submit overtime for ROM approval">⏱️ OT</button>' +
         '</div>' +
         '</div>';
     }
@@ -1569,32 +1568,8 @@
       };
       if (inBtn) inBtn.onclick = function () { doClock("in"); };
       if (outBtn) outBtn.onclick = function () { doClock("out"); };
-      var otBtn = row.querySelector('[data-act="overtime"]');
-      if (otBtn) otBtn.onclick = async function () {
-        // PIN-gate the submission so a colleague can't tap OT for someone
-        // else and get them paid extra.
-        var entered = prompt("Enter " + name + "'s 6-digit personal PIN to submit overtime:");
-        if (entered == null) return;
-        entered = (entered || "").trim();
-        if (!/^\d{6}$/.test(entered)) { alert("PIN must be exactly 6 digits."); return; }
-        if (entered !== pins[ec]) { alert("Wrong PIN."); return; }
-        var result = await openMgrOvertimeModal({ name: name });
-        if (!result) return;
-        try {
-          await window.APP_DATA.submitOvertimeRequest({
-            ec: ec,
-            name: name,
-            branch: thisBranch,
-            date: result.date,
-            hours: result.hours,
-            reason: result.reason,
-            submittedBy: name
-          });
-          alert("✓ Overtime submitted for ROM approval.\n\n" + result.hours + "h on " + result.date + " — you'll see it as Approved on the HR portal once a ROM signs off.");
-        } catch (e) {
-          alert("Could not submit overtime: " + (e.message || e));
-        }
-      };
+      // Overtime is recorded from the HR portal only — managers no longer
+      // submit OT requests from the kiosk (too many spurious requests).
     });
   }
 

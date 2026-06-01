@@ -1363,6 +1363,21 @@
     return config || {};
   }
 
+  // ---------- Overtime recording access (boa_overtime_access_v1) ----------
+  // Who is allowed to RECORD overtime from the HR portal. Shape:
+  //   { roles: ["national"], pins: ["1234"] }
+  // Owners always have access regardless. Empty/missing → app default.
+  async function loadOvertimeAccess() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_overtime_access_v1").maybeSingle();
+    if (res.error) { console.error("loadOvertimeAccess:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveOvertimeAccess(config) {
+    var res = await sb.from("app_state").upsert({ key: "boa_overtime_access_v1", value: config || {} });
+    if (res.error) { console.error("saveOvertimeAccess:", res.error); throw res.error; }
+    return config || {};
+  }
+
   // ---------- Attendance grid (boa_att_<branch>_<ym>) ----------
   // Same key the check-in kiosk app writes to. Status codes include:
   //   on, late, off, ext, sick_n, sick, frl, al, ph, mat, no, unpaid,
@@ -1686,6 +1701,8 @@
     saveDailyTasks: saveDailyTasks,
     loadFreshaAccess: loadFreshaAccess,
     saveFreshaAccess: saveFreshaAccess,
+    loadOvertimeAccess: loadOvertimeAccess,
+    saveOvertimeAccess: saveOvertimeAccess,
     loadComplianceActions: loadComplianceActions,
     saveComplianceActions: saveComplianceActions,
     loadUnpaidLegalRecords: loadUnpaidLegalRecords,
