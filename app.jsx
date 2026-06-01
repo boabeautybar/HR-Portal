@@ -23808,9 +23808,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 if (!cell) continue;
                 const person = ecToPerson[ecKey];
                 if (!person) { _unresolved.push(ecKey); continue; }
+                // A resigned manager (leftDate on the live record OR the
+                // off-board list) shouldn't show as a guest covering shifts.
+                // Drop them if they left before this week; if they left
+                // mid-week, keep the row greyed as an off-ghost so cells after
+                // leftDate render TERMINATED — same treatment as home rows.
+                const _gLd = _resolveLeftDate(person);
                 _seen.add(ecKey);
+                if (_gLd && _gLd < weekDays[0].ymd) continue;
                 _resolvedCount++;
-                mgrByBranch[s.name].push({ ...person, _guestFromBranch: person.branch || "?" });
+                mgrByBranch[s.name].push(_gLd
+                  ? { ...person, _guestFromBranch: person.branch || "?", _offGhost: true, _offLeftDate: _gLd, _offReason: _resolveLeftReason(person) }
+                  : { ...person, _guestFromBranch: person.branch || "?" });
               }
             });
           });
