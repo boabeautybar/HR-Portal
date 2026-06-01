@@ -15446,6 +15446,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             : r));
         };
         const promoteToOnboarding = (r) => {
+          // Pre-promotion readiness checklist — surface anything still
+          // outstanding so a tech isn't promoted with gaps. Non-blocking:
+          // the user can override after seeing what's missing.
+          const ci = (r.checkins && typeof r.checkins === "object" && !Array.isArray(r.checkins))
+            ? Object.values(r.checkins).filter(st => st === "on" || st === "late").length : 0;
+          const checks = [
+            [!!r.inductionPassDate, "Induction passed"],
+            [!!(r.midEval && r.midEval.submittedAt), "Mid-trial review done"],
+            [!!(r.finalEval && r.finalEval.submittedAt), "Final review done"],
+            [ci >= 5, "At least 5 trial check-ins (has " + ci + ")"],
+            [!!r.freshaTrialOpened, "Opened on Fresha for the trial"]
+          ];
+          const outstanding = checks.filter(c => !c[0]);
+          const lines = checks.map(c => (c[0] ? "✅ " : "⚠️ ") + c[1]).join("\n");
+          const head = "Promote " + (r.name || "this tech") + " to onboarding?\n\n"
+            + (outstanding.length ? "Some steps are still outstanding:\n\n" : "All checks complete:\n\n");
+          if (!window.confirm(head + lines + (outstanding.length ? "\n\nPromote anyway?" : ""))) return;
           // Pre-fill the onboarding form and switch to onboarding tab
           const allEcs = [...staff.map(s => s.ec), ...managers.map(m => m.ec), ...obList.map(o => o.ec)].filter(Boolean);
           const maxNum = allEcs.reduce((max, ec) => {
@@ -16222,6 +16239,76 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             setTrialList(updatedTrial);
             try { await window.BOA_DB.saveTrialPeriod(updatedTrial); } catch (e) { }
           }
+
+          // 2b. Auto-sync into the current schedule cycle. A freshly-onboarded
+          // nail tech is now a schedule row but has no shifts yet — easy to
+          // forget once the trial ends. If their start date falls within the
+          // current cycle we offer to drop them straight onto it on the
+          // store's standard roster (respecting that store's fixed closed
+          // days), with days before they start marked X, for the manager to
+          // fine-tune on the Scheduling tab.
+          try {
+            const isTech = obForm.position !== "AM" && obForm.position !== "SM";
+            if (isTech && obForm.branch && window.BOA_DB.currentSchedYm && window.BOA_DB.periodDays && window.BOA_DB.loadSchedule && window.BOA_DB.saveSchedule) {
+              const ym = window.BOA_DB.currentSchedYm();
+              const days = window.BOA_DB.periodDays(ym) || [];
+              const _pad = n => String(n).padStart(2, "0");
+              const ymdOf = d => d.year + "-" + _pad(d.monthIdx + 1) + "-" + _pad(d.d);
+              const cycleStart = days.length ? ymdOf(days[0]) : null;
+              const cycleEnd = days.length ? ymdOf(days[days.length - 1]) : null;
+              const start = obForm.startDate;
+              if (cycleEnd && start && start <= cycleEnd) {
+                // Respect the store's fixed closed days (e.g. Betty is closed
+                // Sun+Mon). For a closed-day store those closed days ARE the
+                // weekly off-days — everyone is off then and works the rest —
+                // so we don't add extra weekday offs. For an open-all-week
+                // store we apply the standard rule: two off-days a Mon–Sun
+                // week, with every second Sunday off (Monday is the standing
+                // off-day; on a worked-Sunday week the 2nd off is the Tuesday).
+                // A mid-month starter may get a 1-off first week where the
+                // other off fell before their start date — that's fine.
+                const salonCfg = (typeof SALONS !== "undefined" ? SALONS : []).find(s => s.name === obForm.branch) || {};
+                const closedSet = new Set((Array.isArray(salonCfg.closedDow) ? salonCfg.closedDow : []).map(Number));
+                const dowNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+                // Every-second-Sunday is anchored to an absolute week parity
+                // (whole weeks since a fixed Monday epoch) so the rotation stays
+                // continuous across the 25th→24th cycle boundary. Otherwise a
+                // tech given Mon+Tue off in the final rollover week would lose
+                // the Sunday off that belongs to that same labour week in the
+                // next cycle.
+                const _weekEven = (y, mi, dd) => Math.floor((Date.UTC(y, mi, dd) - Date.UTC(2024, 0, 1)) / 604800000) % 2 === 0;
+                const fromLbl = start > cycleStart ? start : "the start of the cycle";
+                const rosterDesc = closedSet.size
+                  ? obForm.branch + "'s roster — off on its closed days (" + [...closedSet].sort().map(x => dowNames[x]).join(" + ") + "), working the rest"
+                  : "the standard roster — two off-days a week, every second Sunday off";
+                if (window.confirm("Add " + obForm.name + " to the current schedule (" + ym + ") now?\n\nThey'll be dropped in on " + rosterDesc + ", from " + fromLbl + ". You can fine-tune it on the Scheduling tab.")) {
+                  const sched = await window.BOA_DB.loadSchedule(obForm.branch, ym, false);
+                  const grid = (sched && sched.grid) || {};
+                  const row = {};
+                  days.forEach(d => {
+                    const dy = ymdOf(d);
+                    if (dy < start) { row[d.d] = "X"; return; }       // not started yet
+                    let off;
+                    if (closedSet.size) {
+                      off = closedSet.has(d.dow);                     // store closed → off; else work
+                    } else if (d.dow === 1) {
+                      off = true;                                     // Monday — standing off-day
+                    } else if (d.dow === 0) {
+                      off = _weekEven(d.year, d.monthIdx, d.d);       // every second Sunday off
+                    } else if (d.dow === 2) {                         // Tuesday off only when that week's Sunday is worked
+                      const sd = new Date(d.year, d.monthIdx, d.d); sd.setDate(sd.getDate() + 5);
+                      off = !_weekEven(sd.getFullYear(), sd.getMonth(), sd.getDate());
+                    } else {
+                      off = false;
+                    }
+                    row[d.d] = off ? "O" : "W";
+                  });
+                  grid[obForm.ec] = row;
+                  await window.BOA_DB.saveSchedule(obForm.branch, ym, grid, false);
+                }
+              }
+            }
+          } catch (e) { console.warn("schedule auto-sync (continuing):", e); }
 
           // 3. Add to onboarding history (for the UI grid and historical data)
           const obRecord = {
