@@ -23526,9 +23526,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
           // Riverlands — Mon-Fri split, Sat/Sun single shift.
           if (_b === "Riverlands") {
-            if (dow === 6) return "09:00 - 18:00";          // Sat single WE
-            if (dow === 0) return "08:00 - 17:00";          // Sun single WE
-            if (isSM) return "08:00 - 17:00";
+            if (isSM) return "08:00 - 17:00";               // SM/SSM always 08:00-17:00, every day
+            if (dow === 6) return "09:00 - 18:00";          // Sat single AM
+            if (dow === 0) return "08:30 - 17:00";          // Sun single AM (08:30 open)
             if (code === "WE") return "09:00 - 18:00";      // AM opener
             if (code === "WB") return "08:00 - 17:00";      // 4+ bonus opener
             if (code === "WL") return "10:00 - 19:00";
