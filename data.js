@@ -1284,6 +1284,24 @@
     return records;
   }
 
+  // ---------- Manager custom shift hours (boa_mgr_times_v1) ----------
+  // Per-manager, per-day manual overrides of the computed shift hours,
+  // set from the Manager Coverage cell editor (e.g. when one manager has
+  // to open early or stay to close because cover fell short). Keyed by
+  // employee code then ISO date — both globally unique — so a single
+  // store covers every branch/cycle and the kiosk can layer it on top of
+  // the schedule grid. Shape: { [ec]: { "YYYY-MM-DD": "HH:MM - HH:MM" } }.
+  async function loadMgrTimes() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_mgr_times_v1").maybeSingle();
+    if (res.error) { console.error("loadMgrTimes:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveMgrTimes(map) {
+    var res = await sb.from("app_state").upsert({ key: "boa_mgr_times_v1", value: map || {} });
+    if (res.error) { console.error("saveMgrTimes:", res.error); throw res.error; }
+    return map || {};
+  }
+
   // ---------- Daily tasks (boa_daily_tasks_v1) ----------
   // Per-user to-do items assigned by an admin. Records:
   //   { _id, title, description, assigneePin, date (YYYY-MM-DD),
@@ -1615,6 +1633,8 @@
     // Unpaid legal-status leave
     loadTechLoans: loadTechLoans,
     saveTechLoans: saveTechLoans,
+    loadMgrTimes: loadMgrTimes,
+    saveMgrTimes: saveMgrTimes,
     loadMgrLoans: loadMgrLoans,
     saveMgrLoans: saveMgrLoans,
     loadDailyTasks: loadDailyTasks,

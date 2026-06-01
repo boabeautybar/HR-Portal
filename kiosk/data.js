@@ -1016,6 +1016,16 @@
     });
     return { grid: combined, ym: ym, kind: kind || "combined" };
   }
+  // Per-manager custom shift hours set in the HR portal coverage view.
+  // Shared global key, keyed { [ec]: { "YYYY-MM-DD": "HH:MM - HH:MM" } }.
+  // The Manager Schedule view layers these over the computed shift times
+  // so a manager's one-off early-open / late-close hours show on the day.
+  async function getMgrTimes() {
+    var c = client(); if (!c) return {};
+    var res = await c.from("app_state").select("value").eq("key", "boa_mgr_times_v1").maybeSingle();
+    if (res.error) { console.error("getMgrTimes:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
   // Batched cross-branch schedule load: { branchName -> merged grid }.
   // Used by the manager "Borrow Tech" picker to filter the candidate pool
   // to only techs who are scheduled to work TODAY at their home branch.
@@ -1320,7 +1330,7 @@
     deactivateStaff: deactivateStaff,
     lastClockinToday: lastClockinToday, addClockin: addClockin, listTodayClockins: listTodayClockins,
     todaysCashup: todaysCashup, addCashup: addCashup, listRecentCashups: listRecentCashups,
-    currentSchedYm: currentSchedYm, periodLabel: periodLabel, periodDays: periodDays, getSchedule: getSchedule, getSchedulesForBranches: getSchedulesForBranches,
+    currentSchedYm: currentSchedYm, periodLabel: periodLabel, periodDays: periodDays, getSchedule: getSchedule, getSchedulesForBranches: getSchedulesForBranches, getMgrTimes: getMgrTimes,
     ymForDate: ymForDate, endOfSchedulePeriod: endOfSchedulePeriod,
     getAttendance: getAttendance, setAttendanceStatus: setAttendanceStatus,
     getSwaps: getSwaps, recordSwap: recordSwap, undoSwap: undoSwap,

@@ -8979,6 +8979,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [mgrCoverageDraft, setMgrCoverageDraft] = useState({});
   const [mgrCoverageDraftLoans, setMgrCoverageDraftLoans] = useState([]);
   const [mgrCoverageDraftApplying, setMgrCoverageDraftApplying] = useState(false);
+  // Manual per-day manager shift-hour overrides (e.g. open early / stay to
+  // close when cover falls short). Live map loaded from boa_mgr_times_v1;
+  // draft staged alongside the coverage draft and committed by "Apply to
+  // live". Shape (both): { [ec]: { "YYYY-MM-DD": "HH:MM - HH:MM" } }; a ""
+  // value in the draft means "clear this override on apply".
+  const [mgrCustomTimes, setMgrCustomTimes] = useState({});
+  const [mgrCustomTimesDraft, setMgrCustomTimesDraft] = useState({});
 
   // ── Daily Check-ins (nail tech) state ──────────────────────────────
   // Loaded once when the Check-ins tab or the Attendance tab opens, so the
@@ -9963,6 +9970,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     window.BOA_DB.loadMgrLoans().then(rows => {
       if (!cancelled) setMgrLoanRows(Array.isArray(rows) ? rows : []);
     });
+    if (window.BOA_DB.loadMgrTimes) {
+      window.BOA_DB.loadMgrTimes().then(map => {
+        if (!cancelled) setMgrCustomTimes(map && typeof map === "object" ? map : {});
+      });
+    }
     return () => { cancelled = true; };
   }, [tab]);
 
@@ -23395,9 +23407,38 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Connecteam-style colored blocks branded by branch with the shift
         // times and role · branch label; non-working cells fall back to a
         // small muted pill (OFF / LEAVE / REQ / MATERNITY) or blank.
+        // Parse a "HH:MM - HH:MM" range into padded { start, end } for the
+        // <input type="time"> fields; returns blanks if it doesn't match.
+        const _parseRange = (s) => {
+          const m = /^(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})$/.exec((s || "").trim());
+          const pad = (t) => t && t.length === 4 ? "0" + t : t;
+          return m ? { start: pad(m[1]), end: pad(m[2]) } : { start: "", end: "" };
+        };
+        // Effective custom hours for (ec, ymd): draft wins over live; a ""
+        // draft value means the override was cleared this session.
+        const _effCustomTime = (ec, ymd) => {
+          const e = String(ec || "").trim();
+          const dRow = mgrCustomTimesDraft[e];
+          if (dRow && Object.prototype.hasOwnProperty.call(dRow, ymd)) return dRow[ymd] || null;
+          const lRow = mgrCustomTimes[e];
+          return (lRow && lRow[ymd]) || null;
+        };
+
         const openCellEditor = (branchName, mgrYm, dom, ymd, ec, name, role, currentCell) => {
           if (!ec) return;
-          setMgrCellEditor({ branch: branchName, mgrYm, ec, name: name || "", role: role || "", ymd, dom, currentCell: currentCell || "" });
+          // Pre-compute the standard hours and any existing override so the
+          // editor's time fields can pre-fill and detect "back to standard".
+          const dow = ymd ? new Date(ymd + "T12:00:00").getDay() : 0;
+          const std = isWorking(currentCell) ? shiftTimes(role, currentCell, branchName, dow) : "";
+          const cust = _effCustomTime(ec, ymd);
+          const sd = _parseRange(std);
+          const cd = _parseRange(cust || "");
+          setMgrCellEditor({
+            branch: branchName, mgrYm, ec, name: name || "", role: role || "", ymd, dom,
+            currentCell: currentCell || "",
+            _defStart: sd.start, _defEnd: sd.end,
+            _custStart: cd.start, _custEnd: cd.end, _hadCustom: !!cust
+          });
         };
 
         // ── Draft-mode mutations ────────────────────────────────────
@@ -23500,8 +23541,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               await window.BOA_DB.saveMgrLoans(existing);
               setMgrLoanRows(existing);
             }
+            // Commit custom shift-hour overrides.
+            if (Object.keys(mgrCustomTimesDraft).length > 0 && window.BOA_DB.saveMgrTimes) {
+              const mergedTimes = JSON.parse(JSON.stringify(mgrCustomTimes || {}));
+              Object.entries(mgrCustomTimesDraft).forEach(([ec, row]) => {
+                Object.entries(row).forEach(([ymd, val]) => {
+                  if (val) {
+                    if (!mergedTimes[ec]) mergedTimes[ec] = {};
+                    mergedTimes[ec][ymd] = val;
+                  } else if (mergedTimes[ec]) {
+                    delete mergedTimes[ec][ymd];
+                    if (Object.keys(mergedTimes[ec]).length === 0) delete mergedTimes[ec];
+                  }
+                });
+              });
+              await window.BOA_DB.saveMgrTimes(mergedTimes);
+              setMgrCustomTimes(mergedTimes);
+            }
             setMgrCoverageDraft({});
             setMgrCoverageDraftLoans([]);
+            setMgrCustomTimesDraft({});
           } catch (err) {
             window.alert("Apply failed: " + ((err && err.message) || err));
           } finally {
@@ -23509,16 +23568,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
         };
         const _discardDraft = () => {
-          if (Object.keys(mgrCoverageDraft).length === 0 && mgrCoverageDraftLoans.length === 0) return;
+          if (Object.keys(mgrCoverageDraft).length === 0 && mgrCoverageDraftLoans.length === 0 && Object.keys(mgrCustomTimesDraft).length === 0) return;
           if (!window.confirm("Discard all pending shift changes?")) return;
           setMgrCoverageDraft({});
           setMgrCoverageDraftLoans([]);
+          setMgrCustomTimesDraft({});
         };
         const _draftChangeCount = (() => {
           let n = 0;
           Object.values(mgrCoverageDraft).forEach(br => {
             Object.values(br).forEach(row => { n += Object.keys(row).length; });
           });
+          Object.values(mgrCustomTimesDraft).forEach(row => { n += Object.keys(row).length; });
           return n;
         })();
 
@@ -23691,7 +23752,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Working cell → solid branch-coloured block with times + role.
           if (isWorking(cellVal)) {
             const pal = branchColour(branchName);
-            const time = shiftTimes(role, cellVal, branchName, dow);
+            // Manual override for this exact day wins over the computed hours.
+            const _customTime = _effCustomTime(ec, ymd);
+            const time = _customTime || shiftTimes(role, cellVal, branchName, dow);
             const subtle = cellVal !== "W" ? { borderLeft: "4px solid rgba(255,255,255,0.5)" } : {};
             // Was this day tagged with an absence reason by the ROM? If so
             // the block desaturates and a coloured pill at the top calls
@@ -23703,8 +23766,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const dotTitle = clockedIn ? "✓ Clocked in" : (isPast ? "✗ Absent — did not clock in" : null);
             return (
               <td key={key} {..._dh} onClick={onCellClick} style={tdStyle}>
-                <div title={(role || "") + " · " + branchName + " · " + cellVal + " · " + time + (dotTitle ? "\n" + dotTitle : "") + (_abs && _absStyle ? "\n" + _absStyle.lbl + (_abs.note ? " — " + _abs.note : "") + (_abs.recorded_by ? " (by " + _abs.recorded_by + ")" : "") : "") + (isGuest ? "\nGuest from " + isGuest : "") + "\n\nClick to edit · drag to swap days or loan to another store"}
+                <div title={(role || "") + " · " + branchName + " · " + cellVal + " · " + time + (_customTime ? " (custom hours)" : "") + (dotTitle ? "\n" + dotTitle : "") + (_abs && _absStyle ? "\n" + _absStyle.lbl + (_abs.note ? " — " + _abs.note : "") + (_abs.recorded_by ? " (by " + _abs.recorded_by + ")" : "") : "") + (isGuest ? "\nGuest from " + isGuest : "") + "\n\nClick to edit times · drag to swap days or loan to another store"}
                   style={{ position: "relative", background: pal.bg, color: pal.fg, borderRadius: 6, padding: "8px 6px", textAlign: "left", lineHeight: 1.25, minHeight: 56, boxShadow: "inset 0 -2px 0 rgba(0,0,0,0.18)", opacity: _abs ? 0.55 : 1, ...subtle }}>
+                  {_customTime && (
+                    <span title="Custom hours for this day" style={{ position: "absolute", bottom: 3, right: 4, fontSize: 9, fontWeight: 800, color: "#fff", opacity: 0.95 }}>★</span>
+                  )}
                   {_abs && _absStyle && (
                     <div style={{ position: "absolute", top: 3, left: 3, right: 3, background: _absStyle.bg, color: _absStyle.fg, borderRadius: 4, padding: "1px 5px", fontSize: 9, fontWeight: 800, letterSpacing: "0.05em", textAlign: "center", boxShadow: "0 1px 2px rgba(0,0,0,0.18)", opacity: 1 }}>
                       {_absStyle.lbl}{_abs.proof ? " 📎" : ""}
@@ -24447,6 +24513,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               return hadLive ? [...filtered, { _op: "remove", ec, date: ymd }] : filtered;
             });
           }
+          // Stage custom shift hours for this day. Only meaningful for a
+          // working code; a value equal to the standard hours (or blank)
+          // clears any existing override.
+          const cs = E._draftStart != null ? E._draftStart : (E._custStart || "");
+          const ce = E._draftEnd != null ? E._draftEnd : (E._custEnd || "");
+          const stdRange = (E._defStart && E._defEnd) ? (E._defStart + " - " + E._defEnd) : "";
+          const newRange = (cs && ce) ? (cs + " - " + ce) : "";
+          let stageTime = null; // null = leave override untouched
+          if (newRange && newRange !== stdRange) stageTime = newRange;        // explicit custom hours
+          else if (E._hadCustom && (!newRange || newRange === stdRange)) stageTime = ""; // cleared / reset to standard
+          if (stageTime !== null) {
+            setMgrCustomTimesDraft(prev => {
+              const row = { ...(prev[ec] || {}) };
+              row[ymd] = stageTime;
+              return { ...prev, [ec]: row };
+            });
+          }
           _close();
         };
         const _setDraft = (next) => setMgrCellEditor(prev => prev ? { ...prev, ...next } : null);
@@ -24465,6 +24548,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const otherBranches = SALONS.map(s => s.name).filter(b => b !== E.branch);
         const draftCode = E._draftCode != null ? E._draftCode : E.currentCell;
         const draftDest = E._draftDest || "";
+        // Custom-hours fields. Only offered for a working code. Pre-fill with
+        // any existing override, else the standard computed hours.
+        const _isWorkingCode = ["W", "WE", "WL", "WM", "WB", "E"].indexOf(draftCode) >= 0;
+        const startVal = E._draftStart != null ? E._draftStart : (E._custStart || E._defStart || "");
+        const endVal = E._draftEnd != null ? E._draftEnd : (E._custEnd || E._defEnd || "");
+        const _stdRange = (E._defStart && E._defEnd) ? (E._defStart + " - " + E._defEnd) : "";
+        const _isCustomNow = !!(startVal && endVal) && ((startVal + " - " + endVal) !== _stdRange);
         return (
           <div onClick={_close} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
             <div onClick={ev => ev.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "20px 22px", width: "100%", maxWidth: 500 }}>
@@ -24485,6 +24575,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   {_opts.map(o => <option key={o.code} value={o.code}>{o.code ? o.code + " — " + o.lbl : o.lbl}</option>)}
                 </select>
               </div>
+
+              {_isWorkingCode && !draftDest && (
+                <div style={{ marginTop: 12, padding: "10px 12px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 9 }}>
+                  <label style={{ fontSize: 10, fontWeight: 800, color: "#b45309", letterSpacing: "0.06em" }}>CUSTOM HOURS — THIS DAY ONLY (optional)</label>
+                  <div style={{ fontSize: 11, color: "#92400e", marginTop: 2 }}>
+                    Override the standard {_stdRange ? _stdRange.replace(" - ", "–") : "shift"} when this manager has to open early or stay to close. Shows on the coverage grid and the kiosk schedule.
+                  </div>
+                  <div style={{ display: "flex", gap: 10, marginTop: 8, alignItems: "flex-end" }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 9, fontWeight: 800, color: "#b45309", letterSpacing: "0.04em" }}>START</div>
+                      <input type="time" value={startVal} onChange={ev => _setDraft({ _draftStart: ev.target.value })}
+                        style={{ display: "block", width: "100%", marginTop: 3, padding: "8px 10px", borderRadius: 8, border: "1px solid #fcd34d", fontSize: 13, background: "#fff", boxSizing: "border-box" }} />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 9, fontWeight: 800, color: "#b45309", letterSpacing: "0.04em" }}>END</div>
+                      <input type="time" value={endVal} onChange={ev => _setDraft({ _draftEnd: ev.target.value })}
+                        style={{ display: "block", width: "100%", marginTop: 3, padding: "8px 10px", borderRadius: 8, border: "1px solid #fcd34d", fontSize: 13, background: "#fff", boxSizing: "border-box" }} />
+                    </div>
+                    {(_isCustomNow || E._hadCustom) && (
+                      <button type="button" onClick={() => _setDraft({ _draftStart: E._defStart || "", _draftEnd: E._defEnd || "" })}
+                        title="Reset to the standard computed hours"
+                        style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #fcd34d", background: "#fff", color: "#b45309", fontWeight: 700, fontSize: 12, cursor: "pointer", whiteSpace: "nowrap" }}>↺ Standard</button>
+                    )}
+                  </div>
+                  {_isCustomNow && (
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "#92400e", marginTop: 6 }}>★ Custom hours: {startVal}–{endVal}</div>
+                  )}
+                </div>
+              )}
 
               <div style={{ marginTop: 12 }}>
                 <label style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" }}>OR LOAN TO ANOTHER STORE (optional)</label>
