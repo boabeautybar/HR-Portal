@@ -9810,23 +9810,75 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       }
       return out;
     };
+    // Mid-cycle transfers: a tech who moved branches keeps their record on the
+    // OLD branch (branch + transferring/transferTo/transferDate) until the
+    // move settles. On the attendance sheet we show them ONCE, at the
+    // destination, with a full-cycle view — so we pull the SOURCE branch's
+    // grid + schedule and merge their pre-transfer cells into this branch's.
+    const pp = z => String(z).padStart(2, "0");
+    const cycStartE = new Date(_atP[0], _atP[1] - 1, 25);
+    const cycEndE = new Date(_atP[0], _atP[1], 24);
+    const cycStartYmdE = cycStartE.getFullYear() + "-" + pp(cycStartE.getMonth() + 1) + "-" + pp(cycStartE.getDate());
+    const cycEndYmdE = cycEndE.getFullYear() + "-" + pp(cycEndE.getMonth() + 1) + "-" + pp(cycEndE.getDate());
+    const _todayE = new Date(); const todayYmdE = _todayE.getFullYear() + "-" + pp(_todayE.getMonth() + 1) + "-" + pp(_todayE.getDate());
+    // Only consolidate once the transfer date has arrived (future pending
+    // transfers stay on the old branch until then).
+    const incoming = (staff || []).filter(s => s && s.ec && s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= todayYmdE && s.branch && s.branch !== attBranch);
+    const srcBranches = Array.from(new Set(incoming.map(s => s.branch)));
     Promise.all([
       safe(window.BOA_DB.loadAttendance(attBranch, attYM)),
       safe(window.BOA_DB.loadSchedule(attBranch, techYm, false)),
       safe(window.BOA_DB.loadSchedule(attBranch, attYM, true)),
       window.BOA_DB.loadEarlyLeaves ? safe(window.BOA_DB.loadEarlyLeaves(attBranch, attYM)) : Promise.resolve({}),
-      window.BOA_DB.loadExtras ? safe(window.BOA_DB.loadExtras(attBranch, attYM)) : Promise.resolve({})
-    ]).then(([att, sch, mgrSch, early, extras]) => {
-      setAttGrid((att && att.grid) || {});
-      setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null, freshaWorked: att.freshaWorked || {}, reviewedWarnings: att.reviewedWarnings || {}, mirrorSuppressed: !!att.mirrorSuppressed } : { freshaWorked: {}, reviewedWarnings: {}, mirrorSuppressed: false });
+      window.BOA_DB.loadExtras ? safe(window.BOA_DB.loadExtras(attBranch, attYM)) : Promise.resolve({}),
+      Promise.all(srcBranches.map(async (br) => {
+        const [sAtt, sSch] = await Promise.all([
+          safe(window.BOA_DB.loadAttendance(br, attYM)),
+          safe(window.BOA_DB.loadSchedule(br, techYm, false))
+        ]);
+        return [br, (sAtt && sAtt.grid) || {}, (sSch && sSch.grid) || {}, (sAtt && sAtt.freshaWorked) || {}];
+      }))
+    ]).then(([att, sch, mgrSch, early, extras, srcData]) => {
+      const mergedGrid = { ...((att && att.grid) || {}) };
       const techGrid = (sch && sch.grid) || {};
       const mgrGrid = ymdReKey((mgrSch && mgrSch.grid) || {});
-      setAttSched({ ...techGrid, ...mgrGrid });
+      const mergedSched = { ...techGrid, ...mgrGrid };
+      const mergedFresha = { ...((att && att.freshaWorked) || {}) };
+      // Overlay each incoming tech's pre-transfer cells from their old branch —
+      // grid, schedule AND the Fresha-worked flags, so a later Fresha check
+      // validates her earlier (old-branch) cells the same as everyone else.
+      if (incoming.length) {
+        const srcMap = {}; (srcData || []).forEach(([br, g, sg, fw]) => { srcMap[br] = { g: g || {}, sg: sg || {}, fw: fw || {} }; });
+        incoming.forEach(s => {
+          const src = srcMap[s.branch]; if (!src) return;
+          const ec = s.ec, ecT = String(ec).trim();
+          const srcRow = src.g[ec] || src.g[ecT] || {};
+          const srcSchRow = src.sg[ec] || src.sg[ecT] || {};
+          const srcFwRow = src.fw[ec] || src.fw[ecT] || {};
+          const gRow = { ...(mergedGrid[ec] || {}) };
+          const sRow = { ...(mergedSched[ec] || {}) };
+          const fRow = { ...(mergedFresha[ec] || {}) };
+          for (let cur = new Date(cycStartE); cur <= cycEndE; cur.setDate(cur.getDate() + 1)) {
+            const ymd = cur.getFullYear() + "-" + pp(cur.getMonth() + 1) + "-" + pp(cur.getDate());
+            if (ymd >= s.transferDate) continue;                 // only pre-transfer days
+            const dom = cur.getDate();
+            if (gRow[dom] == null && srcRow[dom] != null) gRow[dom] = srcRow[dom];
+            if (sRow[dom] == null && srcSchRow[dom] != null) sRow[dom] = srcSchRow[dom];
+            if (fRow[dom] == null && srcFwRow[dom] != null) fRow[dom] = srcFwRow[dom];
+          }
+          mergedGrid[ec] = gRow;
+          mergedSched[ec] = sRow;
+          mergedFresha[ec] = fRow;
+        });
+      }
+      setAttGrid(mergedGrid);
+      setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null, freshaWorked: mergedFresha, reviewedWarnings: att.reviewedWarnings || {}, mirrorSuppressed: !!att.mirrorSuppressed } : { freshaWorked: mergedFresha, reviewedWarnings: {}, mirrorSuppressed: false });
+      setAttSched(mergedSched);
       setAttEarly(early || {});
       setAttExtras(extras || {});
     }).catch(e => console.error("Attendance load:", e))
       .finally(() => setAttLoading(false));
-  }, [tab, attBranch, attYM]);
+  }, [tab, attBranch, attYM, staff]);
 
   // Load attendance from every other branch we have a loan going out to
   // during this cycle, so the home-branch cells can mirror what the
@@ -9850,6 +9902,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     };
     (techLoans || []).forEach(_addTarget);
     (mgrLoanRows || []).forEach(_addTarget);
+    // Incoming mid-cycle transfers: their pre-transfer loan-outs were made from
+    // their OLD branch, so we also need the RECEIVING branches' grids to mirror
+    // those loan-day statuses in this destination view (matches the old branch).
+    const _todayCB = new Date(); const _todayYmdCB = _todayCB.getFullYear() + "-" + pp(_todayCB.getMonth() + 1) + "-" + pp(_todayCB.getDate());
+    const _incoming = (staff || []).filter(s => s && s.ec && s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= _todayYmdCB && s.branch && s.branch !== attBranch);
+    if (_incoming.length) {
+      const incByEc = {}; _incoming.forEach(s => { incByEc[s.ec] = s; });
+      (techLoans || []).forEach(l => {
+        if (!l || !l.ec || !l.date || !l.toBranch || l.toBranch === attBranch) return;
+        if (l.date < cycStartYmd || l.date > cycEndYmd) return;
+        const inc = incByEc[l.ec];
+        if (inc && l.fromBranch === inc.branch && l.date < inc.transferDate) targets.add(l.toBranch);
+      });
+    }
     if (targets.size === 0) { setCrossBranchAttGrids({}); return; }
     let cancelled = false;
     Promise.all([...targets].map(async (br) => {
@@ -9864,7 +9930,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setCrossBranchAttGrids(next);
     });
     return () => { cancelled = true; };
-  }, [tab, attBranch, attYM, techLoans, mgrLoanRows]);
+  }, [tab, attBranch, attYM, techLoans, mgrLoanRows, staff]);
 
   // ── Dashboard: count staff scheduled to work today across all branches ──
   const [dashScheduledToday, setDashScheduledToday] = useState(null); // null = loading
@@ -17337,6 +17403,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // are excluded entirely.
         const cycStartYmd = cycStart.getFullYear() + "-" + p2(cycStart.getMonth() + 1) + "-" + p2(cycStart.getDate());
         const cycEndYmd = cycEnd.getFullYear() + "-" + p2(cycEnd.getMonth() + 1) + "-" + p2(cycEnd.getDate());
+        // A transfer only takes effect once its date arrives — a future pending
+        // transfer stays entirely on the OLD branch until then. Gate the
+        // consolidation on today, not the cycle end.
+        const _todayYmdR = (() => { const d = new Date(); return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()); })();
         const stillInCycle = (ec) => {
           const ld = offByEc[ec];
           return !ld || ld >= cycStartYmd;
@@ -17357,13 +17427,47 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const _mgrLoansInCycle = (mgrLoanRows || []).filter(l => l && l.date && l.date >= cycStartYmd && l.date <= cycEndYmd);
         const outgoingLoanMap = {};
         const _mgrLoanedOutSet = new Set();    // "ec|d" pairs — managers loaned OUT this cycle
+        // Incoming mid-cycle transfers (arriving at this branch). Their
+        // pre-transfer loan-outs were made from their OLD branch, so carry them
+        // into this destination view — the loan arrow + the receiving branch's
+        // mirrored status then render exactly as they did at the old branch.
+        const _incomingByEc = {};
+        (enriched || []).forEach(s => {
+          if (s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= _todayYmdR && s.branch && s.branch !== attBranch && stillInCycle(s.ec)) {
+            _incomingByEc[s.ec] = { movedFrom: s.branch, transferDate: s.transferDate };
+          }
+        });
+        // Check-ins are indexed by the staff record's branch. A transferred
+        // tech's record still points at the OLD branch, so ALL their clock-ins
+        // (before AND after the move) live under it — look check-ins up there
+        // for incoming techs so their worked days show and genuine missed days
+        // can be told apart from worked-but-unstamped ones.
+        const _cinBranchFor = (ec) => (_incomingByEc[ec] && _incomingByEc[ec].movedFrom) || attBranch;
+        // Post-transfer fallback for an incoming tech. On/after the transfer
+        // date the day belongs to the NEW branch. If she isn't on the new
+        // branch's saved schedule and the day carries no explicit mark, resolve
+        // it from her clock-in: checked in → worked (On Time), otherwise it's an
+        // off day at the new store (grey OFF) rather than a blank cell.
+        const _incPostFallback = (ec, dayObj) => {
+          const inc = _incomingByEc[ec];
+          if (!inc || !dayObj || dayObj.ymd < inc.transferDate || dayObj.ymd > _todayYmdR) return null;
+          if (attSched[ec] && attSched[ec][dayObj.d]) return null;     // on the new branch's schedule
+          if (attGrid[ec] && attGrid[ec][dayObj.d]) return null;       // explicitly marked
+          const ci = ((checkInsByBranch[_cinBranchFor(ec)] || {})[ec] || {})[dayObj.ymd];
+          return (ci && ci.hasIn) ? "on" : "off";
+        };
         _loansInCycle.concat(_mgrLoansInCycle).forEach(l => {
           if (!l.ec) return;
           const dy = days.find(x => x.ymd === l.date);
           if (!dy) return;
+          let toB = null;
           if (l.fromBranch === attBranch && l.toBranch && l.toBranch !== attBranch) {
-            (outgoingLoanMap[l.ec] = outgoingLoanMap[l.ec] || {})[dy.d] = l.toBranch;
+            toB = l.toBranch;
+          } else {
+            const inc = _incomingByEc[l.ec];
+            if (inc && l.fromBranch === inc.movedFrom && l.toBranch && l.date < inc.transferDate) toB = l.toBranch;
           }
+          if (toB) (outgoingLoanMap[l.ec] = outgoingLoanMap[l.ec] || {})[dy.d] = toB;
         });
         _mgrLoansInCycle.forEach(l => {
           if (!l.ec || !l.fromBranch || l.fromBranch !== attBranch) return;
@@ -17374,8 +17478,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // AMs currently on an active Store-Manager trial (per the SM Trials
         // tab). They work SM shifts, so surface "SM · on trial" on the grid.
         const _smTrialEcSet = new Set((smTrialList || []).filter(t => t && t.status === "active" && t.ec).map(t => String(t.ec).trim()));
+        // Mid-cycle branch transfers. A transferred tech is shown ONCE, at the
+        // DESTINATION branch, with a full-cycle view (pre-transfer cells were
+        // merged in from the old branch by the loader). So: drop techs leaving
+        // THIS branch this cycle, and add techs arriving HERE this cycle (their
+        // record still carries the old branch + transferring flags).
+        const _movedAwayThisCycle = (s) => s.transferring && s.transferTo && s.transferTo !== attBranch && s.transferDate && s.transferDate <= _todayYmdR;
+        const _arrivingHereThisCycle = (s) => s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= _todayYmdR && s.branch && s.branch !== attBranch;
         const attStaff = [
-          ...enriched.filter(s => s.branch === attBranch && stillInCycle(s.ec)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat })),
+          ...enriched.filter(s => s.branch === attBranch && stillInCycle(s.ec) && !_movedAwayThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat })),
+          ...enriched.filter(s => stillInCycle(s.ec) && _arrivingHereThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat, movedFrom: s.branch, movedOn: s.transferDate })),
           ...managers.filter(m => m.branch === attBranch && stillInCycle(m.ec)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", onMat: !!m.onMat, smTrial: _smTrialEcSet.has(String(m.ec).trim()) }))
         ].sort((a, b) => {
           // Maternity-leave staff go to the very bottom of the grid so the
@@ -17592,7 +17704,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               if (_isExtraDay(ec, d)) return "ext";
               // Path 1: kiosk audit log marked the day as Extra.
               const _dayObjExt = days.find(x => x.d === d);
-              const _ka = _dayObjExt ? ((kioskAbsentByBranch[attBranch] || {})[ec] || {})[_dayObjExt.ymd] : null;
+              const _ka = _dayObjExt ? ((kioskAbsentByBranch[_cinBranchFor(ec)] || {})[ec] || {})[_dayObjExt.ymd] : null;
               if (_ka && _ka.status === "ext") return "ext";
               // Path 2: the SCHEDULE code itself is "E" (extra cover) for
               // this day. When the manager taps On Time / Late later, the
@@ -17625,6 +17737,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // days must be reviewed first. The cell render flags those days for
           // review (see mgrClockedInUnscheduled) so the regional can confirm
           // them as an Extra Day or correct the record.
+          // Transferred-in tech, post-transfer day with nothing resolved above.
+          const _incPost = _incPostFallback(ec, dayObj);
+          if (_incPost) return _incPost;
           return "";
         };
         const hasOverride = (ec, d) => {
@@ -17632,6 +17747,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // displays in bold red rather than faded/italic.
           const dayObj = days.find(x => x.d === d);
           if (dayObj && isPostLeftDate(ec, dayObj.ymd)) return true;
+          // Post-transfer derived On Time / OFF for an incoming tech renders
+          // solid so the cell clearly reads worked / off, not a faint blank.
+          if (_incPostFallback(ec, dayObj)) return true;
           // Loaned-out days are derived from the loan record (and possibly
           // mirrored from the receiving branch) - render as a solid override
           // so the cell isn't italicised like a schedule hint.
@@ -17667,7 +17785,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             if (_do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd]) return "al";
           }
           const sv = attSched[ec] && attSched[ec][d];
-          if (!sv) return null;
+          if (!sv) {
+            // Incoming tech, post-transfer, not on the new branch's schedule:
+            // colour the strip from the clock-in fallback (green worked / grey off).
+            const _f = _incPostFallback(ec, days.find(x => x.d === d));
+            return _f || null;
+          }
           if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL") return "on";
           if (sv === "O" || sv === "R") return "off";
           if (sv === "L") return "al";
@@ -18519,8 +18642,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const hint = schedHint(ec, dy.d);
             const scheduleSaysWork = hint === "on" || hint === "ext";
             const freshaWorkedCell = !!((((attMeta || {}).freshaWorked || {})[ec] || {})[dy.d]);
-            const checkin = ((checkInsByBranch[attBranch] || {})[ec] || {})[dy.ymd] || null;
-            const kioskAbs = ((kioskAbsentByBranch[attBranch] || {})[ec] || {})[dy.ymd] || null;
+            const checkin = ((checkInsByBranch[_cinBranchFor(ec)] || {})[ec] || {})[dy.ymd] || null;
+            const kioskAbs = ((kioskAbsentByBranch[_cinBranchFor(ec)] || {})[ec] || {})[dy.ymd] || null;
             const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
             const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
             const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i" || bareV === "late";
@@ -18635,8 +18758,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // have their own clock-in source (handled via the mgr-overlay
               // upstream). Skip the lookups for them so we never mix tech
               // kiosk hits into a manager warning.
-              const kioskAbs = s.role === "NT" ? (((kioskAbsentByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null) : null;
-              const checkin = s.role === "NT" ? (((checkInsByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null) : null;
+              const kioskAbs = s.role === "NT" ? (((kioskAbsentByBranch[_cinBranchFor(s.ec)] || {})[s.ec] || {})[dy.ymd] || null) : null;
+              const checkin = s.role === "NT" ? (((checkInsByBranch[_cinBranchFor(s.ec)] || {})[s.ec] || {})[dy.ymd] || null) : null;
               const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
               const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
               const freshaWorkedCell = !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
@@ -18916,6 +19039,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <div style={{ fontSize: 11, fontWeight: 700, color: "#831843", display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
                             <span>{isMgr ? (s.role === "SM" ? "👑 " : s.role === "SSM" ? "💎 " : "⭐ ") : ""}{s.name}</span>
                             {s.smTrial && <span title="On a Store-Manager trial (SM Trials tab) — works SM shifts" style={{ background: "#FFEDD5", color: "#9A3412", border: "1px solid #FED7AA", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>⭐ SM TRIAL</span>}
+                            {s.movedFrom && <span title={"Transferred from " + s.movedFrom + (s.movedOn ? " on " + new Date(s.movedOn + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : "") + " — earlier cells in this cycle are from " + s.movedFrom} style={{ background: "#dbeafe", color: "#1e40af", border: "1px solid #93c5fd", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>🔄 FROM {s.movedFrom}{s.movedOn ? " · " + new Date(s.movedOn + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
                           </div>
                           <div style={{ fontSize: 9, color: "#9ca3af" }}>{s.ec} · {s.smTrial ? "SM · on trial" : s.role}</div>
                         </td>
@@ -18946,7 +19070,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // entries are advance planning, not actual check-ins, so ignore
                           // them here.
                           const checkin = (s.role === "NT" && isPastOrToday && !mirrorSuppressed)
-                            ? ((checkInsByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null
+                            ? ((checkInsByBranch[_cinBranchFor(s.ec)] || {})[s.ec] || {})[dy.ymd] || null
                             : null;
                           // Discrepancy logic:
                           //  - Tech checked in but attendance marks them OFF / Annual /
@@ -18967,7 +19091,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // so they don't trigger "checked in" / mismatch signals on days
                           // that haven't happened yet.
                           const kioskAbs = (s.role === "NT" && isPastOrToday && !mirrorSuppressed)
-                            ? ((kioskAbsentByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null
+                            ? ((kioskAbsentByBranch[_cinBranchFor(s.ec)] || {})[s.ec] || {})[dy.ymd] || null
                             : null;
                           // swap_o explicitly means "took today off, owes a day back" — the
                           // tech was NOT present, even if a PIN-clockin record happened to
@@ -19043,7 +19167,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // 'allMatchOff' but without the Fresha gate since
                           // managers don't have appointment data.
                           const mgrSchedOff = s.role !== "NT" && _mgrEcToStaffId[s.ec] && scheduleSaysOff && !isWorking && !isLate && !_mgrCheckedIn(s.ec, dy.ymd) && isPastOrToday && dy.ymd >= _mgrCheckinFromYmd;
-                          const allMatchOff = (s.role === "NT" && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn && freshaCoversThisDay && !freshaWorkedCell)
+                          // Scheduled off, nobody clocked in, and no Fresha
+                          // appointment → a confirmed OFF day. Shown for any
+                          // past/today day rather than only once a Fresha import
+                          // has covered it, so today's off cells fill in straight
+                          // away (previously they stayed blank until Fresha ran).
+                          // A later Fresha import that shows an appointment flips
+                          // the day off OFF via freshaWorkedCell. Works the same
+                          // for transferred-in techs (their merged old/new cells
+                          // carry no Fresha here either).
+                          const allMatchOff = (s.role === "NT" && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn && !freshaWorkedCell && isPastOrToday)
                             || mgrSchedOff;
                           // Cross-source rules across Schedule × Kiosk × Fresha:
                           //  • allAgreeAbsent — scheduled to work, kiosk marked the tech absent
