@@ -21,7 +21,10 @@ const STAFF_USERS = {
   "3030": {
     name: "Rochelle", role: "Ops Admin",
     hideCategories: ["People", "Insights"],
-    hideTabs: ["locations", "mgrPlanner"]
+    hideTabs: ["locations", "mgrPlanner"],
+    // People is hidden, but Rochelle helps run the nail-tech trials, so the
+    // Trial Period tab is allow-listed back in via showTabs.
+    showTabs: ["trialPeriod"]
   },
   // Farida: Manager Trainer / LSM. Edits schedules, leave, maternity, and
   // can see daily check-ins + manager clock-ins. View-only on locations,
@@ -32,7 +35,8 @@ const STAFF_USERS = {
     name: "Farida", role: "Manager Trainer / LSM",
     hideCategories: ["Payroll", "Insights"],
     hideTabs: ["staff"],
-    readOnlyTabs: ["locations", "onboard", "offboard", "recruitment"]
+    readOnlyTabs: ["locations", "onboard", "offboard", "recruitment"],
+    showTabs: ["trialPeriod"]
   },
   "1111": { name: "Demo", role: "Training Demo", demo: true },
   // Voucher Entry: a stripped utility login. Sees ONLY the Voucher Entry grid
@@ -6304,7 +6308,7 @@ function PinLogin(props) {
       setPin("");
       return;
     }
-    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, isOwner: !!u.isOwner, voucherEntryOnly: !!u.voucherEntryOnly, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], readOnlyTabs: u.readOnlyTabs || [], stores: Array.isArray(u.stores) ? u.stores.slice() : [], signedInAt: new Date().toISOString() };
+    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, isOwner: !!u.isOwner, voucherEntryOnly: !!u.voucherEntryOnly, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], showTabs: u.showTabs || [], readOnlyTabs: u.readOnlyTabs || [], stores: Array.isArray(u.stores) ? u.stores.slice() : [], signedInAt: new Date().toISOString() };
     try { sessionStorage.setItem(PIN_SESSION_KEY, JSON.stringify(session)); } catch (_) { }
     window.BOA_CURRENT_USER = session;
     onUnlock(session);
@@ -6765,6 +6769,19 @@ function AppGate() {
             u.hideTabs = [...ht, "dashMgrAbsences"];
           }
         });
+        // V3 migration: Rochelle (3030) & Farida (4040) help run the
+        // nail-tech trials, so allow-list the Trial Period tab back in for
+        // them (Rochelle keeps the rest of People hidden). Runs once each.
+        Object.keys(dynamic).forEach(pin => {
+          const u = dynamic[pin];
+          if (u._trialTabMigrated) return;
+          u._trialTabMigrated = true;
+          dashMigrated = true;
+          if (pin === "3030" || pin === "4040") {
+            const st = Array.isArray(u.showTabs) ? u.showTabs : [];
+            if (!st.includes("trialPeriod")) u.showTabs = [...st, "trialPeriod"];
+          }
+        });
         if (dashMigrated) { try { await saveAppUsersToDb(dynamic); } catch (_) { } }
       }
       if (cancelled) return;
@@ -6785,6 +6802,7 @@ function AppGate() {
               voucherEntryOnly: !!u.voucherEntryOnly,
               hideCategories: u.hideCategories || [],
               hideTabs: u.hideTabs || [],
+              showTabs: u.showTabs || [],
               readOnlyTabs: u.readOnlyTabs || [],
               stores: Array.isArray(u.stores) ? u.stores.slice() : []
             };
@@ -6915,10 +6933,11 @@ const SETTINGS_CATS = ["Home/Dashboard", "People", "Operations", "Payroll", "Ins
 function userToPerms(u) {
   const hideCats = new Set(u.hideCategories || []);
   const hideTabs = new Set(u.hideTabs || []);
+  const showTabs = new Set(u.showTabs || []);
   const roTabs = new Set(u.readOnlyTabs || []);
   const perms = {};
   SETTINGS_TABS.forEach(({ t, cat }) => {
-    const visible = !hideCats.has(cat) && !hideTabs.has(t);
+    const visible = (!hideCats.has(cat) || showTabs.has(t)) && !hideTabs.has(t);
     const editable = visible && !roTabs.has(t);
     perms[t] = { visible, editable };
   });
@@ -6962,7 +6981,7 @@ function isRomRole(role) {
   return r === "regional ops manager" || r === "regional operations manager" || r === "rom";
 }
 
-function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
+function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFreshaCfgSave }) {
   const users = appUsers || {};
   const [editing, setEditing] = useState(null);   // {pin, isNew, name, role, demo, isOwner, perms, originalPin}
   const [busy, setBusy] = useState(false);
@@ -7179,6 +7198,56 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser }) {
           </tbody>
         </table>
       </div>
+
+      {/* ── Fresha trial access ── who opens trial techs on Fresha and who
+          sees the dashboard reminders. Changes save immediately. */}
+      {onFreshaCfgSave && (() => {
+        const cfg = freshaCfg || { openerPins: [], viewerRoles: [], viewerPins: [] };
+        const userList = Object.keys(users || {})
+          .filter(pin => !(users[pin] && (users[pin].voucherEntryOnly || users[pin].demo)))
+          .map(pin => ({ pin, name: (users[pin] && users[pin].name) || pin, role: (users[pin] && users[pin].role) || "" }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+        const toggleArr = (arr, val) => (arr || []).includes(val) ? (arr || []).filter(x => x !== val) : [...(arr || []), val];
+        const setCfg = (patch) => onFreshaCfgSave({ ...cfg, ...patch });
+        const roleOpts = [{ key: "national ops", label: "National Ops Manager" }, { key: "regional ops", label: "Regional Ops Manager" }];
+        const chk = { width: 15, height: 15, accentColor: "#7c3aed" };
+        const colHead = { fontSize: 10, fontWeight: 800, color: "#7c3aed", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 };
+        const rowL = { display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13, color: "#3b0764", cursor: "pointer" };
+        return (
+          <div style={{ marginTop: 26, background: "#faf5ff", border: "2px solid #d8b4fe", borderRadius: 14, padding: "18px 20px" }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: "#6b21a8", fontWeight: 700, marginBottom: 2 }}>🧪 Fresha — trial access</div>
+            <div style={{ fontSize: 12, color: "#9333ea", marginBottom: 16 }}>Choose who is responsible for opening trial techs on Fresha (they can tick the reminders done on the dashboard) and who can see those reminders.</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 20 }}>
+              <div>
+                <div style={colHead}>Opens techs on Fresha</div>
+                {userList.map(u => (
+                  <label key={u.pin} style={rowL}>
+                    <input type="checkbox" style={chk} checked={(cfg.openerPins || []).includes(u.pin)} onChange={() => setCfg({ openerPins: toggleArr(cfg.openerPins, u.pin) })} />
+                    {u.name} <span style={{ color: "#a78bfa", fontSize: 11 }}>· {u.role}</span>
+                  </label>
+                ))}
+              </div>
+              <div>
+                <div style={colHead}>Can see reminders (by role)</div>
+                {roleOpts.map(r => (
+                  <label key={r.key} style={rowL}>
+                    <input type="checkbox" style={chk} checked={(cfg.viewerRoles || []).includes(r.key)} onChange={() => setCfg({ viewerRoles: toggleArr(cfg.viewerRoles, r.key) })} />
+                    {r.label}
+                  </label>
+                ))}
+                <div style={{ ...colHead, marginTop: 14 }}>…or specific people</div>
+                {userList.map(u => (
+                  <label key={u.pin} style={rowL}>
+                    <input type="checkbox" style={chk} checked={(cfg.viewerPins || []).includes(u.pin)} onChange={() => setCfg({ viewerPins: toggleArr(cfg.viewerPins, u.pin) })} />
+                    {u.name} <span style={{ color: "#a78bfa", fontSize: 11 }}>· {u.role}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div style={{ fontSize: 11, color: "#9333ea", marginTop: 14, fontStyle: "italic" }}>Owners always see the reminders. Changes save automatically.</div>
+          </div>
+        );
+      })()}
 
       {/* ── Add / edit modal ── */}
       {editing && (
@@ -9102,6 +9171,36 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [obList, setObList] = useState([]);           // joiner records (3-month contract signers)
   const [obFilter, setObFilter] = useState("recent"); // "recent" = last 31 days, "all" = every onboarded record
   const [trialList, setTrialList] = useState([]);     // trial period candidates (pre-contract)
+  const [freshaAccess, setFreshaAccess] = useState({}); // who opens/sees trial Fresha reminders (boa_fresha_access_v1)
+  // Resolved Fresha-access config with sensible defaults: Rochelle (3030)
+  // and Farida (4040) open techs on Fresha; National Ops + Regional Ops
+  // managers can see the reminders. All editable under Settings.
+  const freshaCfg = useMemo(() => {
+    const c = freshaAccess || {};
+    return {
+      openerPins: Array.isArray(c.openerPins) && c.openerPins.length ? c.openerPins : ["3030", "4040"],
+      viewerRoles: Array.isArray(c.viewerRoles) ? c.viewerRoles : ["national ops", "regional ops"],
+      viewerPins: Array.isArray(c.viewerPins) ? c.viewerPins : []
+    };
+  }, [freshaAccess]);
+  const saveFreshaCfg = async (next) => {
+    setFreshaAccess(next);
+    try { if (window.BOA_DB.saveFreshaAccess) await window.BOA_DB.saveFreshaAccess(next); }
+    catch (e) { window.alert("Could not save Fresha access: " + (e.message || e)); }
+  };
+  // App-scope trial persistence (the trial tab has its own copy inside an
+  // IIFE; the dashboard Fresha card needs one too).
+  const persistTrialList = async (next) => {
+    setTrialList(next);
+    try { await window.BOA_DB.saveTrialPeriod(next); }
+    catch (e) { window.alert("Could not save trial data: " + (e.message || e)); }
+  };
+  // Toggle a Fresha milestone flag on a trial record, stamping who/when.
+  const setTrialFresha = (id, field, on) => {
+    persistTrialList((trialList || []).map(r => r._id === id
+      ? { ...r, [field]: on, [field + "At"]: on ? new Date().toISOString() : null, [field + "By"]: on ? ((currentUser && currentUser.name) || "") : null }
+      : r));
+  };
   const [expandedTrialCards, setExpandedTrialCards] = useState(new Set()); // tracking expanded state for trial cards
   const [hrTasks, setHrTasks] = useState([]);         // HR Tasks (mocked for now)
   const [offList, setOffList] = useState([]);         // leaver records
@@ -9692,8 +9791,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadHRTasks(),
       window.BOA_DB.loadTrialPeriod(),
       window.BOA_DB.loadSmTrial ? window.BOA_DB.loadSmTrial() : Promise.resolve([]),
-      window.BOA_DB.loadOvertimeRequests ? window.BOA_DB.loadOvertimeRequests() : Promise.resolve([])
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot]) => {
+      window.BOA_DB.loadOvertimeRequests ? window.BOA_DB.loadOvertimeRequests() : Promise.resolve([]),
+      window.BOA_DB.loadFreshaAccess ? window.BOA_DB.loadFreshaAccess() : Promise.resolve({})
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc]) => {
       setStaff(d.staff);
       setManagers(d.managers);
       setMatRecs(d.matRecs);
@@ -9705,6 +9805,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setTrialList(Array.isArray(trial) ? trial : []);
       setSmTrialList(Array.isArray(smTrial) ? smTrial : []);
       setOvertimeReqs(Array.isArray(ot) ? ot : []);
+      setFreshaAccess(freshaAcc && typeof freshaAcc === "object" ? freshaAcc : {});
       setLoading(false);
     }).catch((err) => {
       setLoadError("Could not load data: " + (err.message || err));
@@ -11216,9 +11317,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // Permission filter: hide entire categories AND/OR individual tabs.
             const hideCats = new Set(currentUser.hideCategories || []);
             const hideTabs = new Set(currentUser.hideTabs || []);
+            // showTabs allow-lists specific tabs back in even when their whole
+            // category is hidden (e.g. Rochelle keeps People hidden but still
+            // gets the Trial Period tab).
+            const showTabs = new Set(currentUser.showTabs || []);
             const visibleGroups = groups
-              .filter(g => !hideCats.has(g.key))
-              .map(g => ({ ...g, items: g.items.filter(it => !hideTabs.has(it.t)) }))
+              .map(g => ({ ...g, items: g.items.filter(it => !hideTabs.has(it.t) && (!hideCats.has(g.key) || showTabs.has(it.t))) }))
               .filter(g => g.items.length > 0);
             const tabToCategory = {};
             for (const g of visibleGroups) for (const it of g.items) tabToCategory[it.t] = g.key;
@@ -11758,6 +11862,91 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         );
                       })}
                     </div>
+                  </div>
+                );
+              })()}
+
+              {/* ── SECTION: TRIAL TECHS — FRESHA TO OPEN ──
+                  Reminder for the people responsible for opening trial nail
+                  techs on Fresha (the booking platform). Visible only to the
+                  configured openers (default Rochelle & Farida — they can tick
+                  items done) and viewers (National Ops + Regional managers,
+                  read-only). Who opens/sees is editable in Settings. */}
+              {(() => {
+                const _role = (currentUser?.role || "").toLowerCase();
+                const isOpener = (freshaCfg.openerPins || []).includes(currentUser?.pin);
+                const isViewer = !!currentUser?.isOwner
+                  || (freshaCfg.viewerPins || []).includes(currentUser?.pin)
+                  || (freshaCfg.viewerRoles || []).some(r => _role.includes(String(r).toLowerCase()));
+                if (!isOpener && !isViewer) return null;
+                const _nt = (c) => c && (c.role || "nt") !== "am";
+                const activeTrials = (trialList || []).filter(c => _nt(c) && c.startDate
+                  && c.status !== "passed" && c.status !== "failed" && c.status !== "hired");
+                const monthPending = (trialList || []).filter(c => _nt(c)
+                  && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened);
+                if (activeTrials.length === 0 && monthPending.length === 0) return null;
+                const _pad = n => String(n).padStart(2, "0");
+                const trialWindow = (startDate) => {
+                  const start = new Date(startDate + "T12:00:00");
+                  if (isNaN(start)) return { first: null, last: null };
+                  const cur = new Date(start); let first = null, last = null, n = 0;
+                  for (let g = 0; g < 60 && n < 10; g++) {
+                    const y = cur.getFullYear(), m = cur.getMonth() + 1, d = cur.getDate();
+                    const ymd = y + "-" + _pad(m) + "-" + _pad(d), dow = cur.getDay();
+                    if (dow !== 0 && dow !== 6 && !(saHolidays(y) || {})[ymd]) { if (!first) first = ymd; last = ymd; n++; }
+                    cur.setDate(cur.getDate() + 1);
+                  }
+                  return { first, last };
+                };
+                const fmt = ymd => ymd ? new Date(ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : "—";
+                const stageLbl = { induction: "Induction", trial_w1: "Trial week 1", pending_mid_review: "⏰ Mid-review due", trial_w2: "Trial week 2", pending_final_review: "⏰ Final review due" };
+                const needTrial = activeTrials.filter(c => !c.freshaTrialOpened).length;
+                const openerNames = (freshaCfg.openerPins || []).map(p => (appUsers && appUsers[p] && appUsers[p].name) || p).join(" or ");
+                const pill = (bg, fg, txt) => <span style={{ background: bg, color: fg, padding: "2px 8px", borderRadius: 6, fontSize: 10, fontWeight: 800, letterSpacing: "0.03em" }}>{txt}</span>;
+                const actionBtn = (label, onClick) => <button onClick={onClick} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 6, padding: "4px 11px", fontSize: 11, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>{label}</button>;
+                const undoBtn = (onClick) => <button onClick={onClick} title="Mark as not opened" style={{ background: "transparent", color: "#15803d", border: "none", fontSize: 10, fontWeight: 700, cursor: "pointer", textDecoration: "underline", whiteSpace: "nowrap" }}>undo</button>;
+                const rowWrap = { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "1px dashed #e9d5ff", flexWrap: "wrap" };
+                return (
+                  <div style={{ background: "#faf5ff", border: "2px solid #d8b4fe", borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: "0 4px 16px rgba(124,58,237,0.10)" }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 4 }}>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: "#6b21a8", letterSpacing: "0.04em", textTransform: "uppercase" }}>🧪 Trial techs · Fresha</div>
+                      <div style={{ fontSize: 12, color: "#7c3aed", fontWeight: 700 }}>
+                        {needTrial > 0 ? `${needTrial} to open for trial` : "all trials opened"}{monthPending.length ? ` · ${monthPending.length} to open for the month` : ""}
+                      </div>
+                      <div style={{ flex: 1 }} />
+                      <button onClick={() => tryChangeTab("trialPeriod")} style={{ background: "#fff", color: "#6b21a8", border: "1px solid #d8b4fe", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>Open Trial Period →</button>
+                    </div>
+                    <div style={{ fontSize: 11, color: "#9333ea", marginBottom: 8, fontStyle: "italic" }}>
+                      {isOpener ? `You open trial techs on Fresha — tick each one once it's done.` : `Opened by ${openerNames || "the assigned team"}.`}
+                    </div>
+                    {activeTrials.map(c => {
+                      const w = trialWindow(c.startDate);
+                      const opened = !!c.freshaTrialOpened;
+                      return (
+                        <div key={"ft-" + c._id} style={rowWrap}>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: 13, fontWeight: 700, color: "#581c87" }}>{c.name} <span style={{ color: "#a78bfa", fontWeight: 600 }}>· 📍 {c.branch}</span></div>
+                            <div style={{ fontSize: 11, color: "#9333ea", marginTop: 1 }}>Trial {fmt(w.first)} → {fmt(w.last)} · {stageLbl[c.status] || c.status}</div>
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            {opened
+                              ? <>{pill("#dcfce7", "#166534", "✓ Fresha opened" + (c.freshaTrialOpenedBy ? " · " + c.freshaTrialOpenedBy : ""))}{isOpener && undoBtn(() => setTrialFresha(c._id, "freshaTrialOpened", false))}</>
+                              : (isOpener ? actionBtn("Mark opened on Fresha", () => setTrialFresha(c._id, "freshaTrialOpened", true)) : pill("#fef3c7", "#92400e", "⏳ awaiting Fresha"))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {monthPending.map(c => (
+                      <div key={"fm-" + c._id} style={{ ...rowWrap, borderTop: "1px dashed #c4b5fd" }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "#581c87" }}>{c.name} <span style={{ color: "#a78bfa", fontWeight: 600 }}>· 📍 {c.branch}</span></div>
+                          <div style={{ fontSize: 11, color: "#15803d", fontWeight: 700, marginTop: 1 }}>✅ Passed trial — open on Fresha for the rest of the month (after the schedule is synced)</div>
+                        </div>
+                        <div>
+                          {isOpener ? actionBtn("Mark month opened", () => setTrialFresha(c._id, "freshaMonthOpened", true)) : pill("#fef3c7", "#92400e", "⏳ awaiting Fresha")}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 );
               })()}
@@ -24359,6 +24548,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           appUsers={appUsers}
           onUsersUpdate={onUsersUpdate}
           currentUser={currentUser}
+          freshaCfg={freshaCfg}
+          onFreshaCfgSave={saveFreshaCfg}
         /></div>
       )}
 
