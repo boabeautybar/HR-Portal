@@ -9410,7 +9410,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const getHint = (ec, d) => {
             const sv = bSched[ec] && bSched[ec][d];
             if (!sv) return null;
-            if (sv === "W" || sv === "WE" || sv === "WL") return "on";
+            if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL") return "on";
             if (sv === "O" || sv === "R") return "off";
             if (sv === "L") return "al";
             if (sv === "ML") return "mat";
@@ -17027,7 +17027,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // active roster stays at the top. Within each group, sort by
           // SM → AM → NT then alphabetically.
           if (a.onMat !== b.onMat) return a.onMat ? 1 : -1;
-          const order = { SM: 0, AM: 1, NT: 2 };
+          const order = { SSM: 0, SM: 1, AM: 2, NT: 3 };
           return (order[a.role] ?? 9) - (order[b.role] ?? 9) || a.name.localeCompare(b.name);
         });
         // Lookup for the schedule/status helpers below: every day for an
@@ -17227,7 +17227,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (sv === "ML") return "mat";
           if (sv === "X") return "term";
           if (sv === "E") return "ext";
-          if (sv === "W" || sv === "WE" || sv === "WL") return "on";
+          if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL") return "on";
           return "";
         };
         const hasOverride = (ec, d) => {
@@ -17264,7 +17264,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
           const sv = attSched[ec] && attSched[ec][d];
           if (!sv) return null;
-          if (sv === "W" || sv === "WE" || sv === "WL") return "on";
+          if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL") return "on";
           if (sv === "O" || sv === "R") return "off";
           if (sv === "L") return "al";
           if (sv === "ML") return "mat";
@@ -17959,7 +17959,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             if (onMatEcs.has(ec)) return "mat";
             const sv = attSched[ec] && attSched[ec][d];
             if (!sv) return null;
-            if (sv === "W" || sv === "WE" || sv === "WL") return "on";
+            if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL") return "on";
             if (sv === "O" || sv === "R") return "off";
             if (sv === "L") return "al";
             if (sv === "ML") return "mat";
@@ -18477,9 +18477,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   )}
                   {attStaff.map((s, idx) => {
                     const t = totalsFor(s.ec);
-                    const isMgr = s.role === "SM" || s.role === "AM";
+                    const isMgr = s.role === "SM" || s.role === "SSM" || s.role === "AM";
                     const prev = idx > 0 ? attStaff[idx - 1] : null;
-                    const prevIsMgr = prev ? (prev.role === "SM" || prev.role === "AM") : null;
+                    const prevIsMgr = prev ? (prev.role === "SM" || prev.role === "SSM" || prev.role === "AM") : null;
                     const showSection = idx === 0 || isMgr !== prevIsMgr;
                     const sectionRow = showSection ? (
                       <tr key={"section-" + (isMgr ? "mgr" : "tech")}>
@@ -18493,7 +18493,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const dataRow = (
                       <tr key={s.ec} style={isMgr ? { background: "#fffaf0" } : undefined}>
                         <td style={{ position: "sticky", left: 0, background: isMgr ? "#fffaf0" : "#FFFFFF", padding: "6px 10px", borderBottom: "1px solid #FCE7F3", borderRight: "2px solid #FBCFE8", zIndex: 2, minWidth: 170 }}>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: "#831843" }}>{isMgr ? (s.role === "SM" ? "👑 " : "⭐ ") : ""}{s.name}</div>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: "#831843" }}>{isMgr ? (s.role === "SM" ? "👑 " : s.role === "SSM" ? "💎 " : "⭐ ") : ""}{s.name}</div>
                           <div style={{ fontSize: 9, color: "#9ca3af" }}>{s.ec} · {s.role}</div>
                         </td>
                         {days.map(dy => {
