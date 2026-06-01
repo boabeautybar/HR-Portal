@@ -463,6 +463,9 @@
     }
     var sched = await window.APP_DATA.getSchedule(ym, kind);
     var grid  = (sched && sched.grid) || {};
+    // Per-manager custom shift hours (set in the HR portal coverage view),
+    // layered over the computed times on the Manager Schedule view.
+    var customTimes = (isMgr && window.APP_DATA.getMgrTimes) ? ((await window.APP_DATA.getMgrTimes()) || {}) : {};
     var days  = window.APP_DATA.periodDays(ym);
     var monthAbbr = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
     var _pad2 = function (n) { return String(n).padStart(2, "0"); };
@@ -530,6 +533,7 @@
               '</th>';
     });
     html += '</tr></thead><tbody>';
+    var customList = [];   // collected custom-hours days for the summary below
     rows.forEach(function (s) {
       // Direction-aware transfer blanking, mirroring the HR portal:
       //   • outgoing (leaving this branch): cells on/after transfer_date blank
@@ -549,12 +553,26 @@
           // Hover-only full time on Manager view so the cell stays
           // visually clean but the exact hours are reachable on tap.
           var _title = "";
+          var _custCls = "";
+          var _mark = "";
           if (isMgr && (cell === "W" || cell === "WE" || cell === "WL" || cell === "WM" || cell === "WB" || cell === "E")) {
             var _dt = new Date(d.year, d.monthIdx, d.day);
             var _hrs = _shiftTimes(s.role, cell, thisBranch, _dt.getDay());
-            if (_hrs) _title = ' title="' + esc(_hrs) + '"';
+            // Manual override for this manager on this exact day wins over
+            // the computed hours and is flagged with a ★ + summary row.
+            // Employee codes can carry a trailing space in older data, so
+            // fall back to the trimmed key.
+            var _custRow = customTimes[s.employee_code] || customTimes[(s.employee_code || "").trim()];
+            var _cust = _custRow && _custRow[_ymd];
+            if (_cust) {
+              _hrs = _cust;
+              _custCls = " sched-cell-custom";
+              _mark = '<span class="sched-cust-star" aria-hidden="true">★</span>';
+              customList.push({ name: s.name, mon: monthAbbr[d.monthIdx], day: d.day, dow: dowAbbr[_dt.getDay()], hrs: _cust });
+            }
+            if (_hrs) _title = ' title="' + esc(_hrs + (_cust ? " (custom hours)" : "")) + '"';
           }
-          html += '<td class="sched-cell sched-st-' + cell + classes + '"' + _title + '>' + cell + '</td>';
+          html += '<td class="sched-cell sched-st-' + cell + classes + _custCls + '"' + _title + '>' + cell + _mark + '</td>';
         } else {
           html += '<td class="' + classes.trim() + '"></td>';
         }
@@ -572,7 +590,21 @@
               '<span><span class="sched-st-R">R</span> Requested off</span>' +
               '<span><span class="sched-st-L">L</span> Leave</span>' +
               '<span class="sched-legend-note">Today highlighted</span>' +
+              (isMgr && customList.length ? '<span class="sched-legend-note">★ custom hours</span>' : '') +
             '</div>';
+
+    // Custom-hours summary — spells out the special hours per manager/day
+    // so the exact times are visible without hovering each starred cell.
+    if (isMgr && customList.length) {
+      customList.sort(function (a, b) { return (a.day - b.day) || (a.name || "").localeCompare(b.name || ""); });
+      html += '<div class="sched-custom-hours">' +
+                '<div class="sched-custom-hours-title">⏰ Custom hours this cycle</div>' +
+                customList.map(function (c) {
+                  return '<div class="sched-custom-hours-row"><strong>' + esc(c.name) + '</strong> · ' +
+                         esc(c.dow + ' ' + c.day + ' ' + c.mon) + ' — ' + esc(c.hrs) + '</div>';
+                }).join("") +
+              '</div>';
+    }
     body.innerHTML = html;
   }
 
