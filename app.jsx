@@ -16270,9 +16270,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const salonCfg = (typeof SALONS !== "undefined" ? SALONS : []).find(s => s.name === obForm.branch) || {};
                 const closedSet = new Set((Array.isArray(salonCfg.closedDow) ? salonCfg.closedDow : []).map(Number));
                 const dowNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-                let _sIdx = -1;
-                const offSunday = new Set();
-                days.forEach(d => { if (d.dow === 0) { _sIdx++; if (_sIdx % 2 === 0) offSunday.add(ymdOf(d)); } });
+                // Every-second-Sunday is anchored to an absolute week parity
+                // (whole weeks since a fixed Monday epoch) so the rotation stays
+                // continuous across the 25th→24th cycle boundary. Otherwise a
+                // tech given Mon+Tue off in the final rollover week would lose
+                // the Sunday off that belongs to that same labour week in the
+                // next cycle.
+                const _weekEven = (y, mi, dd) => Math.floor((Date.UTC(y, mi, dd) - Date.UTC(2024, 0, 1)) / 604800000) % 2 === 0;
                 const fromLbl = start > cycleStart ? start : "the start of the cycle";
                 const rosterDesc = closedSet.size
                   ? obForm.branch + "'s roster — off on its closed days (" + [...closedSet].sort().map(x => dowNames[x]).join(" + ") + "), working the rest"
@@ -16290,10 +16294,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     } else if (d.dow === 1) {
                       off = true;                                     // Monday — standing off-day
                     } else if (d.dow === 0) {
-                      off = offSunday.has(dy);                        // every second Sunday off
-                    } else if (d.dow === 2) {                         // Tuesday off when that week's Sunday is worked
+                      off = _weekEven(d.year, d.monthIdx, d.d);       // every second Sunday off
+                    } else if (d.dow === 2) {                         // Tuesday off only when that week's Sunday is worked
                       const sd = new Date(d.year, d.monthIdx, d.d); sd.setDate(sd.getDate() + 5);
-                      off = !offSunday.has(sd.getFullYear() + "-" + _pad(sd.getMonth() + 1) + "-" + _pad(sd.getDate()));
+                      off = !_weekEven(sd.getFullYear(), sd.getMonth(), sd.getDate());
                     } else {
                       off = false;
                     }
