@@ -1904,10 +1904,7 @@
       return "10:00 - 19:00";
     }
     if (b === "Fourways") {
-      if (isSM) {
-        if (code === "WL") return "11:00 - 20:00";
-        return "08:00 - 17:00";
-      }
+      if (isSM) return "08:00 - 17:00";   // SM/SSM always open, never close
       if (dow === 0) {
         if (code === "WE") return "08:00 - 17:00";
         return "10:00 - 19:00";
@@ -1931,7 +1928,7 @@
     if (code === "WM") return "09:00 - 13:00";
     if (code === "WB") return "08:00 - 19:00";
     if (code === "E")  return "09:00 - 18:30";
-    return "09:30 - 18:30";
+    return "09:00 - 18:30";
   }
   function fmtDate(s) {
     try {
