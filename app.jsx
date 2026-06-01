@@ -9810,23 +9810,65 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       }
       return out;
     };
+    // Mid-cycle transfers: a tech who moved branches keeps their record on the
+    // OLD branch (branch + transferring/transferTo/transferDate) until the
+    // move settles. On the attendance sheet we show them ONCE, at the
+    // destination, with a full-cycle view — so we pull the SOURCE branch's
+    // grid + schedule and merge their pre-transfer cells into this branch's.
+    const pp = z => String(z).padStart(2, "0");
+    const cycStartE = new Date(_atP[0], _atP[1] - 1, 25);
+    const cycEndE = new Date(_atP[0], _atP[1], 24);
+    const cycStartYmdE = cycStartE.getFullYear() + "-" + pp(cycStartE.getMonth() + 1) + "-" + pp(cycStartE.getDate());
+    const cycEndYmdE = cycEndE.getFullYear() + "-" + pp(cycEndE.getMonth() + 1) + "-" + pp(cycEndE.getDate());
+    const incoming = (staff || []).filter(s => s && s.ec && s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= cycEndYmdE && s.branch && s.branch !== attBranch);
+    const srcBranches = Array.from(new Set(incoming.map(s => s.branch)));
     Promise.all([
       safe(window.BOA_DB.loadAttendance(attBranch, attYM)),
       safe(window.BOA_DB.loadSchedule(attBranch, techYm, false)),
       safe(window.BOA_DB.loadSchedule(attBranch, attYM, true)),
       window.BOA_DB.loadEarlyLeaves ? safe(window.BOA_DB.loadEarlyLeaves(attBranch, attYM)) : Promise.resolve({}),
-      window.BOA_DB.loadExtras ? safe(window.BOA_DB.loadExtras(attBranch, attYM)) : Promise.resolve({})
-    ]).then(([att, sch, mgrSch, early, extras]) => {
-      setAttGrid((att && att.grid) || {});
-      setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null, freshaWorked: att.freshaWorked || {}, reviewedWarnings: att.reviewedWarnings || {}, mirrorSuppressed: !!att.mirrorSuppressed } : { freshaWorked: {}, reviewedWarnings: {}, mirrorSuppressed: false });
+      window.BOA_DB.loadExtras ? safe(window.BOA_DB.loadExtras(attBranch, attYM)) : Promise.resolve({}),
+      Promise.all(srcBranches.map(async (br) => {
+        const [sAtt, sSch] = await Promise.all([
+          safe(window.BOA_DB.loadAttendance(br, attYM)),
+          safe(window.BOA_DB.loadSchedule(br, techYm, false))
+        ]);
+        return [br, (sAtt && sAtt.grid) || {}, (sSch && sSch.grid) || {}];
+      }))
+    ]).then(([att, sch, mgrSch, early, extras, srcData]) => {
+      const mergedGrid = { ...((att && att.grid) || {}) };
       const techGrid = (sch && sch.grid) || {};
       const mgrGrid = ymdReKey((mgrSch && mgrSch.grid) || {});
-      setAttSched({ ...techGrid, ...mgrGrid });
+      const mergedSched = { ...techGrid, ...mgrGrid };
+      // Overlay each incoming tech's pre-transfer cells from their old branch.
+      if (incoming.length) {
+        const srcMap = {}; (srcData || []).forEach(([br, g, sg]) => { srcMap[br] = { g: g || {}, sg: sg || {} }; });
+        incoming.forEach(s => {
+          const src = srcMap[s.branch]; if (!src) return;
+          const ec = s.ec, ecT = String(ec).trim();
+          const srcRow = src.g[ec] || src.g[ecT] || {};
+          const srcSchRow = src.sg[ec] || src.sg[ecT] || {};
+          const gRow = { ...(mergedGrid[ec] || {}) };
+          const sRow = { ...(mergedSched[ec] || {}) };
+          for (let cur = new Date(cycStartE); cur <= cycEndE; cur.setDate(cur.getDate() + 1)) {
+            const ymd = cur.getFullYear() + "-" + pp(cur.getMonth() + 1) + "-" + pp(cur.getDate());
+            if (ymd >= s.transferDate) continue;                 // only pre-transfer days
+            const dom = cur.getDate();
+            if (gRow[dom] == null && srcRow[dom] != null) gRow[dom] = srcRow[dom];
+            if (sRow[dom] == null && srcSchRow[dom] != null) sRow[dom] = srcSchRow[dom];
+          }
+          mergedGrid[ec] = gRow;
+          mergedSched[ec] = sRow;
+        });
+      }
+      setAttGrid(mergedGrid);
+      setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null, freshaWorked: att.freshaWorked || {}, reviewedWarnings: att.reviewedWarnings || {}, mirrorSuppressed: !!att.mirrorSuppressed } : { freshaWorked: {}, reviewedWarnings: {}, mirrorSuppressed: false });
+      setAttSched(mergedSched);
       setAttEarly(early || {});
       setAttExtras(extras || {});
     }).catch(e => console.error("Attendance load:", e))
       .finally(() => setAttLoading(false));
-  }, [tab, attBranch, attYM]);
+  }, [tab, attBranch, attYM, staff]);
 
   // Load attendance from every other branch we have a loan going out to
   // during this cycle, so the home-branch cells can mirror what the
@@ -17374,8 +17416,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // AMs currently on an active Store-Manager trial (per the SM Trials
         // tab). They work SM shifts, so surface "SM · on trial" on the grid.
         const _smTrialEcSet = new Set((smTrialList || []).filter(t => t && t.status === "active" && t.ec).map(t => String(t.ec).trim()));
+        // Mid-cycle branch transfers. A transferred tech is shown ONCE, at the
+        // DESTINATION branch, with a full-cycle view (pre-transfer cells were
+        // merged in from the old branch by the loader). So: drop techs leaving
+        // THIS branch this cycle, and add techs arriving HERE this cycle (their
+        // record still carries the old branch + transferring flags).
+        const _movedAwayThisCycle = (s) => s.transferring && s.transferTo && s.transferTo !== attBranch && s.transferDate && s.transferDate <= cycEndYmd;
+        const _arrivingHereThisCycle = (s) => s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= cycEndYmd && s.branch && s.branch !== attBranch;
         const attStaff = [
-          ...enriched.filter(s => s.branch === attBranch && stillInCycle(s.ec)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat })),
+          ...enriched.filter(s => s.branch === attBranch && stillInCycle(s.ec) && !_movedAwayThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat })),
+          ...enriched.filter(s => stillInCycle(s.ec) && _arrivingHereThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat, movedFrom: s.branch, movedOn: s.transferDate })),
           ...managers.filter(m => m.branch === attBranch && stillInCycle(m.ec)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", onMat: !!m.onMat, smTrial: _smTrialEcSet.has(String(m.ec).trim()) }))
         ].sort((a, b) => {
           // Maternity-leave staff go to the very bottom of the grid so the
@@ -18916,6 +18966,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <div style={{ fontSize: 11, fontWeight: 700, color: "#831843", display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
                             <span>{isMgr ? (s.role === "SM" ? "👑 " : s.role === "SSM" ? "💎 " : "⭐ ") : ""}{s.name}</span>
                             {s.smTrial && <span title="On a Store-Manager trial (SM Trials tab) — works SM shifts" style={{ background: "#FFEDD5", color: "#9A3412", border: "1px solid #FED7AA", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>⭐ SM TRIAL</span>}
+                            {s.movedFrom && <span title={"Transferred from " + s.movedFrom + (s.movedOn ? " on " + new Date(s.movedOn + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : "") + " — earlier cells in this cycle are from " + s.movedFrom} style={{ background: "#dbeafe", color: "#1e40af", border: "1px solid #93c5fd", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>🔄 FROM {s.movedFrom}{s.movedOn ? " · " + new Date(s.movedOn + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
                           </div>
                           <div style={{ fontSize: 9, color: "#9ca3af" }}>{s.ec} · {s.smTrial ? "SM · on trial" : s.role}</div>
                         </td>
