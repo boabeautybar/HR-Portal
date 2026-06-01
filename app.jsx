@@ -9329,6 +9329,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // from the attendance grid because the tech still checked in, only their
   // shift ended early. Shape: { [dayKey]: { [ec]: { hours, recordedAt, recordedBy } } }
   const [attEarly, setAttEarly] = useState({});
+  const [attExtras, setAttExtras] = useState({});   // kiosk Extra-Day sidecar (boa_extras_<branch>_<ym>) → { dayKey: { ec: {...} } }
   // Per-edit undo stack for the attendance grid — pushed before every manual
   // setCell / markCellReviewed / autoRecordReview, capped at 10 entries.
   // Cleared whenever the branch or cycle changes so we never restore into
@@ -9508,14 +9509,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       safe(window.BOA_DB.loadAttendance(attBranch, attYM)),
       safe(window.BOA_DB.loadSchedule(attBranch, techYm, false)),
       safe(window.BOA_DB.loadSchedule(attBranch, attYM, true)),
-      window.BOA_DB.loadEarlyLeaves ? safe(window.BOA_DB.loadEarlyLeaves(attBranch, attYM)) : Promise.resolve({})
-    ]).then(([att, sch, mgrSch, early]) => {
+      window.BOA_DB.loadEarlyLeaves ? safe(window.BOA_DB.loadEarlyLeaves(attBranch, attYM)) : Promise.resolve({}),
+      window.BOA_DB.loadExtras ? safe(window.BOA_DB.loadExtras(attBranch, attYM)) : Promise.resolve({})
+    ]).then(([att, sch, mgrSch, early, extras]) => {
       setAttGrid((att && att.grid) || {});
       setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null, freshaWorked: att.freshaWorked || {}, reviewedWarnings: att.reviewedWarnings || {}, mirrorSuppressed: !!att.mirrorSuppressed } : { freshaWorked: {}, reviewedWarnings: {}, mirrorSuppressed: false });
       const techGrid = (sch && sch.grid) || {};
       const mgrGrid = ymdReKey((mgrSch && mgrSch.grid) || {});
       setAttSched({ ...techGrid, ...mgrGrid });
       setAttEarly(early || {});
+      setAttExtras(extras || {});
     }).catch(e => console.error("Attendance load:", e))
       .finally(() => setAttLoading(false));
   }, [tab, attBranch, attYM]);
@@ -17148,6 +17151,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
         });
 
+        // Extra-Day overlay. The kiosk records Extra Day approvals only in the
+        // boa_extras sidecar, keyed dayKey → ec where dayKey is the DAY-OF-MONTH
+        // string (same keying as attGrid/attSched), independent of the tech's
+        // on-the-day attendance code. Flatten it to ec → dayOfMonth → true so
+        // the status resolver can render those days as "Extra Day" even when the
+        // kiosk also logged them as On Time / Late.
+        const _extraByEcDom = {};
+        Object.keys(attExtras || {}).forEach(dayKey => {
+          const perEc = attExtras[dayKey] || {};
+          Object.keys(perEc).forEach(ec => {
+            (_extraByEcDom[String(ec).trim()] = _extraByEcDom[String(ec).trim()] || {})[String(dayKey)] = true;
+          });
+        });
+        const _isExtraDay = (ec, d) => !!(_extraByEcDom[String(ec).trim()] && _extraByEcDom[String(ec).trim()][String(d)]);
+
         // Helpers
         const mirrorSuppressed = !!(attMeta && attMeta.mirrorSuppressed);
         const getStatus = (ec, d) => {
@@ -17231,6 +17249,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // else (sick, absent, FRL, swap, etc.) still wins over ext
             // because those are real anomalies the admin must see.
             if (_bareV === "on" || _bareV === "late") {
+              // Path 0: kiosk Extra-Day sidecar (boa_extras) — the canonical
+              // source for Extra Day, independent of the on/late code.
+              if (_isExtraDay(ec, d)) return "ext";
               // Path 1: kiosk audit log marked the day as Extra.
               const _dayObjExt = days.find(x => x.d === d);
               const _ka = _dayObjExt ? ((kioskAbsentByBranch[attBranch] || {})[ec] || {})[_dayObjExt.ymd] : null;
@@ -17251,6 +17272,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // clock-in and no ROM-recorded reason → render as 'Absent' so
           // the existing absent-needs-review warning + red ⚠ kick in.
           if (dayObj && _isMgrAutoAbsent(ec, dayObj.ymd, d)) return "absent";
+          // Approved Extra Day with no recorded code yet still reads as Extra Day.
+          if (_isExtraDay(ec, d)) return "ext";
           // Fall back to schedule hint
           const sv = attSched[ec] && attSched[ec][d];
           if (sv === "O" || sv === "R") return "off";
@@ -18985,7 +19008,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#14532d", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#f0fdf4" }}>{t.ph}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#7c2d12", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#fef3c7" }}>{t.mat}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#92400e", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#fef3c7" }}>{t.late}</td>
-                        <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#064e3b", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#d1fae5" }}>{t.ext}</td>
+                        <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#064e3b", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#d1fae5" }}
+                          title={t.exdOffsetUnpaid > 0 ? t.ext + " extra day" + (t.ext === 1 ? "" : "s") + " − " + t.exdOffsetUnpaid + " used to cover unpaid day" + (t.exdOffsetUnpaid === 1 ? "" : "s") + " = " + t.exdAfterUnpaid + " net extra" : (t.ext + " extra day" + (t.ext === 1 ? "" : "s"))}>{t.exdAfterUnpaid}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: t.earlyHours > 0 ? "#7c2d12" : "#9ca3af", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: t.earlyHours > 0 ? "#fef3c7" : "#fffbeb" }}
                           title={t.earlyHours > 0 ? t.earlyHours + "h short — " + t.earlyDays.toFixed(2) + " unpaid day" + (t.earlyDays === 1 ? "" : "s") + " (8h = 1 day)" : "No short hours"}>
                           {t.earlyHours > 0 ? (t.earlyHours === Math.floor(t.earlyHours) ? t.earlyHours + "h" : t.earlyHours.toFixed(1) + "h") : "0"}
