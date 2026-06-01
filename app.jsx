@@ -9404,12 +9404,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         techSchByKey[k] = (tsch && tsch.grid) || {};
         mgrSchByKey[k] = (msch && msch.grid) || {};
       })));
+      // Kiosk audit-log extra days (boa_kiosk_log status === "ext"). The
+      // attendance sheet treats these as Extra Day too, so a tech whose extra
+      // day was logged via the kiosk tile (not stamped on the grid) is still
+      // counted. Populated below once the look-back window is known.
+      const extraKioskSet = new Set();
       // Is this (ec, day) an extra day worked? Mirrors the attendance sheet:
-      // grid "ext", a kiosk extras-sidecar entry, or a scheduled "E".
+      // grid "ext", a kiosk extras-sidecar entry, a kiosk-log "ext", or a
+      // scheduled "E" (tech or manager schedule).
       const isExtraDay = (k, ec, ecT, ymd, dom, gridBare) => {
         if (gridBare === "ext") return true;
         const ex = extrasByKey[k] || {}; const exDay = ex[dom] || ex[String(dom)] || {};
         if (exDay[ec] || exDay[ecT]) return true;
+        if (extraKioskSet.has(ecT + "|" + ymd)) return true;
         const ts = techSchByKey[k] || {}; const tv = (ts[ec] || ts[ecT] || {})[dom]; if (tv === "E") return true;
         const ms = mgrSchByKey[k] || {}; const mrow = ms[ec] || ms[ecT] || {}; if (mrow[ymd] === "E" || mrow[dom] === "E" || mrow[String(dom)] === "E") return true;
         return false;
@@ -9420,6 +9427,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       let mgrStatuses = [], mgrClock = [];
       try { mgrStatuses = (await window.BOA_DB.loadManagerDayStatuses(daysBack)) || []; } catch (_) { }
       try { mgrClock = (await window.BOA_DB.listRecentManagerClockins(daysBack)) || []; } catch (_) { }
+      // Kiosk audit-log extra days for nail techs (and anyone using the tile).
+      if (window.BOA_DB.listRecentKioskCheckins) {
+        try {
+          const krows = (await window.BOA_DB.listRecentKioskCheckins(daysBack, SALONS.map(s => s.name))) || [];
+          krows.forEach(r => { if (r && r.status === "ext" && r.ec && r.ymd) extraKioskSet.add(String(r.ec).trim() + "|" + r.ymd); });
+        } catch (_) { }
+      }
       const mgrStatusByIdYmd = {};
       mgrStatuses.forEach(r => { if (r && r.staff_id && r.date && r.status) (mgrStatusByIdYmd[String(r.staff_id)] = mgrStatusByIdYmd[String(r.staff_id)] || {})[r.date] = r.status; });
       const mgrClockByIdYmd = {};
