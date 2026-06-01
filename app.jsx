@@ -20009,16 +20009,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Fourways — store hours 09:00–20:00 Mon-Sat, 09:00–19:00 Sun.
         //
         //   Mon-Sat (closer 11:00–20:00, optional opener 10:00–19:00):
-        //     1 SM working  → WE (08:00-17:00)
-        //     2+ SMs        → 1 SM opens (WE), the rest close (WL).
-        //                     Opener rotated fairly so the same SM doesn't
-        //                     always do the open.
+        //     SM/SSM always work 08:00-17:00 (WE) — they never close;
+        //     the 11:00-20:00 close is carried by the AMs/techs.
         //     AMs (regardless of SM count):
         //       1   → WL (11:00-20:00)
         //       2+  → 1 WM (10:00-19:00, rotated) + rest WL (11:00-20:00)
         //   Sunday (one early 08:00-17:00 + one late 10:00-19:00):
-        //     1 SM  → WE; AMs → WL (10:00-19:00)
-        //     2+ SMs → 1 WE + rest WL (the second SM does the close).
+        //     SM/SSM → WE (08:00-17:00); AMs → WL (10:00-19:00)
         //     No SM, 1 AM → WE (08:00-17:00, opener priority — covers
         //                   store-open; 17-19 needs a tech)
         //     No SM, 2+ AMs → 1 WE (rotated) + rest WL (10:00-19:00)
@@ -20027,11 +20024,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
           const _middleCount   = {};   // rotation for Mon-Sat WM (AMs, 10-19 opener)
           const _earlyCount    = {};   // rotation for Sunday WE when no SM (AMs)
-          const _smEarlyCount  = {};   // rotation for SM opener vs closer when 2+ SMs
           (managers || []).forEach(m => {
             _middleCount[m.ec]   = 0;
             _earlyCount[m.ec]    = 0;
-            _smEarlyCount[m.ec]  = 0;
           });
           const _pickLowest = (list, counter) => {
             const sorted = list.slice().sort((a, b) =>
@@ -20057,16 +20052,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
             const sms = workers.filter(_isSM);
             const ams = workers.filter(m => !_isSM(m));
-            // SM placement (shared for Sun + Mon-Sat): 1 SM always opens,
-            // any extra SMs take the closer slot so the store has a
-            // manager all the way to close.
-            if (sms.length === 1) {
-              grid[sms[0].ec][dy.d] = "WE";
-            } else if (sms.length >= 2) {
-              const opener = _pickLowest(sms, _smEarlyCount);
-              grid[opener.ec][dy.d] = "WE";
-              sms.filter(m => m.ec !== opener.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
-            }
+            // SM placement (shared for Sun + Mon-Sat): SM/SSM always work
+            // the 08:00-17:00 opener (WE) and never close — the late
+            // 11:00-20:00 shift is carried by the AMs/techs.
+            sms.forEach(m => { grid[m.ec][dy.d] = "WE"; });
             const isSun = dy.dow === 0;
             if (isSun) {
               if (sms.length >= 1) {
@@ -21138,7 +21127,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             {mgrSchedDraft && branch === "Fourways" && (
               <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 14px", marginBottom: 10, fontSize: 12, color: "#065f46", display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center" }}>
                 <span style={{ fontSize: 11, fontWeight: 800, color: "#065f46", letterSpacing: "0.08em", textTransform: "uppercase" }}>🕐 Fourways manager shifts</span>
-                <span><strong>SM / SSM</strong> · 1 on duty → WE 08:00–17:00; <span style={{ color: "#0f766e" }}>2+ on duty → 1 WE opener + the rest WL closer (rotated)</span></span>
+                <span><strong>SM / SSM (every day)</strong> · 08:00–17:00 (always open, never close)</span>
                 <span><strong>Mon–Sat</strong> (store 09:00–20:00) · <span style={{ color: "#0f766e" }}>WM 10:00–19:00 (only with 2+ AMs on duty, rotated)</span> · WL 11:00–20:00</span>
                 <span><strong>Sunday</strong> (store 09:00–19:00) · WE 08:00–17:00 · WL 10:00–19:00</span>
               </div>
@@ -23013,12 +23002,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             return "10:00 - 19:00";
           }
 
-          // Fourways — store hours differ; SM rotates opener/closer.
+          // Fourways — store hours differ; SM/SSM always open (08-17),
+          // AMs/techs carry the late close.
           if (_b === "Fourways") {
-            if (isSM) {
-              if (code === "WL") return "11:00 - 20:00";
-              return "08:00 - 17:00";
-            }
+            if (isSM) return "08:00 - 17:00";   // SM/SSM always open, never close
             if (dow === 0) {                                // Sunday (store 09-19)
               if (code === "WE") return "08:00 - 17:00";
               if (code === "WL") return "10:00 - 19:00";

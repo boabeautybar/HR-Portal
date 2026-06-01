@@ -2560,10 +2560,7 @@
       return "10:00 - 19:00";
     }
     if (b === "Fourways") {
-      if (isSM) {
-        if (code === "WL") return "11:00 - 20:00";
-        return "08:00 - 17:00";
-      }
+      if (isSM) return "08:00 - 17:00";   // SM/SSM always open, never close
       if (dow === 0) {
         if (code === "WE") return "08:00 - 17:00";
         return "10:00 - 19:00";
@@ -2623,7 +2620,7 @@
       lines.push("AM Mon–Sat · WM 09:00–18:00 · WL 10:00–19:00");
       lines.push("Sunday — single 08:00–17:00 shift");
     } else if (b === "Fourways") {
-      lines.push("SM / SSM — WE 08:00–17:00 · WL 11:00–20:00 (rotated when 2+ on duty)");
+      lines.push("SM / SSM — 08:00–17:00 every day");
       lines.push("AM Mon–Sat · WM 10:00–19:00 · WL 11:00–20:00");
       lines.push("AM Sunday · WE 08:00–17:00 · WL 10:00–19:00");
     } else {
