@@ -9413,7 +9413,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       });
       const blank = (s, role) => ({
         ec: s.ec, name: s.name, branch: s.branch || "", role,
-        sickNoNote: 0, sickNote: 0, noShow: 0, absent: 0, frl: 0, unpaid: 0, late: 0,
+        sickNoNote: 0, sickNote: 0, noShow: 0, absent: 0, frl: 0, unpaid: 0, late: 0, extra: 0,
         worked: 0, missed: 0, monthEnd: 0, byDow: [0, 0, 0, 0, 0, 0, 0]
       });
       const markPattern = (rec, ymd) => {
@@ -9431,7 +9431,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           case "unpaid": rec.unpaid++; rec.missed++; markPattern(rec, ymd); break;
           case "frl": rec.frl++; rec.missed++; break;                 // legitimate — counted, not pattern-flagged
           case "late": rec.late++; rec.worked++; break;
-          case "on": case "ext": case "trial": case "swap_i": rec.worked++; break;
+          case "ext": rec.extra++; rec.worked++; break;             // extra day worked (beyond schedule)
+          case "on": case "trial": case "swap_i": rec.worked++; break;
           default: break;                                              // al / mat / ph / off / term / swap_o / loan_out / deduct → ignore
         }
       };
@@ -9485,15 +9486,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         });
         if (rec.worked + rec.missed > 0) mgrRecs.push(finish(rec));
       });
-      const sumTotals = (arr, t) => arr.forEach(r => { t.sickNoNote += r.sickNoNote; t.sickNote += r.sickNote; t.noShow += r.noShow; t.absent += r.absent; t.frl += r.frl; t.unpaid += r.unpaid; t.late += r.late; });
-      const totals = { sickNoNote: 0, sickNote: 0, noShow: 0, absent: 0, frl: 0, unpaid: 0, late: 0 };
+      const sumTotals = (arr, t) => arr.forEach(r => { t.sickNoNote += r.sickNoNote; t.sickNote += r.sickNote; t.noShow += r.noShow; t.absent += r.absent; t.frl += r.frl; t.unpaid += r.unpaid; t.late += r.late; t.extra += r.extra; });
+      const totals = { sickNoNote: 0, sickNote: 0, noShow: 0, absent: 0, frl: 0, unpaid: 0, late: 0, extra: 0 };
       sumTotals(techRecs, totals); sumTotals(mgrRecs, totals);
+      // Headline missed / extra-day totals, split by role.
+      const sumField = (arr, f) => arr.reduce((a, r) => a + r[f], 0);
+      const split = {
+        techMissed: sumField(techRecs, "missed"), mgrMissed: sumField(mgrRecs, "missed"),
+        techExtra: sumField(techRecs, "extra"), mgrExtra: sumField(mgrRecs, "extra")
+      };
       const byMissed = (a, b) => b.missed - a.missed || b.concerning - a.concerning || a.name.localeCompare(b.name);
       const byBest = (a, b) => (b.attendanceRate - a.attendanceRate) || (b.worked - a.worked) || a.missed - b.missed;
       const bestAttenders = techRecs.concat(mgrRecs).filter(r => r.worked >= 3 && r.attendanceRate != null).sort(byBest).slice(0, 10);
       const flagged = techRecs.concat(mgrRecs).filter(r => r.flags.length > 0).sort((a, b) => b.concerning - a.concerning || b.missed - a.missed);
       setReportsData({
-        loading: false, range: rangeKey, startYmd, endYmd, totals,
+        loading: false, range: rangeKey, startYmd, endYmd, totals, split,
         topMgrs: mgrRecs.filter(r => r.missed > 0).sort(byMissed).slice(0, 10),
         topTechs: techRecs.filter(r => r.missed > 0).sort(byMissed).slice(0, 10),
         bestAttenders, flagged, mgrCount: mgrRecs.length, techCount: techRecs.length
@@ -19416,7 +19423,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           chip("Absent", r.absent, "#fca5a5", "#7f1d1d"),
           chip("FRL", r.frl, "#fed7aa", "#7c2d12"),
           chip("Unpaid", r.unpaid, "#ede9fe", "#5b21b6"),
-          chip("Late", r.late, "#e5e7eb", "#374151")
+          chip("Late", r.late, "#e5e7eb", "#374151"),
+          chip("Extra", r.extra, "#bbf7d0", "#166534")
         ].filter(Boolean);
         const flagChip = (f) => <span key={f} style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d", padding: "1px 7px", borderRadius: 6, fontSize: 10, fontWeight: 800, whiteSpace: "nowrap" }}>⚠ {f}</span>;
         const personRow = (r, i, accent) => (
@@ -19482,9 +19490,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
             {ready && (() => {
               const t = rd.totals;
+              const sp = rd.split || { techMissed: 0, mgrMissed: 0, techExtra: 0, mgrExtra: 0 };
+              // Headline split card: one metric, nail-tech vs manager vs total.
+              const splitCard = (title, icon, ntN, mgrN, accent, bg) => (
+                <div style={{ flex: "1 1 240px", background: bg, border: "1px solid " + accent + "33", borderRadius: 12, padding: "14px 16px" }}>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: accent, letterSpacing: "0.05em", marginBottom: 10 }}>{icon} {title}</div>
+                  <div style={{ display: "flex", alignItems: "flex-end", gap: 18 }}>
+                    <div><div style={{ fontSize: 26, fontWeight: 800, color: accent, lineHeight: 1 }}>{ntN}</div><div style={{ fontSize: 10, fontWeight: 700, color: accent, opacity: 0.8, marginTop: 3 }}>💅 Nail techs</div></div>
+                    <div><div style={{ fontSize: 26, fontWeight: 800, color: accent, lineHeight: 1 }}>{mgrN}</div><div style={{ fontSize: 10, fontWeight: 700, color: accent, opacity: 0.8, marginTop: 3 }}>👑 Managers</div></div>
+                    <div style={{ marginLeft: "auto", textAlign: "right" }}><div style={{ fontSize: 26, fontWeight: 800, color: accent, lineHeight: 1 }}>{ntN + mgrN}</div><div style={{ fontSize: 10, fontWeight: 700, color: accent, opacity: 0.8, marginTop: 3 }}>Total</div></div>
+                  </div>
+                </div>
+              );
               return (
                 <div>
-                  {/* Totals */}
+                  {/* Headline totals — missed vs extra days, split by role */}
+                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+                    {splitCard("MISSED DAYS", "🚫", sp.techMissed, sp.mgrMissed, "#9d174d", "#FDF2F8")}
+                    {splitCard("EXTRA DAYS WORKED", "➕", sp.techExtra, sp.mgrExtra, "#166534", "#f0fdf4")}
+                  </div>
+
+                  {/* Breakdown of missed-day categories (all staff) */}
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
                     {totalCard("No-shows", t.noShow, "#f5f3ff", "#581c87")}
                     {totalCard("Sick · no note", t.sickNoNote, "#fef2f2", "#7f1d1d")}
@@ -19492,6 +19518,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     {totalCard("Absent", t.absent, "#fef2f2", "#7f1d1d")}
                     {totalCard("FRL", t.frl, "#fff7ed", "#7c2d12")}
                     {totalCard("Unpaid", t.unpaid, "#f5f3ff", "#5b21b6")}
+                    {totalCard("Extra days", t.extra, "#f0fdf4", "#166534")}
                     {totalCard("Late", t.late, "#f9fafb", "#374151")}
                   </div>
 
