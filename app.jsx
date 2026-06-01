@@ -9382,18 +9382,58 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         return yy + "-" + String(mm).padStart(2, "0");
       };
       const cycles = Array.from(new Set(ymds.map(attYmForYmd)));
-      // Attendance grids for every branch × touched cycle (tech absences).
-      const gridByKey = {};
+      const todayYmd = ymdOf(today);
+      const endMonthYm = (ym) => { let [y, m] = ym.split("-").map(Number); m += 1; if (m > 12) { m = 1; y++; } return y + "-" + String(m).padStart(2, "0"); };
+      // Per branch × touched cycle, load every source the attendance sheet
+      // uses to render a day, so the report counts the SAME extra days the
+      // sheet shows: the attendance grid, the kiosk extras sidecar, the tech
+      // schedule (END-month ym) and the manager schedule (START-month ym).
+      // Extra days can sit in any of these (a scheduled "E", a kiosk extra,
+      // or a manual "ext" stamp) — reading only the grid undercounts them.
+      const gridByKey = {}, extrasByKey = {}, techSchByKey = {}, mgrSchByKey = {};
       await Promise.all(SALONS.flatMap(sl => cycles.map(async ym => {
-        try { const att = await window.BOA_DB.loadAttendance(sl.name, ym); gridByKey[sl.name + "|" + ym] = (att && att.grid) || {}; }
-        catch (_) { gridByKey[sl.name + "|" + ym] = {}; }
+        const k = sl.name + "|" + ym;
+        const [att, ex, tsch, msch] = await Promise.all([
+          window.BOA_DB.loadAttendance(sl.name, ym).catch(() => null),
+          window.BOA_DB.loadExtras ? window.BOA_DB.loadExtras(sl.name, ym).catch(() => ({})) : Promise.resolve({}),
+          window.BOA_DB.loadSchedule(sl.name, endMonthYm(ym), false).catch(() => null),
+          window.BOA_DB.loadSchedule(sl.name, ym, true).catch(() => null)
+        ]);
+        gridByKey[k] = (att && att.grid) || {};
+        extrasByKey[k] = ex || {};
+        techSchByKey[k] = (tsch && tsch.grid) || {};
+        mgrSchByKey[k] = (msch && msch.grid) || {};
       })));
+      // Kiosk audit-log extra days (boa_kiosk_log status === "ext"). The
+      // attendance sheet treats these as Extra Day too, so a tech whose extra
+      // day was logged via the kiosk tile (not stamped on the grid) is still
+      // counted. Populated below once the look-back window is known.
+      const extraKioskSet = new Set();
+      // Is this (ec, day) an extra day worked? Mirrors the attendance sheet:
+      // grid "ext", a kiosk extras-sidecar entry, a kiosk-log "ext", or a
+      // scheduled "E" (tech or manager schedule).
+      const isExtraDay = (k, ec, ecT, ymd, dom, gridBare) => {
+        if (gridBare === "ext") return true;
+        const ex = extrasByKey[k] || {}; const exDay = ex[dom] || ex[String(dom)] || {};
+        if (exDay[ec] || exDay[ecT]) return true;
+        if (extraKioskSet.has(ecT + "|" + ymd)) return true;
+        const ts = techSchByKey[k] || {}; const tv = (ts[ec] || ts[ecT] || {})[dom]; if (tv === "E") return true;
+        const ms = mgrSchByKey[k] || {}; const mrow = ms[ec] || ms[ecT] || {}; if (mrow[ymd] === "E" || mrow[dom] === "E" || mrow[String(dom)] === "E") return true;
+        return false;
+      };
       // Manager absences live in manager_day_status; worked days come from
       // their kiosk clock-ins. Pull a window wide enough to reach the range.
       const daysBack = Math.max(10, Math.ceil((Date.now() - start.getTime()) / 86400000) + 2);
       let mgrStatuses = [], mgrClock = [];
       try { mgrStatuses = (await window.BOA_DB.loadManagerDayStatuses(daysBack)) || []; } catch (_) { }
       try { mgrClock = (await window.BOA_DB.listRecentManagerClockins(daysBack)) || []; } catch (_) { }
+      // Kiosk audit-log extra days for nail techs (and anyone using the tile).
+      if (window.BOA_DB.listRecentKioskCheckins) {
+        try {
+          const krows = (await window.BOA_DB.listRecentKioskCheckins(daysBack, SALONS.map(s => s.name))) || [];
+          krows.forEach(r => { if (r && r.status === "ext" && r.ec && r.ymd) extraKioskSet.add(String(r.ec).trim() + "|" + r.ymd); });
+        } catch (_) { }
+      }
       const mgrStatusByIdYmd = {};
       mgrStatuses.forEach(r => { if (r && r.staff_id && r.date && r.status) (mgrStatusByIdYmd[String(r.staff_id)] = mgrStatusByIdYmd[String(r.staff_id)] || {})[r.date] = r.status; });
       const mgrClockByIdYmd = {};
@@ -9413,7 +9453,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       });
       const blank = (s, role) => ({
         ec: s.ec, name: s.name, branch: s.branch || "", role,
-        sickNoNote: 0, sickNote: 0, noShow: 0, absent: 0, frl: 0, unpaid: 0, late: 0,
+        sickNoNote: 0, sickNote: 0, noShow: 0, absent: 0, frl: 0, unpaid: 0, late: 0, extra: 0,
         worked: 0, missed: 0, monthEnd: 0, byDow: [0, 0, 0, 0, 0, 0, 0]
       });
       const markPattern = (rec, ymd) => {
@@ -9431,7 +9471,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           case "unpaid": rec.unpaid++; rec.missed++; markPattern(rec, ymd); break;
           case "frl": rec.frl++; rec.missed++; break;                 // legitimate — counted, not pattern-flagged
           case "late": rec.late++; rec.worked++; break;
-          case "on": case "ext": case "trial": case "swap_i": rec.worked++; break;
+          case "ext": rec.extra++; rec.worked++; break;             // extra day worked (beyond schedule)
+          case "on": case "trial": case "swap_i": rec.worked++; break;
           default: break;                                              // al / mat / ph / off / term / swap_o / loan_out / deduct → ignore
         }
       };
@@ -9451,6 +9492,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         rec.attendanceRate = (rec.worked + rec.missed) > 0 ? rec.worked / (rec.worked + rec.missed) : null;
         return rec;
       };
+      const MISSEDSET = { sick: 1, sick_n: 1, no: 1, absent: 1, unpaid: 1, frl: 1 };
       const techRecs = [], mgrRecs = [];
       (staff || []).forEach(s => {
         const ec = s.ec; if (!ec) return;
@@ -9459,13 +9501,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const ld = offByEc[ec]; if (ld && ld < startYmd) return;
         const rec = blank(s, "NT");
         ymds.forEach(ymd => {
+          if (ymd > todayYmd) return;                         // don't count days that haven't happened
           if (ld && ymd > ld) return;
           if (leaveSet.has(ecT + "|" + ymd)) return;
-          const ym = attYmForYmd(ymd), dom = parseInt(ymd.slice(8, 10), 10);
-          const g = gridByKey[s.branch + "|" + ym] || {};
-          let v = (g[ec] || g[ecT] || {})[dom];
-          if (!v) return;
-          classify(rec, v.charAt(0) === "~" ? v.slice(1) : v, ymd);
+          const ym = attYmForYmd(ymd), dom = parseInt(ymd.slice(8, 10), 10), k = s.branch + "|" + ym;
+          const g = gridByKey[k] || {};
+          const v = (g[ec] || g[ecT] || {})[dom];
+          const bare = v ? (v.charAt(0) === "~" ? v.slice(1) : v) : "";
+          if (bare && MISSEDSET[bare]) { classify(rec, bare, ymd); return; }   // a recorded absence wins over an extra flag
+          if (isExtraDay(k, ec, ecT, ymd, dom, bare)) { rec.extra++; rec.worked++; return; }
+          if (bare) classify(rec, bare, ymd);
         });
         if (rec.worked + rec.missed > 0) techRecs.push(finish(rec));
       });
@@ -9477,23 +9522,37 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const sid = String(m._id || m.id || "");
         const rec = blank(m, m.role || "AM");
         ymds.forEach(ymd => {
+          if (ymd > todayYmd) return;
           if (ld && ymd > ld) return;
           if (leaveSet.has(ecT + "|" + ymd)) return;
+          const ym = attYmForYmd(ymd), dom = parseInt(ymd.slice(8, 10), 10), k = m.branch + "|" + ym;
           const st = (mgrStatusByIdYmd[sid] || {})[ymd];
+          if (st && MISSEDSET[st]) { classify(rec, st, ymd); return; }          // ROM-recorded absence wins
+          const g = gridByKey[k] || {};
+          const gv = (g[ec] || g[ecT] || {})[dom];
+          const gBare = gv ? (gv.charAt(0) === "~" ? gv.slice(1) : gv) : "";
+          if (isExtraDay(k, ec, ecT, ymd, dom, gBare)) { rec.extra++; rec.worked++; return; }
           if (st) { classify(rec, st, ymd); return; }
           if ((mgrClockByIdYmd[sid] || {})[ymd]) rec.worked++;
         });
         if (rec.worked + rec.missed > 0) mgrRecs.push(finish(rec));
       });
-      const sumTotals = (arr, t) => arr.forEach(r => { t.sickNoNote += r.sickNoNote; t.sickNote += r.sickNote; t.noShow += r.noShow; t.absent += r.absent; t.frl += r.frl; t.unpaid += r.unpaid; t.late += r.late; });
-      const totals = { sickNoNote: 0, sickNote: 0, noShow: 0, absent: 0, frl: 0, unpaid: 0, late: 0 };
+      const sumTotals = (arr, t) => arr.forEach(r => { t.sickNoNote += r.sickNoNote; t.sickNote += r.sickNote; t.noShow += r.noShow; t.absent += r.absent; t.frl += r.frl; t.unpaid += r.unpaid; t.late += r.late; t.extra += r.extra; });
+      const totals = { sickNoNote: 0, sickNote: 0, noShow: 0, absent: 0, frl: 0, unpaid: 0, late: 0, extra: 0 };
       sumTotals(techRecs, totals); sumTotals(mgrRecs, totals);
+      // Headline missed / extra-day totals, split by role.
+      const sumField = (arr, f) => arr.reduce((a, r) => a + r[f], 0);
+      const split = {
+        techMissed: sumField(techRecs, "missed"), mgrMissed: sumField(mgrRecs, "missed"),
+        techExtra: sumField(techRecs, "extra"), mgrExtra: sumField(mgrRecs, "extra"),
+        mgrWithMissed: mgrRecs.filter(r => r.missed > 0).length    // forfeit the R1,000 bonus this cycle
+      };
       const byMissed = (a, b) => b.missed - a.missed || b.concerning - a.concerning || a.name.localeCompare(b.name);
       const byBest = (a, b) => (b.attendanceRate - a.attendanceRate) || (b.worked - a.worked) || a.missed - b.missed;
       const bestAttenders = techRecs.concat(mgrRecs).filter(r => r.worked >= 3 && r.attendanceRate != null).sort(byBest).slice(0, 10);
       const flagged = techRecs.concat(mgrRecs).filter(r => r.flags.length > 0).sort((a, b) => b.concerning - a.concerning || b.missed - a.missed);
       setReportsData({
-        loading: false, range: rangeKey, startYmd, endYmd, totals,
+        loading: false, range: rangeKey, startYmd, endYmd, totals, split,
         topMgrs: mgrRecs.filter(r => r.missed > 0).sort(byMissed).slice(0, 10),
         topTechs: techRecs.filter(r => r.missed > 0).sort(byMissed).slice(0, 10),
         bestAttenders, flagged, mgrCount: mgrRecs.length, techCount: techRecs.length
@@ -9574,8 +9633,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       }).filter(r => r.total > 0);
       all.sort((a, b) => (b.recent - a.recent) || (b.total - a.total) || a.name.localeCompare(b.name));
       const orgMissed = new Array(N).fill(0);
-      Object.values(recs).forEach(r => r.missed.forEach((v, i) => orgMissed[i] += v));
-      setTrendData({ loading: false, cycleYms, rows: all, orgMissed });
+      // Managers who had at least one missed day in a cycle forfeit the
+      // R1,000 attendance bonus that cycle — count them per cycle.
+      const mgrIneligible = new Array(N).fill(0);
+      Object.values(recs).forEach(r => {
+        r.missed.forEach((v, i) => orgMissed[i] += v);
+        if (r.role !== "NT") r.missed.forEach((v, i) => { if (v > 0) mgrIneligible[i]++; });
+      });
+      setTrendData({ loading: false, cycleYms, rows: all, orgMissed, mgrIneligible });
     } catch (e) {
       console.error("attendance trend load:", e);
       setTrendData({ loading: false, cycleYms, error: (e && e.message) || String(e) });
@@ -19416,7 +19481,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           chip("Absent", r.absent, "#fca5a5", "#7f1d1d"),
           chip("FRL", r.frl, "#fed7aa", "#7c2d12"),
           chip("Unpaid", r.unpaid, "#ede9fe", "#5b21b6"),
-          chip("Late", r.late, "#e5e7eb", "#374151")
+          chip("Late", r.late, "#e5e7eb", "#374151"),
+          chip("Extra", r.extra, "#bbf7d0", "#166534")
         ].filter(Boolean);
         const flagChip = (f) => <span key={f} style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d", padding: "1px 7px", borderRadius: 6, fontSize: 10, fontWeight: 800, whiteSpace: "nowrap" }}>⚠ {f}</span>;
         const personRow = (r, i, accent) => (
@@ -19482,9 +19548,37 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
             {ready && (() => {
               const t = rd.totals;
+              const sp = rd.split || { techMissed: 0, mgrMissed: 0, techExtra: 0, mgrExtra: 0 };
+              // Headline split card: one metric, nail-tech vs manager vs total.
+              const splitCard = (title, icon, ntN, mgrN, accent, bg) => (
+                <div style={{ flex: "1 1 240px", background: bg, border: "1px solid " + accent + "33", borderRadius: 12, padding: "14px 16px" }}>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: accent, letterSpacing: "0.05em", marginBottom: 10 }}>{icon} {title}</div>
+                  <div style={{ display: "flex", alignItems: "flex-end", gap: 18 }}>
+                    <div><div style={{ fontSize: 26, fontWeight: 800, color: accent, lineHeight: 1 }}>{ntN}</div><div style={{ fontSize: 10, fontWeight: 700, color: accent, opacity: 0.8, marginTop: 3 }}>💅 Nail techs</div></div>
+                    <div><div style={{ fontSize: 26, fontWeight: 800, color: accent, lineHeight: 1 }}>{mgrN}</div><div style={{ fontSize: 10, fontWeight: 700, color: accent, opacity: 0.8, marginTop: 3 }}>👑 Managers</div></div>
+                    <div style={{ marginLeft: "auto", textAlign: "right" }}><div style={{ fontSize: 26, fontWeight: 800, color: accent, lineHeight: 1 }}>{ntN + mgrN}</div><div style={{ fontSize: 10, fontWeight: 700, color: accent, opacity: 0.8, marginTop: 3 }}>Total</div></div>
+                  </div>
+                </div>
+              );
               return (
                 <div>
-                  {/* Totals */}
+                  {/* Headline totals — missed vs extra days, split by role */}
+                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+                    {splitCard("MISSED DAYS", "🚫", sp.techMissed, sp.mgrMissed, "#9d174d", "#FDF2F8")}
+                    {splitCard("EXTRA DAYS WORKED", "➕", sp.techExtra, sp.mgrExtra, "#166534", "#f0fdf4")}
+                  </div>
+
+                  {/* Manager attendance-bonus forfeit for this range */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 12, padding: "14px 18px", marginBottom: 16 }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: "#166534" }}>👑 Managers forfeiting the R1,000 attendance bonus{rd.range === "cycle" ? " this cycle" : " in this range"}</div>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginLeft: "auto" }}>
+                      <span style={{ fontSize: 28, fontWeight: 800, color: "#166534", lineHeight: 1 }}>{sp.mgrWithMissed}</span>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "#15803d" }}>of {rd.mgrCount} manager{rd.mgrCount === 1 ? "" : "s"}</span>
+                    </div>
+                    <div style={{ background: "#166534", color: "#fff", borderRadius: 9, padding: "8px 16px", fontSize: 16, fontWeight: 800 }}>R{(sp.mgrWithMissed * 1000).toLocaleString("en-ZA")} saved</div>
+                  </div>
+
+                  {/* Breakdown of missed-day categories (all staff) */}
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
                     {totalCard("No-shows", t.noShow, "#f5f3ff", "#581c87")}
                     {totalCard("Sick · no note", t.sickNoNote, "#fef2f2", "#7f1d1d")}
@@ -19492,6 +19586,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     {totalCard("Absent", t.absent, "#fef2f2", "#7f1d1d")}
                     {totalCard("FRL", t.frl, "#fff7ed", "#7c2d12")}
                     {totalCard("Unpaid", t.unpaid, "#f5f3ff", "#5b21b6")}
+                    {totalCard("Extra days", t.extra, "#f0fdf4", "#166534")}
                     {totalCard("Late", t.late, "#f9fafb", "#374151")}
                   </div>
 
@@ -19582,6 +19677,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             <div style={{ fontSize: 10, color: "#9d4d6e", fontWeight: 700 }}>{cyLabel(ym)}</div>
                           </div>
                         ))}
+                      </div>
+                    </div>
+                    {/* Manager attendance-bonus forfeit per cycle (R1,000 each) */}
+                    <div style={{ background: "#fff", border: "1px solid #bbf7d0", borderRadius: 11, padding: "14px 16px", marginBottom: 16 }}>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: "#166534", marginBottom: 4, letterSpacing: "0.04em" }}>👑 MANAGERS LOSING THE R1,000 ATTENDANCE BONUS · PER CYCLE</div>
+                      <div style={{ fontSize: 11, color: "#9d4d6e", marginBottom: 12 }}>Any manager with ≥1 missed day in a cycle forfeits the R1,000 attendance bonus that cycle.</div>
+                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                        {trendData.cycleYms.map((ym, i) => {
+                          const c = (trendData.mgrIneligible || [])[i] || 0;
+                          return (
+                            <div key={ym} title={cyTitle(ym)} style={{ flex: "1 1 110px", background: i === N - 1 ? "#dcfce7" : "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 9, padding: "10px 12px", textAlign: "center" }}>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: "#166534", marginBottom: 4 }}>{cyLabel(ym)}</div>
+                              <div style={{ fontSize: 22, fontWeight: 800, color: "#166534", lineHeight: 1 }}>{c}</div>
+                              <div style={{ fontSize: 9, color: "#15803d", marginTop: 2 }}>manager{c === 1 ? "" : "s"}</div>
+                              <div style={{ fontSize: 12, fontWeight: 800, color: "#166534", marginTop: 6 }}>R{(c * 1000).toLocaleString("en-ZA")}</div>
+                              <div style={{ fontSize: 8, color: "#15803d" }}>saved</div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                     <div style={{ background: "#fff", border: "1px solid #F9A8D4", borderRadius: 11, overflow: "hidden" }}>
