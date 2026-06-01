@@ -816,7 +816,7 @@
     return (res.data && res.data.value) || {};
   }
 
-  async function recordEarlyLeave(ym, dayKey, ec, hours, recordedBy) {
+  async function recordEarlyLeave(ym, dayKey, ec, hours, recordedBy, opts) {
     var c = client(); if (!c) throw new Error("Supabase not configured");
     var h = Number(hours);
     if (!isFinite(h) || h <= 0) throw new Error("Hours must be a positive number.");
@@ -826,10 +826,19 @@
     var existing = await getEarlyLeaves(ym);
     var data = JSON.parse(JSON.stringify(existing || {}));
     if (!data[dayKey]) data[dayKey] = {};
+    // Optional reason / note added later for managers' early-out picker.
+    // Older rows just have { hours, recordedAt, recordedBy } — the new
+    // fields are appended and the HR portal treats them as optional.
+    var reasonCode = opts && opts.reasonCode ? String(opts.reasonCode) : null;
+    var reasonNote = opts && opts.reasonNote ? String(opts.reasonNote).trim() : null;
+    var approver   = opts && opts.approver   ? String(opts.approver).trim()   : null;
     data[dayKey][ec] = {
       hours:       h,
       recordedAt:  new Date().toISOString(),
-      recordedBy:  (recordedBy || "").trim() || null
+      recordedBy:  (recordedBy || "").trim() || null,
+      reasonCode:  reasonCode,
+      reasonNote:  reasonNote || null,
+      approver:    approver || null
     };
     var res = await c.from("app_state").upsert({ key: earlyKey(ym), value: data });
     if (res.error) throw res.error;
@@ -1006,6 +1015,16 @@
       });
     });
     return { grid: combined, ym: ym, kind: kind || "combined" };
+  }
+  // Per-manager custom shift hours set in the HR portal coverage view.
+  // Shared global key, keyed { [ec]: { "YYYY-MM-DD": "HH:MM - HH:MM" } }.
+  // The Manager Schedule view layers these over the computed shift times
+  // so a manager's one-off early-open / late-close hours show on the day.
+  async function getMgrTimes() {
+    var c = client(); if (!c) return {};
+    var res = await c.from("app_state").select("value").eq("key", "boa_mgr_times_v1").maybeSingle();
+    if (res.error) { console.error("getMgrTimes:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
   }
   // Batched cross-branch schedule load: { branchName -> merged grid }.
   // Used by the manager "Borrow Tech" picker to filter the candidate pool
@@ -1311,7 +1330,7 @@
     deactivateStaff: deactivateStaff,
     lastClockinToday: lastClockinToday, addClockin: addClockin, listTodayClockins: listTodayClockins,
     todaysCashup: todaysCashup, addCashup: addCashup, listRecentCashups: listRecentCashups,
-    currentSchedYm: currentSchedYm, periodLabel: periodLabel, periodDays: periodDays, getSchedule: getSchedule, getSchedulesForBranches: getSchedulesForBranches,
+    currentSchedYm: currentSchedYm, periodLabel: periodLabel, periodDays: periodDays, getSchedule: getSchedule, getSchedulesForBranches: getSchedulesForBranches, getMgrTimes: getMgrTimes,
     ymForDate: ymForDate, endOfSchedulePeriod: endOfSchedulePeriod,
     getAttendance: getAttendance, setAttendanceStatus: setAttendanceStatus,
     getSwaps: getSwaps, recordSwap: recordSwap, undoSwap: undoSwap,
@@ -1329,18 +1348,107 @@
     activeSmTrialEcs: activeSmTrialEcs,
     listAllManagers: listAllManagers, listTodayManagerClockins: listTodayManagerClockins,
     addManagerClockinWithMeta: addManagerClockinWithMeta,
-    loadClockinMeta: loadClockinMeta, listRecentManagerClockins: listRecentManagerClockins
+    loadClockinMeta: loadClockinMeta, listRecentManagerClockins: listRecentManagerClockins,
+
+    // Manager-side absence reasons (set by the ROM via the HR portal). The
+    // kiosk reads today's rows so the "haven't clocked in" warning can
+    // suppress itself once a ROM has tagged a reason.
+    listManagerDayStatusesToday: listManagerDayStatusesToday,
+
+    // Manager overtime — submitted from the kiosk, approved on the portal.
+    submitOvertimeRequest: submitOvertimeRequest,
+
+    // Witness reports — a manager naming a colleague who left early without
+    // clocking out. Stored as a single growing list for ROM review.
+    submitEarlyLeaveReport: submitEarlyLeaveReport
   };
 
-  async function listRecentManagerClockins(daysBack) {
+  async function submitEarlyLeaveReport(p) {
+    var c = client(); if (!c) throw new Error("Supabase not configured");
+    if (!p || !p.names) throw new Error("names is required.");
+    var nowD = new Date();
+    var ymd = nowD.getFullYear() + "-" + String(nowD.getMonth() + 1).padStart(2, "0") + "-" + String(nowD.getDate()).padStart(2, "0");
+    var prior = await c.from("app_state").select("value").eq("key", "boa_mgr_early_reports_v1").maybeSingle();
+    var list = (prior.data && Array.isArray(prior.data.value)) ? prior.data.value.slice() : [];
+    list.push({
+      id:             "elr_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+      branch:         branch() || "",
+      ymd:            ymd,
+      reportedAt:     nowD.toISOString(),
+      reportedByEc:   String(p.reportedByEc || "").trim() || null,
+      reportedByName: String(p.reportedByName || "").trim() || null,
+      names:          String(p.names).trim(),
+      note:           String(p.note || "").trim() || null,
+      reviewed:       false
+    });
+    // Cap so the row doesn't grow unbounded forever — keep last ~5k.
+    if (list.length > 5000) list = list.slice(-5000);
+    var res = await c.from("app_state").upsert({ key: "boa_mgr_early_reports_v1", value: list });
+    if (res.error) throw res.error;
+    return list[list.length - 1];
+  }
+
+  async function listManagerDayStatusesToday() {
+    var c = client(); if (!c) return [];
+    var today = todayStr();
+    var res = await c.from("manager_day_status").select("staff_id,status").eq("date", today);
+    if (res.error) { console.error("listManagerDayStatusesToday:", res.error); return []; }
+    return res.data || [];
+  }
+
+  // Append a single OT entry to the boa_overtime_v1 list (created by the
+  // HR portal's Overtime tab). Status defaults to "pending" — the entry
+  // shows up under "Pending approval" on the portal until an admin acts.
+  async function submitOvertimeRequest(p) {
+    var c = client(); if (!c) throw new Error("Supabase not configured");
+    if (!p || !p.ec || !p.date || !p.hours || !p.reason) {
+      throw new Error("ec, date, hours and reason are required.");
+    }
+    var h = Number(p.hours);
+    if (!isFinite(h) || h <= 0) throw new Error("Hours must be a positive number.");
+    if (h > 12) throw new Error("Hours can't exceed 12 — please double-check.");
+    h = Math.round(h * 2) / 2;
+    var prior = await c.from("app_state").select("value").eq("key", "boa_overtime_v1").maybeSingle();
+    var list = (prior.data && Array.isArray(prior.data.value)) ? prior.data.value.slice() : [];
+    list.push({
+      id:           "ot_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+      ec:           String(p.ec).trim(),
+      name:         (p.name || "").trim(),
+      branch:       (p.branch || branch() || "").trim(),
+      date:         String(p.date),
+      hours:        h,
+      reason:       String(p.reason).trim(),
+      status:       "pending",
+      submittedAt:  new Date().toISOString(),
+      submittedBy:  (p.submittedBy || "").trim() || null,
+      decidedAt:    null,
+      decidedBy:    null,
+      decisionNote: null
+    });
+    var res = await c.from("app_state").upsert({ key: "boa_overtime_v1", value: list });
+    if (res.error) throw res.error;
+    return list[list.length - 1];
+  }
+
+  // When `mgrIds` is provided, the clockins query is filtered server-side
+  // via .in("staff_id", mgrIds) so only manager rows come back. This is a
+  // regular column filter (not the broken embedded one) and it's
+  // dramatically faster on the kiosk because clockins is dominated by
+  // nail-tech rows. Falls back to the unfiltered HR-portal-style query
+  // when no IDs are passed.
+  async function listRecentManagerClockins(daysBack, mgrIds) {
     var c = client(); if (!c) return [];
     var since = new Date();
     since.setHours(0, 0, 0, 0);
     since.setDate(since.getDate() - (daysBack || 7));
-    var res = await c.from("clockins")
-      .select("*, staff:staff_id ( id, name, employee_code, role_type, branch )")
+    var q = c.from("clockins")
+      .select("*, staff:staff_id ( id, name, employee_code, role_type, role, branch )")
       .gte("ts", since.toISOString())
       .order("ts", { ascending: true });
+    if (Array.isArray(mgrIds) && mgrIds.length > 0) {
+      q = q.in("staff_id", mgrIds);
+    }
+    var res = await q;
     if (res.error) { console.error("listRecentManagerClockins:", res.error); return []; }
     return (res.data || []).filter(function (r) { return r.staff && r.staff.role_type === "manager"; });
   }
@@ -1465,7 +1573,14 @@
   }
   async function listAllManagers() {
     var c = client(); if (!c) return [];
-    var res = await c.from("staff").select("*").eq("active", true).order("name", { ascending: true });
+    // Project only the columns the Manager Clock-in screen needs. The
+    // staff table carries photo blobs + several other heavy fields that
+    // we don't use here, so `select("*")` was loading 100s of KB per call
+    // and dominating the kiosk's screen-render time.
+    var res = await c.from("staff")
+      .select("id,name,employee_code,role,role_type,branch,active")
+      .eq("active", true)
+      .order("name", { ascending: true });
     if (res.error) { console.error("listAllManagers:", res.error); return []; }
     return (res.data || []).filter(isManagerRow);
   }

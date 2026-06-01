@@ -3,7 +3,7 @@
    ------------------------------------------------------------
    Landing: 4 big tiles
      1. Nail Tech Check-in   (daily attendance grid — shared with staff)
-     2. Manager Check-in     (PIN + selfie + GPS clock-in/out)
+     2. Manager Check-in     (PIN + selfie clock-in/out)
      3. Cash Up              (daily totals form — shared with staff)
      4. Request <next month> Off  (off-day request — shared with staff)
 
@@ -389,6 +389,94 @@
       console.warn("loadKioskReminders failed:", e);
     });
   }
+  // Home-screen "haven't clocked in" nag — surfaces the same warning
+  // the Manager Clock-in screen already shows per-row, here as a single
+  // banner above the tiles so a manager passing the home screen sees
+  // their colleagues' missing clock-ins without drilling in.
+  async function loadMgrClockinNagIntoPanel() {
+    var slot = document.getElementById("mgr-clockin-nag-slot");
+    if (!slot) return;
+    if (!window.APP_DATA || !window.APP_DATA.listAllManagers) return;
+    try {
+      var nowD = new Date();
+      var todayK = _ymdToday(nowD);
+      var cutH = (cfg.clockInWarningCutoffHour != null ? cfg.clockInWarningCutoffHour : 9);
+      var cutM = (cfg.clockInWarningCutoffMinute != null ? cfg.clockInWarningCutoffMinute : 30);
+      var nowMins = nowD.getHours() * 60 + nowD.getMinutes();
+      if (nowMins < cutH * 60 + cutM) { slot.style.display = "none"; return; }
+
+      var thisBranch = (cfg.branchName || "");
+      var mgrs = await window.APP_DATA.listAllManagers();
+      var hereMgrs = (mgrs || []).filter(function (m) { return m && m.branch === thisBranch; });
+      if (hereMgrs.length === 0) { slot.style.display = "none"; return; }
+
+      // Today's schedule for this branch's managers. getSchedule expects
+      // an END-month ym (see the comment in renderMgrClockin) so we pass
+      // currentMonth+1 if we're past the 25th, else just currentMonth —
+      // the helper subtracts one internally to land on the right cycle
+      // row. Without this we read last month's cell at this day-of-month
+      // and a manager who was scheduled to WORK on the same date last
+      // cycle but is OFF today incorrectly flagged as "not clocked in".
+      var schedByEc = {};
+      var _endY = nowD.getFullYear(), _endM = nowD.getMonth() + 1;
+      if (nowD.getDate() >= 25) { _endM += 1; if (_endM > 12) { _endM = 1; _endY += 1; } }
+      var schedYm = _endY + "-" + String(_endM).padStart(2, "0");
+      try {
+        if (window.APP_DATA.getSchedule) {
+          var res = await window.APP_DATA.getSchedule(schedYm, "mgr");
+          var grid = (res && res.grid) || {};
+          Object.keys(grid).forEach(function (ec) {
+            var row = grid[ec] || {};
+            var v = row[todayK] != null ? row[todayK] : row[nowD.getDate()];
+            if (v != null) schedByEc[ec] = v;
+          });
+        }
+      } catch (_) {}
+      var isWorking = function (v) { return v === "W" || v === "WL" || v === "WE" || v === "WB" || v === "WM" || v === "E"; };
+
+      // Who clocked in already, who's been ROM-tagged.
+      var clockedInEcs = {};
+      try {
+        var recent = await window.APP_DATA.listRecentManagerClockins(2);
+        (recent || []).forEach(function (r) {
+          if (!r || !r.staff || r.type !== "in") return;
+          var k = (function () { var d = new Date(r.ts); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
+          if (k !== todayK) return;
+          clockedInEcs[String(r.staff.employee_code || "").trim()] = true;
+        });
+      } catch (_) {}
+      var taggedStaffIds = {};
+      try {
+        if (window.APP_DATA.listManagerDayStatusesToday) {
+          var tagged = await window.APP_DATA.listManagerDayStatusesToday();
+          (tagged || []).forEach(function (r) { if (r && r.staff_id) taggedStaffIds[r.staff_id] = true; });
+        }
+      } catch (_) {}
+
+      var missing = hereMgrs.filter(function (m) {
+        var ec = String(m.employee_code || "").trim();
+        if (!isWorking(schedByEc[ec])) return false;     // not scheduled today
+        if (clockedInEcs[ec]) return false;              // already in
+        if (taggedStaffIds[m.id]) return false;          // ROM explained
+        return true;
+      });
+
+      if (missing.length === 0) { slot.style.display = "none"; return; }
+      var names = missing.map(function (m) { return esc(m.name); }).join(", ");
+      slot.innerHTML =
+        '<div class="mgr-home-nag">' +
+          '<div class="mgr-home-nag-icon">⚠</div>' +
+          '<div class="mgr-home-nag-body">' +
+            '<div class="mgr-home-nag-title">Manager' + (missing.length === 1 ? "" : "s") + " not clocked in yet</div>" +
+            '<div class="mgr-home-nag-sub">' + names + " &mdash; no clock-in means an unpaid day. Open <strong>Manager Check-in</strong> to clock in.</div>" +
+          '</div>' +
+        '</div>';
+      slot.style.display = "block";
+    } catch (e) {
+      console.warn("mgr-clockin-nag load failed:", e);
+      slot.style.display = "none";
+    }
+  }
   // Wire every '✓ Mark done' / 'tap to undo' button on the reminders
   // panel. Tapping disables the button while the Supabase write is in
   // flight, then re-renders the panel from a fresh listKioskReminders
@@ -432,6 +520,11 @@
       // Hidden by default; only flips visible when there's at least one
       // reminder firing today for this branch.
       '<div id="kiosk-reminders" style="display:none"></div>' +
+      // "Haven't clocked in" nag — same logic as the per-row pill on the
+      // Manager Clock-in screen, surfaced here on the home screen so it
+      // catches a manager who walks in, opens the tablet, and stops at
+      // the landing. Populated async by loadMgrClockinNagIntoPanel.
+      '<div id="mgr-clockin-nag-slot" style="display:none"></div>' +
       '<div class="tile-grid tile-grid-4">' +
       '<button class="tile tile-big" id="tile-nailtech" type="button">' +
       '<div class="tile-icon">✍️</div>' +
@@ -461,6 +554,7 @@
       '</div>'
     );
     loadKioskRemindersIntoPanel();
+    loadMgrClockinNagIntoPanel();
     if (window.BOA_FLOWS) window.BOA_FLOWS.refreshCheckinNag();
     document.getElementById("tile-nailtech").onclick = function () {
       if (window.BOA_FLOWS) window.BOA_FLOWS.renderCheckin();
@@ -779,38 +873,14 @@
 
   // ---------------- Manager Clock-in (this tab) ----------------
   // Each manager uses their own 6-digit personal PIN to clock in/out for
-  // the day. After PIN, we capture a selfie + GPS coords (anti-buddy-punch
-  // measures), gate clock-IN to 08:00+, and auto-clock-OUT anyone still
-  // clocked in at 18:30.
+  // the day. After PIN, we capture a selfie (anti-buddy-punch), gate
+  // clock-IN to 08:00+, and auto-clock-OUT anyone still clocked in past
+  // their scheduled shift end + 1h grace.
 
-  // Haversine distance in meters between two {lat,lng} points
-  function distMeters(a, b) {
-    var R = 6371000;
-    var toRad = function (d) { return d * Math.PI / 180; };
-    var dLat = toRad(b.lat - a.lat);
-    var dLng = toRad(b.lng - a.lng);
-    var s = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) *
-      Math.sin(dLng / 2) * Math.sin(dLng / 2);
-    return Math.round(2 * R * Math.asin(Math.sqrt(s)));
-  }
-
-  function getGPS() {
-    return new Promise(function (resolve) {
-      if (!navigator.geolocation) { resolve(null); return; }
-      var done = false;
-      var timer = setTimeout(function () {
-        if (done) return; done = true; resolve({ error: "timeout" });
-      }, 12000);
-      navigator.geolocation.getCurrentPosition(function (pos) {
-        if (done) return; done = true; clearTimeout(timer);
-        resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy });
-      }, function (err) {
-        if (done) return; done = true; clearTimeout(timer);
-        resolve({ error: err.message || ("code " + err.code) });
-      }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 });
-    });
-  }
+  // GPS capture used to live here (haversine + navigator.geolocation
+  // wrappers). Removed when manager clock-in/out switched to selfie-only
+  // proof — the geolocation prompt added seconds of latency on flaky
+  // tablet links and the photo timestamp already covers the audit.
 
   // Camera modal — returns Promise<dataUrl|null>. Manager taps Capture
   // (freezes a still frame) then either Retake or Confirm. Cancel returns null.
@@ -883,12 +953,39 @@
     });
   }
 
-  // Strip 18:30 from now (or 18:30 from a given date) — used for auto-out ts
+  // Fallback auto-out ts when we don't have a manager's scheduled end —
+  // e.g. the schedule isn't published yet, or the cell is empty. Used as
+  // a safety net only; the normal path resolves to the exact shift end.
   function eveningTs(yyyy_mm_dd) {
     var p = (yyyy_mm_dd || "").split("-");
     var d = new Date(+p[0], +p[1] - 1, +p[2]);
     d.setHours(cfg.autoClockOutHour || 18, cfg.autoClockOutMinute || 30, 0, 0);
     return d.toISOString();
+  }
+  // Parse "HH:MM - HH:MM" → { startH, startM, endH, endM } using the end.
+  function _parseShiftEnd(rangeStr) {
+    if (!rangeStr) return null;
+    var m = /(\d{1,2}):(\d{2})\s*$/.exec(rangeStr);
+    if (!m) return null;
+    return { h: +m[1], m: +m[2] };
+  }
+  // Build a Date for a (ymd, role, code, branch) tuple at the manager's
+  // scheduled shift END time. Returns null if we can't resolve it (no
+  // schedule code, unknown role, etc.) — callers fall back to the
+  // configured cutoff.
+  function _scheduledEndDate(ymd, role, code, branchName) {
+    if (!ymd || !code) return null;
+    if (typeof shiftTimes !== "function") return null;
+    var p = ymd.split("-");
+    var d = new Date(+p[0], +p[1] - 1, +p[2]);
+    var range = shiftTimes(role, code, branchName, d.getDay());
+    var hm = _parseShiftEnd(range);
+    if (!hm) return null;
+    d.setHours(hm.h, hm.m, 0, 0);
+    return d;
+  }
+  function _ymdToday(d) {
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
   }
   function dateKeyOf(iso) {
     var d = new Date(iso);
@@ -899,7 +996,18 @@
   // after them, where the day is in the past OR (the day is today AND
   // current time >= 18:30). Returns a Set of EC codes that got auto-outed
   // YESTERDAY (used for the warning banner today).
-  async function ensureAutoOuts(recentRows) {
+  // Auto-out logic:
+  //   1. Find each manager's last "in" today / on past days with no out.
+  //   2. Look up their SCHEDULED shift end (role + code + branch + dow).
+  //   3. Trigger the auto-out only AFTER scheduledEnd + 1 hour grace, but
+  //      stamp the recorded ts at scheduledEnd EXACTLY — managers can't
+  //      sneak in overtime by simply leaving the kiosk and forgetting
+  //      to clock out.
+  //   4. When the schedule isn't available (no published cell, unknown
+  //      role, etc.) fall back to the legacy 18:30 cutoff.
+  // schedLookup: optional fn (ec, ymd) → schedule code, mgrByEc: optional
+  // map ec → manager record carrying role + branch.
+  async function ensureAutoOuts(recentRows, schedLookup, mgrByEc) {
     var groups = {};                                 // {ec: {ymd: [rows...]}}
     recentRows.forEach(function (r) {
       var ec = r.staff && r.staff.employee_code; if (!ec) return;
@@ -909,11 +1017,12 @@
       groups[ec][k].push(r);
     });
     var now = new Date();
-    var todayK = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0") + "-" + String(now.getDate()).padStart(2, "0");
-    var cutoffPassed = (now.getHours() > (cfg.autoClockOutHour || 18)) ||
+    var todayK = _ymdToday(now);
+    var legacyCutoffPassed = (now.getHours() > (cfg.autoClockOutHour || 18)) ||
       (now.getHours() === (cfg.autoClockOutHour || 18) && now.getMinutes() >= (cfg.autoClockOutMinute || 30));
+    var graceMs = ((cfg.autoClockOutGraceHours != null ? cfg.autoClockOutGraceHours : 1) * 60 * 60 * 1000);
     var yesterdayDate = new Date(now); yesterdayDate.setDate(yesterdayDate.getDate() - 1);
-    var yesterdayK = yesterdayDate.getFullYear() + "-" + String(yesterdayDate.getMonth() + 1).padStart(2, "0") + "-" + String(yesterdayDate.getDate()).padStart(2, "0");
+    var yesterdayK = _ymdToday(yesterdayDate);
     var autoOutedYesterday = {};
     for (var ec in groups) {
       for (var k in groups[ec]) {
@@ -923,17 +1032,30 @@
           if ((last.type === "out_auto") && k === yesterdayK) autoOutedYesterday[ec] = last;
           continue;
         }
-        // last is "in" and not closed
+        // last is "in" and not closed — figure out the right end time.
+        var mgr = mgrByEc && mgrByEc[String(ec).trim()];
+        var schedCode = schedLookup ? schedLookup(ec, k) : null;
+        var schedEnd = (mgr && schedCode) ? _scheduledEndDate(k, mgr.role, schedCode, mgr.branch || (last.staff && last.staff.branch)) : null;
+        var endIso, fireCutoff;
+        if (schedEnd) {
+          // Auto-out only past (scheduled end + grace). Record at scheduled end.
+          fireCutoff = new Date(schedEnd.getTime() + graceMs);
+          endIso = schedEnd.toISOString();
+        } else {
+          // Fallback: legacy 18:30 hard cutoff.
+          fireCutoff = new Date(k.split("-").map(Number)[0], k.split("-").map(Number)[1] - 1, k.split("-").map(Number)[2],
+            (cfg.autoClockOutHour || 18), (cfg.autoClockOutMinute || 30), 0, 0);
+          endIso = eveningTs(k);
+        }
         var isPast = k < todayK;
-        var isTodayAndCutoff = (k === todayK) && cutoffPassed;
-        if (!isPast && !isTodayAndCutoff) continue;
-        // Insert out_auto with ts = that day's 18:30
+        var isTodayAndPastCutoff = (k === todayK) && (now >= fireCutoff);
+        if (!isPast && !isTodayAndPastCutoff) continue;
         try {
           await window.APP_DATA.addManagerClockinWithMeta(last.staff_id, "out_auto", {
-            tsOverride: eveningTs(k),
+            tsOverride: endIso,
             flags: ["auto_clockout"]
           });
-          if (k === yesterdayK) autoOutedYesterday[ec] = { type: "out_auto", ts: eveningTs(k) };
+          if (k === yesterdayK) autoOutedYesterday[ec] = { type: "out_auto", ts: endIso };
         } catch (e) { console.warn("Auto-out failed for", ec, k, e); }
       }
     }
@@ -955,7 +1077,7 @@
       '<div id="mc-warn"></div>' +
       '<div id="mc-hint" style="font-size:13px;color:#9ca3af;margin-bottom:12px">' +
       'Tap Clock In or Clock Out → enter your 6-digit PIN → take a quick selfie. ' +
-      'Earliest clock-in is 08:00. Anyone still clocked in at 18:30 is auto-clocked-out.' +
+      'Earliest clock-in is 08:00. Anyone still clocked in past their shift end + 1h grace is auto-clocked-out at their scheduled end time.' +
       '</div>' +
       '<div id="mc-body">Loading…</div>' +
       '</section>'
@@ -963,13 +1085,81 @@
     document.getElementById("back-home").onclick = renderManagerLanding;
     document.getElementById("mc-refresh").onclick = renderMgrClockin;
 
-    var pins, mgrs, recent, smTrialEcs, trialCand;
+    var pins, mgrs, recent, smTrialEcs, trialCand, mgrTaggedStaffIds = {};
+    var schedByEcYmd = {};
+    // Resolve current + previous cycle ym (25th-of-month convention) up
+    // front so we can fire the schedule loads in parallel below.
+    var _nowD0 = new Date();
+    var todayK = _ymdToday(_nowD0);
+    var _todayDow = _nowD0.getDay();
+    // Start-month YM for the current + previous cycle (25 → 24 convention).
+    // _curCycleYm = "2026-05" means the May 25 → June 24 cycle.
+    var _curCycleY = _nowD0.getFullYear(), _curCycleM = _nowD0.getMonth() + 1;
+    if (_nowD0.getDate() < 25) { _curCycleM -= 1; if (_curCycleM < 1) { _curCycleM = 12; _curCycleY -= 1; } }
+    var _curCycleYm = _curCycleY + "-" + String(_curCycleM).padStart(2, "0");
+    var _prevCycleY = _curCycleY, _prevCycleM = _curCycleM - 1;
+    if (_prevCycleM < 1) { _prevCycleM = 12; _prevCycleY -= 1; }
+    var _prevCycleYm = _prevCycleY + "-" + String(_prevCycleM).padStart(2, "0");
+    // getSchedule(ym, "mgr") expects an END-month ym (tech convention) and
+    // does endYm − 1 internally to compute the manager start-month key.
+    // We hold start-month YMs above (so _ingestSched re-keys cells against
+    // the right cycle), so pass END = startMonth + 1 to the loader.
+    function _endYmOf(startYm) {
+      var p = startYm.split("-"); var y = +p[0], m = +p[1] + 1;
+      if (m > 12) { m = 1; y += 1; }
+      return y + "-" + String(m).padStart(2, "0");
+    }
+    var _curEndYm  = _endYmOf(_curCycleYm);
+    var _prevEndYm = _endYmOf(_prevCycleYm);
+    function _ingestSched(ym, res) {
+      var grid = (res && res.grid) || {};
+      var ymP = ym.split("-").map(Number);
+      var startY = ymP[0], startM = ymP[1];
+      Object.keys(grid).forEach(function (ec) {
+        var row = grid[ec] || {};
+        Object.keys(row).forEach(function (k) {
+          var v = row[k]; if (!v) return;
+          var ymd;
+          if (/^\d{4}-\d{2}-\d{2}$/.test(k)) {
+            ymd = k;
+          } else {
+            var dom = parseInt(k, 10);
+            if (!isFinite(dom)) return;
+            var y = startY, m = startM;
+            if (dom < 25) { m += 1; if (m > 12) { m = 1; y += 1; } }
+            ymd = y + "-" + String(m).padStart(2, "0") + "-" + String(dom).padStart(2, "0");
+          }
+          (schedByEcYmd[ec] = schedByEcYmd[ec] || {})[ymd] = v;
+        });
+      });
+    }
+    // Load managers FIRST so the clockins query can filter server-side
+    // by their staff_ids — clockins is dominated by nail-tech rows and
+    // the previous unfiltered query was downloading hundreds of irrelevant
+    // rows per render. Everything else fires in parallel after the IDs
+    // are known.
     try {
-      pins = await window.APP_DATA.loadManagerPins();
-      mgrs = await window.APP_DATA.listAllManagers();
-      recent = await window.APP_DATA.listRecentManagerClockins(7);
-      smTrialEcs = window.APP_DATA.activeSmTrialEcs ? await window.APP_DATA.activeSmTrialEcs() : {};
-      trialCand = window.APP_DATA.listTrialCandidates ? await window.APP_DATA.listTrialCandidates() : [];
+      var _stage1 = await Promise.all([
+        window.APP_DATA.loadManagerPins(),
+        window.APP_DATA.listAllManagers(),
+        window.APP_DATA.activeSmTrialEcs ? window.APP_DATA.activeSmTrialEcs() : Promise.resolve({}),
+        window.APP_DATA.listTrialCandidates ? window.APP_DATA.listTrialCandidates() : Promise.resolve([])
+      ]);
+      pins       = _stage1[0];
+      mgrs       = _stage1[1];
+      smTrialEcs = _stage1[2];
+      trialCand  = _stage1[3];
+      var _mgrIds = (mgrs || []).map(function (m) { return m.id; }).filter(Boolean);
+      var _stage2 = await Promise.all([
+        window.APP_DATA.listRecentManagerClockins(2, _mgrIds),
+        window.APP_DATA.getSchedule ? window.APP_DATA.getSchedule(_curEndYm, "mgr").catch(function () { return null; }) : Promise.resolve(null),
+        window.APP_DATA.getSchedule ? window.APP_DATA.getSchedule(_prevEndYm, "mgr").catch(function () { return null; }) : Promise.resolve(null),
+        window.APP_DATA.listManagerDayStatusesToday ? window.APP_DATA.listManagerDayStatusesToday().catch(function () { return []; }) : Promise.resolve([])
+      ]);
+      recent = _stage2[0];
+      _ingestSched(_curCycleYm, _stage2[1]);
+      _ingestSched(_prevCycleYm, _stage2[2]);
+      (_stage2[3] || []).forEach(function (r) { if (r && r.staff_id) mgrTaggedStaffIds[r.staff_id] = true; });
     } catch (e) {
       document.getElementById("mc-body").innerHTML =
         '<div class="warn">Could not load: ' + esc(e.message || e) + '</div>';
@@ -988,13 +1178,6 @@
       return;
     }
 
-    // Run auto-out routine and find anyone auto-outed yesterday
-    var autoYesterday = await ensureAutoOuts(recent);
-    if (Object.keys(autoYesterday).length > 0) {
-      // Rebuild recent so the per-row "today" status reflects the new auto-outs
-      recent = await window.APP_DATA.listRecentManagerClockins(7);
-    }
-
     var thisBranch = (cfg.branchName || "");
     mgrs.sort(function (a, b) {
       var aHere = a.branch === thisBranch ? 0 : 1;
@@ -1003,14 +1186,37 @@
       return (a.name || "").localeCompare(b.name || "");
     });
 
-    // Last clock-in TODAY per ec
-    var todayK = (function () {
-      var d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-    })();
+    var mgrByEc = {};
+    mgrs.forEach(function (m) { if (m.employee_code) mgrByEc[String(m.employee_code).trim()] = m; });
+    var _schedLookup = function (ec, ymd) {
+      var row = schedByEcYmd[String(ec).trim()];
+      return row ? row[ymd] : null;
+    };
+
+    // Run auto-out routine (schedule-aware) and find anyone auto-outed yesterday
+    var autoYesterday = await ensureAutoOuts(recent, _schedLookup, mgrByEc);
+    if (Object.keys(autoYesterday).length > 0) {
+      // Rebuild recent so the per-row "today" status reflects the new auto-outs
+      recent = await window.APP_DATA.listRecentManagerClockins(2);
+    }
+
+    // Today's schedule lookup for per-row hours + the "haven't clocked in" check.
+    var mgrTodaySched = {};
+    Object.keys(schedByEcYmd).forEach(function (ec) {
+      var v = schedByEcYmd[ec][todayK];
+      if (v != null) mgrTodaySched[ec] = v;
+    });
     var byEc = {};
     var inTodayByEc = {};   // earliest "in" record today per ec — only one clock-in/day allowed
+    // Trim ECs on BOTH sides of the lookup. Some staff records carry
+    // trailing whitespace on employee_code (e.g. "B620-M ") and the
+    // raw value comes back differently between listAllManagers (often
+    // clean) and the staff JOIN on clockins. Without the trim the row
+    // lookup misses and a manager who clocked in renders as "HAVEN'T
+    // CLOCKED IN" — matches the HR portal's mLocalYmd / trim pattern.
     recent.forEach(function (r) {
-      var ec = r.staff && r.staff.employee_code; if (!ec) return;
+      var ec = r.staff && r.staff.employee_code ? String(r.staff.employee_code).trim() : "";
+      if (!ec) return;
       if (dateKeyOf(r.ts) !== todayK) return;
       if (!byEc[ec] || r.ts > byEc[ec].ts) byEc[ec] = r;
       if (r.type === "in" && (!inTodayByEc[ec] || r.ts < inTodayByEc[ec].ts)) inTodayByEc[ec] = r;
@@ -1018,19 +1224,37 @@
 
     // Yesterday-auto-out summary banner
     var warnHtml = "";
-    var autoNames = mgrs.filter(function (m) { return autoYesterday[m.employee_code]; }).map(function (m) { return m.name; });
+    var autoNames = mgrs.filter(function (m) { return autoYesterday[String(m.employee_code || "").trim()]; }).map(function (m) { return m.name; });
     if (autoNames.length > 0) {
       warnHtml =
         '<div class="warn" style="margin-bottom:14px;background:#fee2e2;border:1px solid #fca5a5;color:#7f1d1d;border-radius:11px;padding:12px 14px;font-size:13px;line-height:1.5">' +
         '<strong>⚠ Forgot to clock out yesterday — this is an offence.</strong><br>' +
-        'The following managers were auto-clocked-out at 18:30 and need to remember to clock out manually today: <strong>' + autoNames.map(esc).join(", ") + '</strong>.' +
+        'The following managers were auto-clocked-out at their scheduled shift end yesterday and need to remember to clock out manually today: <strong>' + autoNames.map(esc).join(", ") + '</strong>.' +
         '</div>';
     }
     document.getElementById("mc-warn").innerHTML = warnHtml;
 
+    // "Haven't clocked in yet" warning gate. A scheduled-today manager at
+    // this branch who hasn't clocked in and hasn't been tagged absent by
+    // the ROM, after the configured cutoff time, gets a blinking pill so
+    // colleagues at the tablet see it as a reminder. Disappears as soon
+    // as they clock in, OR a ROM tags an absence on the HR portal.
+    var _warnCutH = (cfg.clockInWarningCutoffHour != null ? cfg.clockInWarningCutoffHour : 9);
+    var _warnCutM = (cfg.clockInWarningCutoffMinute != null ? cfg.clockInWarningCutoffMinute : 30);
+    var _nowMins  = (new Date()).getHours() * 60 + (new Date()).getMinutes();
+    var _pastWarnCutoff = _nowMins >= (_warnCutH * 60 + _warnCutM);
+    var _isWorkingCode = function (v) { return v === "W" || v === "WL" || v === "WE" || v === "WB" || v === "WM" || v === "E"; };
+
     function mgrRowHtml(m) {
-      var ec = m.employee_code || "";
-      var has = !!pins[ec];
+      // ec is the trimmed key used for every lookup table built above.
+      // The raw m.employee_code might carry trailing whitespace, which
+      // would mismatch against the trimmed keys in inTodayByEc / byEc /
+      // mgrTodaySched and leave the manager rendering as "not clocked
+      // in" even when they did. pins is keyed by raw EC (its data layer
+      // doesn't trim), so we fall back to either form for the PIN check.
+      var ecRaw = m.employee_code || "";
+      var ec = String(ecRaw).trim();
+      var has = !!(pins[ec] || pins[ecRaw]);
       var last = byEc[ec];
       var inDone = !!inTodayByEc[ec];   // already clocked in today → no second clock-in
       // An AM on an active SM trial is shown as "SM · on trial", mirroring
@@ -1051,19 +1275,43 @@
         lastLabel += ' <span class="pill pill-mute">clocked in ' + fmtTime(inTodayByEc[ec].ts) + '</span>';
       }
       var autoBadge = autoYesterday[ec] ? ' <span class="pill" style="background:#fee2e2;color:#7f1d1d">⚠ auto-out yesterday</span>' : "";
+      // Blinking nag: scheduled, no clock-in today, not ROM-tagged, past
+      // the warning cutoff time. Only nag for THIS branch's managers.
+      var _nagBadge = "";
+      if (m.branch === thisBranch
+          && _pastWarnCutoff
+          && !inTodayByEc[ec]
+          && _isWorkingCode(mgrTodaySched[ec])
+          && !mgrTaggedStaffIds[m.id]) {
+        _nagBadge = ' <span class="mgr-clockin-nag" title="No clock-in recorded yet today. No clock-in = unpaid day. Clock in now, or ask the ROM to tag the absence reason.">⚠ HAVEN\'T CLOCKED IN</span>';
+      }
       var rowCls = m.branch === thisBranch ? "" : " staff-inactive";
+      // Shift hours for today, computed from the schedule code and
+      // role. Only shown for managers based at this branch on a day
+      // the schedule says they're working — silent otherwise so we
+      // don't tell an off-duty manager "your shift is X" by mistake.
+      var _schedCodeToday = mgrTodaySched[ec];
+      var _isWorkingToday = _schedCodeToday === "W" || _schedCodeToday === "WL" || _schedCodeToday === "WE" || _schedCodeToday === "WM" || _schedCodeToday === "WB" || _schedCodeToday === "E";
+      var shiftLine = "";
+      if (m.branch === thisBranch && _isWorkingToday) {
+        var _effRole = onSmTrial ? "SM" : (m.role || "");
+        var _hrs = shiftTimes(_effRole, _schedCodeToday, thisBranch, _todayDow);
+        shiftLine = '<div class="staff-shift-hours" style="font-size:11px;color:var(--pink-700);font-weight:700;letter-spacing:0.02em;margin-top:2px">🕐 Today · ' + esc(_hrs) + '</div>';
+      }
       return '<div class="staff-row' + rowCls + '" data-id="' + m.id + '" data-ec="' + esc(ec) + '" data-name="' + esc(m.name) + '">' +
         '<div class="staff-row-main">' +
         '<div class="staff-name">' + esc(m.name) +
         rolePill +
         (m.branch !== thisBranch ? ' <span class="pill pill-mute">' + esc(m.branch || "—") + "</span>" : "") +
-        (has ? "" : ' <span class="pill pill-warn">NO PIN</span>') + autoBadge +
+        (has ? "" : ' <span class="pill pill-warn">NO PIN</span>') + autoBadge + _nagBadge +
         '</div>' +
+        shiftLine +
         '<div class="staff-code" style="margin-top:3px">' + lastLabel + '</div>' +
         '</div>' +
         '<div class="staff-row-actions">' +
         '<button class="btn btn-primary" data-act="clockin"  ' + (has && !inDone ? "" : 'disabled') + (inDone ? ' title="Already clocked in today"' : '') + '>Clock In</button>' +
-        '<button class="link-btn"       data-act="clockout" ' + (has ? "" : 'disabled') + '>Clock Out</button>' +
+        '<button class="btn btn-out"     data-act="clockout" ' + (has ? "" : 'disabled') + '>Clock Out</button>' +
+        '<button class="link-btn"       data-act="overtime" ' + (has ? "" : 'disabled') + ' title="Submit overtime for ROM approval">⏱️ OT</button>' +
         '</div>' +
         '</div>';
     }
@@ -1077,7 +1325,7 @@
     // Trial AMs use the same daily-status buttons as the trial check-in
     // on the nail-tech side. They have no PIN during the trial weeks; once
     // they pass and get a real employee code they'll appear in the manager
-    // list above with PIN + photo + GPS.
+    // list above with PIN + photo.
     var trialStatusButtons = [
       { code: "on",     label: "On Time"     },
       { code: "late",   label: "Late"        },
@@ -1189,6 +1437,58 @@
             alert("Earliest clock-in is " + String(earliest).padStart(2, "0") + ":00.\n\nIt's only " + new Date().toLocaleTimeString() + " — wait until " + String(earliest).padStart(2, "0") + ":00 then try again.");
             return;
           }
+          // 1a. Store-open gate. The kiosk boot screen shows the gate when
+          // the store hasn't been opened today, but it only fires on the
+          // initial boot — a tablet left running from yesterday lets
+          // managers tap "Manager Clock-in" and clock in BEFORE anyone
+          // marks the store as open. Re-check here so opening the store
+          // is genuinely the first action of the day.
+          try {
+            var opened = await window.APP_DATA.getStoreOpenedToday();
+            if (!opened || !opened.openedAt) {
+              alert("Open the store first.\n\nNobody has marked " + (cfg.branchName || "this store") + " as open yet today. Tap ← Back and open the store before clocking in.");
+              return;
+            }
+          } catch (e) {
+            // Don't block on transient network errors — log and proceed.
+            console.warn("store-open check failed; allowing clock-in:", e);
+          }
+        }
+        // 1b. Early-clock-out picker. Resolve THIS manager's scheduled
+        // shift end for today (role + code + branch + dow). If they're
+        // clocking out more than `earlyClockOutGraceMinutes` (default 20)
+        // before that end time → prompt for a reason. The short hours
+        // saved to the early-leave sidecar = scheduledEnd − now.
+        // Fallback when we can't resolve the schedule (no published cell,
+        // unknown role, etc.) is the legacy fixed-hour cutoff so we
+        // never let a too-early clock-out slip through silently.
+        var earlyOpts = null;
+        if (type === "out") {
+          var nowD = new Date();
+          var graceMin = (cfg.earlyClockOutGraceMinutes != null ? cfg.earlyClockOutGraceMinutes : 20);
+          var schedCodeToday = mgrTodaySched[ec];
+          var _mForOut = mgrByEc[String(ec).trim()];
+          var schedEndToday = (_mForOut && schedCodeToday) ? _scheduledEndDate(todayK, _mForOut.role, schedCodeToday, _mForOut.branch || thisBranch) : null;
+          var promptForReason = false;
+          var hoursShort = 0;
+          if (schedEndToday) {
+            var minsToEnd = Math.round((schedEndToday.getTime() - nowD.getTime()) / 60000);
+            if (minsToEnd > graceMin) {
+              promptForReason = true;
+              hoursShort = Math.min(12, Math.max(0.5, Math.round((minsToEnd / 60) * 2) / 2));
+            }
+          } else {
+            var earlyCutH = (cfg.earlyClockOutCutoffHour != null ? cfg.earlyClockOutCutoffHour : 17);
+            if (nowD.getHours() < earlyCutH) {
+              promptForReason = true;
+              var minsShort = (earlyCutH * 60) - (nowD.getHours() * 60 + nowD.getMinutes());
+              hoursShort = Math.min(12, Math.max(0.5, Math.round((minsShort / 60) * 2) / 2));
+            }
+          }
+          if (promptForReason) {
+            earlyOpts = await openMgrEarlyClockoutModal({ name: name, defaultHours: hoursShort });
+            if (!earlyOpts) return;          // user cancelled
+          }
         }
         // 2. PIN
         var entered = prompt("Enter " + name + "'s 6-digit personal PIN:");
@@ -1206,45 +1506,280 @@
         if (type === "out" && last && last.type === "out") {
           if (!confirm(name + " is already clocked out today (" + fmtTime(last.ts) + "). Record another clock-out anyway?")) return;
         }
-        // 4. Get GPS (best-effort — graceful if denied/unavailable)
-        var gps = await getGPS();
+        // 4. Photo — the selfie alone is enough proof for manager clock-in/out.
+        // GPS was previously captured here too but added latency on flaky
+        // tablet connections (the geolocation prompt blocks for seconds)
+        // and the photo timestamp + clock-in time already cover the audit.
         var meta = { flags: [] };
-        var distanceMeters = null, outOfRange = false;
-        if (gps && !gps.error) {
-          meta.lat = gps.lat; meta.lng = gps.lng; meta.accuracy = gps.accuracy;
-          if (cfg.geo && cfg.geo.lat !== undefined) {
-            distanceMeters = distMeters({ lat: gps.lat, lng: gps.lng }, cfg.geo);
-            outOfRange = distanceMeters > (cfg.radiusMeters || 1000);
-            meta.distanceMeters = distanceMeters;
-            meta.outOfRange = outOfRange;
-            if (outOfRange && cfg.enforceGeo) {
-              alert("Out of range — your tablet reports being " + distanceMeters + "m from " + cfg.branchName + " (max " + cfg.radiusMeters + "m).\n\nClock-in is only allowed at the store.");
-              return;
-            }
-            if (outOfRange) meta.flags.push("out_of_range");
-          }
-        } else if (gps && gps.error) {
-          if (cfg.enforceGeo) {
-            alert("Could not get location: " + gps.error + "\n\nLocation is required for clock-in. Enable location in browser settings and try again.");
-            return;
-          }
-          meta.flags.push("no_gps:" + gps.error);
-        }
-        // 5. Photo
         var dataUrl = await capturePhoto(name);
         if (!dataUrl) return;        // user cancelled
         meta.photoDataUrl = dataUrl;
 
-        // 6. Save
+        // 6. Save. Clock-in/out goes first; early-leave reason is best-effort
+        // and won't roll back the clock-out if writing the sidecar fails (we
+        // surface the error but the clock-out already landed).
         try {
           await window.APP_DATA.addManagerClockinWithMeta(id, type, meta);
-          renderMgrClockin();
         } catch (e) {
           alert("Could not record: " + (e.message || e));
+          return;
         }
+        if (earlyOpts) {
+          try {
+            // dayKey + ym match the sidecar's convention: cycle uses START-
+            // month, dayKey is the day-of-month (1–31).
+            var _now2  = new Date();
+            var _y = _now2.getFullYear(), _m = _now2.getMonth() + 1, _d = _now2.getDate();
+            var _ym2; if (_d > 24) { var nm = _m + 1, ny = _y; if (nm > 12) { nm = 1; ny += 1; } _ym2 = ny + "-" + String(nm).padStart(2, "0"); } else { _ym2 = _y + "-" + String(_m).padStart(2, "0"); }
+            await window.APP_DATA.recordEarlyLeave(_ym2, String(_d), ec, earlyOpts.hours, name, {
+              reasonCode: earlyOpts.reasonCode,
+              reasonNote: earlyOpts.reasonNote,
+              approver:   earlyOpts.approver
+            });
+          } catch (e) {
+            alert("Clock-out saved, but the early-leave reason couldn't be recorded: " + (e.message || e) + "\n\nAsk the ROM to record it manually from the HR portal.");
+          }
+        }
+        // Post-clock-out witness prompt: catch colleagues who walked out
+        // without clocking out (so no early-leave reason was logged). The
+        // clocking-out manager names them; the report goes to boa_mgr_early_reports_v1
+        // for ROM review. Skipped on clock-in.
+        if (type === "out") {
+          try {
+            var report = await openMgrEarlyLeaveReportModal({ name: name });
+            if (report && report.names) {
+              await window.APP_DATA.submitEarlyLeaveReport({
+                reportedByEc:   ec,
+                reportedByName: name,
+                names:          report.names,
+                note:           report.note || ""
+              });
+            }
+          } catch (e) { console.warn("early-leave report save failed:", e); }
+        }
+        renderMgrClockin();
       };
       if (inBtn) inBtn.onclick = function () { doClock("in"); };
       if (outBtn) outBtn.onclick = function () { doClock("out"); };
+      var otBtn = row.querySelector('[data-act="overtime"]');
+      if (otBtn) otBtn.onclick = async function () {
+        // PIN-gate the submission so a colleague can't tap OT for someone
+        // else and get them paid extra.
+        var entered = prompt("Enter " + name + "'s 6-digit personal PIN to submit overtime:");
+        if (entered == null) return;
+        entered = (entered || "").trim();
+        if (!/^\d{6}$/.test(entered)) { alert("PIN must be exactly 6 digits."); return; }
+        if (entered !== pins[ec]) { alert("Wrong PIN."); return; }
+        var result = await openMgrOvertimeModal({ name: name });
+        if (!result) return;
+        try {
+          await window.APP_DATA.submitOvertimeRequest({
+            ec: ec,
+            name: name,
+            branch: thisBranch,
+            date: result.date,
+            hours: result.hours,
+            reason: result.reason,
+            submittedBy: name
+          });
+          alert("✓ Overtime submitted for ROM approval.\n\n" + result.hours + "h on " + result.date + " — you'll see it as Approved on the HR portal once a ROM signs off.");
+        } catch (e) {
+          alert("Could not submit overtime: " + (e.message || e));
+        }
+      };
+    });
+  }
+
+  // ---------------- Early-clock-out reason modal (manager) ----------------
+  // Resolves to { reasonCode, reasonNote, hours } or null if cancelled.
+  // The default hours equals (cutoff − now) so the modal opens with the
+  // expected short-hours pre-filled; the manager can edit.
+  function openMgrEarlyClockoutModal(opts) {
+    return new Promise(function (resolve) {
+      var prev = document.getElementById("boa-mgr-early-modal");
+      if (prev) prev.remove();
+      var modal = document.createElement("div");
+      modal.id = "boa-mgr-early-modal";
+      modal.className = "boa-modal-backdrop";
+      modal.innerHTML =
+        '<div class="boa-modal-card">' +
+          '<h2 class="boa-modal-title">🏃 Leaving early — ' + esc(opts.name) + '</h2>' +
+          '<p class="boa-modal-body">' +
+            'You\'re clocking out before the end of your shift. The hours short are ' +
+            'deducted from this pay cycle — describe why, and name the ROM or ' +
+            'manager who approved going home early.' +
+          '</p>' +
+          '<label class="lbl" style="margin-top:14px">Explanation</label>' +
+          '<textarea id="boa-mgr-early-note" class="input" rows="3" ' +
+            'placeholder="e.g. doctor at 14:30, feeling dizzy, kids sick, etc." autocomplete="off"></textarea>' +
+          '<label class="lbl" style="margin-top:10px">Approved by</label>' +
+          '<input id="boa-mgr-early-approver" type="text" class="input" ' +
+            'placeholder="ROM or manager name" autocomplete="off">' +
+          '<label class="lbl" style="margin-top:10px">Hours short (30-minute intervals)</label>' +
+          '<input id="boa-mgr-early-hours" type="number" class="input" min="0.5" max="12" step="0.5" ' +
+            'value="' + esc(String(opts.defaultHours || 0.5)) + '" autocomplete="off">' +
+          '<div id="boa-mgr-early-err" class="err-line"></div>' +
+          '<div class="btn-row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">' +
+            '<button type="button" class="link-btn link-btn-dark" id="boa-mgr-early-cancel">Cancel clock-out</button>' +
+            '<button type="button" class="btn btn-primary" id="boa-mgr-early-save">Continue clock-out</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(modal);
+
+      var saveBtn = document.getElementById("boa-mgr-early-save");
+      var cancelBtn = document.getElementById("boa-mgr-early-cancel");
+      var hoursEl = document.getElementById("boa-mgr-early-hours");
+      var noteEl  = document.getElementById("boa-mgr-early-note");
+      var approverEl = document.getElementById("boa-mgr-early-approver");
+      var errEl   = document.getElementById("boa-mgr-early-err");
+      function close(result) { modal.remove(); resolve(result); }
+      cancelBtn.onclick = function () { close(null); };
+      modal.addEventListener("click", function (e) { if (e.target === modal) close(null); });
+      setTimeout(function () { try { noteEl.focus(); } catch (_e) {} }, 50);
+
+      saveBtn.onclick = function () {
+        errEl.textContent = "";
+        var explanation = (noteEl.value || "").trim();
+        if (explanation.length < 3) { errEl.textContent = "Add a short explanation so payroll knows why."; return; }
+        var approver = (approverEl.value || "").trim();
+        if (approver.length < 2) { errEl.textContent = "Add the name of the ROM / manager who approved this."; return; }
+        var h = Number((hoursEl.value || "").trim());
+        if (!isFinite(h) || h <= 0) { errEl.textContent = "Hours must be a positive number (e.g. 1.5)."; return; }
+        if (h > 12) { errEl.textContent = "12 hours is the max — please double-check."; return; }
+        // Persist both fields combined into reasonNote so existing readers
+        // (HR portal short-hours summary) pick them up without a schema
+        // change. approver is kept on its own field too for any future UI
+        // that wants to surface it separately.
+        close({
+          reasonCode: "early_leave",
+          reasonNote: explanation + " · approved by " + approver,
+          approver:   approver,
+          hours:      h
+        });
+      };
+    });
+  }
+
+  // ---------------- Witness "did anyone leave early?" prompt ----------------
+  // Asked after a manager successfully clocks out, so a colleague who
+  // walked out without clocking out (no reason logged, no short-hours
+  // deducted) still gets reported. Resolves to:
+  //   { names: "Jane Doe, Sam Smith", note: "left around 14:00" }
+  //   null  → user picked "No" or dismissed
+  function openMgrEarlyLeaveReportModal(opts) {
+    return new Promise(function (resolve) {
+      var prev = document.getElementById("boa-mgr-early-report-modal");
+      if (prev) prev.remove();
+      var modal = document.createElement("div");
+      modal.id = "boa-mgr-early-report-modal";
+      modal.className = "boa-modal-backdrop";
+      modal.innerHTML =
+        '<div class="boa-modal-card">' +
+          '<h2 class="boa-modal-title">👀 Did anyone leave early today?</h2>' +
+          '<p class="boa-modal-body">' +
+            'Thanks for clocking out, ' + esc(opts.name) + '. Before you go — ' +
+            'did any manager leave their shift early today without clocking out? ' +
+            'A quick yes/no helps payroll catch missed deductions.' +
+          '</p>' +
+          '<div class="btn-row" style="justify-content:center;gap:10px;margin-top:12px">' +
+            '<button type="button" class="link-btn link-btn-dark" id="boa-mgr-er-no">No, everyone stayed</button>' +
+            '<button type="button" class="btn btn-primary" id="boa-mgr-er-yes">Yes, name them</button>' +
+          '</div>' +
+          '<div id="boa-mgr-er-detail" style="display:none;margin-top:14px">' +
+            '<label class="lbl">Who left early?</label>' +
+            '<input id="boa-mgr-er-names" type="text" class="input" ' +
+              'placeholder="Comma-separated names" autocomplete="off">' +
+            '<label class="lbl" style="margin-top:10px">Note (optional — when they left, why if you know)</label>' +
+            '<textarea id="boa-mgr-er-note" class="input" rows="2" ' +
+              'placeholder="e.g. around 14:00, said she was sick"></textarea>' +
+            '<div id="boa-mgr-er-err" class="err-line"></div>' +
+            '<div class="btn-row" style="justify-content:space-between;gap:8px;margin-top:10px">' +
+              '<button type="button" class="link-btn link-btn-dark" id="boa-mgr-er-cancel">Skip</button>' +
+              '<button type="button" class="btn btn-primary" id="boa-mgr-er-save">Submit report</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(modal);
+
+      var noBtn   = document.getElementById("boa-mgr-er-no");
+      var yesBtn  = document.getElementById("boa-mgr-er-yes");
+      var detail  = document.getElementById("boa-mgr-er-detail");
+      var namesEl = document.getElementById("boa-mgr-er-names");
+      var noteEl  = document.getElementById("boa-mgr-er-note");
+      var errEl   = document.getElementById("boa-mgr-er-err");
+      var saveBtn = document.getElementById("boa-mgr-er-save");
+      var cancelBtn = document.getElementById("boa-mgr-er-cancel");
+      function close(result) { modal.remove(); resolve(result); }
+      noBtn.onclick     = function () { close(null); };
+      cancelBtn.onclick = function () { close(null); };
+      modal.addEventListener("click", function (e) { if (e.target === modal) close(null); });
+      yesBtn.onclick = function () {
+        detail.style.display = "block";
+        yesBtn.style.display = "none";
+        noBtn.style.display  = "none";
+        setTimeout(function () { try { namesEl.focus(); } catch (_e) {} }, 50);
+      };
+      saveBtn.onclick = function () {
+        errEl.textContent = "";
+        var names = (namesEl.value || "").trim();
+        if (names.length < 2) { errEl.textContent = "Add at least one name."; return; }
+        close({ names: names, note: (noteEl.value || "").trim() });
+      };
+    });
+  }
+
+  // ---------------- Overtime submission modal (manager) ----------------
+  // Submits an OT entry to the boa_overtime_v1 list (status = pending).
+  // The HR portal Overtime tab approves or rejects.
+  function openMgrOvertimeModal(opts) {
+    return new Promise(function (resolve) {
+      var prev = document.getElementById("boa-mgr-ot-modal");
+      if (prev) prev.remove();
+      var modal = document.createElement("div");
+      modal.id = "boa-mgr-ot-modal";
+      modal.className = "boa-modal-backdrop";
+      var todayIso = (new Date()).toISOString().slice(0, 10);
+      modal.innerHTML =
+        '<div class="boa-modal-card">' +
+          '<h2 class="boa-modal-title">⏱️ Submit overtime — ' + esc(opts.name) + '</h2>' +
+          '<p class="boa-modal-body">' +
+            'Submit overtime hours for ROM approval. Only approved hours are paid. ' +
+            'Clocking in early doesn\'t count as overtime — only extra time after your shift.' +
+          '</p>' +
+          '<label class="lbl" style="margin-top:10px">Date</label>' +
+          '<input id="boa-mgr-ot-date" type="date" class="input" value="' + esc(todayIso) + '">' +
+          '<label class="lbl" style="margin-top:10px">Hours (30-minute intervals)</label>' +
+          '<input id="boa-mgr-ot-hours" type="number" class="input" min="0.5" max="12" step="0.5" placeholder="e.g. 2">' +
+          '<label class="lbl" style="margin-top:10px">Reason</label>' +
+          '<textarea id="boa-mgr-ot-reason" class="input" rows="2" placeholder="Why was extra time needed?"></textarea>' +
+          '<div id="boa-mgr-ot-err" class="err-line"></div>' +
+          '<div class="btn-row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">' +
+            '<button type="button" class="link-btn link-btn-dark" id="boa-mgr-ot-cancel">Cancel</button>' +
+            '<button type="button" class="btn btn-primary" id="boa-mgr-ot-save">Submit for approval</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(modal);
+
+      var saveBtn = document.getElementById("boa-mgr-ot-save");
+      var cancelBtn = document.getElementById("boa-mgr-ot-cancel");
+      var dateEl = document.getElementById("boa-mgr-ot-date");
+      var hrsEl  = document.getElementById("boa-mgr-ot-hours");
+      var rsnEl  = document.getElementById("boa-mgr-ot-reason");
+      var errEl  = document.getElementById("boa-mgr-ot-err");
+      function close(result) { modal.remove(); resolve(result); }
+      cancelBtn.onclick = function () { close(null); };
+      modal.addEventListener("click", function (e) { if (e.target === modal) close(null); });
+      saveBtn.onclick = function () {
+        errEl.textContent = "";
+        var d = (dateEl.value || "").trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) { errEl.textContent = "Pick a valid date."; return; }
+        var h = Number((hrsEl.value || "").trim());
+        if (!isFinite(h) || h <= 0) { errEl.textContent = "Hours must be a positive number."; return; }
+        if (h > 12) { errEl.textContent = "12 hours is the max."; return; }
+        var r = (rsnEl.value || "").trim();
+        if (!r) { errEl.textContent = "Add a short reason so the approver knows the context."; return; }
+        close({ date: d, hours: h, reason: r });
+      };
     });
   }
 
@@ -1326,6 +1861,74 @@
   function fmtTime(iso) {
     try { return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
     catch (_e) { return iso; }
+  }
+  // Mirror of the HR portal's shiftTimes() (Manager Coverage tab) so the
+  // kiosk can show each manager their shift hours for today. Keep these
+  // two implementations in sync — the portal one is the source of truth.
+  //   role: "SM" | "SSM" | "AM"
+  //   code: schedule cell value for today (W / WE / WL / WM / WB / E …)
+  //   branchName: store name (matches APP_CONFIG.branchName)
+  //   dow: 0=Sun … 6=Sat (Date#getDay)
+  function shiftTimes(role, code, branchName, dow) {
+    var r = (role || "").toUpperCase();
+    var isSM = r === "SM" || r === "SSM";
+    var b = branchName || "";
+
+    if (b === "Sandown" || b === "Table Bay") {
+      if (isSM) return "08:00 - 17:00";
+      if (dow === 0) {
+        if (code === "WE") return "08:00 - 17:00";
+        return "09:00 - 18:00";
+      }
+      if (dow === 6 && b === "Sandown") {
+        if (code === "WE") return "08:00 - 17:00";
+        return "10:00 - 19:00";
+      }
+      if (code === "WE") return "08:00 - 17:00";
+      if (code === "WM") return "09:00 - 18:00";
+      return "11:00 - 20:00";
+    }
+    if (b === "Riverlands") {
+      if (dow === 6) return "09:00 - 18:00";
+      if (dow === 0) return "08:00 - 17:00";
+      if (isSM) return "08:00 - 17:00";
+      if (code === "WE") return "09:00 - 18:00";
+      if (code === "WB") return "08:00 - 17:00";
+      return "10:00 - 19:00";
+    }
+    if (b === "Ballito" || b === "Mall of the South") {
+      if (isSM) return "08:00 - 17:00";
+      if (dow === 0) return "08:00 - 17:00";
+      if (code === "WE") return "08:00 - 17:00";
+      if (code === "WM") return "09:00 - 18:00";
+      return "10:00 - 19:00";
+    }
+    if (b === "Fourways") {
+      if (isSM) return "08:00 - 17:00";   // SM/SSM always open, never close
+      if (dow === 0) {
+        if (code === "WE") return "08:00 - 17:00";
+        return "10:00 - 19:00";
+      }
+      if (code === "WM") return "10:00 - 19:00";
+      return "11:00 - 20:00";
+    }
+    // Generic stores. Weekend override: SM flat 08:00-17:00 Sat & Sun.
+    // AM Sat 09:00-18:00, Sun 08:30-17:00. Weekdays keep code-specific.
+    if (isSM) {
+      if (dow === 0 || dow === 6) return "08:00 - 17:00";
+      if (code === "WL") return "08:30 - 17:30";
+      if (code === "WE") return "07:30 - 16:30";
+      if (code === "WM") return "08:00 - 13:00";
+      return "08:00 - 17:00";
+    }
+    if (dow === 6) return "09:00 - 18:00";
+    if (dow === 0) return "08:30 - 17:00";
+    if (code === "WL") return "10:00 - 19:00";
+    if (code === "WE") return "08:30 - 18:00";
+    if (code === "WM") return "09:00 - 13:00";
+    if (code === "WB") return "08:00 - 19:00";
+    if (code === "E")  return "09:00 - 18:30";
+    return "09:00 - 18:30";
   }
   function fmtDate(s) {
     try {

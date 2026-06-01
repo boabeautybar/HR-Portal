@@ -226,6 +226,15 @@ textarea.input { resize: vertical; min-height: 64px; }
 .btn-primary:not(:disabled):hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(236,72,153,0.28); }
 .btn-warn { background: linear-gradient(135deg, var(--amber-700), #D97706); color: #fff; }
 .btn-warn:not(:disabled):hover { transform: translateY(-1px); }
+/* Solid outline button for the Clock Out action on the Manager Check-in
+   screen. Distinct from .btn-primary (Clock In's pink gradient) so the
+   two actions read as two different choices, and visibly bolder than
+   .link-btn so it doesn't fade into the row background. */
+.btn-out {
+  background: #fff; color: var(--pink-700);
+  border: 2px solid var(--pink-500);
+}
+.btn-out:not(:disabled):hover { background: var(--pink-50); transform: translateY(-1px); box-shadow: 0 6px 16px rgba(190,24,93,0.18); }
 .btn-row { display: flex; gap: 10px; margin-top: 14px; }
 
 /* ===== Result cards ===== */
@@ -699,6 +708,23 @@ textarea.input { resize: vertical; min-height: 64px; }
 .sched-name-h { text-align: left; min-width: 110px; padding: 6px 10px !important; }
 .sched-name { text-align: left; padding: 6px 10px !important; font-weight: 600; color: var(--pink-900); background: #fff; position: sticky; left: 0; }
 .sched-cell { font-weight: 800; }
+/* One-shot info banner above the Manager Schedule grid. Lists SM/SSM
+   and AM hours for this branch so the grid itself stays clean (no
+   per-row repetition). */
+.sched-hours-banner {
+  background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 11px;
+  padding: 10px 14px; margin: 0 0 12px;
+  color: #065f46; font-size: 12px;
+}
+.sched-hours-banner-title {
+  font-size: 11px; font-weight: 800; letter-spacing: 0.06em;
+  text-transform: uppercase; margin-bottom: 6px;
+}
+.sched-hours-banner-rows {
+  display: grid; gap: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.sched-hours-banner-rows > div { line-height: 1.45; }
 .sched-today { outline: 2px solid var(--pink-500); outline-offset: -2px; }
 /* Working states — all greens (different shades) so any working day reads as
    green at a glance and never gets mistaken for a red OFF day. */
@@ -720,6 +746,22 @@ textarea.input { resize: vertical; min-height: 64px; }
 .sched-legend > span { display: inline-flex; align-items: center; gap: 6px; }
 .sched-legend > span > span { display: inline-block; padding: 2px 6px; border-radius: 4px; font-weight: 700; min-width: 22px; text-align: center; }
 .sched-legend-note { color: var(--pink-700) !important; font-style: italic; }
+
+/* Trial nail-tech ghost rows (10 trial working days, yellow) */
+.sched-cell-trial { background: #fef08a; color: #854d0e; font-weight: 800; }
+.sched-trial-row .sched-name { background: #fefce8; color: #854d0e; font-style: italic; }
+.sched-trial-tag { background: #fef08a; color: #854d0e; padding: 1px 5px; border-radius: 4px; font-size: 9px; font-weight: 800; letter-spacing: 0.04em; font-style: normal; }
+
+/* Custom shift hours (per-manager, per-day overrides from the HR portal) */
+.sched-cell-custom { outline: 2px solid #f59e0b; outline-offset: -2px; }
+.sched-cust-star { color: #b45309; font-size: 9px; vertical-align: super; margin-left: 1px; }
+.sched-custom-hours {
+  margin: 4px 4px 0; padding: 10px 12px; border-radius: 10px;
+  background: #fffbeb; border: 1px solid #fde68a; font-size: 12px; color: #92400e;
+}
+.sched-custom-hours-title { font-weight: 800; letter-spacing: 0.04em; margin-bottom: 6px; }
+.sched-custom-hours-row { padding: 2px 0; }
+.sched-custom-hours-row strong { color: #7c2d12; }
 
 /* ── "Submit today's check-in" home-screen warning ───────────────────────
    Big, red, blinking banner shown on the kiosk home screen after 10:30 when
@@ -746,4 +788,39 @@ textarea.input { resize: vertical; min-height: 64px; }
 .checkin-nag-sub   { font-size: 14px; font-weight: 600; line-height: 1.45; margin-top: 4px; opacity: 0.97; }
 @media (prefers-reduced-motion: reduce) {
   .checkin-nag { animation: none; box-shadow: 0 0 18px 4px rgba(220, 38, 38, 0.55); }
+}
+
+/* ── Per-row "haven't clocked in yet" nag — manager clock-in screen ──
+   Small inline blinking pill shown next to a scheduled manager's name
+   once they're past the warning cutoff with no clock-in and no ROM-
+   tagged absence. */
+.mgr-clockin-nag {
+  display: inline-block;
+  background: #DC2626; color: #fff;
+  border: 1px solid #7F1D1D; border-radius: 999px;
+  padding: 2px 10px; margin-left: 6px;
+  font-size: 11px; font-weight: 800; letter-spacing: 0.04em;
+  animation: checkin-nag-blink 1.1s steps(1, end) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mgr-clockin-nag { animation: none; }
+}
+
+/* ── Home-screen "haven't clocked in" nag — lists this branch's missing
+   managers above the home tiles, same colour family as the tech check-in
+   nag so the visual urgency reads the same. */
+.mgr-home-nag {
+  display: flex; align-items: center; gap: 14px;
+  background: #DC2626; color: #fff;
+  border: 3px solid #7F1D1D; border-radius: 16px;
+  padding: 14px 18px; margin: 0 0 16px;
+  animation: checkin-nag-blink 1.1s steps(1, end) infinite,
+             checkin-nag-glow  1.6s ease-in-out infinite;
+}
+.mgr-home-nag-icon  { font-size: 34px; line-height: 1; flex: 0 0 auto; }
+.mgr-home-nag-body  { flex: 1 1 auto; }
+.mgr-home-nag-title { font-size: 18px; font-weight: 800; letter-spacing: 0.04em; }
+.mgr-home-nag-sub   { font-size: 13px; font-weight: 600; line-height: 1.45; margin-top: 3px; opacity: 0.96; }
+@media (prefers-reduced-motion: reduce) {
+  .mgr-home-nag { animation: none; box-shadow: 0 0 18px 4px rgba(220, 38, 38, 0.55); }
 }

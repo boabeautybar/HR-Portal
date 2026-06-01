@@ -957,6 +957,23 @@
     if (res.error) { console.error("loadEarlyLeaves:", res.error); return {}; }
     return (res.data && res.data.value) || {};
   }
+  // ---------- Extra-day sidecar (kiosk) ----------
+  // The kiosk's "Extra Day" approval writes to its extras sidecar as a nested
+  // map { [dayKey]: { [ec]: { approvedBy, approvedAt } } } where dayKey is the
+  // DAY-OF-MONTH string. KEYING QUIRK: unlike the attendance grid and the
+  // early-leave sidecar — which the kiosk stores under the START-month of the
+  // 25th→24th cycle (attKey/earlyKey subtract a month) — the extras sidecar is
+  // keyed by the RAW ymForDate, i.e. the END-month. The portal passes the
+  // START-month (attYM, same as loadAttendance), so we shift +1 month here to
+  // read the row the kiosk actually wrote.
+  async function loadExtras(branch, ym) {
+    var p = String(ym).split("-");
+    var y = +p[0], m = (+p[1]) + 1; if (m > 12) { m = 1; y += 1; }
+    var key = "boa_extras_" + branch + "_" + y + "-" + String(m).padStart(2, "0");
+    var res = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
+    if (res.error) { console.error("loadExtras:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
   // Delete the boa_early_<branch>_<ym> sidecar entirely. Called by the
   // Attendance Total Reset so the 'left early' orange overlay clears
   // along with the rest of the display state. The next Import Check-ins
@@ -1284,6 +1301,24 @@
     return records;
   }
 
+  // ---------- Manager custom shift hours (boa_mgr_times_v1) ----------
+  // Per-manager, per-day manual overrides of the computed shift hours,
+  // set from the Manager Coverage cell editor (e.g. when one manager has
+  // to open early or stay to close because cover fell short). Keyed by
+  // employee code then ISO date — both globally unique — so a single
+  // store covers every branch/cycle and the kiosk can layer it on top of
+  // the schedule grid. Shape: { [ec]: { "YYYY-MM-DD": "HH:MM - HH:MM" } }.
+  async function loadMgrTimes() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_mgr_times_v1").maybeSingle();
+    if (res.error) { console.error("loadMgrTimes:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveMgrTimes(map) {
+    var res = await sb.from("app_state").upsert({ key: "boa_mgr_times_v1", value: map || {} });
+    if (res.error) { console.error("saveMgrTimes:", res.error); throw res.error; }
+    return map || {};
+  }
+
   // ---------- Daily tasks (boa_daily_tasks_v1) ----------
   // Per-user to-do items assigned by an admin. Records:
   //   { _id, title, description, assigneePin, date (YYYY-MM-DD),
@@ -1300,6 +1335,22 @@
     var res = await sb.from("app_state").upsert({ key: "boa_daily_tasks_v1", value: records || [] });
     if (res.error) { console.error("saveDailyTasks:", res.error); throw res.error; }
     return records;
+  }
+
+  // ---------- Fresha trial access config (boa_fresha_access_v1) ----------
+  // Who is responsible for opening trial techs on Fresha, and who can see
+  // the trial Fresha reminders on the dashboard. Shape:
+  //   { openerPins: ["3030","4040"], viewerRoles: ["national ops","regional ops"], viewerPins: [] }
+  // Empty/missing falls back to a sensible default in the app.
+  async function loadFreshaAccess() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_fresha_access_v1").maybeSingle();
+    if (res.error) { console.error("loadFreshaAccess:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveFreshaAccess(config) {
+    var res = await sb.from("app_state").upsert({ key: "boa_fresha_access_v1", value: config || {} });
+    if (res.error) { console.error("saveFreshaAccess:", res.error); throw res.error; }
+    return config || {};
   }
 
   // ---------- Attendance grid (boa_att_<branch>_<ym>) ----------
@@ -1594,6 +1645,7 @@
     reopenDailyCheckin: reopenDailyCheckin,
     listStoreOpenings: listStoreOpenings,
     loadEarlyLeaves: loadEarlyLeaves,
+    loadExtras: loadExtras,
     deleteEarlyLeaves: deleteEarlyLeaves,
     loadKioskProof: loadKioskProof,
     probeRecentClockinsRaw: probeRecentClockinsRaw,
@@ -1615,18 +1667,59 @@
     // Unpaid legal-status leave
     loadTechLoans: loadTechLoans,
     saveTechLoans: saveTechLoans,
+    loadMgrTimes: loadMgrTimes,
+    saveMgrTimes: saveMgrTimes,
     loadMgrLoans: loadMgrLoans,
     saveMgrLoans: saveMgrLoans,
     loadDailyTasks: loadDailyTasks,
     saveDailyTasks: saveDailyTasks,
+    loadFreshaAccess: loadFreshaAccess,
+    saveFreshaAccess: saveFreshaAccess,
     loadComplianceActions: loadComplianceActions,
     saveComplianceActions: saveComplianceActions,
     loadUnpaidLegalRecords: loadUnpaidLegalRecords,
     saveUnpaidLegalRecords: saveUnpaidLegalRecords,
     loadKioskSecurityLogs: loadKioskSecurityLogs,
     saveKioskSecurityLogs: saveKioskSecurityLogs,
-    saveKioskDevices: saveKioskDevices
+    saveKioskDevices: saveKioskDevices,
+
+    // Manager overtime tracker (HR portal Payroll tab)
+    loadOvertimeRequests: loadOvertimeRequests,
+    saveOvertimeRequests: saveOvertimeRequests,
+
+    // Witness reports — a clocking-out manager naming a colleague who
+    // left early without clocking out. Submitted from the kiosk
+    // (kiosk/data.js submitEarlyLeaveReport); the HR portal reads them
+    // here to surface on the Manager Check-ins tab.
+    loadEarlyLeaveReports: loadEarlyLeaveReports
   };
+
+  // ── Overtime requests ────────────────────────────────────────────────
+  // Single app_state row "boa_overtime_v1" holding the full list of
+  // submitted overtime entries (newest last). Each entry:
+  //   { id, ec, name, branch, date (YYYY-MM-DD), hours, reason,
+  //     status: "pending"|"approved"|"rejected",
+  //     submittedAt, submittedBy, decidedAt, decidedBy, decisionNote }
+  // The HR portal Overtime tab groups by pay cycle (25 → 24) and offsets
+  // approved hours against short hours pulled from the boa_early_*
+  // sidecar to compute net payable overtime.
+  async function loadOvertimeRequests() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_overtime_v1").maybeSingle();
+    if (res.error) { console.error("loadOvertimeRequests:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveOvertimeRequests(list) {
+    var res = await sb.from("app_state").upsert({ key: "boa_overtime_v1", value: Array.isArray(list) ? list : [] });
+    if (res.error) { console.error("saveOvertimeRequests:", res.error); throw res.error; }
+    return list;
+  }
+  async function loadEarlyLeaveReports() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_mgr_early_reports_v1").maybeSingle();
+    if (res.error) { console.error("loadEarlyLeaveReports:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
 
   // ── Custom locations ─────────────────────────────────────────────────
   // Persists branches added via the Locations tab. Stored as a single

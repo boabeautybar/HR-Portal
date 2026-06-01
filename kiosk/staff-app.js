@@ -396,6 +396,72 @@
     return y + "-" + String(m).padStart(2, "0");
   }
 
+  // South African public holidays for a year, mirroring the HR portal's
+  // saHolidays() (Public Holidays Act 1994, with Sunday→Monday observed
+  // rule). Used to exclude holidays when counting a trial's 10 working
+  // days so the kiosk matches the portal exactly. Returns { ymd: name }.
+  var _saHolCache = {};
+  function _easterSunday(year) {
+    var a = year % 19, b = Math.floor(year / 100), c = year % 100;
+    var d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
+    var g = Math.floor((b - f + 1) / 3);
+    var h = (19 * a + b - d - g + 15) % 30;
+    var i = Math.floor(c / 4), k = c % 4;
+    var l = (32 + 2 * e + 2 * i - h - k) % 7;
+    var m = Math.floor((a + 11 * h + 22 * l) / 451);
+    var month = Math.floor((h + l - 7 * m + 114) / 31);
+    var day = ((h + l - 7 * m + 114) % 31) + 1;
+    return new Date(year, month - 1, day);
+  }
+  function _saHolidays(year) {
+    if (_saHolCache[year]) return _saHolCache[year];
+    var out = {};
+    var dk = function (y, m, d) { return y + "-" + String(m).padStart(2, "0") + "-" + String(d).padStart(2, "0"); };
+    var add = function (m, d, name) {
+      var dt = new Date(year, m - 1, d);
+      out[dk(year, m, d)] = name;
+      if (dt.getDay() === 0) {
+        var dt2 = new Date(year, m - 1, d + 1);
+        out[dk(dt2.getFullYear(), dt2.getMonth() + 1, dt2.getDate())] = name + " (observed)";
+      }
+    };
+    add(1, 1, "New Year's Day");
+    add(3, 21, "Human Rights Day");
+    var easter = _easterSunday(year);
+    var gf = new Date(easter); gf.setDate(easter.getDate() - 2);
+    var fd = new Date(easter); fd.setDate(easter.getDate() + 1);
+    out[dk(gf.getFullYear(), gf.getMonth() + 1, gf.getDate())] = "Good Friday";
+    out[dk(fd.getFullYear(), fd.getMonth() + 1, fd.getDate())] = "Family Day";
+    add(4, 27, "Freedom Day");
+    add(5, 1, "Workers' Day");
+    add(6, 16, "Youth Day");
+    add(8, 9, "Women's Day");
+    add(9, 24, "Heritage Day");
+    add(12, 16, "Day of Reconciliation");
+    add(12, 25, "Christmas Day");
+    add(12, 26, "Day of Goodwill");
+    _saHolCache[year] = out;
+    return out;
+  }
+  // Build the set of trial working-day dates (YYYY-MM-DD) for a trial
+  // candidate: 10 days from startDate, Monday–Friday only, skipping
+  // weekends and public holidays. Matches the HR portal's trial overlay.
+  function _trialDaySet(startDate) {
+    var set = {};
+    if (!startDate) return set;
+    var start = new Date(startDate + "T12:00:00");
+    if (isNaN(start)) return set;
+    var cur = new Date(start), count = 0;
+    for (var guard = 0; guard < 60 && count < 10; guard++) {
+      var y = cur.getFullYear(), m = cur.getMonth() + 1, dd = cur.getDate();
+      var ymd = y + "-" + String(m).padStart(2, "0") + "-" + String(dd).padStart(2, "0");
+      var dow = cur.getDay();
+      if (dow !== 0 && dow !== 6 && !_saHolidays(y)[ymd]) { set[ymd] = true; count++; }
+      cur.setDate(cur.getDate() + 1);
+    }
+    return set;
+  }
+
   // out of renderSchedule so the picker can call it without re-running
   // the picker UI. Back button returns to the picker.
   async function renderScheduleKind(kind, ym) {
@@ -463,6 +529,9 @@
     }
     var sched = await window.APP_DATA.getSchedule(ym, kind);
     var grid  = (sched && sched.grid) || {};
+    // Per-manager custom shift hours (set in the HR portal coverage view),
+    // layered over the computed times on the Manager Schedule view.
+    var customTimes = (isMgr && window.APP_DATA.getMgrTimes) ? ((await window.APP_DATA.getMgrTimes()) || {}) : {};
     var days  = window.APP_DATA.periodDays(ym);
     var monthAbbr = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
     var _pad2 = function (n) { return String(n).padStart(2, "0"); };
@@ -488,8 +557,27 @@
     });
     rows.sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
 
+    // Trial nail techs — read-only yellow ghost rows (nail-tech view only).
+    // They have no employee code and aren't in the saved grid, so they're a
+    // pure overlay showing their 10 trial working days for this cycle.
+    var trialGhostRows = [];
+    if (!isMgr && window.APP_DATA.listTrialCandidates) {
+      var trialCands = (await window.APP_DATA.listTrialCandidates()) || [];
+      trialCands.forEach(function (c) {
+        if (!c || c.branch !== thisBranch) return;
+        if (String(c.role || "nt").toLowerCase() !== "nt") return;   // nail techs only (excludes AM/SM/managers, any case)
+        if (c.status === "passed" || c.status === "failed" || c.status === "hired") return;
+        if (!c.startDate) return;
+        var daySet = _trialDaySet(c.startDate);
+        var inCycle = days.some(function (d) { return daySet[_ymdOf(d)]; });
+        if (!inCycle) return;                                        // no trial day this cycle
+        var _keys = Object.keys(daySet).sort();
+        trialGhostRows.push({ name: c.name || "Trial tech", startDate: c.startDate, daySet: daySet, lastYmd: _keys[_keys.length - 1] || null });
+      });
+    }
+
     var body = document.getElementById("sched-body");
-    if (rows.length === 0) {
+    if (rows.length === 0 && trialGhostRows.length === 0) {
       body.innerHTML = '<div class="empty">No ' + (isMgr ? "manager" : "nail tech") + ' schedule has been posted for this period yet, or ' + (isMgr ? "managers" : "techs") + " don't have employee codes matching the HR portal.</div>";
       return;
     }
@@ -503,7 +591,17 @@
       var dt = new Date(d.year, d.monthIdx, d.day);
       return dt.getDay() === 1; // Monday
     };
-    var html = '<div class="sched-wrap"><table class="sched-table">';
+    // Branch-aware "manager hours" banner shown once above the grid on
+    // the Manager Schedule view. Keeps the rows visually clean — no
+    // repeated subtitle under each name. The cells themselves still
+    // expose the exact time as a hover tooltip via the title attr below.
+    var html = '';
+    if (isMgr) {
+      html += _hoursBannerHtml(thisBranch);
+    } else {
+      html += _techHoursBannerHtml(thisBranch);
+    }
+    html += '<div class="sched-wrap"><table class="sched-table">';
     html += '<thead><tr><th class="sched-name-h">Staff</th>';
     days.forEach(function (d, i) {
       var dt = new Date(d.year, d.monthIdx, d.day);
@@ -520,6 +618,7 @@
               '</th>';
     });
     html += '</tr></thead><tbody>';
+    var customList = [];   // collected custom-hours days for the summary below
     rows.forEach(function (s) {
       // Direction-aware transfer blanking, mirroring the HR portal:
       //   • outgoing (leaving this branch): cells on/after transfer_date blank
@@ -536,7 +635,53 @@
         if (d.isToday) classes += ' sched-today';
         if (weekStartAt(d, i)) classes += ' sched-week-start';
         if (cell) {
-          html += '<td class="sched-cell sched-st-' + cell + classes + '">' + cell + '</td>';
+          // Hover-only full time on Manager view so the cell stays
+          // visually clean but the exact hours are reachable on tap.
+          var _title = "";
+          var _custCls = "";
+          var _mark = "";
+          if (isMgr && (cell === "W" || cell === "WE" || cell === "WL" || cell === "WM" || cell === "WB" || cell === "E")) {
+            var _dt = new Date(d.year, d.monthIdx, d.day);
+            var _hrs = _shiftTimes(s.role, cell, thisBranch, _dt.getDay());
+            // Manual override for this manager on this exact day wins over
+            // the computed hours and is flagged with a ★ + summary row.
+            // Employee codes can carry a trailing space in older data, so
+            // fall back to the trimmed key.
+            var _custRow = customTimes[s.employee_code] || customTimes[(s.employee_code || "").trim()];
+            var _cust = _custRow && _custRow[_ymd];
+            if (_cust) {
+              _hrs = _cust;
+              _custCls = " sched-cell-custom";
+              _mark = '<span class="sched-cust-star" aria-hidden="true">★</span>';
+              customList.push({ name: s.name, mon: monthAbbr[d.monthIdx], day: d.day, dow: dowAbbr[_dt.getDay()], hrs: _cust });
+            }
+            if (_hrs) _title = ' title="' + esc(_hrs + (_cust ? " (custom hours)" : "")) + '"';
+          }
+          html += '<td class="sched-cell sched-st-' + cell + classes + _custCls + '"' + _title + '>' + cell + _mark + '</td>';
+        } else {
+          html += '<td class="' + classes.trim() + '"></td>';
+        }
+      });
+      html += '</tr>';
+    });
+    // Trial nail-tech ghost rows — yellow "T" on each of their 10 trial days.
+    trialGhostRows.forEach(function (t) {
+      var startLbl = new Date(t.startDate + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" });
+      html += '<tr class="sched-trial-row"><td class="sched-name" title="' + esc(t.name) + ' · 10-day trial (started ' + esc(startLbl) + ')">' +
+              esc(t.name) + ' <span class="sched-trial-tag">🧪 TRIAL</span></td>';
+      days.forEach(function (d, i) {
+        var _ymd = _ymdOf(d);
+        var classes = '';
+        if (d.isToday) classes += ' sched-today';
+        if (weekStartAt(d, i)) classes += ' sched-week-start';
+        // Pre-start days grey out (X); trial working days are yellow (T);
+        // weekends & public holidays inside the trial window read as off (O).
+        if (t.startDate && _ymd < t.startDate) {
+          html += '<td class="sched-cell sched-st-X' + classes + '" title="' + esc(t.name + ' · not started yet') + '">X</td>';
+        } else if (t.daySet[_ymd]) {
+          html += '<td class="sched-cell sched-cell-trial' + classes + '" title="' + esc(t.name + ' · trial working day (Mon–Fri, excl. weekends & public holidays)') + '">T</td>';
+        } else if (t.lastYmd && _ymd <= t.lastYmd) {
+          html += '<td class="sched-cell sched-st-O' + classes + '" title="' + esc(t.name + ' · off (weekend / public holiday during trial)') + '">O</td>';
         } else {
           html += '<td class="' + classes.trim() + '"></td>';
         }
@@ -553,8 +698,23 @@
               '<span><span class="sched-st-O">O</span> Off</span>' +
               '<span><span class="sched-st-R">R</span> Requested off</span>' +
               '<span><span class="sched-st-L">L</span> Leave</span>' +
+              (!isMgr && trialGhostRows.length ? '<span><span class="sched-cell-trial">T</span> Trial day</span>' : '') +
               '<span class="sched-legend-note">Today highlighted</span>' +
+              (isMgr && customList.length ? '<span class="sched-legend-note">★ custom hours</span>' : '') +
             '</div>';
+
+    // Custom-hours summary — spells out the special hours per manager/day
+    // so the exact times are visible without hovering each starred cell.
+    if (isMgr && customList.length) {
+      customList.sort(function (a, b) { return (a.day - b.day) || (a.name || "").localeCompare(b.name || ""); });
+      html += '<div class="sched-custom-hours">' +
+                '<div class="sched-custom-hours-title">⏰ Custom hours this cycle</div>' +
+                customList.map(function (c) {
+                  return '<div class="sched-custom-hours-row"><strong>' + esc(c.name) + '</strong> · ' +
+                         esc(c.dow + ' ' + c.day + ' ' + c.mon) + ' — ' + esc(c.hrs) + '</div>';
+                }).join("") +
+              '</div>';
+    }
     body.innerHTML = html;
   }
 
@@ -991,7 +1151,7 @@
     var myTrialCand = trialCand.filter(function(c) {
       // Trial AMs live on the Manager Clock-in page instead — they don't
       // belong with the nail-tech roster.
-      if ((c.role || "nt") === "am") return false;
+      if (String(c.role || "nt").toLowerCase() !== "nt") return false;
       return c.branch === myBranch && c.status && c.status.indexOf("trial") === 0;
     });
 
@@ -2497,6 +2657,149 @@
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
     });
+  }
+  // Mirror of the HR portal's shiftTimes() so the kiosk Manager Schedule
+  // view can stamp each working cell with its actual hours. Kept in sync
+  // with the portal copy (app.jsx Manager Coverage) and with the
+  // equivalent helper in manager-app.js — those two are the source of
+  // truth, this one just renders the schedule grid.
+  //   role: "SM" | "SSM" | "AM"
+  //   code: W / WE / WL / WM / WB / E
+  //   branchName: store name (APP_CONFIG.branchName)
+  //   dow: 0=Sun … 6=Sat
+  function _shiftTimes(role, code, branchName, dow) {
+    var r = (role || "").toUpperCase();
+    var isSM = r === "SM" || r === "SSM";
+    var b = branchName || "";
+
+    if (b === "Sandown" || b === "Table Bay") {
+      if (isSM) return "08:00 - 17:00";
+      if (dow === 0) {
+        if (code === "WE") return "08:00 - 17:00";
+        return "09:00 - 18:00";
+      }
+      if (dow === 6 && b === "Sandown") {
+        if (code === "WE") return "08:00 - 17:00";
+        return "10:00 - 19:00";
+      }
+      if (code === "WE") return "08:00 - 17:00";
+      if (code === "WM") return "09:00 - 18:00";
+      return "11:00 - 20:00";
+    }
+    if (b === "Riverlands") {
+      if (isSM) return "08:00 - 17:00";               // SM/SSM always 08:00-17:00, every day
+      if (dow === 6) return "09:00 - 18:00";
+      if (dow === 0) return "08:30 - 17:00";          // Sun single AM (08:30 open)
+      if (code === "WE") return "09:00 - 18:00";
+      if (code === "WB") return "08:00 - 17:00";
+      return "10:00 - 19:00";
+    }
+    if (b === "Ballito" || b === "Mall of the South") {
+      if (isSM) return "08:00 - 17:00";
+      if (dow === 0) return "08:00 - 17:00";
+      if (code === "WE") return "08:00 - 17:00";
+      if (code === "WM") return "09:00 - 18:00";
+      return "10:00 - 19:00";
+    }
+    if (b === "Fourways") {
+      if (isSM) return "08:00 - 17:00";   // SM/SSM always open, never close
+      if (dow === 0) {
+        if (code === "WE") return "08:00 - 17:00";
+        return "10:00 - 19:00";
+      }
+      if (code === "WM") return "10:00 - 19:00";
+      return "11:00 - 20:00";
+    }
+    // Generic stores. SM flat 08-17 on weekends. AM Sat 09-18, Sun 8:30-17.
+    if (isSM) {
+      if (dow === 0 || dow === 6) return "08:00 - 17:00";
+      if (code === "WL") return "08:30 - 17:30";
+      if (code === "WE") return "07:30 - 16:30";
+      if (code === "WM") return "08:00 - 13:00";
+      return "08:00 - 17:00";
+    }
+    if (dow === 6) return "09:00 - 18:00";
+    if (dow === 0) return "08:30 - 17:00";
+    if (code === "WL") return "10:00 - 19:00";
+    if (code === "WE") return "08:30 - 18:00";
+    if (code === "WM") return "09:00 - 13:00";
+    if (code === "WB") return "08:00 - 19:00";
+    if (code === "E")  return "09:00 - 18:30";
+    return "09:00 - 18:30";
+  }
+  // Compact a "HH:MM - HH:MM" range so it fits in a narrow grid cell:
+  //   "09:00 - 18:00" → "9–18"
+  //   "08:30 - 17:00" → "8:30–17"
+  //   "09:00 - 18:30" → "9–18:30"
+  function _compactShift(s) {
+    if (!s) return "";
+    return String(s).replace(/0(\d):00/g, "$1").replace(/(\d\d):00/g, "$1").replace(/\s*-\s*/, "–");
+  }
+  // One-shot info banner shown above the Manager Schedule grid. Lists
+  // SM/SSM and AM hours for this branch so the rows themselves stay
+  // clean (just W/WL/O codes). Generic stores get the Mon-Fri / Sat /
+  // Sun triple. Special stores spell out the per-code times since at
+  // those branches the code drives the shift, not the day of week.
+  function _hoursBannerHtml(branchName) {
+    var b = branchName || "";
+    var lines = [];
+    if (b === "Sandown") {
+      lines.push("SM / SSM — 08:00–17:00 every day");
+      lines.push("AM Mon–Fri · WE 08:00–17:00 · WM 09:00–18:00 · WL 11:00–20:00");
+      lines.push("AM Saturday · WE 08:00–17:00 · WL 10:00–19:00");
+      lines.push("AM Sunday · WE 08:00–17:00 · WL 09:00–18:00");
+    } else if (b === "Table Bay") {
+      lines.push("SM / SSM — 08:00–17:00 every day");
+      lines.push("AM Mon–Sat · WE 08:00–17:00 · WM 09:00–18:00 · WL 11:00–20:00");
+      lines.push("AM Sunday · WE 08:00–17:00 · WL 09:00–18:00");
+    } else if (b === "Riverlands") {
+      lines.push("SM — 08:00–17:00 Mon–Fri");
+      lines.push("AM Mon–Fri · WE 09:00–18:00 · WL 10:00–19:00 · WB 08:00–17:00");
+      lines.push("Saturday — single 09:00–18:00 shift");
+      lines.push("Sunday — AM 08:30–17:00 · SM 08:00–17:00");
+    } else if (b === "Ballito" || b === "Mall of the South") {
+      lines.push("SM — 08:00–17:00 every day");
+      lines.push("AM Mon–Sat · WM 09:00–18:00 · WL 10:00–19:00");
+      lines.push("Sunday — single 08:00–17:00 shift");
+    } else if (b === "Fourways") {
+      lines.push("SM / SSM — 08:00–17:00 every day");
+      lines.push("AM Mon–Sat · WM 10:00–19:00 · WL 11:00–20:00");
+      lines.push("AM Sunday · WE 08:00–17:00 · WL 10:00–19:00");
+    } else {
+      lines.push("SM / SSM — 08:00–17:00 every day");
+      lines.push("AM Mon–Fri — 09:00–18:30");
+      lines.push("AM Saturday — 09:00–18:00");
+      lines.push("AM Sunday — 08:30–17:00");
+    }
+    var rows = lines.map(function (l) { return '<div>' + esc(l) + '</div>'; }).join("");
+    return '<div class="sched-hours-banner">' +
+             '<div class="sched-hours-banner-title">🕐 Manager hours · ' + esc(b || "this store") + '</div>' +
+             '<div class="sched-hours-banner-rows">' + rows + '</div>' +
+           '</div>';
+  }
+  // Same banner pattern, but for the Nail Tech schedule view. Only the
+  // stores that publish a known tech-side WL split are listed; anything
+  // else gets an empty string so we don't render a banner at all.
+  function _techHoursBannerHtml(branchName) {
+    var b = branchName || "";
+    var lines = [];
+    if (b === "Fourways") {
+      lines.push("Mon–Fri · W 09:30–18:30 · WL 11:00–20:00 (4 techs)");
+      lines.push("Saturday · W 09:00–18:00 · WL 11:00–20:00 (4 techs)");
+      lines.push("Sunday · W 09:00–18:00 · WL 10:00–19:00 (2–3 techs, alternates by parity)");
+    } else if (b === "Sandown") {
+      lines.push("Mon–Fri · WE 08:00–17:15 · WL 11:00–20:00");
+      lines.push("Saturday · WE 08:15–17:15 · WL 10:00–19:00");
+      lines.push("Sunday · all shifts 09:00–18:00 (no early/late split)");
+    } else if (b === "Table Bay") {
+      lines.push("Up to 3 nail techs per day on the late shift (WL).");
+    }
+    if (lines.length === 0) return "";
+    var rows = lines.map(function (l) { return '<div>' + esc(l) + '</div>'; }).join("");
+    return '<div class="sched-hours-banner">' +
+             '<div class="sched-hours-banner-title">🕐 Nail tech hours · ' + esc(b) + '</div>' +
+             '<div class="sched-hours-banner-rows">' + rows + '</div>' +
+           '</div>';
   }
   // A staff row is a manager if it's tagged as one in the DB, OR its employee
   // code follows the manager convention. Branch managers use codes ending in
