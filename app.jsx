@@ -6992,7 +6992,7 @@ function isRomRole(role) {
   return r === "regional ops manager" || r === "regional operations manager" || r === "rom";
 }
 
-function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFreshaCfgSave }) {
+function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFreshaCfgSave, overtimeCfg, onOvertimeCfgSave }) {
   const users = appUsers || {};
   const [editing, setEditing] = useState(null);   // {pin, isNew, name, role, demo, isOwner, perms, originalPin}
   const [busy, setBusy] = useState(false);
@@ -7256,6 +7256,49 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
               </div>
             </div>
             <div style={{ fontSize: 11, color: "#9333ea", marginTop: 14, fontStyle: "italic" }}>Owners always see the reminders. Changes save automatically.</div>
+          </div>
+        );
+      })()}
+
+      {/* ── Overtime recording access ── who may record overtime on the HR
+          portal. Owners always can; everyone else must be granted here. */}
+      {onOvertimeCfgSave && (() => {
+        const cfg = overtimeCfg || { roles: ["national"], pins: [] };
+        const userList = Object.keys(users || {})
+          .filter(pin => !(users[pin] && (users[pin].voucherEntryOnly || users[pin].demo)))
+          .map(pin => ({ pin, name: (users[pin] && users[pin].name) || pin, role: (users[pin] && users[pin].role) || "", isOwner: !!(users[pin] && users[pin].isOwner) }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+        const toggleArr = (arr, val) => (arr || []).includes(val) ? (arr || []).filter(x => x !== val) : [...(arr || []), val];
+        const setCfg = (patch) => onOvertimeCfgSave({ ...cfg, ...patch });
+        const roleOpts = [{ key: "national", label: "National Ops Managers" }, { key: "regional", label: "Regional managers (all ROM variants)" }];
+        const chk = { width: 15, height: 15, accentColor: "#0f766e" };
+        const colHead = { fontSize: 10, fontWeight: 800, color: "#0f766e", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 };
+        const rowL = { display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13, color: "#134e4a", cursor: "pointer" };
+        return (
+          <div style={{ marginTop: 26, background: "#f0fdfa", border: "2px solid #99f6e4", borderRadius: 14, padding: "18px 20px" }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: "#0f766e", fontWeight: 700, marginBottom: 2 }}>⏱️ Overtime — who can record it</div>
+            <div style={{ fontSize: 12, color: "#0d9488", marginBottom: 16 }}>Overtime is recorded only from the HR portal (not the kiosk). Owners can always record it; grant other people below. Anyone not listed sees the Overtime tab read-only.</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 20 }}>
+              <div>
+                <div style={colHead}>Allowed by role</div>
+                {roleOpts.map(r => (
+                  <label key={r.key} style={rowL}>
+                    <input type="checkbox" style={chk} checked={(cfg.roles || []).includes(r.key)} onChange={() => setCfg({ roles: toggleArr(cfg.roles, r.key) })} />
+                    {r.label}
+                  </label>
+                ))}
+              </div>
+              <div>
+                <div style={colHead}>…or specific people</div>
+                {userList.map(u => (
+                  <label key={u.pin} style={{ ...rowL, opacity: u.isOwner ? 0.6 : 1 }}>
+                    <input type="checkbox" style={chk} checked={u.isOwner || (cfg.pins || []).includes(u.pin)} disabled={u.isOwner} onChange={() => setCfg({ pins: toggleArr(cfg.pins, u.pin) })} />
+                    {u.name} <span style={{ color: "#5eead4", fontSize: 11 }}>· {u.role}{u.isOwner ? " · always" : ""}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div style={{ fontSize: 11, color: "#0d9488", marginTop: 14, fontStyle: "italic" }}>Owners always have access. Changes save automatically.</div>
           </div>
         );
       })()}
@@ -9199,6 +9242,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     try { if (window.BOA_DB.saveFreshaAccess) await window.BOA_DB.saveFreshaAccess(next); }
     catch (e) { window.alert("Could not save Fresha access: " + (e.message || e)); }
   };
+  // Who may RECORD overtime from the HR portal (boa_overtime_access_v1).
+  // Default: National Ops managers (owners always allowed). Editable in Settings.
+  const [overtimeAccess, setOvertimeAccess] = useState({});
+  const overtimeCfg = useMemo(() => {
+    const c = overtimeAccess || {};
+    return {
+      roles: Array.isArray(c.roles) ? c.roles : ["national"],
+      pins: Array.isArray(c.pins) ? c.pins : []
+    };
+  }, [overtimeAccess]);
+  const saveOvertimeCfg = async (next) => {
+    setOvertimeAccess(next);
+    try { if (window.BOA_DB.saveOvertimeAccess) await window.BOA_DB.saveOvertimeAccess(next); }
+    catch (e) { window.alert("Could not save overtime access: " + (e.message || e)); }
+  };
   // App-scope trial persistence (the trial tab has its own copy inside an
   // IIFE; the dashboard Fresha card needs one too).
   const persistTrialList = async (next) => {
@@ -10176,8 +10234,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadTrialPeriod(),
       window.BOA_DB.loadSmTrial ? window.BOA_DB.loadSmTrial() : Promise.resolve([]),
       window.BOA_DB.loadOvertimeRequests ? window.BOA_DB.loadOvertimeRequests() : Promise.resolve([]),
-      window.BOA_DB.loadFreshaAccess ? window.BOA_DB.loadFreshaAccess() : Promise.resolve({})
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc]) => {
+      window.BOA_DB.loadFreshaAccess ? window.BOA_DB.loadFreshaAccess() : Promise.resolve({}),
+      window.BOA_DB.loadOvertimeAccess ? window.BOA_DB.loadOvertimeAccess() : Promise.resolve({})
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess]) => {
       setStaff(d.staff);
       setManagers(d.managers);
       setMatRecs(d.matRecs);
@@ -10190,6 +10249,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setSmTrialList(Array.isArray(smTrial) ? smTrial : []);
       setOvertimeReqs(Array.isArray(ot) ? ot : []);
       setFreshaAccess(freshaAcc && typeof freshaAcc === "object" ? freshaAcc : {});
+      setOvertimeAccess(otAccess && typeof otAccess === "object" ? otAccess : {});
       setLoading(false);
     }).catch((err) => {
       setLoadError("Could not load data: " + (err.message || err));
@@ -10408,7 +10468,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // Load recent manager clock-ins when the viewer tab opens.
   useEffect(() => {
-    if (tab !== "mgrclockins" && tab !== "mgrCoverage" && tab !== "attendance") return;
+    if (tab !== "mgrclockins" && tab !== "mgrCoverage" && tab !== "attendance" && tab !== "overtime") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     let cancelled = false;
     (async () => {
@@ -10419,7 +10479,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // days" load silently drops the cycle's early days (or the whole cycle
         // when viewing a past month), which reads as missing clock-ins.
         let effDays = mgrClockinDays;
-        if (tab === "attendance" && attYM) {
+        if ((tab === "attendance" || tab === "overtime") && attYM) {
           const ap = attYM.split("-").map(Number);
           const cyStart = new Date(ap[0], ap[1] - 1, 25);
           const spanDays = Math.ceil((Date.now() - cyStart.getTime()) / 86400000) + 2;
@@ -19908,6 +19968,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           - Early clock-ins are intentionally NOT counted as OT. */}
       {tab === "overtime" && (() => {
         const ym = attYM;
+        // Only owners + people granted in Settings → Overtime access may record
+        // overtime. Everyone else gets the tab read-only (view, no submit).
+        const canRecordOvertime = (() => {
+          if (!currentUser) return false;
+          if (currentUser.isOwner) return true;
+          const role = (currentUser.role || "").toLowerCase();
+          const roleMatch = (overtimeCfg.roles || []).some(k =>
+            k === "national" ? (role.includes("national ops") || role.includes("national operations") || role.includes("national"))
+              : k === "regional" ? (role.includes("regional") || /\brom\b/.test(role) || role.includes("regional ops"))
+                : false
+          );
+          if (roleMatch) return true;
+          return (overtimeCfg.pins || []).includes(currentUser.pin);
+        })();
         const ymPretty = (() => {
           try {
             const [yy, mm] = ym.split("-").map(Number);
@@ -19922,6 +19996,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const inCycle = (r) => cycleOf(r.date) === ym;
         const f = otForm;
         const submitOvertime = async () => {
+          if (!canRecordOvertime) { alert("You don't have permission to record overtime. An owner can grant it under Settings → Overtime."); return; }
           const ec = (f.ec || "").trim();
           const m = managers.find(x => x.ec === ec);
           if (!m) { alert("Pick a manager from the list."); return; }
@@ -19932,6 +20007,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (hours > 12) { alert("Hours can't exceed 12 — double-check."); return; }
           const reason = (f.reason || "").trim();
           if (!reason) { alert("Add a short reason so the approver knows the context."); return; }
+          // No clock-out that day → no overtime. A real clock-out (not an
+          // auto-out) is the only proof the manager actually worked past their
+          // shift, so overtime can't be granted without one.
+          const _otLocalYmd = (ts) => { const d = new Date(ts); const z = n => String(n).padStart(2, "0"); return d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate()); };
+          const _mSid = String(m._id || m.id || "");
+          const clockedOut = (mgrClockinRows || []).some(r =>
+            r && r.type === "out" && r.ts && _otLocalYmd(r.ts) === date &&
+            (((r.staff && r.staff.employee_code && String(r.staff.employee_code).trim() === ec)) ||
+              (r.staff_id != null && String(r.staff_id) === _mSid))
+          );
+          if (!clockedOut) {
+            alert(m.name + " has no clock-out recorded on " + date + ".\n\nOvertime can only be added for a day the manager actually clocked out — the clock-out confirms they worked past their shift. (Forgotten / auto clock-outs don't count.)");
+            return;
+          }
           const newReq = {
             id: "ot_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
             ec: m.ec,
@@ -19954,6 +20043,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           catch (e) { alert("Save failed: " + (e.message || e)); setOvertimeReqs(overtimeReqs); }
         };
         const decide = async (id, status) => {
+          if (!canRecordOvertime) { alert("You don't have permission to manage overtime."); return; }
           let note = null;
           if (status === "rejected") {
             note = window.prompt("Reason for rejecting (shown to the manager):", "");
@@ -19971,6 +20061,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           catch (e) { alert("Save failed: " + (e.message || e)); setOvertimeReqs(overtimeReqs); }
         };
         const deleteReq = async (id) => {
+          if (!canRecordOvertime) { alert("You don't have permission to manage overtime."); return; }
           if (!confirm("Delete this overtime entry? This can't be undone.")) return;
           const next = overtimeReqs.filter(r => r.id !== id);
           setOvertimeReqs(next);
@@ -20053,7 +20144,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 {r.decidedAt && <> · {r.status === "approved" ? "Approved" : "Rejected"} {new Date(r.decidedAt).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })} by {r.decidedBy}</>}
               </div>
               {r.decisionNote && <div style={{ fontSize: 11, color: "#7f1d1d", marginTop: 4, fontStyle: "italic" }}>Rejection note: {r.decisionNote}</div>}
-              <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+              {canRecordOvertime && <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
                 {r.status === "pending" && (
                   <>
                     <button onClick={() => decide(r.id, "approved")} style={{ background: "#14532d", color: "#fff", border: "none", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>✓ Approve</button>
@@ -20064,7 +20155,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <button onClick={() => decide(r.id, "pending")} style={{ background: "transparent", color: "#831843", border: "1px solid #F9A8D4", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>↺ Reopen</button>
                 )}
                 <button onClick={() => deleteReq(r.id)} style={{ background: "transparent", color: "#9ca3af", border: "1px solid #e5e7eb", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontSize: 11 }}>Delete</button>
-              </div>
+              </div>}
             </div>
           );
         };
@@ -20085,9 +20176,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
             </div>
 
-            {/* Submit form */}
+            {/* Submit form — only for users granted overtime-recording rights */}
+            {!canRecordOvertime && (
+              <div style={{ padding: "12px 16px", background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 10, marginBottom: 14, fontSize: 12, color: "#0f766e" }}>
+                🔒 You can view overtime here, but recording it is restricted. Ask an owner to grant you access under <strong>Settings → Overtime — who can record it</strong>.
+              </div>
+            )}
+            {canRecordOvertime && (
             <div style={{ padding: "14px 16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, marginBottom: 14 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 10 }}>Submit overtime for a manager</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 10 }}>Record overtime for a manager</div>
               <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 2fr auto", gap: 8, alignItems: "end" }}>
                 <div>
                   <div style={{ fontSize: 10, color: "#9d4d6e", marginBottom: 3, fontWeight: 700, letterSpacing: "0.04em" }}>MANAGER</div>
@@ -20110,9 +20207,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <div style={{ fontSize: 10, color: "#9d4d6e", marginBottom: 3, fontWeight: 700, letterSpacing: "0.04em" }}>REASON</div>
                   <input type="text" value={f.reason} onChange={e => setOtForm({ ...f, reason: e.target.value })} placeholder="Why was extra time needed?" style={{ width: "100%", padding: "6px 8px", border: "1px solid #F9A8D4", borderRadius: 6, fontSize: 12 }} />
                 </div>
-                <button onClick={submitOvertime} style={{ background: "#831843", color: "#fff", border: "none", borderRadius: 6, padding: "7px 14px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>+ Submit</button>
+                <button onClick={submitOvertime} style={{ background: "#831843", color: "#fff", border: "none", borderRadius: 6, padding: "7px 14px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>+ Record</button>
               </div>
             </div>
+            )}
 
             {/* Cycle summary */}
             <div style={{ padding: "14px 16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, marginBottom: 14 }}>
@@ -25605,6 +25703,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           currentUser={currentUser}
           freshaCfg={freshaCfg}
           onFreshaCfgSave={saveFreshaCfg}
+          overtimeCfg={overtimeCfg}
+          onOvertimeCfgSave={saveOvertimeCfg}
         /></div>
       )}
 
