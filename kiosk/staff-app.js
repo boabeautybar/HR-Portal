@@ -571,7 +571,8 @@
         var daySet = _trialDaySet(c.startDate);
         var inCycle = days.some(function (d) { return daySet[_ymdOf(d)]; });
         if (!inCycle) return;                                        // no trial day this cycle
-        trialGhostRows.push({ name: c.name || "Trial tech", startDate: c.startDate, daySet: daySet });
+        var _keys = Object.keys(daySet).sort();
+        trialGhostRows.push({ name: c.name || "Trial tech", startDate: c.startDate, daySet: daySet, lastYmd: _keys[_keys.length - 1] || null });
       });
     }
 
@@ -673,8 +674,14 @@
         var classes = '';
         if (d.isToday) classes += ' sched-today';
         if (weekStartAt(d, i)) classes += ' sched-week-start';
-        if (t.daySet[_ymd]) {
+        // Pre-start days grey out (X); trial working days are yellow (T);
+        // weekends & public holidays inside the trial window read as off (O).
+        if (t.startDate && _ymd < t.startDate) {
+          html += '<td class="sched-cell sched-st-X' + classes + '" title="' + esc(t.name + ' · not started yet') + '">X</td>';
+        } else if (t.daySet[_ymd]) {
           html += '<td class="sched-cell sched-cell-trial' + classes + '" title="' + esc(t.name + ' · trial working day (Mon–Fri, excl. weekends & public holidays)') + '">T</td>';
+        } else if (t.lastYmd && _ymd <= t.lastYmd) {
+          html += '<td class="sched-cell sched-st-O' + classes + '" title="' + esc(t.name + ' · off (weekend / public holiday during trial)') + '">O</td>';
         } else {
           html += '<td class="' + classes.trim() + '"></td>';
         }
