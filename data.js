@@ -1320,6 +1320,22 @@
     return records;
   }
 
+  // ---------- Fresha trial access config (boa_fresha_access_v1) ----------
+  // Who is responsible for opening trial techs on Fresha, and who can see
+  // the trial Fresha reminders on the dashboard. Shape:
+  //   { openerPins: ["3030","4040"], viewerRoles: ["national ops","regional ops"], viewerPins: [] }
+  // Empty/missing falls back to a sensible default in the app.
+  async function loadFreshaAccess() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_fresha_access_v1").maybeSingle();
+    if (res.error) { console.error("loadFreshaAccess:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveFreshaAccess(config) {
+    var res = await sb.from("app_state").upsert({ key: "boa_fresha_access_v1", value: config || {} });
+    if (res.error) { console.error("saveFreshaAccess:", res.error); throw res.error; }
+    return config || {};
+  }
+
   // ---------- Attendance grid (boa_att_<branch>_<ym>) ----------
   // Same key the check-in kiosk app writes to. Status codes include:
   //   on, late, off, ext, sick_n, sick, frl, al, ph, mat, no, unpaid,
@@ -1639,6 +1655,8 @@
     saveMgrLoans: saveMgrLoans,
     loadDailyTasks: loadDailyTasks,
     saveDailyTasks: saveDailyTasks,
+    loadFreshaAccess: loadFreshaAccess,
+    saveFreshaAccess: saveFreshaAccess,
     loadComplianceActions: loadComplianceActions,
     saveComplianceActions: saveComplianceActions,
     loadUnpaidLegalRecords: loadUnpaidLegalRecords,
