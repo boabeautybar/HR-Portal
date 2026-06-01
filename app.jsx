@@ -17428,6 +17428,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // for incoming techs so their worked days show and genuine missed days
         // can be told apart from worked-but-unstamped ones.
         const _cinBranchFor = (ec) => (_incomingByEc[ec] && _incomingByEc[ec].movedFrom) || attBranch;
+        // Post-transfer fallback for an incoming tech. On/after the transfer
+        // date the day belongs to the NEW branch. If she isn't on the new
+        // branch's saved schedule and the day carries no explicit mark, resolve
+        // it from her clock-in: checked in → worked (On Time), otherwise it's an
+        // off day at the new store (grey OFF) rather than a blank cell.
+        const _incPostFallback = (ec, dayObj) => {
+          const inc = _incomingByEc[ec];
+          if (!inc || !dayObj || dayObj.ymd < inc.transferDate) return null;
+          if (attSched[ec] && attSched[ec][dayObj.d]) return null;     // on the new branch's schedule
+          if (attGrid[ec] && attGrid[ec][dayObj.d]) return null;       // explicitly marked
+          const ci = ((checkInsByBranch[_cinBranchFor(ec)] || {})[ec] || {})[dayObj.ymd];
+          return (ci && ci.hasIn) ? "on" : "off";
+        };
         _loansInCycle.concat(_mgrLoansInCycle).forEach(l => {
           if (!l.ec) return;
           const dy = days.find(x => x.ymd === l.date);
@@ -17709,6 +17722,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // days must be reviewed first. The cell render flags those days for
           // review (see mgrClockedInUnscheduled) so the regional can confirm
           // them as an Extra Day or correct the record.
+          // Transferred-in tech, post-transfer day with nothing resolved above.
+          const _incPost = _incPostFallback(ec, dayObj);
+          if (_incPost) return _incPost;
           return "";
         };
         const hasOverride = (ec, d) => {
@@ -17716,6 +17732,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // displays in bold red rather than faded/italic.
           const dayObj = days.find(x => x.d === d);
           if (dayObj && isPostLeftDate(ec, dayObj.ymd)) return true;
+          // Post-transfer derived On Time / OFF for an incoming tech renders
+          // solid so the cell clearly reads worked / off, not a faint blank.
+          if (_incPostFallback(ec, dayObj)) return true;
           // Loaned-out days are derived from the loan record (and possibly
           // mirrored from the receiving branch) - render as a solid override
           // so the cell isn't italicised like a schedule hint.
@@ -17751,7 +17770,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             if (_do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd]) return "al";
           }
           const sv = attSched[ec] && attSched[ec][d];
-          if (!sv) return null;
+          if (!sv) {
+            // Incoming tech, post-transfer, not on the new branch's schedule:
+            // colour the strip from the clock-in fallback (green worked / grey off).
+            const _f = _incPostFallback(ec, days.find(x => x.d === d));
+            return _f || null;
+          }
           if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL") return "on";
           if (sv === "O" || sv === "R") return "off";
           if (sv === "L") return "al";
