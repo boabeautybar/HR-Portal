@@ -19911,14 +19911,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const ymPretty = (() => {
           try {
             const [yy, mm] = ym.split("-").map(Number);
-            const startD = new Date(yy, mm - 2, 25);
-            const endD   = new Date(yy, mm - 1, 24);
+            // attYM is the START-month of the 25th→24th cycle (e.g. "2026-05"
+            // = 25 May → 24 Jun), matching the attendance sheet — NOT end-month.
+            const startD = new Date(yy, mm - 1, 25);
+            const endD   = new Date(yy, mm, 24);
             const f = d => d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short" });
             return f(startD) + " → " + f(endD) + " " + endD.getFullYear();
           } catch (_) { return ym; }
         })();
 
-        const cycleOf = (date) => date ? payrollYmFor(date) : "";
+        // Cycle (start-month ym) a date falls in — must match attYM's
+        // convention or submitted overtime is filtered out of the view it was
+        // entered in (looks like it "didn't save"). A date on/before the 24th
+        // belongs to the previous month's cycle.
+        const cycleOf = (date) => {
+          if (!date) return "";
+          const [y, m, d] = date.split("-").map(Number);
+          let yy = y, mm = m;
+          if (d <= 24) { mm -= 1; if (mm < 1) { mm = 12; yy--; } }
+          return yy + "-" + String(mm).padStart(2, "0");
+        };
         const inCycle = (r) => cycleOf(r.date) === ym;
         const f = otForm;
         const submitOvertime = async () => {
