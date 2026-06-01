@@ -25846,8 +25846,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Stage custom shift hours for this day. Only meaningful for a
           // working code; a value equal to the standard hours (or blank)
           // clears any existing override.
-          const cs = E._draftStart != null ? E._draftStart : (E._custStart || "");
-          const ce = E._draftEnd != null ? E._draftEnd : (E._custEnd || "");
+          // Use the SAME effective values the time inputs display (which
+          // pre-fill with the standard hours). Previously the staging dropped
+          // the _defStart/_defEnd fallback, so changing only the END (leaving
+          // the pre-filled standard START untouched) produced a blank range
+          // and silently saved nothing — "the change wouldn't stick".
+          const cs = E._draftStart != null ? E._draftStart : (E._custStart || E._defStart || "");
+          const ce = E._draftEnd != null ? E._draftEnd : (E._custEnd || E._defEnd || "");
           const stdRange = (E._defStart && E._defEnd) ? (E._defStart + " - " + E._defEnd) : "";
           const newRange = (cs && ce) ? (cs + " - " + ce) : "";
           let stageTime = null; // null = leave override untouched
