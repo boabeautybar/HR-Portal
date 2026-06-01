@@ -9353,17 +9353,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const loadAttendanceReports = async (rangeKey) => {
     const _p2r = z => String(z).padStart(2, "0");
     const ymdOf = d => d.getFullYear() + "-" + _p2r(d.getMonth() + 1) + "-" + _p2r(d.getDate());
-    // Resolve [start, end] for the chosen range. end is always today.
+    // Resolve [start, end] for the chosen range. Week and month-to-date end
+    // today; the pay cycle spans the FULL 25th→24th window (e.g. 25 May →
+    // 24 Jun) even mid-cycle — future days simply carry no data yet.
     const today = new Date(); today.setHours(0, 0, 0, 0);
-    let start;
+    let start, end = today;
     if (rangeKey === "week") { start = new Date(today); start.setDate(start.getDate() - 6); }
     else if (rangeKey === "mtd") { start = new Date(today.getFullYear(), today.getMonth(), 1); }
     else { // pay cycle 25th → 24th containing today
       let y = today.getFullYear(), m = today.getMonth();
       if (today.getDate() < 25) { m -= 1; if (m < 0) { m = 11; y -= 1; } }
       start = new Date(y, m, 25);
+      end = new Date(y, m + 1, 24);                  // 24th of the following month
     }
-    const startYmd = ymdOf(start), endYmd = ymdOf(today);
+    const startYmd = ymdOf(start), endYmd = ymdOf(end);
     setReportsData({ loading: true, range: rangeKey, startYmd, endYmd });
     try {
       const ymds = [];
