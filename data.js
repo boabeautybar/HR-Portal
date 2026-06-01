@@ -958,13 +958,18 @@
     return (res.data && res.data.value) || {};
   }
   // ---------- Extra-day sidecar (kiosk) ----------
-  // The kiosk's "Extra Day" approval writes to boa_extras_<branch>_<ym> as a
-  // nested map { [dayKey]: { [ec]: { approvedBy, recordedAt } } } (dayKey is
-  // YYYY-MM-DD). The Extra Day flag lives ONLY here — independent of the
-  // tech's on-the-day attendance code — so the HR portal must cross-reference
-  // it to render those days as "Extra Day" on the attendance sheet.
+  // The kiosk's "Extra Day" approval writes to its extras sidecar as a nested
+  // map { [dayKey]: { [ec]: { approvedBy, approvedAt } } } where dayKey is the
+  // DAY-OF-MONTH string. KEYING QUIRK: unlike the attendance grid and the
+  // early-leave sidecar — which the kiosk stores under the START-month of the
+  // 25th→24th cycle (attKey/earlyKey subtract a month) — the extras sidecar is
+  // keyed by the RAW ymForDate, i.e. the END-month. The portal passes the
+  // START-month (attYM, same as loadAttendance), so we shift +1 month here to
+  // read the row the kiosk actually wrote.
   async function loadExtras(branch, ym) {
-    var key = "boa_extras_" + branch + "_" + ym;
+    var p = String(ym).split("-");
+    var y = +p[0], m = (+p[1]) + 1; if (m > 12) { m = 1; y += 1; }
+    var key = "boa_extras_" + branch + "_" + y + "-" + String(m).padStart(2, "0");
     var res = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
     if (res.error) { console.error("loadExtras:", res.error); return {}; }
     return (res.data && res.data.value) || {};
