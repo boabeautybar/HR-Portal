@@ -17107,6 +17107,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (!ec) return;
           (_mgrCheckedInByEcYmd[ec] = _mgrCheckedInByEcYmd[ec] || {})[_mLocalYmd(r.ts)] = true;
         });
+        // EC keys on the clock-in map above are trimmed, but staff / schedule
+        // rows can carry a trailing space. The schedule grid (keyed by the raw
+        // EC) still renders, so a spaced EC silently misses its OWN clock-in —
+        // the schedule strip shows but the clock-in never matches. Always trim
+        // on lookup so the date+EC match is robust regardless of stray spaces.
+        const _mgrCheckedIn = (ec, ymd) => !!(_mgrCheckedInByEcYmd[String(ec || "").trim()] || {})[ymd];
         const _todayYmdAtt = (() => { const d = new Date(); return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()); })();
         const _mgrCheckinFromYmd = (() => {
           const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - (mgrClockinDays || 31));
@@ -17124,7 +17130,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if ((_onLeaveByEcYmd[String(ec).trim()] || {})[ymd]) return false; // on approved leave
           if ((_mgrStatusByEcYmd[ec] || {})[ymd]) return false;     // ROM already explained it
           if ((attGrid[ec] || {})[d]) return false;                 // admin already set the cell
-          if ((_mgrCheckedInByEcYmd[ec] || {})[ymd]) return false;  // they did clock in
+          if (_mgrCheckedIn(ec, ymd)) return false;                 // they did clock in
           const sv = (attSched[ec] || {})[d];
           return sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL" || sv === "E";
         };
@@ -17216,7 +17222,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // we render the home cell as 'On Time' so the payroll row
             // shows a worked day instead of staying blank.
             const _do = days.find(x => x.d === d);
-            if (_do && _mgrEcToStaffId[ec] && _mgrCheckedInByEcYmd[ec] && _mgrCheckedInByEcYmd[ec][_do.ymd]) {
+            if (_do && _mgrEcToStaffId[ec] && _mgrCheckedIn(ec, _do.ymd)) {
               return "on";
             }
             return "loan_out";
@@ -17282,16 +17288,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (sv === "X") return "term";
           if (sv === "E") return "ext";
           if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL") return "on";
-          // Manager clock-in fallback. A manager whose kiosk clock-in is
-          // recorded for this day (in the manager clock-in table) but whose
-          // cell has no schedule code and no other status resolving it is
-          // still a real worked day — render it as 'On Time'. Without this a
-          // manager's worked day shows blank whenever the manager schedule
-          // for the cycle hasn't been published yet (e.g. the new month's
-          // grid isn't generated), which is why today's clock-ins weren't
-          // surfacing on the attendance sheet even though they appear under
-          // Manager Check-ins.
-          if (dayObj && _mgrEcToStaffId[ec] && (_mgrCheckedInByEcYmd[ec] || {})[dayObj.ymd]) return "on";
+          // A manager clock-in on a day they were NOT scheduled to work is
+          // deliberately NOT auto-resolved to 'On Time' here — random extra
+          // days must be reviewed first. The cell render flags those days for
+          // review (see mgrClockedInUnscheduled) so the regional can confirm
+          // them as an Extra Day or correct the record.
           return "";
         };
         const hasOverride = (ec, d) => {
@@ -17312,15 +17313,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const _hoOff = _hoSched === "O" || _hoSched === "R";
           if (!_hoOff && dayObj && (_mgrStatusByEcYmd[ec] || {})[dayObj.ymd]) return true;
           if (dayObj && _isMgrAutoAbsent(ec, dayObj.ymd, d)) return true;
-          // Manager kiosk clock-in = confirmed presence. Render it as a solid
-          // 'On Time' (bold), not a faded schedule hint, so the clock-in is
-          // actually visible on the attendance sheet. Fires whether the day
-          // was scheduled to work or carries no schedule code at all; the
-          // only exception is a day the schedule explicitly marks off / on
-          // leave / terminated, where the clock-in is an anomaly best left to
-          // the existing extra-day / review flow rather than auto-confirmed.
-          const _hoSchedOffish = _hoSched === "O" || _hoSched === "R" || _hoSched === "L" || _hoSched === "ML" || _hoSched === "X";
-          if (dayObj && _mgrEcToStaffId[ec] && !_hoSchedOffish && (_mgrCheckedInByEcYmd[ec] || {})[dayObj.ymd]) return true;
+          // A manager kiosk clock-in on a day they were SCHEDULED to work is
+          // confirmed presence — render it solid (bold On Time), not a faded
+          // schedule hint, so the clock-in is actually visible on the sheet.
+          // Clock-ins on non-working days are surfaced as a review flag in the
+          // cell (mgrClockedInUnscheduled), not auto-confirmed here.
+          const _hoSchedWork = _hoSched === "W" || _hoSched === "WE" || _hoSched === "WL" || _hoSched === "WM" || _hoSched === "WB" || _hoSched === "E";
+          if (dayObj && _mgrEcToStaffId[ec] && _hoSchedWork && _mgrCheckedIn(ec, dayObj.ymd)) return true;
           if (dayObj && (_onLeaveByEcYmd[String(ec).trim()] || {})[dayObj.ymd] && !(attGrid[ec] && attGrid[ec][d])) return true;
           const v = attGrid[ec] && attGrid[ec][d];
           return !!v && v.indexOf("~") !== 0;
@@ -18692,7 +18691,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // confirmed off, no warning. Mirrors the tech
                           // 'allMatchOff' but without the Fresha gate since
                           // managers don't have appointment data.
-                          const mgrSchedOff = s.role !== "NT" && _mgrEcToStaffId[s.ec] && scheduleSaysOff && !isWorking && !isLate && !((_mgrCheckedInByEcYmd[s.ec] || {})[dy.ymd]) && isPastOrToday && dy.ymd >= _mgrCheckinFromYmd;
+                          const mgrSchedOff = s.role !== "NT" && _mgrEcToStaffId[s.ec] && scheduleSaysOff && !isWorking && !isLate && !_mgrCheckedIn(s.ec, dy.ymd) && isPastOrToday && dy.ymd >= _mgrCheckinFromYmd;
                           const allMatchOff = (s.role === "NT" && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn && freshaCoversThisDay && !freshaWorkedCell)
                             || mgrSchedOff;
                           // Cross-source rules across Schedule × Kiosk × Fresha:
@@ -18765,7 +18764,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const trustedAbsenceCell = (bareV === "sick" || bareV === "no") && scheduleSaysWork && kioskMarkedAbsent && !freshaWorkedCell;
                           const absentNeedsReview = ((bareV === "sick" || bareV === "no") && !trustedAbsenceCell) || bareV === "absent";
                           const proofPendingCell = (bareV === "sick_n" || bareV === "frl");
-                          const warning = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || missingCheckin || absentNeedsReview || workedOnOffDay || unaccountedScheduledDay || offButFreshaWorked;
+                          // Manager clocked in on a day they were NOT scheduled to
+                          // work (off / leave / no schedule code) and the regional
+                          // hasn't resolved the cell yet → flag for review instead
+                          // of silently treating it as a worked day. Random extra
+                          // days must be confirmed (as Extra Day) or corrected.
+                          const mgrClockedInUnscheduled = s.role !== "NT" && _mgrEcToStaffId[s.ec] && _mgrCheckedIn(s.ec, dy.ymd) && hint !== "on" && hint !== "ext" && isPastOrToday && !override;
+                          const warning = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || missingCheckin || absentNeedsReview || workedOnOffDay || unaccountedScheduledDay || offButFreshaWorked || mgrClockedInUnscheduled;
                           const reviewRec = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
                           const reviewed = !!reviewRec && reviewRec.valueAtReview === (v || "");
                           // Plain English description of the single primary mismatch
@@ -18773,7 +18778,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // at the bottom of the tooltip shows this so the user can
                           // see "where is the mismatch" without scanning four lines.
                           const mismatchReason = (
-                            apptVsKioskAbsentWarn ? "Kiosk marked the tech absent but Fresha has a completed appointment that day."
+                            mgrClockedInUnscheduled ? "Manager clocked in but was NOT scheduled to work this day — review and mark as Extra Day, or correct the record. Extra days aren't auto-approved."
+                              : apptVsKioskAbsentWarn ? "Kiosk marked the tech absent but Fresha has a completed appointment that day."
                               : extDayNoApptWarn ? "Extra Day recorded but Fresha shows no appointments — did they actually do any service?"
                                 : absentNeedsReview ? ("Absent day — admin must confirm " + ((STAT[bareV] || {}).lbl || bareV) + " for payroll.")
                                   : missingCheckin ? "Fresha shows appointments and tech was scheduled to work, but no kiosk check-in was recorded."
@@ -18799,7 +18805,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const mgrStatus = s.role !== "NT" ? ((_mgrStatusByEcYmd[s.ec] || {})[dy.ymd] || null) : null;
                           const mgrNote = s.role !== "NT" ? ((_mgrNoteByEcYmd[s.ec] || {})[dy.ymd] || null) : null;
                           const mgrRecorder = s.role !== "NT" ? ((_mgrRecorderByEcYmd[s.ec] || {})[dy.ymd] || null) : null;
-                          const mgrCheckedIn = s.role !== "NT" && ((_mgrCheckedInByEcYmd[s.ec] || {})[dy.ymd]);
+                          const mgrCheckedIn = s.role !== "NT" && _mgrCheckedIn(s.ec, dy.ymd);
                           const _mgrStatusStale = mgrStatus && (hint === "off");
                           if (s.role !== "NT") {
                             if (mgrStatus && !_mgrStatusStale) {
