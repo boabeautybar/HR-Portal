@@ -6044,16 +6044,26 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                       </td>
                       {days.map(d => {
                         const dYmd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
-                        const isTrialDay = t._trialDaySet.has(dYmd);
                         const weekEnd = d.dow === 0;
-                        const cs = isTrialDay ? cellStyle("trial") : { background: "#fff", color: "#e5e7eb" };
-                        const title = isTrialDay
-                          ? `${t.name} · ${d.d} ${monthAbbr[d.monthIdx]} · trial working day (Mon–Fri, excludes weekends & public holidays)`
-                          : `${t.name} · on trial — only Mon–Fri trial days are scheduled`;
+                        // Pre-start days grey out (X); trial working days are
+                        // yellow (T); weekends & public holidays that fall
+                        // inside the trial window read as off (O). Days after
+                        // the 10th trial day stay blank.
+                        let code = "", cs = { background: "#fff", color: "#e5e7eb" }, title = `${t.name} · on trial`;
+                        if (t._trialStartDate && dYmd < t._trialStartDate) {
+                          code = "X"; cs = cellStyle("X");
+                          title = `${t.name} · not started yet — joins ${startLbl}`;
+                        } else if (t._trialDaySet.has(dYmd)) {
+                          code = "T"; cs = cellStyle("trial");
+                          title = `${t.name} · ${d.d} ${monthAbbr[d.monthIdx]} · trial working day (Mon–Fri, excludes weekends & public holidays)`;
+                        } else if (t._trialLastYmd && dYmd <= t._trialLastYmd) {
+                          code = "O"; cs = cellStyle("O");
+                          title = `${t.name} · ${d.d} ${monthAbbr[d.monthIdx]} · off (${isHoliday(d) ? holidayName(d) : "weekend"} during trial)`;
+                        }
                         return (
                           <td key={t._id + "-" + d.d} title={title}
                             style={{ ...cs, padding: 0, height: 30, textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", borderRight: weekEnd ? "3px solid #BE185D" : "none", fontSize: 11, fontWeight: 700, userSelect: "none", cursor: "default" }}>
-                            {isTrialDay ? "T" : ""}
+                            {code}
                           </td>
                         );
                       })}
