@@ -17312,10 +17312,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const _hoOff = _hoSched === "O" || _hoSched === "R";
           if (!_hoOff && dayObj && (_mgrStatusByEcYmd[ec] || {})[dayObj.ymd]) return true;
           if (dayObj && _isMgrAutoAbsent(ec, dayObj.ymd, d)) return true;
-          // Manager clock-in with no schedule code backing it is still a real
-          // worked day (see the matching fallback in getStatus) — render it
-          // solid, not as a faded schedule hint.
-          if (dayObj && _mgrEcToStaffId[ec] && !_hoSched && (_mgrCheckedInByEcYmd[ec] || {})[dayObj.ymd]) return true;
+          // Manager kiosk clock-in = confirmed presence. Render it as a solid
+          // 'On Time' (bold), not a faded schedule hint, so the clock-in is
+          // actually visible on the attendance sheet. Fires whether the day
+          // was scheduled to work or carries no schedule code at all; the
+          // only exception is a day the schedule explicitly marks off / on
+          // leave / terminated, where the clock-in is an anomaly best left to
+          // the existing extra-day / review flow rather than auto-confirmed.
+          const _hoSchedOffish = _hoSched === "O" || _hoSched === "R" || _hoSched === "L" || _hoSched === "ML" || _hoSched === "X";
+          if (dayObj && _mgrEcToStaffId[ec] && !_hoSchedOffish && (_mgrCheckedInByEcYmd[ec] || {})[dayObj.ymd]) return true;
           if (dayObj && (_onLeaveByEcYmd[String(ec).trim()] || {})[dayObj.ymd] && !(attGrid[ec] && attGrid[ec][d])) return true;
           const v = attGrid[ec] && attGrid[ec][d];
           return !!v && v.indexOf("~") !== 0;
