@@ -9820,7 +9820,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const cycEndE = new Date(_atP[0], _atP[1], 24);
     const cycStartYmdE = cycStartE.getFullYear() + "-" + pp(cycStartE.getMonth() + 1) + "-" + pp(cycStartE.getDate());
     const cycEndYmdE = cycEndE.getFullYear() + "-" + pp(cycEndE.getMonth() + 1) + "-" + pp(cycEndE.getDate());
-    const incoming = (staff || []).filter(s => s && s.ec && s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= cycEndYmdE && s.branch && s.branch !== attBranch);
+    const _todayE = new Date(); const todayYmdE = _todayE.getFullYear() + "-" + pp(_todayE.getMonth() + 1) + "-" + pp(_todayE.getDate());
+    // Only consolidate once the transfer date has arrived (future pending
+    // transfers stay on the old branch until then).
+    const incoming = (staff || []).filter(s => s && s.ec && s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= todayYmdE && s.branch && s.branch !== attBranch);
     const srcBranches = Array.from(new Set(incoming.map(s => s.branch)));
     Promise.all([
       safe(window.BOA_DB.loadAttendance(attBranch, attYM)),
@@ -9895,7 +9898,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     // Incoming mid-cycle transfers: their pre-transfer loan-outs were made from
     // their OLD branch, so we also need the RECEIVING branches' grids to mirror
     // those loan-day statuses in this destination view (matches the old branch).
-    const _incoming = (staff || []).filter(s => s && s.ec && s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= cycEndYmd && s.branch && s.branch !== attBranch);
+    const _todayCB = new Date(); const _todayYmdCB = _todayCB.getFullYear() + "-" + pp(_todayCB.getMonth() + 1) + "-" + pp(_todayCB.getDate());
+    const _incoming = (staff || []).filter(s => s && s.ec && s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= _todayYmdCB && s.branch && s.branch !== attBranch);
     if (_incoming.length) {
       const incByEc = {}; _incoming.forEach(s => { incByEc[s.ec] = s; });
       (techLoans || []).forEach(l => {
@@ -17392,6 +17396,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // are excluded entirely.
         const cycStartYmd = cycStart.getFullYear() + "-" + p2(cycStart.getMonth() + 1) + "-" + p2(cycStart.getDate());
         const cycEndYmd = cycEnd.getFullYear() + "-" + p2(cycEnd.getMonth() + 1) + "-" + p2(cycEnd.getDate());
+        // A transfer only takes effect once its date arrives — a future pending
+        // transfer stays entirely on the OLD branch until then. Gate the
+        // consolidation on today, not the cycle end.
+        const _todayYmdR = (() => { const d = new Date(); return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()); })();
         const stillInCycle = (ec) => {
           const ld = offByEc[ec];
           return !ld || ld >= cycStartYmd;
@@ -17418,7 +17426,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // mirrored status then render exactly as they did at the old branch.
         const _incomingByEc = {};
         (enriched || []).forEach(s => {
-          if (s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= cycEndYmd && s.branch && s.branch !== attBranch && stillInCycle(s.ec)) {
+          if (s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= _todayYmdR && s.branch && s.branch !== attBranch && stillInCycle(s.ec)) {
             _incomingByEc[s.ec] = { movedFrom: s.branch, transferDate: s.transferDate };
           }
         });
@@ -17435,7 +17443,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // off day at the new store (grey OFF) rather than a blank cell.
         const _incPostFallback = (ec, dayObj) => {
           const inc = _incomingByEc[ec];
-          if (!inc || !dayObj || dayObj.ymd < inc.transferDate) return null;
+          if (!inc || !dayObj || dayObj.ymd < inc.transferDate || dayObj.ymd > _todayYmdR) return null;
           if (attSched[ec] && attSched[ec][dayObj.d]) return null;     // on the new branch's schedule
           if (attGrid[ec] && attGrid[ec][dayObj.d]) return null;       // explicitly marked
           const ci = ((checkInsByBranch[_cinBranchFor(ec)] || {})[ec] || {})[dayObj.ymd];
@@ -17468,8 +17476,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // merged in from the old branch by the loader). So: drop techs leaving
         // THIS branch this cycle, and add techs arriving HERE this cycle (their
         // record still carries the old branch + transferring flags).
-        const _movedAwayThisCycle = (s) => s.transferring && s.transferTo && s.transferTo !== attBranch && s.transferDate && s.transferDate <= cycEndYmd;
-        const _arrivingHereThisCycle = (s) => s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= cycEndYmd && s.branch && s.branch !== attBranch;
+        const _movedAwayThisCycle = (s) => s.transferring && s.transferTo && s.transferTo !== attBranch && s.transferDate && s.transferDate <= _todayYmdR;
+        const _arrivingHereThisCycle = (s) => s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= _todayYmdR && s.branch && s.branch !== attBranch;
         const attStaff = [
           ...enriched.filter(s => s.branch === attBranch && stillInCycle(s.ec) && !_movedAwayThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat })),
           ...enriched.filter(s => stillInCycle(s.ec) && _arrivingHereThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat, movedFrom: s.branch, movedOn: s.transferDate })),
@@ -19152,8 +19160,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // 'allMatchOff' but without the Fresha gate since
                           // managers don't have appointment data.
                           const mgrSchedOff = s.role !== "NT" && _mgrEcToStaffId[s.ec] && scheduleSaysOff && !isWorking && !isLate && !_mgrCheckedIn(s.ec, dy.ymd) && isPastOrToday && dy.ymd >= _mgrCheckinFromYmd;
+                          // Transferred-in tech: their old (pre-transfer) and new
+                          // (post-transfer) branches both carry no Fresha here, so
+                          // a scheduled-off day they weren't in still reads OFF —
+                          // confirm it without the Fresha gate the way managers do.
+                          const transferSchedOff = !!s.movedFrom && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn && isPastOrToday;
                           const allMatchOff = (s.role === "NT" && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn && freshaCoversThisDay && !freshaWorkedCell)
-                            || mgrSchedOff;
+                            || mgrSchedOff || transferSchedOff;
                           // Cross-source rules across Schedule × Kiosk × Fresha:
                           //  • allAgreeAbsent — scheduled to work, kiosk marked the tech absent
                           //    (any reason: sick / no-show / frl / off / unpaid / …), AND Fresha
