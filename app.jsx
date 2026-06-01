@@ -111,7 +111,7 @@ function installDemoMode() {
     };
     const noop = async () => { };
     ["saveStaff", "saveMat", "saveManager"].forEach(n => { window.BOA_DB[n] = passthrough; });
-    ["saveSchedule", "saveAttendance", "saveOnboarding", "saveOffboarding",
+    ["saveSchedule", "saveAttendance", "saveEarlyLeaves", "saveOnboarding", "saveOffboarding",
       "saveLeaveRecords", "saveMgrRequests", "saveManagerPins",
       "deleteMat", "deleteManager", "deleteSchedule", "appendActivity"
     ].forEach(n => { window.BOA_DB[n] = noop; });
@@ -126,7 +126,7 @@ function installDemoMode() {
 // hitting Supabase, so a user with view-only access can still see the
 // edit UI but their changes never persist.
 const READ_ONLY_GUARDED_METHODS = [
-  "saveStaff", "saveMat", "saveManager", "saveSchedule", "saveAttendance",
+  "saveStaff", "saveMat", "saveManager", "saveSchedule", "saveAttendance", "saveEarlyLeaves",
   "saveOnboarding", "saveOffboarding", "saveLeaveRecords", "saveMgrRequests",
   "saveTechRequests", "saveManagerPins", "deleteMat", "deleteManager", "deleteSchedule"
 ];
@@ -18741,9 +18741,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Every admin edit auto-records a review so the cell gets the ✓
           // mark — both warning-cell decisions AND ordinary manual entries
           // ("Sick NO note", "Annual", etc.) read as "admin reviewed this".
+          // Remove any kiosk 'left early' short-hours for this cell. The
+          // orange -Xh overlay lives in the boa_early sidecar, NOT the grid,
+          // so setting a status alone never clears it — clear it explicitly
+          // whenever the admin overrides the cell (e.g. correcting a trial AM
+          // who actually worked their full scheduled shift).
+          const clearEarlyLeaveForCell = async (ec, d) => {
+            const cur = attEarly || {};
+            if (!(cur[d] && cur[d][ec])) return;
+            const next = { ...cur, [d]: { ...cur[d] } };
+            delete next[d][ec];
+            if (Object.keys(next[d]).length === 0) delete next[d];
+            setAttEarly(next);
+            try { if (window.BOA_DB.saveEarlyLeaves) await window.BOA_DB.saveEarlyLeaves(attBranch, attYM, next); }
+            catch (e) { console.error("clear early-leave:", e); }
+          };
           const setCellAndReview = async (ec, d, finalValue) => {
             await setCell(ec, d, finalValue);
             await autoRecordReview(ec, d, finalValue);
+            await clearEarlyLeaveForCell(ec, d);
           };
           if (val === "deduct") {
             const hStr = prompt("How many hours unpaid? (e.g. 1.5 for 1h30)\n\nEnter a number between 0.5 and 9.", "1");

@@ -1035,7 +1035,7 @@
         // last is "in" and not closed — figure out the right end time.
         var mgr = mgrByEc && mgrByEc[String(ec).trim()];
         var schedCode = schedLookup ? schedLookup(ec, k) : null;
-        var schedEnd = (mgr && schedCode) ? _scheduledEndDate(k, mgr.role, schedCode, mgr.branch || (last.staff && last.staff.branch)) : null;
+        var schedEnd = (mgr && schedCode) ? _scheduledEndDate(k, mgr._effRole || mgr.role, schedCode, mgr.branch || (last.staff && last.staff.branch)) : null;
         var endIso, fireCutoff;
         if (schedEnd) {
           // Auto-out only past (scheduled end + grace). Record at scheduled end.
@@ -1187,7 +1187,15 @@
     });
 
     var mgrByEc = {};
-    mgrs.forEach(function (m) { if (m.employee_code) mgrByEc[String(m.employee_code).trim()] = m; });
+    mgrs.forEach(function (m) {
+      if (!m.employee_code) return;
+      var _ecK = String(m.employee_code).trim();
+      // AMs on an active SM trial work SM shifts (08:00–17:00 close), not the
+      // later AM close. Resolve their scheduled shift end — and therefore any
+      // early-clock-out short hours and auto-out time — as an SM, not an AM.
+      m._effRole = (m.role === "AM" && smTrialEcs && smTrialEcs[_ecK]) ? "SM" : m.role;
+      mgrByEc[_ecK] = m;
+    });
     var _schedLookup = function (ec, ymd) {
       var row = schedByEcYmd[String(ec).trim()];
       return row ? row[ymd] : null;
@@ -1468,7 +1476,7 @@
           var graceMin = (cfg.earlyClockOutGraceMinutes != null ? cfg.earlyClockOutGraceMinutes : 20);
           var schedCodeToday = mgrTodaySched[ec];
           var _mForOut = mgrByEc[String(ec).trim()];
-          var schedEndToday = (_mForOut && schedCodeToday) ? _scheduledEndDate(todayK, _mForOut.role, schedCodeToday, _mForOut.branch || thisBranch) : null;
+          var schedEndToday = (_mForOut && schedCodeToday) ? _scheduledEndDate(todayK, _mForOut._effRole || _mForOut.role, schedCodeToday, _mForOut.branch || thisBranch) : null;
           var promptForReason = false;
           var hoursShort = 0;
           if (schedEndToday) {

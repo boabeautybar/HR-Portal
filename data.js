@@ -974,6 +974,16 @@
     if (res.error) { console.error("loadExtras:", res.error); return {}; }
     return (res.data && res.data.value) || {};
   }
+  // Persist the boa_early_<branch>_<ym> sidecar (the whole nested map). Used
+  // by the attendance sheet to clear a single day's 'left early' short-hours
+  // when an admin overrides that cell, so the orange -Xh overlay can be
+  // removed (it lives in this sidecar, not the attendance grid).
+  async function saveEarlyLeaves(branch, ym, value) {
+    var key = "boa_early_" + branch + "_" + ym;
+    var res = await sb.from("app_state").upsert({ key: key, value: value || {} });
+    if (res.error) { console.error("saveEarlyLeaves:", res.error, "key:", key); throw res.error; }
+    return value || {};
+  }
   // Delete the boa_early_<branch>_<ym> sidecar entirely. Called by the
   // Attendance Total Reset so the 'left early' orange overlay clears
   // along with the rest of the display state. The next Import Check-ins
@@ -1645,6 +1655,7 @@
     reopenDailyCheckin: reopenDailyCheckin,
     listStoreOpenings: listStoreOpenings,
     loadEarlyLeaves: loadEarlyLeaves,
+    saveEarlyLeaves: saveEarlyLeaves,
     loadExtras: loadExtras,
     deleteEarlyLeaves: deleteEarlyLeaves,
     loadKioskProof: loadKioskProof,
