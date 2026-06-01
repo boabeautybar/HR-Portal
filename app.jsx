@@ -15603,6 +15603,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const activeTrials = currentList.filter(r => r.status !== "passed" && r.status !== "failed" && r.status !== "hired");
         const passedTrials = currentList.filter(r => r.status === "passed" && !r.promotedToOnboarding);
         const failedTrials = currentList.filter(r => r.status === "failed");
+        // Recently-hired techs (onboarded in the last 30 days). Surfaced so they
+        // can be reviewed and removed here — otherwise a "hired" record is
+        // invisible in the kanban yet still lingers in the data.
+        const hiredRecent = currentList.filter(r => {
+          if (r.status !== "hired") return false;
+          const ref = Date.parse(r.promotedAt || r.updatedAt || r.addedAt || "");
+          return !!ref && (Date.now() - ref) < 30 * 86400000;
+        }).sort((a, b) => Date.parse(b.promotedAt || b.updatedAt || b.addedAt || "") - Date.parse(a.promotedAt || a.updatedAt || a.addedAt || ""));
 
         const inp = { padding: "8px 10px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: "#fff" };
         const lbl = { display: "block", fontSize: 10, fontWeight: 700, color: "#BE185D", letterSpacing: "0.08em", marginBottom: 4, textTransform: "uppercase" };
@@ -15904,6 +15912,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               </div>
             </div>
+
+            {/* Hired in the last 30 days */}
+            {hiredRecent.length > 0 && (
+              <div style={{ marginTop: 32 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#15803d", marginBottom: 10 }}>🎉 Hired · last 30 days ({hiredRecent.length})</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {hiredRecent.map(r => {
+                    const hiredRef = r.promotedAt || r.updatedAt || r.addedAt;
+                    const hiredLbl = hiredRef ? new Date(hiredRef).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : "—";
+                    return (
+                      <div key={r._id} style={{ background: "#fff", borderRadius: 10, border: "1px solid #bbf7d0", padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <div>
+                          <span style={{ fontWeight: 700, color: "#14532d", fontSize: 13 }}>{r.name}</span>
+                          <span style={{ fontSize: 11, color: "#6b7280", marginLeft: 8 }}>📍 {r.branch} · hired {hiredLbl}</span>
+                        </div>
+                        <button onClick={() => deleteTrial(r._id)} style={{ background: "none", border: "1px solid #d1d5db", borderRadius: 6, padding: "3px 10px", cursor: "pointer", fontSize: 11, color: "#6b7280" }} title="Remove this trial record (they stay an active staff member)">Remove</button>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 6, fontStyle: "italic" }}>Removing clears the trial record only — the person stays an active staff member.</div>
+              </div>
+            )}
 
             {/* Failed / Archived */}
             {failedTrials.length > 0 && (
