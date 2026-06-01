@@ -396,6 +396,72 @@
     return y + "-" + String(m).padStart(2, "0");
   }
 
+  // South African public holidays for a year, mirroring the HR portal's
+  // saHolidays() (Public Holidays Act 1994, with Sunday→Monday observed
+  // rule). Used to exclude holidays when counting a trial's 10 working
+  // days so the kiosk matches the portal exactly. Returns { ymd: name }.
+  var _saHolCache = {};
+  function _easterSunday(year) {
+    var a = year % 19, b = Math.floor(year / 100), c = year % 100;
+    var d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
+    var g = Math.floor((b - f + 1) / 3);
+    var h = (19 * a + b - d - g + 15) % 30;
+    var i = Math.floor(c / 4), k = c % 4;
+    var l = (32 + 2 * e + 2 * i - h - k) % 7;
+    var m = Math.floor((a + 11 * h + 22 * l) / 451);
+    var month = Math.floor((h + l - 7 * m + 114) / 31);
+    var day = ((h + l - 7 * m + 114) % 31) + 1;
+    return new Date(year, month - 1, day);
+  }
+  function _saHolidays(year) {
+    if (_saHolCache[year]) return _saHolCache[year];
+    var out = {};
+    var dk = function (y, m, d) { return y + "-" + String(m).padStart(2, "0") + "-" + String(d).padStart(2, "0"); };
+    var add = function (m, d, name) {
+      var dt = new Date(year, m - 1, d);
+      out[dk(year, m, d)] = name;
+      if (dt.getDay() === 0) {
+        var dt2 = new Date(year, m - 1, d + 1);
+        out[dk(dt2.getFullYear(), dt2.getMonth() + 1, dt2.getDate())] = name + " (observed)";
+      }
+    };
+    add(1, 1, "New Year's Day");
+    add(3, 21, "Human Rights Day");
+    var easter = _easterSunday(year);
+    var gf = new Date(easter); gf.setDate(easter.getDate() - 2);
+    var fd = new Date(easter); fd.setDate(easter.getDate() + 1);
+    out[dk(gf.getFullYear(), gf.getMonth() + 1, gf.getDate())] = "Good Friday";
+    out[dk(fd.getFullYear(), fd.getMonth() + 1, fd.getDate())] = "Family Day";
+    add(4, 27, "Freedom Day");
+    add(5, 1, "Workers' Day");
+    add(6, 16, "Youth Day");
+    add(8, 9, "Women's Day");
+    add(9, 24, "Heritage Day");
+    add(12, 16, "Day of Reconciliation");
+    add(12, 25, "Christmas Day");
+    add(12, 26, "Day of Goodwill");
+    _saHolCache[year] = out;
+    return out;
+  }
+  // Build the set of trial working-day dates (YYYY-MM-DD) for a trial
+  // candidate: 10 days from startDate, Monday–Friday only, skipping
+  // weekends and public holidays. Matches the HR portal's trial overlay.
+  function _trialDaySet(startDate) {
+    var set = {};
+    if (!startDate) return set;
+    var start = new Date(startDate + "T12:00:00");
+    if (isNaN(start)) return set;
+    var cur = new Date(start), count = 0;
+    for (var guard = 0; guard < 60 && count < 10; guard++) {
+      var y = cur.getFullYear(), m = cur.getMonth() + 1, dd = cur.getDate();
+      var ymd = y + "-" + String(m).padStart(2, "0") + "-" + String(dd).padStart(2, "0");
+      var dow = cur.getDay();
+      if (dow !== 0 && dow !== 6 && !_saHolidays(y)[ymd]) { set[ymd] = true; count++; }
+      cur.setDate(cur.getDate() + 1);
+    }
+    return set;
+  }
+
   // out of renderSchedule so the picker can call it without re-running
   // the picker UI. Back button returns to the picker.
   async function renderScheduleKind(kind, ym) {
@@ -491,8 +557,26 @@
     });
     rows.sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
 
+    // Trial nail techs — read-only yellow ghost rows (nail-tech view only).
+    // They have no employee code and aren't in the saved grid, so they're a
+    // pure overlay showing their 10 trial working days for this cycle.
+    var trialGhostRows = [];
+    if (!isMgr && window.APP_DATA.listTrialCandidates) {
+      var trialCands = (await window.APP_DATA.listTrialCandidates()) || [];
+      trialCands.forEach(function (c) {
+        if (!c || c.branch !== thisBranch) return;
+        if ((c.role || "nt") === "am") return;                       // nail techs only
+        if (c.status === "passed" || c.status === "failed" || c.status === "hired") return;
+        if (!c.startDate) return;
+        var daySet = _trialDaySet(c.startDate);
+        var inCycle = days.some(function (d) { return daySet[_ymdOf(d)]; });
+        if (!inCycle) return;                                        // no trial day this cycle
+        trialGhostRows.push({ name: c.name || "Trial tech", startDate: c.startDate, daySet: daySet });
+      });
+    }
+
     var body = document.getElementById("sched-body");
-    if (rows.length === 0) {
+    if (rows.length === 0 && trialGhostRows.length === 0) {
       body.innerHTML = '<div class="empty">No ' + (isMgr ? "manager" : "nail tech") + ' schedule has been posted for this period yet, or ' + (isMgr ? "managers" : "techs") + " don't have employee codes matching the HR portal.</div>";
       return;
     }
@@ -579,6 +663,24 @@
       });
       html += '</tr>';
     });
+    // Trial nail-tech ghost rows — yellow "T" on each of their 10 trial days.
+    trialGhostRows.forEach(function (t) {
+      var startLbl = new Date(t.startDate + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" });
+      html += '<tr class="sched-trial-row"><td class="sched-name" title="' + esc(t.name) + ' · 10-day trial (started ' + esc(startLbl) + ')">' +
+              esc(t.name) + ' <span class="sched-trial-tag">🧪 TRIAL</span></td>';
+      days.forEach(function (d, i) {
+        var _ymd = _ymdOf(d);
+        var classes = '';
+        if (d.isToday) classes += ' sched-today';
+        if (weekStartAt(d, i)) classes += ' sched-week-start';
+        if (t.daySet[_ymd]) {
+          html += '<td class="sched-cell sched-cell-trial' + classes + '" title="' + esc(t.name + ' · trial working day (Mon–Fri, excl. weekends & public holidays)') + '">T</td>';
+        } else {
+          html += '<td class="' + classes.trim() + '"></td>';
+        }
+      });
+      html += '</tr>';
+    });
     html += '</tbody></table></div>';
 
     html += '<div class="sched-legend">' +
@@ -589,6 +691,7 @@
               '<span><span class="sched-st-O">O</span> Off</span>' +
               '<span><span class="sched-st-R">R</span> Requested off</span>' +
               '<span><span class="sched-st-L">L</span> Leave</span>' +
+              (!isMgr && trialGhostRows.length ? '<span><span class="sched-cell-trial">T</span> Trial day</span>' : '') +
               '<span class="sched-legend-note">Today highlighted</span>' +
               (isMgr && customList.length ? '<span class="sched-legend-note">★ custom hours</span>' : '') +
             '</div>';
