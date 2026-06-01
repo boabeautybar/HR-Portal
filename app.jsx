@@ -7209,7 +7209,7 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
           .sort((a, b) => a.name.localeCompare(b.name));
         const toggleArr = (arr, val) => (arr || []).includes(val) ? (arr || []).filter(x => x !== val) : [...(arr || []), val];
         const setCfg = (patch) => onFreshaCfgSave({ ...cfg, ...patch });
-        const roleOpts = [{ key: "national ops", label: "National Ops Manager" }, { key: "regional ops", label: "Regional Ops Manager" }];
+        const roleOpts = [{ key: "national", label: "National Ops Managers" }, { key: "regional", label: "Regional managers (all ROM variants)" }];
         const chk = { width: 15, height: 15, accentColor: "#7c3aed" };
         const colHead = { fontSize: 10, fontWeight: 800, color: "#7c3aed", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 };
         const rowL = { display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13, color: "#3b0764", cursor: "pointer" };
@@ -9179,7 +9179,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const c = freshaAccess || {};
     return {
       openerPins: Array.isArray(c.openerPins) && c.openerPins.length ? c.openerPins : ["3030", "4040"],
-      viewerRoles: Array.isArray(c.viewerRoles) ? c.viewerRoles : ["national ops", "regional ops"],
+      viewerRoles: Array.isArray(c.viewerRoles) ? c.viewerRoles : ["national", "regional"],
       viewerPins: Array.isArray(c.viewerPins) ? c.viewerPins : []
     };
   }, [freshaAccess]);
@@ -11874,10 +11874,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   read-only). Who opens/sees is editable in Settings. */}
               {(() => {
                 const _role = (currentUser?.role || "").toLowerCase();
+                // Robust role matching: "regional" catches every ROM variant
+                // (incl. "ROM"/"Regional Manager") via isRomRole; "national"
+                // catches National Ops/Operations. Any other stored keyword
+                // falls back to a plain substring test.
+                const roleMatch = (key) => {
+                  const k = String(key).toLowerCase();
+                  if (k === "regional") return isRomRole(currentUser?.role) || _role.includes("regional");
+                  if (k === "national") return _role.includes("national ops") || _role.includes("national operations") || _role.includes("national");
+                  return _role.includes(k);
+                };
                 const isOpener = (freshaCfg.openerPins || []).includes(currentUser?.pin);
                 const isViewer = !!currentUser?.isOwner
                   || (freshaCfg.viewerPins || []).includes(currentUser?.pin)
-                  || (freshaCfg.viewerRoles || []).some(r => _role.includes(String(r).toLowerCase()));
+                  || (freshaCfg.viewerRoles || []).some(roleMatch);
                 if (!isOpener && !isViewer) return null;
                 const _nt = (c) => c && (c.role || "nt") !== "am";
                 const activeTrials = (trialList || []).filter(c => _nt(c) && c.startDate
