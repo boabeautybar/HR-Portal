@@ -16243,9 +16243,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // 2b. Auto-sync into the current schedule cycle. A freshly-onboarded
           // nail tech is now a schedule row but has no shifts yet — easy to
           // forget once the trial ends. If their start date falls within the
-          // current cycle we offer to drop them straight onto it with a
-          // default Mon–Sat working pattern (Sundays off; days before they
-          // start marked X) for the manager to fine-tune on the Scheduling tab.
+          // current cycle we offer to drop them straight onto it on the
+          // store's standard roster (respecting that store's fixed closed
+          // days), with days before they start marked X, for the manager to
+          // fine-tune on the Scheduling tab.
           try {
             const isTech = obForm.position !== "AM" && obForm.position !== "SM";
             if (isTech && obForm.branch && window.BOA_DB.currentSchedYm && window.BOA_DB.periodDays && window.BOA_DB.loadSchedule && window.BOA_DB.saveSchedule) {
@@ -16257,28 +16258,44 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const cycleEnd = days.length ? ymdOf(days[days.length - 1]) : null;
               const start = obForm.startDate;
               if (cycleEnd && start && start <= cycleEnd) {
-                // Default roster mirrors the salon rule rather than a flat
-                // 6-day week: two off-days per Mon–Sun week, with every second
-                // Sunday off. Monday is the standing off-day (quietest); on
-                // "off-Sunday" weeks the 2nd off is that Sunday, otherwise it's
-                // the Tuesday. Days before the start date are marked X.
+                // Respect the store's fixed closed days (e.g. Betty is closed
+                // Sun+Mon). For a closed-day store those closed days ARE the
+                // weekly off-days — everyone is off then and works the rest —
+                // so we don't add extra weekday offs. For an open-all-week
+                // store we apply the standard rule: two off-days a Mon–Sun
+                // week, with every second Sunday off (Monday is the standing
+                // off-day; on a worked-Sunday week the 2nd off is the Tuesday).
+                // A mid-month starter may get a 1-off first week where the
+                // other off fell before their start date — that's fine.
+                const salonCfg = (typeof SALONS !== "undefined" ? SALONS : []).find(s => s.name === obForm.branch) || {};
+                const closedSet = new Set((Array.isArray(salonCfg.closedDow) ? salonCfg.closedDow : []).map(Number));
+                const dowNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
                 let _sIdx = -1;
                 const offSunday = new Set();
                 days.forEach(d => { if (d.dow === 0) { _sIdx++; if (_sIdx % 2 === 0) offSunday.add(ymdOf(d)); } });
                 const fromLbl = start > cycleStart ? start : "the start of the cycle";
-                if (window.confirm("Add " + obForm.name + " to the current schedule (" + ym + ") now?\n\nThey'll be dropped in on the standard roster — two off-days a week, every second Sunday off — from " + fromLbl + ". You can fine-tune it on the Scheduling tab.")) {
+                const rosterDesc = closedSet.size
+                  ? obForm.branch + "'s roster — off on its closed days (" + [...closedSet].sort().map(x => dowNames[x]).join(" + ") + "), working the rest"
+                  : "the standard roster — two off-days a week, every second Sunday off";
+                if (window.confirm("Add " + obForm.name + " to the current schedule (" + ym + ") now?\n\nThey'll be dropped in on " + rosterDesc + ", from " + fromLbl + ". You can fine-tune it on the Scheduling tab.")) {
                   const sched = await window.BOA_DB.loadSchedule(obForm.branch, ym, false);
                   const grid = (sched && sched.grid) || {};
                   const row = {};
                   days.forEach(d => {
                     const dy = ymdOf(d);
-                    if (dy < start) { row[d.d] = "X"; return; }
-                    let off = false;
-                    if (d.dow === 1) off = true;                       // Monday — standing off-day
-                    else if (d.dow === 0) off = offSunday.has(dy);     // every second Sunday off
-                    else if (d.dow === 2) {                            // Tuesday off when that week's Sunday is worked
+                    if (dy < start) { row[d.d] = "X"; return; }       // not started yet
+                    let off;
+                    if (closedSet.size) {
+                      off = closedSet.has(d.dow);                     // store closed → off; else work
+                    } else if (d.dow === 1) {
+                      off = true;                                     // Monday — standing off-day
+                    } else if (d.dow === 0) {
+                      off = offSunday.has(dy);                        // every second Sunday off
+                    } else if (d.dow === 2) {                         // Tuesday off when that week's Sunday is worked
                       const sd = new Date(d.year, d.monthIdx, d.d); sd.setDate(sd.getDate() + 5);
                       off = !offSunday.has(sd.getFullYear() + "-" + _pad(sd.getMonth() + 1) + "-" + _pad(sd.getDate()));
+                    } else {
+                      off = false;
                     }
                     row[d.d] = off ? "O" : "W";
                   });
