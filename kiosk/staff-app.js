@@ -2586,12 +2586,12 @@
     if (code === "WM") return "09:00 - 13:00";
     if (code === "WB") return "08:00 - 19:00";
     if (code === "E")  return "09:00 - 18:30";
-    return "09:30 - 18:30";
+    return "09:00 - 18:30";
   }
   // Compact a "HH:MM - HH:MM" range so it fits in a narrow grid cell:
   //   "09:00 - 18:00" → "9–18"
   //   "08:30 - 17:00" → "8:30–17"
-  //   "09:30 - 18:30" → "9:30–18:30"
+  //   "09:00 - 18:30" → "9–18:30"
   function _compactShift(s) {
     if (!s) return "";
     return String(s).replace(/0(\d):00/g, "$1").replace(/(\d\d):00/g, "$1").replace(/\s*-\s*/, "–");
@@ -2628,7 +2628,7 @@
       lines.push("AM Sunday · WE 08:00–17:00 · WL 10:00–19:00");
     } else {
       lines.push("SM / SSM — 08:00–17:00 every day");
-      lines.push("AM Mon–Fri — 09:30–18:30");
+      lines.push("AM Mon–Fri — 09:00–18:30");
       lines.push("AM Saturday — 09:00–18:00");
       lines.push("AM Sunday — 08:30–17:00");
     }

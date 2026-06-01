@@ -20531,7 +20531,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             });
             // Sandown + Table Bay use per-shift hours (WE/WM/WL on the
             // cells + a banner above the grid), so the row subtitle drops
-            // the generic 8–17 / 9:30–18:30 fallback for those stores.
+            // the generic 8–17 / 9:00–18:30 fallback for those stores.
             const _hideHours = branch === "Sandown" || branch === "Table Bay" || branch === "Riverlands" || branch === "Ballito" || branch === "Fourways" || branch === "Mall of the South";
             const sub = mg._offGhost
               ? "Left " + mg._offLeftDate + (mg._offReason ? " · " + mg._offReason : "")
@@ -20539,7 +20539,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 ? "Starts " + mg._obStartDate
                 : _hideHours
                   ? (mg.role === "SM" ? "Store Manager" : mg.role === "SSM" ? "Senior Store Manager" : "Assistant Manager")
-                  : (mg.role === "SM" || mg.role === "SSM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · Wkd 9:30–18:30 · Sat 9:00–18:00 · Sun 8:30–17:00");
+                  : (mg.role === "SM" || mg.role === "SSM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · Wkd 9:00–18:30 · Sat 9:00–18:00 · Sun 8:30–17:00");
             return { ec: mg.ec, name: mg.name, sub, cells };
           });
           const totals = columns.map(c => {
@@ -20792,7 +20792,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           <div>
             <div style={{ marginBottom: 14 }}>
               <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700, marginBottom: 4 }}>👔 Manager Schedule</div>
-              <div style={{ fontSize: 12, color: "#F472B6" }}>25th → 24th cycle. SM 8:00–17:00 with 2 weekend pairs off. AM 9:30–18:30 with 1 weekend pair off. Always ≥ 2 managers on shift; 2 off-days per full week; max 6 days in a row. Drag to swap days within a manager. Double-click an OFF cell to cycle OFF → REQ → EXT.</div>
+              <div style={{ fontSize: 12, color: "#F472B6" }}>25th → 24th cycle. SM 8:00–17:00 with 2 weekend pairs off. AM 9:00–18:30 with 1 weekend pair off. Always ≥ 2 managers on shift; 2 off-days per full week; max 6 days in a row. Drag to swap days within a manager. Double-click an OFF cell to cycle OFF → REQ → EXT.</div>
             </div>
 
             <div style={{ background: "#FFFFFF", borderRadius: 11, padding: "12px 14px", border: "1px solid #FBCFE8", marginBottom: 14, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
@@ -21155,7 +21155,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 14px", marginBottom: 10, fontSize: 12, color: "#065f46", display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center" }}>
                 <span style={{ fontSize: 11, fontWeight: 800, color: "#065f46", letterSpacing: "0.08em", textTransform: "uppercase" }}>🕐 {branch} manager shifts</span>
                 <span><strong>SM / SSM (every day)</strong> · 08:00–17:00</span>
-                <span><strong>Mon–Fri</strong> · AM 09:30–18:30 (WL 10:00–19:00, WE 08:30–18:00)</span>
+                <span><strong>Mon–Fri</strong> · AM 09:00–18:30 (WL 10:00–19:00, WE 08:30–18:00)</span>
                 <span><strong>Saturday</strong> · AM 09:00–18:00</span>
                 <span><strong>Sunday</strong> · AM 08:30–17:00</span>
               </div>
@@ -21203,7 +21203,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               ? null
                               : (branch === "Sandown" || branch === "Table Bay" || branch === "Riverlands" || branch === "Ballito" || branch === "Fourways" || branch === "Mall of the South")
                                 ? <div style={{ fontSize: 9, color: "#BE185D", marginTop: 1 }}>{mg.role === "SM" ? "Store Manager" : mg.role === "SSM" ? "Senior Store Manager" : "Assistant Manager"}</div>
-                                : <div style={{ fontSize: 9, color: "#BE185D", marginTop: 1 }}>{mg.role === "SM" || mg.role === "SSM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · Wkd 9:30–18:30 · Sat 9:00–18:00 · Sun 8:30–17:00"}</div>
+                                : <div style={{ fontSize: 9, color: "#BE185D", marginTop: 1 }}>{mg.role === "SM" || mg.role === "SSM" ? "Store Manager · 8:00–17:00" : "Assistant Manager · Wkd 9:00–18:30 · Sat 9:00–18:00 · Sun 8:30–17:00"}</div>
                         }
                       </td>
                       {result.dates.map((dy, di) => {
@@ -23029,7 +23029,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             return "11:00 - 20:00";
           }
 
-          // Generic stores — generic SM 08-17 / AM 09:30-18:30 hours.
+          // Generic stores — generic SM 08-17 / AM 09:00-18:30 hours.
           // Weekend override: SM/SSM stays on a flat 08:00-17:00 Sat & Sun
           // (no early/late split applies at these stores on weekends).
           // AMs switch to the shorter weekend day: Sat 09:00-18:00,
@@ -23048,7 +23048,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (code === "WM") return "09:00 - 13:00";
           if (code === "WB") return "08:00 - 19:00";
           if (code === "E")  return "09:00 - 18:30";
-          return "09:30 - 18:30";
+          return "09:00 - 18:30";
         };
         const isWorking = (v) => v === "W" || v === "WE" || v === "WL" || v === "WM" || v === "WB" || v === "E";
 

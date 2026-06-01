@@ -1931,7 +1931,7 @@
     if (code === "WM") return "09:00 - 13:00";
     if (code === "WB") return "08:00 - 19:00";
     if (code === "E")  return "09:00 - 18:30";
-    return "09:30 - 18:30";
+    return "09:00 - 18:30";
   }
   function fmtDate(s) {
     try {
