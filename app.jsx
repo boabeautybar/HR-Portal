@@ -10852,6 +10852,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           setOffList(nextOff);
         } catch (oe) { console.warn("offboard scrub failed (record still deleted):", oe); }
       }
+      // Scrub any trial-period record for this person too. A promoted/hired
+      // tech keeps a trial record (status "hired") that is invisible in the
+      // Trial tab but still feeds the dashboard Fresha reminders — so without
+      // this it would haunt the system after an owner delete. Match on EC if
+      // present, otherwise name + branch.
+      const _nm = (s) => (s || "").trim().toLowerCase();
+      const nextTrial = (trialList || []).filter(t => !(t && (
+        (rec.ec && t.ec && t.ec.trim() === rec.ec.trim()) ||
+        (_nm(t.name) === _nm(rec.name) && t.branch === rec.branch)
+      )));
+      if (nextTrial.length !== (trialList || []).length) {
+        try {
+          await window.BOA_DB.saveTrialPeriod(nextTrial);
+          setTrialList(nextTrial);
+        } catch (te) { console.warn("trial scrub failed (staff still deleted):", te); }
+      }
       setStaffModal(null);
       logActivity(
         "🗑 Hard-deleted staff",
@@ -11905,10 +11921,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 // promoted recently. Older ones have long since been handled and
                 // would otherwise linger on the dashboard forever.
                 const _recent = (c) => { const t = Date.parse(c.promotedAt || c.updatedAt || c.addedAt || ""); return !!t && (Date.now() - t) < 45 * 86400000; };
+                // Safety net for records orphaned before the owner-delete cascade
+                // existed: drop any already-hired tech whose person is no longer
+                // an active staff member (i.e. they were hard-deleted).
+                const _nm2 = (s) => (s || "").trim().toLowerCase();
+                const _liveStaff = new Set((staff || []).map(s => _nm2(s.name) + "|" + s.branch));
+                const _gone = (c) => c.status === "hired" && !_liveStaff.has(_nm2(c.name) + "|" + c.branch);
                 const activeTrials = (trialList || []).filter(c => _nt(c) && c.startDate
                   && c.status !== "passed" && c.status !== "failed" && c.status !== "hired");
                 const monthPending = (trialList || []).filter(c => _nt(c)
-                  && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c));
+                  && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c) && !_gone(c));
                 if (activeTrials.length === 0 && monthPending.length === 0) return null;
                 const _pad = n => String(n).padStart(2, "0");
                 const trialWindow = (startDate) => {
