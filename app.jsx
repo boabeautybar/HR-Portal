@@ -2764,7 +2764,7 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, onStar
 }
 
 // ─── SCHEDULE EDITOR (Phase 2a — manual editing, save to Supabase) ──────────────
-function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obList, techLoans, onTechLoansChange, initialBranch }) {
+function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, leaveRecs, obList, techLoans, onTechLoansChange, initialBranch }) {
   const [branch, setBranch] = useState(initialBranch || SALONS[0].name);
   const [ym, setYm] = useState(window.BOA_DB ? window.BOA_DB.currentSchedYm() : "2026-05");
   const [grid, setGrid] = useState({});
@@ -4845,6 +4845,54 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
   const isHoliday = (d) => !!holidayLookup[_hkey(d)];
   const holidayName = (d) => holidayLookup[_hkey(d)] || "";
 
+  // Trial nail techs shown as read-only YELLOW GHOST rows on the schedule.
+  // They have no employee code and aren't in the saved grid, so this is a
+  // pure render overlay — nothing here is ever written to boa_sched. Each
+  // trial runs 10 WORKING days from its start date: Monday–Friday only,
+  // skipping weekends and SA public holidays. We expose the set of trial-day
+  // dates (YYYY-MM-DD) so the grid can paint just those cells.
+  const trialGhostRows = useMemo(() => {
+    const active = (trialList || []).filter(c =>
+      c && c.branch === branch &&
+      (c.role || "nt") !== "am" &&                       // nail techs only
+      c.status !== "passed" && c.status !== "failed" && c.status !== "hired" &&
+      c.startDate
+    );
+    const _pad = (n) => String(n).padStart(2, "0");
+    return active.map(c => {
+      // Walk forward from the start date collecting 10 Mon–Fri non-holiday
+      // days. Cap the scan so a bad/edge date can never loop unbounded.
+      const daySet = new Set();
+      const start = new Date(c.startDate + "T12:00:00");
+      let firstYmd = null, lastYmd = null;
+      if (!isNaN(start)) {
+        const cur = new Date(start);
+        for (let guard = 0; guard < 60 && daySet.size < 10; guard++) {
+          const y = cur.getFullYear(), m = cur.getMonth() + 1, dd = cur.getDate();
+          const ymd = y + "-" + _pad(m) + "-" + _pad(dd);
+          const dow = cur.getDay();
+          const isHol = !!(saHolidays(y) || {})[ymd];
+          if (dow !== 0 && dow !== 6 && !isHol) {
+            daySet.add(ymd);
+            if (!firstYmd) firstYmd = ymd;
+            lastYmd = ymd;
+          }
+          cur.setDate(cur.getDate() + 1);
+        }
+      }
+      return {
+        _id: "trial-" + c._id,
+        name: c.name || "Trial tech",
+        _trial: true,
+        _trialStartDate: c.startDate,
+        _trialDaySet: daySet,
+        _trialFirstYmd: firstYmd,
+        _trialLastYmd: lastYmd,
+        _trialStatus: c.status
+      };
+    });
+  }, [trialList, branch]);
+
   // 7+ consecutive working days violations (HARD — labour law). Skip on-mat staff.
   const longStreaks = useMemo(() => {
     const out = [];
@@ -5976,6 +6024,41 @@ function Schedule({ allStaff, techRequests, onTechRequestsChange, leaveRecs, obL
                       })}
                       <td style={{ padding: "6px 8px", borderLeft: "2px solid #FBCFE8", borderBottom: "1px solid #FCE7F3", textAlign: "center", color: onMat ? "#9ca3af" : "#15803d", fontSize: 11, fontWeight: 700 }}>{onMat ? "—" : counts.w}</td>
                       <td style={{ padding: "6px 8px", borderBottom: "1px solid #FCE7F3", textAlign: "center", color: onMat ? "#9ca3af" : "#991b1b", fontSize: 11, fontWeight: 700 }}>{onMat ? "—" : counts.off}</td>
+                    </tr>
+                  );
+                })}
+                {/* Trial nail techs — read-only yellow ghost rows. Not in the
+                    saved grid, never editable, never counted in coverage. */}
+                {trialGhostRows.map(t => {
+                  const trialDaysInCycle = days.filter(d => t._trialDaySet.has(d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0"))).length;
+                  if (trialDaysInCycle === 0) return null;   // no trial days this cycle — don't clutter the grid
+                  const startLbl = t._trialStartDate ? new Date(t._trialStartDate + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : "";
+                  return (
+                    <tr key={t._id} style={{ opacity: 0.92 }}>
+                      <td style={{ position: "sticky", left: 0, background: "#fefce8", padding: "6px 10px", borderBottom: "1px solid #FCE7F3", color: "#854d0e", fontWeight: 600, fontSize: 12, zIndex: 1 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                          <span>{t.name}</span>
+                          <span style={{ background: "#fef08a", color: "#854d0e", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 800, letterSpacing: "0.04em" }}>🧪 TRIAL</span>
+                        </div>
+                        <div style={{ fontSize: 10, color: "#a16207", marginTop: 1, letterSpacing: "0.02em", fontStyle: "italic" }}>10-day trial · started {startLbl} · not yet on payroll</div>
+                      </td>
+                      {days.map(d => {
+                        const dYmd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
+                        const isTrialDay = t._trialDaySet.has(dYmd);
+                        const weekEnd = d.dow === 0;
+                        const cs = isTrialDay ? cellStyle("trial") : { background: "#fff", color: "#e5e7eb" };
+                        const title = isTrialDay
+                          ? `${t.name} · ${d.d} ${monthAbbr[d.monthIdx]} · trial working day (Mon–Fri, excludes weekends & public holidays)`
+                          : `${t.name} · on trial — only Mon–Fri trial days are scheduled`;
+                        return (
+                          <td key={t._id + "-" + d.d} title={title}
+                            style={{ ...cs, padding: 0, height: 30, textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", borderRight: weekEnd ? "3px solid #BE185D" : "none", fontSize: 11, fontWeight: 700, userSelect: "none", cursor: "default" }}>
+                            {isTrialDay ? "T" : ""}
+                          </td>
+                        );
+                      })}
+                      <td style={{ padding: "6px 8px", borderLeft: "2px solid #FBCFE8", borderBottom: "1px solid #FCE7F3", textAlign: "center", color: "#a16207", fontSize: 11, fontWeight: 700 }}>{trialDaysInCycle || "—"}</td>
+                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #FCE7F3", textAlign: "center", color: "#9ca3af", fontSize: 11, fontWeight: 700 }}>—</td>
                     </tr>
                   );
                 })}
@@ -12567,6 +12650,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         {tab === "scheduling" && schedSubTab === "techs" && (
           <Schedule
             allStaff={enriched}
+            trialList={trialList}
             techRequests={techRequests}
             onTechRequestsChange={(next) => { setTechRequests(next); setTechRequestsTick(t => t + 1); }}
             leaveRecs={leaveRecs}
