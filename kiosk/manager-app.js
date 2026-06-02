@@ -489,9 +489,14 @@
         }
       } catch (_) {}
 
+      // Don't nag anyone who's on approved emergency leave today — that's a
+      // "no action required" day, surfaced separately on the home screen.
+      var emergLeave = await _onLeaveEcsToday(true);
+
       var missing = hereMgrs.filter(function (m) {
         var ec = String(m.employee_code || "").trim();
         if (!isWorking(schedByEc[ec])) return false;     // not scheduled today
+        if (emergLeave[ec] === "el") return false;       // on emergency leave
         if (clockedInEcs[ec]) return false;              // already in
         if (taggedStaffIds[m.id]) return false;          // ROM explained
         return true;
@@ -513,6 +518,62 @@
       slot.style.display = "none";
     }
   }
+
+  // Employee codes (ec → "el"/"al") on approved leave that covers today, read
+  // from the Leave Calendar (boa_leave_v1). emergency:true → "el" (unpaid),
+  // otherwise "al". Best-effort; returns {} on any failure.
+  async function _onLeaveEcsToday(emergencyOnly) {
+    if (!window.APP_DATA || !window.APP_DATA.listLeaveRecords) return {};
+    try {
+      var todayK = _ymdToday(new Date());
+      var recs = await window.APP_DATA.listLeaveRecords();
+      var map = {};
+      (recs || []).forEach(function (r) {
+        if (!r || !r.ec || !r.startDate || !r.endDate) return;
+        if (emergencyOnly && r.emergency !== true) return;
+        if (r.startDate <= todayK && todayK <= r.endDate) {
+          var ec = String(r.ec).trim();
+          // An emergency record wins over a plain one for the same ec/day.
+          if (map[ec] !== "el") map[ec] = (r.emergency === true ? "el" : "al");
+        }
+      });
+      return map;
+    } catch (e) { console.warn("_onLeaveEcsToday failed:", e); return {}; }
+  }
+
+  // Calm "on emergency leave today · no action required" home-screen panel.
+  // Lists this store's staff who are on EMERGENCY (unpaid) leave covering
+  // today, so the manager knows not to chase them for a check-in / clock-in.
+  async function loadOnLeaveTodayIntoPanel() {
+    var slot = document.getElementById("mgr-on-leave-slot");
+    if (!slot) return;
+    if (!window.APP_DATA || !window.APP_DATA.listLeaveRecords || !window.APP_DATA.listStaff) { slot.style.display = "none"; return; }
+    try {
+      var leaveMap = await _onLeaveEcsToday(true);   // emergency only
+      var ecs = Object.keys(leaveMap);
+      if (ecs.length === 0) { slot.style.display = "none"; return; }
+      // Resolve names against this branch's staff (drops anyone not here).
+      var staff = await window.APP_DATA.listStaff();
+      var nameByEc = {};
+      (staff || []).forEach(function (s) { if (s && s.employee_code) nameByEc[String(s.employee_code).trim()] = s.name; });
+      var names = [];
+      ecs.forEach(function (ec) { if (nameByEc[ec]) names.push(esc(nameByEc[ec])); });
+      if (names.length === 0) { slot.style.display = "none"; return; }
+      slot.innerHTML =
+        '<div class="mgr-home-info">' +
+          '<div class="mgr-home-nag-icon">🏖️</div>' +
+          '<div class="mgr-home-nag-body">' +
+            '<div class="mgr-home-nag-title">On emergency leave today &middot; no action required</div>' +
+            '<div class="mgr-home-nag-sub">' + names.join(", ") + ' &mdash; approved <strong>emergency leave (unpaid)</strong>. No need to chase them for a check-in or clock-in today.</div>' +
+          '</div>' +
+        '</div>';
+      slot.style.display = "block";
+    } catch (e) {
+      console.warn("on-leave panel load failed:", e);
+      slot.style.display = "none";
+    }
+  }
+
   // Wire every '✓ Mark done' / 'tap to undo' button on the reminders
   // panel. Tapping disables the button while the Supabase write is in
   // flight, then re-renders the panel from a fresh listKioskReminders
@@ -563,6 +624,9 @@
       // catches a manager who walks in, opens the tablet, and stops at
       // the landing. Populated async by loadMgrClockinNagIntoPanel.
       '<div id="mgr-clockin-nag-slot" style="display:none"></div>' +
+      // Calm "on emergency leave today · no action required" panel — populated
+      // async by loadOnLeaveTodayIntoPanel.
+      '<div id="mgr-on-leave-slot" style="display:none"></div>' +
       '<div class="tile-grid tile-grid-4">' +
       '<button class="tile tile-big" id="tile-nailtech" type="button">' +
       '<div class="tile-icon">✍️</div>' +
@@ -593,6 +657,7 @@
     );
     loadKioskRemindersIntoPanel();
     loadMgrClockinNagIntoPanel();
+    loadOnLeaveTodayIntoPanel();
     if (window.BOA_FLOWS) { window.BOA_FLOWS.refreshCheckinNag(); window.BOA_FLOWS.refreshCashupNag(); }
     document.getElementById("tile-nailtech").onclick = function () {
       if (window.BOA_FLOWS) window.BOA_FLOWS.renderCheckin();

@@ -948,3 +948,13 @@ textarea.input { resize: vertical; min-height: 64px; }
 @media (prefers-reduced-motion: reduce) {
   .mgr-home-nag { animation: none; box-shadow: 0 0 18px 4px rgba(220, 38, 38, 0.55); }
 }
+
+/* Calm, informational variant of the home banner (no blink) — e.g. "on
+   emergency leave today · no action required". Reuses the -icon/-body/-title
+   /-sub children. */
+.mgr-home-info {
+  display: flex; align-items: center; gap: 14px;
+  background: #ecfdf5; color: #065f46;
+  border: 1px solid #6ee7b7; border-radius: 16px;
+  padding: 14px 18px; margin: 0 0 16px;
+}
