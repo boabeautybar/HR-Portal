@@ -282,15 +282,19 @@
         // hours). Fetch by prefix and match on the trimmed code client-side.
         var ecTrim = found.ecKey.trim();
         var ecUp = ecTrim.toUpperCase();
+        // NOTE: select only columns that exist on `staff` — referencing a
+        // missing column (e.g. first_name) makes PostgREST reject the whole
+        // query, which silently emptied the role (→ generic wrong hours).
         var rr = await Promise.all([
-          sb.from("staff").select("employee_code,name,first_name,role,role_type").ilike("employee_code", ecTrim + "%").limit(10),
+          sb.from("staff").select("employee_code,name,role,role_type").ilike("employee_code", ecTrim + "%").limit(10),
           sb.from("app_state").select("value").eq("key", "boa_sm_trial_v1").maybeSingle(),
           sb.from("app_state").select("value").eq("key", "boa_mgr_times_v1").maybeSingle()
         ]);
         var rows = (rr[0] && rr[0].data) || [];
+        state.dbgStaff = { count: rows.length, err: (rr[0] && rr[0].error && rr[0].error.message) || "" };
         var row = rows.filter(function (x) { return String(x.employee_code || "").trim().toUpperCase() === ecUp; })[0];
         if (row) {
-          state.name = row.first_name || (row.name || "").split(" ")[0] || "";
+          state.name = (row.name || "").trim().split(" ")[0] || "";
           state.role = row.role || "";
           if (row.role_type === "manager") state.isManager = true;
         }
@@ -371,6 +375,7 @@
       'DEBUG<br>ec=' + esc(JSON.stringify(state.ec)) +
       ' · source=' + (state.isManager ? "manager-grid" : "tech-grid") +
       '<br>role=' + esc(JSON.stringify(state.role)) + ' · effRole=' + esc(JSON.stringify(state.effRole)) +
+      '<br>staffRows=' + ((state.dbgStaff && state.dbgStaff.count) || 0) + ' · staffErr=' + esc((state.dbgStaff && state.dbgStaff.err) || "none") +
       '<br>customDays=' + Object.keys(state.custom || {}).length +
       ' · todayRawCode=' + esc(JSON.stringify(rawToday)) +
       '<br>todayTime=' + esc(shiftTimes(state.effRole || state.role, "W", state.store, today.getDay())) +
