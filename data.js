@@ -1851,8 +1851,11 @@
     if (res.error) { console.error("loadIncidentReports:", res.error); return []; }
     return Array.isArray(res.data) ? res.data : [];
   }
-  async function setIncidentStatus(id, status) {
-    var res = await sb.rpc("set_incident_status", { p_key: incidentKey(), p_id: id, p_status: status });
+  async function setIncidentStatus(id, status, note, actor) {
+    var res = await sb.rpc("set_incident_status", {
+      p_key: incidentKey(), p_id: id, p_status: status,
+      p_note: note || "", p_actor: actor || ""
+    });
     if (res.error) { console.error("setIncidentStatus:", res.error); throw res.error; }
     return true;
   }

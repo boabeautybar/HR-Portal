@@ -7052,6 +7052,7 @@ const SETTINGS_TABS = [
   { t: "smTrial", l: "SM Trials", cat: "People", icon: "⭐" },
   { t: "unpaidLegal", l: "Unpaid Leave (Legal)", cat: "People", icon: "⏸️" },
   { t: "compliance", l: "Compliance", cat: "People", icon: "📋" },
+  { t: "incidents", l: "Incident Reports", cat: "People", icon: "🛡️" },
   { t: "scheduling", l: "Scheduling", cat: "Operations", icon: "📅" },
   { t: "locations", l: "Locations", cat: "Operations", icon: "📍" },
   { t: "checkins", l: "Nail Tech Check-ins", cat: "Operations", icon: "📲" },
@@ -7067,7 +7068,6 @@ const SETTINGS_TABS = [
   { t: "payrollReports", l: "Reports", cat: "Payroll", icon: "📈" },
   { t: "overtime", l: "Overtime", cat: "Payroll", icon: "⏱️" },
   { t: "alerts", l: "Alerts", cat: "Insights", icon: "🔔" },
-  { t: "incidents", l: "Incident Reports", cat: "Insights", icon: "🛡️" },
   { t: "activity", l: "Activity Log", cat: "Insights", icon: "📜" },
   { t: "kioskPins", l: "Kiosk PINs", cat: "Admin", icon: "🔑" },
   { t: "managerPins", l: "Manager PINs", cat: "Admin", icon: "🆔" },
@@ -8323,12 +8323,15 @@ function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
 // (reached by the printed QR in the staff room). Only the Owner / HR / senior
 // ops see this tab — store managers use the kiosk, never the portal.
 const INCIDENT_CAT = {
-  Safety:     { label: "Safety / injury",     emoji: "⚠️",  color: "#b45309", bg: "#fef3c7" },
-  Harassment: { label: "Harassment / bullying", emoji: "🚫", color: "#9d174d", bg: "#fce7f3" },
-  Management: { label: "Management conduct",   emoji: "👔",  color: "#6b21a8", bg: "#ede9fe" },
-  Theft:      { label: "Theft / money",        emoji: "💰",  color: "#92400e", bg: "#fef3c7" },
-  Hygiene:    { label: "Hygiene",              emoji: "🧼",  color: "#0e7490", bg: "#cffafe" },
-  Other:      { label: "Other",                emoji: "📋",  color: "#374151", bg: "#f3f4f6" }
+  Safety:       { label: "Safety / injury",        emoji: "⚠️",  color: "#b45309", bg: "#fef3c7" },
+  Harassment:   { label: "Harassment / bullying",  emoji: "🚫",  color: "#9d174d", bg: "#fce7f3" },
+  Management:   { label: "Management conduct",      emoji: "👔",  color: "#6b21a8", bg: "#ede9fe" },
+  StaffConduct: { label: "Staff member's conduct", emoji: "🙍",  color: "#9a3412", bg: "#ffedd5" },
+  Customer:     { label: "Customer / client",      emoji: "🧍",  color: "#1d4ed8", bg: "#dbeafe" },
+  Theft:        { label: "Theft / money / till",   emoji: "💰",  color: "#92400e", bg: "#fef3c7" },
+  Stock:        { label: "Stock / equipment / damage", emoji: "📦", color: "#374151", bg: "#f3f4f6" },
+  Hygiene:      { label: "Hygiene",                emoji: "🧼",  color: "#0e7490", bg: "#cffafe" },
+  Other:        { label: "Other",                  emoji: "📋",  color: "#374151", bg: "#f3f4f6" }
 };
 const INCIDENT_STATUS = {
   new:       { label: "New",       color: "#b91c1c", bg: "#fee2e2" },
@@ -8368,8 +8371,21 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
   const [noteDraft, setNoteDraft] = useState({});
   const [busy, setBusy] = useState(false);
   const [photoZoom, setPhotoZoom] = useState(null);
+  const [showQR, setShowQR] = useState(false);            // QR is tucked away by default
+  const [resolvingId, setResolvingId] = useState(null);   // report awaiting a resolution note
+  const [resolveText, setResolveText] = useState("");
 
-  const reportUrl = (typeof window !== "undefined" ? window.location.origin : "") + "/report.html";
+  // Where the QR points. A custom address (window.BOA_REPORT_URL) wins so staff
+  // can land on a separate site instead of the portal's own domain; "/report.html"
+  // is appended if that address has no path of its own.
+  const reportUrl = (() => {
+    const custom = (typeof window !== "undefined" && window.BOA_REPORT_URL || "").trim();
+    if (custom) {
+      try { const u = new URL(custom); return (u.pathname && u.pathname !== "/") ? custom : custom.replace(/\/+$/, "") + "/report.html"; }
+      catch (_e) { return custom; }
+    }
+    return (typeof window !== "undefined" ? window.location.origin : "") + "/report.html";
+  })();
   const stores = Array.from(new Set(reports.map(r => r.store).filter(Boolean))).sort();
 
   const patchLocal = (id, patch) => setReports(reports.map(r => r.id === id ? { ...r, ...patch } : r));
@@ -8382,9 +8398,31 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
     }
   };
   const changeStatus = async (r, status) => {
+    // Closing a report requires a written resolution — open the note box first.
+    if (status === "resolved") {
+      setResolvingId(r.id);
+      setResolveText(r.resolution || "");
+      return;
+    }
     setBusy(true);
     try { await window.BOA_DB.setIncidentStatus(r.id, status); patchLocal(r.id, { status, reviewed: true }); }
     catch (e) { alert("Could not update status: " + (e.message || e)); }
+    setBusy(false);
+  };
+  const doResolve = async (r) => {
+    const text = (resolveText || "").trim();
+    if (!text) return;
+    setBusy(true);
+    try {
+      await window.BOA_DB.setIncidentStatus(r.id, "resolved", text, currentUser.name || currentUser.pin || "");
+      const note = { at: new Date().toISOString(), by: currentUser.name || "", note: "Resolved: " + text };
+      patchLocal(r.id, {
+        status: "resolved", reviewed: true,
+        resolution: text, resolved_at: new Date().toISOString(), resolved_by: currentUser.name || "",
+        internal_notes: [...(Array.isArray(r.internal_notes) ? r.internal_notes : []), note]
+      });
+      setResolvingId(null); setResolveText("");
+    } catch (e) { alert("Could not resolve: " + (e.message || e)); }
     setBusy(false);
   };
   const addNote = async (r) => {
@@ -8422,25 +8460,33 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
         Reports are anonymous unless the person chose to add their name.
       </p>
 
-      {/* QR / link panel */}
-      <div style={{ ...card, background: "#fdf2f8", borderColor: "#f9a8d4" }}>
-        <div style={{ display: "flex", gap: 18, alignItems: "center", flexWrap: "wrap" }}>
-          <div style={{ background: "#fff", padding: 12, borderRadius: 12, border: "1px solid #f3d4e0" }}>
-            <IncidentQR url={reportUrl} size={150} />
-          </div>
-          <div style={{ flex: "1 1 260px", minWidth: 240 }}>
-            <div style={{ fontWeight: 800, color: "#831843", fontSize: 15, marginBottom: 4 }}>Staff reporting QR code</div>
-            <div style={{ fontSize: 13, color: "#6b3a4e", marginBottom: 8 }}>
-              Print this and put it somewhere private in each store (staff room / toilet). Staff scan it
-              on their own phone to file a report — no manager, no shared iPad needed.
+      {/* QR — tucked away; HR clicks to reveal it only when they need to print. */}
+      <div style={{ marginBottom: 16 }}>
+        <button onClick={() => setShowQR(v => !v)}
+          style={{ background: "#fff", color: "#831843", border: "1.5px solid #f9a8d4", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>
+          {showQR ? "▾ Hide staff QR code" : "▸ Staff QR code (print & hang in store)"}
+        </button>
+        {showQR && (
+          <div style={{ ...card, background: "#fdf2f8", borderColor: "#f9a8d4", marginTop: 10, marginBottom: 0 }}>
+            <div style={{ display: "flex", gap: 18, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ background: "#fff", padding: 12, borderRadius: 12, border: "1px solid #f3d4e0" }}>
+                <IncidentQR url={reportUrl} size={150} />
+              </div>
+              <div style={{ flex: "1 1 260px", minWidth: 240 }}>
+                <div style={{ fontWeight: 800, color: "#831843", fontSize: 15, marginBottom: 4 }}>Staff reporting QR code</div>
+                <div style={{ fontSize: 13, color: "#6b3a4e", marginBottom: 8 }}>
+                  Print this once and put it somewhere private in each store (staff room / toilet). Staff scan it
+                  on their own phone to file a report — no manager, no shared iPad needed.
+                </div>
+                <div style={{ fontSize: 12, color: "#9d6a82", wordBreak: "break-all", marginBottom: 10 }}>{reportUrl}</div>
+                <button onClick={() => window.print()}
+                  style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 9, padding: "9px 16px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>
+                  🖨️ Print QR
+                </button>
+              </div>
             </div>
-            <div style={{ fontSize: 12, color: "#9d6a82", wordBreak: "break-all", marginBottom: 10 }}>{reportUrl}</div>
-            <button onClick={() => window.print()}
-              style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 9, padding: "9px 16px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>
-              🖨️ Print QR
-            </button>
           </div>
-        </div>
+        )}
       </div>
 
       {/* Filters */}
@@ -8486,6 +8532,7 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
               <div style={{ marginTop: 14, borderTop: "1px dashed #f3d4e0", paddingTop: 14 }}>
                 <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 16px", fontSize: 13.5, color: "#374151", marginBottom: 12 }}>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Ref</span><span>{r.ref_code}</span>
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>When</span><span>{fmtIncidentDate(r.incident_date)}{r.time_frame ? " · " + r.time_frame : ""}</span>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Filed</span><span>{fmtIncidentTime(r.created_at)}</span>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>People involved</span><span style={{ whiteSpace: "pre-wrap" }}>{r.people_involved || "—"}</span>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>What happened</span><span style={{ whiteSpace: "pre-wrap" }}>{r.description}</span>
@@ -8501,6 +8548,15 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
                     style={{ maxWidth: 180, maxHeight: 180, borderRadius: 10, border: "1px solid #f3d4e0", cursor: "zoom-in", marginBottom: 12 }} />
                 )}
 
+                {/* How it was resolved — shown for closed reports so you can track it. */}
+                {r.status === "resolved" && r.resolution && (
+                  <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 11, padding: "11px 13px", marginBottom: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: "#15803d", marginBottom: 4 }}>✅ How this was resolved</div>
+                    <div style={{ fontSize: 13.5, color: "#14532d", whiteSpace: "pre-wrap" }}>{r.resolution}</div>
+                    <div style={{ fontSize: 11, color: "#4d7c5a", marginTop: 5 }}>{r.resolved_by || "HR"}{r.resolved_at ? " · " + fmtIncidentTime(r.resolved_at) : ""}</div>
+                  </div>
+                )}
+
                 {/* Status controls */}
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
                   {["new", "reviewing", "resolved"].map(s => {
@@ -8509,11 +8565,27 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
                     return (
                       <button key={s} disabled={busy || on} onClick={() => changeStatus(r, s)}
                         style={{ border: "1.5px solid " + sc.color, background: on ? sc.color : "#fff", color: on ? "#fff" : sc.color, borderRadius: 9, padding: "7px 14px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: on ? "default" : "pointer", opacity: busy && !on ? 0.6 : 1 }}>
-                        {on ? "● " : ""}{sc.label}
+                        {on ? "● " : ""}{s === "resolved" && !on ? "Resolve / close" : sc.label}
                       </button>
                     );
                   })}
                 </div>
+
+                {/* Resolve box — a written outcome is required before closing. */}
+                {resolvingId === r.id && (
+                  <div style={{ background: "#f0fdf4", border: "1.5px solid #86efac", borderRadius: 11, padding: "12px 13px", marginBottom: 14 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 800, color: "#15803d", marginBottom: 6 }}>Before closing, write how this was resolved (required)</div>
+                    <textarea value={resolveText} onChange={e => setResolveText(e.target.value)} autoFocus
+                      placeholder="What was done, what was the outcome, any actions taken…"
+                      style={{ width: "100%", boxSizing: "border-box", minHeight: 80, fontFamily: "inherit", fontSize: 13.5, padding: "10px 12px", borderRadius: 9, border: "1.5px solid #86efac", resize: "vertical" }} />
+                    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                      <button disabled={busy || !resolveText.trim()} onClick={() => doResolve(r)}
+                        style={{ background: "#15803d", color: "#fff", border: "none", borderRadius: 9, padding: "8px 16px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: resolveText.trim() ? "pointer" : "default", opacity: resolveText.trim() ? 1 : 0.5 }}>Confirm & close</button>
+                      <button onClick={() => { setResolvingId(null); setResolveText(""); }}
+                        style={{ background: "#f3f4f6", color: "#6b7280", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>Cancel</button>
+                    </div>
+                  </div>
+                )}
 
                 {/* Internal notes */}
                 <div style={{ fontWeight: 700, color: "#831843", fontSize: 12.5, marginBottom: 6 }}>HR notes (internal — staff never see these)</div>
@@ -12261,7 +12333,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   ] : []),
                   { t: "maternity", l: matLbl },
                   { t: "unpaidLegal", l: "⏸️ Unpaid Leave (Legal)" },
-                  { t: "compliance", l: "📋 Compliance" }
+                  { t: "compliance", l: "📋 Compliance" },
+                  ...(canSeeIncidents(currentUser) ? [(() => {
+                    const unread = incidentReports.filter(r => !r.reviewed).length;
+                    return { t: "incidents", l: "🛡️ Incident Reports" + (unread ? "  (" + unread + ")" : "") };
+                  })()] : [])
                 ]
               },
               {
@@ -12300,10 +12376,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 color: { bg: "#EDE9FE", bgActive: "#DDD6FE", ink: "#5B21B6" },
                 items: [
                   { t: "alerts", l: "🔔 Alerts" },
-                  ...(canSeeIncidents(currentUser) ? [(() => {
-                    const unread = incidentReports.filter(r => !r.reviewed).length;
-                    return { t: "incidents", l: "🛡️ Incident Reports" + (unread ? "  (" + unread + ")" : "") };
-                  })()] : []),
                   { t: "activity", l: "📜 Activity Log" }
                 ]
               },

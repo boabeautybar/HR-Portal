@@ -53,6 +53,23 @@ window.BOA_SUPABASE_CONFIG = {
   textarea { resize: vertical; min-height: 120px; }
   .hint { font-size: 12px; color: #a07487; margin-top: 5px; font-weight: 400; }
 
+  /* Date field — bigger, clearly tappable, with quick-pick chips */
+  .date-input {
+    appearance: none; -webkit-appearance: none;
+    font-weight: 600; color: var(--deep);
+    min-height: 52px; font-size: 17px;
+    background: #fff url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='%23BE185D' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='4' width='18' height='18' rx='2'/><line x1='16' y1='2' x2='16' y2='6'/><line x1='8' y1='2' x2='8' y2='6'/><line x1='3' y1='10' x2='21' y2='10'/></svg>") no-repeat right 13px center;
+    padding-right: 44px;
+  }
+  .date-input::-webkit-calendar-picker-indicator { opacity: 0; position: absolute; right: 0; width: 44px; height: 52px; cursor: pointer; }
+  .quickdates { display: flex; gap: 8px; margin-top: 9px; flex-wrap: wrap; }
+  .quickdate {
+    font-family: inherit; font-size: 13px; font-weight: 600;
+    background: #fff; color: var(--deep); border: 1.5px solid #e7c6d4;
+    border-radius: 999px; padding: 8px 15px; cursor: pointer;
+  }
+  .quickdate.on { background: var(--pink); color: #fff; border-color: var(--pink); }
+
   .urgent-btn {
     width: 100%; border: none; border-radius: 16px; cursor: pointer;
     background: #dc2626; color: #fff; font-family: "Outfit", sans-serif;
