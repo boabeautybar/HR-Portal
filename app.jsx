@@ -9288,6 +9288,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [cashupRegion, setCashupRegion] = useState("all");
   const [cashupBranchFilter, setCashupBranchFilter] = useState("All");
   const [cashupSlipModal, setCashupSlipModal] = useState(null);
+  // Collapsible "who hasn't submitted their cash-up yet" follow-up panel.
+  const [cashupShowMissing, setCashupShowMissing] = useState(false);
   useEffect(() => {
     if (tab !== "cashups") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
@@ -25732,7 +25734,39 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           ? branchesInScope
           : branchesInScope.filter(s => s.region === cashupRegion);
 
+        // ── Who hasn't submitted? ───────────────────────────────────────
+        // For every expected (branch × day) in the window, flag the ones with
+        // no active cash-up so ops can chase the store. We honour the same
+        // region / branch filters as the table and skip a store's known
+        // closed weekdays (SALONS[].closedDow) so days off aren't false flags.
+        const _pad2 = (n) => String(n).padStart(2, "0");
+        const _today0 = new Date(); _today0.setHours(0, 0, 0, 0);
+        const _todayYmd = _today0.getFullYear() + "-" + _pad2(_today0.getMonth() + 1) + "-" + _pad2(_today0.getDate());
+        const branchesToCheck = cashupBranchFilter !== "All"
+          ? visibleBranches.filter(s => s.name === cashupBranchFilter)
+          : visibleBranches;
+        // A branch+date counts as "submitted" if any non-reopened row exists.
+        const submittedSet = new Set(activeRows.map(r => r.branch + "|" + r.date));
+        const missingByDate = [];
+        for (let i = 0; i < cashupDays; i++) {
+          const d = new Date(_today0); d.setDate(d.getDate() - i);
+          const ymd = d.getFullYear() + "-" + _pad2(d.getMonth() + 1) + "-" + _pad2(d.getDate());
+          const dow = d.getDay();
+          const missing = branchesToCheck.filter(s =>
+            !(Array.isArray(s.closedDow) && s.closedDow.includes(dow)) &&
+            !submittedSet.has(s.name + "|" + ymd)
+          );
+          if (missing.length) missingByDate.push({ ymd, isToday: ymd === _todayYmd, branches: missing.map(s => s.name) });
+        }
+        const missingCount = missingByDate.reduce((a, d) => a + d.branches.length, 0);
+
         const rangeOpts = [{ v: 1, l: "Today" }, { v: 3, l: "Last 3 days" }, { v: 7, l: "Last 7 days" }, { v: 14, l: "Last 14 days" }, { v: 30, l: "Last 30 days" }, { v: 60, l: "Last 60 days" }];
+
+        // Small "?" help dot — native-tooltip explainer used on confusing
+        // column headers and the banking-status badges.
+        const HelpDot = ({ text }) => (
+          <span title={text} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 14, height: 14, borderRadius: "50%", background: "#FBCFE8", color: "#831843", fontSize: 9, fontWeight: 800, marginLeft: 4, cursor: "help", verticalAlign: "middle", flex: "0 0 auto" }}>?</span>
+        );
 
         const statCard = (label, value, sub) => (
           <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 12, padding: "10px 14px", minWidth: 140 }}>
@@ -25746,7 +25780,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           <div style={{ padding: "0 24px" }}>
             <div style={{ marginBottom: 14 }}>
               <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700, marginBottom: 4 }}>💰 Cash Ups</div>
-              <div style={{ fontSize: 12, color: "#F472B6" }}>Every store's daily cash-up, banking slip and manual-discount reasons in one place. Submitted from the BOA Check-in kiosk → Cash Up screen.</div>
+              <div style={{ fontSize: 12, color: "#F472B6" }}>Every store's daily cash-up — Yoco machine photo, banking slip and manual-discount reasons in one place. Hover any <strong>?</strong> for an explanation. Submitted from the BOA Check-in kiosk → Cash Up screen.</div>
             </div>
 
             {renderScopeBar({ marginBottom: 12 })}
@@ -25785,6 +25819,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               {statCard("Card Tips", _fmtMoney(totals.tips))}
               {statCard("Manual Discounts", _fmtMoney(totals.manualD))}
               {statCard("Banking Gaps", String(bankingGaps.length), notBanked.length + " explicitly not banked")}
+              {statCard("Not Submitted", String(missingCount), "store-day" + (missingCount === 1 ? "" : "s") + " to follow up")}
             </div>
 
             {(bankingGaps.length > 0 || notBanked.length > 0) && (
@@ -25797,6 +25832,39 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
             )}
 
+            {/* Who hasn't submitted their cash-up — collapsible follow-up list */}
+            {missingCount > 0 && (
+              <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 11, marginBottom: 14, overflow: "hidden" }}>
+                <button
+                  onClick={() => setCashupShowMissing(v => !v)}
+                  style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, background: "#FCE7F3", border: "none", padding: "11px 16px", cursor: "pointer", textAlign: "left" }}
+                >
+                  <span style={{ fontSize: 14 }}>🚫</span>
+                  <span style={{ fontSize: 13, fontWeight: 800, color: "#831843" }}>Not submitted — {missingCount} store-day{missingCount === 1 ? "" : "s"} to follow up</span>
+                  <HelpDot text={"Stores with no cash-up captured for that day. Known closed days (e.g. weekends a store doesn't trade) are excluded. Today's stores may still submit before close."} />
+                  <span style={{ flex: 1 }} />
+                  <span style={{ fontSize: 12, color: "#BE185D", fontWeight: 700 }}>{cashupShowMissing ? "Hide ▲" : "Show ▼"}</span>
+                </button>
+                {cashupShowMissing && (
+                  <div style={{ padding: "10px 16px 14px" }}>
+                    {missingByDate.map(d => (
+                      <div key={d.ymd} style={{ display: "flex", gap: 10, alignItems: "baseline", padding: "7px 0", borderBottom: "1px solid #FCE7F3" }}>
+                        <div style={{ minWidth: 130, fontSize: 12, fontWeight: 700, color: "#831843" }}>
+                          {_fmtDate(d.ymd)}
+                          {d.isToday && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#9ca3af" }}>(today — may still submit)</span>}
+                        </div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                          {d.branches.map(b => (
+                            <span key={b} style={{ background: "#fee2e2", color: "#7f1d1d", padding: "2px 9px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>{b}</span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
             {filtered.length === 0 ? (
               <div style={{ background: "#FFFFFF", borderRadius: 11, border: "1px dashed #FBCFE8", padding: "30px 20px", textAlign: "center", color: "#9ca3af" }}>No cash-ups submitted in this window.</div>
             ) : (
@@ -25804,8 +25872,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: "#1f2937" }}>
                   <thead>
                     <tr style={{ background: "#FCE7F3", color: "#831843", textAlign: "left" }}>
-                      {["Date","Branch","Region","Yoco","Yoco Link","Cash","Tips","Vouchers","Gift card","Manual Disc.","Total","Banking","Signed by","Action"].map(h => (
-                        <th key={h} style={{ padding: "8px 10px", fontSize: 11, fontWeight: 800, letterSpacing: "0.04em", borderBottom: "1px solid #FBCFE8", whiteSpace: "nowrap" }}>{h}</th>
+                      {[
+                        { l: "Date" },
+                        { l: "Branch" },
+                        { l: "Region" },
+                        { l: "Yoco", help: "Card payments taken on the Yoco card machine today. Tap the 📷 under the amount to see the manager's photo of the machine's totals screen." },
+                        { l: "Yoco Link", help: "Payments collected via a Yoco online payment link (not swiped on the machine)." },
+                        { l: "Cash" },
+                        { l: "Tips", help: "Card tips left for staff. Shown for the record — NOT added into the day's revenue total." },
+                        { l: "Vouchers", sub: "sold", help: "Value of gift VOUCHERS SOLD today. The client paid now (cash/card) for a voucher to be used on a future visit, so it's part of today's takings and is included in the total." },
+                        { l: "Gift cards", sub: "redeemed", help: "Value of gift cards REDEEMED as payment today. The client settled their bill with a gift card bought earlier — it counts toward today's revenue total, but no new cash or card came in for it." },
+                        { l: "Manual Disc.", help: "Discounts applied by hand at the till. Hover the ⓘ on a row to read the manager's reason." },
+                        { l: "Total" },
+                        { l: "Banking", help: "Cash banking status. Yes = banked with slip attached. Not banked = cash was taken but not deposited (follow up). Missing = cash taken but no banking answer captured." },
+                        { l: "Signed by" },
+                        { l: "Action" },
+                      ].map(h => (
+                        <th key={h.l} style={{ padding: "8px 10px", fontSize: 11, fontWeight: 800, letterSpacing: "0.04em", borderBottom: "1px solid #FBCFE8", whiteSpace: "nowrap" }}>
+                          <span style={{ display: "inline-flex", alignItems: "center" }}>
+                            {h.l}
+                            {h.sub && <span style={{ marginLeft: 4, fontSize: 9, fontWeight: 700, color: "#BE185D", textTransform: "lowercase", letterSpacing: "0.02em" }}>({h.sub})</span>}
+                            {h.help && <HelpDot text={h.help} />}
+                          </span>
+                        </th>
                       ))}
                     </tr>
                   </thead>
@@ -25825,9 +25914,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           </span>
                         );
                       } else if (r.cash_banked === false) {
-                        banking = <span style={{ background: "#fee2e2", color: "#7f1d1d", padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>Not banked</span>;
+                        banking = (
+                          <span style={{ display: "inline-flex", alignItems: "center" }}>
+                            <span style={{ background: "#fee2e2", color: "#7f1d1d", padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>Not banked</span>
+                            <HelpDot text={"The store took cash today but the manager confirmed it was NOT deposited at the bank (e.g. weekend, after bank hours, kept in the safe). The cash is still outstanding — follow up to make sure it gets banked. Their reason should be in the Notes 📝."} />
+                          </span>
+                        );
                       } else if (Number(r.cash) > 0) {
-                        banking = <span style={{ background: "#fef3c7", color: "#92400e", padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>Missing</span>;
+                        banking = (
+                          <span style={{ display: "inline-flex", alignItems: "center" }}>
+                            <span style={{ background: "#fef3c7", color: "#92400e", padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>Missing</span>
+                            <HelpDot text={"Cash was taken but no banking answer was captured (a legacy cash-up, or the step was skipped on submit). Check with the store whether the cash was banked."} />
+                          </span>
+                        );
                       } else {
                         banking = <span style={{ color: "#9ca3af" }}>—</span>;
                       }
@@ -25841,7 +25940,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <td style={cell}>{_fmtDate(r.date)}{isArchived && <span style={{ marginLeft: 6, background: "#e5e7eb", color: "#4b5563", padding: "1px 6px", borderRadius: 5, fontSize: 10, fontWeight: 700 }}>REOPENED</span>}</td>
                           <td style={{ ...cell, fontWeight: 700, color: "#831843" }}>{r.branch}</td>
                           <td style={cell}><span style={{ background: rm.bg, color: rm.color, padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>{rm.short}</span></td>
-                          <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.yoco)}</td>
+                          <td style={{ ...cellNum, ...strikeIfArchived }}>
+                            {_fmtMoney(r.yoco)}
+                            {r.yoco_photo ? (
+                              <div style={{ fontSize: 10, fontWeight: 700, marginTop: 1 }}>
+                                <a href="#" onClick={e => { e.preventDefault(); setCashupSlipModal({ url: r.yoco_photo, branch: r.branch, date: r.date, label: "📸 Yoco machine balances" }); }} style={{ color: "#BE185D", textDecoration: "none" }}>📷 photo</a>
+                              </div>
+                            ) : (
+                              <div style={{ fontSize: 10, fontWeight: 600, color: "#cbb3bd", marginTop: 1 }} title="No photo of the Yoco machine totals was attached for this day.">no photo</div>
+                            )}
+                          </td>
                           <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.yoco_link)}</td>
                           <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.cash)}</td>
                           <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.card_tips)}</td>
@@ -25888,10 +25996,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div onClick={() => setCashupSlipModal(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, padding: 16 }}>
                 <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 14, padding: 16, maxWidth: 720, width: "100%" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                    <div style={{ fontWeight: 800, color: "#831843" }}>🏦 Banking slip — {cashupSlipModal.branch} · {_fmtDate(cashupSlipModal.date)}</div>
+                    <div style={{ fontWeight: 800, color: "#831843" }}>{cashupSlipModal.label || "🏦 Banking slip"} — {cashupSlipModal.branch} · {_fmtDate(cashupSlipModal.date)}</div>
                     <button onClick={() => setCashupSlipModal(null)} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
                   </div>
-                  <img src={cashupSlipModal.url} alt="banking slip" style={{ width: "100%", borderRadius: 8, display: "block" }} />
+                  <img src={cashupSlipModal.url} alt={cashupSlipModal.label || "banking slip"} style={{ width: "100%", borderRadius: 8, display: "block" }} />
                 </div>
               </div>
             )}
