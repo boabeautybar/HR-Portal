@@ -23554,6 +23554,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const staffByEc = {};
           for (const s of (staff || [])) staffByEc[s.ec] = s;
           for (const m of (managers || [])) staffByEc[m.ec] = m;
+          // Managers must NOT appear in Nail Tech Check-ins. Their kiosk
+          // entries here are early-clock-out mirrors (status "left_early")
+          // that leak in from boa_kiosk_log — those belong on the attendance
+          // sheet / Manager Check-ins, not in the nail-tech feed.
+          const mgrEcSet = new Set((managers || []).map(m => String(m.ec || "").trim()).filter(Boolean));
           // Synthesize "clockin-shaped" rows from the kiosk attendance grid so
           // the existing table renderer can display them next to clockins rows.
           // Only SUBMITTED check-ins are shown (manager tapped "Confirm and
@@ -23587,10 +23592,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               staff: { name: sRec ? sRec.name : "(unknown)", employee_code: r.ec, branch: r.branch }
             };
           });
-          // Merge clockins rows + attendance-grid rows, newest first.
-          const filtered = clockinFiltered.concat(attShaped).sort((a, b) =>
-            String(b.ts || "").localeCompare(String(a.ts || ""))
-          );
+          // Merge clockins rows + attendance-grid rows, newest first. Drop any
+          // row belonging to a manager (their early-clock-out leaks in as a
+          // "left_early" kiosk-log entry) — keep orphan rows for diagnostics.
+          const filtered = clockinFiltered.concat(attShaped)
+            .filter(r => !mgrEcSet.has(String((r.staff && r.staff.employee_code) || "").trim()))
+            .sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
           // Per-branch tally of every row fetched in the load window — independent
           // of the viewer's branch/range filters above. Lets us see at a glance
           // whether a branch's check-ins reached Supabase at all.
