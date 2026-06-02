@@ -9284,7 +9284,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // stores via the existing scope bar; everyone else sees all branches
   // and can filter by region.
   const [cashupRows, setCashupRows] = useState([]);
-  const [cashupDays, setCashupDays] = useState(14);
+  // Cash Ups is a day-by-day view: land on today, step back/forward a day at a
+  // time. (Replaces the old fixed look-back ranges.)
+  const [cashupDate, setCashupDate] = useState(() => {
+    const d = new Date(); const p = n => String(n).padStart(2, "0");
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+  });
   const [cashupRegion, setCashupRegion] = useState("all");
   const [cashupBranchFilter, setCashupBranchFilter] = useState("All");
   const [cashupSlipModal, setCashupSlipModal] = useState(null);
@@ -9299,11 +9304,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     if (tab !== "cashups") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     let cancelled = false;
-    window.BOA_DB.listRecentCashups(cashupDays).then(rows => {
+    window.BOA_DB.listCashupsForDate(cashupDate).then(rows => {
       if (!cancelled) setCashupRows(rows || []);
     });
     return () => { cancelled = true; };
-  }, [tab, cashupDays]);
+  }, [tab, cashupDate]);
 
   // ── Onboarding / Off-boarding state ────────────────────────────────
   const [obList, setObList] = useState([]);           // joiner records (3-month contract signers)
@@ -25740,10 +25745,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           : branchesInScope.filter(s => s.region === cashupRegion);
 
         // ── Who hasn't submitted? ───────────────────────────────────────
-        // For every expected (branch × day) in the window, flag the ones with
-        // no active cash-up so ops can chase the store. We honour the same
-        // region / branch filters as the table and skip a store's known
-        // closed weekdays (SALONS[].closedDow) so days off aren't false flags.
+        // For the day being viewed, flag the in-scope stores with no active
+        // cash-up so ops can chase them. We honour the same region / branch
+        // filters as the table and skip a store's known closed weekdays
+        // (SALONS[].closedDow) so days off aren't false flags.
         const _pad2 = (n) => String(n).padStart(2, "0");
         const _today0 = new Date(); _today0.setHours(0, 0, 0, 0);
         const _todayYmd = _today0.getFullYear() + "-" + _pad2(_today0.getMonth() + 1) + "-" + _pad2(_today0.getDate());
@@ -25760,24 +25765,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const o = CASHUP_STORE_OPENING[name];
           return (o && o > CASHUP_GO_LIVE) ? o : CASHUP_GO_LIVE;
         };
-        // A branch+date counts as "submitted" if any non-reopened row exists.
-        const submittedSet = new Set(activeRows.map(r => r.branch + "|" + r.date));
-        const missingByDate = [];
-        for (let i = 0; i < cashupDays; i++) {
-          const d = new Date(_today0); d.setDate(d.getDate() - i);
-          const ymd = d.getFullYear() + "-" + _pad2(d.getMonth() + 1) + "-" + _pad2(d.getDate());
-          if (ymd < CASHUP_GO_LIVE) continue;
-          const dow = d.getDay();
-          const missing = branchesToCheck.filter(s =>
-            ymd >= expectedFrom(s.name) &&
-            !(Array.isArray(s.closedDow) && s.closedDow.includes(dow)) &&
-            !submittedSet.has(s.name + "|" + ymd)
-          );
-          if (missing.length) missingByDate.push({ ymd, isToday: ymd === _todayYmd, branches: missing.map(s => s.name) });
-        }
-        const missingCount = missingByDate.reduce((a, d) => a + d.branches.length, 0);
-
-        const rangeOpts = [{ v: 1, l: "Today" }, { v: 3, l: "Last 3 days" }, { v: 7, l: "Last 7 days" }, { v: 14, l: "Last 14 days" }, { v: 30, l: "Last 30 days" }, { v: 60, l: "Last 60 days" }];
+        // A branch counts as "submitted" if any non-reopened row exists for
+        // the viewed day.
+        const submittedSet = new Set(activeRows.map(r => r.branch));
+        const selDow = (() => { try { return new Date(cashupDate + "T12:00:00").getDay(); } catch (_) { return -1; } })();
+        const selIsToday = cashupDate === _todayYmd;
+        const selIsFuture = cashupDate > _todayYmd;
+        const missingBranches = (cashupDate >= CASHUP_GO_LIVE && !selIsFuture)
+          ? branchesToCheck.filter(s =>
+              cashupDate >= expectedFrom(s.name) &&
+              !(Array.isArray(s.closedDow) && s.closedDow.includes(selDow)) &&
+              !submittedSet.has(s.name)
+            ).map(s => s.name)
+          : [];
+        const missingCount = missingBranches.length;
+        // Day-navigator helpers.
+        const _shiftDay = (delta) => {
+          const d = new Date(cashupDate + "T12:00:00"); d.setDate(d.getDate() + delta);
+          return d.getFullYear() + "-" + _pad2(d.getMonth() + 1) + "-" + _pad2(d.getDate());
+        };
+        const _fmtDayLong = (ymd) => { try { return new Date(ymd + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "long", day: "2-digit", month: "long", year: "numeric" }); } catch (_) { return ymd; } };
 
         // Small "?" help dot — tap/click opens an explainer popup. Used on
         // confusing column headers and the banking-status badges. Native
@@ -25826,24 +25833,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </select>
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>RANGE</label>
-                <select value={cashupDays} onChange={e => setCashupDays(Number(e.target.value))} style={{ padding: "7px 11px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff", minWidth: 140 }}>
-                  {rangeOpts.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
-                </select>
+                <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>DAY</label>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <button onClick={() => setCashupDate(_shiftDay(-1))} title="Previous day" style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "7px 11px", cursor: "pointer", fontSize: 14, fontWeight: 800, lineHeight: 1 }}>‹</button>
+                  <input type="date" max={_todayYmd} value={cashupDate} onChange={e => { if (e.target.value) setCashupDate(e.target.value); }} style={{ padding: "7px 9px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff" }} />
+                  <button onClick={() => { if (cashupDate < _todayYmd) setCashupDate(_shiftDay(1)); }} disabled={cashupDate >= _todayYmd} title="Next day" style={{ background: "#fff", color: cashupDate >= _todayYmd ? "#e9c6d6" : "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "7px 11px", cursor: cashupDate >= _todayYmd ? "not-allowed" : "pointer", fontSize: 14, fontWeight: 800, lineHeight: 1 }}>›</button>
+                  {!selIsToday && <button onClick={() => setCashupDate(_todayYmd)} style={{ background: "#FCE7F3", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "7px 11px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Today</button>}
+                </div>
               </div>
               <div style={{ flex: 1 }} />
               <button
                 onClick={() => {
-                  const yd = new Date(_today0); yd.setDate(yd.getDate() - 1);
-                  const yYmd = yd.getFullYear() + "-" + _pad2(yd.getMonth() + 1) + "-" + _pad2(yd.getDate());
                   const defBranch = cashupBranchFilter !== "All" ? cashupBranchFilter : (visibleBranches[0] ? visibleBranches[0].name : "");
-                  setCashupAdd({ branch: defBranch, date: yYmd, yoco: "", yoco_link: "", cash: "", card_tips: "", vouchers: "", gift_card: "", manual_discounts: "", manual_discount_reason: "", cash_banked: "", amount_banked: "", banking_ref: "", banked_by: "", notes: "", signed_by: "" });
+                  setCashupAdd({ branch: defBranch, date: cashupDate, yoco: "", yoco_link: "", cash: "", card_tips: "", vouchers: "", gift_card: "", manual_discounts: "", manual_discount_reason: "", cash_banked: "", amount_banked: "", banking_ref: "", banked_by: "", notes: "", signed_by: "" });
                 }}
                 style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}
               >➕ Add cash-up</button>
               <div style={{ fontSize: 12, color: "#831843", textAlign: "right" }}>
-                <div style={{ fontWeight: 700 }}>{filtered.length} cash-up{filtered.length !== 1 ? "s" : ""}</div>
-                <div style={{ fontSize: 11, color: "#9ca3af" }}>across {new Set(filtered.map(r => r.branch)).size} store{new Set(filtered.map(r => r.branch)).size !== 1 ? "s" : ""}</div>
+                <div style={{ fontWeight: 800 }}>{_fmtDayLong(cashupDate)}{selIsToday ? " · today" : ""}</div>
+                <div style={{ fontSize: 11, color: "#9ca3af" }}>{filtered.length} cash-up{filtered.length !== 1 ? "s" : ""} across {new Set(filtered.map(r => r.branch)).size} store{new Set(filtered.map(r => r.branch)).size !== 1 ? "s" : ""}</div>
               </div>
             </div>
 
@@ -25853,7 +25861,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               {statCard("Card Tips", _fmtMoney(totals.tips))}
               {statCard("Manual Discounts", _fmtMoney(totals.manualD))}
               {statCard("Banking Gaps", String(bankingGaps.length), notBanked.length + " explicitly not banked")}
-              {statCard("Not Submitted", String(missingCount), "store-day" + (missingCount === 1 ? "" : "s") + " to follow up")}
+              {statCard("Not Submitted", String(missingCount), "store" + (missingCount === 1 ? "" : "s") + (selIsToday ? " not in yet" : " to follow up"))}
             </div>
 
             {(bankingGaps.length > 0 || notBanked.length > 0) && (
@@ -25874,25 +25882,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, background: "#FCE7F3", border: "none", padding: "11px 16px", cursor: "pointer", textAlign: "left" }}
                 >
                   <span style={{ fontSize: 14 }}>🚫</span>
-                  <span style={{ fontSize: 13, fontWeight: 800, color: "#831843" }}>Not submitted — {missingCount} store-day{missingCount === 1 ? "" : "s"} to follow up</span>
-                  <HelpDot text={"Stores with no cash-up captured for that day. Known closed days (e.g. weekends a store doesn't trade) are excluded. Today's stores may still submit before close."} />
+                  <span style={{ fontSize: 13, fontWeight: 800, color: "#831843" }}>Not submitted — {missingCount} store{missingCount === 1 ? "" : "s"} {selIsToday ? "not in yet" : "to follow up"}</span>
+                  <HelpDot text={"Stores with no cash-up captured for the day you're viewing. Known closed days (e.g. weekends a store doesn't trade) and stores not yet open are excluded." + (selIsToday ? " You're on today — these stores may still submit before close." : "")} />
                   <span style={{ flex: 1 }} />
                   <span style={{ fontSize: 12, color: "#BE185D", fontWeight: 700 }}>{cashupShowMissing ? "Hide ▲" : "Show ▼"}</span>
                 </button>
                 {cashupShowMissing && (
-                  <div style={{ padding: "10px 16px 14px" }}>
-                    {missingByDate.map(d => (
-                      <div key={d.ymd} style={{ display: "flex", gap: 10, alignItems: "baseline", padding: "7px 0", borderBottom: "1px solid #FCE7F3" }}>
-                        <div style={{ minWidth: 130, fontSize: 12, fontWeight: 700, color: "#831843" }}>
-                          {_fmtDate(d.ymd)}
-                          {d.isToday && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#9ca3af" }}>(today — may still submit)</span>}
-                        </div>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                          {d.branches.map(b => (
-                            <span key={b} style={{ background: "#fee2e2", color: "#7f1d1d", padding: "2px 9px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>{b}</span>
-                          ))}
-                        </div>
-                      </div>
+                  <div style={{ padding: "12px 16px 14px", display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                    {selIsToday && <span style={{ fontSize: 11, color: "#9ca3af", marginRight: 4 }}>Not in yet (may still submit):</span>}
+                    {missingBranches.map(b => (
+                      <span key={b} style={{ background: "#fee2e2", color: "#7f1d1d", padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>{b}</span>
                     ))}
                   </div>
                 )}
@@ -25900,7 +25899,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             )}
 
             {filtered.length === 0 ? (
-              <div style={{ background: "#FFFFFF", borderRadius: 11, border: "1px dashed #FBCFE8", padding: "30px 20px", textAlign: "center", color: "#9ca3af" }}>No cash-ups submitted in this window.</div>
+              <div style={{ background: "#FFFFFF", borderRadius: 11, border: "1px dashed #FBCFE8", padding: "30px 20px", textAlign: "center", color: "#9ca3af" }}>No cash-ups submitted for {_fmtDayLong(cashupDate)}.</div>
             ) : (
               <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 13, overflow: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: "#1f2937" }}>
@@ -26007,7 +26006,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   if (!window.confirm("Reopen this cash-up?\n\nStore: " + r.branch + "\nDate: " + r.date + "\nTotal: " + _fmtMoney(r.total) + "\n\nThe store will be able to submit a new cash-up for this day. The current entry stays in the history as 'Reopened'.")) return;
                                   try {
                                     await window.BOA_DB.reopenCashup(r.id, currentUser?.name || "");
-                                    const fresh = await window.BOA_DB.listRecentCashups(cashupDays);
+                                    const fresh = await window.BOA_DB.listCashupsForDate(cashupDate);
                                     setCashupRows(fresh || []);
                                   } catch (e) {
                                     window.alert("Couldn't reopen: " + ((e && e.message) || e));
@@ -26086,7 +26085,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     notes: cashupAdd.notes, signed_by: cashupAdd.signed_by,
                     entered_by: currentUser?.name || ""
                   });
-                  const fresh = await window.BOA_DB.listRecentCashups(cashupDays);
+                  const fresh = await window.BOA_DB.listCashupsForDate(cashupDate);
                   setCashupRows(fresh || []);
                   setCashupAdd(null);
                 } catch (e) {

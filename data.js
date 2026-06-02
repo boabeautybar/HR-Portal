@@ -700,6 +700,18 @@
     return res.data || [];
   }
 
+  // Cash-ups for a single day across every branch — powers the HR portal's
+  // day-by-day Cash Ups navigator (region/branch filtering stays client-side).
+  async function listCashupsForDate(dateStr) {
+    if (!dateStr) return [];
+    var res = await sb.from("cashups").select("*")
+      .eq("date", dateStr)
+      .order("created_at", { ascending: false })
+      .limit(5000);
+    if (res.error) { console.error("listCashupsForDate:", res.error); return []; }
+    return res.data || [];
+  }
+
   // Manager day-status — reason captured by a ROM when a scheduled manager
   // didn't clock in. Powers the "Mark reason" flow on Manager Check-ins,
   // overlays the absence on the attendance grid, and feeds the ROM dashboard
@@ -1689,6 +1701,7 @@
 
     // Cash-ups (from the kiosk)
     listRecentCashups: listRecentCashups,
+    listCashupsForDate: listCashupsForDate,
     addCashupManual: addCashupManual,
     reopenCashup: reopenCashup,
     loadManagerDayStatuses: loadManagerDayStatuses,
