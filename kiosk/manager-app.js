@@ -58,9 +58,13 @@
 
     root.innerHTML =
       '<header class="app-header gp-header">' +
+      '<div class="gp-header-inner">' +
+      '<div class="gp-left">' +
+      '<div class="boa-logo"><img class="boa-logo-img" src="boa-logo.png" alt="BOA Beauty Bar"></div>' +
       '<div class="gp-greeting">' +
       '<div class="gp-greeting-line">' + esc(getGreeting()) + ' · ' + esc(cfg.branchDisplayName || cfg.branchName || "BOA Check-in") + '</div>' +
       '<div class="gp-sublabel" id="gp-sublabel">MANAGER</div>' +
+      '</div>' +
       '</div>' +
       '<div class="gp-actions">' +
       '<button class="gp-btn" id="pwa-install-btn" style="display:none; margin-right:12px; font-weight:700;" type="button"><span>⬇️</span> Install to Device</button>' +
@@ -75,6 +79,7 @@
       '<div class="gp-header-right">' +
         '<button class="gp-home-quick" id="gp-home-quick" type="button" aria-label="Home" title="Home">🏠</button>' +
         '<button class="gp-menu-toggle" id="gp-menu-toggle" type="button" aria-label="Menu">☰</button>' +
+      '</div>' +
       '</div>' +
       '</header>' +
       '<main id="staff-main"></main>';
