@@ -12748,11 +12748,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   the "Abscond / Absence Warnings" permission (owner-only by
                   default; grant others in Settings). */}
               {!(new Set(currentUser?.hideTabs || []).has("dashAbscond")) && (() => {
-                // Unexcused missed days: NO SHOW, ABSENT and SICK WITHOUT NOTE
-                // ('sick'). Excused — sick WITH note ('sick_n'), FRL with proof
-                // ('frl') and leave/PH/off — do NOT count and break the run.
-                const MISSED = { no: 1, absent: 1, sick: 1 };
-                const PRESENTOK = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1, swap_o: 1, sick_n: 1, frl: 1, al: 1, el: 1, ph: 1, mat: 1, off: 1, term: 1 };
+                // Unexcused missed days that count toward an abscond streak:
+                // NO SHOW and ABSENT only. Everything else — sick (with or
+                // without note), FRL, leave, PH, off, present — does NOT count
+                // and breaks the run.
+                const MISSED = { no: 1, absent: 1 };
+                const PRESENTOK = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1, swap_o: 1, sick: 1, sick_n: 1, frl: 1, al: 1, el: 1, ph: 1, mat: 1, off: 1, term: 1 };
                 const _t = new Date(); _t.setHours(0, 0, 0, 0);
                 const _p2 = n => String(n).padStart(2, "0");
                 const _todayYmd = _t.getFullYear() + "-" + _p2(_t.getMonth() + 1) + "-" + _p2(_t.getDate());
@@ -12841,7 +12842,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </div>
                     <div style={{ display: dashCollapsed.abscond ? "none" : "block" }}>
                       <div style={{ fontSize: 11, color: "#b91c1c", marginBottom: 8, fontStyle: "italic" }}>
-                        These people have missed 2+ days in a row (no-show, absent or sick without a note) and <strong>haven't returned to work yet</strong>. Consecutive no-shows likely mean abscondment — investigate, set up a disciplinary, and plan a replacement for the store.
+                        These people have been no-show or absent 2+ days in a row and <strong>haven't returned to work yet</strong>. Consecutive no-shows likely mean abscondment — investigate, set up a disciplinary, and plan a replacement for the store.
                       </div>
                       {warns.map((w, i) => {
                         const red = w.allNo;
