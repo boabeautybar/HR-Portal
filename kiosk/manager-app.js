@@ -58,9 +58,12 @@
 
     root.innerHTML =
       '<header class="app-header gp-header">' +
+      '<div class="gp-left">' +
+      '<div class="boa-logo" aria-label="BOA Beauty Bar"><span class="boa-logo-boa">BOA</span><span class="boa-logo-beauty">BEAUTY</span><span class="boa-logo-bar">Bar</span></div>' +
       '<div class="gp-greeting">' +
       '<div class="gp-greeting-line">' + esc(getGreeting()) + ' · ' + esc(cfg.branchDisplayName || cfg.branchName || "BOA Check-in") + '</div>' +
       '<div class="gp-sublabel" id="gp-sublabel">MANAGER</div>' +
+      '</div>' +
       '</div>' +
       '<div class="gp-actions">' +
       '<button class="gp-btn" id="pwa-install-btn" style="display:none; margin-right:12px; font-weight:700;" type="button"><span>⬇️</span> Install to Device</button>' +
