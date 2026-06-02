@@ -128,7 +128,7 @@ function installDemoMode() {
 const READ_ONLY_GUARDED_METHODS = [
   "saveStaff", "saveMat", "saveManager", "saveSchedule", "saveAttendance", "saveEarlyLeaves",
   "saveOnboarding", "saveOffboarding", "saveLeaveRecords", "saveMgrRequests",
-  "saveTechRequests", "saveManagerPins", "deleteMat", "deleteManager", "deleteSchedule"
+  "saveTechRequests", "saveManagerPins", "saveTrialPeriod", "deleteMat", "deleteManager", "deleteSchedule"
 ];
 function installReadOnlyGuard() {
   const apply = () => {
@@ -6936,6 +6936,7 @@ const SETTINGS_TABS = [
   { t: "onboard", l: "Onboarding", cat: "People", icon: "🌱" },
   { t: "offboard", l: "Off-boarding", cat: "People", icon: "👋" },
   { t: "recruitment", l: "Recruitment", cat: "People", icon: "🎯" },
+  { t: "trialPeriod", l: "Trial Period & Induction", cat: "People", icon: "🧪" },
   { t: "maternity", l: "Maternity", cat: "People", icon: "🤱" },
   { t: "smTrial", l: "SM Trials", cat: "People", icon: "⭐" },
   { t: "unpaidLegal", l: "Unpaid Leave (Legal)", cat: "People", icon: "⏸️" },
