@@ -9290,6 +9290,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [cashupSlipModal, setCashupSlipModal] = useState(null);
   // Collapsible "who hasn't submitted their cash-up yet" follow-up panel.
   const [cashupShowMissing, setCashupShowMissing] = useState(false);
+  // Text shown in the tap-to-open "?" help popup on the Cash Ups table.
+  const [cashupHelp, setCashupHelp] = useState(null);
   useEffect(() => {
     if (tab !== "cashups") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
@@ -25766,10 +25768,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         const rangeOpts = [{ v: 1, l: "Today" }, { v: 3, l: "Last 3 days" }, { v: 7, l: "Last 7 days" }, { v: 14, l: "Last 14 days" }, { v: 30, l: "Last 30 days" }, { v: 60, l: "Last 60 days" }];
 
-        // Small "?" help dot — native-tooltip explainer used on confusing
-        // column headers and the banking-status badges.
+        // Small "?" help dot — tap/click opens an explainer popup. Used on
+        // confusing column headers and the banking-status badges. Native
+        // title kept as a hover fallback on desktop.
         const HelpDot = ({ text }) => (
-          <span title={text} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 14, height: 14, borderRadius: "50%", background: "#FBCFE8", color: "#831843", fontSize: 9, fontWeight: 800, marginLeft: 4, cursor: "help", verticalAlign: "middle", flex: "0 0 auto" }}>?</span>
+          <span
+            role="button"
+            tabIndex={0}
+            title={text}
+            onClick={e => { e.preventDefault(); e.stopPropagation(); setCashupHelp(text); }}
+            onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); setCashupHelp(text); } }}
+            style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 15, height: 15, borderRadius: "50%", background: "#FBCFE8", color: "#831843", fontSize: 10, fontWeight: 800, marginLeft: 4, cursor: "pointer", verticalAlign: "middle", flex: "0 0 auto", userSelect: "none" }}
+          >?</span>
         );
 
         const statCard = (label, value, sub) => (
@@ -26004,6 +26014,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <button onClick={() => setCashupSlipModal(null)} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
                   </div>
                   <img src={cashupSlipModal.url} alt={cashupSlipModal.label || "banking slip"} style={{ width: "100%", borderRadius: 8, display: "block" }} />
+                </div>
+              </div>
+            )}
+
+            {cashupHelp && (
+              <div onClick={() => setCashupHelp(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, padding: 16 }}>
+                <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 14, padding: "18px 20px", maxWidth: 420, width: "100%", boxShadow: "0 12px 40px rgba(0,0,0,0.2)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <div style={{ display: "inline-flex", alignItems: "center", gap: 7, fontWeight: 800, color: "#831843" }}>
+                      <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 18, height: 18, borderRadius: "50%", background: "#FBCFE8", color: "#831843", fontSize: 11, fontWeight: 800 }}>?</span>
+                      What this means
+                    </div>
+                    <button onClick={() => setCashupHelp(null)} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
+                  </div>
+                  <div style={{ fontSize: 13.5, color: "#374151", lineHeight: 1.55 }}>{cashupHelp}</div>
                 </div>
               </div>
             )}
