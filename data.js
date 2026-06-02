@@ -1386,6 +1386,21 @@
     return map || {};
   }
 
+  // Abscond / absence-warning follow-ups. When HR actions a flagged person on
+  // the dashboard ("marked done" + a note of what was done) we store it here so
+  // the warning clears — until the person misses again AFTER the actioned date.
+  // Shape: { [ec]: { throughYmd, note, by, at } }.
+  async function loadAbscondActions() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_abscond_actions_v1").maybeSingle();
+    if (res.error) { console.error("loadAbscondActions:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveAbscondActions(map) {
+    var res = await sb.from("app_state").upsert({ key: "boa_abscond_actions_v1", value: map || {} });
+    if (res.error) { console.error("saveAbscondActions:", res.error); throw res.error; }
+    return map || {};
+  }
+
   // ---------- Daily tasks (boa_daily_tasks_v1) ----------
   // Per-user to-do items assigned by an admin. Records:
   //   { _id, title, description, assigneePin, date (YYYY-MM-DD),
@@ -1755,6 +1770,8 @@
     saveTechLoans: saveTechLoans,
     loadMgrTimes: loadMgrTimes,
     saveMgrTimes: saveMgrTimes,
+    loadAbscondActions: loadAbscondActions,
+    saveAbscondActions: saveAbscondActions,
     loadMgrLoans: loadMgrLoans,
     saveMgrLoans: saveMgrLoans,
     loadDailyTasks: loadDailyTasks,
