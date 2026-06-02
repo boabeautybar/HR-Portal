@@ -138,6 +138,24 @@
   // active SM trial is treated as an SM). A blank cell counts as a working day
   // for techs (their generator defaults blanks to W) but as OFF for managers
   // (coverage treats only explicit work codes as working).
+  // The shift-time hours for a working day. Managers use the full Manager
+  // Coverage logic (custom hours → shiftTimes by effective role). Techs are
+  // only ever marked Work/Off in the portal — so we show a time ONLY when the
+  // day carries an explicit shift code (WE/WL/WM/WB); a plain "W" shows no
+  // invented time (it used to wrongly default to the store's closer shift).
+  function workSub(c, dt) {
+    if (state.isManager) {
+      var custom = state.custom && state.custom[ymdStr(dt)];
+      if (custom) return custom + " · custom hours";
+      return shiftTimes(state.effRole || state.role, c || "W", state.store, dt.getDay());
+    }
+    if (c === "WE" || c === "WL" || c === "WM" || c === "WB") {
+      var variant = c === "WE" ? "Early" : c === "WL" ? "Late" : c === "WM" ? "Mid" : "";
+      return shiftTimes(state.role, c, state.store, dt.getDay()) + (variant ? " · " + variant : "");
+    }
+    return "";
+  }
+
   function cellStatus(row, dt) {
     var code = getCell(row, dt);
     var c = (code == null ? "" : String(code)).toUpperCase();
@@ -145,14 +163,11 @@
     if (c === "R") return { kind: "off", label: "Off", sub: "Requested day off" };
     if (c === "L") return { kind: "leave", label: "On leave", sub: "" };
     if (c === "ML") return { kind: "leave", label: "Maternity leave", sub: "" };
+    if (c === "E") return { kind: "extra", label: "💰 Extra day", sub: workSub(c, dt) };
     if (c === "X" || c === "P") return { kind: "work", label: "Pre-start", sub: "" };
     var working = WORK_CODES[c] || (c === "" && !state.isManager);
     if (!working) return { kind: "off", label: "Off", sub: "" };
-    var custom = state.custom && state.custom[ymdStr(dt)];
-    var times = custom || shiftTimes(state.effRole || state.role, c || "W", state.store, dt.getDay());
-    var variant = c === "WE" ? "Early" : c === "WL" ? "Late" : c === "WM" ? "Mid" : c === "E" ? "Extra cover" : "";
-    var sub = times + (variant ? " · " + variant : "") + (custom ? " · custom hours" : "");
-    return { kind: "work", label: "Work", sub: sub };
+    return { kind: "work", label: "Work", sub: workSub(c, dt) };
   }
 
   // ── Data ─────────────────────────────────────────────────────
