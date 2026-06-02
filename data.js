@@ -700,6 +700,18 @@
     return res.data || [];
   }
 
+  // Cash-ups for a single day across every branch — powers the HR portal's
+  // day-by-day Cash Ups navigator (region/branch filtering stays client-side).
+  async function listCashupsForDate(dateStr) {
+    if (!dateStr) return [];
+    var res = await sb.from("cashups").select("*")
+      .eq("date", dateStr)
+      .order("created_at", { ascending: false })
+      .limit(5000);
+    if (res.error) { console.error("listCashupsForDate:", res.error); return []; }
+    return res.data || [];
+  }
+
   // Manager day-status — reason captured by a ROM when a scheduled manager
   // didn't clock in. Powers the "Mark reason" flow on Manager Check-ins,
   // overlays the absence on the attendance grid, and feeds the ROM dashboard
@@ -747,6 +759,40 @@
       .eq("date", p.date);
     if (res.error) { console.error("deleteManagerDayStatus:", res.error); throw res.error; }
     return true;
+  }
+
+  // Manually enter a cash-up from the HR portal for a store that forgot to
+  // submit (typically a previous day). Mirrors the kiosk's addCashup shape but
+  // for an arbitrary branch + date, and stamps the notes so it's clear in the
+  // table that finance/ops keyed it in rather than the store. `total` is a
+  // generated column in Supabase, so we never set it. Banking-slip and
+  // Yoco-photo aren't capturable here (no kiosk camera) and stay null.
+  async function addCashupManual(p) {
+    if (!p || !p.branch || !p.date) throw new Error("Branch and date are required");
+    var stamp = "[Entered manually via HR portal" + (p.entered_by ? " by " + String(p.entered_by).trim() : "") + "]";
+    var notes = (p.notes || "").trim();
+    notes = notes ? (notes + " " + stamp) : stamp;
+    var row = {
+      branch: p.branch,
+      date:   p.date,
+      yoco:      Number(p.yoco)      || 0,
+      yoco_link: Number(p.yoco_link) || 0,
+      cash:      Number(p.cash)      || 0,
+      card_tips: Number(p.card_tips) || 0,
+      vouchers:  Number(p.vouchers)  || 0,
+      gift_card: Number(p.gift_card) || 0,
+      manual_discounts:       Number(p.manual_discounts) || 0,
+      manual_discount_reason: (p.manual_discount_reason || "").trim() || null,
+      notes:     notes,
+      signed_by: (p.signed_by || "").trim() || (p.entered_by || "").trim() || "HR portal",
+      cash_banked:   (p.cash_banked === true || p.cash_banked === false) ? p.cash_banked : null,
+      amount_banked: Number(p.amount_banked) || 0,
+      banking_ref:   (p.banking_ref || "").trim() || null,
+      banked_by:     (p.banked_by   || "").trim() || null
+    };
+    var res = await sb.from("cashups").insert(row).select().single();
+    if (res.error) { console.error("addCashupManual:", res.error); throw res.error; }
+    return res.data;
   }
 
   // Soft-delete a cash-up so the store can submit a fresh one for the
@@ -1655,6 +1701,8 @@
 
     // Cash-ups (from the kiosk)
     listRecentCashups: listRecentCashups,
+    listCashupsForDate: listCashupsForDate,
+    addCashupManual: addCashupManual,
     reopenCashup: reopenCashup,
     loadManagerDayStatuses: loadManagerDayStatuses,
     saveManagerDayStatus: saveManagerDayStatus,
