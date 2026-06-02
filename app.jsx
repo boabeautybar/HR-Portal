@@ -10205,6 +10205,31 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // kept so the Abscond / Absence Warnings widget can scan for consecutive
   // no-show/absent days. Reduced tiles use the same source.
   const [dashAttByBranch, setDashAttByBranch] = useState({});
+  // HR follow-ups on abscond/absence warnings: { [ec]: { throughYmd, note, by, at } }.
+  // Marking a flagged person "done" + a note clears the warning until they miss
+  // again after the actioned date.
+  const [abscondActions, setAbscondActions] = useState({});
+  useEffect(() => {
+    if (tab !== "dashboard") return;
+    if (!window.BOA_DB || !window.BOA_DB.loadAbscondActions) return;
+    let cancelled = false;
+    window.BOA_DB.loadAbscondActions().then(m => { if (!cancelled) setAbscondActions(m || {}); });
+    return () => { cancelled = true; };
+  }, [tab]);
+  // Record an action taken on a flagged person (clears the warning through the
+  // given day) and persist it.
+  const markAbscondDone = async (ec, throughYmd, note) => {
+    const key = String(ec || "").trim(); if (!key) return;
+    const next = { ...abscondActions, [key]: { throughYmd: throughYmd || null, note: (note || "").trim(), by: (currentUser && currentUser.name) || "", at: new Date().toISOString() } };
+    setAbscondActions(next);
+    try { await window.BOA_DB.saveAbscondActions(next); } catch (e) { window.alert("Couldn't save the note: " + ((e && e.message) || e)); }
+  };
+  const clearAbscondDone = async (ec) => {
+    const key = String(ec || "").trim(); if (!key) return;
+    const next = { ...abscondActions }; delete next[key];
+    setAbscondActions(next);
+    try { await window.BOA_DB.saveAbscondActions(next); } catch (e) { window.alert("Couldn't update: " + ((e && e.message) || e)); }
+  };
   useEffect(() => {
     if (tab !== "dashboard") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
@@ -12771,14 +12796,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 // today: a worked day stops the count (they've returned); off /
                 // blank / excused days are skipped; no-show/absent are counted.
                 const missedSinceReturn = (statuses) => {
-                  let run = 0, noShows = 0, absents = 0;
+                  let run = 0, noShows = 0, absents = 0, lastIdx = -1;
                   for (let i = statuses.length - 1; i >= 0; i--) {
                     const s = statuses[i];
                     if (WORKED[s]) break;                 // returned to work → stop
-                    if (MISSED[s]) { run++; if (s === "no") noShows++; else absents++; }
+                    if (MISSED[s]) { if (lastIdx === -1) lastIdx = i; run++; if (s === "no") noShows++; else absents++; }
                     // else: off / blank / excused → skip
                   }
-                  return { run, noShows, absents };
+                  return { run, noShows, absents, lastIdx };
                 };
                 const _missLabel = (w) => {
                   const parts = [];
@@ -12800,7 +12825,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   // return (and OFF days don't break the run).
                   const statuses = cycleDays.map(d => { let v = grid[d.dom] || ""; if (v.indexOf("~") === 0) v = ""; return v; });
                   const r = missedSinceReturn(statuses);
-                  if (r.run >= 2) warns.push({ name: s.name, branch: s.branch, role: "Nail tech", run: r.run, noShows: r.noShows, absents: r.absents, allNo: r.run === r.noShows });
+                  if (r.run >= 2) warns.push({ ec: String(s.ec).trim(), name: s.name, branch: s.branch, role: "Nail tech", run: r.run, noShows: r.noShows, absents: r.absents, allNo: r.run === r.noShows, lastMissedYmd: (cycleDays[r.lastIdx] || {}).ymd || null });
                 });
                 // Managers — from ROM-tagged day statuses (keyed by staff_id).
                 const mgrById = {};
@@ -12819,35 +12844,57 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   const r = missedSinceReturn(statuses);
                   // Clocked in today → they're back at work, don't flag.
                   const backToday = dashTodayMgrClockinEcs && dashTodayMgrClockinEcs.has && dashTodayMgrClockinEcs.has(String(m.ec || "").trim());
-                  if (r.run >= 2 && !backToday) warns.push({ name: m.name, branch: m.branch, role: "Manager", run: r.run, noShows: r.noShows, absents: r.absents, allNo: r.run === r.noShows });
+                  if (r.run >= 2 && !backToday) warns.push({ ec: String(m.ec || "").trim(), name: m.name, branch: m.branch, role: "Manager", run: r.run, noShows: r.noShows, absents: r.absents, allNo: r.run === r.noShows, lastMissedYmd: (cycleDays[r.lastIdx] || {}).ymd || null });
                 });
-                if (warns.length === 0) return null;
-                warns.sort((a, b) => (Number(b.allNo) - Number(a.allNo)) || (b.run - a.run) || (b.noShows - a.noShows));
-                const abscondCount = warns.filter(w => w.allNo).length;
+                // Hide anyone HR has already actioned, unless they've missed
+                // again AFTER the actioned date (then it re-surfaces).
+                const active = warns.filter(w => {
+                  const a = abscondActions[w.ec];
+                  return !(a && a.throughYmd && w.lastMissedYmd && a.throughYmd >= w.lastMissedYmd);
+                });
+                if (active.length === 0) return null;
+                active.sort((a, b) => (Number(b.allNo) - Number(a.allNo)) || (b.run - a.run) || (b.noShows - a.noShows));
+                const abscondCount = active.filter(w => w.allNo).length;
+                const _fmtD = ymd => { try { return new Date(ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }); } catch (_) { return ymd; } };
                 return (
                   <div style={{ background: "#fef2f2", border: "2px solid #fecaca", borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: "0 4px 16px rgba(220,38,38,0.10)" }}>
                     <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
                       <div onClick={() => setDashCollapsed(p => ({ ...p, abscond: !p.abscond }))} style={{ fontSize: 15, fontWeight: 800, color: "#991b1b", letterSpacing: "0.04em", textTransform: "uppercase", cursor: "pointer" }}>🚨 Abscond / Absence Warnings <span style={{ fontSize: 12, opacity: 0.6 }}>{dashCollapsed.abscond ? "▸" : "▾"}</span></div>
                       <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700 }}>
-                        {warns.length} staff with 2+ days missed in a row{abscondCount > 0 ? ` · ${abscondCount} possible abscondment` : ""}
+                        {active.length} staff with 2+ days missed in a row{abscondCount > 0 ? ` · ${abscondCount} possible abscondment` : ""}
                       </div>
                     </div>
                     <div style={{ display: dashCollapsed.abscond ? "none" : "block" }}>
                       <div style={{ fontSize: 11, color: "#b91c1c", marginBottom: 8, fontStyle: "italic" }}>
                         These people have been no-show or absent 2+ days in a row and <strong>haven't returned to work yet</strong>. Consecutive no-shows likely mean abscondment — investigate, set up a disciplinary, and plan a replacement for the store.
                       </div>
-                      {warns.map((w, i) => {
+                      {active.map((w, i) => {
                         const red = w.allNo;
                         const label = w.allNo
                           ? `${w.run} no-show${w.run === 1 ? "" : "s"} in a row`
                           : _missLabel(w);
+                        const prior = abscondActions[w.ec];   // exists but superseded (missed again since)
                         return (
                           <div key={"ab-" + i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "1px dashed #fecaca", flexWrap: "wrap" }}>
                             <div style={{ minWidth: 0 }}>
                               <div style={{ fontSize: 13, fontWeight: 700, color: "#7f1d1d" }}>{w.name} <span style={{ color: "#ef4444", fontWeight: 600 }}>· 📍 {w.branch}</span> <span style={{ color: "#9ca3af", fontWeight: 600, fontSize: 11 }}>· {w.role}</span></div>
                               <div style={{ fontSize: 11, color: red ? "#b91c1c" : "#b45309", fontWeight: 700, marginTop: 1 }}>{red ? "⛔ " : "⚠ "}{label}{red ? " — likely absconding" : ""}</div>
+                              {prior && prior.note && (
+                                <div style={{ fontSize: 10.5, color: "#9ca3af", marginTop: 2, fontStyle: "italic" }}>↩ Last action: “{prior.note}”{prior.by ? " — " + prior.by : ""}{prior.at ? " · " + _fmtD(prior.at.slice(0, 10)) : ""} · missed again since</div>
+                              )}
                             </div>
-                            <span style={{ background: red ? "#fee2e2" : "#fef3c7", color: red ? "#7f1d1d" : "#92400e", padding: "2px 9px", borderRadius: 6, fontSize: 10, fontWeight: 800, letterSpacing: "0.03em", whiteSpace: "nowrap" }}>{red ? "INVESTIGATE" : "FOLLOW UP"}</span>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              <span style={{ background: red ? "#fee2e2" : "#fef3c7", color: red ? "#7f1d1d" : "#92400e", padding: "2px 9px", borderRadius: 6, fontSize: 10, fontWeight: 800, letterSpacing: "0.03em", whiteSpace: "nowrap" }}>{red ? "INVESTIGATE" : "FOLLOW UP"}</span>
+                              <button
+                                onClick={() => {
+                                  const note = window.prompt("Mark " + w.name + " (" + w.branch + ") as actioned.\n\nWhat action was taken? (e.g. called her, no response — disciplinary set for 5 Jun / replacing her)", (prior && prior.note) || "");
+                                  if (note === null) return;   // cancelled
+                                  markAbscondDone(w.ec, w.lastMissedYmd, note);
+                                }}
+                                title="Mark done and record what action was taken — clears the warning unless they miss again"
+                                style={{ background: "#fff", color: "#7f1d1d", border: "1px solid #fecaca", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}
+                              >✓ Mark done</button>
+                            </div>
                           </div>
                         );
                       })}
