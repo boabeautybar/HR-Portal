@@ -133,6 +133,30 @@
   function ymdStr(dt) { return dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate()); }
   var WORK_CODES = { W: 1, WE: 1, WL: 1, WM: 1, WB: 1, E: 1 };
 
+  // NAIL-TECH shift times, taken straight from the schedule tab's per-store
+  // banners (these differ from the manager shiftTimes rules — e.g. Sandown WE
+  // ends 17:15, Saturday WE starts 08:15). Keyed by store → day-bucket
+  // (0=Sun, 6=Sat, 1=Mon–Fri) → code. Stores not listed fall back to the
+  // generic rules (weekend single shift only) — see workSub.
+  var TECH_TIMES = {
+    "Sandown": {
+      1: { WE: "08:00 - 17:15", WL: "11:00 - 20:00" },
+      6: { WE: "08:15 - 17:15", WL: "10:00 - 19:00" },
+      0: { W: "09:00 - 18:00" }
+    },
+    "Fourways": {
+      1: { W: "09:30 - 18:30", WL: "11:00 - 20:00" },
+      6: { W: "09:00 - 18:00", WL: "11:00 - 20:00" },
+      0: { W: "09:00 - 18:00", WL: "10:00 - 19:00" }
+    }
+  };
+  function techTime(store, dow, code) {
+    var tbl = TECH_TIMES[store];
+    if (!tbl) return null;                       // no defined tech table for this store
+    var row = tbl[dow === 0 ? 0 : dow === 6 ? 6 : 1] || {};
+    return row[code] || row.W || "";             // "" = store defined but this combo isn't
+  }
+
   // Status for one date — matches Manager Coverage exactly: per-day custom hours
   // (boa_mgr_times_v1) win, else shiftTimes using the EFFECTIVE role (an AM on an
   // active SM trial is treated as an SM). A blank cell counts as a working day
@@ -149,10 +173,18 @@
       if (custom) return custom + " · custom hours";
       return shiftTimes(state.effRole || state.role, c || "W", state.store, dt.getDay());
     }
-    if (c === "WE" || c === "WL" || c === "WM" || c === "WB") {
-      var variant = c === "WE" ? "Early" : c === "WL" ? "Late" : c === "WM" ? "Mid" : "";
-      return shiftTimes(state.role, c, state.store, dt.getDay()) + (variant ? " · " + variant : "");
-    }
+    var dow = dt.getDay();
+    var code = (c === "WE" || c === "WL" || c === "WM" || c === "WB") ? c : "W";
+    var variant = c === "WE" ? " · Early" : c === "WL" ? " · Late" : c === "WM" ? " · Mid" : "";
+
+    // 1) Store with tech times defined on the schedule tab (Sandown, Fourways…).
+    var tt = techTime(state.store, dow, code);
+    if (tt !== null) return tt ? tt + variant : variant.replace(" · ", "");
+
+    // 2) Otherwise: explicit shift codes show their time; a plain "W" only has a
+    // single known time on weekends (one shift), so weekdays show just "Work".
+    if (code !== "W") return shiftTimes(state.role, code, state.store, dow) + variant;
+    if (dow === 0 || dow === 6) return shiftTimes(state.role, "W", state.store, dow);
     return "";
   }
 
