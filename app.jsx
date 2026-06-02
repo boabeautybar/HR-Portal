@@ -12748,12 +12748,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   the "Abscond / Absence Warnings" permission (owner-only by
                   default; grant others in Settings). */}
               {!(new Set(currentUser?.hideTabs || []).has("dashAbscond")) && (() => {
-                // Unexcused missed days that count toward an abscond streak:
-                // NO SHOW and ABSENT only. Everything else — sick (with or
-                // without note), FRL, leave, PH, off, present — does NOT count
-                // and breaks the run.
+                // What counts toward an abscond streak: NO SHOW and ABSENT.
                 const MISSED = { no: 1, absent: 1 };
-                const PRESENTOK = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1, swap_o: 1, sick: 1, sick_n: 1, frl: 1, al: 1, el: 1, ph: 1, mat: 1, off: 1, term: 1 };
+                // A day they actually WORKED — counts as a return to work and
+                // ENDS the streak (so anyone back at work after a no-show/absent
+                // run is excluded). OFF / blank / excused days (leave, PH, sick,
+                // FRL, maternity, owed-day) are neutral — they neither count nor
+                // reset, so a rest day between no-shows doesn't hide the streak.
+                const WORKED = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1 };
                 const _t = new Date(); _t.setHours(0, 0, 0, 0);
                 const _p2 = n => String(n).padStart(2, "0");
                 const _todayYmd = _t.getFullYear() + "-" + _p2(_t.getMonth() + 1) + "-" + _p2(_t.getDate());
@@ -12765,31 +12767,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 for (let dd = new Date(cyStart); dd <= _t; dd.setDate(dd.getDate() + 1)) {
                   cycleDays.push({ dom: dd.getDate(), ymd: dd.getFullYear() + "-" + _p2(dd.getMonth() + 1) + "-" + _p2(dd.getDate()) });
                 }
-                // Trailing run of consecutive missed days, ending at the most
-                // recent MARKED day. If that day is a present/excused status the
-                // run is 0 — i.e. someone who CAME BACK after a no-show/absent
-                // streak is not flagged. lastIdx = index of the most recent
-                // missed day in the run (for the recency guard below).
-                const trailingRun = (statuses) => {
-                  let end = statuses.length - 1;
-                  while (end >= 0 && !statuses[end]) end--;   // skip not-yet-marked trailing days
-                  let run = 0, noShows = 0, absents = 0, sickNoNote = 0, lastIdx = -1;
-                  for (let i = end; i >= 0; i--) {
+                // No-show/absent days since they LAST WORKED. Walking back from
+                // today: a worked day stops the count (they've returned); off /
+                // blank / excused days are skipped; no-show/absent are counted.
+                const missedSinceReturn = (statuses) => {
+                  let run = 0, noShows = 0, absents = 0;
+                  for (let i = statuses.length - 1; i >= 0; i--) {
                     const s = statuses[i];
-                    if (!MISSED[s]) break;
-                    if (lastIdx === -1) lastIdx = i;
-                    run++;
-                    if (s === "no") noShows++;
-                    else if (s === "absent") absents++;
-                    else if (s === "sick") sickNoNote++;
+                    if (WORKED[s]) break;                 // returned to work → stop
+                    if (MISSED[s]) { run++; if (s === "no") noShows++; else absents++; }
+                    // else: off / blank / excused → skip
                   }
-                  return { run, noShows, absents, sickNoNote, lastIdx };
+                  return { run, noShows, absents };
                 };
                 const _missLabel = (w) => {
                   const parts = [];
                   if (w.noShows) parts.push(w.noShows + " no-show" + (w.noShows === 1 ? "" : "s"));
                   if (w.absents) parts.push(w.absents + " absent");
-                  if (w.sickNoNote) parts.push(w.sickNoNote + " sick (no note)");
                   return w.run + " days missed in a row · " + parts.join(", ");
                 };
                 const warns = [];
@@ -12802,15 +12796,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   const bg = dashAttByBranch[s.branch] || {};
                   const grid = bg[String(s.ec)] || bg[String(s.ec).trim()];
                   if (!grid) return;
-                  const statuses = cycleDays.map(d => {
-                    let v = grid[d.dom]; if (v && v.indexOf("~") === 0) v = "";
-                    return MISSED[v] ? v : "";
-                  });
-                  // run ends at the latest marked day; if they returned (a
-                  // present day after the streak) the run is 0, so we only
-                  // surface people who haven't been back yet.
-                  const r = trailingRun(statuses);
-                  if (r.run >= 2) warns.push({ name: s.name, branch: s.branch, role: "Nail tech", run: r.run, noShows: r.noShows, absents: r.absents, sickNoNote: r.sickNoNote, allNo: r.run === r.noShows });
+                  // Keep the raw status so a real worked day registers as a
+                  // return (and OFF days don't break the run).
+                  const statuses = cycleDays.map(d => { let v = grid[d.dom] || ""; if (v.indexOf("~") === 0) v = ""; return v; });
+                  const r = missedSinceReturn(statuses);
+                  if (r.run >= 2) warns.push({ name: s.name, branch: s.branch, role: "Nail tech", run: r.run, noShows: r.noShows, absents: r.absents, allNo: r.run === r.noShows });
                 });
                 // Managers — from ROM-tagged day statuses (keyed by staff_id).
                 const mgrById = {};
@@ -12825,9 +12815,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   if (m.onMat || m.offboarded) return;
                   if (_hasStoreScope && !scopedSalonNames.has(m.branch)) return;
                   const byDate = byMgr[id];
-                  const statuses = cycleDays.map(d => { const v = byDate[d.ymd]; return MISSED[v] ? v : ""; });
-                  const r = trailingRun(statuses);
-                  if (r.run >= 2) warns.push({ name: m.name, branch: m.branch, role: "Manager", run: r.run, noShows: r.noShows, absents: r.absents, sickNoNote: r.sickNoNote, allNo: r.run === r.noShows });
+                  const statuses = cycleDays.map(d => byDate[d.ymd] || "");
+                  const r = missedSinceReturn(statuses);
+                  // Clocked in today → they're back at work, don't flag.
+                  const backToday = dashTodayMgrClockinEcs && dashTodayMgrClockinEcs.has && dashTodayMgrClockinEcs.has(String(m.ec || "").trim());
+                  if (r.run >= 2 && !backToday) warns.push({ name: m.name, branch: m.branch, role: "Manager", run: r.run, noShows: r.noShows, absents: r.absents, allNo: r.run === r.noShows });
                 });
                 if (warns.length === 0) return null;
                 warns.sort((a, b) => (Number(b.allNo) - Number(a.allNo)) || (b.run - a.run) || (b.noShows - a.noShows));
