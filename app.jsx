@@ -6897,6 +6897,22 @@ function AppGate() {
             u.hideTabs = [...ht, "dashMgrAbsences"];
           }
         });
+        // V3b migration: introduces the Abscond / Absence Warnings widget.
+        // HR-sensitive (possible abscondment → disciplinary), so hidden by
+        // default for everyone except the owner; admins grant specific people
+        // in Settings → Users → Edit (Home/Dashboard › Abscond / Absence
+        // Warnings).
+        Object.keys(dynamic).forEach(pin => {
+          const u = dynamic[pin];
+          if (u._dashMigratedAbscond) return;
+          u._dashMigratedAbscond = true;
+          dashMigrated = true;
+          if (u.isOwner) return;
+          const ht = Array.isArray(u.hideTabs) ? u.hideTabs : [];
+          if (!ht.includes("dashAbscond")) {
+            u.hideTabs = [...ht, "dashAbscond"];
+          }
+        });
         // V3 migration: Rochelle (3030) & Farida (4040) help run the
         // nail-tech trials, so allow-list the Trial Period tab back in for
         // them (Rochelle keeps the rest of People hidden). Runs once each.
@@ -7026,6 +7042,7 @@ const SETTINGS_TABS = [
   { t: "dashSecurityAlerts", l: "Security Alerts", cat: "Home/Dashboard", icon: "🚨" },
   { t: "dashHrActions", l: "HR Actions & Tasks", cat: "Home/Dashboard", icon: "📝" },
   { t: "dashMgrAbsences", l: "Manager Absences (Action required)", cat: "Home/Dashboard", icon: "📌" },
+  { t: "dashAbscond", l: "Abscond / Absence Warnings", cat: "Home/Dashboard", icon: "🚨" },
   { t: "staff", l: "Staff List", cat: "People", icon: "👥" },
   { t: "onboard", l: "Onboarding", cat: "People", icon: "🌱" },
   { t: "offboard", l: "Off-boarding", cat: "People", icon: "👋" },
@@ -10184,6 +10201,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Per-branch nail-tech breakdown for today: { branch: { scheduled, checkedIn, notCheckedIn, absent } }
   const [dashTechByBranch, setDashTechByBranch] = useState(null); // null = loading
   const [dashTodayMgrClockinEcs, setDashTodayMgrClockinEcs] = useState(null); // null = loading, Set<ec> once loaded
+  // Full current-cycle attendance grids per branch (ec → dayOfMonth → status),
+  // kept so the Abscond / Absence Warnings widget can scan for consecutive
+  // no-show/absent days. Reduced tiles use the same source.
+  const [dashAttByBranch, setDashAttByBranch] = useState({});
   useEffect(() => {
     if (tab !== "dashboard") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
@@ -10260,6 +10281,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       // peek at a loaned-out tech's status at the destination branch.
       const attByBranch = {};
       for (const r of rows) attByBranch[r.name] = r.attGrid;
+      setDashAttByBranch(attByBranch);   // full grids for the abscond-warning scan
       const map = {};
       const mgrMap = {};
       const techMap = {};
@@ -12713,6 +12735,110 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         </div>
                       </div>
                     ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* ── SECTION: ABSCOND / ABSENCE WARNINGS ──
+                  Flags any nail tech or manager with 2+ CONSECUTIVE no-show /
+                  absent days in the current pay cycle. Consecutive NO-SHOWS =
+                  likely absconding → red, for HR to investigate, set up a
+                  disciplinary, and plan a replacement. HR-sensitive: gated by
+                  the "Abscond / Absence Warnings" permission (owner-only by
+                  default; grant others in Settings). */}
+              {!(new Set(currentUser?.hideTabs || []).has("dashAbscond")) && (() => {
+                const MISSED = { no: 1, absent: 1 };
+                const PRESENTOK = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1, swap_o: 1, sick: 1, sick_n: 1, frl: 1, al: 1, el: 1, ph: 1, mat: 1, off: 1, term: 1 };
+                const _t = new Date(); _t.setHours(0, 0, 0, 0);
+                const _p2 = n => String(n).padStart(2, "0");
+                const _todayYmd = _t.getFullYear() + "-" + _p2(_t.getMonth() + 1) + "-" + _p2(_t.getDate());
+                // Current pay-cycle days (25th → 24th) up to today, oldest→newest.
+                const cyStart = new Date(_t);
+                if (_t.getDate() >= 25) cyStart.setDate(25);
+                else { cyStart.setMonth(cyStart.getMonth() - 1); cyStart.setDate(25); }
+                const cycleDays = [];
+                for (let dd = new Date(cyStart); dd <= _t; dd.setDate(dd.getDate() + 1)) {
+                  cycleDays.push({ dom: dd.getDate(), ymd: dd.getFullYear() + "-" + _p2(dd.getMonth() + 1) + "-" + _p2(dd.getDate()) });
+                }
+                // Trailing run of consecutive missed days (internal blanks /
+                // present / excused statuses break the run; trailing blanks are
+                // trimmed since today may not be marked yet).
+                const trailingRun = (statuses) => {
+                  const arr = statuses.slice();
+                  while (arr.length && !arr[arr.length - 1]) arr.pop();
+                  let run = 0, noShows = 0, hasAbsent = false;
+                  for (let i = arr.length - 1; i >= 0; i--) {
+                    const s = arr[i];
+                    if (MISSED[s]) { run++; if (s === "no") noShows++; else hasAbsent = true; }
+                    else break;
+                  }
+                  return { run, noShows, hasAbsent };
+                };
+                const warns = [];
+                // Nail techs — scan the per-branch attendance grids.
+                (enriched || []).forEach(s => {
+                  if (!s || !s.ec || !s.branch) return;
+                  if (s.onMat) return;
+                  if (s.leftDate && _todayYmd > s.leftDate) return;
+                  if (_hasStoreScope && !scopedSalonNames.has(s.branch)) return;
+                  const bg = dashAttByBranch[s.branch] || {};
+                  const grid = bg[String(s.ec)] || bg[String(s.ec).trim()];
+                  if (!grid) return;
+                  const statuses = cycleDays.map(d => {
+                    let v = grid[d.dom]; if (v && v.indexOf("~") === 0) v = "";
+                    return MISSED[v] ? v : "";
+                  });
+                  const { run, noShows, hasAbsent } = trailingRun(statuses);
+                  if (run >= 2) warns.push({ name: s.name, branch: s.branch, role: "Nail tech", run, noShows, hasAbsent, allNo: !hasAbsent });
+                });
+                // Managers — from ROM-tagged day statuses (keyed by staff_id).
+                const mgrById = {};
+                (enrichedManagers || []).forEach(m => { const id = m && (m._id || m.id); if (id != null) mgrById[String(id)] = m; });
+                const byMgr = {};
+                (mgrDayStatuses || []).forEach(r => {
+                  if (!r || r.staff_id == null || !r.date) return;
+                  (byMgr[String(r.staff_id)] = byMgr[String(r.staff_id)] || {})[r.date] = r.status;
+                });
+                Object.keys(byMgr).forEach(id => {
+                  const m = mgrById[id]; if (!m || !m.branch) return;
+                  if (m.onMat || m.offboarded) return;
+                  if (_hasStoreScope && !scopedSalonNames.has(m.branch)) return;
+                  const byDate = byMgr[id];
+                  const statuses = cycleDays.map(d => { const v = byDate[d.ymd]; return MISSED[v] ? v : ""; });
+                  const { run, noShows, hasAbsent } = trailingRun(statuses);
+                  if (run >= 2) warns.push({ name: m.name, branch: m.branch, role: "Manager", run, noShows, hasAbsent, allNo: !hasAbsent });
+                });
+                if (warns.length === 0) return null;
+                warns.sort((a, b) => (Number(b.allNo) - Number(a.allNo)) || (b.run - a.run) || (b.noShows - a.noShows));
+                const abscondCount = warns.filter(w => w.allNo).length;
+                return (
+                  <div style={{ background: "#fef2f2", border: "2px solid #fecaca", borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: "0 4px 16px rgba(220,38,38,0.10)" }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
+                      <div onClick={() => setDashCollapsed(p => ({ ...p, abscond: !p.abscond }))} style={{ fontSize: 15, fontWeight: 800, color: "#991b1b", letterSpacing: "0.04em", textTransform: "uppercase", cursor: "pointer" }}>🚨 Abscond / Absence Warnings <span style={{ fontSize: 12, opacity: 0.6 }}>{dashCollapsed.abscond ? "▸" : "▾"}</span></div>
+                      <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700 }}>
+                        {warns.length} staff with 2+ days missed in a row{abscondCount > 0 ? ` · ${abscondCount} possible abscondment` : ""}
+                      </div>
+                    </div>
+                    <div style={{ display: dashCollapsed.abscond ? "none" : "block" }}>
+                      <div style={{ fontSize: 11, color: "#b91c1c", marginBottom: 8, fontStyle: "italic" }}>
+                        Consecutive no-shows likely mean the person is absconding — investigate, set up a disciplinary, and plan a replacement for the store.
+                      </div>
+                      {warns.map((w, i) => {
+                        const red = w.allNo;
+                        const label = w.allNo
+                          ? `${w.run} no-show${w.run === 1 ? "" : "s"} in a row`
+                          : `${w.run} days missed in a row (${w.noShows} no-show${w.noShows === 1 ? "" : "s"}${w.hasAbsent ? " + absent" : ""})`;
+                        return (
+                          <div key={"ab-" + i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "1px dashed #fecaca", flexWrap: "wrap" }}>
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontSize: 13, fontWeight: 700, color: "#7f1d1d" }}>{w.name} <span style={{ color: "#ef4444", fontWeight: 600 }}>· 📍 {w.branch}</span> <span style={{ color: "#9ca3af", fontWeight: 600, fontSize: 11 }}>· {w.role}</span></div>
+                              <div style={{ fontSize: 11, color: red ? "#b91c1c" : "#b45309", fontWeight: 700, marginTop: 1 }}>{red ? "⛔ " : "⚠ "}{label}{red ? " — likely absconding" : ""}</div>
+                            </div>
+                            <span style={{ background: red ? "#fee2e2" : "#fef3c7", color: red ? "#7f1d1d" : "#92400e", padding: "2px 9px", borderRadius: 6, fontSize: 10, fontWeight: 800, letterSpacing: "0.03em", whiteSpace: "nowrap" }}>{red ? "INVESTIGATE" : "FOLLOW UP"}</span>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 );
