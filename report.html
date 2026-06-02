@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<!-- Unlisted: this page should never be indexed or surfaced by search. -->
+<meta name="robots" content="noindex,nofollow" />
+<title>BOA · Report an Incident</title>
+<meta name="theme-color" content="#BE185D" />
+<link rel="icon" type="image/png" href="BOA.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Outfit:wght@400;500;600;700;800;900&family=Playfair+Display:wght@500;600;700&display=swap" rel="stylesheet" />
+
+<!-- Same Supabase project as the rest of BOA. The form only ever calls the
+     submit_incident_report RPC (insert-only) — it cannot read any reports. -->
+<script>
+window.BOA_SUPABASE_CONFIG = {
+  url:     "https://kcinqpwkwpzbosxtkwyl.supabase.co",
+  anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtjaW5xcHdrd3B6Ym9zeHRrd3lsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc3MjIwMTYsImV4cCI6MjA5MzI5ODAxNn0.AGL2hXQ5N3uQikqSbWFsZ1uxBlWZUm9o1ipMFlAFjBg"
+};
+</script>
+
+<style>
+  :root { --pink:#BE185D; --deep:#831843; --bg:#FCF5F7; --ink:#1f2937; --line:#f3d4e0; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; }
+  body {
+    font-family: "DM Sans", system-ui, sans-serif;
+    background: var(--bg); color: var(--ink);
+    padding: 18px 14px calc(40px + env(safe-area-inset-bottom));
+    line-height: 1.45;
+  }
+  .wrap { max-width: 560px; margin: 0 auto; }
+  .brand { text-align: center; margin: 6px 0 16px; }
+  .brand img { width: 64px; height: 64px; border-radius: 16px; object-fit: cover; }
+  h1 { font-family: "Playfair Display", serif; font-size: 26px; color: var(--deep); margin: 10px 0 4px; text-align: center; }
+  .sub { text-align: center; color: #9d6a82; font-size: 14px; margin: 0 auto 18px; max-width: 440px; }
+  .reassure {
+    background: #fff; border: 1px solid var(--line); border-radius: 14px;
+    padding: 13px 15px; font-size: 13.5px; color: #6b3a4e; margin-bottom: 18px;
+  }
+  .reassure strong { color: var(--deep); }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 18px 16px; margin-bottom: 16px; }
+  label.field { display: block; margin-bottom: 16px; }
+  label.field > span { display: block; font-weight: 700; font-size: 13px; color: var(--deep); margin-bottom: 6px; }
+  input[type=text], input[type=tel], select, textarea {
+    width: 100%; font-family: inherit; font-size: 16px; color: var(--ink);
+    background: #fff; border: 1.5px solid #e7c6d4; border-radius: 11px;
+    padding: 12px 13px; outline: none;
+  }
+  input:focus, select:focus, textarea:focus { border-color: var(--pink); box-shadow: 0 0 0 3px rgba(190,24,93,.12); }
+  textarea { resize: vertical; min-height: 120px; }
+  .hint { font-size: 12px; color: #a07487; margin-top: 5px; font-weight: 400; }
+
+  .urgent-btn {
+    width: 100%; border: none; border-radius: 16px; cursor: pointer;
+    background: #dc2626; color: #fff; font-family: "Outfit", sans-serif;
+    font-weight: 800; font-size: 19px; letter-spacing: .01em;
+    padding: 18px 16px; margin-bottom: 6px; line-height: 1.25;
+    box-shadow: 0 6px 18px rgba(220,38,38,.32);
+    transition: transform .08s ease;
+  }
+  .urgent-btn:active { transform: scale(.985); }
+  .urgent-btn small { display: block; font-weight: 600; font-size: 12.5px; opacity: .92; margin-top: 4px; }
+  .urgent-btn.on { background: #7f1d1d; animation: pulse 1.4s infinite; }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(220,38,38,.5); }
+    70% { box-shadow: 0 0 0 12px rgba(220,38,38,0); }
+    100% { box-shadow: 0 0 0 0 rgba(220,38,38,0); }
+  }
+  .urgent-note { text-align:center; font-size:12.5px; color:#b91c1c; font-weight:600; margin: 0 0 18px; min-height: 16px; }
+
+  .toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 14px; color: var(--deep); font-weight: 600; }
+  .toggle input { width: 20px; height: 20px; accent-color: var(--pink); }
+  .optional-box { margin-top: 14px; padding-top: 4px; }
+
+  .photo-row { display:flex; align-items:center; gap:12px; flex-wrap: wrap; }
+  .photo-btn {
+    display:inline-block; background:#fdf2f8; border:1.5px dashed #e7a3c2; color:var(--deep);
+    border-radius:11px; padding:11px 16px; font-weight:700; font-size:14px; cursor:pointer;
+  }
+  .photo-btn input { display:none; }
+  #photoPrev { max-width: 110px; max-height: 110px; border-radius: 10px; border:1px solid var(--line); }
+  .photo-clear { background:none; border:none; color:#b91c1c; font-weight:700; cursor:pointer; font-size:13px; }
+
+  .submit {
+    width: 100%; border: none; border-radius: 14px; cursor: pointer;
+    background: var(--pink); color: #fff; font-family: "Outfit", sans-serif;
+    font-weight: 800; font-size: 17px; padding: 16px; margin-top: 4px;
+    box-shadow: 0 6px 16px rgba(190,24,93,.28);
+  }
+  .submit:disabled { opacity: .55; cursor: default; box-shadow: none; }
+  .err { color:#b91c1c; font-weight:600; font-size:13.5px; margin-top:10px; text-align:center; min-height: 16px; }
+
+  /* Confirmation */
+  .done { text-align:center; padding: 26px 6px; }
+  .done .tick { font-size: 56px; }
+  .done h2 { font-family:"Playfair Display",serif; color:var(--deep); font-size:24px; margin:8px 0 6px; }
+  .done .ref { display:inline-block; background:#fff; border:1.5px solid var(--line); border-radius:12px; padding:10px 18px; font-family:"Outfit",sans-serif; font-weight:800; font-size:20px; color:var(--pink); letter-spacing:.04em; margin:10px 0; }
+  .done p { color:#6b3a4e; font-size:14px; max-width: 420px; margin: 8px auto; }
+  .foot { text-align:center; font-size:11.5px; color:#bf94a5; margin-top: 22px; }
+</style>
+</head>
+<body>
+  <div class="wrap" id="root">
+    <div class="brand"><img src="BOA.png" alt="BOA" /></div>
+    <h1>Report an incident</h1>
+    <p class="sub">Loading…</p>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <script src="report.js"></script>
+</body>
+</html>

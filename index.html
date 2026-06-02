@@ -80,6 +80,14 @@ window.BOA_SUPABASE_CONFIG = {
 };
 </script>
 
+<!-- HR access key for confidential incident reports (sql/incident_reports.sql).
+     Must match the 'incident_hr_key' row seeded in Supabase. This key lets the
+     portal read/manage reports; it is deliberately NOT present in the kiosk, so
+     a store manager with the kiosk's anon key cannot read incident reports. -->
+<script>
+  window.BOA_INCIDENT_HR_KEY = "CHANGE-ME-boa-hr-incident-key";
+</script>
+
 <!-- Google API config for HR Library Migration -->
 <script>
 window.BOA_GOOGLE_CONFIG = {
@@ -101,6 +109,8 @@ window.BOA_GOOGLE_CONFIG = {
 <script crossorigin src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.development.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.24.8/babel.min.js"></script>
+<!-- QR code generator for the Incident Reports tab (printable staff-room QR). -->
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="https://apis.google.com/js/api.js" async defer></script>
 

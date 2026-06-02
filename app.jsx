@@ -7067,6 +7067,7 @@ const SETTINGS_TABS = [
   { t: "payrollReports", l: "Reports", cat: "Payroll", icon: "📈" },
   { t: "overtime", l: "Overtime", cat: "Payroll", icon: "⏱️" },
   { t: "alerts", l: "Alerts", cat: "Insights", icon: "🔔" },
+  { t: "incidents", l: "Incident Reports", cat: "Insights", icon: "🛡️" },
   { t: "activity", l: "Activity Log", cat: "Insights", icon: "📜" },
   { t: "kioskPins", l: "Kiosk PINs", cat: "Admin", icon: "🔑" },
   { t: "managerPins", l: "Manager PINs", cat: "Admin", icon: "🆔" },
@@ -7126,6 +7127,18 @@ function permsToUser(base, perms, stores) {
 function isRomRole(role) {
   const r = (role || "").toLowerCase().trim();
   return r === "regional ops manager" || r === "regional operations manager" || r === "rom";
+}
+
+// Who may see confidential staff incident reports: the Owner, HR, and senior
+// ops (National Ops + Regional Ops). Store managers use the kiosk, never the
+// portal, so they're already excluded — this is belt-and-braces for the portal.
+function canSeeIncidents(user) {
+  if (!user) return false;
+  if (user.isOwner) return true;
+  const r = (user.role || "").toLowerCase();
+  return r === "master admin" ||
+         r.includes("hr") || r.includes("human res") ||
+         r.includes("national") || isRomRole(user.role);
 }
 
 function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFreshaCfgSave, overtimeCfg, onOvertimeCfgSave }) {
@@ -8301,6 +8314,277 @@ function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── STAFF INCIDENT REPORTS ─────────────────────────────────────────────────
+// Confidential reports filed by staff from their own phone via /report.html
+// (reached by the printed QR in the staff room). Only the Owner / HR / senior
+// ops see this tab — store managers use the kiosk, never the portal.
+const INCIDENT_CAT = {
+  Safety:     { label: "Safety / injury",     emoji: "⚠️",  color: "#b45309", bg: "#fef3c7" },
+  Harassment: { label: "Harassment / bullying", emoji: "🚫", color: "#9d174d", bg: "#fce7f3" },
+  Management: { label: "Management conduct",   emoji: "👔",  color: "#6b21a8", bg: "#ede9fe" },
+  Theft:      { label: "Theft / money",        emoji: "💰",  color: "#92400e", bg: "#fef3c7" },
+  Hygiene:    { label: "Hygiene",              emoji: "🧼",  color: "#0e7490", bg: "#cffafe" },
+  Other:      { label: "Other",                emoji: "📋",  color: "#374151", bg: "#f3f4f6" }
+};
+const INCIDENT_STATUS = {
+  new:       { label: "New",       color: "#b91c1c", bg: "#fee2e2" },
+  reviewing: { label: "Reviewing", color: "#b45309", bg: "#fef3c7" },
+  resolved:  { label: "Resolved",  color: "#15803d", bg: "#dcfce7" }
+};
+function fmtIncidentTime(iso) {
+  if (!iso) return "";
+  try { return new Date(iso).toLocaleString("en-ZA", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); }
+  catch (_e) { return String(iso); }
+}
+function fmtIncidentDate(d) {
+  if (!d) return "—";
+  try { return new Date(d + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }); }
+  catch (_e) { return String(d); }
+}
+
+// Renders the printable QR pointing at the live /report.html on this origin.
+function IncidentQR({ url, size }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.innerHTML = "";
+    if (window.QRCode) {
+      try { new window.QRCode(el, { text: url, width: size || 200, height: size || 200, correctLevel: window.QRCode.CorrectLevel.M }); }
+      catch (_e) { el.textContent = url; }
+    } else { el.textContent = url; }
+  }, [url, size]);
+  return <div ref={ref} />;
+}
+
+function IncidentReportsTab({ reports, setReports, currentUser }) {
+  const [statusFilter, setStatusFilter] = useState("open");   // open | all | new | reviewing | resolved
+  const [storeFilter, setStoreFilter] = useState("");
+  const [openId, setOpenId] = useState(null);
+  const [noteDraft, setNoteDraft] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [photoZoom, setPhotoZoom] = useState(null);
+
+  const reportUrl = (typeof window !== "undefined" ? window.location.origin : "") + "/report.html";
+  const stores = Array.from(new Set(reports.map(r => r.store).filter(Boolean))).sort();
+
+  const patchLocal = (id, patch) => setReports(reports.map(r => r.id === id ? { ...r, ...patch } : r));
+
+  const onOpen = async (r) => {
+    const next = openId === r.id ? null : r.id;
+    setOpenId(next);
+    if (next && !r.reviewed) {
+      try { await window.BOA_DB.markIncidentReviewed(r.id); patchLocal(r.id, { reviewed: true }); } catch (_e) {}
+    }
+  };
+  const changeStatus = async (r, status) => {
+    setBusy(true);
+    try { await window.BOA_DB.setIncidentStatus(r.id, status); patchLocal(r.id, { status, reviewed: true }); }
+    catch (e) { alert("Could not update status: " + (e.message || e)); }
+    setBusy(false);
+  };
+  const addNote = async (r) => {
+    const text = (noteDraft[r.id] || "").trim();
+    if (!text) return;
+    setBusy(true);
+    try {
+      await window.BOA_DB.addIncidentNote(r.id, text, currentUser.name || currentUser.pin || "");
+      const note = { at: new Date().toISOString(), by: currentUser.name || "", note: text };
+      patchLocal(r.id, { internal_notes: [...(Array.isArray(r.internal_notes) ? r.internal_notes : []), note] });
+      setNoteDraft({ ...noteDraft, [r.id]: "" });
+    } catch (e) { alert("Could not save note: " + (e.message || e)); }
+    setBusy(false);
+  };
+
+  const filtered = reports.filter(r => {
+    if (storeFilter && r.store !== storeFilter) return false;
+    if (statusFilter === "open") return r.status !== "resolved";
+    if (statusFilter === "all") return true;
+    return r.status === statusFilter;
+  });
+  const urgentOpen = reports.filter(r => r.urgent && r.status !== "resolved").length;
+
+  const card = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 18px", marginBottom: 16 };
+  const chip = (c) => ({ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: c.color, background: c.bg });
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 4 }}>
+        <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#831843", margin: 0 }}>🛡️ Incident Reports</h2>
+        {urgentOpen > 0 && <span style={chip(INCIDENT_STATUS.new)}>🚨 {urgentOpen} urgent open</span>}
+      </div>
+      <p style={{ color: "#9d6a82", fontSize: 13.5, marginTop: 4, maxWidth: 680 }}>
+        Confidential reports filed by staff from their own phones. Store managers cannot see these.
+        Reports are anonymous unless the person chose to add their name.
+      </p>
+
+      {/* QR / link panel */}
+      <div style={{ ...card, background: "#fdf2f8", borderColor: "#f9a8d4" }}>
+        <div style={{ display: "flex", gap: 18, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ background: "#fff", padding: 12, borderRadius: 12, border: "1px solid #f3d4e0" }}>
+            <IncidentQR url={reportUrl} size={150} />
+          </div>
+          <div style={{ flex: "1 1 260px", minWidth: 240 }}>
+            <div style={{ fontWeight: 800, color: "#831843", fontSize: 15, marginBottom: 4 }}>Staff reporting QR code</div>
+            <div style={{ fontSize: 13, color: "#6b3a4e", marginBottom: 8 }}>
+              Print this and put it somewhere private in each store (staff room / toilet). Staff scan it
+              on their own phone to file a report — no manager, no shared iPad needed.
+            </div>
+            <div style={{ fontSize: 12, color: "#9d6a82", wordBreak: "break-all", marginBottom: 10 }}>{reportUrl}</div>
+            <button onClick={() => window.print()}
+              style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 9, padding: "9px 16px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>
+              🖨️ Print QR
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Filters */}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+          style={{ fontFamily: "inherit", fontSize: 13, padding: "8px 10px", borderRadius: 9, border: "1.5px solid #e7c6d4" }}>
+          <option value="open">Open (not resolved)</option>
+          <option value="new">New only</option>
+          <option value="reviewing">Reviewing</option>
+          <option value="resolved">Resolved</option>
+          <option value="all">All</option>
+        </select>
+        <select value={storeFilter} onChange={e => setStoreFilter(e.target.value)}
+          style={{ fontFamily: "inherit", fontSize: 13, padding: "8px 10px", borderRadius: 9, border: "1.5px solid #e7c6d4" }}>
+          <option value="">All stores</option>
+          {stores.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <span style={{ alignSelf: "center", fontSize: 12.5, color: "#9d6a82" }}>{filtered.length} report{filtered.length === 1 ? "" : "s"}</span>
+      </div>
+
+      {filtered.length === 0 && (
+        <div style={{ ...card, textAlign: "center", color: "#9d6a82" }}>No reports here yet.</div>
+      )}
+
+      {filtered.map(r => {
+        const cat = INCIDENT_CAT[r.category] || INCIDENT_CAT.Other;
+        const st = INCIDENT_STATUS[r.status] || INCIDENT_STATUS.new;
+        const open = openId === r.id;
+        const notes = Array.isArray(r.internal_notes) ? r.internal_notes : [];
+        return (
+          <div key={r.id} style={{ ...card, marginBottom: 12, borderColor: r.urgent && r.status !== "resolved" ? "#fca5a5" : "#f3d4e0", borderWidth: r.urgent && r.status !== "resolved" ? 2 : 1 }}>
+            <div onClick={() => onOpen(r)} style={{ display: "flex", gap: 10, alignItems: "center", cursor: "pointer", flexWrap: "wrap" }}>
+              {r.urgent && <span style={chip(INCIDENT_STATUS.new)}>🚨 URGENT</span>}
+              {!r.reviewed && <span style={{ width: 9, height: 9, borderRadius: 999, background: "#BE185D", display: "inline-block" }} title="Not yet opened" />}
+              <span style={chip(cat)}>{cat.emoji} {cat.label}</span>
+              <strong style={{ color: "#111827", fontSize: 14 }}>{r.store || "Unknown store"}</strong>
+              <span style={{ color: "#9ca3af", fontSize: 12 }}>· incident {fmtIncidentDate(r.incident_date)}</span>
+              <span style={{ marginLeft: "auto", ...chip(st) }}>{st.label}</span>
+              <span style={{ color: "#cbb1bd", fontSize: 18, lineHeight: 1 }}>{open ? "▾" : "▸"}</span>
+            </div>
+
+            {open && (
+              <div style={{ marginTop: 14, borderTop: "1px dashed #f3d4e0", paddingTop: 14 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 16px", fontSize: 13.5, color: "#374151", marginBottom: 12 }}>
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>Ref</span><span>{r.ref_code}</span>
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>Filed</span><span>{fmtIncidentTime(r.created_at)}</span>
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>People involved</span><span style={{ whiteSpace: "pre-wrap" }}>{r.people_involved || "—"}</span>
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>What happened</span><span style={{ whiteSpace: "pre-wrap" }}>{r.description}</span>
+                  {r.witnesses && (<><span style={{ color: "#9d6a82", fontWeight: 700 }}>Witnesses</span><span style={{ whiteSpace: "pre-wrap" }}>{r.witnesses}</span></>)}
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>Reporter</span>
+                  <span>{r.reporter_name
+                    ? <>{r.reporter_name}{r.reporter_contact ? <span style={{ color: "#6b7280" }}> · {r.reporter_contact}</span> : null}</>
+                    : <em style={{ color: "#9ca3af" }}>Anonymous</em>}</span>
+                </div>
+
+                {r.photo_b64 && (
+                  <img src={r.photo_b64} alt="attachment" onClick={() => setPhotoZoom(r.photo_b64)}
+                    style={{ maxWidth: 180, maxHeight: 180, borderRadius: 10, border: "1px solid #f3d4e0", cursor: "zoom-in", marginBottom: 12 }} />
+                )}
+
+                {/* Status controls */}
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+                  {["new", "reviewing", "resolved"].map(s => {
+                    const sc = INCIDENT_STATUS[s];
+                    const on = r.status === s;
+                    return (
+                      <button key={s} disabled={busy || on} onClick={() => changeStatus(r, s)}
+                        style={{ border: "1.5px solid " + sc.color, background: on ? sc.color : "#fff", color: on ? "#fff" : sc.color, borderRadius: 9, padding: "7px 14px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: on ? "default" : "pointer", opacity: busy && !on ? 0.6 : 1 }}>
+                        {on ? "● " : ""}{sc.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Internal notes */}
+                <div style={{ fontWeight: 700, color: "#831843", fontSize: 12.5, marginBottom: 6 }}>HR notes (internal — staff never see these)</div>
+                {notes.map((n, i) => (
+                  <div key={i} style={{ background: "#faf5f7", borderRadius: 9, padding: "8px 11px", fontSize: 13, marginBottom: 6 }}>
+                    <span style={{ whiteSpace: "pre-wrap" }}>{n.note}</span>
+                    <div style={{ fontSize: 11, color: "#9d6a82", marginTop: 3 }}>{n.by || "HR"} · {fmtIncidentTime(n.at)}</div>
+                  </div>
+                ))}
+                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                  <input value={noteDraft[r.id] || ""} onChange={e => setNoteDraft({ ...noteDraft, [r.id]: e.target.value })}
+                    placeholder="Add an internal note…" onKeyDown={e => { if (e.key === "Enter") addNote(r); }}
+                    style={{ flex: 1, fontFamily: "inherit", fontSize: 13, padding: "8px 11px", borderRadius: 9, border: "1.5px solid #e7c6d4" }} />
+                  <button disabled={busy || !(noteDraft[r.id] || "").trim()} onClick={() => addNote(r)}
+                    style={{ background: "#831843", color: "#fff", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer", opacity: (noteDraft[r.id] || "").trim() ? 1 : 0.5 }}>Add</button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {photoZoom && (
+        <div onClick={() => setPhotoZoom(null)}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.8)", zIndex: 100000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, cursor: "zoom-out" }}>
+          <img src={photoZoom} alt="attachment" style={{ maxWidth: "95%", maxHeight: "95%", borderRadius: 10 }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Pop-up that greets HR when there are unopened reports. Louder (red) if any
+// unopened report is urgent. Alerts the people the owner named — HR, Regional
+// and National managers — via canSeeIncidents gating on the App side.
+function IncidentPopup({ reports, onView, onDismiss }) {
+  const unread = reports.filter(r => !r.reviewed);
+  if (unread.length === 0) return null;
+  const urgent = unread.filter(r => r.urgent);
+  const isUrgent = urgent.length > 0;
+  const accent = isUrgent ? "#dc2626" : "#BE185D";
+  return (
+    <div onClick={onDismiss} style={{ position: "fixed", inset: 0, background: "rgba(76,5,25,0.5)", backdropFilter: "blur(2px)", zIndex: 100001, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 18, maxWidth: 420, width: "100%", overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,.35)", border: "2px solid " + accent, ...(isUrgent ? { animation: "urgentPulse 1.6s infinite" } : {}) }}>
+        <div style={{ background: accent, color: "#fff", padding: "16px 20px", fontFamily: "'Outfit',sans-serif", fontWeight: 800, fontSize: 18 }}>
+          {isUrgent ? "🚨 Urgent incident report" + (urgent.length > 1 ? "s" : "") : "🛡️ New incident report" + (unread.length > 1 ? "s" : "")}
+        </div>
+        <div style={{ padding: "18px 20px" }}>
+          <p style={{ margin: "0 0 12px", color: "#374151", fontSize: 14 }}>
+            {isUrgent
+              ? <><strong>{urgent.length}</strong> urgent report{urgent.length > 1 ? "s" : ""} need{urgent.length === 1 ? "s" : ""} attention now.{unread.length > urgent.length ? " (" + unread.length + " unread in total.)" : ""}</>
+              : <><strong>{unread.length}</strong> new report{unread.length > 1 ? "s" : ""} from staff {unread.length > 1 ? "are" : "is"} waiting to be reviewed.</>}
+          </p>
+          {unread.slice(0, 3).map(r => {
+            const cat = INCIDENT_CAT[r.category] || INCIDENT_CAT.Other;
+            return (
+              <div key={r.id} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, padding: "6px 0", borderTop: "1px solid #f3f4f6" }}>
+                {r.urgent && <span style={{ color: "#dc2626", fontWeight: 800 }}>🚨</span>}
+                <span>{cat.emoji}</span>
+                <strong style={{ color: "#111827" }}>{r.store || "Unknown"}</strong>
+                <span style={{ color: "#9ca3af", marginLeft: "auto" }}>{fmtIncidentTime(r.created_at)}</span>
+              </div>
+            );
+          })}
+          {unread.length > 3 && <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 6 }}>+{unread.length - 3} more</div>}
+          <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+            <button onClick={onView} style={{ flex: 1, background: accent, color: "#fff", border: "none", borderRadius: 10, padding: "12px", fontWeight: 800, fontSize: 14, fontFamily: "inherit", cursor: "pointer" }}>View reports</button>
+            <button onClick={onDismiss} style={{ background: "#f3f4f6", color: "#6b7280", border: "none", borderRadius: 10, padding: "12px 16px", fontWeight: 700, fontSize: 14, fontFamily: "inherit", cursor: "pointer" }}>Later</button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -9501,6 +9785,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // ── Leave Planner state ────────────────────────────────────────────
   const [leaveRecs, setLeaveRecs] = useState([]);
   const [overtimeReqs, setOvertimeReqs] = useState([]);
+  // Staff incident reports (confidential channel — see sql/incident_reports.sql)
+  const [incidentReports, setIncidentReports] = useState([]);
+  const [incidentPopupSeen, setIncidentPopupSeen] = useState(false);  // dismissed for this session
   const [overtimeShortCache, setOvertimeShortCache] = useState({});    // { ec|cycleYm: hours } from early-leave sidecar
   const [overtimeShortLoading, setOvertimeShortLoading] = useState(false);
   const [otForm, setOtForm] = useState({ ec: "", date: "", hours: "", reason: "" });
@@ -10466,8 +10753,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadSmTrial ? window.BOA_DB.loadSmTrial() : Promise.resolve([]),
       window.BOA_DB.loadOvertimeRequests ? window.BOA_DB.loadOvertimeRequests() : Promise.resolve([]),
       window.BOA_DB.loadFreshaAccess ? window.BOA_DB.loadFreshaAccess() : Promise.resolve({}),
-      window.BOA_DB.loadOvertimeAccess ? window.BOA_DB.loadOvertimeAccess() : Promise.resolve({})
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess]) => {
+      window.BOA_DB.loadOvertimeAccess ? window.BOA_DB.loadOvertimeAccess() : Promise.resolve({}),
+      (window.BOA_DB.loadIncidentReports && canSeeIncidents(currentUser)) ? window.BOA_DB.loadIncidentReports() : Promise.resolve([])
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, incidents]) => {
       setStaff(d.staff);
       setManagers(d.managers);
       setMatRecs(d.matRecs);
@@ -10481,6 +10769,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setOvertimeReqs(Array.isArray(ot) ? ot : []);
       setFreshaAccess(freshaAcc && typeof freshaAcc === "object" ? freshaAcc : {});
       setOvertimeAccess(otAccess && typeof otAccess === "object" ? otAccess : {});
+      setIncidentReports(Array.isArray(incidents) ? incidents : []);
       setLoading(false);
     }).catch((err) => {
       setLoadError("Could not load data: " + (err.message || err));
@@ -11887,6 +12176,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         }
       `}</style>
 
+      {/* Incident reports pop-up — greets HR/senior staff when reports are
+          waiting. Louder (red) when any unread report is marked urgent. */}
+      {!loading && !incidentPopupSeen && canSeeIncidents(currentUser) && (
+        <IncidentPopup
+          reports={incidentReports}
+          onView={() => { setIncidentPopupSeen(true); tryChangeTab("incidents"); }}
+          onDismiss={() => setIncidentPopupSeen(true)}
+        />
+      )}
+
       {currentUser?.demo && (
         <div style={{ background: "#fde047", color: "#78350f", borderBottom: "2px solid #ca8a04", padding: "10px 24px", textAlign: "center", fontSize: 13, fontWeight: 700, letterSpacing: "0.02em" }}>
           ⚠ TRAINING / DEMO LOGIN — You can explore the portal but any changes you make will <u>NOT</u> be saved.
@@ -12001,6 +12300,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 color: { bg: "#EDE9FE", bgActive: "#DDD6FE", ink: "#5B21B6" },
                 items: [
                   { t: "alerts", l: "🔔 Alerts" },
+                  ...(canSeeIncidents(currentUser) ? [(() => {
+                    const unread = incidentReports.filter(r => !r.reviewed).length;
+                    return { t: "incidents", l: "🛡️ Incident Reports" + (unread ? "  (" + unread + ")" : "") };
+                  })()] : []),
                   { t: "activity", l: "📜 Activity Log" }
                 ]
               },
@@ -15698,6 +16001,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             </div>
           );
         })()}
+
+        {/* ── INCIDENT REPORTS TAB ── */}
+        {tab === "incidents" && canSeeIncidents(currentUser) && (
+          <IncidentReportsTab reports={incidentReports} setReports={setIncidentReports} currentUser={currentUser} />
+        )}
 
         {/* ── ALERTS TAB ── */}
         {tab === "alerts" && (() => {
