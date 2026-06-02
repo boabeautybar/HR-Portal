@@ -54,29 +54,40 @@
     location.reload();
   };
 
-  // If already authed in this session, hide the overlay and tell the app.
-  // The dispatch is deferred to the next tick so the role apps (which load
-  // *after* this script) have time to register their listener.
-  var prev = sessionStorage.getItem(STORAGE_KEY);
-  if (prev === "staff" || prev === "manager") {
-    document.body.classList.add("role-" + prev);
-    window.APP_ROLE = prev;
-    var hideOverlay = function () {
-      var ov = document.getElementById("pin-overlay");
-      if (ov) ov.style.display = "none";
-    };
-    if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", hideOverlay);
-    } else { hideOverlay(); }
-    setTimeout(function () {
-      document.dispatchEvent(new CustomEvent("app:authed", { detail: { role: prev } }));
-    }, 0);
-    return;
-  }
-
-  document.addEventListener("DOMContentLoaded", init);
-  if (document.readyState !== "loading") init();
   var inited = false;
+
+  // Device lock (security.js) gates the boot: resolve(true) = enrolled/allowed,
+  // resolve(false) = unenrolled (its enrolment screen owns the page, so the PIN
+  // must never show). If security.js isn't present, default to allow.
+  (window.kioskDeviceGate || Promise.resolve(true)).then(function (deviceOk) {
+    if (deviceOk === false) return; // blocked — do not boot the app
+    bootGate();
+  });
+
+  function bootGate() {
+    // If already authed in this session, hide the overlay and tell the app.
+    // The dispatch is deferred to the next tick so the role apps (which load
+    // *after* this script) have time to register their listener.
+    var prev = sessionStorage.getItem(STORAGE_KEY);
+    if (prev === "staff" || prev === "manager") {
+      document.body.classList.add("role-" + prev);
+      window.APP_ROLE = prev;
+      var hideOverlay = function () {
+        var ov = document.getElementById("pin-overlay");
+        if (ov) ov.style.display = "none";
+      };
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", hideOverlay);
+      } else { hideOverlay(); }
+      setTimeout(function () {
+        document.dispatchEvent(new CustomEvent("app:authed", { detail: { role: prev } }));
+      }, 0);
+      return;
+    }
+
+    document.addEventListener("DOMContentLoaded", init);
+    if (document.readyState !== "loading") init();
+  }
 
   function init() {
     if (inited) return; inited = true;

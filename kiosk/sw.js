@@ -13,6 +13,10 @@ self.addEventListener('activate', (e) => {
 });
 
 self.addEventListener('fetch', (e) => {
-  // Pass-through: always fetch from network, do not cache.
+  // Only touch same-origin GETs. Cross-origin assets (Supabase SDK / fonts from
+  // CDNs) must load normally — re-fetching them through the worker breaks CORS.
+  let url;
+  try { url = new URL(e.request.url); } catch (_) { return; }
+  if (e.request.method !== 'GET' || url.origin !== self.location.origin) return;
   e.respondWith(fetch(e.request));
 });
