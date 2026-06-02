@@ -8375,16 +8375,16 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
   const [resolvingId, setResolvingId] = useState(null);   // report awaiting a resolution note
   const [resolveText, setResolveText] = useState("");
 
-  // Where the QR points. A custom address (window.BOA_REPORT_URL) wins so staff
-  // can land on a separate site instead of the portal's own domain; "/report.html"
-  // is appended if that address has no path of its own.
+  // Where the QR points: the "My BOA" staff hub. A custom address
+  // (window.BOA_STAFF_URL) wins so staff land on a separate site instead of the
+  // portal's own domain; "/myboa.html" is appended if it has no path of its own.
   const reportUrl = (() => {
-    const custom = (typeof window !== "undefined" && window.BOA_REPORT_URL || "").trim();
+    const custom = (typeof window !== "undefined" && (window.BOA_STAFF_URL || window.BOA_REPORT_URL) || "").trim();
     if (custom) {
-      try { const u = new URL(custom); return (u.pathname && u.pathname !== "/") ? custom : custom.replace(/\/+$/, "") + "/report.html"; }
+      try { const u = new URL(custom); return (u.pathname && u.pathname !== "/") ? custom : custom.replace(/\/+$/, "") + "/myboa.html"; }
       catch (_e) { return custom; }
     }
-    return (typeof window !== "undefined" ? window.location.origin : "") + "/report.html";
+    return (typeof window !== "undefined" ? window.location.origin : "") + "/myboa.html";
   })();
   const stores = Array.from(new Set(reports.map(r => r.store).filter(Boolean))).sort();
 
@@ -8464,7 +8464,7 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
       <div style={{ marginBottom: 16 }}>
         <button onClick={() => setShowQR(v => !v)}
           style={{ background: "#fff", color: "#831843", border: "1.5px solid #f9a8d4", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>
-          {showQR ? "▾ Hide staff QR code" : "▸ Staff QR code (print & hang in store)"}
+          {showQR ? "▾ Hide My BOA QR code" : "▸ My BOA QR code (print & hang in store)"}
         </button>
         {showQR && (
           <div style={{ ...card, background: "#fdf2f8", borderColor: "#f9a8d4", marginTop: 10, marginBottom: 0 }}>
@@ -8473,10 +8473,10 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
                 <IncidentQR url={reportUrl} size={150} />
               </div>
               <div style={{ flex: "1 1 260px", minWidth: 240 }}>
-                <div style={{ fontWeight: 800, color: "#831843", fontSize: 15, marginBottom: 4 }}>Staff reporting QR code</div>
+                <div style={{ fontWeight: 800, color: "#831843", fontSize: 15, marginBottom: 4 }}>My BOA QR code</div>
                 <div style={{ fontSize: 13, color: "#6b3a4e", marginBottom: 8 }}>
-                  Print this once and put it somewhere private in each store (staff room / toilet). Staff scan it
-                  on their own phone to file a report — no manager, no shared iPad needed.
+                  Print this once and put it in each store (staff room). Staff scan it on their own phone to open
+                  <strong> My BOA</strong> — where they can view their schedule and report an incident.
                 </div>
                 <div style={{ fontSize: 12, color: "#9d6a82", wordBreak: "break-all", marginBottom: 10 }}>{reportUrl}</div>
                 <button onClick={() => window.print()}
