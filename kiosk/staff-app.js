@@ -41,7 +41,7 @@
     root.innerHTML =
       '<header class="app-header gp-header">' +
         '<div class="gp-left">' +
-          '<div class="boa-logo" aria-label="BOA Beauty Bar"><span class="boa-logo-boa">BOA</span><span class="boa-logo-beauty">BEAUTY</span><span class="boa-logo-bar">Bar</span></div>' +
+          '<div class="boa-logo"><img class="boa-logo-img" src="boa-logo.png" alt="BOA Beauty Bar"></div>' +
           '<div class="gp-greeting">' +
             '<div class="gp-greeting-line">' + esc(getGreeting()) + ' · ' + esc(cfg.branchDisplayName || cfg.branchName || "BOA Check-in") + '</div>' +
             '<div class="gp-sublabel" id="gp-sublabel">HOME</div>' +

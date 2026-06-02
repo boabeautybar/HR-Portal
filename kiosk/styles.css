@@ -27,9 +27,9 @@
   --gray-500: #6B7280;
   --gray-700: #374151;
   --gray-900: #111827;
-  /* Modern display font for the brand lockup, greeting and hero headings.
-     Swap 'Sora' here to restyle them all at once. */
-  --font-display: 'Sora', 'Outfit', system-ui, -apple-system, sans-serif;
+  /* Display font for the greeting and hero brand title — Outfit, the same
+     modern sans the HR portal uses for its brand headings. */
+  --font-display: 'Outfit', system-ui, -apple-system, sans-serif;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
@@ -116,23 +116,22 @@ body {
 }
 
 /* Left cluster: brand logo + greeting, kept together on the header's left. */
-.gp-left { display: flex; align-items: center; gap: 18px; min-width: 0; }
+.gp-left { display: flex; align-items: center; gap: 16px; min-width: 0; }
 
-/* BOA Beauty Bar wordmark — recreated in type so it stays crisp at any size.
-   White on the magenta header. To use the exact artwork instead, drop the
-   file in and replace this markup with <img class="boa-logo-img" src="boa-logo.png">. */
+/* BOA Beauty Bar logo — the actual transparent-PNG artwork (black ink), the
+   same file the HR portal uses. The HR portal shows it black on a light-pink
+   header; the kiosk header is dark magenta, so we sit the logo on a matching
+   light-pink tile so the black logo reads the same way. */
 .boa-logo {
-  display: flex; align-items: baseline; white-space: nowrap; color: #fff;
-  flex: 0 0 auto; line-height: 1; user-select: none;
+  display: inline-flex; align-items: center; flex: 0 0 auto;
+  background: linear-gradient(135deg, #FFFFFF 0%, #FDF2F8 55%, #FBCFE8 100%);
+  padding: 8px 16px; border-radius: 13px;
+  box-shadow: 0 2px 12px rgba(131,24,67,0.22);
 }
-.boa-logo-boa    { font-family: var(--font-display); font-weight: 800; font-size: 27px; letter-spacing: 0.01em; }
-.boa-logo-beauty { font-family: var(--font-display); font-weight: 300; font-size: 27px; letter-spacing: 0.16em; margin-left: 7px; }
-.boa-logo-bar    { font-family: 'Pinyon Script', cursive; font-weight: 400; font-size: 32px; margin-left: 1px; transform: translateY(3px); }
-.boa-logo-img    { height: 40px; width: auto; display: block; flex: 0 0 auto; }
+.boa-logo-img { height: 30px; width: auto; object-fit: contain; display: block; }
 @media (max-width: 1100px) {
-  .boa-logo-boa, .boa-logo-beauty { font-size: 22px; }
-  .boa-logo-bar { font-size: 26px; }
-  .boa-logo-img { height: 32px; }
+  .boa-logo-img { height: 24px; }
+  .boa-logo { padding: 6px 11px; }
   .gp-left { gap: 12px; }
 }
 .gp-sublabel {
