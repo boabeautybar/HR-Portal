@@ -33,7 +33,7 @@
     var saved = {};
     try { saved = JSON.parse(localStorage.getItem("myboa_sched_v1") || "{}"); } catch (_e) {}
     root.innerHTML = [
-      '<div class="brand"><img src="BOA.png" alt="BOA" /></div>',
+      '<div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>',
       '<h1>Request leave</h1>',
       '<p class="sub">Send a leave request to HR. You\'ll get a reference number.</p>',
       '<div class="card">',
@@ -119,7 +119,7 @@
 
   function done(ref) {
     root.innerHTML = [
-      '<div class="brand"><img src="BOA.png" alt="BOA" /></div>',
+      '<div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>',
       '<div class="done">',
         '<div class="tick">✅</div>',
         '<h2>Your leave request has been sent</h2>',

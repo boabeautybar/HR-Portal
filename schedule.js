@@ -318,7 +318,7 @@
     try { saved = JSON.parse(localStorage.getItem(LS_KEY) || "{}"); } catch (_e) {}
     root.innerHTML = [
       '<a class="back" href="myboa.html">‹ My BOA</a>',
-      '<div class="brand"><img src="BOA.png" alt="BOA" /></div>',
+      '<div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>',
       '<h1>My schedule</h1>',
       '<p class="sub">Enter your details to see your roster.</p>',
       msg ? '<p class="err" style="text-align:center">' + esc(msg) + '</p>' : '',

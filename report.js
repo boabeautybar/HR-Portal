@@ -50,7 +50,7 @@
   // ── Render the form ──────────────────────────────────────────
   function render() {
     root.innerHTML = [
-      '<div class="brand"><img src="BOA.png" alt="BOA" /></div>',
+      '<div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>',
       '<h1>Report an incident</h1>',
       '<p class="sub">Tell us about something that happened in your store.</p>',
 
@@ -260,7 +260,7 @@
 
   function showDone(ref) {
     root.innerHTML = [
-      '<div class="brand"><img src="BOA.png" alt="BOA" /></div>',
+      '<div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>',
       '<div class="done">',
         '<div class="tick">✅</div>',
         '<h2>Thank you — your report has been sent</h2>',
