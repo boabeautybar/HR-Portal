@@ -1798,6 +1798,13 @@
     // here to surface on the Manager Check-ins tab.
     loadEarlyLeaveReports: loadEarlyLeaveReports,
 
+    // Staff incident reports (confidential; from /report.html). Read/updated
+    // only via key-gated RPCs — see sql/incident_reports.sql.
+    loadIncidentReports: loadIncidentReports,
+    setIncidentStatus: setIncidentStatus,
+    markIncidentReviewed: markIncidentReviewed,
+    addIncidentNote: addIncidentNote,
+
     // Kiosk device lock (Tier 3A) — server-validated enrolment RPCs
     createKioskEnrollment: createKioskEnrollment,
     listKioskDevices: listKioskDevices,
@@ -1829,6 +1836,35 @@
     if (res.error) { console.error("loadEarlyLeaveReports:", res.error); return []; }
     var v = res.data && res.data.value;
     return Array.isArray(v) ? v : [];
+  }
+
+  // ── Staff incident reports ───────────────────────────────────────────
+  // Confidential reports filed from /report.html. The table is unreadable
+  // through the normal anon API; everything goes through SECURITY DEFINER
+  // RPCs that require the HR access key. That key lives only in the HR
+  // portal (window.BOA_INCIDENT_HR_KEY) — NOT in the kiosk — so a manager
+  // holding the kiosk's anon key still can't read or alter these reports.
+  function incidentKey() { return window.BOA_INCIDENT_HR_KEY || ""; }
+
+  async function loadIncidentReports() {
+    var res = await sb.rpc("list_incident_reports", { p_key: incidentKey() });
+    if (res.error) { console.error("loadIncidentReports:", res.error); return []; }
+    return Array.isArray(res.data) ? res.data : [];
+  }
+  async function setIncidentStatus(id, status) {
+    var res = await sb.rpc("set_incident_status", { p_key: incidentKey(), p_id: id, p_status: status });
+    if (res.error) { console.error("setIncidentStatus:", res.error); throw res.error; }
+    return true;
+  }
+  async function markIncidentReviewed(id) {
+    var res = await sb.rpc("mark_incident_reviewed", { p_key: incidentKey(), p_id: id });
+    if (res.error) { console.error("markIncidentReviewed:", res.error); throw res.error; }
+    return true;
+  }
+  async function addIncidentNote(id, note, author) {
+    var res = await sb.rpc("add_incident_note", { p_key: incidentKey(), p_id: id, p_note: note, p_author: author || "" });
+    if (res.error) { console.error("addIncidentNote:", res.error); throw res.error; }
+    return true;
   }
 
   // ── Custom locations ─────────────────────────────────────────────────
