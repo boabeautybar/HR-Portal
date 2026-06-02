@@ -291,7 +291,6 @@
           sb.from("app_state").select("value").eq("key", "boa_mgr_times_v1").maybeSingle()
         ]);
         var rows = (rr[0] && rr[0].data) || [];
-        state.dbgStaff = { count: rows.length, err: (rr[0] && rr[0].error && rr[0].error.message) || "" };
         var row = rows.filter(function (x) { return String(x.employee_code || "").trim().toUpperCase() === ecUp; })[0];
         if (row) {
           state.name = (row.name || "").trim().split(" ")[0] || "";
@@ -354,7 +353,6 @@
         tabBtn("month", "Month"),
       '</div>',
       '<div id="view"></div>',
-      debugLine(),
       '<p class="foot">My BOA · schedules are set by your manager</p>'
     ].join("");
     document.getElementById("chg").onclick = function () { renderForm(); };
@@ -362,24 +360,6 @@
       b.onclick = function () { state.view = b.getAttribute("data-v"); renderDash(); };
     });
     renderView();
-  }
-  // Diagnostic line — only when the URL has ?debug=1. Shows what the viewer
-  // detected so we can pinpoint wrong shift times.
-  function debugLine() {
-    if (!/[?&]debug=1/.test(location.search)) return "";
-    var today = new Date();
-    var grid = state.cache[ymForDate(today)];
-    var row = rowFor(grid);
-    var rawToday = row ? getCell(row, today) : "(no row)";
-    return '<div style="margin-top:16px;padding:10px 12px;background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;font-size:11px;color:#9a3412;font-family:monospace;line-height:1.6;word-break:break-all">' +
-      'DEBUG<br>ec=' + esc(JSON.stringify(state.ec)) +
-      ' · source=' + (state.isManager ? "manager-grid" : "tech-grid") +
-      '<br>role=' + esc(JSON.stringify(state.role)) + ' · effRole=' + esc(JSON.stringify(state.effRole)) +
-      '<br>staffRows=' + ((state.dbgStaff && state.dbgStaff.count) || 0) + ' · staffErr=' + esc((state.dbgStaff && state.dbgStaff.err) || "none") +
-      '<br>customDays=' + Object.keys(state.custom || {}).length +
-      ' · todayRawCode=' + esc(JSON.stringify(rawToday)) +
-      '<br>todayTime=' + esc(shiftTimes(state.effRole || state.role, "W", state.store, today.getDay())) +
-      '</div>';
   }
   function tabBtn(v, label) {
     return '<button type="button" class="tab' + (state.view === v ? ' on' : '') + '" data-v="' + v + '">' + label + '</button>';
