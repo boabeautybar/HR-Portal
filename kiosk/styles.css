@@ -111,6 +111,7 @@ body {
   padding: 20px 26px;
   background: linear-gradient(135deg, #FBCFE8 0%, #F9A8D4 50%, #F472B6 100%);
   color: var(--pink-900);
+  gap: 36px; flex-wrap: wrap;
 }
 .gp-greeting { line-height: 1.2; min-width: 0; }
 .gp-greeting-line {
