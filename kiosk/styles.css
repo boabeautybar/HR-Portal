@@ -108,7 +108,7 @@ body {
    Light pink ombre, matching the HR portal header, so the black BOA Beauty
    Bar logo reads directly on it. Text + pills use dark ink for contrast. */
 .gp-header {
-  padding: 12px 26px;
+  padding: 20px 26px;
   background: linear-gradient(135deg, #FBCFE8 0%, #F9A8D4 50%, #F472B6 100%);
   color: var(--pink-900);
 }
