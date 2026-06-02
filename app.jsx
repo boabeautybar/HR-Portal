@@ -111,7 +111,7 @@ function installDemoMode() {
     };
     const noop = async () => { };
     ["saveStaff", "saveMat", "saveManager"].forEach(n => { window.BOA_DB[n] = passthrough; });
-    ["saveSchedule", "saveAttendance", "saveOnboarding", "saveOffboarding",
+    ["saveSchedule", "saveAttendance", "saveEarlyLeaves", "saveOnboarding", "saveOffboarding",
       "saveLeaveRecords", "saveMgrRequests", "saveManagerPins",
       "deleteMat", "deleteManager", "deleteSchedule", "appendActivity"
     ].forEach(n => { window.BOA_DB[n] = noop; });
@@ -126,7 +126,7 @@ function installDemoMode() {
 // hitting Supabase, so a user with view-only access can still see the
 // edit UI but their changes never persist.
 const READ_ONLY_GUARDED_METHODS = [
-  "saveStaff", "saveMat", "saveManager", "saveSchedule", "saveAttendance",
+  "saveStaff", "saveMat", "saveManager", "saveSchedule", "saveAttendance", "saveEarlyLeaves",
   "saveOnboarding", "saveOffboarding", "saveLeaveRecords", "saveMgrRequests",
   "saveTechRequests", "saveManagerPins", "deleteMat", "deleteManager", "deleteSchedule"
 ];
@@ -6928,6 +6928,7 @@ const SETTINGS_TABS = [
   { t: "cashups", l: "Cash Ups", cat: "Operations", icon: "💰" },
   { t: "attendance", l: "Attendance / Payroll", cat: "Payroll", icon: "📕" },
   { t: "payrollProgress", l: "Payroll Progress", cat: "Payroll", icon: "📊" },
+  { t: "payrollReports", l: "Reports", cat: "Payroll", icon: "📈" },
   { t: "overtime", l: "Overtime", cat: "Payroll", icon: "⏱️" },
   { t: "alerts", l: "Alerts", cat: "Insights", icon: "🔔" },
   { t: "activity", l: "Activity Log", cat: "Insights", icon: "📜" },
@@ -6991,7 +6992,7 @@ function isRomRole(role) {
   return r === "regional ops manager" || r === "regional operations manager" || r === "rom";
 }
 
-function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFreshaCfgSave }) {
+function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFreshaCfgSave, overtimeCfg, onOvertimeCfgSave }) {
   const users = appUsers || {};
   const [editing, setEditing] = useState(null);   // {pin, isNew, name, role, demo, isOwner, perms, originalPin}
   const [busy, setBusy] = useState(false);
@@ -7255,6 +7256,49 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
               </div>
             </div>
             <div style={{ fontSize: 11, color: "#9333ea", marginTop: 14, fontStyle: "italic" }}>Owners always see the reminders. Changes save automatically.</div>
+          </div>
+        );
+      })()}
+
+      {/* ── Overtime recording access ── who may record overtime on the HR
+          portal. Owners always can; everyone else must be granted here. */}
+      {onOvertimeCfgSave && (() => {
+        const cfg = overtimeCfg || { roles: ["national"], pins: [] };
+        const userList = Object.keys(users || {})
+          .filter(pin => !(users[pin] && (users[pin].voucherEntryOnly || users[pin].demo)))
+          .map(pin => ({ pin, name: (users[pin] && users[pin].name) || pin, role: (users[pin] && users[pin].role) || "", isOwner: !!(users[pin] && users[pin].isOwner) }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+        const toggleArr = (arr, val) => (arr || []).includes(val) ? (arr || []).filter(x => x !== val) : [...(arr || []), val];
+        const setCfg = (patch) => onOvertimeCfgSave({ ...cfg, ...patch });
+        const roleOpts = [{ key: "national", label: "National Ops Managers" }, { key: "regional", label: "Regional managers (all ROM variants)" }];
+        const chk = { width: 15, height: 15, accentColor: "#0f766e" };
+        const colHead = { fontSize: 10, fontWeight: 800, color: "#0f766e", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 };
+        const rowL = { display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13, color: "#134e4a", cursor: "pointer" };
+        return (
+          <div style={{ marginTop: 26, background: "#f0fdfa", border: "2px solid #99f6e4", borderRadius: 14, padding: "18px 20px" }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: "#0f766e", fontWeight: 700, marginBottom: 2 }}>⏱️ Overtime — who can record it</div>
+            <div style={{ fontSize: 12, color: "#0d9488", marginBottom: 16 }}>Overtime is recorded only from the HR portal (not the kiosk). Owners can always record it; grant other people below. Anyone not listed sees the Overtime tab read-only.</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 20 }}>
+              <div>
+                <div style={colHead}>Allowed by role</div>
+                {roleOpts.map(r => (
+                  <label key={r.key} style={rowL}>
+                    <input type="checkbox" style={chk} checked={(cfg.roles || []).includes(r.key)} onChange={() => setCfg({ roles: toggleArr(cfg.roles, r.key) })} />
+                    {r.label}
+                  </label>
+                ))}
+              </div>
+              <div>
+                <div style={colHead}>…or specific people</div>
+                {userList.map(u => (
+                  <label key={u.pin} style={{ ...rowL, opacity: u.isOwner ? 0.6 : 1 }}>
+                    <input type="checkbox" style={chk} checked={u.isOwner || (cfg.pins || []).includes(u.pin)} disabled={u.isOwner} onChange={() => setCfg({ pins: toggleArr(cfg.pins, u.pin) })} />
+                    {u.name} <span style={{ color: "#5eead4", fontSize: 11 }}>· {u.role}{u.isOwner ? " · always" : ""}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div style={{ fontSize: 11, color: "#0d9488", marginTop: 14, fontStyle: "italic" }}>Owners always have access. Changes save automatically.</div>
           </div>
         );
       })()}
@@ -9055,7 +9099,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const NAV_TAB_TO_CATEGORY = {
     onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
     scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
-    attendance: "Payroll", payrollProgress: "Payroll", overtime: "Payroll",
+    attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll",
     alerts: "Insights", activity: "Insights",
     settings: "Admin", voucherAdmin: "Admin"
   };
@@ -9197,6 +9241,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     setFreshaAccess(next);
     try { if (window.BOA_DB.saveFreshaAccess) await window.BOA_DB.saveFreshaAccess(next); }
     catch (e) { window.alert("Could not save Fresha access: " + (e.message || e)); }
+  };
+  // Who may RECORD overtime from the HR portal (boa_overtime_access_v1).
+  // Default: National Ops managers (owners always allowed). Editable in Settings.
+  const [overtimeAccess, setOvertimeAccess] = useState({});
+  const overtimeCfg = useMemo(() => {
+    const c = overtimeAccess || {};
+    return {
+      roles: Array.isArray(c.roles) ? c.roles : ["national"],
+      pins: Array.isArray(c.pins) ? c.pins : []
+    };
+  }, [overtimeAccess]);
+  const saveOvertimeCfg = async (next) => {
+    setOvertimeAccess(next);
+    try { if (window.BOA_DB.saveOvertimeAccess) await window.BOA_DB.saveOvertimeAccess(next); }
+    catch (e) { window.alert("Could not save overtime access: " + (e.message || e)); }
   };
   // App-scope trial persistence (the trial tab has its own copy inside an
   // IIFE; the dashboard Fresha card needs one too).
@@ -9341,6 +9400,310 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // admin review per branch for the active cycle. Lives at component scope
   // so it can be triggered from the dedicated Payroll Progress tab.
   const [payrollOverview, setPayrollOverview] = useState(null);   // null | { loading, ym, byBranch }
+
+  // ── Attendance / Absenteeism Reports (Payroll → Reports) ───────────
+  // Cross-branch overview of who is missing the most work, who attends
+  // best, and recurring patterns (Monday / weekend / month-end clusters)
+  // that flag possible sick-leave abuse. Annual leave + maternity are
+  // never counted as missed days.
+  const [reportRange, setReportRange] = useState("cycle");        // "cycle" | "week" | "mtd"
+  const [reportsData, setReportsData] = useState(null);           // null | { loading, ... }
+  const loadAttendanceReports = async (rangeKey) => {
+    const _p2r = z => String(z).padStart(2, "0");
+    const ymdOf = d => d.getFullYear() + "-" + _p2r(d.getMonth() + 1) + "-" + _p2r(d.getDate());
+    // Resolve [start, end] for the chosen range. Week and month-to-date end
+    // today; the pay cycle spans the FULL 25th→24th window (e.g. 25 May →
+    // 24 Jun) even mid-cycle — future days simply carry no data yet.
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    let start, end = today;
+    if (rangeKey === "week") { start = new Date(today); start.setDate(start.getDate() - 6); }
+    else if (rangeKey === "mtd") { start = new Date(today.getFullYear(), today.getMonth(), 1); }
+    else { // pay cycle 25th → 24th containing today
+      let y = today.getFullYear(), m = today.getMonth();
+      if (today.getDate() < 25) { m -= 1; if (m < 0) { m = 11; y -= 1; } }
+      start = new Date(y, m, 25);
+      end = new Date(y, m + 1, 24);                  // 24th of the following month
+    }
+    const startYmd = ymdOf(start), endYmd = ymdOf(end);
+    setReportsData({ loading: true, range: rangeKey, startYmd, endYmd });
+    try {
+      const ymds = [];
+      for (let cur = new Date(start); ymdOf(cur) <= endYmd; cur.setDate(cur.getDate() + 1)) ymds.push(ymdOf(cur));
+      // Attendance grids are saved under the START-month ym of the 25th→24th
+      // cycle (cycle 25 May → 24 Jun lives at "2026-05"), matching
+      // currentAttYm() — NOT payrollYmFor()'s end-month convention. Use the
+      // start-month key or the tech grids load empty.
+      const attYmForYmd = (ymd) => {
+        const [y, m, d] = ymd.split("-").map(Number);
+        let yy = y, mm = m;
+        if (d <= 24) { mm -= 1; if (mm < 1) { mm = 12; yy--; } }
+        return yy + "-" + String(mm).padStart(2, "0");
+      };
+      const cycles = Array.from(new Set(ymds.map(attYmForYmd)));
+      const todayYmd = ymdOf(today);
+      const endMonthYm = (ym) => { let [y, m] = ym.split("-").map(Number); m += 1; if (m > 12) { m = 1; y++; } return y + "-" + String(m).padStart(2, "0"); };
+      // Per branch × touched cycle, load every source the attendance sheet
+      // uses to render a day, so the report counts the SAME extra days the
+      // sheet shows: the attendance grid, the kiosk extras sidecar, the tech
+      // schedule (END-month ym) and the manager schedule (START-month ym).
+      // Extra days can sit in any of these (a scheduled "E", a kiosk extra,
+      // or a manual "ext" stamp) — reading only the grid undercounts them.
+      const gridByKey = {}, extrasByKey = {}, techSchByKey = {}, mgrSchByKey = {};
+      await Promise.all(SALONS.flatMap(sl => cycles.map(async ym => {
+        const k = sl.name + "|" + ym;
+        const [att, ex, tsch, msch] = await Promise.all([
+          window.BOA_DB.loadAttendance(sl.name, ym).catch(() => null),
+          window.BOA_DB.loadExtras ? window.BOA_DB.loadExtras(sl.name, ym).catch(() => ({})) : Promise.resolve({}),
+          window.BOA_DB.loadSchedule(sl.name, endMonthYm(ym), false).catch(() => null),
+          window.BOA_DB.loadSchedule(sl.name, ym, true).catch(() => null)
+        ]);
+        gridByKey[k] = (att && att.grid) || {};
+        extrasByKey[k] = ex || {};
+        techSchByKey[k] = (tsch && tsch.grid) || {};
+        mgrSchByKey[k] = (msch && msch.grid) || {};
+      })));
+      // Kiosk audit-log extra days (boa_kiosk_log status === "ext"). The
+      // attendance sheet treats these as Extra Day too, so a tech whose extra
+      // day was logged via the kiosk tile (not stamped on the grid) is still
+      // counted. Populated below once the look-back window is known.
+      const extraKioskSet = new Set();
+      // Is this (ec, day) an extra day worked? Mirrors the attendance sheet:
+      // grid "ext", a kiosk extras-sidecar entry, a kiosk-log "ext", or a
+      // scheduled "E" (tech or manager schedule).
+      const isExtraDay = (k, ec, ecT, ymd, dom, gridBare) => {
+        if (gridBare === "ext") return true;
+        const ex = extrasByKey[k] || {}; const exDay = ex[dom] || ex[String(dom)] || {};
+        if (exDay[ec] || exDay[ecT]) return true;
+        if (extraKioskSet.has(ecT + "|" + ymd)) return true;
+        const ts = techSchByKey[k] || {}; const tv = (ts[ec] || ts[ecT] || {})[dom]; if (tv === "E") return true;
+        const ms = mgrSchByKey[k] || {}; const mrow = ms[ec] || ms[ecT] || {}; if (mrow[ymd] === "E" || mrow[dom] === "E" || mrow[String(dom)] === "E") return true;
+        return false;
+      };
+      // Manager absences live in manager_day_status; worked days come from
+      // their kiosk clock-ins. Pull a window wide enough to reach the range.
+      const daysBack = Math.max(10, Math.ceil((Date.now() - start.getTime()) / 86400000) + 2);
+      let mgrStatuses = [], mgrClock = [];
+      try { mgrStatuses = (await window.BOA_DB.loadManagerDayStatuses(daysBack)) || []; } catch (_) { }
+      try { mgrClock = (await window.BOA_DB.listRecentManagerClockins(daysBack)) || []; } catch (_) { }
+      // Kiosk audit-log extra days for nail techs (and anyone using the tile).
+      if (window.BOA_DB.listRecentKioskCheckins) {
+        try {
+          const krows = (await window.BOA_DB.listRecentKioskCheckins(daysBack, SALONS.map(s => s.name))) || [];
+          krows.forEach(r => { if (r && r.status === "ext" && r.ec && r.ymd) extraKioskSet.add(String(r.ec).trim() + "|" + r.ymd); });
+        } catch (_) { }
+      }
+      const mgrStatusByIdYmd = {};
+      mgrStatuses.forEach(r => { if (r && r.staff_id && r.date && r.status) (mgrStatusByIdYmd[String(r.staff_id)] = mgrStatusByIdYmd[String(r.staff_id)] || {})[r.date] = r.status; });
+      const mgrClockByIdYmd = {};
+      mgrClock.forEach(r => {
+        if (!r || r.type !== "in" || !r.ts) return;
+        const d = new Date(r.ts); const k = ymdOf(d);
+        const sid = r.staff_id != null ? String(r.staff_id) : (r.staff && r.staff.id != null ? String(r.staff.id) : null);
+        if (sid) (mgrClockByIdYmd[sid] = mgrClockByIdYmd[sid] || {})[k] = true;
+      });
+      // Exclusions: terminated before the range, maternity, approved annual leave.
+      const offByEc = {}; (offList || []).forEach(o => { if (o && o.ec && o.leftDate) offByEc[o.ec] = o.leftDate; });
+      const leaveSet = new Set();
+      (leaveRecs || []).forEach(lv => {
+        if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return;
+        const ecT = String(lv.ec).trim();
+        for (let cur = new Date(lv.startDate + "T00:00:00"); ymdOf(cur) <= lv.endDate; cur.setDate(cur.getDate() + 1)) leaveSet.add(ecT + "|" + ymdOf(cur));
+      });
+      const blank = (s, role) => ({
+        ec: s.ec, name: s.name, branch: s.branch || "", role,
+        sickNoNote: 0, sickNote: 0, noShow: 0, absent: 0, frl: 0, unpaid: 0, late: 0, extra: 0,
+        worked: 0, missed: 0, monthEnd: 0, byDow: [0, 0, 0, 0, 0, 0, 0]
+      });
+      const markPattern = (rec, ymd) => {
+        const dow = new Date(ymd + "T00:00:00").getDay();
+        rec.byDow[dow]++;
+        const dom = parseInt(ymd.slice(8, 10), 10);
+        if (dom >= 26 || dom <= 3) rec.monthEnd++;     // around month boundary / payday
+      };
+      const classify = (rec, bare, ymd) => {
+        switch (bare) {
+          case "sick": rec.sickNoNote++; rec.missed++; markPattern(rec, ymd); break;
+          case "sick_n": rec.sickNote++; rec.missed++; markPattern(rec, ymd); break;
+          case "no": rec.noShow++; rec.missed++; markPattern(rec, ymd); break;
+          case "absent": rec.absent++; rec.missed++; markPattern(rec, ymd); break;
+          case "unpaid": rec.unpaid++; rec.missed++; markPattern(rec, ymd); break;
+          case "frl": rec.frl++; rec.missed++; break;                 // legitimate — counted, not pattern-flagged
+          case "late": rec.late++; rec.worked++; break;
+          case "ext": rec.extra++; rec.worked++; break;             // extra day worked (beyond schedule)
+          case "on": case "trial": case "swap_i": rec.worked++; break;
+          default: break;                                              // al / mat / ph / off / term / swap_o / loan_out / deduct → ignore
+        }
+      };
+      const finish = (rec) => {
+        const base = rec.sickNoNote + rec.sickNote + rec.noShow + rec.absent + rec.unpaid;   // missed excl. FRL → pattern denominator
+        const flags = [];
+        if (base >= 3) {
+          const mon = rec.byDow[1], fri = rec.byDow[5], wknd = rec.byDow[0] + rec.byDow[6];
+          if (mon >= 2 && mon / base >= 0.4) flags.push("Monday-heavy");
+          if (fri >= 2 && fri / base >= 0.4) flags.push("Friday-heavy");
+          if (wknd >= 2 && wknd / base >= 0.5) flags.push("Weekend-heavy");
+          if (rec.monthEnd >= 2 && rec.monthEnd / base >= 0.5) flags.push("Month-end cluster");
+          if (rec.sickNoNote >= 3 && rec.sickNoNote >= rec.sickNote) flags.push("Frequent no-note sick");
+        }
+        rec.flags = flags;
+        rec.concerning = rec.sickNoNote + rec.noShow + rec.absent;
+        rec.attendanceRate = (rec.worked + rec.missed) > 0 ? rec.worked / (rec.worked + rec.missed) : null;
+        return rec;
+      };
+      const MISSEDSET = { sick: 1, sick_n: 1, no: 1, absent: 1, unpaid: 1, frl: 1 };
+      const techRecs = [], mgrRecs = [];
+      (staff || []).forEach(s => {
+        const ec = s.ec; if (!ec) return;
+        const ecT = String(ec).trim();
+        if (onMatEcs.has(ecT)) return;
+        const ld = offByEc[ec]; if (ld && ld < startYmd) return;
+        const rec = blank(s, "NT");
+        ymds.forEach(ymd => {
+          if (ymd > todayYmd) return;                         // don't count days that haven't happened
+          if (ld && ymd > ld) return;
+          if (leaveSet.has(ecT + "|" + ymd)) return;
+          const ym = attYmForYmd(ymd), dom = parseInt(ymd.slice(8, 10), 10), k = s.branch + "|" + ym;
+          const g = gridByKey[k] || {};
+          const v = (g[ec] || g[ecT] || {})[dom];
+          const bare = v ? (v.charAt(0) === "~" ? v.slice(1) : v) : "";
+          if (bare && MISSEDSET[bare]) { classify(rec, bare, ymd); return; }   // a recorded absence wins over an extra flag
+          if (isExtraDay(k, ec, ecT, ymd, dom, bare)) { rec.extra++; rec.worked++; return; }
+          if (bare) classify(rec, bare, ymd);
+        });
+        if (rec.worked + rec.missed > 0) techRecs.push(finish(rec));
+      });
+      (managers || []).forEach(m => {
+        const ec = m.ec; if (!ec) return;
+        const ecT = String(ec).trim();
+        if (onMatEcs.has(ecT)) return;
+        const ld = offByEc[ec]; if (ld && ld < startYmd) return;
+        const sid = String(m._id || m.id || "");
+        const rec = blank(m, m.role || "AM");
+        ymds.forEach(ymd => {
+          if (ymd > todayYmd) return;
+          if (ld && ymd > ld) return;
+          if (leaveSet.has(ecT + "|" + ymd)) return;
+          const ym = attYmForYmd(ymd), dom = parseInt(ymd.slice(8, 10), 10), k = m.branch + "|" + ym;
+          const st = (mgrStatusByIdYmd[sid] || {})[ymd];
+          if (st && MISSEDSET[st]) { classify(rec, st, ymd); return; }          // ROM-recorded absence wins
+          const g = gridByKey[k] || {};
+          const gv = (g[ec] || g[ecT] || {})[dom];
+          const gBare = gv ? (gv.charAt(0) === "~" ? gv.slice(1) : gv) : "";
+          if (isExtraDay(k, ec, ecT, ymd, dom, gBare)) { rec.extra++; rec.worked++; return; }
+          if (st) { classify(rec, st, ymd); return; }
+          if ((mgrClockByIdYmd[sid] || {})[ymd]) rec.worked++;
+        });
+        if (rec.worked + rec.missed > 0) mgrRecs.push(finish(rec));
+      });
+      const sumTotals = (arr, t) => arr.forEach(r => { t.sickNoNote += r.sickNoNote; t.sickNote += r.sickNote; t.noShow += r.noShow; t.absent += r.absent; t.frl += r.frl; t.unpaid += r.unpaid; t.late += r.late; t.extra += r.extra; });
+      const totals = { sickNoNote: 0, sickNote: 0, noShow: 0, absent: 0, frl: 0, unpaid: 0, late: 0, extra: 0 };
+      sumTotals(techRecs, totals); sumTotals(mgrRecs, totals);
+      // Headline missed / extra-day totals, split by role.
+      const sumField = (arr, f) => arr.reduce((a, r) => a + r[f], 0);
+      const split = {
+        techMissed: sumField(techRecs, "missed"), mgrMissed: sumField(mgrRecs, "missed"),
+        techExtra: sumField(techRecs, "extra"), mgrExtra: sumField(mgrRecs, "extra"),
+        mgrWithMissed: mgrRecs.filter(r => r.missed > 0).length    // forfeit the R1,000 bonus this cycle
+      };
+      const byMissed = (a, b) => b.missed - a.missed || b.concerning - a.concerning || a.name.localeCompare(b.name);
+      const byBest = (a, b) => (b.attendanceRate - a.attendanceRate) || (b.worked - a.worked) || a.missed - b.missed;
+      const bestAttenders = techRecs.concat(mgrRecs).filter(r => r.worked >= 3 && r.attendanceRate != null).sort(byBest).slice(0, 10);
+      const flagged = techRecs.concat(mgrRecs).filter(r => r.flags.length > 0).sort((a, b) => b.concerning - a.concerning || b.missed - a.missed);
+      setReportsData({
+        loading: false, range: rangeKey, startYmd, endYmd, totals, split,
+        topMgrs: mgrRecs.filter(r => r.missed > 0).sort(byMissed).slice(0, 10),
+        topTechs: techRecs.filter(r => r.missed > 0).sort(byMissed).slice(0, 10),
+        bestAttenders, flagged, mgrCount: mgrRecs.length, techCount: techRecs.length
+      });
+    } catch (e) {
+      console.error("attendance reports load:", e);
+      setReportsData({ loading: false, range: rangeKey, startYmd, endYmd, error: (e && e.message) || String(e) });
+    }
+  };
+
+  // Multi-cycle trend: missed days per person across the last N pay cycles,
+  // so you can see who is trending worse/better month over month.
+  const [reportsView, setReportsView] = useState("snapshot");     // "snapshot" | "trend"
+  const [trendData, setTrendData] = useState(null);
+  const loadAttendanceTrend = async () => {
+    const N = 6;
+    const _p2 = z => String(z).padStart(2, "0");
+    const ymdOf = d => d.getFullYear() + "-" + _p2(d.getMonth() + 1) + "-" + _p2(d.getDate());
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const todayYmd = ymdOf(today);
+    const attYmOf = (d) => { let y = d.getFullYear(), m = d.getMonth() + 1; if (d.getDate() <= 24) { m--; if (m < 1) { m = 12; y--; } } return y + "-" + _p2(m); };
+    const [cy, cm] = attYmOf(today).split("-").map(Number);
+    const cycleYms = [];
+    for (let i = N - 1; i >= 0; i--) { let yy = cy, mm = cm - i; while (mm < 1) { mm += 12; yy--; } cycleYms.push(yy + "-" + _p2(mm)); }
+    setTrendData({ loading: true, cycleYms });
+    try {
+      const gridByKey = {};
+      await Promise.all(SALONS.flatMap(sl => cycleYms.map(async ym => {
+        try { const att = await window.BOA_DB.loadAttendance(sl.name, ym); gridByKey[sl.name + "|" + ym] = (att && att.grid) || {}; }
+        catch (_) { gridByKey[sl.name + "|" + ym] = {}; }
+      })));
+      const oldestStart = new Date(Number(cycleYms[0].split("-")[0]), Number(cycleYms[0].split("-")[1]) - 1, 25);
+      const daysBack = Math.max(40, Math.ceil((Date.now() - oldestStart.getTime()) / 86400000) + 2);
+      let mgrStatuses = [], mgrClock = [];
+      try { mgrStatuses = (await window.BOA_DB.loadManagerDayStatuses(daysBack)) || []; } catch (_) { }
+      const mgrStatusByIdYmd = {};
+      mgrStatuses.forEach(r => { if (r && r.staff_id && r.date && r.status) (mgrStatusByIdYmd[String(r.staff_id)] = mgrStatusByIdYmd[String(r.staff_id)] || {})[r.date] = r.status; });
+      const offByEc = {}; (offList || []).forEach(o => { if (o && o.ec && o.leftDate) offByEc[o.ec] = o.leftDate; });
+      const leaveSet = new Set();
+      (leaveRecs || []).forEach(lv => { if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return; const ecT = String(lv.ec).trim(); for (let cur = new Date(lv.startDate + "T00:00:00"); ymdOf(cur) <= lv.endDate; cur.setDate(cur.getDate() + 1)) leaveSet.add(ecT + "|" + ymdOf(cur)); });
+      const MISSED = { sick: 1, sick_n: 1, no: 1, absent: 1, unpaid: 1, frl: 1 };
+      const CONCERN = { sick: 1, no: 1, absent: 1 };
+      const WORKED = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1 };
+      const cycleDays = (ym) => { const [yy, mm] = ym.split("-").map(Number); const s = new Date(yy, mm - 1, 25), e = new Date(yy, mm, 24); const out = []; for (let cur = new Date(s); cur <= e; cur.setDate(cur.getDate() + 1)) { const yd = ymdOf(cur); if (yd > todayYmd) break; out.push(yd); } return out; };
+      const cycleDaysMap = {}; cycleYms.forEach(ym => cycleDaysMap[ym] = cycleDays(ym));
+      const recs = {};
+      const ensure = (s, role) => { const k = s.ec; if (!recs[k]) recs[k] = { ec: s.ec, name: s.name, branch: s.branch || "", role, missed: new Array(N).fill(0), concern: new Array(N).fill(0), active: new Array(N).fill(false) }; return recs[k]; };
+      (staff || []).forEach(s => {
+        const ec = s.ec; if (!ec) return; const ecT = String(ec).trim(); if (onMatEcs.has(ecT)) return; const ld = offByEc[ec];
+        cycleYms.forEach((ym, ci) => {
+          const g = gridByKey[s.branch + "|" + ym] || {}; const row = g[ec] || g[ecT]; if (!row) return;
+          cycleDaysMap[ym].forEach(ymd => {
+            if (ld && ymd > ld) return; if (leaveSet.has(ecT + "|" + ymd)) return;
+            const dom = parseInt(ymd.slice(8, 10), 10); let v = row[dom]; if (!v) return;
+            const bare = v.charAt(0) === "~" ? v.slice(1) : v;
+            if (MISSED[bare]) { const r = ensure(s, "NT"); r.missed[ci]++; if (CONCERN[bare]) r.concern[ci]++; r.active[ci] = true; }
+            else if (WORKED[bare]) { ensure(s, "NT").active[ci] = true; }
+          });
+        });
+      });
+      (managers || []).forEach(m => {
+        const ec = m.ec; if (!ec) return; const ecT = String(ec).trim(); if (onMatEcs.has(ecT)) return; const ld = offByEc[ec]; const sid = String(m._id || m.id || "");
+        cycleYms.forEach((ym, ci) => {
+          cycleDaysMap[ym].forEach(ymd => {
+            if (ld && ymd > ld) return; if (leaveSet.has(ecT + "|" + ymd)) return;
+            const st = (mgrStatusByIdYmd[sid] || {})[ymd];
+            if (st && MISSED[st]) { const r = ensure(m, m.role || "AM"); r.missed[ci]++; if (CONCERN[st]) r.concern[ci]++; r.active[ci] = true; }
+          });
+        });
+      });
+      const all = Object.values(recs).map(r => {
+        const total = r.missed.reduce((a, b) => a + b, 0);
+        const recent = r.missed[N - 1];
+        const priorAvg = (N - 1) > 0 ? r.missed.slice(0, N - 1).reduce((a, b) => a + b, 0) / (N - 1) : 0;
+        let trend = "flat";
+        if (recent > priorAvg + 0.75) trend = "up"; else if (recent < priorAvg - 0.75) trend = "down";
+        return { ...r, total, recent, priorAvg, trend };
+      }).filter(r => r.total > 0);
+      all.sort((a, b) => (b.recent - a.recent) || (b.total - a.total) || a.name.localeCompare(b.name));
+      const orgMissed = new Array(N).fill(0);
+      // Managers who had at least one missed day in a cycle forfeit the
+      // R1,000 attendance bonus that cycle — count them per cycle.
+      const mgrIneligible = new Array(N).fill(0);
+      Object.values(recs).forEach(r => {
+        r.missed.forEach((v, i) => orgMissed[i] += v);
+        if (r.role !== "NT") r.missed.forEach((v, i) => { if (v > 0) mgrIneligible[i]++; });
+      });
+      setTrendData({ loading: false, cycleYms, rows: all, orgMissed, mgrIneligible });
+    } catch (e) {
+      console.error("attendance trend load:", e);
+      setTrendData({ loading: false, cycleYms, error: (e && e.message) || String(e) });
+    }
+  };
   const loadPayrollOverviewForCycle = async (ymForLoad) => {
     try {
       const ym = ymForLoad;
@@ -9505,23 +9868,75 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       }
       return out;
     };
+    // Mid-cycle transfers: a tech who moved branches keeps their record on the
+    // OLD branch (branch + transferring/transferTo/transferDate) until the
+    // move settles. On the attendance sheet we show them ONCE, at the
+    // destination, with a full-cycle view — so we pull the SOURCE branch's
+    // grid + schedule and merge their pre-transfer cells into this branch's.
+    const pp = z => String(z).padStart(2, "0");
+    const cycStartE = new Date(_atP[0], _atP[1] - 1, 25);
+    const cycEndE = new Date(_atP[0], _atP[1], 24);
+    const cycStartYmdE = cycStartE.getFullYear() + "-" + pp(cycStartE.getMonth() + 1) + "-" + pp(cycStartE.getDate());
+    const cycEndYmdE = cycEndE.getFullYear() + "-" + pp(cycEndE.getMonth() + 1) + "-" + pp(cycEndE.getDate());
+    const _todayE = new Date(); const todayYmdE = _todayE.getFullYear() + "-" + pp(_todayE.getMonth() + 1) + "-" + pp(_todayE.getDate());
+    // Only consolidate once the transfer date has arrived (future pending
+    // transfers stay on the old branch until then).
+    const incoming = (staff || []).filter(s => s && s.ec && s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= todayYmdE && s.branch && s.branch !== attBranch);
+    const srcBranches = Array.from(new Set(incoming.map(s => s.branch)));
     Promise.all([
       safe(window.BOA_DB.loadAttendance(attBranch, attYM)),
       safe(window.BOA_DB.loadSchedule(attBranch, techYm, false)),
       safe(window.BOA_DB.loadSchedule(attBranch, attYM, true)),
       window.BOA_DB.loadEarlyLeaves ? safe(window.BOA_DB.loadEarlyLeaves(attBranch, attYM)) : Promise.resolve({}),
-      window.BOA_DB.loadExtras ? safe(window.BOA_DB.loadExtras(attBranch, attYM)) : Promise.resolve({})
-    ]).then(([att, sch, mgrSch, early, extras]) => {
-      setAttGrid((att && att.grid) || {});
-      setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null, freshaWorked: att.freshaWorked || {}, reviewedWarnings: att.reviewedWarnings || {}, mirrorSuppressed: !!att.mirrorSuppressed } : { freshaWorked: {}, reviewedWarnings: {}, mirrorSuppressed: false });
+      window.BOA_DB.loadExtras ? safe(window.BOA_DB.loadExtras(attBranch, attYM)) : Promise.resolve({}),
+      Promise.all(srcBranches.map(async (br) => {
+        const [sAtt, sSch] = await Promise.all([
+          safe(window.BOA_DB.loadAttendance(br, attYM)),
+          safe(window.BOA_DB.loadSchedule(br, techYm, false))
+        ]);
+        return [br, (sAtt && sAtt.grid) || {}, (sSch && sSch.grid) || {}, (sAtt && sAtt.freshaWorked) || {}];
+      }))
+    ]).then(([att, sch, mgrSch, early, extras, srcData]) => {
+      const mergedGrid = { ...((att && att.grid) || {}) };
       const techGrid = (sch && sch.grid) || {};
       const mgrGrid = ymdReKey((mgrSch && mgrSch.grid) || {});
-      setAttSched({ ...techGrid, ...mgrGrid });
+      const mergedSched = { ...techGrid, ...mgrGrid };
+      const mergedFresha = { ...((att && att.freshaWorked) || {}) };
+      // Overlay each incoming tech's pre-transfer cells from their old branch —
+      // grid, schedule AND the Fresha-worked flags, so a later Fresha check
+      // validates her earlier (old-branch) cells the same as everyone else.
+      if (incoming.length) {
+        const srcMap = {}; (srcData || []).forEach(([br, g, sg, fw]) => { srcMap[br] = { g: g || {}, sg: sg || {}, fw: fw || {} }; });
+        incoming.forEach(s => {
+          const src = srcMap[s.branch]; if (!src) return;
+          const ec = s.ec, ecT = String(ec).trim();
+          const srcRow = src.g[ec] || src.g[ecT] || {};
+          const srcSchRow = src.sg[ec] || src.sg[ecT] || {};
+          const srcFwRow = src.fw[ec] || src.fw[ecT] || {};
+          const gRow = { ...(mergedGrid[ec] || {}) };
+          const sRow = { ...(mergedSched[ec] || {}) };
+          const fRow = { ...(mergedFresha[ec] || {}) };
+          for (let cur = new Date(cycStartE); cur <= cycEndE; cur.setDate(cur.getDate() + 1)) {
+            const ymd = cur.getFullYear() + "-" + pp(cur.getMonth() + 1) + "-" + pp(cur.getDate());
+            if (ymd >= s.transferDate) continue;                 // only pre-transfer days
+            const dom = cur.getDate();
+            if (gRow[dom] == null && srcRow[dom] != null) gRow[dom] = srcRow[dom];
+            if (sRow[dom] == null && srcSchRow[dom] != null) sRow[dom] = srcSchRow[dom];
+            if (fRow[dom] == null && srcFwRow[dom] != null) fRow[dom] = srcFwRow[dom];
+          }
+          mergedGrid[ec] = gRow;
+          mergedSched[ec] = sRow;
+          mergedFresha[ec] = fRow;
+        });
+      }
+      setAttGrid(mergedGrid);
+      setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null, freshaWorked: mergedFresha, reviewedWarnings: att.reviewedWarnings || {}, mirrorSuppressed: !!att.mirrorSuppressed } : { freshaWorked: mergedFresha, reviewedWarnings: {}, mirrorSuppressed: false });
+      setAttSched(mergedSched);
       setAttEarly(early || {});
       setAttExtras(extras || {});
     }).catch(e => console.error("Attendance load:", e))
       .finally(() => setAttLoading(false));
-  }, [tab, attBranch, attYM]);
+  }, [tab, attBranch, attYM, staff]);
 
   // Load attendance from every other branch we have a loan going out to
   // during this cycle, so the home-branch cells can mirror what the
@@ -9545,6 +9960,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     };
     (techLoans || []).forEach(_addTarget);
     (mgrLoanRows || []).forEach(_addTarget);
+    // Incoming mid-cycle transfers: their pre-transfer loan-outs were made from
+    // their OLD branch, so we also need the RECEIVING branches' grids to mirror
+    // those loan-day statuses in this destination view (matches the old branch).
+    const _todayCB = new Date(); const _todayYmdCB = _todayCB.getFullYear() + "-" + pp(_todayCB.getMonth() + 1) + "-" + pp(_todayCB.getDate());
+    const _incoming = (staff || []).filter(s => s && s.ec && s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= _todayYmdCB && s.branch && s.branch !== attBranch);
+    if (_incoming.length) {
+      const incByEc = {}; _incoming.forEach(s => { incByEc[s.ec] = s; });
+      (techLoans || []).forEach(l => {
+        if (!l || !l.ec || !l.date || !l.toBranch || l.toBranch === attBranch) return;
+        if (l.date < cycStartYmd || l.date > cycEndYmd) return;
+        const inc = incByEc[l.ec];
+        if (inc && l.fromBranch === inc.branch && l.date < inc.transferDate) targets.add(l.toBranch);
+      });
+    }
     if (targets.size === 0) { setCrossBranchAttGrids({}); return; }
     let cancelled = false;
     Promise.all([...targets].map(async (br) => {
@@ -9559,7 +9988,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setCrossBranchAttGrids(next);
     });
     return () => { cancelled = true; };
-  }, [tab, attBranch, attYM, techLoans, mgrLoanRows]);
+  }, [tab, attBranch, attYM, techLoans, mgrLoanRows, staff]);
 
   // ── Dashboard: count staff scheduled to work today across all branches ──
   const [dashScheduledToday, setDashScheduledToday] = useState(null); // null = loading
@@ -9805,8 +10234,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadTrialPeriod(),
       window.BOA_DB.loadSmTrial ? window.BOA_DB.loadSmTrial() : Promise.resolve([]),
       window.BOA_DB.loadOvertimeRequests ? window.BOA_DB.loadOvertimeRequests() : Promise.resolve([]),
-      window.BOA_DB.loadFreshaAccess ? window.BOA_DB.loadFreshaAccess() : Promise.resolve({})
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc]) => {
+      window.BOA_DB.loadFreshaAccess ? window.BOA_DB.loadFreshaAccess() : Promise.resolve({}),
+      window.BOA_DB.loadOvertimeAccess ? window.BOA_DB.loadOvertimeAccess() : Promise.resolve({})
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess]) => {
       setStaff(d.staff);
       setManagers(d.managers);
       setMatRecs(d.matRecs);
@@ -9819,6 +10249,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setSmTrialList(Array.isArray(smTrial) ? smTrial : []);
       setOvertimeReqs(Array.isArray(ot) ? ot : []);
       setFreshaAccess(freshaAcc && typeof freshaAcc === "object" ? freshaAcc : {});
+      setOvertimeAccess(otAccess && typeof otAccess === "object" ? otAccess : {});
       setLoading(false);
     }).catch((err) => {
       setLoadError("Could not load data: " + (err.message || err));
@@ -10037,12 +10468,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // Load recent manager clock-ins when the viewer tab opens.
   useEffect(() => {
-    if (tab !== "mgrclockins" && tab !== "mgrCoverage" && tab !== "attendance") return;
+    if (tab !== "mgrclockins" && tab !== "mgrCoverage" && tab !== "attendance" && tab !== "overtime") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     let cancelled = false;
     (async () => {
       try {
-        const rows = await window.BOA_DB.listRecentManagerClockins(mgrClockinDays);
+        // Default look-back is mgrClockinDays. On the Attendance tab the user
+        // can be viewing ANY cycle (25th→24th), so widen the window to always
+        // reach the start of the viewed cycle — otherwise a relative "last N
+        // days" load silently drops the cycle's early days (or the whole cycle
+        // when viewing a past month), which reads as missing clock-ins.
+        let effDays = mgrClockinDays;
+        if ((tab === "attendance" || tab === "overtime") && attYM) {
+          const ap = attYM.split("-").map(Number);
+          const cyStart = new Date(ap[0], ap[1] - 1, 25);
+          const spanDays = Math.ceil((Date.now() - cyStart.getTime()) / 86400000) + 2;
+          if (spanDays > effDays) effDays = spanDays;
+        }
+        const rows = await window.BOA_DB.listRecentManagerClockins(effDays);
         if (cancelled) return;
         setMgrClockinRows(rows || []);
         // Photo/GPS metadata is loaded per selected day (see the effect below)
@@ -10087,7 +10530,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       } catch (e) { console.error("mgr clockins load:", e); }
     })();
     return () => { cancelled = true; };
-  }, [tab, mgrClockinDays]);
+  }, [tab, mgrClockinDays, attYM]);
 
   // Manager Coverage tab: load manager schedules for every branch for
   // the cycle(s) the visible week touches. Reuses mgrClockinSchedCache
@@ -11300,6 +11743,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 items: [
                   { t: "attendance", l: "📕 Attendance" },
                   { t: "payrollProgress", l: "📊 Payroll Progress" },
+                  { t: "payrollReports", l: "📈 Reports" },
                   { t: "overtime", l: "⏱️ Overtime" }
                 ]
               },
@@ -17019,6 +17463,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // are excluded entirely.
         const cycStartYmd = cycStart.getFullYear() + "-" + p2(cycStart.getMonth() + 1) + "-" + p2(cycStart.getDate());
         const cycEndYmd = cycEnd.getFullYear() + "-" + p2(cycEnd.getMonth() + 1) + "-" + p2(cycEnd.getDate());
+        // A transfer only takes effect once its date arrives — a future pending
+        // transfer stays entirely on the OLD branch until then. Gate the
+        // consolidation on today, not the cycle end.
+        const _todayYmdR = (() => { const d = new Date(); return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()); })();
         const stillInCycle = (ec) => {
           const ld = offByEc[ec];
           return !ld || ld >= cycStartYmd;
@@ -17039,13 +17487,47 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const _mgrLoansInCycle = (mgrLoanRows || []).filter(l => l && l.date && l.date >= cycStartYmd && l.date <= cycEndYmd);
         const outgoingLoanMap = {};
         const _mgrLoanedOutSet = new Set();    // "ec|d" pairs — managers loaned OUT this cycle
+        // Incoming mid-cycle transfers (arriving at this branch). Their
+        // pre-transfer loan-outs were made from their OLD branch, so carry them
+        // into this destination view — the loan arrow + the receiving branch's
+        // mirrored status then render exactly as they did at the old branch.
+        const _incomingByEc = {};
+        (enriched || []).forEach(s => {
+          if (s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= _todayYmdR && s.branch && s.branch !== attBranch && stillInCycle(s.ec)) {
+            _incomingByEc[s.ec] = { movedFrom: s.branch, transferDate: s.transferDate };
+          }
+        });
+        // Check-ins are indexed by the staff record's branch. A transferred
+        // tech's record still points at the OLD branch, so ALL their clock-ins
+        // (before AND after the move) live under it — look check-ins up there
+        // for incoming techs so their worked days show and genuine missed days
+        // can be told apart from worked-but-unstamped ones.
+        const _cinBranchFor = (ec) => (_incomingByEc[ec] && _incomingByEc[ec].movedFrom) || attBranch;
+        // Post-transfer fallback for an incoming tech. On/after the transfer
+        // date the day belongs to the NEW branch. If she isn't on the new
+        // branch's saved schedule and the day carries no explicit mark, resolve
+        // it from her clock-in: checked in → worked (On Time), otherwise it's an
+        // off day at the new store (grey OFF) rather than a blank cell.
+        const _incPostFallback = (ec, dayObj) => {
+          const inc = _incomingByEc[ec];
+          if (!inc || !dayObj || dayObj.ymd < inc.transferDate || dayObj.ymd > _todayYmdR) return null;
+          if (attSched[ec] && attSched[ec][dayObj.d]) return null;     // on the new branch's schedule
+          if (attGrid[ec] && attGrid[ec][dayObj.d]) return null;       // explicitly marked
+          const ci = ((checkInsByBranch[_cinBranchFor(ec)] || {})[ec] || {})[dayObj.ymd];
+          return (ci && ci.hasIn) ? "on" : "off";
+        };
         _loansInCycle.concat(_mgrLoansInCycle).forEach(l => {
           if (!l.ec) return;
           const dy = days.find(x => x.ymd === l.date);
           if (!dy) return;
+          let toB = null;
           if (l.fromBranch === attBranch && l.toBranch && l.toBranch !== attBranch) {
-            (outgoingLoanMap[l.ec] = outgoingLoanMap[l.ec] || {})[dy.d] = l.toBranch;
+            toB = l.toBranch;
+          } else {
+            const inc = _incomingByEc[l.ec];
+            if (inc && l.fromBranch === inc.movedFrom && l.toBranch && l.date < inc.transferDate) toB = l.toBranch;
           }
+          if (toB) (outgoingLoanMap[l.ec] = outgoingLoanMap[l.ec] || {})[dy.d] = toB;
         });
         _mgrLoansInCycle.forEach(l => {
           if (!l.ec || !l.fromBranch || l.fromBranch !== attBranch) return;
@@ -17053,9 +17535,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (dy) _mgrLoanedOutSet.add(String(l.ec).trim() + "|" + dy.d);
         });
 
+        // AMs currently on an active Store-Manager trial (per the SM Trials
+        // tab). They work SM shifts, so surface "SM · on trial" on the grid.
+        const _smTrialEcSet = new Set((smTrialList || []).filter(t => t && t.status === "active" && t.ec).map(t => String(t.ec).trim()));
+        // Mid-cycle branch transfers. A transferred tech is shown ONCE, at the
+        // DESTINATION branch, with a full-cycle view (pre-transfer cells were
+        // merged in from the old branch by the loader). So: drop techs leaving
+        // THIS branch this cycle, and add techs arriving HERE this cycle (their
+        // record still carries the old branch + transferring flags).
+        const _movedAwayThisCycle = (s) => s.transferring && s.transferTo && s.transferTo !== attBranch && s.transferDate && s.transferDate <= _todayYmdR;
+        const _arrivingHereThisCycle = (s) => s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= _todayYmdR && s.branch && s.branch !== attBranch;
         const attStaff = [
-          ...enriched.filter(s => s.branch === attBranch && stillInCycle(s.ec)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat })),
-          ...managers.filter(m => m.branch === attBranch && stillInCycle(m.ec)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", onMat: !!m.onMat }))
+          ...enriched.filter(s => s.branch === attBranch && stillInCycle(s.ec) && !_movedAwayThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat })),
+          ...enriched.filter(s => stillInCycle(s.ec) && _arrivingHereThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat, movedFrom: s.branch, movedOn: s.transferDate })),
+          ...managers.filter(m => m.branch === attBranch && stillInCycle(m.ec)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", onMat: !!m.onMat, smTrial: _smTrialEcSet.has(String(m.ec).trim()) }))
         ].sort((a, b) => {
           // Maternity-leave staff go to the very bottom of the grid so the
           // active roster stays at the top. Within each group, sort by
@@ -17099,14 +17592,31 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // and auto-flag those cells as 'absent + needs review' on the grid —
         // same shape as the missing-checkin warning for nail techs.
         const _mgrCheckedInByEcYmd = {};
+        const _mgrCheckedInByIdYmd = {};
         const _mLocalYmd = (ts) => { const d = new Date(ts); return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()); };
         (mgrClockinRows || []).forEach(r => {
           if (!r || !r.staff || r.staff.role_type !== "manager") return;
           if (r.type !== "in") return;
+          const ymdK = _mLocalYmd(r.ts);
+          // Index every clock-in by BOTH employee-code and staff_id. EC keys
+          // are matched against the staff list, which can carry trailing spaces
+          // or formatting differences; staff_id is a stable join key, so the
+          // id index is the reliable match and the EC index is a fallback.
           const ec = String(r.staff.employee_code || "").trim();
-          if (!ec) return;
-          (_mgrCheckedInByEcYmd[ec] = _mgrCheckedInByEcYmd[ec] || {})[_mLocalYmd(r.ts)] = true;
+          if (ec) (_mgrCheckedInByEcYmd[ec] = _mgrCheckedInByEcYmd[ec] || {})[ymdK] = true;
+          const sid = r.staff_id != null ? String(r.staff_id) : (r.staff && r.staff.id != null ? String(r.staff.id) : null);
+          if (sid) (_mgrCheckedInByIdYmd[sid] = _mgrCheckedInByIdYmd[sid] || {})[ymdK] = true;
         });
+        // A manager is "checked in" for (ec, ymd) if either index matches.
+        // staff_id (resolved via _mgrEcToStaffId, the same map the schedule
+        // uses) is the primary key so a spaced/odd EC can't make a manager
+        // silently miss their own clock-in; trimmed EC is the fallback.
+        const _mgrCheckedIn = (ec, ymd) => {
+          const t = String(ec || "").trim();
+          if ((_mgrCheckedInByEcYmd[t] || {})[ymd]) return true;
+          const sid = _mgrEcToStaffId[ec] != null ? String(_mgrEcToStaffId[ec]) : null;
+          return !!(sid && (_mgrCheckedInByIdYmd[sid] || {})[ymd]);
+        };
         const _todayYmdAtt = (() => { const d = new Date(); return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()); })();
         const _mgrCheckinFromYmd = (() => {
           const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - (mgrClockinDays || 31));
@@ -17124,7 +17634,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if ((_onLeaveByEcYmd[String(ec).trim()] || {})[ymd]) return false; // on approved leave
           if ((_mgrStatusByEcYmd[ec] || {})[ymd]) return false;     // ROM already explained it
           if ((attGrid[ec] || {})[d]) return false;                 // admin already set the cell
-          if ((_mgrCheckedInByEcYmd[ec] || {})[ymd]) return false;  // they did clock in
+          if (_mgrCheckedIn(ec, ymd)) return false;                 // they did clock in
           const sv = (attSched[ec] || {})[d];
           return sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL" || sv === "E";
         };
@@ -17216,7 +17726,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // we render the home cell as 'On Time' so the payroll row
             // shows a worked day instead of staying blank.
             const _do = days.find(x => x.d === d);
-            if (_do && _mgrEcToStaffId[ec] && _mgrCheckedInByEcYmd[ec] && _mgrCheckedInByEcYmd[ec][_do.ymd]) {
+            if (_do && _mgrEcToStaffId[ec] && _mgrCheckedIn(ec, _do.ymd)) {
               return "on";
             }
             return "loan_out";
@@ -17254,7 +17764,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               if (_isExtraDay(ec, d)) return "ext";
               // Path 1: kiosk audit log marked the day as Extra.
               const _dayObjExt = days.find(x => x.d === d);
-              const _ka = _dayObjExt ? ((kioskAbsentByBranch[attBranch] || {})[ec] || {})[_dayObjExt.ymd] : null;
+              const _ka = _dayObjExt ? ((kioskAbsentByBranch[_cinBranchFor(ec)] || {})[ec] || {})[_dayObjExt.ymd] : null;
               if (_ka && _ka.status === "ext") return "ext";
               // Path 2: the SCHEDULE code itself is "E" (extra cover) for
               // this day. When the manager taps On Time / Late later, the
@@ -17282,6 +17792,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (sv === "X") return "term";
           if (sv === "E") return "ext";
           if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL") return "on";
+          // A manager clock-in on a day they were NOT scheduled to work is
+          // deliberately NOT auto-resolved to 'On Time' here — random extra
+          // days must be reviewed first. The cell render flags those days for
+          // review (see mgrClockedInUnscheduled) so the regional can confirm
+          // them as an Extra Day or correct the record.
+          // Transferred-in tech, post-transfer day with nothing resolved above.
+          const _incPost = _incPostFallback(ec, dayObj);
+          if (_incPost) return _incPost;
           return "";
         };
         const hasOverride = (ec, d) => {
@@ -17289,6 +17807,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // displays in bold red rather than faded/italic.
           const dayObj = days.find(x => x.d === d);
           if (dayObj && isPostLeftDate(ec, dayObj.ymd)) return true;
+          // Post-transfer derived On Time / OFF for an incoming tech renders
+          // solid so the cell clearly reads worked / off, not a faint blank.
+          if (_incPostFallback(ec, dayObj)) return true;
           // Loaned-out days are derived from the loan record (and possibly
           // mirrored from the receiving branch) - render as a solid override
           // so the cell isn't italicised like a schedule hint.
@@ -17302,6 +17823,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const _hoOff = _hoSched === "O" || _hoSched === "R";
           if (!_hoOff && dayObj && (_mgrStatusByEcYmd[ec] || {})[dayObj.ymd]) return true;
           if (dayObj && _isMgrAutoAbsent(ec, dayObj.ymd, d)) return true;
+          // A manager kiosk clock-in on a day they were SCHEDULED to work is
+          // confirmed presence — render it solid (bold On Time), not a faded
+          // schedule hint, so the clock-in is actually visible on the sheet.
+          // Clock-ins on non-working days are surfaced as a review flag in the
+          // cell (mgrClockedInUnscheduled), not auto-confirmed here.
+          const _hoSchedWork = _hoSched === "W" || _hoSched === "WE" || _hoSched === "WL" || _hoSched === "WM" || _hoSched === "WB" || _hoSched === "E";
+          if (dayObj && _mgrEcToStaffId[ec] && _hoSchedWork && _mgrCheckedIn(ec, dayObj.ymd)) return true;
           if (dayObj && (_onLeaveByEcYmd[String(ec).trim()] || {})[dayObj.ymd] && !(attGrid[ec] && attGrid[ec][d])) return true;
           const v = attGrid[ec] && attGrid[ec][d];
           return !!v && v.indexOf("~") !== 0;
@@ -17317,7 +17845,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             if (_do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd]) return "al";
           }
           const sv = attSched[ec] && attSched[ec][d];
-          if (!sv) return null;
+          if (!sv) {
+            // Incoming tech, post-transfer, not on the new branch's schedule:
+            // colour the strip from the clock-in fallback (green worked / grey off).
+            const _f = _incPostFallback(ec, days.find(x => x.d === d));
+            return _f || null;
+          }
           if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL") return "on";
           if (sv === "O" || sv === "R") return "off";
           if (sv === "L") return "al";
@@ -18169,8 +18702,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const hint = schedHint(ec, dy.d);
             const scheduleSaysWork = hint === "on" || hint === "ext";
             const freshaWorkedCell = !!((((attMeta || {}).freshaWorked || {})[ec] || {})[dy.d]);
-            const checkin = ((checkInsByBranch[attBranch] || {})[ec] || {})[dy.ymd] || null;
-            const kioskAbs = ((kioskAbsentByBranch[attBranch] || {})[ec] || {})[dy.ymd] || null;
+            const checkin = ((checkInsByBranch[_cinBranchFor(ec)] || {})[ec] || {})[dy.ymd] || null;
+            const kioskAbs = ((kioskAbsentByBranch[_cinBranchFor(ec)] || {})[ec] || {})[dy.ymd] || null;
             const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
             const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
             const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i" || bareV === "late";
@@ -18285,8 +18818,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // have their own clock-in source (handled via the mgr-overlay
               // upstream). Skip the lookups for them so we never mix tech
               // kiosk hits into a manager warning.
-              const kioskAbs = s.role === "NT" ? (((kioskAbsentByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null) : null;
-              const checkin = s.role === "NT" ? (((checkInsByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null) : null;
+              const kioskAbs = s.role === "NT" ? (((kioskAbsentByBranch[_cinBranchFor(s.ec)] || {})[s.ec] || {})[dy.ymd] || null) : null;
+              const checkin = s.role === "NT" ? (((checkInsByBranch[_cinBranchFor(s.ec)] || {})[s.ec] || {})[dy.ymd] || null) : null;
               const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
               const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
               const freshaWorkedCell = !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
@@ -18394,9 +18927,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Every admin edit auto-records a review so the cell gets the ✓
           // mark — both warning-cell decisions AND ordinary manual entries
           // ("Sick NO note", "Annual", etc.) read as "admin reviewed this".
+          // Remove any kiosk 'left early' short-hours for this cell. The
+          // orange -Xh overlay lives in the boa_early sidecar, NOT the grid,
+          // so setting a status alone never clears it — clear it explicitly
+          // whenever the admin overrides the cell (e.g. correcting a trial AM
+          // who actually worked their full scheduled shift).
+          const clearEarlyLeaveForCell = async (ec, d) => {
+            const cur = attEarly || {};
+            if (!(cur[d] && cur[d][ec])) return;
+            const next = { ...cur, [d]: { ...cur[d] } };
+            delete next[d][ec];
+            if (Object.keys(next[d]).length === 0) delete next[d];
+            setAttEarly(next);
+            try { if (window.BOA_DB.saveEarlyLeaves) await window.BOA_DB.saveEarlyLeaves(attBranch, attYM, next); }
+            catch (e) { console.error("clear early-leave:", e); }
+          };
           const setCellAndReview = async (ec, d, finalValue) => {
             await setCell(ec, d, finalValue);
             await autoRecordReview(ec, d, finalValue);
+            await clearEarlyLeaveForCell(ec, d);
           };
           if (val === "deduct") {
             const hStr = prompt("How many hours unpaid? (e.g. 1.5 for 1h30)\n\nEnter a number between 0.5 and 9.", "1");
@@ -18547,8 +19096,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const dataRow = (
                       <tr key={s.ec} style={isMgr ? { background: "#fffaf0" } : undefined}>
                         <td style={{ position: "sticky", left: 0, background: isMgr ? "#fffaf0" : "#FFFFFF", padding: "6px 10px", borderBottom: "1px solid #FCE7F3", borderRight: "2px solid #FBCFE8", zIndex: 2, minWidth: 170 }}>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: "#831843" }}>{isMgr ? (s.role === "SM" ? "👑 " : s.role === "SSM" ? "💎 " : "⭐ ") : ""}{s.name}</div>
-                          <div style={{ fontSize: 9, color: "#9ca3af" }}>{s.ec} · {s.role}</div>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: "#831843", display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                            <span>{isMgr ? (s.role === "SM" ? "👑 " : s.role === "SSM" ? "💎 " : "⭐ ") : ""}{s.name}</span>
+                            {s.smTrial && <span title="On a Store-Manager trial (SM Trials tab) — works SM shifts" style={{ background: "#FFEDD5", color: "#9A3412", border: "1px solid #FED7AA", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>⭐ SM TRIAL</span>}
+                            {s.movedFrom && <span title={"Transferred from " + s.movedFrom + (s.movedOn ? " on " + new Date(s.movedOn + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : "") + " — earlier cells in this cycle are from " + s.movedFrom} style={{ background: "#dbeafe", color: "#1e40af", border: "1px solid #93c5fd", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>🔄 FROM {s.movedFrom}{s.movedOn ? " · " + new Date(s.movedOn + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
+                          </div>
+                          <div style={{ fontSize: 9, color: "#9ca3af" }}>{s.ec} · {s.smTrial ? "SM · on trial" : s.role}</div>
                         </td>
                         {days.map(dy => {
                           const v = getStatus(s.ec, dy.d);
@@ -18577,7 +19130,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // entries are advance planning, not actual check-ins, so ignore
                           // them here.
                           const checkin = (s.role === "NT" && isPastOrToday && !mirrorSuppressed)
-                            ? ((checkInsByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null
+                            ? ((checkInsByBranch[_cinBranchFor(s.ec)] || {})[s.ec] || {})[dy.ymd] || null
                             : null;
                           // Discrepancy logic:
                           //  - Tech checked in but attendance marks them OFF / Annual /
@@ -18598,7 +19151,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // so they don't trigger "checked in" / mismatch signals on days
                           // that haven't happened yet.
                           const kioskAbs = (s.role === "NT" && isPastOrToday && !mirrorSuppressed)
-                            ? ((kioskAbsentByBranch[attBranch] || {})[s.ec] || {})[dy.ymd] || null
+                            ? ((kioskAbsentByBranch[_cinBranchFor(s.ec)] || {})[s.ec] || {})[dy.ymd] || null
                             : null;
                           // swap_o explicitly means "took today off, owes a day back" — the
                           // tech was NOT present, even if a PIN-clockin record happened to
@@ -18673,8 +19226,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // confirmed off, no warning. Mirrors the tech
                           // 'allMatchOff' but without the Fresha gate since
                           // managers don't have appointment data.
-                          const mgrSchedOff = s.role !== "NT" && _mgrEcToStaffId[s.ec] && scheduleSaysOff && !isWorking && !isLate && !((_mgrCheckedInByEcYmd[s.ec] || {})[dy.ymd]) && isPastOrToday && dy.ymd >= _mgrCheckinFromYmd;
-                          const allMatchOff = (s.role === "NT" && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn && freshaCoversThisDay && !freshaWorkedCell)
+                          const mgrSchedOff = s.role !== "NT" && _mgrEcToStaffId[s.ec] && scheduleSaysOff && !isWorking && !isLate && !_mgrCheckedIn(s.ec, dy.ymd) && isPastOrToday && dy.ymd >= _mgrCheckinFromYmd;
+                          // Scheduled off, nobody clocked in, and no Fresha
+                          // appointment → a confirmed OFF day. Shown for any
+                          // past/today day rather than only once a Fresha import
+                          // has covered it, so today's off cells fill in straight
+                          // away (previously they stayed blank until Fresha ran).
+                          // A later Fresha import that shows an appointment flips
+                          // the day off OFF via freshaWorkedCell. Works the same
+                          // for transferred-in techs (their merged old/new cells
+                          // carry no Fresha here either).
+                          const allMatchOff = (s.role === "NT" && scheduleSaysOff && !isWorking && !isLate && !checkinHasIn && !freshaWorkedCell && isPastOrToday)
                             || mgrSchedOff;
                           // Cross-source rules across Schedule × Kiosk × Fresha:
                           //  • allAgreeAbsent — scheduled to work, kiosk marked the tech absent
@@ -18746,7 +19308,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const trustedAbsenceCell = (bareV === "sick" || bareV === "no") && scheduleSaysWork && kioskMarkedAbsent && !freshaWorkedCell;
                           const absentNeedsReview = ((bareV === "sick" || bareV === "no") && !trustedAbsenceCell) || bareV === "absent";
                           const proofPendingCell = (bareV === "sick_n" || bareV === "frl");
-                          const warning = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || missingCheckin || absentNeedsReview || workedOnOffDay || unaccountedScheduledDay || offButFreshaWorked;
+                          // Manager clocked in on a day they were NOT scheduled to
+                          // work (off / leave / no schedule code) and the regional
+                          // hasn't resolved the cell yet → flag for review instead
+                          // of silently treating it as a worked day. Random extra
+                          // days must be confirmed (as Extra Day) or corrected.
+                          const mgrClockedInUnscheduled = s.role !== "NT" && _mgrEcToStaffId[s.ec] && _mgrCheckedIn(s.ec, dy.ymd) && hint !== "on" && hint !== "ext" && isPastOrToday && !override;
+                          const warning = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || missingCheckin || absentNeedsReview || workedOnOffDay || unaccountedScheduledDay || offButFreshaWorked || mgrClockedInUnscheduled;
                           const reviewRec = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
                           const reviewed = !!reviewRec && reviewRec.valueAtReview === (v || "");
                           // Plain English description of the single primary mismatch
@@ -18754,7 +19322,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // at the bottom of the tooltip shows this so the user can
                           // see "where is the mismatch" without scanning four lines.
                           const mismatchReason = (
-                            apptVsKioskAbsentWarn ? "Kiosk marked the tech absent but Fresha has a completed appointment that day."
+                            mgrClockedInUnscheduled ? "Manager clocked in but was NOT scheduled to work this day — review and mark as Extra Day, or correct the record. Extra days aren't auto-approved."
+                              : apptVsKioskAbsentWarn ? "Kiosk marked the tech absent but Fresha has a completed appointment that day."
                               : extDayNoApptWarn ? "Extra Day recorded but Fresha shows no appointments — did they actually do any service?"
                                 : absentNeedsReview ? ("Absent day — admin must confirm " + ((STAT[bareV] || {}).lbl || bareV) + " for payroll.")
                                   : missingCheckin ? "Fresha shows appointments and tech was scheduled to work, but no kiosk check-in was recorded."
@@ -18780,7 +19349,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const mgrStatus = s.role !== "NT" ? ((_mgrStatusByEcYmd[s.ec] || {})[dy.ymd] || null) : null;
                           const mgrNote = s.role !== "NT" ? ((_mgrNoteByEcYmd[s.ec] || {})[dy.ymd] || null) : null;
                           const mgrRecorder = s.role !== "NT" ? ((_mgrRecorderByEcYmd[s.ec] || {})[dy.ymd] || null) : null;
-                          const mgrCheckedIn = s.role !== "NT" && ((_mgrCheckedInByEcYmd[s.ec] || {})[dy.ymd]);
+                          const mgrCheckedIn = s.role !== "NT" && _mgrCheckedIn(s.ec, dy.ymd);
                           const _mgrStatusStale = mgrStatus && (hint === "off");
                           if (s.role !== "NT") {
                             if (mgrStatus && !_mgrStatusStale) {
@@ -19107,6 +19676,285 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         );
       })()}
 
+      {/* ── PAYROLL REPORTS TAB ── */}
+      {tab === "payrollReports" && (currentUser.hideCategories || []).includes("Payroll") && (
+        <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 14, padding: "30px 26px", textAlign: "center", color: "#831843" }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>🔒</div>
+          <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 14, fontWeight: 700 }}>Payroll is not available for your account.</div>
+        </div>
+      )}
+      {tab === "payrollReports" && !((currentUser.hideCategories || []).includes("Payroll")) && (() => {
+        const rd = reportsData;
+        const ready = rd && !rd.loading && rd.range === reportRange && !rd.error;
+        const rangeLabel = (k) => k === "week" ? "Last 7 days" : k === "mtd" ? "Month to date" : "Pay cycle (25th → 24th)";
+        const fmtD = (ymd) => { try { return new Date(ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }); } catch (_) { return ymd; } };
+        const chip = (lbl, n, bg, fg) => n > 0 ? <span key={lbl} style={{ background: bg, color: fg, padding: "1px 7px", borderRadius: 6, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" }}>{lbl} {n}</span> : null;
+        const breakdownChips = (r) => [
+          chip("Sick(no note)", r.sickNoNote, "#fee2e2", "#7f1d1d"),
+          chip("Sick+note", r.sickNote, "#dcfce7", "#166534"),
+          chip("No-show", r.noShow, "#e9d5ff", "#581c87"),
+          chip("Absent", r.absent, "#fca5a5", "#7f1d1d"),
+          chip("FRL", r.frl, "#fed7aa", "#7c2d12"),
+          chip("Unpaid", r.unpaid, "#ede9fe", "#5b21b6"),
+          chip("Late", r.late, "#e5e7eb", "#374151"),
+          chip("Extra", r.extra, "#bbf7d0", "#166534")
+        ].filter(Boolean);
+        const flagChip = (f) => <span key={f} style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d", padding: "1px 7px", borderRadius: 6, fontSize: 10, fontWeight: 800, whiteSpace: "nowrap" }}>⚠ {f}</span>;
+        const personRow = (r, i, accent) => (
+          <div key={r.ec + i} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "9px 12px", borderBottom: "1px solid #FDEEF5" }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: accent, minWidth: 22, textAlign: "right" }}>{i + 1}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{r.name}</span>
+                <span style={{ fontSize: 10, color: "#9d4d6e" }}>{r.branch}{r.role && r.role !== "NT" ? " · " + r.role : ""}</span>
+              </div>
+              <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 5 }}>
+                {breakdownChips(r)}
+                {r.flags.map(flagChip)}
+              </div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 18, fontWeight: 800, color: accent, lineHeight: 1 }}>{r.missed}</div>
+              <div style={{ fontSize: 9, color: "#9d4d6e", marginTop: 2 }}>missed</div>
+            </div>
+          </div>
+        );
+        const totalCard = (lbl, n, bg, fg) => (
+          <div style={{ background: bg, borderRadius: 10, padding: "10px 14px", minWidth: 92, flex: "1 1 92px" }}>
+            <div style={{ fontSize: 22, fontWeight: 800, color: fg, lineHeight: 1 }}>{n}</div>
+            <div style={{ fontSize: 10, fontWeight: 700, color: fg, opacity: 0.85, marginTop: 3 }}>{lbl}</div>
+          </div>
+        );
+        return (
+          <div style={{ padding: "0 24px" }}>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700, marginBottom: 4 }}>📈 Attendance Reports</div>
+              <div style={{ fontSize: 12, color: "#9d4d6e" }}>Who misses the most work, who attends best, and recurring patterns (Monday / weekend / month-end clusters) that flag possible sick-leave abuse. Annual leave &amp; maternity are never counted as missed days.</div>
+            </div>
+
+            {/* View toggle: snapshot vs multi-cycle trend */}
+            <div style={{ display: "flex", gap: 6, marginBottom: 14, borderBottom: "1px solid #FBCFE8", paddingBottom: 12 }}>
+              {[{ k: "snapshot", l: "📋 Snapshot" }, { k: "trend", l: "📉 Trend vs previous months" }].map(v => (
+                <button key={v.k} onClick={() => setReportsView(v.k)}
+                  style={{ background: reportsView === v.k ? "#FCE7F3" : "transparent", color: "#831843", border: "1px solid " + (reportsView === v.k ? "#F472B6" : "transparent"), borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                  {v.l}
+                </button>
+              ))}
+            </div>
+
+            {reportsView === "snapshot" && (<div>
+            {/* Range selector + load */}
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
+              {["cycle", "week", "mtd"].map(k => (
+                <button key={k} onClick={() => { setReportRange(k); loadAttendanceReports(k); }}
+                  style={{ background: reportRange === k ? "#831843" : "#fff", color: reportRange === k ? "#fff" : "#831843", border: "1px solid #F9A8D4", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                  {rangeLabel(k)}
+                </button>
+              ))}
+              <button onClick={() => loadAttendanceReports(reportRange)} style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700, marginLeft: 4 }}>
+                {rd && rd.loading ? "Loading…" : (ready ? "↻ Refresh" : "Load now")}
+              </button>
+              {ready && <span style={{ fontSize: 11, color: "#9d4d6e" }}>{fmtD(rd.startYmd)} → {fmtD(rd.endYmd)} · {rd.techCount + rd.mgrCount} active staff</span>}
+            </div>
+
+            {!rd && <div style={{ padding: "16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, fontSize: 13, color: "#831843" }}>Pick a range and click <strong>Load now</strong> to pull every branch.</div>}
+            {rd && rd.loading && <div style={{ padding: "16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, fontSize: 13, color: "#831843" }}>Crunching attendance across {SALONS.length} branches…</div>}
+            {rd && rd.error && <div style={{ padding: "16px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 10, fontSize: 13, color: "#7f1d1d" }}>Couldn’t load: {rd.error}</div>}
+
+            {ready && (() => {
+              const t = rd.totals;
+              const sp = rd.split || { techMissed: 0, mgrMissed: 0, techExtra: 0, mgrExtra: 0 };
+              // Headline split card: one metric, nail-tech vs manager vs total.
+              const splitCard = (title, icon, ntN, mgrN, accent, bg) => (
+                <div style={{ flex: "1 1 240px", background: bg, border: "1px solid " + accent + "33", borderRadius: 12, padding: "14px 16px" }}>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: accent, letterSpacing: "0.05em", marginBottom: 10 }}>{icon} {title}</div>
+                  <div style={{ display: "flex", alignItems: "flex-end", gap: 18 }}>
+                    <div><div style={{ fontSize: 26, fontWeight: 800, color: accent, lineHeight: 1 }}>{ntN}</div><div style={{ fontSize: 10, fontWeight: 700, color: accent, opacity: 0.8, marginTop: 3 }}>💅 Nail techs</div></div>
+                    <div><div style={{ fontSize: 26, fontWeight: 800, color: accent, lineHeight: 1 }}>{mgrN}</div><div style={{ fontSize: 10, fontWeight: 700, color: accent, opacity: 0.8, marginTop: 3 }}>👑 Managers</div></div>
+                    <div style={{ marginLeft: "auto", textAlign: "right" }}><div style={{ fontSize: 26, fontWeight: 800, color: accent, lineHeight: 1 }}>{ntN + mgrN}</div><div style={{ fontSize: 10, fontWeight: 700, color: accent, opacity: 0.8, marginTop: 3 }}>Total</div></div>
+                  </div>
+                </div>
+              );
+              return (
+                <div>
+                  {/* Headline totals — missed vs extra days, split by role */}
+                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+                    {splitCard("MISSED DAYS", "🚫", sp.techMissed, sp.mgrMissed, "#9d174d", "#FDF2F8")}
+                    {splitCard("EXTRA DAYS WORKED", "➕", sp.techExtra, sp.mgrExtra, "#166534", "#f0fdf4")}
+                  </div>
+
+                  {/* Manager attendance-bonus forfeit for this range */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 12, padding: "14px 18px", marginBottom: 16 }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: "#166534" }}>👑 Managers forfeiting the R1,000 attendance bonus{rd.range === "cycle" ? " this cycle" : " in this range"}</div>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginLeft: "auto" }}>
+                      <span style={{ fontSize: 28, fontWeight: 800, color: "#166534", lineHeight: 1 }}>{sp.mgrWithMissed}</span>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "#15803d" }}>of {rd.mgrCount} manager{rd.mgrCount === 1 ? "" : "s"}</span>
+                    </div>
+                    <div style={{ background: "#166534", color: "#fff", borderRadius: 9, padding: "8px 16px", fontSize: 16, fontWeight: 800 }}>R{(sp.mgrWithMissed * 1000).toLocaleString("en-ZA")} saved</div>
+                  </div>
+
+                  {/* Breakdown of missed-day categories (all staff) */}
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+                    {totalCard("No-shows", t.noShow, "#f5f3ff", "#581c87")}
+                    {totalCard("Sick · no note", t.sickNoNote, "#fef2f2", "#7f1d1d")}
+                    {totalCard("Sick · +note", t.sickNote, "#f0fdf4", "#166534")}
+                    {totalCard("Absent", t.absent, "#fef2f2", "#7f1d1d")}
+                    {totalCard("FRL", t.frl, "#fff7ed", "#7c2d12")}
+                    {totalCard("Unpaid", t.unpaid, "#f5f3ff", "#5b21b6")}
+                    {totalCard("Extra days", t.extra, "#f0fdf4", "#166534")}
+                    {totalCard("Late", t.late, "#f9fafb", "#374151")}
+                  </div>
+
+                  {/* Pattern insights */}
+                  <div style={{ background: rd.flagged.length ? "#fffbeb" : "#f0fdf4", border: "1px solid " + (rd.flagged.length ? "#fcd34d" : "#bbf7d0"), borderRadius: 11, padding: "12px 16px", marginBottom: 16 }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: rd.flagged.length ? "#92400e" : "#166534", marginBottom: rd.flagged.length ? 8 : 0 }}>
+                      {rd.flagged.length ? "⚠ " + rd.flagged.length + " staff with attendance patterns to review" : "✓ No recurring absence patterns detected in this range"}
+                    </div>
+                    {rd.flagged.length > 0 && (
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 8 }}>
+                        {rd.flagged.slice(0, 12).map((r, i) => (
+                          <div key={r.ec + i} style={{ background: "#fff", border: "1px solid #fcd34d", borderRadius: 8, padding: "8px 10px" }}>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: "#831843" }}>{r.name} <span style={{ fontSize: 10, fontWeight: 500, color: "#9d4d6e" }}>· {r.branch}{r.role && r.role !== "NT" ? " · " + r.role : ""}</span></div>
+                            <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 5 }}>{r.flags.map(flagChip)}</div>
+                            <div style={{ fontSize: 10, color: "#9d4d6e", marginTop: 5 }}>{r.concerning} concerning day{r.concerning === 1 ? "" : "s"} (sick-no-note + no-show + absent) of {r.missed} missed</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Top absentees: managers + techs */}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, marginBottom: 16 }}>
+                    <div style={{ background: "#fff", border: "1px solid #F9A8D4", borderRadius: 11, overflow: "hidden" }}>
+                      <div style={{ background: "#F5F3FF", padding: "10px 14px", fontSize: 12, fontWeight: 800, color: "#5b21b6", letterSpacing: "0.04em" }}>👑 MANAGERS · MOST MISSED DAYS</div>
+                      {rd.topMgrs.length === 0 ? <div style={{ padding: "14px", fontSize: 12, color: "#9d4d6e", fontStyle: "italic" }}>No manager absences in this range.</div> : rd.topMgrs.map((r, i) => personRow(r, i, "#7c3aed"))}
+                    </div>
+                    <div style={{ background: "#fff", border: "1px solid #F9A8D4", borderRadius: 11, overflow: "hidden" }}>
+                      <div style={{ background: "#FDEEF5", padding: "10px 14px", fontSize: 12, fontWeight: 800, color: "#831843", letterSpacing: "0.04em" }}>💅 NAIL TECHS · MOST MISSED DAYS</div>
+                      {rd.topTechs.length === 0 ? <div style={{ padding: "14px", fontSize: 12, color: "#9d4d6e", fontStyle: "italic" }}>No nail-tech absences in this range.</div> : rd.topTechs.map((r, i) => personRow(r, i, "#BE185D"))}
+                    </div>
+                  </div>
+
+                  {/* Best attendance */}
+                  <div style={{ background: "#fff", border: "1px solid #bbf7d0", borderRadius: 11, overflow: "hidden" }}>
+                    <div style={{ background: "#f0fdf4", padding: "10px 14px", fontSize: 12, fontWeight: 800, color: "#166534", letterSpacing: "0.04em" }}>🏆 ATTENDING BEST (most days worked, fewest missed)</div>
+                    {rd.bestAttenders.length === 0 ? <div style={{ padding: "14px", fontSize: 12, color: "#9d4d6e", fontStyle: "italic" }}>Not enough recorded days yet to rank.</div> : (
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 0 }}>
+                        {rd.bestAttenders.map((r, i) => (
+                          <div key={r.ec + i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: "1px solid #f0fdf4" }}>
+                            <div style={{ fontSize: 13, fontWeight: 800, color: "#16a34a", minWidth: 20 }}>{i + 1}</div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 12, fontWeight: 700, color: "#831843" }}>{r.name}</div>
+                              <div style={{ fontSize: 10, color: "#9d4d6e" }}>{r.branch}{r.role && r.role !== "NT" ? " · " + r.role : ""} · {r.worked} worked{r.missed > 0 ? " · " + r.missed + " missed" : ""}</div>
+                            </div>
+                            <div style={{ fontSize: 13, fontWeight: 800, color: "#16a34a" }}>{Math.round(r.attendanceRate * 100)}%</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ marginTop: 14, fontSize: 11, color: "#9d4d6e", lineHeight: 1.5 }}>
+                    Missed days exclude annual leave and maternity. Manager absences are read from the regional-recorded reasons; nail-tech absences from the attendance grid. Patterns flag when ≥3 concerning days cluster on a weekday/weekend/month-end (≥40–50% share). “Concerning” = sick-without-note + no-show + absent.
+                  </div>
+                </div>
+              );
+            })()}
+            </div>)}
+
+            {reportsView === "trend" && (<div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
+                <button onClick={loadAttendanceTrend} style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                  {trendData && trendData.loading ? "Loading…" : (trendData && !trendData.loading ? "↻ Refresh" : "Load now")}
+                </button>
+                <span style={{ fontSize: 11, color: "#9d4d6e" }}>Last 6 pay cycles · missed days per person (annual leave &amp; maternity excluded)</span>
+              </div>
+              {!trendData && <div style={{ padding: "16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, fontSize: 13, color: "#831843" }}>Click <strong>Load now</strong> to compare the last 6 pay cycles across every branch.</div>}
+              {trendData && trendData.loading && <div style={{ padding: "16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, fontSize: 13, color: "#831843" }}>Crunching 6 cycles across {SALONS.length} branches…</div>}
+              {trendData && trendData.error && <div style={{ padding: "16px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 10, fontSize: 13, color: "#7f1d1d" }}>Couldn’t load: {trendData.error}</div>}
+              {trendData && !trendData.loading && !trendData.error && (() => {
+                const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+                const cyLabel = (ym) => { const m = Number(ym.split("-")[1]); return months[m - 1]; };
+                const cyTitle = (ym) => { const [y, m] = ym.split("-").map(Number); const em = m === 12 ? 1 : m + 1; const ey = m === 12 ? y + 1 : y; return "25 " + months[m - 1] + " → 24 " + months[em - 1] + " " + ey; };
+                const maxOrg = Math.max(1, ...trendData.orgMissed);
+                const cellColor = (n) => n === 0 ? { bg: "#f0fdf4", fg: "#9ca3af" } : n <= 2 ? { bg: "#fef9c3", fg: "#854d0e" } : n <= 4 ? { bg: "#fed7aa", fg: "#7c2d12" } : { bg: "#fecaca", fg: "#7f1d1d" };
+                const ti = (t) => t === "up" ? { c: "#dc2626", s: "▲" } : t === "down" ? { c: "#16a34a", s: "▼" } : { c: "#9ca3af", s: "▬" };
+                const N = trendData.cycleYms.length;
+                return (
+                  <div>
+                    <div style={{ background: "#fff", border: "1px solid #F9A8D4", borderRadius: 11, padding: "14px 16px", marginBottom: 16 }}>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: "#831843", marginBottom: 12, letterSpacing: "0.04em" }}>TOTAL MISSED DAYS PER CYCLE · ALL STAFF</div>
+                      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", height: 130 }}>
+                        {trendData.cycleYms.map((ym, i) => (
+                          <div key={ym} title={cyTitle(ym)} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, justifyContent: "flex-end", height: "100%" }}>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: "#831843" }}>{trendData.orgMissed[i]}</div>
+                            <div style={{ width: "100%", maxWidth: 48, height: Math.max(4, Math.round(86 * trendData.orgMissed[i] / maxOrg)), background: i === N - 1 ? "#BE185D" : "#F9A8D4", borderRadius: "6px 6px 0 0" }} />
+                            <div style={{ fontSize: 10, color: "#9d4d6e", fontWeight: 700 }}>{cyLabel(ym)}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    {/* Manager attendance-bonus forfeit per cycle (R1,000 each) */}
+                    <div style={{ background: "#fff", border: "1px solid #bbf7d0", borderRadius: 11, padding: "14px 16px", marginBottom: 16 }}>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: "#166534", marginBottom: 4, letterSpacing: "0.04em" }}>👑 MANAGERS LOSING THE R1,000 ATTENDANCE BONUS · PER CYCLE</div>
+                      <div style={{ fontSize: 11, color: "#9d4d6e", marginBottom: 12 }}>Any manager with ≥1 missed day in a cycle forfeits the R1,000 attendance bonus that cycle.</div>
+                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                        {trendData.cycleYms.map((ym, i) => {
+                          const c = (trendData.mgrIneligible || [])[i] || 0;
+                          return (
+                            <div key={ym} title={cyTitle(ym)} style={{ flex: "1 1 110px", background: i === N - 1 ? "#dcfce7" : "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 9, padding: "10px 12px", textAlign: "center" }}>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: "#166534", marginBottom: 4 }}>{cyLabel(ym)}</div>
+                              <div style={{ fontSize: 22, fontWeight: 800, color: "#166534", lineHeight: 1 }}>{c}</div>
+                              <div style={{ fontSize: 9, color: "#15803d", marginTop: 2 }}>manager{c === 1 ? "" : "s"}</div>
+                              <div style={{ fontSize: 12, fontWeight: 800, color: "#166534", marginTop: 6 }}>R{(c * 1000).toLocaleString("en-ZA")}</div>
+                              <div style={{ fontSize: 8, color: "#15803d" }}>saved</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div style={{ background: "#fff", border: "1px solid #F9A8D4", borderRadius: 11, overflow: "hidden" }}>
+                      <div style={{ background: "#FDEEF5", padding: "10px 14px", fontSize: 12, fontWeight: 800, color: "#831843", letterSpacing: "0.04em" }}>MISSED DAYS PER PERSON · LAST {N} CYCLES (newest on the right)</div>
+                      {trendData.rows.length === 0 ? <div style={{ padding: "14px", fontSize: 12, color: "#9d4d6e", fontStyle: "italic" }}>No absences across these cycles.</div> : (
+                        <div style={{ overflowX: "auto" }}>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                            <thead>
+                              <tr style={{ background: "#FDEEF5", color: "#831843" }}>
+                                <th style={{ padding: "8px 12px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #F9A8D4", position: "sticky", left: 0, background: "#FDEEF5" }}>Staff</th>
+                                {trendData.cycleYms.map(ym => <th key={ym} title={cyTitle(ym)} style={{ padding: "8px 10px", textAlign: "center", fontWeight: 700, borderBottom: "1px solid #F9A8D4", minWidth: 44 }}>{cyLabel(ym)}</th>)}
+                                <th style={{ padding: "8px 12px", textAlign: "center", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Trend</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {trendData.rows.slice(0, 50).map((r, ri) => {
+                                const tt = ti(r.trend);
+                                return (
+                                  <tr key={r.ec + ri}>
+                                    <td style={{ padding: "7px 12px", borderBottom: "1px solid #FDEEF5", position: "sticky", left: 0, background: "#fff" }}>
+                                      <div style={{ fontSize: 12, fontWeight: 700, color: "#831843" }}>{r.name}</div>
+                                      <div style={{ fontSize: 10, color: "#9d4d6e" }}>{r.branch}{r.role && r.role !== "NT" ? " · " + r.role : ""}</div>
+                                    </td>
+                                    {r.missed.map((n, ci) => { const c = cellColor(n); return <td key={ci} style={{ padding: "5px 6px", borderBottom: "1px solid #FDEEF5", textAlign: "center" }}><span style={{ display: "inline-block", minWidth: 22, padding: "2px 6px", borderRadius: 6, background: c.bg, color: c.fg, fontWeight: 700, fontSize: 11 }}>{n}</span></td>; })}
+                                    <td style={{ padding: "5px 12px", borderBottom: "1px solid #FDEEF5", textAlign: "center", color: tt.c, fontWeight: 800, fontSize: 14 }} title={r.trend === "up" ? "More absences than prior-cycle average" : r.trend === "down" ? "Fewer absences than prior-cycle average" : "About the same"}>{tt.s}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ marginTop: 14, fontSize: 11, color: "#9d4d6e", lineHeight: 1.5 }}>
+                      Each column is one pay cycle (25th→24th); hover a column for its dates. ▲ = the latest cycle is worse than this person’s prior-cycle average, ▼ = better, ▬ = about the same. Cell colour: green 0, yellow 1–2, orange 3–4, red 5+. Annual leave &amp; maternity are excluded; the current cycle counts only days up to today.
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>)}
+          </div>
+        );
+      })()}
+
       {/* ── OVERTIME TAB ── */}
       {/* Manager overtime tracker.
           - Managers (or admin on their behalf) submit OT entries with date,
@@ -19120,20 +19968,47 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           - Early clock-ins are intentionally NOT counted as OT. */}
       {tab === "overtime" && (() => {
         const ym = attYM;
+        // Only owners + people granted in Settings → Overtime access may record
+        // overtime. Everyone else gets the tab read-only (view, no submit).
+        const canRecordOvertime = (() => {
+          if (!currentUser) return false;
+          if (currentUser.isOwner) return true;
+          const role = (currentUser.role || "").toLowerCase();
+          const roleMatch = (overtimeCfg.roles || []).some(k =>
+            k === "national" ? (role.includes("national ops") || role.includes("national operations") || role.includes("national"))
+              : k === "regional" ? (role.includes("regional") || /\brom\b/.test(role) || role.includes("regional ops"))
+                : false
+          );
+          if (roleMatch) return true;
+          return (overtimeCfg.pins || []).includes(currentUser.pin);
+        })();
         const ymPretty = (() => {
           try {
             const [yy, mm] = ym.split("-").map(Number);
-            const startD = new Date(yy, mm - 2, 25);
-            const endD   = new Date(yy, mm - 1, 24);
+            // attYM is the START-month of the 25th→24th cycle (e.g. "2026-05"
+            // = 25 May → 24 Jun), matching the attendance sheet — NOT end-month.
+            const startD = new Date(yy, mm - 1, 25);
+            const endD   = new Date(yy, mm, 24);
             const f = d => d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short" });
             return f(startD) + " → " + f(endD) + " " + endD.getFullYear();
           } catch (_) { return ym; }
         })();
 
-        const cycleOf = (date) => date ? payrollYmFor(date) : "";
+        // Cycle (start-month ym) a date falls in — must match attYM's
+        // convention or submitted overtime is filtered out of the view it was
+        // entered in (looks like it "didn't save"). A date on/before the 24th
+        // belongs to the previous month's cycle.
+        const cycleOf = (date) => {
+          if (!date) return "";
+          const [y, m, d] = date.split("-").map(Number);
+          let yy = y, mm = m;
+          if (d <= 24) { mm -= 1; if (mm < 1) { mm = 12; yy--; } }
+          return yy + "-" + String(mm).padStart(2, "0");
+        };
         const inCycle = (r) => cycleOf(r.date) === ym;
         const f = otForm;
         const submitOvertime = async () => {
+          if (!canRecordOvertime) { alert("You don't have permission to record overtime. An owner can grant it under Settings → Overtime."); return; }
           const ec = (f.ec || "").trim();
           const m = managers.find(x => x.ec === ec);
           if (!m) { alert("Pick a manager from the list."); return; }
@@ -19144,6 +20019,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (hours > 12) { alert("Hours can't exceed 12 — double-check."); return; }
           const reason = (f.reason || "").trim();
           if (!reason) { alert("Add a short reason so the approver knows the context."); return; }
+          // No clock-out that day → no overtime. A real clock-out (not an
+          // auto-out) is the only proof the manager actually worked past their
+          // shift, so overtime can't be granted without one.
+          const _otLocalYmd = (ts) => { const d = new Date(ts); const z = n => String(n).padStart(2, "0"); return d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate()); };
+          const _mSid = String(m._id || m.id || "");
+          const clockedOut = (mgrClockinRows || []).some(r =>
+            r && r.type === "out" && r.ts && _otLocalYmd(r.ts) === date &&
+            (((r.staff && r.staff.employee_code && String(r.staff.employee_code).trim() === ec)) ||
+              (r.staff_id != null && String(r.staff_id) === _mSid))
+          );
+          if (!clockedOut) {
+            alert(m.name + " has no clock-out recorded on " + date + ".\n\nOvertime can only be added for a day the manager actually clocked out — the clock-out confirms they worked past their shift. (Forgotten / auto clock-outs don't count.)");
+            return;
+          }
           const newReq = {
             id: "ot_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
             ec: m.ec,
@@ -19166,6 +20055,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           catch (e) { alert("Save failed: " + (e.message || e)); setOvertimeReqs(overtimeReqs); }
         };
         const decide = async (id, status) => {
+          if (!canRecordOvertime) { alert("You don't have permission to manage overtime."); return; }
           let note = null;
           if (status === "rejected") {
             note = window.prompt("Reason for rejecting (shown to the manager):", "");
@@ -19183,6 +20073,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           catch (e) { alert("Save failed: " + (e.message || e)); setOvertimeReqs(overtimeReqs); }
         };
         const deleteReq = async (id) => {
+          if (!canRecordOvertime) { alert("You don't have permission to manage overtime."); return; }
           if (!confirm("Delete this overtime entry? This can't be undone.")) return;
           const next = overtimeReqs.filter(r => r.id !== id);
           setOvertimeReqs(next);
@@ -19265,7 +20156,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 {r.decidedAt && <> · {r.status === "approved" ? "Approved" : "Rejected"} {new Date(r.decidedAt).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })} by {r.decidedBy}</>}
               </div>
               {r.decisionNote && <div style={{ fontSize: 11, color: "#7f1d1d", marginTop: 4, fontStyle: "italic" }}>Rejection note: {r.decisionNote}</div>}
-              <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+              {canRecordOvertime && <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
                 {r.status === "pending" && (
                   <>
                     <button onClick={() => decide(r.id, "approved")} style={{ background: "#14532d", color: "#fff", border: "none", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>✓ Approve</button>
@@ -19276,7 +20167,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <button onClick={() => decide(r.id, "pending")} style={{ background: "transparent", color: "#831843", border: "1px solid #F9A8D4", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>↺ Reopen</button>
                 )}
                 <button onClick={() => deleteReq(r.id)} style={{ background: "transparent", color: "#9ca3af", border: "1px solid #e5e7eb", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontSize: 11 }}>Delete</button>
-              </div>
+              </div>}
             </div>
           );
         };
@@ -19297,9 +20188,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
             </div>
 
-            {/* Submit form */}
+            {/* Submit form — only for users granted overtime-recording rights */}
+            {!canRecordOvertime && (
+              <div style={{ padding: "12px 16px", background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 10, marginBottom: 14, fontSize: 12, color: "#0f766e" }}>
+                🔒 You can view overtime here, but recording it is restricted. Ask an owner to grant you access under <strong>Settings → Overtime — who can record it</strong>.
+              </div>
+            )}
+            {canRecordOvertime && (
             <div style={{ padding: "14px 16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, marginBottom: 14 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 10 }}>Submit overtime for a manager</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 10 }}>Record overtime for a manager</div>
               <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 2fr auto", gap: 8, alignItems: "end" }}>
                 <div>
                   <div style={{ fontSize: 10, color: "#9d4d6e", marginBottom: 3, fontWeight: 700, letterSpacing: "0.04em" }}>MANAGER</div>
@@ -19322,9 +20219,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <div style={{ fontSize: 10, color: "#9d4d6e", marginBottom: 3, fontWeight: 700, letterSpacing: "0.04em" }}>REASON</div>
                   <input type="text" value={f.reason} onChange={e => setOtForm({ ...f, reason: e.target.value })} placeholder="Why was extra time needed?" style={{ width: "100%", padding: "6px 8px", border: "1px solid #F9A8D4", borderRadius: 6, fontSize: 12 }} />
                 </div>
-                <button onClick={submitOvertime} style={{ background: "#831843", color: "#fff", border: "none", borderRadius: 6, padding: "7px 14px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>+ Submit</button>
+                <button onClick={submitOvertime} style={{ background: "#831843", color: "#fff", border: "none", borderRadius: 6, padding: "7px 14px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>+ Record</button>
               </div>
             </div>
+            )}
 
             {/* Cycle summary */}
             <div style={{ padding: "14px 16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, marginBottom: 14 }}>
@@ -24817,6 +25715,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           currentUser={currentUser}
           freshaCfg={freshaCfg}
           onFreshaCfgSave={saveFreshaCfg}
+          overtimeCfg={overtimeCfg}
+          onOvertimeCfgSave={saveOvertimeCfg}
         /></div>
       )}
 
@@ -25058,8 +25958,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Stage custom shift hours for this day. Only meaningful for a
           // working code; a value equal to the standard hours (or blank)
           // clears any existing override.
-          const cs = E._draftStart != null ? E._draftStart : (E._custStart || "");
-          const ce = E._draftEnd != null ? E._draftEnd : (E._custEnd || "");
+          // Use the SAME effective values the time inputs display (which
+          // pre-fill with the standard hours). Previously the staging dropped
+          // the _defStart/_defEnd fallback, so changing only the END (leaving
+          // the pre-filled standard START untouched) produced a blank range
+          // and silently saved nothing — "the change wouldn't stick".
+          const cs = E._draftStart != null ? E._draftStart : (E._custStart || E._defStart || "");
+          const ce = E._draftEnd != null ? E._draftEnd : (E._custEnd || E._defEnd || "");
           const stdRange = (E._defStart && E._defEnd) ? (E._defStart + " - " + E._defEnd) : "";
           const newRange = (cs && ce) ? (cs + " - " + ce) : "";
           let stageTime = null; // null = leave override untouched

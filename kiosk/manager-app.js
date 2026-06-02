@@ -1035,7 +1035,7 @@
         // last is "in" and not closed — figure out the right end time.
         var mgr = mgrByEc && mgrByEc[String(ec).trim()];
         var schedCode = schedLookup ? schedLookup(ec, k) : null;
-        var schedEnd = (mgr && schedCode) ? _scheduledEndDate(k, mgr.role, schedCode, mgr.branch || (last.staff && last.staff.branch)) : null;
+        var schedEnd = (mgr && schedCode) ? _scheduledEndDate(k, mgr._effRole || mgr.role, schedCode, mgr.branch || (last.staff && last.staff.branch)) : null;
         var endIso, fireCutoff;
         if (schedEnd) {
           // Auto-out only past (scheduled end + grace). Record at scheduled end.
@@ -1187,7 +1187,15 @@
     });
 
     var mgrByEc = {};
-    mgrs.forEach(function (m) { if (m.employee_code) mgrByEc[String(m.employee_code).trim()] = m; });
+    mgrs.forEach(function (m) {
+      if (!m.employee_code) return;
+      var _ecK = String(m.employee_code).trim();
+      // AMs on an active SM trial work SM shifts (08:00–17:00 close), not the
+      // later AM close. Resolve their scheduled shift end — and therefore any
+      // early-clock-out short hours and auto-out time — as an SM, not an AM.
+      m._effRole = (m.role === "AM" && smTrialEcs && smTrialEcs[_ecK]) ? "SM" : m.role;
+      mgrByEc[_ecK] = m;
+    });
     var _schedLookup = function (ec, ymd) {
       var row = schedByEcYmd[String(ec).trim()];
       return row ? row[ymd] : null;
@@ -1311,7 +1319,6 @@
         '<div class="staff-row-actions">' +
         '<button class="btn btn-primary" data-act="clockin"  ' + (has && !inDone ? "" : 'disabled') + (inDone ? ' title="Already clocked in today"' : '') + '>Clock In</button>' +
         '<button class="btn btn-out"     data-act="clockout" ' + (has ? "" : 'disabled') + '>Clock Out</button>' +
-        '<button class="link-btn"       data-act="overtime" ' + (has ? "" : 'disabled') + ' title="Submit overtime for ROM approval">⏱️ OT</button>' +
         '</div>' +
         '</div>';
     }
@@ -1468,7 +1475,7 @@
           var graceMin = (cfg.earlyClockOutGraceMinutes != null ? cfg.earlyClockOutGraceMinutes : 20);
           var schedCodeToday = mgrTodaySched[ec];
           var _mForOut = mgrByEc[String(ec).trim()];
-          var schedEndToday = (_mForOut && schedCodeToday) ? _scheduledEndDate(todayK, _mForOut.role, schedCodeToday, _mForOut.branch || thisBranch) : null;
+          var schedEndToday = (_mForOut && schedCodeToday) ? _scheduledEndDate(todayK, _mForOut._effRole || _mForOut.role, schedCodeToday, _mForOut.branch || thisBranch) : null;
           var promptForReason = false;
           var hoursShort = 0;
           if (schedEndToday) {
@@ -1561,32 +1568,8 @@
       };
       if (inBtn) inBtn.onclick = function () { doClock("in"); };
       if (outBtn) outBtn.onclick = function () { doClock("out"); };
-      var otBtn = row.querySelector('[data-act="overtime"]');
-      if (otBtn) otBtn.onclick = async function () {
-        // PIN-gate the submission so a colleague can't tap OT for someone
-        // else and get them paid extra.
-        var entered = prompt("Enter " + name + "'s 6-digit personal PIN to submit overtime:");
-        if (entered == null) return;
-        entered = (entered || "").trim();
-        if (!/^\d{6}$/.test(entered)) { alert("PIN must be exactly 6 digits."); return; }
-        if (entered !== pins[ec]) { alert("Wrong PIN."); return; }
-        var result = await openMgrOvertimeModal({ name: name });
-        if (!result) return;
-        try {
-          await window.APP_DATA.submitOvertimeRequest({
-            ec: ec,
-            name: name,
-            branch: thisBranch,
-            date: result.date,
-            hours: result.hours,
-            reason: result.reason,
-            submittedBy: name
-          });
-          alert("✓ Overtime submitted for ROM approval.\n\n" + result.hours + "h on " + result.date + " — you'll see it as Approved on the HR portal once a ROM signs off.");
-        } catch (e) {
-          alert("Could not submit overtime: " + (e.message || e));
-        }
-      };
+      // Overtime is recorded from the HR portal only — managers no longer
+      // submit OT requests from the kiosk (too many spurious requests).
     });
   }
 
