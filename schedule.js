@@ -26,7 +26,8 @@
   var LS_KEY = "myboa_sched_v1";
 
   var state = {
-    ec: "", store: "", name: "", role: "", isManager: false,
+    ec: "", store: "", name: "", role: "", effRole: "", isManager: false,
+    custom: {},              // ymd -> "HH:MM - HH:MM" custom hours for this person
     view: "soon",            // soon | week | month
     monthYm: null,
     cache: {},               // ym -> grid object (for state.store + isManager)
@@ -129,18 +130,29 @@
     return "09:00 - 18:30";
   }
 
-  // Interpret a cell code into a display status.
-  function codeInfo(code, role, branch, dow) {
+  function ymdStr(dt) { return dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate()); }
+  var WORK_CODES = { W: 1, WE: 1, WL: 1, WM: 1, WB: 1, E: 1 };
+
+  // Status for one date — matches Manager Coverage exactly: per-day custom hours
+  // (boa_mgr_times_v1) win, else shiftTimes using the EFFECTIVE role (an AM on an
+  // active SM trial is treated as an SM). A blank cell counts as a working day
+  // for techs (their generator defaults blanks to W) but as OFF for managers
+  // (coverage treats only explicit work codes as working).
+  function cellStatus(row, dt) {
+    var code = getCell(row, dt);
     var c = (code == null ? "" : String(code)).toUpperCase();
     if (c === "O") return { kind: "off", label: "Off", sub: "" };
     if (c === "R") return { kind: "off", label: "Off", sub: "Requested day off" };
     if (c === "L") return { kind: "leave", label: "On leave", sub: "" };
     if (c === "ML") return { kind: "leave", label: "Maternity leave", sub: "" };
     if (c === "X" || c === "P") return { kind: "work", label: "Pre-start", sub: "" };
-    // Everything else (blank, W, WE, WL, WM, WB, E) is a working day.
-    var times = shiftTimes(role, c || "W", branch, dow);
+    var working = WORK_CODES[c] || (c === "" && !state.isManager);
+    if (!working) return { kind: "off", label: "Off", sub: "" };
+    var custom = state.custom && state.custom[ymdStr(dt)];
+    var times = custom || shiftTimes(state.effRole || state.role, c || "W", state.store, dt.getDay());
     var variant = c === "WE" ? "Early" : c === "WL" ? "Late" : c === "WM" ? "Mid" : c === "E" ? "Extra cover" : "";
-    return { kind: "work", label: "Work", sub: times + (variant ? " · " + variant : "") };
+    var sub = times + (variant ? " · " + variant : "") + (custom ? " · custom hours" : "");
+    return { kind: "work", label: "Work", sub: sub };
   }
 
   // ── Data ─────────────────────────────────────────────────────
@@ -179,7 +191,7 @@
     var grid = await loadCycle(ymForDate(dt));
     var row = rowFor(grid);
     if (!row) return { published: false };
-    return { published: true, info: codeInfo(getCell(row, dt), state.role, state.store, dt.getDay()) };
+    return { published: true, info: cellStatus(row, dt) };
   }
 
   // ── Screens ──────────────────────────────────────────────────
@@ -256,18 +268,38 @@
       state.isManager = found.isManager;
       state.name = "";
       state.role = "";
+      state.effRole = "";
+      state.custom = {};
       state.cache = {};
       state.monthYm = found.ym || ymEnd;
       state.view = "soon";
 
-      // Best-effort: get a friendly name + role (for shift times). Never fatal.
+      // Best-effort: name + role (for shift times), active SM-trial flag, and any
+      // per-day custom hours — exactly what Manager Coverage uses. Never fatal.
       try {
-        var res = await sb.from("staff").select("name,first_name,role,role_type").ilike("employee_code", found.ecKey).limit(1);
-        var row = res && res.data && res.data[0];
+        var ecUp = found.ecKey.toUpperCase().trim();
+        var rr = await Promise.all([
+          sb.from("staff").select("name,first_name,role,role_type").ilike("employee_code", found.ecKey).limit(1),
+          sb.from("app_state").select("value").eq("key", "boa_sm_trial_v1").maybeSingle(),
+          sb.from("app_state").select("value").eq("key", "boa_mgr_times_v1").maybeSingle()
+        ]);
+        var row = rr[0] && rr[0].data && rr[0].data[0];
         if (row) {
           state.name = row.first_name || (row.name || "").split(" ")[0] || "";
           state.role = row.role || "";
           if (row.role_type === "manager") state.isManager = true;
+        }
+        // SM trial: an active trial makes an AM count as an SM for hours.
+        var trials = rr[1] && rr[1].data && rr[1].data.value;
+        var onSmTrial = Array.isArray(trials) && trials.some(function (t) {
+          return t && t.status === "active" && t.ec && String(t.ec).toUpperCase().trim() === ecUp;
+        });
+        state.effRole = (state.role === "AM" && onSmTrial) ? "SM" : state.role;
+        // Per-day custom hours map[ec][ymd].
+        var times = rr[2] && rr[2].data && rr[2].data.value;
+        if (times && typeof times === "object") {
+          if (times[found.ecKey]) state.custom = times[found.ecKey];
+          else { for (var tk in times) { if (String(tk).toUpperCase().trim() === ecUp) { state.custom = times[tk]; break; } } }
         }
       } catch (_e) {}
 
@@ -354,7 +386,7 @@
     var rows = days2.map(function (x) {
       var st = { published: false };
       var grid = state.cache[ym], row = rowFor(grid);
-      if (row) st = { published: true, info: codeInfo(getCell(row, x.date), state.role, state.store, x.dow) };
+      if (row) st = { published: true, info: cellStatus(row, x.date) };
       return dayCard(x.date, st, false);
     }).join("");
     el.innerHTML =
