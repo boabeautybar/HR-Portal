@@ -174,6 +174,8 @@
       setInterval(window.BOA_FLOWS.refreshNewsBadge, 60 * 1000);
       // Keep the "submit your check-in" warning live while the landing is open.
       setInterval(window.BOA_FLOWS.refreshCheckinNag, 60 * 1000);
+      // Keep the "previous day's cash-up still owed" reminder live too.
+      if (window.BOA_FLOWS.refreshCashupNag) setInterval(window.BOA_FLOWS.refreshCashupNag, 60 * 1000);
     }
 
     // ── Store-open gate ─────────────────────────────────────────
@@ -545,6 +547,8 @@
       // Big blinking warning when today's nail-tech check-in hasn't been
       // submitted yet (and it's past 10:30) — populated async below.
       '<div id="checkin-nag-slot"></div>' +
+      // Previous-day cash-up reminder — populated async by refreshCashupNag.
+      '<div id="cashup-nag-slot"></div>' +
       // Reminders panel — populated async right after this innerHTML write.
       // Hidden by default; only flips visible when there's at least one
       // reminder firing today for this branch.
@@ -584,7 +588,7 @@
     );
     loadKioskRemindersIntoPanel();
     loadMgrClockinNagIntoPanel();
-    if (window.BOA_FLOWS) window.BOA_FLOWS.refreshCheckinNag();
+    if (window.BOA_FLOWS) { window.BOA_FLOWS.refreshCheckinNag(); window.BOA_FLOWS.refreshCashupNag(); }
     document.getElementById("tile-nailtech").onclick = function () {
       if (window.BOA_FLOWS) window.BOA_FLOWS.renderCheckin();
     };
@@ -1592,6 +1596,23 @@
               });
             }
           } catch (e) { console.warn("early-leave report save failed:", e); }
+
+          // Non-blocking cash-up reminder on clock-out. We can't force it
+          // (early shifts clock out before close), so just nudge: if today's
+          // cash-up isn't in yet, remind them on the way out. They tap OK and
+          // carry on — clock-out has already been recorded above.
+          try {
+            if (window.APP_DATA.todaysCashup) {
+              var cuToday = await window.APP_DATA.todaysCashup();
+              var owed = window.APP_DATA.outstandingCashupDates ? await window.APP_DATA.outstandingCashupDates(7) : [];
+              if (!cuToday || (owed && owed.length)) {
+                var msg = "✅ Clocked out.\n\n";
+                if (!cuToday) msg += "Reminder: today's CASH-UP hasn't been submitted yet. Please make sure it's done before the store closes.\n";
+                if (owed && owed.length) msg += "\nAlso still owed: " + owed.length + " previous day" + (owed.length === 1 ? "" : "s") + " — see the reminder on the home screen.\n";
+                alert(msg);
+              }
+            }
+          } catch (e) { console.warn("cash-up clock-out reminder failed (non-fatal):", e); }
         }
         renderMgrClockin();
       };

@@ -114,6 +114,7 @@
         '<div class="hero-title">What would you like to do?</div>' +
       '</div>' +
       '<div id="checkin-nag-slot"></div>' +
+      '<div id="cashup-nag-slot"></div>' +
       '<div class="tile-grid tile-grid-4">' +
         '<button class="tile tile-big" id="tile-checkin" type="button">' +
           '<div class="tile-icon">✍️</div>' +
@@ -140,8 +141,9 @@
     document.getElementById("tile-checkin").onclick  = renderCheckin;
     document.getElementById("tile-schedule").onclick = renderSchedule;
     document.getElementById("tile-offreq").onclick   = renderOffRequests;
-    document.getElementById("tile-cashup").onclick   = renderCashup;
+    document.getElementById("tile-cashup").onclick   = function () { renderCashup(); };
     refreshCheckinNag();
+    refreshCashupNag();
   }
 
   // ---------------- News (read-only viewer) ----------------
@@ -2374,14 +2376,29 @@
   }
 
   // ---------------- Cash-up ----------------
-  async function renderCashup() {
+  async function renderCashup(targetDate) {
     setSublabel("Cash Up");
+    // targetDate (YYYY-MM-DD) lets a store complete a PREVIOUS day's cash-up
+    // they missed — reached from the home-screen reminder. Defaults to today.
+    var today   = window.APP_DATA && window.APP_DATA.todayStr ? window.APP_DATA.todayStr() : null;
+    var forDate = (typeof targetDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(targetDate)) ? targetDate : today;
+    var isBackfill = !!forDate && !!today && forDate !== today;
+    var prettyDate = forDate ? new Date(forDate + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "long", day: "2-digit", month: "long" }) : "";
     setMain(
       '<div class="panel">' +
         '<div class="panel-head">' +
-          '<h2>Cash Up</h2>' +
+          '<h2>Cash Up' + (isBackfill ? ' · ' + esc(prettyDate) : '') + '</h2>' +
           '<button class="link-btn link-btn-dark" id="back-home">← Back</button>' +
         '</div>' +
+        (isBackfill
+          ? '<div class="checkin-nag" role="alert" style="margin-bottom:12px">' +
+              '<div class="checkin-nag-icon">📅</div>' +
+              '<div class="checkin-nag-text">' +
+                '<div class="checkin-nag-title">MISSED CASH-UP — ' + esc(prettyDate.toUpperCase()) + '</div>' +
+                '<div class="checkin-nag-sub">You\'re completing the cash-up for a <strong>previous day</strong> that wasn\'t submitted. Enter that day\'s totals (not today\'s). Today\'s cash-up is still done separately.</div>' +
+              '</div>' +
+            '</div>'
+          : '') +
         '<div id="cashup-body">Loading…</div>' +
       '</div>'
     );
@@ -2392,12 +2409,12 @@
       return;
     }
 
-    var existing = await window.APP_DATA.todaysCashup();
+    var existing = await window.APP_DATA.cashupForDate(forDate);
     if (existing) {
       document.getElementById("cashup-body").innerHTML =
         '<div class="result-card result-ok">' +
           '<div class="result-icon">✓</div>' +
-          '<div class="result-title">Today\'s cash-up already submitted</div>' +
+          '<div class="result-title">' + (isBackfill ? esc(prettyDate) + '\'s' : 'Today\'s') + ' cash-up already submitted</div>' +
           '<div class="result-sub">Signed by ' + esc(existing.signed_by) + ' at ' + fmtTime(existing.created_at) + '</div>' +
         '</div>' +
         '<div class="cashup-summary">' +
@@ -2558,6 +2575,7 @@
       var cashBanked    = cashBankedYes ? true : (cashBankedNo ? false : null);
       try {
         await window.APP_DATA.addCashup({
+          date:       forDate,
           yoco:       val("yoco"),
           yoco_link:  val("yoco_link"),
           cash:       val("cash"),
@@ -2576,7 +2594,7 @@
           yoco_photo:    yocoPhotoDataUrl
         });
         resEl.innerHTML = '<div class="result-card result-ok"><div class="result-icon">✓</div><div class="result-title">Cash-up saved. Thank you!</div></div>';
-        setTimeout(renderCashup, 800);
+        setTimeout(function () { renderCashup(forDate); }, 800);
       } catch (err) {
         resEl.innerHTML = '<div class="result-card result-err">Could not save: ' + esc(err.message || err) + '</div>';
         btn.disabled = false;
@@ -2899,6 +2917,40 @@
     el.innerHTML = nag ? checkinNagHtml() : "";
   }
 
+  // Home-screen reminder for PREVIOUS days the store missed its cash-up.
+  // Each day gets a "Complete now" button that opens the cash-up form for
+  // that exact date. Today is never listed (still in progress). Non-blocking.
+  async function refreshCashupNag() {
+    var el = document.getElementById("cashup-nag-slot");
+    if (!el) return;
+    if (!window.APP_DATA || !window.APP_DATA.outstandingCashupDates) { el.innerHTML = ""; return; }
+    var dates;
+    try { dates = await window.APP_DATA.outstandingCashupDates(7); }
+    catch (e) { console.warn("cashup nag check failed (non-fatal):", e); el.innerHTML = ""; return; }
+    if (!dates || !dates.length) { el.innerHTML = ""; return; }
+    var rows = dates.map(function (d) {
+      var pretty = new Date(d + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" });
+      return '<div class="cashup-nag-row" style="display:flex;align-items:center;gap:10px;justify-content:space-between;padding:7px 0;border-top:1px solid rgba(255,255,255,0.25)">' +
+               '<span style="font-weight:700">' + esc(pretty) + '</span>' +
+               '<button class="btn btn-primary cashup-nag-do" data-date="' + d + '" style="padding:6px 14px">Complete now →</button>' +
+             '</div>';
+    }).join("");
+    el.innerHTML =
+      '<div class="checkin-nag" role="alert" style="flex-direction:column;align-items:stretch">' +
+        '<div style="display:flex;align-items:center;gap:12px">' +
+          '<div class="checkin-nag-icon">💵</div>' +
+          '<div class="checkin-nag-text">' +
+            '<div class="checkin-nag-title">CASH-UP STILL OWED — ' + dates.length + ' DAY' + (dates.length === 1 ? '' : 'S') + '</div>' +
+            '<div class="checkin-nag-sub">A previous day\'s cash-up wasn\'t submitted. Tap <strong>Complete now</strong> to enter that day\'s totals — today\'s cash-up is still done separately.</div>' +
+          '</div>' +
+        '</div>' +
+        '<div style="margin-top:8px">' + rows + '</div>' +
+      '</div>';
+    Array.prototype.forEach.call(el.querySelectorAll(".cashup-nag-do"), function (btn) {
+      btn.onclick = function () { renderCashup(btn.dataset.date); };
+    });
+  }
+
   // ---------- Shared flows (used by manager-app.js too) ----------
   // Manager dashboard reuses these so we don't duplicate ~600 lines of UI.
   // Call configure() once to redirect output to a different element and
@@ -2915,6 +2967,7 @@
     renderSchedule:     function () { return renderSchedule.apply(null, arguments); },
     renderNews:         function () { return renderNews.apply(null, arguments); },
     refreshNewsBadge:   function () { return refreshNewsBadge.apply(null, arguments); },
-    refreshCheckinNag:  function () { return refreshCheckinNag.apply(null, arguments); }
+    refreshCheckinNag:  function () { return refreshCheckinNag.apply(null, arguments); },
+    refreshCashupNag:   function () { return refreshCashupNag.apply(null, arguments); }
   };
 })();
