@@ -208,6 +208,19 @@
     document.getElementById("ec").onkeydown = function (e) { if (e.key === "Enter") lookup(); };
   }
 
+  // Raw grid fetch independent of state (used while we work out who they are).
+  async function fetchGrid(store, isManager, ymEnd) {
+    var key = (isManager ? "boa_mgrsched_" : "boa_sched_") + store + "_" + (isManager ? shiftYm(ymEnd, -1) : ymEnd);
+    var res = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
+    return (res && res.data && res.data.value && res.data.value.grid) || null;
+  }
+  function findEcKey(grid, ec) {
+    if (!grid) return null;
+    var up = ec.toUpperCase().trim();
+    for (var k in grid) { if (String(k).toUpperCase().trim() === up) return k; }
+    return null;
+  }
+
   async function lookup() {
     var store = document.getElementById("store").value;
     var ec = (document.getElementById("ec").value || "").trim();
@@ -217,23 +230,49 @@
 
     setBusy(true);
     try {
-      var res = await sb.from("staff")
-        .select("employee_code,name,first_name,role,role_type,active")
-        .ilike("employee_code", ec).limit(1);
-      var row = res && res.data && res.data[0];
-      if (!row) { setBusy(false); setErr("We couldn't find that employee code. Please check and try again."); return; }
+      // Schedule-first: find the code in the published rosters (the grid is the
+      // source of truth, keyed by employee code). This works even if the staff
+      // table can't be read. We search current → next → previous cycle, tech
+      // then manager, and stop at the first match.
+      var ymEnd = currentSchedYm();
+      var cycles = [ymEnd, shiftYm(ymEnd, 1), shiftYm(ymEnd, -1)];
+      var found = null;
+      for (var i = 0; i < cycles.length && !found; i++) {
+        var techGrid = await fetchGrid(store, false, cycles[i]);
+        var tk = findEcKey(techGrid, ec);
+        if (tk) { found = { isManager: false, ecKey: tk, ym: cycles[i] }; break; }
+        var mgrGrid = await fetchGrid(store, true, cycles[i]);
+        var mk = findEcKey(mgrGrid, ec);
+        if (mk) { found = { isManager: true, ecKey: mk, ym: cycles[i] }; break; }
+      }
+      if (!found) {
+        setBusy(false);
+        setErr("We couldn't find a schedule for " + esc(ec) + " at " + esc(store) + ". Check your code and store — your manager may not have published it yet.");
+        return;
+      }
 
-      state.ec = row.employee_code;
       state.store = store;
-      state.name = row.first_name || (row.name || "").split(" ")[0] || "";
-      state.role = row.role || "";
-      state.isManager = row.role_type === "manager";
+      state.ec = found.ecKey;
+      state.isManager = found.isManager;
+      state.name = "";
+      state.role = "";
       state.cache = {};
-      state.monthYm = currentSchedYm();
+      state.monthYm = found.ym || ymEnd;
       state.view = "soon";
-      try { localStorage.setItem(LS_KEY, JSON.stringify({ store: store, ec: row.employee_code })); } catch (_e) {}
 
-      // Warm the cycles needed for the Today/Tomorrow/Week view.
+      // Best-effort: get a friendly name + role (for shift times). Never fatal.
+      try {
+        var res = await sb.from("staff").select("name,first_name,role,role_type").ilike("employee_code", found.ecKey).limit(1);
+        var row = res && res.data && res.data[0];
+        if (row) {
+          state.name = row.first_name || (row.name || "").split(" ")[0] || "";
+          state.role = row.role || "";
+          if (row.role_type === "manager") state.isManager = true;
+        }
+      } catch (_e) {}
+
+      try { localStorage.setItem(LS_KEY, JSON.stringify({ store: store, ec: found.ecKey })); } catch (_e) {}
+
       var today = new Date(), tom = new Date(); tom.setDate(tom.getDate() + 1);
       await Promise.all([loadCycle(ymForDate(today)), loadCycle(ymForDate(tom)), loadCycle(state.monthYm)]);
       setBusy(false);
