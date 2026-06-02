@@ -1564,42 +1564,13 @@
             console.warn("store-open check failed; allowing clock-in:", e);
           }
         }
-        // 1b. Early-clock-out picker. Resolve THIS manager's scheduled
-        // shift end for today (role + code + branch + dow). If they're
-        // clocking out more than `earlyClockOutGraceMinutes` (default 20)
-        // before that end time → prompt for a reason. The short hours
-        // saved to the early-leave sidecar = scheduledEnd − now.
-        // Fallback when we can't resolve the schedule (no published cell,
-        // unknown role, etc.) is the legacy fixed-hour cutoff so we
-        // never let a too-early clock-out slip through silently.
-        var earlyOpts = null;
-        if (type === "out") {
-          var nowD = new Date();
-          var graceMin = (cfg.earlyClockOutGraceMinutes != null ? cfg.earlyClockOutGraceMinutes : 20);
-          var schedCodeToday = mgrTodaySched[ec];
-          var _mForOut = mgrByEc[String(ec).trim()];
-          var schedEndToday = (_mForOut && schedCodeToday) ? _scheduledEndDate(todayK, _mForOut._effRole || _mForOut.role, schedCodeToday, _mForOut.branch || thisBranch) : null;
-          var promptForReason = false;
-          var hoursShort = 0;
-          if (schedEndToday) {
-            var minsToEnd = Math.round((schedEndToday.getTime() - nowD.getTime()) / 60000);
-            if (minsToEnd > graceMin) {
-              promptForReason = true;
-              hoursShort = Math.min(12, Math.max(0.5, Math.round((minsToEnd / 60) * 2) / 2));
-            }
-          } else {
-            var earlyCutH = (cfg.earlyClockOutCutoffHour != null ? cfg.earlyClockOutCutoffHour : 17);
-            if (nowD.getHours() < earlyCutH) {
-              promptForReason = true;
-              var minsShort = (earlyCutH * 60) - (nowD.getHours() * 60 + nowD.getMinutes());
-              hoursShort = Math.min(12, Math.max(0.5, Math.round((minsShort / 60) * 2) / 2));
-            }
-          }
-          if (promptForReason) {
-            earlyOpts = await openMgrEarlyClockoutModal({ name: name, defaultHours: hoursShort });
-            if (!earlyOpts) return;          // user cancelled
-          }
-        }
+        // 1b. (Removed) Early-clock-out self-prompt. We no longer ask a manager
+        // "how many hours early" on clock-out — that guessed a scheduled end and
+        // could record a deduction even when they left on time. Instead the HR
+        // portal's attendance sheet DERIVES the deduction automatically from the
+        // actual clock-out time recorded below vs the manager's scheduled end
+        // for that day (custom hours aware). The colleague "did anyone leave
+        // early?" witness prompt still runs after a successful clock-out.
         // 2. PIN
         var entered = prompt("Enter " + name + "'s 6-digit personal PIN:");
         if (entered == null) return;
@@ -1634,22 +1605,8 @@
           alert("Could not record: " + (e.message || e));
           return;
         }
-        if (earlyOpts) {
-          try {
-            // dayKey + ym match the sidecar's convention: cycle uses START-
-            // month, dayKey is the day-of-month (1–31).
-            var _now2  = new Date();
-            var _y = _now2.getFullYear(), _m = _now2.getMonth() + 1, _d = _now2.getDate();
-            var _ym2; if (_d > 24) { var nm = _m + 1, ny = _y; if (nm > 12) { nm = 1; ny += 1; } _ym2 = ny + "-" + String(nm).padStart(2, "0"); } else { _ym2 = _y + "-" + String(_m).padStart(2, "0"); }
-            await window.APP_DATA.recordEarlyLeave(_ym2, String(_d), ec, earlyOpts.hours, name, {
-              reasonCode: earlyOpts.reasonCode,
-              reasonNote: earlyOpts.reasonNote,
-              approver:   earlyOpts.approver
-            });
-          } catch (e) {
-            alert("Clock-out saved, but the early-leave reason couldn't be recorded: " + (e.message || e) + "\n\nAsk the ROM to record it manually from the HR portal.");
-          }
-        }
+        // (Manager early-leave is no longer self-recorded here — the HR portal
+        // derives it from this clock-out time. See note at "1b" above.)
         // Post-clock-out witness prompt: catch colleagues who walked out
         // without clocking out (so no early-leave reason was logged). The
         // clocking-out manager names them; the report goes to boa_mgr_early_reports_v1
