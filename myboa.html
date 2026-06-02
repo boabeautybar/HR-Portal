@@ -20,10 +20,12 @@
   body { font-family: "DM Sans", system-ui, sans-serif; background: var(--bg); color: #1f2937;
     padding: 26px 16px calc(40px + env(safe-area-inset-bottom)); line-height: 1.45; }
   .wrap { max-width: 520px; margin: 0 auto; }
-  .brand { text-align: center; margin-bottom: 10px; }
-  .brand img { width: 76px; height: 76px; border-radius: 18px; object-fit: cover; }
-  h1 { font-family: "Playfair Display", serif; font-size: 30px; color: var(--deep); margin: 12px 0 2px; text-align: center; letter-spacing: .01em; }
-  .sub { text-align: center; color: #9d6a82; font-size: 14.5px; margin: 0 auto 22px; max-width: 380px; }
+  .brand { text-align: center; margin: 8px 0 14px; }
+  .brand img { width: min(270px, 72%); height: auto; display: inline-block; }
+  h1 { font-family: "Outfit", system-ui, sans-serif; font-weight: 300; font-size: 27px;
+    color: #1f2937; margin: 14px 0 2px; text-align: center; letter-spacing: .14em; text-transform: uppercase; }
+  h1 b { font-weight: 700; color: #111827; }
+  .sub { text-align: center; color: #9d6a82; font-size: 14.5px; margin: 4px auto 24px; max-width: 380px; }
   .tile {
     display: flex; align-items: center; gap: 16px; width: 100%; text-align: left;
     background: #fff; border: 1px solid var(--line); border-radius: 18px;
@@ -48,8 +50,8 @@
 </head>
 <body>
   <div class="wrap">
-    <div class="brand"><img src="BOA.png" alt="BOA" /></div>
-    <h1>My BOA</h1>
+    <div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>
+    <h1>My <b>BOA</b></h1>
     <p class="sub">Welcome — choose what you'd like to do.</p>
 
     <a class="tile sched" href="schedule.html">
