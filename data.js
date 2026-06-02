@@ -812,6 +812,17 @@
     return res.data;
   }
 
+  // Permanently remove a cash-up row (hard delete). Unlike reopenCashup, which
+  // keeps the entry for audit, this fully removes it from Supabase — so it
+  // disappears from the HR portal AND the store's kiosk. Intended for clearing
+  // test or duplicate entries.
+  async function deleteCashup(id) {
+    if (!id) throw new Error("Missing cashup id");
+    var res = await sb.from("cashups").delete().eq("id", id);
+    if (res.error) { console.error("deleteCashup:", res.error); throw res.error; }
+    return true;
+  }
+
   // portal's spot-check viewer. Photo + GPS lives in app_state under
   // boa_mgrclockin_meta_<id> — fetch lazily per row.
   async function listRecentManagerClockins(daysBack) {
@@ -1704,6 +1715,7 @@
     listCashupsForDate: listCashupsForDate,
     addCashupManual: addCashupManual,
     reopenCashup: reopenCashup,
+    deleteCashup: deleteCashup,
     loadManagerDayStatuses: loadManagerDayStatuses,
     saveManagerDayStatus: saveManagerDayStatus,
     deleteManagerDayStatus: deleteManagerDayStatus,
