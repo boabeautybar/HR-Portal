@@ -22,7 +22,8 @@ window.BOA_SUPABASE_CONFIG = {
   :root { --pink:#BE185D; --deep:#831843; --bg:#FCF5F7; --ink:#1f2937; --line:#f3d4e0; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; }
-  body { font-family: "DM Sans", system-ui, sans-serif; background: var(--bg); color: var(--ink);
+  body { font-family: "DM Sans", system-ui, sans-serif; color: var(--ink);
+    background: radial-gradient(130% 90% at 50% -10%, #FCE0EE 0%, #FDEFF5 42%, #FFF7FB 100%) fixed;
     padding: 16px 14px calc(40px + env(safe-area-inset-bottom)); line-height: 1.45; }
   .wrap, #root { max-width: 560px; margin: 0 auto; }
   .back { display:inline-block; color:#9d6a82; font-size:13px; font-weight:600; text-decoration:none; margin-bottom:6px; }
@@ -30,7 +31,8 @@ window.BOA_SUPABASE_CONFIG = {
   .brand img { width:min(200px, 60%); height:auto; display:inline-block; }
   h1 { font-family:"Outfit",system-ui,sans-serif; font-weight:600; font-size:22px; color:var(--deep); margin:6px 0 4px; text-align:center; letter-spacing:.005em; }
   .sub { text-align:center; color:#9d6a82; font-size:14px; margin:0 0 16px; }
-  .card { background:#fff; border:1px solid var(--line); border-radius:16px; padding:18px 16px; margin-bottom:16px; }
+  .card { background:linear-gradient(180deg,#fff,#fffafc); border:1px solid #FBCFE8; border-radius:16px; padding:18px 16px; margin-bottom:16px;
+    box-shadow:0 0 0 1px rgba(244,114,182,0.22), 0 0 14px rgba(244,114,182,0.14), 0 6px 18px rgba(190,24,93,0.07); }
   label.field { display:block; margin-bottom:16px; }
   label.field > span { display:block; font-weight:700; font-size:13px; color:var(--deep); margin-bottom:6px; }
   input, select, textarea { width:100%; font-family:inherit; font-size:16px; color:var(--ink); background:#fff;

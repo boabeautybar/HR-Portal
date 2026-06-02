@@ -27,7 +27,7 @@ window.BOA_SUPABASE_CONFIG = {
   html, body { margin: 0; }
   body {
     font-family: "DM Sans", system-ui, sans-serif;
-    background: var(--bg); color: var(--ink);
+    background: radial-gradient(130% 90% at 50% -10%, #FCE0EE 0%, #FDEFF5 42%, #FFF7FB 100%) fixed; color: var(--ink);
     padding: 18px 14px calc(40px + env(safe-area-inset-bottom));
     line-height: 1.45;
   }
@@ -42,7 +42,8 @@ window.BOA_SUPABASE_CONFIG = {
     padding: 13px 15px; font-size: 13.5px; color: #6b3a4e; margin-bottom: 18px;
   }
   .reassure strong { color: var(--deep); }
-  .card { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 18px 16px; margin-bottom: 16px; }
+  .card { background: linear-gradient(180deg,#fff,#fffafc); border: 1px solid #FBCFE8; border-radius: 16px; padding: 18px 16px; margin-bottom: 16px;
+    box-shadow:0 0 0 1px rgba(244,114,182,0.22), 0 0 14px rgba(244,114,182,0.14), 0 6px 18px rgba(190,24,93,0.07); }
   label.field { display: block; margin-bottom: 16px; }
   label.field > span { display: block; font-weight: 700; font-size: 13px; color: var(--deep); margin-bottom: 6px; }
   input[type=text], input[type=tel], select, textarea {
