@@ -12748,8 +12748,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   the "Abscond / Absence Warnings" permission (owner-only by
                   default; grant others in Settings). */}
               {!(new Set(currentUser?.hideTabs || []).has("dashAbscond")) && (() => {
-                const MISSED = { no: 1, absent: 1 };
-                const PRESENTOK = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1, swap_o: 1, sick: 1, sick_n: 1, frl: 1, al: 1, el: 1, ph: 1, mat: 1, off: 1, term: 1 };
+                // Unexcused missed days: NO SHOW, ABSENT and SICK WITHOUT NOTE
+                // ('sick'). Excused — sick WITH note ('sick_n'), FRL with proof
+                // ('frl') and leave/PH/off — do NOT count and break the run.
+                const MISSED = { no: 1, absent: 1, sick: 1 };
+                const PRESENTOK = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1, swap_o: 1, sick_n: 1, frl: 1, al: 1, el: 1, ph: 1, mat: 1, off: 1, term: 1 };
                 const _t = new Date(); _t.setHours(0, 0, 0, 0);
                 const _p2 = n => String(n).padStart(2, "0");
                 const _todayYmd = _t.getFullYear() + "-" + _p2(_t.getMonth() + 1) + "-" + _p2(_t.getDate());
@@ -12761,19 +12764,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 for (let dd = new Date(cyStart); dd <= _t; dd.setDate(dd.getDate() + 1)) {
                   cycleDays.push({ dom: dd.getDate(), ymd: dd.getFullYear() + "-" + _p2(dd.getMonth() + 1) + "-" + _p2(dd.getDate()) });
                 }
-                // Trailing run of consecutive missed days (internal blanks /
-                // present / excused statuses break the run; trailing blanks are
-                // trimmed since today may not be marked yet).
+                // Trailing run of consecutive missed days, ending at the most
+                // recent MARKED day. If that day is a present/excused status the
+                // run is 0 — i.e. someone who CAME BACK after a no-show/absent
+                // streak is not flagged. lastIdx = index of the most recent
+                // missed day in the run (for the recency guard below).
                 const trailingRun = (statuses) => {
-                  const arr = statuses.slice();
-                  while (arr.length && !arr[arr.length - 1]) arr.pop();
-                  let run = 0, noShows = 0, hasAbsent = false;
-                  for (let i = arr.length - 1; i >= 0; i--) {
-                    const s = arr[i];
-                    if (MISSED[s]) { run++; if (s === "no") noShows++; else hasAbsent = true; }
-                    else break;
+                  let end = statuses.length - 1;
+                  while (end >= 0 && !statuses[end]) end--;   // skip not-yet-marked trailing days
+                  let run = 0, noShows = 0, absents = 0, sickNoNote = 0, lastIdx = -1;
+                  for (let i = end; i >= 0; i--) {
+                    const s = statuses[i];
+                    if (!MISSED[s]) break;
+                    if (lastIdx === -1) lastIdx = i;
+                    run++;
+                    if (s === "no") noShows++;
+                    else if (s === "absent") absents++;
+                    else if (s === "sick") sickNoNote++;
                   }
-                  return { run, noShows, hasAbsent };
+                  return { run, noShows, absents, sickNoNote, lastIdx };
+                };
+                const _missLabel = (w) => {
+                  const parts = [];
+                  if (w.noShows) parts.push(w.noShows + " no-show" + (w.noShows === 1 ? "" : "s"));
+                  if (w.absents) parts.push(w.absents + " absent");
+                  if (w.sickNoNote) parts.push(w.sickNoNote + " sick (no note)");
+                  return w.run + " days missed in a row · " + parts.join(", ");
                 };
                 const warns = [];
                 // Nail techs — scan the per-branch attendance grids.
@@ -12789,8 +12805,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     let v = grid[d.dom]; if (v && v.indexOf("~") === 0) v = "";
                     return MISSED[v] ? v : "";
                   });
-                  const { run, noShows, hasAbsent } = trailingRun(statuses);
-                  if (run >= 2) warns.push({ name: s.name, branch: s.branch, role: "Nail tech", run, noShows, hasAbsent, allNo: !hasAbsent });
+                  // run ends at the latest marked day; if they returned (a
+                  // present day after the streak) the run is 0, so we only
+                  // surface people who haven't been back yet.
+                  const r = trailingRun(statuses);
+                  if (r.run >= 2) warns.push({ name: s.name, branch: s.branch, role: "Nail tech", run: r.run, noShows: r.noShows, absents: r.absents, sickNoNote: r.sickNoNote, allNo: r.run === r.noShows });
                 });
                 // Managers — from ROM-tagged day statuses (keyed by staff_id).
                 const mgrById = {};
@@ -12806,8 +12825,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   if (_hasStoreScope && !scopedSalonNames.has(m.branch)) return;
                   const byDate = byMgr[id];
                   const statuses = cycleDays.map(d => { const v = byDate[d.ymd]; return MISSED[v] ? v : ""; });
-                  const { run, noShows, hasAbsent } = trailingRun(statuses);
-                  if (run >= 2) warns.push({ name: m.name, branch: m.branch, role: "Manager", run, noShows, hasAbsent, allNo: !hasAbsent });
+                  const r = trailingRun(statuses);
+                  if (r.run >= 2) warns.push({ name: m.name, branch: m.branch, role: "Manager", run: r.run, noShows: r.noShows, absents: r.absents, sickNoNote: r.sickNoNote, allNo: r.run === r.noShows });
                 });
                 if (warns.length === 0) return null;
                 warns.sort((a, b) => (Number(b.allNo) - Number(a.allNo)) || (b.run - a.run) || (b.noShows - a.noShows));
@@ -12822,13 +12841,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </div>
                     <div style={{ display: dashCollapsed.abscond ? "none" : "block" }}>
                       <div style={{ fontSize: 11, color: "#b91c1c", marginBottom: 8, fontStyle: "italic" }}>
-                        Consecutive no-shows likely mean the person is absconding — investigate, set up a disciplinary, and plan a replacement for the store.
+                        These people have missed 2+ days in a row (no-show, absent or sick without a note) and <strong>haven't returned to work yet</strong>. Consecutive no-shows likely mean abscondment — investigate, set up a disciplinary, and plan a replacement for the store.
                       </div>
                       {warns.map((w, i) => {
                         const red = w.allNo;
                         const label = w.allNo
                           ? `${w.run} no-show${w.run === 1 ? "" : "s"} in a row`
-                          : `${w.run} days missed in a row (${w.noShows} no-show${w.noShows === 1 ? "" : "s"}${w.hasAbsent ? " + absent" : ""})`;
+                          : _missLabel(w);
                         return (
                           <div key={"ab-" + i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "1px dashed #fecaca", flexWrap: "wrap" }}>
                             <div style={{ minWidth: 0 }}>
