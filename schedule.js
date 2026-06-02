@@ -133,6 +133,43 @@
   function ymdStr(dt) { return dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate()); }
   var WORK_CODES = { W: 1, WE: 1, WL: 1, WM: 1, WB: 1, E: 1 };
 
+  // ── SA public holidays (mirrors the portal's saHolidays) ─────
+  function _easterSunday(year) {
+    var a = year % 19, b = Math.floor(year / 100), c = year % 100, d = Math.floor(b / 4), e = b % 4;
+    var f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3);
+    var h = (19 * a + b - d - g + 15) % 30, i = Math.floor(c / 4), k = c % 4;
+    var l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451);
+    var month = Math.floor((h + l - 7 * m + 114) / 31), day = ((h + l - 7 * m + 114) % 31) + 1;
+    return new Date(year, month - 1, day);
+  }
+  var _holCache = {};
+  function saHolidays(year) {
+    if (_holCache[year]) return _holCache[year];
+    var out = {};
+    var add = function (mo, d, name) {
+      var dt = new Date(year, mo - 1, d);
+      out[ymdStr(dt)] = name;
+      if (dt.getDay() === 0) { var dt2 = new Date(year, mo - 1, d + 1); out[ymdStr(dt2)] = name + " (observed)"; }
+    };
+    add(1, 1, "New Year's Day"); add(3, 21, "Human Rights Day");
+    var easter = _easterSunday(year);
+    var gf = new Date(easter); gf.setDate(easter.getDate() - 2);
+    var fd = new Date(easter); fd.setDate(easter.getDate() + 1);
+    out[ymdStr(gf)] = "Good Friday"; out[ymdStr(fd)] = "Family Day";
+    add(4, 27, "Freedom Day"); add(5, 1, "Workers' Day"); add(6, 16, "Youth Day");
+    add(8, 9, "Women's Day"); add(9, 24, "Heritage Day"); add(12, 16, "Day of Reconciliation");
+    add(12, 25, "Christmas Day"); add(12, 26, "Day of Goodwill");
+    _holCache[year] = out;
+    return out;
+  }
+  function holidayName(dt) { return saHolidays(dt.getFullYear())[ymdStr(dt)] || ""; }
+
+  // Default nail-tech hours for normal stores (single shift every day).
+  var NORMAL_TECH = { 1: "09:30 - 18:30", 6: "09:00 - 18:00", 0: "09:00 - 17:00" };
+  // Stores where weekday techs are split into early/late shifts (so a plain "W"
+  // weekday has no single time). Sandown/Fourways have full tables below.
+  var SPLIT_STORES = { "Sandown": 1, "Table Bay": 1, "Fourways": 1, "Mall of the South": 1, "Ballito": 1 };
+
   // NAIL-TECH shift times, taken straight from the schedule tab's per-store
   // banners (these differ from the manager shiftTimes rules — e.g. Sandown WE
   // ends 17:15, Saturday WE starts 08:15). Keyed by store → day-bucket
@@ -181,11 +218,16 @@
     var tt = techTime(state.store, dow, code);
     if (tt !== null) return tt ? tt + variant : variant.replace(" · ", "");
 
-    // 2) Otherwise: explicit shift codes show their time; a plain "W" only has a
-    // single known time on weekends (one shift), so weekdays show just "Work".
-    if (code !== "W") return shiftTimes(state.role, code, state.store, dow) + variant;
-    if (dow === 0 || dow === 6) return shiftTimes(state.role, "W", state.store, dow);
-    return "";
+    // 2) Split-shift store without a full table: explicit codes show their time;
+    // a plain "W" only has one known time on weekends, weekdays show just "Work".
+    if (SPLIT_STORES[state.store]) {
+      if (code !== "W") return shiftTimes(state.role, code, state.store, dow) + variant;
+      if (dow === 0 || dow === 6) return shiftTimes(state.role, "W", state.store, dow);
+      return "";
+    }
+
+    // 3) Normal store: a single shift every day (Mon–Fri / Sat / Sun).
+    return NORMAL_TECH[dow === 0 ? 0 : dow === 6 ? 6 : 1] + variant;
   }
 
   function cellStatus(row, dt) {
@@ -195,11 +237,20 @@
     if (c === "R") return { kind: "off", label: "Off", sub: "Requested day off" };
     if (c === "L") return { kind: "leave", label: "On leave", sub: "" };
     if (c === "ML") return { kind: "leave", label: "Maternity leave", sub: "" };
-    if (c === "E") return { kind: "extra", label: "💰 Extra day", sub: workSub(c, dt) };
+    var working = c === "E" || WORK_CODES[c] || (c === "" && !state.isManager);
+    if (!working && c !== "X" && c !== "P") return { kind: "off", label: "Off", sub: "" };
+
+    // Working (incl. Extra / Pre-start). Public holidays pay double — same hours
+    // as whatever weekday they fall on, flagged with 💰💰 and the holiday name.
+    var hol = holidayName(dt);
+    var time = (c === "X" || c === "P") ? "" : workSub(c, dt);
+    if (hol) {
+      var what = c === "E" ? "Extra day" : (c === "X" || c === "P") ? "Pre-start" : "Work";
+      return { kind: "holiday", label: "💰💰 " + what, sub: hol + " · pays double" + (time ? " · " + time : "") };
+    }
+    if (c === "E") return { kind: "extra", label: "💰 Extra day", sub: time };
     if (c === "X" || c === "P") return { kind: "work", label: "Pre-start", sub: "" };
-    var working = WORK_CODES[c] || (c === "" && !state.isManager);
-    if (!working) return { kind: "off", label: "Off", sub: "" };
-    return { kind: "work", label: "Work", sub: workSub(c, dt) };
+    return { kind: "work", label: "Work", sub: time };
   }
 
   // ── Data ─────────────────────────────────────────────────────
