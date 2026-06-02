@@ -40,6 +40,7 @@
     var nextMonth = window.APP_DATA ? window.APP_DATA.nextMonthLabel().split(" ")[0] : "Off";
     root.innerHTML =
       '<header class="app-header gp-header">' +
+        '<div class="gp-header-inner">' +
         '<div class="gp-left">' +
           '<div class="boa-logo"><img class="boa-logo-img" src="boa-logo.png" alt="BOA Beauty Bar"></div>' +
           '<div class="gp-greeting">' +
@@ -57,6 +58,7 @@
         '<div class="gp-header-right">' +
           '<button class="gp-home-quick" id="gp-home-quick" type="button" aria-label="Home" title="Home">🏠</button>' +
           '<button class="gp-menu-toggle" id="gp-menu-toggle" type="button" aria-label="Menu">☰</button>' +
+        '</div>' +
         '</div>' +
       '</header>' +
       '<main id="staff-main"></main>';

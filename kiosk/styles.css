@@ -108,10 +108,17 @@ body {
    Light pink ombre, matching the HR portal header, so the black BOA Beauty
    Bar logo reads directly on it. Text + pills use dark ink for contrast. */
 .gp-header {
+  display: block;
   padding: 20px 26px;
   background: linear-gradient(135deg, #FBCFE8 0%, #F9A8D4 50%, #F472B6 100%);
   color: var(--pink-900);
-  gap: 36px; flex-wrap: wrap;
+}
+/* Capped, centred content row — same as the HR portal — so the greeting and
+   nav don't spread edge-to-edge (and gap out) on wide screens. */
+.gp-header-inner {
+  max-width: 1380px; margin: 0 auto;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 28px; flex-wrap: wrap;
 }
 .gp-greeting { line-height: 1.2; min-width: 0; }
 .gp-greeting-line {
@@ -151,7 +158,8 @@ body {
 .gp-home-quick:active, .gp-menu-toggle:active { transform: scale(0.95); }
 
 @media (max-width: 860px) {
-  .gp-header { position: relative; flex-wrap: nowrap; gap: 12px; }
+  .gp-header { position: relative; }
+  .gp-header-inner { flex-wrap: nowrap; gap: 12px; }
   .gp-greeting-line { font-size: 18px; }
   .gp-header-right { display: flex; }
   .gp-actions {
