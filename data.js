@@ -1805,6 +1805,12 @@
     markIncidentReviewed: markIncidentReviewed,
     addIncidentNote: addIncidentNote,
 
+    // Staff leave requests (from /leave.html) — same key-gated RPC pattern.
+    loadLeaveRequests: loadLeaveRequests,
+    setLeaveStatus: setLeaveStatus,
+    markLeaveReviewed: markLeaveReviewed,
+    addLeaveNote: addLeaveNote,
+
     // Kiosk device lock (Tier 3A) — server-validated enrolment RPCs
     createKioskEnrollment: createKioskEnrollment,
     listKioskDevices: listKioskDevices,
@@ -1851,8 +1857,11 @@
     if (res.error) { console.error("loadIncidentReports:", res.error); return []; }
     return Array.isArray(res.data) ? res.data : [];
   }
-  async function setIncidentStatus(id, status) {
-    var res = await sb.rpc("set_incident_status", { p_key: incidentKey(), p_id: id, p_status: status });
+  async function setIncidentStatus(id, status, note, actor) {
+    var res = await sb.rpc("set_incident_status", {
+      p_key: incidentKey(), p_id: id, p_status: status,
+      p_note: note || "", p_actor: actor || ""
+    });
     if (res.error) { console.error("setIncidentStatus:", res.error); throw res.error; }
     return true;
   }
@@ -1864,6 +1873,31 @@
   async function addIncidentNote(id, note, author) {
     var res = await sb.rpc("add_incident_note", { p_key: incidentKey(), p_id: id, p_note: note, p_author: author || "" });
     if (res.error) { console.error("addIncidentNote:", res.error); throw res.error; }
+    return true;
+  }
+
+  // ── Staff leave requests ─────────────────────────────────────────────
+  // Same HR key as incidents (sql/leave_requests.sql reuses incident_hr_key).
+  async function loadLeaveRequests() {
+    var res = await sb.rpc("list_leave_requests", { p_key: incidentKey() });
+    if (res.error) { console.error("loadLeaveRequests:", res.error); return []; }
+    return Array.isArray(res.data) ? res.data : [];
+  }
+  async function setLeaveStatus(id, status, note, actor) {
+    var res = await sb.rpc("set_leave_status", {
+      p_key: incidentKey(), p_id: id, p_status: status, p_note: note || "", p_actor: actor || ""
+    });
+    if (res.error) { console.error("setLeaveStatus:", res.error); throw res.error; }
+    return true;
+  }
+  async function markLeaveReviewed(id) {
+    var res = await sb.rpc("mark_leave_reviewed", { p_key: incidentKey(), p_id: id });
+    if (res.error) { console.error("markLeaveReviewed:", res.error); throw res.error; }
+    return true;
+  }
+  async function addLeaveNote(id, note, author) {
+    var res = await sb.rpc("add_leave_note", { p_key: incidentKey(), p_id: id, p_note: note, p_author: author || "" });
+    if (res.error) { console.error("addLeaveNote:", res.error); throw res.error; }
     return true;
   }
 

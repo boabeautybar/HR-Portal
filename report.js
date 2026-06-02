@@ -27,9 +27,22 @@
     { v: "Safety", l: "Safety / accident / injury" },
     { v: "Harassment", l: "Harassment or bullying" },
     { v: "Management", l: "A manager / management conduct" },
-    { v: "Theft", l: "Theft or money" },
+    { v: "StaffConduct", l: "A staff member's conduct" },
+    { v: "Customer", l: "A customer / client incident" },
+    { v: "Theft", l: "Theft, money or till" },
+    { v: "Stock", l: "Stock, equipment or damage" },
     { v: "Hygiene", l: "Hygiene / cleanliness" },
     { v: "Other", l: "Something else" }
+  ];
+
+  var TIMEFRAMES = [
+    "Early morning (before 9am)",
+    "Morning (9am – 12pm)",
+    "Around midday (12pm – 2pm)",
+    "Afternoon (2pm – 5pm)",
+    "Evening (after 5pm)",
+    "After hours / store closed",
+    "Not sure"
   ];
 
   var state = { urgent: false, photo: null, showName: false, busy: false };
@@ -37,24 +50,26 @@
   // ── Render the form ──────────────────────────────────────────
   function render() {
     root.innerHTML = [
-      '<div class="brand"><img src="BOA.png" alt="BOA" /></div>',
+      '<div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>',
       '<h1>Report an incident</h1>',
       '<p class="sub">Tell us about something that happened in your store.</p>',
 
       '<div class="reassure">',
-        '<strong>This is private.</strong> You do <strong>not</strong> have to give your name. ',
-        'Reports go straight to <strong>BOA HR & senior management</strong> — your store ',
-        'manager does <strong>not</strong> see them. Tell us what happened in your own words.',
+        '<div style="font-weight:800;color:#831843;font-size:15px;margin-bottom:6px">🔒 You can send this anonymously</div>',
+        'You do <strong>not</strong> have to give your name — leave the name section blank and we will ',
+        'never know who you are. <strong>Only HR can see this report.</strong> Your store manager and ',
+        'any other managers <strong>cannot</strong> see it (so it is safe to use even if your report is ',
+        'about a manager). Tell us what happened in your own words.',
       '</div>',
 
       '<button type="button" id="urgentBtn" class="urgent-btn' + (state.urgent ? ' on' : '') + '">',
         (state.urgent ? '🚨 URGENT — selected' : '🚨 Urgent Incident'),
         '<small>' + (state.urgent
-          ? 'Tap to turn off. HR + Regional + National managers are alerted.'
+          ? 'Tap to turn off. HR is alerted immediately.'
           : 'Tap if you feel unsafe or it needs attention now') + '</small>',
       '</button>',
       '<p class="urgent-note">' + (state.urgent
-        ? 'This will alert HR, your Regional Manager and the National Operations Manager.'
+        ? 'HR will be alerted immediately. Only HR can see this.'
         : '') + '</p>',
 
       '<div class="card">',
@@ -77,8 +92,21 @@
 
         // Date of incident (required)
         '<label class="field"><span>Date of the incident</span>',
-          '<input type="date" id="when" max="' + todayISO() + '" />',
-          '<span class="hint">When it happened. If you\'re not sure of the exact day, pick the closest.</span>',
+          '<input type="date" id="when" class="date-input" min="2023-01-01" max="' + todayISO() + '" />',
+          '<div class="quickdates">',
+            '<button type="button" class="quickdate" data-days="0">Today</button>',
+            '<button type="button" class="quickdate" data-days="1">Yesterday</button>',
+            '<button type="button" class="quickdate" data-days="2">2 days ago</button>',
+          '</div>',
+          '<span class="hint">Tap the field to open the calendar, or use a quick option. Pick the closest day if unsure.</span>',
+        '</label>',
+
+        // Time frame (optional)
+        '<label class="field"><span>Roughly what time? <em style="font-weight:400;color:#a07487">(if you know)</em></span>',
+          '<select id="timeframe">',
+            '<option value="">— choose a time —</option>',
+            TIMEFRAMES.map(function (t) { return '<option>' + esc(t) + '</option>'; }).join(""),
+          '</select>',
         '</label>',
 
         // People involved (required)
@@ -107,7 +135,7 @@
         '</label>',
 
         // Optional identity
-        '<label class="toggle"><input type="checkbox" id="nameToggle" ' + (state.showName ? 'checked' : '') + ' /> Add my name & number so HR can follow up (optional)</label>',
+        '<label class="toggle"><input type="checkbox" id="nameToggle" ' + (state.showName ? 'checked' : '') + ' /> Add my name & number so HR can follow up (optional — leave off to stay anonymous)</label>',
         '<div class="optional-box" id="nameBox" style="display:' + (state.showName ? 'block' : 'none') + '">',
           '<label class="field" style="margin-top:14px"><span>Your name</span><input type="text" id="rname" placeholder="First and last name" /></label>',
           '<label class="field"><span>Phone or email</span><input type="tel" id="rcontact" placeholder="So we can reach you privately" /></label>',
@@ -125,11 +153,31 @@
   function wire() {
     var $ = function (id) { return document.getElementById(id); };
 
-    $("urgentBtn").onclick = function () { state.urgent = !state.urgent; render(); };
+    // Toggle urgent in place (don't re-render — that would wipe typed fields).
+    $("urgentBtn").onclick = function () {
+      state.urgent = !state.urgent;
+      var btn = $("urgentBtn");
+      btn.className = "urgent-btn" + (state.urgent ? " on" : "");
+      btn.innerHTML = (state.urgent ? "🚨 URGENT — selected" : "🚨 Urgent Incident") +
+        '<small>' + (state.urgent ? "Tap to turn off. HR is alerted immediately." : "Tap if you feel unsafe or it needs attention now") + '</small>';
+      var note = document.querySelector(".urgent-note");
+      if (note) note.textContent = state.urgent ? "HR will be alerted immediately. Only HR can see this." : "";
+    };
 
     $("store").onchange = function () {
       $("storeOtherWrap").style.display = this.value === "__other" ? "block" : "none";
     };
+
+    // Quick date buttons set the date field relative to today.
+    Array.prototype.forEach.call(document.querySelectorAll(".quickdate"), function (b) {
+      b.onclick = function () {
+        var d = new Date(); d.setDate(d.getDate() - parseInt(b.getAttribute("data-days"), 10));
+        var p = function (n) { return String(n).padStart(2, "0"); };
+        $("when").value = d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+        Array.prototype.forEach.call(document.querySelectorAll(".quickdate"), function (x) { x.classList.remove("on"); });
+        b.classList.add("on");
+      };
+    });
 
     $("nameToggle").onchange = function () {
       state.showName = this.checked;
@@ -184,6 +232,7 @@
       p_store: store,
       p_category: category,
       p_incident_date: when,
+      p_time_frame: ($("timeframe").value || "").trim() || null,
       p_people_involved: people,
       p_description: desc,
       p_witnesses: witnesses || null,
@@ -211,14 +260,14 @@
 
   function showDone(ref) {
     root.innerHTML = [
-      '<div class="brand"><img src="BOA.png" alt="BOA" /></div>',
+      '<div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>',
       '<div class="done">',
         '<div class="tick">✅</div>',
         '<h2>Thank you — your report has been sent</h2>',
         (ref ? '<div class="ref">' + esc(ref) + '</div>' : ''),
-        '<p>HR has received this privately. Your store manager cannot see it.</p>',
+        '<p><strong>Only HR can see this.</strong> No managers — including your store manager — can see it.</p>',
         (ref ? '<p>If you ever want to refer to this report, you can quote the reference above. You don\'t need to keep it.</p>' : ''),
-        (state.urgent ? '<p style="color:#b91c1c;font-weight:600">Because you marked it urgent, HR and senior management have been alerted.</p>' : ''),
+        (state.urgent ? '<p style="color:#b91c1c;font-weight:600">Because you marked it urgent, HR has been alerted immediately.</p>' : ''),
         '<p style="margin-top:18px"><a href="report.html" style="color:#BE185D;font-weight:700">Submit another report</a></p>',
       '</div>',
       '<p class="foot">BOA HR · Confidential reporting</p>'

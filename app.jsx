@@ -7052,11 +7052,13 @@ const SETTINGS_TABS = [
   { t: "smTrial", l: "SM Trials", cat: "People", icon: "⭐" },
   { t: "unpaidLegal", l: "Unpaid Leave (Legal)", cat: "People", icon: "⏸️" },
   { t: "compliance", l: "Compliance", cat: "People", icon: "📋" },
+  { t: "incidents", l: "Incident Reports", cat: "People", icon: "🛡️" },
   { t: "scheduling", l: "Scheduling", cat: "Operations", icon: "📅" },
   { t: "locations", l: "Locations", cat: "Operations", icon: "📍" },
   { t: "checkins", l: "Nail Tech Check-ins", cat: "Operations", icon: "📲" },
   { t: "mgrclockins", l: "Manager Check-ins", cat: "Operations", icon: "🕐" },
   { t: "leave", l: "Leave Planner", cat: "Operations", icon: "🌴" },
+  { t: "leaveRequests", l: "Leave Requests", cat: "Operations", icon: "📨" },
   { t: "storeOpenings", l: "Store Openings", cat: "Operations", icon: "🔓" },
   { t: "movements", l: "Today's Movements", cat: "Operations", icon: "🔀" },
   { t: "dailyTasks", l: "Daily Tasks", cat: "Operations", icon: "📋" },
@@ -7067,7 +7069,6 @@ const SETTINGS_TABS = [
   { t: "payrollReports", l: "Reports", cat: "Payroll", icon: "📈" },
   { t: "overtime", l: "Overtime", cat: "Payroll", icon: "⏱️" },
   { t: "alerts", l: "Alerts", cat: "Insights", icon: "🔔" },
-  { t: "incidents", l: "Incident Reports", cat: "Insights", icon: "🛡️" },
   { t: "activity", l: "Activity Log", cat: "Insights", icon: "📜" },
   { t: "kioskPins", l: "Kiosk PINs", cat: "Admin", icon: "🔑" },
   { t: "managerPins", l: "Manager PINs", cat: "Admin", icon: "🆔" },
@@ -8323,12 +8324,15 @@ function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
 // (reached by the printed QR in the staff room). Only the Owner / HR / senior
 // ops see this tab — store managers use the kiosk, never the portal.
 const INCIDENT_CAT = {
-  Safety:     { label: "Safety / injury",     emoji: "⚠️",  color: "#b45309", bg: "#fef3c7" },
-  Harassment: { label: "Harassment / bullying", emoji: "🚫", color: "#9d174d", bg: "#fce7f3" },
-  Management: { label: "Management conduct",   emoji: "👔",  color: "#6b21a8", bg: "#ede9fe" },
-  Theft:      { label: "Theft / money",        emoji: "💰",  color: "#92400e", bg: "#fef3c7" },
-  Hygiene:    { label: "Hygiene",              emoji: "🧼",  color: "#0e7490", bg: "#cffafe" },
-  Other:      { label: "Other",                emoji: "📋",  color: "#374151", bg: "#f3f4f6" }
+  Safety:       { label: "Safety / injury",        emoji: "⚠️",  color: "#b45309", bg: "#fef3c7" },
+  Harassment:   { label: "Harassment / bullying",  emoji: "🚫",  color: "#9d174d", bg: "#fce7f3" },
+  Management:   { label: "Management conduct",      emoji: "👔",  color: "#6b21a8", bg: "#ede9fe" },
+  StaffConduct: { label: "Staff member's conduct", emoji: "🙍",  color: "#9a3412", bg: "#ffedd5" },
+  Customer:     { label: "Customer / client",      emoji: "🧍",  color: "#1d4ed8", bg: "#dbeafe" },
+  Theft:        { label: "Theft / money / till",   emoji: "💰",  color: "#92400e", bg: "#fef3c7" },
+  Stock:        { label: "Stock / equipment / damage", emoji: "📦", color: "#374151", bg: "#f3f4f6" },
+  Hygiene:      { label: "Hygiene",                emoji: "🧼",  color: "#0e7490", bg: "#cffafe" },
+  Other:        { label: "Other",                  emoji: "📋",  color: "#374151", bg: "#f3f4f6" }
 };
 const INCIDENT_STATUS = {
   new:       { label: "New",       color: "#b91c1c", bg: "#fee2e2" },
@@ -8368,8 +8372,21 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
   const [noteDraft, setNoteDraft] = useState({});
   const [busy, setBusy] = useState(false);
   const [photoZoom, setPhotoZoom] = useState(null);
+  const [showQR, setShowQR] = useState(false);            // QR is tucked away by default
+  const [resolvingId, setResolvingId] = useState(null);   // report awaiting a resolution note
+  const [resolveText, setResolveText] = useState("");
 
-  const reportUrl = (typeof window !== "undefined" ? window.location.origin : "") + "/report.html";
+  // Where the QR points: the "My BOA" staff hub. A custom address
+  // (window.BOA_STAFF_URL) wins so staff land on a separate site instead of the
+  // portal's own domain; "/myboa.html" is appended if it has no path of its own.
+  const reportUrl = (() => {
+    const custom = (typeof window !== "undefined" && (window.BOA_STAFF_URL || window.BOA_REPORT_URL) || "").trim();
+    if (custom) {
+      try { const u = new URL(custom); return (u.pathname && u.pathname !== "/") ? custom : custom.replace(/\/+$/, "") + "/myboa.html"; }
+      catch (_e) { return custom; }
+    }
+    return (typeof window !== "undefined" ? window.location.origin : "") + "/myboa.html";
+  })();
   const stores = Array.from(new Set(reports.map(r => r.store).filter(Boolean))).sort();
 
   const patchLocal = (id, patch) => setReports(reports.map(r => r.id === id ? { ...r, ...patch } : r));
@@ -8382,9 +8399,31 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
     }
   };
   const changeStatus = async (r, status) => {
+    // Closing a report requires a written resolution — open the note box first.
+    if (status === "resolved") {
+      setResolvingId(r.id);
+      setResolveText(r.resolution || "");
+      return;
+    }
     setBusy(true);
     try { await window.BOA_DB.setIncidentStatus(r.id, status); patchLocal(r.id, { status, reviewed: true }); }
     catch (e) { alert("Could not update status: " + (e.message || e)); }
+    setBusy(false);
+  };
+  const doResolve = async (r) => {
+    const text = (resolveText || "").trim();
+    if (!text) return;
+    setBusy(true);
+    try {
+      await window.BOA_DB.setIncidentStatus(r.id, "resolved", text, currentUser.name || currentUser.pin || "");
+      const note = { at: new Date().toISOString(), by: currentUser.name || "", note: "Resolved: " + text };
+      patchLocal(r.id, {
+        status: "resolved", reviewed: true,
+        resolution: text, resolved_at: new Date().toISOString(), resolved_by: currentUser.name || "",
+        internal_notes: [...(Array.isArray(r.internal_notes) ? r.internal_notes : []), note]
+      });
+      setResolvingId(null); setResolveText("");
+    } catch (e) { alert("Could not resolve: " + (e.message || e)); }
     setBusy(false);
   };
   const addNote = async (r) => {
@@ -8422,25 +8461,33 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
         Reports are anonymous unless the person chose to add their name.
       </p>
 
-      {/* QR / link panel */}
-      <div style={{ ...card, background: "#fdf2f8", borderColor: "#f9a8d4" }}>
-        <div style={{ display: "flex", gap: 18, alignItems: "center", flexWrap: "wrap" }}>
-          <div style={{ background: "#fff", padding: 12, borderRadius: 12, border: "1px solid #f3d4e0" }}>
-            <IncidentQR url={reportUrl} size={150} />
-          </div>
-          <div style={{ flex: "1 1 260px", minWidth: 240 }}>
-            <div style={{ fontWeight: 800, color: "#831843", fontSize: 15, marginBottom: 4 }}>Staff reporting QR code</div>
-            <div style={{ fontSize: 13, color: "#6b3a4e", marginBottom: 8 }}>
-              Print this and put it somewhere private in each store (staff room / toilet). Staff scan it
-              on their own phone to file a report — no manager, no shared iPad needed.
+      {/* QR — tucked away; HR clicks to reveal it only when they need to print. */}
+      <div style={{ marginBottom: 16 }}>
+        <button onClick={() => setShowQR(v => !v)}
+          style={{ background: "#fff", color: "#831843", border: "1.5px solid #f9a8d4", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>
+          {showQR ? "▾ Hide My BOA QR code" : "▸ My BOA QR code (print & hang in store)"}
+        </button>
+        {showQR && (
+          <div style={{ ...card, background: "#fdf2f8", borderColor: "#f9a8d4", marginTop: 10, marginBottom: 0 }}>
+            <div style={{ display: "flex", gap: 18, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ background: "#fff", padding: 12, borderRadius: 12, border: "1px solid #f3d4e0" }}>
+                <IncidentQR url={reportUrl} size={150} />
+              </div>
+              <div style={{ flex: "1 1 260px", minWidth: 240 }}>
+                <div style={{ fontWeight: 800, color: "#831843", fontSize: 15, marginBottom: 4 }}>My BOA QR code</div>
+                <div style={{ fontSize: 13, color: "#6b3a4e", marginBottom: 8 }}>
+                  Print this once and put it in each store (staff room). Staff scan it on their own phone to open
+                  <strong> My BOA</strong> — where they can view their schedule and report an incident.
+                </div>
+                <div style={{ fontSize: 12, color: "#9d6a82", wordBreak: "break-all", marginBottom: 10 }}>{reportUrl}</div>
+                <button onClick={() => window.print()}
+                  style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 9, padding: "9px 16px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>
+                  🖨️ Print QR
+                </button>
+              </div>
             </div>
-            <div style={{ fontSize: 12, color: "#9d6a82", wordBreak: "break-all", marginBottom: 10 }}>{reportUrl}</div>
-            <button onClick={() => window.print()}
-              style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 9, padding: "9px 16px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>
-              🖨️ Print QR
-            </button>
           </div>
-        </div>
+        )}
       </div>
 
       {/* Filters */}
@@ -8486,6 +8533,7 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
               <div style={{ marginTop: 14, borderTop: "1px dashed #f3d4e0", paddingTop: 14 }}>
                 <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 16px", fontSize: 13.5, color: "#374151", marginBottom: 12 }}>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Ref</span><span>{r.ref_code}</span>
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>When</span><span>{fmtIncidentDate(r.incident_date)}{r.time_frame ? " · " + r.time_frame : ""}</span>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Filed</span><span>{fmtIncidentTime(r.created_at)}</span>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>People involved</span><span style={{ whiteSpace: "pre-wrap" }}>{r.people_involved || "—"}</span>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>What happened</span><span style={{ whiteSpace: "pre-wrap" }}>{r.description}</span>
@@ -8501,6 +8549,15 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
                     style={{ maxWidth: 180, maxHeight: 180, borderRadius: 10, border: "1px solid #f3d4e0", cursor: "zoom-in", marginBottom: 12 }} />
                 )}
 
+                {/* How it was resolved — shown for closed reports so you can track it. */}
+                {r.status === "resolved" && r.resolution && (
+                  <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 11, padding: "11px 13px", marginBottom: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: "#15803d", marginBottom: 4 }}>✅ How this was resolved</div>
+                    <div style={{ fontSize: 13.5, color: "#14532d", whiteSpace: "pre-wrap" }}>{r.resolution}</div>
+                    <div style={{ fontSize: 11, color: "#4d7c5a", marginTop: 5 }}>{r.resolved_by || "HR"}{r.resolved_at ? " · " + fmtIncidentTime(r.resolved_at) : ""}</div>
+                  </div>
+                )}
+
                 {/* Status controls */}
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
                   {["new", "reviewing", "resolved"].map(s => {
@@ -8509,11 +8566,27 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
                     return (
                       <button key={s} disabled={busy || on} onClick={() => changeStatus(r, s)}
                         style={{ border: "1.5px solid " + sc.color, background: on ? sc.color : "#fff", color: on ? "#fff" : sc.color, borderRadius: 9, padding: "7px 14px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: on ? "default" : "pointer", opacity: busy && !on ? 0.6 : 1 }}>
-                        {on ? "● " : ""}{sc.label}
+                        {on ? "● " : ""}{s === "resolved" && !on ? "Resolve / close" : sc.label}
                       </button>
                     );
                   })}
                 </div>
+
+                {/* Resolve box — a written outcome is required before closing. */}
+                {resolvingId === r.id && (
+                  <div style={{ background: "#f0fdf4", border: "1.5px solid #86efac", borderRadius: 11, padding: "12px 13px", marginBottom: 14 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 800, color: "#15803d", marginBottom: 6 }}>Before closing, write how this was resolved (required)</div>
+                    <textarea value={resolveText} onChange={e => setResolveText(e.target.value)} autoFocus
+                      placeholder="What was done, what was the outcome, any actions taken…"
+                      style={{ width: "100%", boxSizing: "border-box", minHeight: 80, fontFamily: "inherit", fontSize: 13.5, padding: "10px 12px", borderRadius: 9, border: "1.5px solid #86efac", resize: "vertical" }} />
+                    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                      <button disabled={busy || !resolveText.trim()} onClick={() => doResolve(r)}
+                        style={{ background: "#15803d", color: "#fff", border: "none", borderRadius: 9, padding: "8px 16px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: resolveText.trim() ? "pointer" : "default", opacity: resolveText.trim() ? 1 : 0.5 }}>Confirm & close</button>
+                      <button onClick={() => { setResolvingId(null); setResolveText(""); }}
+                        style={{ background: "#f3f4f6", color: "#6b7280", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>Cancel</button>
+                    </div>
+                  </div>
+                )}
 
                 {/* Internal notes */}
                 <div style={{ fontWeight: 700, color: "#831843", fontSize: 12.5, marginBottom: 6 }}>HR notes (internal — staff never see these)</div>
@@ -8585,6 +8658,198 @@ function IncidentPopup({ reports, onView, onDismiss }) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── STAFF LEAVE REQUESTS ───────────────────────────────────────────────────
+// Submitted from My BOA (leave.html); reviewed here. Same key-gated RPCs as
+// incidents (sql/leave_requests.sql). Visible to Owner / HR / senior ops.
+const LEAVE_TYPE = {
+  Annual: "Annual leave", Sick: "Sick leave", Family: "Family responsibility",
+  Unpaid: "Unpaid leave", Other: "Other"
+};
+const LEAVE_STATUS = {
+  pending:  { label: "Pending",  color: "#b45309", bg: "#fef3c7" },
+  approved: { label: "Approved", color: "#15803d", bg: "#dcfce7" },
+  declined: { label: "Declined", color: "#b91c1c", bg: "#fee2e2" }
+};
+function leaveDays(s, e) {
+  if (!s || !e) return 0;
+  try { return Math.round((new Date(e + "T00:00:00") - new Date(s + "T00:00:00")) / 86400000) + 1; }
+  catch (_e) { return 0; }
+}
+
+function LeaveRequestsTab({ requests, setRequests, currentUser }) {
+  const [statusFilter, setStatusFilter] = useState("pending");
+  const [storeFilter, setStoreFilter] = useState("");
+  const [openId, setOpenId] = useState(null);
+  const [noteDraft, setNoteDraft] = useState({});
+  const [declineId, setDeclineId] = useState(null);
+  const [declineText, setDeclineText] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const stores = Array.from(new Set(requests.map(r => r.store).filter(Boolean))).sort();
+  const patchLocal = (id, patch) => setRequests(requests.map(r => r.id === id ? { ...r, ...patch } : r));
+
+  const onOpen = async (r) => {
+    const next = openId === r.id ? null : r.id;
+    setOpenId(next);
+    if (next && !r.reviewed) { try { await window.BOA_DB.markLeaveReviewed(r.id); patchLocal(r.id, { reviewed: true }); } catch (_e) {} }
+  };
+  const approve = async (r) => {
+    setBusy(true);
+    try {
+      await window.BOA_DB.setLeaveStatus(r.id, "approved", "", currentUser.name || currentUser.pin || "");
+      patchLocal(r.id, { status: "approved", reviewed: true, decided_by: currentUser.name || "", decided_at: new Date().toISOString() });
+    } catch (e) { alert("Could not approve: " + (e.message || e)); }
+    setBusy(false);
+  };
+  const doDecline = async (r) => {
+    const text = (declineText || "").trim();
+    if (!text) return;
+    setBusy(true);
+    try {
+      await window.BOA_DB.setLeaveStatus(r.id, "declined", text, currentUser.name || currentUser.pin || "");
+      const note = { at: new Date().toISOString(), by: currentUser.name || "", note: "DECLINED: " + text };
+      patchLocal(r.id, { status: "declined", reviewed: true, decision_note: text, decided_by: currentUser.name || "", decided_at: new Date().toISOString(), internal_notes: [...(Array.isArray(r.internal_notes) ? r.internal_notes : []), note] });
+      setDeclineId(null); setDeclineText("");
+    } catch (e) { alert("Could not decline: " + (e.message || e)); }
+    setBusy(false);
+  };
+  const addNote = async (r) => {
+    const text = (noteDraft[r.id] || "").trim();
+    if (!text) return;
+    setBusy(true);
+    try {
+      await window.BOA_DB.addLeaveNote(r.id, text, currentUser.name || currentUser.pin || "");
+      const note = { at: new Date().toISOString(), by: currentUser.name || "", note: text };
+      patchLocal(r.id, { internal_notes: [...(Array.isArray(r.internal_notes) ? r.internal_notes : []), note] });
+      setNoteDraft({ ...noteDraft, [r.id]: "" });
+    } catch (e) { alert("Could not save note: " + (e.message || e)); }
+    setBusy(false);
+  };
+
+  const filtered = requests.filter(r => {
+    if (storeFilter && r.store !== storeFilter) return false;
+    if (statusFilter === "all") return true;
+    return r.status === statusFilter;
+  });
+  const pendingCount = requests.filter(r => r.status === "pending").length;
+
+  const card = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 18px", marginBottom: 16 };
+  const chip = (c) => ({ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: c.color, background: c.bg });
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 4 }}>
+        <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#831843", margin: 0 }}>🌴 Leave Requests</h2>
+        {pendingCount > 0 && <span style={chip(LEAVE_STATUS.pending)}>{pendingCount} pending</span>}
+      </div>
+      <p style={{ color: "#9d6a82", fontSize: 13.5, marginTop: 4, maxWidth: 680 }}>
+        Leave requests staff send from My BOA. Approve or decline — declining asks for a reason that's recorded.
+      </p>
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+          style={{ fontFamily: "inherit", fontSize: 13, padding: "8px 10px", borderRadius: 9, border: "1.5px solid #e7c6d4" }}>
+          <option value="pending">Pending</option>
+          <option value="approved">Approved</option>
+          <option value="declined">Declined</option>
+          <option value="all">All</option>
+        </select>
+        <select value={storeFilter} onChange={e => setStoreFilter(e.target.value)}
+          style={{ fontFamily: "inherit", fontSize: 13, padding: "8px 10px", borderRadius: 9, border: "1.5px solid #e7c6d4" }}>
+          <option value="">All stores</option>
+          {stores.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <span style={{ alignSelf: "center", fontSize: 12.5, color: "#9d6a82" }}>{filtered.length} request{filtered.length === 1 ? "" : "s"}</span>
+      </div>
+
+      {filtered.length === 0 && <div style={{ ...card, textAlign: "center", color: "#9d6a82" }}>No requests here.</div>}
+
+      {filtered.map(r => {
+        const st = LEAVE_STATUS[r.status] || LEAVE_STATUS.pending;
+        const open = openId === r.id;
+        const notes = Array.isArray(r.internal_notes) ? r.internal_notes : [];
+        const days = leaveDays(r.start_date, r.end_date);
+        return (
+          <div key={r.id} style={{ ...card, marginBottom: 12 }}>
+            <div onClick={() => onOpen(r)} style={{ display: "flex", gap: 10, alignItems: "center", cursor: "pointer", flexWrap: "wrap" }}>
+              {!r.reviewed && <span style={{ width: 9, height: 9, borderRadius: 999, background: "#BE185D", display: "inline-block" }} title="Not yet opened" />}
+              <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
+              <span style={chip({ color: "#6b21a8", bg: "#ede9fe" })}>{LEAVE_TYPE[r.leave_type] || r.leave_type}</span>
+              <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(r.start_date)} → {fmtIncidentDate(r.end_date)}</span>
+              <span style={{ color: "#9ca3af", fontSize: 12 }}>· {days} day{days === 1 ? "" : "s"}{r.store ? " · " + r.store : ""}</span>
+              <span style={{ marginLeft: "auto", ...chip(st) }}>{st.label}</span>
+              <span style={{ color: "#cbb1bd", fontSize: 18, lineHeight: 1 }}>{open ? "▾" : "▸"}</span>
+            </div>
+
+            {open && (
+              <div style={{ marginTop: 14, borderTop: "1px dashed #f3d4e0", paddingTop: 14 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 16px", fontSize: 13.5, color: "#374151", marginBottom: 12 }}>
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>Ref</span><span>{r.ref_code}</span>
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>Requested</span><span>{fmtIncidentTime(r.created_at)}</span>
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>Employee code</span><span>{r.ec || "—"}</span>
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>Contact</span><span>{r.contact || "—"}</span>
+                  {r.reason && (<><span style={{ color: "#9d6a82", fontWeight: 700 }}>Reason</span><span style={{ whiteSpace: "pre-wrap" }}>{r.reason}</span></>)}
+                </div>
+
+                {r.status !== "pending" && r.decided_by && (
+                  <div style={{ background: r.status === "approved" ? "#f0fdf4" : "#fef2f2", border: "1px solid " + (r.status === "approved" ? "#bbf7d0" : "#fecaca"), borderRadius: 11, padding: "10px 13px", marginBottom: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: r.status === "approved" ? "#15803d" : "#b91c1c", marginBottom: 3 }}>
+                      {r.status === "approved" ? "✅ Approved" : "✕ Declined"}{r.decision_note ? "" : ""}
+                    </div>
+                    {r.decision_note && <div style={{ fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{r.decision_note}</div>}
+                    <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>{r.decided_by}{r.decided_at ? " · " + fmtIncidentTime(r.decided_at) : ""}</div>
+                  </div>
+                )}
+
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+                  <button disabled={busy || r.status === "approved"} onClick={() => approve(r)}
+                    style={{ border: "1.5px solid #15803d", background: r.status === "approved" ? "#15803d" : "#fff", color: r.status === "approved" ? "#fff" : "#15803d", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: r.status === "approved" ? "default" : "pointer" }}>
+                    {r.status === "approved" ? "● Approved" : "Approve"}
+                  </button>
+                  <button disabled={busy || r.status === "declined"} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }}
+                    style={{ border: "1.5px solid #b91c1c", background: r.status === "declined" ? "#b91c1c" : "#fff", color: r.status === "declined" ? "#fff" : "#b91c1c", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: r.status === "declined" ? "default" : "pointer" }}>
+                    {r.status === "declined" ? "● Declined" : "Decline"}
+                  </button>
+                </div>
+
+                {declineId === r.id && (
+                  <div style={{ background: "#fef2f2", border: "1.5px solid #fecaca", borderRadius: 11, padding: "12px 13px", marginBottom: 14 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 800, color: "#b91c1c", marginBottom: 6 }}>Reason for declining (required — the staff member can be told)</div>
+                    <textarea value={declineText} onChange={e => setDeclineText(e.target.value)} autoFocus
+                      placeholder="Why is this being declined…"
+                      style={{ width: "100%", boxSizing: "border-box", minHeight: 70, fontFamily: "inherit", fontSize: 13.5, padding: "10px 12px", borderRadius: 9, border: "1.5px solid #fecaca", resize: "vertical" }} />
+                    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                      <button disabled={busy || !declineText.trim()} onClick={() => doDecline(r)}
+                        style={{ background: "#b91c1c", color: "#fff", border: "none", borderRadius: 9, padding: "8px 16px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: declineText.trim() ? "pointer" : "default", opacity: declineText.trim() ? 1 : 0.5 }}>Confirm decline</button>
+                      <button onClick={() => { setDeclineId(null); setDeclineText(""); }}
+                        style={{ background: "#f3f4f6", color: "#6b7280", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+
+                <div style={{ fontWeight: 700, color: "#831843", fontSize: 12.5, marginBottom: 6 }}>HR notes (internal)</div>
+                {notes.map((n, i) => (
+                  <div key={i} style={{ background: "#faf5f7", borderRadius: 9, padding: "8px 11px", fontSize: 13, marginBottom: 6 }}>
+                    <span style={{ whiteSpace: "pre-wrap" }}>{n.note}</span>
+                    <div style={{ fontSize: 11, color: "#9d6a82", marginTop: 3 }}>{n.by || "HR"} · {fmtIncidentTime(n.at)}</div>
+                  </div>
+                ))}
+                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                  <input value={noteDraft[r.id] || ""} onChange={e => setNoteDraft({ ...noteDraft, [r.id]: e.target.value })}
+                    placeholder="Add an internal note…" onKeyDown={e => { if (e.key === "Enter") addNote(r); }}
+                    style={{ flex: 1, fontFamily: "inherit", fontSize: 13, padding: "8px 11px", borderRadius: 9, border: "1.5px solid #e7c6d4" }} />
+                  <button disabled={busy || !(noteDraft[r.id] || "").trim()} onClick={() => addNote(r)}
+                    style={{ background: "#831843", color: "#fff", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer", opacity: (noteDraft[r.id] || "").trim() ? 1 : 0.5 }}>Add</button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -9788,6 +10053,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Staff incident reports (confidential channel — see sql/incident_reports.sql)
   const [incidentReports, setIncidentReports] = useState([]);
   const [incidentPopupSeen, setIncidentPopupSeen] = useState(false);  // dismissed for this session
+  // Staff leave requests (from My BOA — see sql/leave_requests.sql)
+  const [leaveRequests, setLeaveRequests] = useState([]);
   const [overtimeShortCache, setOvertimeShortCache] = useState({});    // { ec|cycleYm: hours } from early-leave sidecar
   const [overtimeShortLoading, setOvertimeShortLoading] = useState(false);
   const [otForm, setOtForm] = useState({ ec: "", date: "", hours: "", reason: "" });
@@ -10754,8 +11021,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadOvertimeRequests ? window.BOA_DB.loadOvertimeRequests() : Promise.resolve([]),
       window.BOA_DB.loadFreshaAccess ? window.BOA_DB.loadFreshaAccess() : Promise.resolve({}),
       window.BOA_DB.loadOvertimeAccess ? window.BOA_DB.loadOvertimeAccess() : Promise.resolve({}),
-      (window.BOA_DB.loadIncidentReports && canSeeIncidents(currentUser)) ? window.BOA_DB.loadIncidentReports() : Promise.resolve([])
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, incidents]) => {
+      (window.BOA_DB.loadIncidentReports && canSeeIncidents(currentUser)) ? window.BOA_DB.loadIncidentReports() : Promise.resolve([]),
+      (window.BOA_DB.loadLeaveRequests && canSeeIncidents(currentUser)) ? window.BOA_DB.loadLeaveRequests() : Promise.resolve([])
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, incidents, leaveReqs]) => {
       setStaff(d.staff);
       setManagers(d.managers);
       setMatRecs(d.matRecs);
@@ -10770,6 +11038,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setFreshaAccess(freshaAcc && typeof freshaAcc === "object" ? freshaAcc : {});
       setOvertimeAccess(otAccess && typeof otAccess === "object" ? otAccess : {});
       setIncidentReports(Array.isArray(incidents) ? incidents : []);
+      setLeaveRequests(Array.isArray(leaveReqs) ? leaveReqs : []);
       setLoading(false);
     }).catch((err) => {
       setLoadError("Could not load data: " + (err.message || err));
@@ -12261,7 +12530,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   ] : []),
                   { t: "maternity", l: matLbl },
                   { t: "unpaidLegal", l: "⏸️ Unpaid Leave (Legal)" },
-                  { t: "compliance", l: "📋 Compliance" }
+                  { t: "compliance", l: "📋 Compliance" },
+                  ...(canSeeIncidents(currentUser) ? [(() => {
+                    const unread = incidentReports.filter(r => !r.reviewed).length;
+                    return { t: "incidents", l: "🛡️ Incident Reports" + (unread ? "  (" + unread + ")" : "") };
+                  })()] : [])
                 ]
               },
               {
@@ -12273,6 +12546,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "checkins", l: "📲 Nail Tech Check-ins" },
                   { t: "mgrclockins", l: "🕐 Manager Check-ins" },
                   { t: "leave", l: "🌴 Leave Planner" },
+                  ...(canSeeIncidents(currentUser) ? [(() => {
+                    const pend = leaveRequests.filter(r => r.status === "pending").length;
+                    return { t: "leaveRequests", l: "📨 Leave Requests" + (pend ? "  (" + pend + ")" : "") };
+                  })()] : []),
                   { t: "storeOpenings", l: "🔓 Store Openings" },
                   { t: "movements", l: "🔀 Today's Movements" },
                   { t: "dailyTasks", l: "📋 Daily Tasks" },
@@ -12300,10 +12577,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 color: { bg: "#EDE9FE", bgActive: "#DDD6FE", ink: "#5B21B6" },
                 items: [
                   { t: "alerts", l: "🔔 Alerts" },
-                  ...(canSeeIncidents(currentUser) ? [(() => {
-                    const unread = incidentReports.filter(r => !r.reviewed).length;
-                    return { t: "incidents", l: "🛡️ Incident Reports" + (unread ? "  (" + unread + ")" : "") };
-                  })()] : []),
                   { t: "activity", l: "📜 Activity Log" }
                 ]
               },
@@ -16005,6 +16278,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         {/* ── INCIDENT REPORTS TAB ── */}
         {tab === "incidents" && canSeeIncidents(currentUser) && (
           <IncidentReportsTab reports={incidentReports} setReports={setIncidentReports} currentUser={currentUser} />
+        )}
+
+        {/* ── LEAVE REQUESTS TAB ── */}
+        {tab === "leaveRequests" && canSeeIncidents(currentUser) && (
+          <LeaveRequestsTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} />
         )}
 
         {/* ── ALERTS TAB ── */}

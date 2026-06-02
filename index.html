@@ -86,6 +86,12 @@ window.BOA_SUPABASE_CONFIG = {
      a store manager with the kiosk's anon key cannot read incident reports. -->
 <script>
   window.BOA_INCIDENT_HR_KEY = "boa-incident-6a790e353dcf4ff73dfa207b5501bf7400e1223a";
+  // Web address of the "My BOA" staff hub (the QR in the portal points here).
+  // Leave blank to use this site's own /myboa.html. Set it to a separate
+  // address — e.g. "https://my.boabeautybar.co.za" — if you'd rather staff
+  // never land on the portal's domain. ("/myboa.html" is appended if the URL
+  // has no path of its own.)
+  window.BOA_STAFF_URL = "";
 </script>
 
 <!-- Google API config for HR Library Migration -->

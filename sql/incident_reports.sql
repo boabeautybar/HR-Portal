@@ -36,7 +36,8 @@ create table if not exists incident_reports (
   created_at       timestamptz not null default now(),
   store            text,                         -- which salon
   category         text not null default 'Other',-- Safety / Harassment / Management / Theft / Hygiene / Other
-  incident_date    date,                         -- when it happened
+  incident_date    date,                         -- when it happened (the day)
+  time_frame       text,                         -- roughly what time of day
   people_involved  text,                         -- who was involved
   description      text not null,                -- what happened
   witnesses        text,                         -- optional — anyone who saw it
@@ -48,10 +49,19 @@ create table if not exists incident_reports (
   status           text not null default 'new',  -- new | reviewing | resolved
   reviewed         boolean not null default false,-- HR has seen it (clears the pop-up)
   internal_notes   jsonb not null default '[]'::jsonb,  -- [{at,by,note}] — HR-only
+  resolution       text,                          -- how it was resolved (required to close)
+  resolved_at      timestamptz,
+  resolved_by      text,
   updated_at       timestamptz
 );
 
 create index if not exists incident_reports_created_idx on incident_reports (created_at desc);
+
+-- For installs created before these columns existed (safe to re-run).
+alter table incident_reports add column if not exists time_frame  text;
+alter table incident_reports add column if not exists resolution  text;
+alter table incident_reports add column if not exists resolved_at  timestamptz;
+alter table incident_reports add column if not exists resolved_by  text;
 
 -- Tiny private secret store. RLS ON / no policies → unreadable via anon REST.
 -- Only the SECURITY DEFINER functions below can read it.
@@ -84,10 +94,12 @@ begin
 end $$;
 
 -- ---- PUBLIC: submit a report (no key; insert-only, cannot read) ------------
+drop function if exists submit_incident_report(text,text,date,text,text,text,boolean,boolean,text,text,text);
 create or replace function submit_incident_report(
   p_store            text,
   p_category         text,
   p_incident_date    date,
+  p_time_frame       text,
   p_people_involved  text,
   p_description      text,
   p_witnesses        text,
@@ -115,13 +127,14 @@ begin
            || '-' || upper(substr(md5(random()::text), 1, 4));
 
   insert into incident_reports (
-    ref_code, store, category, incident_date, people_involved, description, witnesses,
+    ref_code, store, category, incident_date, time_frame, people_involved, description, witnesses,
     urgent, about_management, reporter_name, reporter_contact, photo_b64
   ) values (
     v_ref,
     btrim(p_store),
     coalesce(nullif(btrim(p_category), ''), 'Other'),
     p_incident_date,
+    nullif(btrim(p_time_frame), ''),
     btrim(p_people_involved),
     btrim(p_description),
     nullif(btrim(p_witnesses), ''),
@@ -144,17 +157,37 @@ begin
 end $$;
 
 -- ---- PORTAL: change status (also marks reviewed) ---------------------------
-create or replace function set_incident_status(p_key text, p_id uuid, p_status text)
-returns void
+-- Closing a report (status='resolved') REQUIRES a resolution note describing
+-- how it was handled — captured on the report and added to the audit trail.
+-- Signature changed (added p_note/p_actor) so the old 3-arg version is dropped.
+drop function if exists set_incident_status(text, uuid, text);
+create or replace function set_incident_status(
+  p_key text, p_id uuid, p_status text,
+  p_note text default '', p_actor text default ''
+) returns void
 language plpgsql security definer set search_path = public as $$
 begin
   perform _check_incident_key(p_key);
   if p_status not in ('new', 'reviewing', 'resolved') then
     raise exception 'bad status';
   end if;
-  update incident_reports
-     set status = p_status, reviewed = true, updated_at = now()
-   where id = p_id;
+  if p_status = 'resolved' and coalesce(btrim(p_note), '') = '' then
+    raise exception 'resolution note required';
+  end if;
+
+  if p_status = 'resolved' then
+    update incident_reports
+       set status = 'resolved', reviewed = true,
+           resolution = btrim(p_note), resolved_at = now(), resolved_by = coalesce(p_actor, ''),
+           internal_notes = internal_notes || jsonb_build_object(
+             'at', now(), 'by', coalesce(p_actor, ''), 'note', 'Resolved: ' || btrim(p_note)),
+           updated_at = now()
+     where id = p_id;
+  else
+    update incident_reports
+       set status = p_status, reviewed = true, updated_at = now()
+     where id = p_id;
+  end if;
 end $$;
 
 -- ---- PORTAL: mark a report as seen (clears the pop-up) ----------------------
@@ -184,8 +217,8 @@ end $$;
 -- The reporting form (public) only needs submit. The portal uses the rest with
 -- the HR key. _check_incident_key stays internal.
 revoke execute on function _check_incident_key(text) from public;
-grant execute on function submit_incident_report(text,text,date,text,text,text,boolean,boolean,text,text,text) to anon;
+grant execute on function submit_incident_report(text,text,date,text,text,text,text,boolean,boolean,text,text,text) to anon;
 grant execute on function list_incident_reports(text)              to anon;
-grant execute on function set_incident_status(text,uuid,text)      to anon;
+grant execute on function set_incident_status(text,uuid,text,text,text) to anon;
 grant execute on function mark_incident_reviewed(text,uuid)        to anon;
 grant execute on function add_incident_note(text,uuid,text,text)   to anon;
