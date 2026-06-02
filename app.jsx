@@ -1592,6 +1592,100 @@ const KIOSK_DEFAULT_PINS = {
   "Mushroom Farm": "0021", "Verdi": "0022", "Ballito": "0023"
 };
 
+// Manager scheduled shift times for a (role, schedule-code, branch, day-of-week).
+// Pure lookup of the store/role hour rules — module-scope so BOTH the Manager
+// Coverage grid and the Attendance sheet (which derives a manager's early-leave
+// deduction from their clock-out vs this end time) use the exact same rules.
+// Returns a "HH:MM - HH:MM" string. Per-day CUSTOM hours (boa_mgr_times_v1)
+// override this where set.
+function shiftTimes(role, code, branch, dow) {
+  const r = (role || "").toUpperCase();
+  const isSM = r === "SM" || r === "SSM";
+  const _b = branch || "";
+
+  // Sandown / Table Bay share the same Mon-Fri split (and
+  // Table Bay extends it to Saturday). SM is a flat 08:00-17:00
+  // every working day.
+  if (_b === "Sandown" || _b === "Table Bay") {
+    if (isSM) return "08:00 - 17:00";
+    if (dow === 0) {                                // Sunday
+      if (code === "WE") return "08:00 - 17:00";
+      if (code === "WL") return "09:00 - 18:00";
+      return "09:00 - 18:00";
+    }
+    if (dow === 6 && _b === "Sandown") {            // Sandown Saturday
+      if (code === "WE") return "08:00 - 17:00";
+      if (code === "WL") return "10:00 - 19:00";
+      return "10:00 - 19:00";
+    }
+    // Mon-Fri (and Mon-Sat for Table Bay)
+    if (code === "WE") return "08:00 - 17:00";
+    if (code === "WM") return "09:00 - 18:00";
+    if (code === "WL") return "11:00 - 20:00";
+    return "11:00 - 20:00";
+  }
+
+  // Riverlands — Mon-Fri split, Sat/Sun single shift.
+  if (_b === "Riverlands") {
+    if (isSM) return "08:00 - 17:00";               // SM/SSM always 08:00-17:00, every day
+    if (dow === 6) return "09:00 - 18:00";          // Sat single AM
+    if (dow === 0) return "08:30 - 17:00";          // Sun single AM (08:30 open)
+    if (code === "WE") return "09:00 - 18:00";      // AM opener
+    if (code === "WB") return "08:00 - 17:00";      // 4+ bonus opener
+    if (code === "WL") return "10:00 - 19:00";
+    return "10:00 - 19:00";
+  }
+
+  // Ballito / Mall of the South — SM-only WE opener, AM closers.
+  if (_b === "Ballito" || _b === "Mall of the South") {
+    if (isSM) return "08:00 - 17:00";
+    if (dow === 0) return "08:00 - 17:00";          // Sunday single WE
+    if (code === "WE") return "08:00 - 17:00";
+    if (code === "WM") return "09:00 - 18:00";
+    if (code === "WL") return "10:00 - 19:00";
+    return "10:00 - 19:00";
+  }
+
+  // Fourways — store hours differ; SM/SSM always open (08-17),
+  // AMs/techs carry the late close.
+  if (_b === "Fourways") {
+    if (isSM) return "08:00 - 17:00";   // SM/SSM always open, never close
+    if (dow === 0) {                                // Sunday (store 09-19)
+      if (code === "WE") return "08:00 - 17:00";
+      if (code === "WL") return "10:00 - 19:00";
+      return "10:00 - 19:00";
+    }
+    if (code === "WM") return "10:00 - 19:00";
+    if (code === "WL") return "11:00 - 20:00";
+    return "11:00 - 20:00";
+  }
+
+  // Generic stores — generic SM 08-17 / AM 09:00-18:30 hours.
+  if (isSM) {
+    if (dow === 0 || dow === 6) return "08:00 - 17:00";
+    if (code === "WL") return "08:30 - 17:30";
+    if (code === "WE") return "07:30 - 16:30";
+    if (code === "WM") return "08:00 - 13:00";
+    return "08:00 - 17:00";
+  }
+  if (dow === 6) return "09:00 - 18:00";        // Saturday AM
+  if (dow === 0) return "08:30 - 17:00";        // Sunday AM
+  if (code === "WL") return "10:00 - 19:00";
+  if (code === "WE") return "08:30 - 18:00";
+  if (code === "WM") return "09:00 - 13:00";
+  if (code === "WB") return "08:00 - 19:00";
+  if (code === "E")  return "09:00 - 18:30";
+  return "09:00 - 18:30";
+}
+
+// Parse a "HH:MM - HH:MM" range into {start,end} minutes-from-midnight, or null.
+function parseShiftRange(s) {
+  if (!s || typeof s !== "string") return null;
+  const m = s.match(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  return { start: (+m[1]) * 60 + (+m[2]), end: (+m[3]) * 60 + (+m[4]) };
+}
+
 // ── One-shot JHB + Durban starter-data import ────────────────────────────
 // Populated from the operations team's "BOA Current Staff- 2026" sheet.
 // Six new locations (five Johannesburg + one Durban) plus 56 nail-tech rows
@@ -17726,6 +17820,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const order = { SSM: 0, SM: 1, AM: 2, NT: 3 };
           return (order[a.role] ?? 9) - (order[b.role] ?? 9) || a.name.localeCompare(b.name);
         });
+        // ec → row lookup (carries role) so per-ec helpers like the totals can
+        // tell a manager from a nail tech.
+        const attStaffByEc = {};
+        attStaff.forEach(row => { attStaffByEc[String(row.ec).trim()] = row; });
         // Lookup for the schedule/status helpers below: every day for an
         // on-maternity staff member mirrors as 'mat' regardless of what's
         // in the saved schedule grid (which may still have legacy 'L'
@@ -17785,6 +17883,49 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if ((_mgrCheckedInByEcYmd[t] || {})[ymd]) return true;
           const sid = _mgrEcToStaffId[ec] != null ? String(_mgrEcToStaffId[ec]) : null;
           return !!(sid && (_mgrCheckedInByIdYmd[sid] || {})[ymd]);
+        };
+        // Latest clock-OUT timestamp (ms) per manager ec+ymd, from the same
+        // rows. Used to AUTO-DERIVE a manager's early-leave deduction from when
+        // they actually clocked out vs their scheduled shift end — so it always
+        // matches the clock-out shown on Manager Check-ins (no manual entry).
+        const _mgrOutTsByEcYmd = {};
+        (mgrClockinRows || []).forEach(r => {
+          if (!r || !r.staff || r.staff.role_type !== "manager") return;
+          if (r.type !== "out" && r.type !== "out_auto") return;
+          const ec = String(r.staff.employee_code || "").trim(); if (!ec) return;
+          const ymdK = _mLocalYmd(r.ts);
+          const t = new Date(r.ts).getTime();
+          const cur = (_mgrOutTsByEcYmd[ec] = _mgrOutTsByEcYmd[ec] || {});
+          if (!cur[ymdK] || t > cur[ymdK]) cur[ymdK] = t;
+        });
+        // Hours short = scheduled end − actual clock-out, honouring per-day
+        // CUSTOM hours (boa_mgr_times_v1) over the code-based default. Returns 0
+        // unless it's a genuine early departure (beyond a small grace). Managers
+        // only — techs keep the kiosk-recorded boa_early sidecar.
+        const _MGR_EARLY_GRACE_MIN = 20;
+        const _mgrEarlyHoursFor = (s, d, ymd) => {
+          if (!s || s.role === "NT" || !ymd) return 0;
+          const ec = String(s.ec || "").trim();
+          const outTs = (_mgrOutTsByEcYmd[ec] || {})[ymd];
+          if (!outTs) {
+            // No clock-out loaded for this day (e.g. an older cycle outside the
+            // clock-in window) — fall back to any historically recorded value
+            // so past manager early-leaves aren't lost.
+            const er = attEarly && attEarly[d] && attEarly[d][s.ec];
+            return er && typeof er.hours === "number" ? er.hours : 0;
+          }
+          const code = (attSched[s.ec] || {})[d] || (attSched[ec] || {})[d] || "";
+          const custom = (mgrCustomTimes[s.ec] || mgrCustomTimes[ec] || {})[ymd];
+          const isWork = code === "W" || code === "WE" || code === "WL" || code === "WM" || code === "WB" || code === "E";
+          if (!custom && !isWork) return 0;                       // not a scheduled working day
+          let dow = -1; try { dow = new Date(ymd + "T12:00:00").getDay(); } catch (_) {}
+          const range = parseShiftRange(custom || shiftTimes(s.role, code, s.branch || attBranch, dow));
+          if (!range) return 0;
+          const out = new Date(outTs);
+          const shortMin = range.end - (out.getHours() * 60 + out.getMinutes());
+          if (shortMin <= _MGR_EARLY_GRACE_MIN) return 0;         // on time / overran / within grace
+          let h = Math.round((shortMin / 60) * 2) / 2;            // round to 0.5h
+          return h > 12 ? 12 : h;
         };
         const _todayYmdAtt = (() => { const d = new Date(); return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()); })();
         const _mgrCheckinFromYmd = (() => {
@@ -18927,11 +19068,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // Tracked separately so the SHORT HRS column can show only
             // these hours; also rolled into the existing unpaidHours so
             // NET UNPAID picks them up too.
-            const earlyForDay = attEarly && attEarly[dy.d];
-            const earlyRec = earlyForDay && earlyForDay[ec];
-            if (earlyRec && typeof earlyRec.hours === "number" && earlyRec.hours > 0) {
-              t.earlyHours += earlyRec.hours;
-              t.unpaidHours += earlyRec.hours;
+            const _esRow = attStaffByEc[String(ec).trim()];
+            let _earlyH = 0;
+            if (_esRow && _esRow.role !== "NT") {
+              _earlyH = _mgrEarlyHoursFor(_esRow, dy.d, dy.ymd);   // derived from clock-out
+            } else {
+              const earlyRec = attEarly && attEarly[dy.d] && attEarly[dy.d][ec];
+              _earlyH = (earlyRec && typeof earlyRec.hours === "number") ? earlyRec.hours : 0;
+            }
+            if (_earlyH > 0) {
+              t.earlyHours += _earlyH;
+              t.unpaidHours += _earlyH;
             }
           }
           // Convert deductions to days. Short hours from the kiosk's
@@ -19387,8 +19534,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // orange overlay until the next Import Check-ins refresh
                           // (matches the rule the user spelled out: 'I only want to
                           // see left-early after I import the check-ins').
-                          const earlyForCell = !mirrorSuppressed && attEarly && attEarly[dy.d] && attEarly[dy.d][s.ec];
-                          const earlyHours = earlyForCell && typeof earlyForCell.hours === "number" ? earlyForCell.hours : 0;
+                          // Managers: derive the deduction from their actual clock-out vs
+                          // scheduled end (custom-hours aware). Techs: kiosk boa_early sidecar.
+                          let earlyHours = 0;
+                          if (!mirrorSuppressed) {
+                            if (s.role !== "NT") {
+                              earlyHours = _mgrEarlyHoursFor(s, dy.d, dy.ymd);
+                            } else {
+                              const earlyForCell = attEarly && attEarly[dy.d] && attEarly[dy.d][s.ec];
+                              earlyHours = earlyForCell && typeof earlyForCell.hours === "number" ? earlyForCell.hours : 0;
+                            }
+                          }
                           if (earlyHours > 0) {
                             const mins = Math.round(earlyHours * 60);
                             const lbl = mins < 60 ? "-" + mins + "m"
@@ -19563,8 +19719,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               : freshaCoversThisDay ? "No appointments this day"
                                 : "No data for this day yet";
                           }
-                          const earlyRec = attEarly && attEarly[dy.d] && attEarly[dy.d][s.ec];
-                          const earlyHrs = earlyRec && typeof earlyRec.hours === "number" ? earlyRec.hours : 0;
+                          const earlyHrs = s.role !== "NT"
+                            ? _mgrEarlyHoursFor(s, dy.d, dy.ymd)
+                            : ((attEarly && attEarly[dy.d] && attEarly[dy.d][s.ec] && typeof attEarly[dy.d][s.ec].hours === "number") ? attEarly[dy.d][s.ec].hours : 0);
 
                           const loanTo = outgoingLoanMap[s.ec] && outgoingLoanMap[s.ec][dy.d];
 
@@ -23554,6 +23711,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const staffByEc = {};
           for (const s of (staff || [])) staffByEc[s.ec] = s;
           for (const m of (managers || [])) staffByEc[m.ec] = m;
+          // Managers must NOT appear in Nail Tech Check-ins. Their kiosk
+          // entries here are early-clock-out mirrors (status "left_early")
+          // that leak in from boa_kiosk_log — those belong on the attendance
+          // sheet / Manager Check-ins, not in the nail-tech feed.
+          const mgrEcSet = new Set((managers || []).map(m => String(m.ec || "").trim()).filter(Boolean));
           // Synthesize "clockin-shaped" rows from the kiosk attendance grid so
           // the existing table renderer can display them next to clockins rows.
           // Only SUBMITTED check-ins are shown (manager tapped "Confirm and
@@ -23587,10 +23749,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               staff: { name: sRec ? sRec.name : "(unknown)", employee_code: r.ec, branch: r.branch }
             };
           });
-          // Merge clockins rows + attendance-grid rows, newest first.
-          const filtered = clockinFiltered.concat(attShaped).sort((a, b) =>
-            String(b.ts || "").localeCompare(String(a.ts || ""))
-          );
+          // Merge clockins rows + attendance-grid rows, newest first. Drop any
+          // row belonging to a manager (their early-clock-out leaks in as a
+          // "left_early" kiosk-log entry) — keep orphan rows for diagnostics.
+          const filtered = clockinFiltered.concat(attShaped)
+            .filter(r => !mgrEcSet.has(String((r.staff && r.staff.employee_code) || "").trim()))
+            .sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
           // Per-branch tally of every row fetched in the load window — independent
           // of the viewer's branch/range filters above. Lets us see at a glance
           // whether a branch's check-ins reached Supabase at all.
@@ -24613,89 +24777,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // (08:00 - 17:00, 09:00 - 18:00, etc.) so the coverage view
         // reads the same as the schedule.
         //   dow: 0=Sun, 1=Mon, …, 6=Sat (matches Date#getDay)
-        const shiftTimes = (role, code, branch, dow) => {
-          const r = (role || "").toUpperCase();
-          const isSM = r === "SM" || r === "SSM";
-          const _b = branch || "";
-
-          // Sandown / Table Bay share the same Mon-Fri split (and
-          // Table Bay extends it to Saturday). SM is a flat 08:00-17:00
-          // every working day.
-          if (_b === "Sandown" || _b === "Table Bay") {
-            if (isSM) return "08:00 - 17:00";
-            if (dow === 0) {                                // Sunday
-              if (code === "WE") return "08:00 - 17:00";
-              if (code === "WL") return "09:00 - 18:00";
-              return "09:00 - 18:00";
-            }
-            if (dow === 6 && _b === "Sandown") {            // Sandown Saturday
-              if (code === "WE") return "08:00 - 17:00";
-              if (code === "WL") return "10:00 - 19:00";
-              return "10:00 - 19:00";
-            }
-            // Mon-Fri (and Mon-Sat for Table Bay)
-            if (code === "WE") return "08:00 - 17:00";
-            if (code === "WM") return "09:00 - 18:00";
-            if (code === "WL") return "11:00 - 20:00";
-            return "11:00 - 20:00";
-          }
-
-          // Riverlands — Mon-Fri split, Sat/Sun single shift.
-          if (_b === "Riverlands") {
-            if (isSM) return "08:00 - 17:00";               // SM/SSM always 08:00-17:00, every day
-            if (dow === 6) return "09:00 - 18:00";          // Sat single AM
-            if (dow === 0) return "08:30 - 17:00";          // Sun single AM (08:30 open)
-            if (code === "WE") return "09:00 - 18:00";      // AM opener
-            if (code === "WB") return "08:00 - 17:00";      // 4+ bonus opener
-            if (code === "WL") return "10:00 - 19:00";
-            return "10:00 - 19:00";
-          }
-
-          // Ballito / Mall of the South — SM-only WE opener, AM closers.
-          if (_b === "Ballito" || _b === "Mall of the South") {
-            if (isSM) return "08:00 - 17:00";
-            if (dow === 0) return "08:00 - 17:00";          // Sunday single WE
-            if (code === "WE") return "08:00 - 17:00";
-            if (code === "WM") return "09:00 - 18:00";
-            if (code === "WL") return "10:00 - 19:00";
-            return "10:00 - 19:00";
-          }
-
-          // Fourways — store hours differ; SM/SSM always open (08-17),
-          // AMs/techs carry the late close.
-          if (_b === "Fourways") {
-            if (isSM) return "08:00 - 17:00";   // SM/SSM always open, never close
-            if (dow === 0) {                                // Sunday (store 09-19)
-              if (code === "WE") return "08:00 - 17:00";
-              if (code === "WL") return "10:00 - 19:00";
-              return "10:00 - 19:00";
-            }
-            if (code === "WM") return "10:00 - 19:00";
-            if (code === "WL") return "11:00 - 20:00";
-            return "11:00 - 20:00";
-          }
-
-          // Generic stores — generic SM 08-17 / AM 09:00-18:30 hours.
-          // Weekend override: SM/SSM stays on a flat 08:00-17:00 Sat & Sun
-          // (no early/late split applies at these stores on weekends).
-          // AMs switch to the shorter weekend day: Sat 09:00-18:00,
-          // Sun 08:30-17:00. Weekdays keep the existing per-code times.
-          if (isSM) {
-            if (dow === 0 || dow === 6) return "08:00 - 17:00";
-            if (code === "WL") return "08:30 - 17:30";
-            if (code === "WE") return "07:30 - 16:30";
-            if (code === "WM") return "08:00 - 13:00";
-            return "08:00 - 17:00";
-          }
-          if (dow === 6) return "09:00 - 18:00";        // Saturday AM
-          if (dow === 0) return "08:30 - 17:00";        // Sunday AM
-          if (code === "WL") return "10:00 - 19:00";
-          if (code === "WE") return "08:30 - 18:00";
-          if (code === "WM") return "09:00 - 13:00";
-          if (code === "WB") return "08:00 - 19:00";
-          if (code === "E")  return "09:00 - 18:30";
-          return "09:00 - 18:30";
-        };
+        // shiftTimes is now defined at module scope (shared with the Attendance
+        // sheet so manager early-leave deductions use the same hour rules).
         const isWorking = (v) => v === "W" || v === "WE" || v === "WL" || v === "WM" || v === "WB" || v === "E";
 
         // Read a cell from the working schedule grid. Tries the EC as-is
