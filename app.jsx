@@ -25745,12 +25745,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const branchesToCheck = cashupBranchFilter !== "All"
           ? visibleBranches.filter(s => s.name === cashupBranchFilter)
           : visibleBranches;
+        // Cash Ups went live on this date — don't flag "not submitted" for any
+        // day before it, since stores weren't using the kiosk cash-up yet.
+        const CASHUP_GO_LIVE = "2026-06-01";
         // A branch+date counts as "submitted" if any non-reopened row exists.
         const submittedSet = new Set(activeRows.map(r => r.branch + "|" + r.date));
         const missingByDate = [];
         for (let i = 0; i < cashupDays; i++) {
           const d = new Date(_today0); d.setDate(d.getDate() - i);
           const ymd = d.getFullYear() + "-" + _pad2(d.getMonth() + 1) + "-" + _pad2(d.getDate());
+          if (ymd < CASHUP_GO_LIVE) continue;
           const dow = d.getDay();
           const missing = branchesToCheck.filter(s =>
             !(Array.isArray(s.closedDow) && s.closedDow.includes(dow)) &&
