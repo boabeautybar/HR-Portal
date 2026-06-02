@@ -12632,8 +12632,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const _nm2 = (s) => (s || "").trim().toLowerCase();
                 const _liveStaff = new Set((staff || []).map(s => _nm2(s.name) + "|" + s.branch));
                 const _gone = (c) => c.status === "hired" && !_liveStaff.has(_nm2(c.name) + "|" + c.branch);
+                // Once a tech is ticked "opened on Fresha", keep the row for ~1
+                // day (so the opener sees the confirmation + can undo), then
+                // clear it from the reminder. Legacy rows ticked before we
+                // timestamped are treated as already handled and hidden. The
+                // tech re-surfaces in "open for the month" once promoted to
+                // onboarding (see monthPending below).
+                const _trialFreshaStillVisible = (c) => {
+                  if (!c.freshaTrialOpened) return true;        // not opened yet → always show
+                  const t = Date.parse(c.freshaTrialOpenedAt || "");
+                  if (!t) return false;                         // opened, no timestamp (legacy) → hide
+                  return (Date.now() - t) < 86400000;           // 1 day after opening, clear it
+                };
                 const activeTrials = (trialList || []).filter(c => _nt(c) && c.startDate
-                  && c.status !== "passed" && c.status !== "failed" && c.status !== "hired");
+                  && c.status !== "passed" && c.status !== "failed" && c.status !== "hired"
+                  && _trialFreshaStillVisible(c));
                 const monthPending = (trialList || []).filter(c => _nt(c)
                   && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c) && !_gone(c));
                 if (activeTrials.length === 0 && monthPending.length === 0) return null;
