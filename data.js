@@ -1719,7 +1719,12 @@
     // left early without clocking out. Submitted from the kiosk
     // (kiosk/data.js submitEarlyLeaveReport); the HR portal reads them
     // here to surface on the Manager Check-ins tab.
-    loadEarlyLeaveReports: loadEarlyLeaveReports
+    loadEarlyLeaveReports: loadEarlyLeaveReports,
+
+    // Kiosk device lock (Tier 3A) — server-validated enrolment RPCs
+    createKioskEnrollment: createKioskEnrollment,
+    listKioskDevices: listKioskDevices,
+    revokeKioskDevice: revokeKioskDevice
   };
 
   // ── Overtime requests ────────────────────────────────────────────────
@@ -1801,5 +1806,25 @@
     var res = await sb.from("app_state").upsert({ key: "boa_kiosk_devices_v1", value: map || {} });
     if (res.error) { console.error("saveKioskDevices:", res.error); throw res.error; }
     return map;
+  }
+
+  // ── Kiosk device lock (Tier 3A) — server-validated enrolment ──────────
+  // Mint a 6-digit enrolment code for a branch (redeemed once on the iPad).
+  async function createKioskEnrollment(branch) {
+    var res = await sb.rpc("create_kiosk_enrollment", { p_branch: branch });
+    if (res.error) { console.error("createKioskEnrollment:", res.error); throw res.error; }
+    return res.data; // the code string
+  }
+  // List active/enrolled devices (no token returned).
+  async function listKioskDevices() {
+    var res = await sb.rpc("list_kiosk_devices");
+    if (res.error) { console.error("listKioskDevices:", res.error); throw res.error; }
+    return res.data || [];
+  }
+  // Revoke a device → forces re-enrolment on its next load.
+  async function revokeKioskDevice(id) {
+    var res = await sb.rpc("revoke_kiosk_device", { p_id: id });
+    if (res.error) { console.error("revokeKioskDevice:", res.error); throw res.error; }
+    return true;
   }
 })();

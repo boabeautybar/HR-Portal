@@ -51,12 +51,32 @@
           '<button class="gp-btn"  data-action="offreq"   type="button" id="gp-btn-off"><span>📝</span> ' + esc(nextMonth) + ' Off</button>' +
           '<button class="gp-btn gp-logout" data-action="logout" type="button">LOG OUT</button>' +
         '</div>' +
+        '<div class="gp-header-right">' +
+          '<button class="gp-home-quick" id="gp-home-quick" type="button" aria-label="Home" title="Home">🏠</button>' +
+          '<button class="gp-menu-toggle" id="gp-menu-toggle" type="button" aria-label="Menu">☰</button>' +
+        '</div>' +
       '</header>' +
       '<main id="staff-main"></main>';
 
-    document.querySelector(".gp-actions").addEventListener("click", function (e) {
+    var gpActions = document.querySelector(".gp-actions");
+    function closeMenu() { if (gpActions) gpActions.classList.remove("open"); }
+    var gpHome = document.getElementById("gp-home-quick");
+    if (gpHome) gpHome.addEventListener("click", function () { closeMenu(); renderLanding(); });
+    var gpToggle = document.getElementById("gp-menu-toggle");
+    if (gpToggle) gpToggle.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (gpActions) gpActions.classList.toggle("open");
+    });
+    document.addEventListener("click", function (e) {
+      if (!gpActions || !gpActions.classList.contains("open")) return;
+      if (gpActions.contains(e.target) || (gpToggle && gpToggle.contains(e.target))) return;
+      closeMenu();
+    });
+
+    gpActions.addEventListener("click", function (e) {
       var btn = e.target.closest("button[data-action]"); if (!btn) return;
       var a = btn.dataset.action;
+      closeMenu();
       if (a === "logout")   window.APP_LOGOUT();
       if (a === "home")     renderLanding();
       if (a === "news")     renderNews();

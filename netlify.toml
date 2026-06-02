@@ -1,0 +1,6 @@
+# Serve the PWA manifest with the correct content-type (Netlify otherwise sends
+# application/octet-stream for .webmanifest, which some browsers reject).
+[[headers]]
+  for = "/manifest.webmanifest"
+  [headers.values]
+    Content-Type = "application/manifest+json"
