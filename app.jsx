@@ -9896,7 +9896,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               //   (scheduled work + presence + Fresha) OR (scheduled off + no
               //   presence + no Fresha). Anything else flags a ⚠.
               const cellSaysPresent = isWorking || isLate || checkinHasIn;
-              const scheduleSaysOff = hint === "off" || hint === "al" || hint === "ph" || hint === "mat";
+              const scheduleSaysOff = hint === "off" || hint === "al" || hint === "el" || hint === "ph" || hint === "mat";
               const isExtraDayCell = bareV === "ext";
               const presentNoApptWarn = cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
               const workedOnOffDay = scheduleSaysOff && cellSaysPresent && !cellShowsAbsent && !isExtraDayCell;
@@ -17552,6 +17552,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           sick: { lbl: "Sick NO note", bg: "#fecaca", fg: "#7f1d1d", cat: "paid" },
           frl: { lbl: "FRL + proof", bg: "#fed7aa", fg: "#7c2d12", cat: "paid" },
           al: { lbl: "Annual", bg: "#bfdbfe", fg: "#1e40af", cat: "paid" },
+          el: { lbl: "Emergency", bg: "#fed7aa", fg: "#9a3412", cat: "unpaid" },
           ph: { lbl: "Public Holiday", bg: "#86efac", fg: "#14532d", cat: "paid" },
           mat: { lbl: "Maternity", bg: "#d6c2a8", fg: "#7c2d12", cat: "unpaid" },
           no: { lbl: "NO SHOW", bg: "#e9d5ff", fg: "#581c87", cat: "unpaid" },
@@ -17818,13 +17819,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // those days. Overlay leave directly from leaveRecs so an approved
         // leave day shows as 'Annual' regardless of whether the schedule was
         // re-saved.
+        // Map each leave day to the attendance code it should mirror as:
+        // emergency leave → 'el' (Emergency, unpaid), otherwise → 'al' (Annual,
+        // paid). Storing the code (not just `true`) lets the overlay carry the
+        // emergency/unpaid distinction onto the attendance sheet. Existing
+        // truthiness checks ([ymd] present) still work since the value is a
+        // non-empty string.
         const _onLeaveByEcYmd = {};
         (leaveRecs || []).forEach(lv => {
           if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return;
           const ec = String(lv.ec).trim();
+          const _code = lv.emergency ? "el" : "al";
           for (let cur = new Date(lv.startDate + "T00:00:00"); cur <= new Date(lv.endDate + "T00:00:00"); cur.setDate(cur.getDate() + 1)) {
             const ymd = cur.getFullYear() + "-" + p2(cur.getMonth() + 1) + "-" + p2(cur.getDate());
-            (_onLeaveByEcYmd[ec] = _onLeaveByEcYmd[ec] || {})[ymd] = true;
+            const _bucket = (_onLeaveByEcYmd[ec] = _onLeaveByEcYmd[ec] || {});
+            // If the same day has both, an emergency record wins (unpaid is the
+            // stricter / safer classification to surface for follow-up).
+            if (_bucket[ymd] !== "el") _bucket[ymd] = _code;
           }
         });
 
@@ -17868,11 +17879,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // get mis-rendered as a working day.
           {
             const _do = days.find(x => x.d === d);
-            if (_do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd]) {
+            const _lc = _do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd];
+            if (_lc) {
               // Admin-edited cell still wins (e.g. "Sick + note" on top of a
               // pre-approved leave day shouldn't get reverted).
               const _gv = attGrid[ec] && attGrid[ec][d];
-              if (!_gv) return "al";
+              if (!_gv) return _lc;   // 'el' (emergency, unpaid) or 'al' (annual)
             }
           }
           // Tech-loan override: the home branch's loaned-out cell mirrors
@@ -18009,7 +18021,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // if the saved schedule grid still has W/WL/WE for that day.
           {
             const _do = days.find(x => x.d === d);
-            if (_do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd]) return "al";
+            const _lc = _do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd];
+            if (_lc) return _lc;   // 'el' (emergency, unpaid) or 'al' (annual)
           }
           const sv = attSched[ec] && attSched[ec][d];
           if (!sv) {
@@ -18125,7 +18138,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // green ✓ + reviewer + note stick for payroll's audit trail. If the
         // underlying value later changes, the review expires (handled at
         // render time by comparing to valueAtReview).
-        const VALID_STAT_CODES = ["on", "late", "off", "sick", "sick_n", "frl", "no", "absent", "al", "ph", "mat", "ext", "trial", "swap_o", "swap_i", "unpaid", "term"];
+        const VALID_STAT_CODES = ["on", "late", "off", "sick", "sick_n", "frl", "no", "absent", "al", "el", "ph", "mat", "ext", "trial", "swap_o", "swap_i", "unpaid", "term"];
         const markCellReviewed = async (ec, d, currentValue) => {
           pushUndo("warning resolution");
           const existing = ((attMeta && attMeta.reviewedWarnings) || {})[ec] || {};
@@ -18884,6 +18897,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const isHol = !!(holidayLookup && holidayLookup[dy.ymd]);
             const phOk = isHol && phEligible(dy, rawV, bareV);
             if (v === "al") t.al++;
+            else if (v === "el") t.unpaid++;   // emergency leave = unpaid
             else if (v === "sick") { t.sick++; t.unpaid++; }
             else if (v === "sick_n") t.sickNote++;
             else if (v === "frl") t.frl++;
@@ -19000,7 +19014,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // above. Cell CORRESPONDS only when scheduled-work + presence
               // + Fresha agree, or scheduled-off + no presence + no Fresha.
               const cellSaysPresent = isWorking || isLate || checkinHasIn;
-              const scheduleSaysOff = hint === "off" || hint === "al" || hint === "ph" || hint === "mat";
+              const scheduleSaysOff = hint === "off" || hint === "al" || hint === "el" || hint === "ph" || hint === "mat";
               const isExtraDayCell = bareV === "ext";
               const presentNoApptWarn = cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
               const workedOnOffDay = scheduleSaysOff && cellSaysPresent && !cellShowsAbsent && !isExtraDayCell;
@@ -19310,7 +19324,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const bareV = v ? (v.charAt(0) === "~" ? v.slice(1) : v) : "";
                           const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i";
                           const isLate = bareV === "late";
-                          const isOff = bareV === "off" || bareV === "swap_o" || bareV === "al" || bareV === "ph" ||
+                          const isOff = bareV === "off" || bareV === "swap_o" || bareV === "al" || bareV === "el" || bareV === "ph" ||
                             bareV === "mat" || bareV === "term" || bareV === "sick" || bareV === "sick_n" || bareV === "frl";
                           // Kiosk audit log entry for this cell (only non-presence statuses
                           // — sick / no-show / off / swap_o / etc.). Future-dated kiosk
@@ -19438,7 +19452,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // matches only hint==='off') — also treats Annual
                           // and Public-Holiday as 'shouldn't be here today'
                           // for the mismatch rules.
-                          const scheduleOffish = hint === "off" || hint === "al" || hint === "ph" || hint === "mat";
+                          const scheduleOffish = hint === "off" || hint === "al" || hint === "el" || hint === "ph" || hint === "mat";
                           const isExtraDayCell = bareV === "ext";
                           // presentNoApptWarn — schedule wants work, the cell or
                           // kiosk says present, but Fresha has no appointment.
@@ -19613,7 +19627,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const allMatchEdge = "1px solid #FCE7F3";
                           const schedStripeColor = stripeMergeBg ? stripeMergeBg
                             : scheduleSaysWork ? C_WORK
-                              : (hint === "off" || hint === "al" || hint === "ph" || hint === "mat" || hint === "term") ? C_OFF
+                              : (hint === "off" || hint === "al" || hint === "el" || hint === "ph" || hint === "mat" || hint === "term") ? C_OFF
                                 : hint ? (STAT[hint] || {}).bg || "transparent"
                                   : "transparent";
                           const freshaStripeColor = stripeMergeBg ? stripeMergeBg
@@ -19706,9 +19720,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       which leave type the day is, without hovering.
                                       Plain on/off mirrored cells stay clean because the green
                                       /grey S strip already shows that. */}
-                                {v && (override || isFutureSwap || earlyHours > 0 || phAuto || bareV === "mat" || bareV === "al") && (
+                                {v && (override || isFutureSwap || earlyHours > 0 || phAuto || bareV === "mat" || bareV === "al" || bareV === "el") && (
                                   <div style={{ position: "absolute", top: 6, bottom: s.role === "NT" ? 6 : 0, left: 0, right: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1, fontSize: 9, fontStyle: (override && !isFutureSwap) ? "normal" : "italic", fontWeight: (override && !isFutureSwap) ? 700 : 400, color: isFutureSwap ? "#9ca3af" : (override ? st.fg : (hintFg + "70")), pointerEvents: "none", letterSpacing: "0.02em" }}>
-                                    <span>{!override && bareV === "mat" ? "ML" : !override && bareV === "al" ? "Annual" : (st.lbl || hintLbl || "")}</span>
+                                    <span>{!override && bareV === "mat" ? "ML" : !override && bareV === "al" ? "Annual" : !override && bareV === "el" ? "Emergency" : (st.lbl || hintLbl || "")}</span>
                                     {/* Loan-day badge — only renders when a real status was
                                           mirrored from the receiving branch (i.e. v !== loan_out,
                                           which already shows '→ Bree' as the main label). */}
