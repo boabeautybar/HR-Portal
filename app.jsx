@@ -12554,13 +12554,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 return (
                   <div style={{ background: "#faf5ff", border: "2px solid #d8b4fe", borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: "0 4px 16px rgba(124,58,237,0.10)" }}>
                     <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 4 }}>
-                      <div style={{ fontSize: 15, fontWeight: 800, color: "#6b21a8", letterSpacing: "0.04em", textTransform: "uppercase" }}>🧪 Trial techs · Fresha</div>
+                      <div onClick={() => setDashCollapsed(p => ({ ...p, trialTechs: !p.trialTechs }))} style={{ fontSize: 15, fontWeight: 800, color: "#6b21a8", letterSpacing: "0.04em", textTransform: "uppercase", cursor: "pointer" }}>🧪 Trial techs · Fresha <span style={{ fontSize: 12, opacity: 0.6 }}>{dashCollapsed.trialTechs ? "▸" : "▾"}</span></div>
                       <div style={{ fontSize: 12, color: "#7c3aed", fontWeight: 700 }}>
                         {needTrial > 0 ? `${needTrial} to open for trial` : "all trials opened"}{monthPending.length ? ` · ${monthPending.length} to open for the month` : ""}
                       </div>
                       <div style={{ flex: 1 }} />
                       <button onClick={() => tryChangeTab("trialPeriod")} style={{ background: "#fff", color: "#6b21a8", border: "1px solid #d8b4fe", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>Open Trial Period →</button>
                     </div>
+                    <div style={{ display: dashCollapsed.trialTechs ? "none" : "block" }}>
                     <div style={{ fontSize: 11, color: "#9333ea", marginBottom: 8, fontStyle: "italic" }}>
                       {canAct ? `Tick each tech once they're opened on Fresha — it clears the reminder.` : `Opened by ${openerNames || "the assigned team"}.`}
                     </div>
@@ -12592,6 +12593,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         </div>
                       </div>
                     ))}
+                    </div>
                   </div>
                 );
               })()}
@@ -12659,8 +12661,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <div style={{ background: palette.bg, border: "2px solid " + palette.border, borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: urgent ? "0 6px 22px rgba(127,29,29,0.18)" : "0 4px 16px rgba(146,64,14,0.12)" }}>
                     <style>{`@keyframes _romAbsBlink { 0%,49%{opacity:1} 50%,100%{opacity:0.35} }`}</style>
                     <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
-                      <div style={{ fontSize: 15, fontWeight: 800, color: palette.text, letterSpacing: "0.04em", textTransform: "uppercase", animation: urgent ? "_romAbsBlink 1s infinite" : "none" }}>
-                        {urgent ? "🚨" : "📌"} Manager absences · action required
+                      <div onClick={() => setDashCollapsed(p => ({ ...p, mgrAbsences: !p.mgrAbsences }))} style={{ fontSize: 15, fontWeight: 800, color: palette.text, letterSpacing: "0.04em", textTransform: "uppercase", animation: urgent ? "_romAbsBlink 1s infinite" : "none", cursor: "pointer" }}>
+                        {urgent ? "🚨" : "📌"} Manager absences · action required <span style={{ fontSize: 12, opacity: 0.6 }}>{dashCollapsed.mgrAbsences ? "▸" : "▾"}</span>
                       </div>
                       <div style={{ fontSize: 12, color: palette.text, fontWeight: 700 }}>
                         {pending.length} manager{pending.length === 1 ? "" : "s"} scheduled but no clock-in &amp; no reason yet
@@ -12673,7 +12675,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         Open Manager Check-ins →
                       </button>
                     </div>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 8 }}>
+                    <div style={{ display: dashCollapsed.mgrAbsences ? "none" : "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 8 }}>
                       {branchKeys.map(b => (
                         <div key={b} style={{ background: palette.chip, border: "1px solid " + palette.chipBorder, borderRadius: 9, padding: "8px 10px" }}>
                           <div style={{ fontSize: 11, fontWeight: 800, color: palette.text, letterSpacing: "0.04em", marginBottom: 4 }}>📍 {b}</div>
