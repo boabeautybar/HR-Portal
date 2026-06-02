@@ -326,14 +326,12 @@
   function dayCard(dt, st, big) {
     var head = big ? (dt.toDateString() === new Date().toDateString() ? "Today" : "Tomorrow") : DOW[dt.getDay()];
     var date = dt.getDate() + " " + MONTHS[dt.getMonth()].slice(0, 3);
-    var body;
-    if (!st.published) {
-      body = '<div class="st st-none">Not published yet</div>';
-    } else {
-      var i = st.info;
-      body = '<div class="st st-' + i.kind + '">' + esc(i.label) + (i.sub ? '<span class="st-sub">' + esc(i.sub) + '</span>' : '') + '</div>';
-    }
-    return '<div class="dayrow' + (dt.toDateString() === new Date().toDateString() ? ' is-today' : '') + (big ? ' big' : '') + '">' +
+    var kind = st.published ? st.info.kind : "none";
+    var label = st.published ? st.info.label : "Not published";
+    var sub = st.published ? st.info.sub : "";
+    var body = '<div class="st"><span class="pill k-' + kind + '">' + esc(label) + '</span>' +
+      (sub ? '<span class="st-sub">' + esc(sub) + '</span>' : '') + '</div>';
+    return '<div class="dayrow k-' + kind + (dt.toDateString() === new Date().toDateString() ? ' is-today' : '') + (big ? ' big' : '') + '">' +
       '<div class="dleft"><div class="dname">' + esc(head) + '</div><div class="ddate">' + esc(date) + '</div></div>' + body + '</div>';
   }
 
