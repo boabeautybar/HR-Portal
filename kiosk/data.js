@@ -548,7 +548,11 @@
 
   async function listRecentCashups(limit) {
     var c = client(); if (!c) return [];
+    // Exclude reopened/deleted entries (archived_at set) so a cash-up that
+    // was reopened or removed from the HR portal stops showing in the store's
+    // Cash History.
     var res = await c.from("cashups").select("*").eq("branch", branch())
+      .is("archived_at", null)
       .order("date", { ascending: false }).order("created_at", { ascending: false })
       .limit(limit || 30);
     if (res.error) { console.error("listRecentCashups:", res.error); return []; }

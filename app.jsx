@@ -25998,24 +25998,41 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <td style={cell}>{banking}</td>
                           <td style={cell}>{r.signed_by}{r.notes ? <span title={r.notes} style={{ marginLeft: 6, color: "#9ca3af" }}>📝</span> : null}{isArchived && r.reopened_by ? <div style={{ fontSize: 10, color: "#9ca3af" }}>reopened by {r.reopened_by}</div> : null}</td>
                           <td style={cell}>
-                            {isArchived ? (
-                              <span style={{ color: "#9ca3af", fontSize: 11 }}>—</span>
-                            ) : (
-                              <button
-                                onClick={async () => {
-                                  if (!window.confirm("Reopen this cash-up?\n\nStore: " + r.branch + "\nDate: " + r.date + "\nTotal: " + _fmtMoney(r.total) + "\n\nThe store will be able to submit a new cash-up for this day. The current entry stays in the history as 'Reopened'.")) return;
-                                  try {
-                                    await window.BOA_DB.reopenCashup(r.id, currentUser?.name || "");
-                                    const fresh = await window.BOA_DB.listCashupsForDate(cashupDate);
-                                    setCashupRows(fresh || []);
-                                  } catch (e) {
-                                    window.alert("Couldn't reopen: " + ((e && e.message) || e));
-                                  }
-                                }}
-                                title="Reopen — let the store submit again for this day"
-                                style={{ background: "#fff", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
-                              >↻ Reopen</button>
-                            )}
+                            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                              {!isArchived && (
+                                <button
+                                  onClick={async () => {
+                                    if (!window.confirm("Reopen this cash-up?\n\nStore: " + r.branch + "\nDate: " + r.date + "\nTotal: " + _fmtMoney(r.total) + "\n\nThe store will be able to submit a new cash-up for this day. The current entry stays in the history as 'Reopened'.")) return;
+                                    try {
+                                      await window.BOA_DB.reopenCashup(r.id, currentUser?.name || "");
+                                      const fresh = await window.BOA_DB.listCashupsForDate(cashupDate);
+                                      setCashupRows(fresh || []);
+                                    } catch (e) {
+                                      window.alert("Couldn't reopen: " + ((e && e.message) || e));
+                                    }
+                                  }}
+                                  title="Reopen — let the store submit again for this day"
+                                  style={{ background: "#fff", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+                                >↻ Reopen</button>
+                              )}
+                              {!_hasStoreScope && (
+                                <button
+                                  onClick={async () => {
+                                    if (!window.confirm("PERMANENTLY DELETE this cash-up?\n\nStore: " + r.branch + "\nDate: " + r.date + "\nTotal: " + _fmtMoney(r.total) + "\n\nThis removes it completely — from the HR portal AND the store's kiosk. Use only for test or duplicate entries. This cannot be undone.")) return;
+                                    try {
+                                      await window.BOA_DB.deleteCashup(r.id);
+                                      const fresh = await window.BOA_DB.listCashupsForDate(cashupDate);
+                                      setCashupRows(fresh || []);
+                                    } catch (e) {
+                                      window.alert("Couldn't delete: " + ((e && e.message) || e));
+                                    }
+                                  }}
+                                  title="Delete permanently — removes this cash-up everywhere (for test / duplicate entries)"
+                                  style={{ background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 7, padding: "4px 9px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+                                >🗑 Delete</button>
+                              )}
+                              {isArchived && _hasStoreScope && <span style={{ color: "#9ca3af", fontSize: 11 }}>—</span>}
+                            </div>
                           </td>
                         </tr>
                       );
