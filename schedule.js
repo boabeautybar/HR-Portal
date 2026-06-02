@@ -277,13 +277,18 @@
       // Best-effort: name + role (for shift times), active SM-trial flag, and any
       // per-day custom hours — exactly what Manager Coverage uses. Never fatal.
       try {
-        var ecUp = found.ecKey.toUpperCase().trim();
+        // Both grid keys AND staff employee_codes sometimes carry a trailing
+        // space, so an exact match can silently miss (→ empty role → wrong
+        // hours). Fetch by prefix and match on the trimmed code client-side.
+        var ecTrim = found.ecKey.trim();
+        var ecUp = ecTrim.toUpperCase();
         var rr = await Promise.all([
-          sb.from("staff").select("name,first_name,role,role_type").ilike("employee_code", found.ecKey).limit(1),
+          sb.from("staff").select("employee_code,name,first_name,role,role_type").ilike("employee_code", ecTrim + "%").limit(10),
           sb.from("app_state").select("value").eq("key", "boa_sm_trial_v1").maybeSingle(),
           sb.from("app_state").select("value").eq("key", "boa_mgr_times_v1").maybeSingle()
         ]);
-        var row = rr[0] && rr[0].data && rr[0].data[0];
+        var rows = (rr[0] && rr[0].data) || [];
+        var row = rows.filter(function (x) { return String(x.employee_code || "").trim().toUpperCase() === ecUp; })[0];
         if (row) {
           state.name = row.first_name || (row.name || "").split(" ")[0] || "";
           state.role = row.role || "";
@@ -334,7 +339,9 @@
       '<a class="back" href="myboa.html">‹ My BOA</a>',
       '<div class="dashhead">',
         '<div><div class="hi">Hi ' + esc(state.name || "there") + ' 👋</div>',
-        '<div class="meta">' + esc(state.store) + (state.role ? ' · ' + esc(state.role) : '') + (state.isManager ? ' · Manager' : '') + '</div></div>',
+        '<div class="meta">' + esc(state.store) + (state.role ? ' · ' + esc(state.role) : '') +
+          (state.effRole === "SM" && state.role === "AM" ? ' (SM trial)' : '') +
+          (state.isManager ? ' · Manager' : '') + '</div></div>',
         '<button type="button" id="chg" class="chg">Change</button>',
       '</div>',
       '<div class="tabs">',
