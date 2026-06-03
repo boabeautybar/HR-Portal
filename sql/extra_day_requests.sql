@@ -66,6 +66,22 @@ begin
   if coalesce(btrim(p_name), '') = '' then raise exception 'name required'; end if;
   if p_work_date is null then raise exception 'date required'; end if;
 
+  -- Block a duplicate offer: same person already has a pending or approved
+  -- request for this same day. Match on employee code when given (case- and
+  -- whitespace-insensitive), otherwise fall back to the name. The portal can
+  -- still log a fresh one after a previous request was declined.
+  if exists (
+    select 1 from extra_day_requests e
+     where e.work_date = p_work_date
+       and e.status in ('pending', 'approved')
+       and (
+         (nullif(btrim(p_ec), '') is not null and upper(btrim(e.ec)) = upper(btrim(p_ec)))
+         or (nullif(btrim(p_ec), '') is null and lower(btrim(e.name)) = lower(btrim(p_name)))
+       )
+  ) then
+    raise exception 'DUPLICATE_DAY';
+  end if;
+
   v_ref := 'EX-' || to_char(now() at time zone 'Africa/Johannesburg', 'YYMMDD')
            || '-' || upper(substr(md5(random()::text), 1, 4));
 

@@ -8881,6 +8881,13 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
       return (a.work_date || "").localeCompare(b.work_date || "");
     });
   const pendingCount = (requests || []).filter(r => r.status === "pending").length;
+  // Flag duplicates — the same person (by EC, else name) with more than one
+  // still-active (pending/approved) request for the SAME day. New ones are
+  // now blocked at submission, but this surfaces any that already slipped in.
+  const _dupKey = (r) => String(r.ec || r.name || "").trim().toUpperCase() + "|" + r.work_date;
+  const _dupCounts = {};
+  (requests || []).forEach(r => { if (r && (r.status === "pending" || r.status === "approved")) { const k = _dupKey(r); _dupCounts[k] = (_dupCounts[k] || 0) + 1; } });
+  const isDup = (r) => (r.status === "pending" || r.status === "approved") && _dupCounts[_dupKey(r)] > 1;
   // Split into managers (EC ends in "M") and nail techs, shown as two
   // distinct colour-coded columns side by side.
   const isMgrReq = (r) => /M$/i.test(String(r.ec || "").trim());
@@ -8931,6 +8938,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
               <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(r.work_date)}</span>
               {dw.name && <span title={dw.busy ? "High-demand day — extra cover almost always needed" : ""} style={{ fontSize: 11, fontWeight: 800, padding: "2px 8px", borderRadius: 6, color: dw.busy ? "#9a3412" : "#6b7280", background: dw.busy ? "#ffedd5" : "#f3f4f6" }}>{dw.busy ? "🔥 " : ""}{dw.name}</span>}
               <span style={{ color: "#9ca3af", fontSize: 12 }}>{r.store ? "· " + r.store : ""}{r.ec ? " · " + r.ec : ""}</span>
+              {isDup(r) && <span title="This person has more than one active request for this day" style={{ fontSize: 10, fontWeight: 800, padding: "2px 8px", borderRadius: 6, color: "#9a3412", background: "#fed7aa" }}>⚠ DUPLICATE DAY</span>}
               <span style={{ marginLeft: "auto", ...chip(st) }}>{st.label}</span>
             </div>
             {r.note && <div style={{ marginTop: 8, fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{linkifyText(r.note)}</div>}

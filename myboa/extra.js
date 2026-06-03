@@ -213,7 +213,14 @@
     setBusy(true, "submit", "Sending…");
     sb.rpc("submit_extra_day_request", payload).then(function (res) {
       setBusy(false, "submit", "Send to regional manager");
-      if (res.error) { setErr("Sorry — could not send. Please try again. (" + (res.error.message || "error") + ")"); return; }
+      if (res.error) {
+        if (/DUPLICATE_DAY/.test(res.error.message || "")) {
+          setErr("You've already offered this day — it's already with your regional manager. No need to send it again.");
+        } else {
+          setErr("Sorry — could not send. Please try again. (" + (res.error.message || "error") + ")");
+        }
+        return;
+      }
       done(res.data);
     }).catch(function () {
       setBusy(false, "submit", "Send to regional manager");
