@@ -155,6 +155,19 @@ function installReadOnlyGuard() {
 // ─── HELPERS ────────────────────────────────────────────────────────────────────
 const TODAY = new Date("2026-04-27");
 function daysDiff(d) { return d ? Math.ceil((new Date(d) - TODAY) / 86400000) : null; }
+// Effective home branch on a given date (YYYY-MM-DD). A branch transfer is
+// stored as flags (transferring/transferTo/transferDate) without rewriting the
+// record's `branch`, so once the transfer date has arrived the stored branch is
+// stale. Mirrors the "settle" rule used on Locations so a borrow/loan logged
+// after a completed transfer attributes hours to the new home, not the old one.
+function effHomeBranch(s, onDate) {
+  if (!s) return "";
+  if (s.transferring && s.transferTo && s.transferDate && onDate) {
+    const td = String(s.transferDate).replace(/\//g, "-");
+    if (td <= onDate) return s.transferTo;
+  }
+  return s.branch || "";
+}
 function fmt(d) { return d ? new Date(d).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : "—"; }
 
 // Compress an image File → JPEG data URL bounded by maxDim & quality.
@@ -9108,13 +9121,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     if (!record || !record.ec) return showErr("Pick a nail tech.");
     if (!record.date) return showErr("Pick a date.");
     if (!record.toBranch) return showErr("Pick the branch they're working at.");
-    // fromBranch fallback: when the staff record passed in didn't carry a
-    // branch field, look it up from the live staff list before bailing.
+    // Resolve the home branch as of the loan date. A completed transfer (date
+    // already passed) lives on the record as flags without rewriting `branch`,
+    // so look the tech up live and follow the transfer rather than trusting a
+    // possibly-stale fromBranch from the form.
     let fromBranch = record.fromBranch || "";
-    if (!fromBranch) {
-      const live = (staff || []).find(p => p && p.ec === record.ec);
-      fromBranch = (live && live.branch) || "";
-    }
+    const live = (staff || []).find(p => p && p.ec === record.ec);
+    if (live) fromBranch = effHomeBranch(live, record.date);
     if (!fromBranch) return showErr("This tech isn't assigned to a home branch yet — set their branch in Staff first.");
     if (fromBranch === record.toBranch) return showErr("Pick a branch different from the tech's home (" + fromBranch + ").");
     if (!window.BOA_DB || !window.BOA_DB.saveTechLoans) return showErr("Database not ready — refresh and try again.");
@@ -22155,14 +22168,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const set = (k, v) => setLoanModal({ ...m, [k]: v });
         // Eligible pool: active, on-site staff. Exclude maternity,
         // unpaid-legal, and anyone already off-boarded with a past leftDate.
+        // `branch` is overridden with the effective home as of the loan date so
+        // the picker list, the "From (home)" field, and the saved record all
+        // follow a completed transfer instead of the stale stored branch.
         const todayPool = (enriched || []).filter(s =>
           s && s.ec && /^[BT]/.test(s.ec) &&
           !s.onMat && !s.onUnpaidLegal &&
           !(s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft > 0)
-        );
+        ).map(s => ({ ...s, branch: effHomeBranch(s, m.date) }));
         const selected = m.ec ? todayPool.find(p => p.ec === m.ec) : null;
-        // When a tech is picked, fromBranch is locked to their home.
-        const fromBranch = selected ? (selected.branch || "") : (m.fromBranch || "");
+        // When a tech is picked, fromBranch is locked to their home as of the
+        // loan date — following a completed transfer, not the stale stored branch.
+        const fromBranch = selected ? effHomeBranch(selected, m.date) : (m.fromBranch || "");
         // toBranch options: every other branch.
         const toOptions = SALONS.filter(s => s.name !== fromBranch);
         // Already-on-leave check for the chosen date.
@@ -22187,7 +22204,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   valueEc={m.ec}
                   onChange={(ec) => {
                     const p = todayPool.find(x => x.ec === ec);
-                    setLoanModal({ ...m, ec, name: (p && p.name) || "", fromBranch: (p && p.branch) || "" });
+                    setLoanModal({ ...m, ec, name: (p && p.name) || "", fromBranch: effHomeBranch(p, m.date) });
                   }}
                   placeholder="Search by name or EC…"
                 />
