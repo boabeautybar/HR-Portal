@@ -8677,8 +8677,8 @@ function IncidentPopup({ reports, onView, onDismiss }) {
 // Submitted from My BOA (leave.html); reviewed here. Same key-gated RPCs as
 // incidents (sql/leave_requests.sql). Visible to Owner / HR / senior ops.
 const LEAVE_TYPE = {
-  Annual: "Annual leave", Sick: "Sick leave", Family: "Family responsibility",
-  Unpaid: "Unpaid leave", Absent: "Called in / Absent", Other: "Other"
+  Annual: "Annual leave", Sick: "Sick", Family: "Family responsibility",
+  Unpaid: "Unpaid leave", Absent: "Absent (other reason)", Other: "Other"
 };
 // Render free-text (e.g. a request reason) with any http(s) links — sick notes
 // / absence proof uploaded from My BOA — turned into clickable anchors.
@@ -8700,15 +8700,16 @@ function leaveDays(s, e) {
   catch (_e) { return 0; }
 }
 
-// People who used the My BOA "Call in sick / Mark absent" tile (leave_type
-// "Absent") whose away-period overlaps today or tomorrow.
+// People who used the My BOA "Call in sick / Mark absent" tile — either sick
+// (leave_type "Sick") or absent for another reason ("Absent") — whose
+// away-period overlaps today or tomorrow.
 function calledInSickWindow(requests) {
   const ymd = (x) => x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0");
   const today = ymd(new Date());
   const t2 = new Date(); t2.setDate(t2.getDate() + 1);
   const tomorrow = ymd(t2);
   const list = (requests || []).filter(r =>
-    r && r.leave_type === "Absent" && r.start_date && r.end_date &&
+    r && (r.leave_type === "Sick" || r.leave_type === "Absent") && r.start_date && r.end_date &&
     r.start_date <= tomorrow && r.end_date >= today);
   return { today, tomorrow, list };
 }
@@ -8736,6 +8737,7 @@ function CalledInSickTab({ requests }) {
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                 {!r.reviewed && <span style={{ width: 9, height: 9, borderRadius: 999, background: "#BE185D", display: "inline-block" }} title="Not yet opened in Leave Requests" />}
                 <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
+                <span style={chip(r.leave_type === "Sick" ? { color: "#b45309", bg: "#fef3c7" } : { color: "#6b21a8", bg: "#ede9fe" })}>{LEAVE_TYPE[r.leave_type] || r.leave_type}</span>
                 {r.store && <span style={chip({ color: "#075985", bg: "#e0f2fe" })}>{r.store}</span>}
                 {r.ec && <span style={{ color: "#9ca3af", fontSize: 12 }}>{r.ec}</span>}
                 <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(r.start_date)}{r.end_date !== r.start_date ? " → " + fmtIncidentDate(r.end_date) : ""}</span>

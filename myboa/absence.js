@@ -34,7 +34,7 @@
     root.innerHTML = [
       '<div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>',
       '<h1>Call in sick / Mark absent</h1>',
-      '<p class="sub">Let management know you won\'t be able to come to work today / tomorrow or so. HR will review it.</p>',
+      '<p class="sub">Notify your manager and HR if you\'re unable to come to work today or tomorrow. Your submission will be reviewed by HR.</p>',
       '<div class="card">',
         '<label class="field"><span>Full name</span>',
           '<input type="text" id="name" placeholder="First and last name" /></label>',
@@ -53,9 +53,14 @@
         '<label class="field"><span>Expected back at work <em style="font-weight:400;color:#a07487">(if known)</em></span><input type="date" id="back" min="' + today + '" />',
           '<span class="hint">Today or tomorrow only — defaults to the day after your last day away.</span></label>',
         '<div class="span" id="span" style="display:none"></div>',
-        '<label class="field"><span>What\'s happening?</span>',
-          '<textarea id="desc" placeholder="Tell management why you can\'t come in — e.g. sick, family emergency…"></textarea></label>',
-        '<label class="field"><span>Attach proof <em style="font-weight:400;color:#a07487">(optional — photo or PDF)</em></span>',
+        '<label class="field"><span>Reason for being away</span>',
+          '<select id="kind">',
+            '<option value="Sick">I\'m sick</option>',
+            '<option value="Absent">Absent — another reason</option>',
+          '</select></label>',
+        '<label class="field"><span id="desclbl">What\'s happening? <em style="font-weight:400;color:#a07487">(optional)</em></span>',
+          '<textarea id="desc" placeholder="Anything management should know — e.g. symptoms, or the reason you\'re away."></textarea></label>',
+        '<label class="field"><span id="filelbl">Attach sick note / proof <em style="font-weight:400;color:#a07487">(optional — photo or PDF)</em></span>',
           '<input type="file" id="file" accept="image/*,application/pdf,.pdf" /></label>',
         '<label class="field"><span>Contact <em style="font-weight:400;color:#a07487">(optional)</em></span>',
           '<input type="text" id="contact" placeholder="Phone or email, so HR can reach you" /></label>',
@@ -83,6 +88,15 @@
     $("start").onchange = function () { if (!$("end").value) $("end").value = this.value; upd(); };
     $("end").onchange = function () { if (this.value && (!$("back").value || $("back").value <= this.value)) $("back").value = nextDay(this.value); upd(); };
     $("back").onchange = upd;
+    $("kind").onchange = function () {
+      var other = this.value === "Absent";
+      $("desclbl").innerHTML = other
+        ? 'Reason you\'re away'
+        : 'What\'s happening? <em style="font-weight:400;color:#a07487">(optional)</em>';
+      $("desc").placeholder = other
+        ? "Tell management why you can't come in — e.g. family emergency, transport…"
+        : "Anything management should know — e.g. symptoms, or the reason you're away.";
+    };
     $("submit").onclick = submit;
   }
 
@@ -94,6 +108,7 @@
     var store = $("store").value;
     var ec = ($("ec").value || "").trim();
     var start = $("start").value, end = $("end").value;
+    var kind = $("kind").value || "Sick"; // "Sick" or "Absent" (other reason)
     var desc = ($("desc").value || "").trim();
     var today = todayYmd();
     var tomorrow = addDays(today, 1);
@@ -104,14 +119,15 @@
     if (start < today || end < today) { setErr("This can only be for today or tomorrow — not the past."); return; }
     if (start > tomorrow || end > tomorrow) { setErr("Calling in / marking absent is only for today or tomorrow."); return; }
     if (end < start) { setErr("The last day can't be before the first day."); return; }
-    if (!desc) { setErr("Please describe why you can't come in."); $("desc").focus(); return; }
+    if (kind === "Absent" && !desc) { setErr("Please tell management the reason you're away."); $("desc").focus(); return; }
 
     var back = $("back").value;
     if (back && back < today) { setErr("The 'Expected back' date can't be in the past."); return; }
     var file = ($("file").files && $("file").files[0]) || null;
 
     var finish = function (proofUrl) {
-      var lines = [desc];
+      var lines = [];
+      if (desc) lines.push(desc);
       if (back && back > end) lines.push("Expected back at work: " + fmt(back));
       if (proofUrl) lines.push("Proof: " + proofUrl);
       var payload = {
@@ -119,7 +135,7 @@
         p_ec: ec || null,
         p_name: name,
         p_contact: ($("contact").value || "").trim() || null,
-        p_leave_type: "Absent",
+        p_leave_type: kind,
         p_start_date: start,
         p_end_date: end,
         p_reason: lines.join("\n")
