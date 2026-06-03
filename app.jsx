@@ -13669,10 +13669,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 if (!cur || rank[status] > rank[cur.status]) byEc[ec] = { status, branch: eff || b };
               }
             }
-            const a = { scheduled: 0, checkedIn: 0, notCheckedIn: 0, absent: 0, notCheckedInList: [] };
+            const a = { scheduled: 0, checkedIn: 0, notCheckedIn: 0, absent: 0, notCheckedInList: [], byBranch: {} };
             for (const ec in byEc) {
               const { status, branch } = byEc[ec];
               a.scheduled++;
+              if (branch) a.byBranch[branch] = (a.byBranch[branch] || 0) + 1;   // per-branch breakdown sums to a.scheduled
               if (status === "in") a.checkedIn++;
               else if (status === "absent") a.absent++;
               else {
@@ -14748,15 +14749,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 {/* Today by branch */}
                 <div style={card}>
                   <div style={cardTitle}>
-                    <span>📅 Scheduled today by branch</span>
+                    <span>💅 Techs working today by branch</span>
                     <button onClick={() => tryChangeTab("scheduling")} style={{ background: "transparent", border: "none", color: PINK.accent, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit" }}>View schedules →</button>
                   </div>
-                  {dashScheduledToday == null ? (
+                  {techToday == null ? (
                     <div style={{ fontSize: 12, color: "#9ca3af", fontStyle: "italic" }}>Loading schedules…</div>
                   ) : (
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(140px,1fr))", gap: 8 }}>
                       {scopedSalons.map(sl => {
-                        const c = dashByBranch[sl.name] || 0;
+                        const c = (techToday.byBranch && techToday.byBranch[sl.name]) || 0;
                         return (
                           <div key={sl.name} style={{ background: PINK.softest, border: `1px solid ${PINK.soft}`, borderRadius: 11, padding: "10px 12px" }}>
                             <div style={{ fontSize: 11, fontWeight: 700, color: PINK.ink }}>📍 {sl.name}</div>
