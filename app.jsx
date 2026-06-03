@@ -8727,6 +8727,43 @@ function calledInSickWindow(requests) {
   return { today, tomorrow, list };
 }
 
+// Annual / emergency leave (Leave Planner records) for NAIL TECHS that overlaps
+// the current 25th→24th payroll cycle and hasn't ended yet — she needs blocking
+// on Fresha for those days so no client bookings land. Returned in the same
+// shape as the sick/absent block rows (key / name / store / dates / leave_type).
+function freshaLeaveBlocks(leaveRecs, staff) {
+  const cycleYm = (window.BOA_DB && window.BOA_DB.currentSchedYm) ? window.BOA_DB.currentSchedYm() : null;
+  if (!cycleYm) return [];
+  const pad = (n) => String(n).padStart(2, "0");
+  const cp = cycleYm.split("-").map(Number), cy = cp[0], cm = cp[1];
+  let sy = cy, sm = cm - 1; if (sm < 1) { sm = 12; sy -= 1; }
+  const cycleStart = sy + "-" + pad(sm) + "-25";   // 25th of the previous month
+  const cycleEnd = cy + "-" + pad(cm) + "-24";     // 24th of the cycle's end month
+  const now = new Date();
+  const ymdNow = now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate());
+  const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
+  const byEc = {};
+  (staff || []).forEach(s => { if (s && s.ec) byEc[String(s.ec).toUpperCase().trim()] = s; });
+  return (leaveRecs || []).filter(lv =>
+    lv && lv.ec && lv.startDate && lv.endDate && isTech(lv.ec)
+    && (lv.emergency || /annual/i.test(String(lv.type || "")))
+    && lv.startDate <= cycleEnd && lv.endDate >= cycleStart
+    && lv.endDate >= ymdNow
+  ).map(lv => {
+    const s = byEc[String(lv.ec).toUpperCase().trim()] || {};
+    return {
+      key: "rec-" + lv._id,
+      ec: lv.ec,
+      name: s.name || lv.ec,
+      store: s.branch || "",
+      start_date: lv.startDate,
+      end_date: lv.endDate,
+      leave_type: "Annual",
+      emergency: !!lv.emergency
+    };
+  });
+}
+
 // Operations board: who's called in sick / absent for today & tomorrow.
 function CalledInSickTab({ requests, setRequests, currentUser }) {
   const card = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 18px", marginBottom: 12 };
@@ -9022,7 +9059,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
 //   • approved nail-tech extra days (open the tech for that single day), and
 //   • trial techs awaiting their Fresha opening (trial window, then the month
 //     once they pass). Tick each one once it's opened on Fresha.
-function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen, trialList, setTrialFresha, leaveRequests, freshaBlocks, markFreshaBlocked }) {
+function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen, trialList, setTrialFresha, leaveRequests, freshaBlocks, markFreshaBlocked, leaveRecs, staff }) {
   const card = { background: "#fff", border: "1px solid #e9d5ff", borderRadius: 12, padding: "12px 14px", marginBottom: 10 };
   const chip = (bg, fg, txt) => <span style={{ background: bg, color: fg, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 800 }}>{txt}</span>;
   const openBtn = (label, onClick) => <button onClick={onClick} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "6px 13px", fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>{label}</button>;
@@ -9038,20 +9075,23 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
   const trialOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened);
   const monthOpen = (trialList || []).filter(c => _nt(c) && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c));
 
-  // Closing side: sick / absent nail techs (today & tomorrow) who need
-  // greying out on Fresha so no client bookings land while they're off.
+  // Closing side: nail techs who need greying out on Fresha so no client
+  // bookings land while they're off — sick / absent (today & tomorrow), plus
+  // annual / emergency leave that falls in the current payroll cycle.
   const isBlocked = (id) => !!(freshaBlocks && freshaBlocks[id] && freshaBlocks[id].blocked);
-  const blockTodos = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec))
-    .sort((a, b) => (Number(isBlocked(a.id)) - Number(isBlocked(b.id))) || (a.start_date || "").localeCompare(b.start_date || ""));
+  const sickBlockTodos = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec))
+    .map(r => ({ key: r.id, ec: r.ec, name: r.name, store: r.store, start_date: r.start_date, end_date: r.end_date, leave_type: r.leave_type, emergency: false, ref_code: r.ref_code }));
+  const blockTodos = [...sickBlockTodos, ...freshaLeaveBlocks(leaveRecs, staff)]
+    .sort((a, b) => (Number(isBlocked(a.key)) - Number(isBlocked(b.key))) || (a.start_date || "").localeCompare(b.start_date || ""));
 
-  const pendingCount = extraTodos.filter(r => !isOpen(r.id)).length + trialOpen.length + monthOpen.length + blockTodos.filter(r => !isBlocked(r.id)).length;
+  const pendingCount = extraTodos.filter(r => !isOpen(r.id)).length + trialOpen.length + monthOpen.length + blockTodos.filter(r => !isBlocked(r.key)).length;
   const secHead = (txt) => <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase", color: "#6b21a8", margin: "0 0 2px" }}>{txt}</div>;
 
   return (
     <div>
       <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#6b21a8", margin: 0 }}>💇‍♀️ Fresha To-Do</h2>
       <p style={{ color: "#9333ea", fontSize: 13.5, margin: "6px 0 18px", maxWidth: 700 }}>
-        Fresha reminders — open approved extra-day cover and trial techs, and block sick/absent techs so no bookings land while they're off. Tick each one once it's done so the team knows.{pendingCount > 0 && <strong> · {pendingCount} to do</strong>}
+        Fresha reminders — open approved extra-day cover and trial techs, and block techs who are off (sick / absent, or on annual / emergency leave this cycle) so no bookings land while they're away. Tick each one once it's done so the team knows.{pendingCount > 0 && <strong> · {pendingCount} to do</strong>}
       </p>
 
       <div style={{ marginBottom: 22 }}>
@@ -9109,25 +9149,26 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
       </div>
 
       <div style={{ marginTop: 22 }}>
-        {secHead("🚫 Block on Fresha · " + blockTodos.filter(r => !isBlocked(r.id)).length + " to block")}
-        <div style={{ fontSize: 12, color: "#9333ea", marginBottom: 10 }}>Nail techs who called in sick or are absent today/tomorrow — grey them out on Fresha so no new client bookings land while they're off.</div>
-        {blockTodos.length === 0 && <div style={{ ...card, color: "#9d6a82" }}>No sick or absent nail techs right now.</div>}
+        {secHead("🚫 Block on Fresha · " + blockTodos.filter(r => !isBlocked(r.key)).length + " to block")}
+        <div style={{ fontSize: 12, color: "#9333ea", marginBottom: 10 }}>Nail techs who are off — called in sick / absent today or tomorrow, or on annual / emergency leave in this payroll cycle. Grey them out on Fresha so no new client bookings land while they're away.</div>
+        {blockTodos.length === 0 && <div style={{ ...card, color: "#9d6a82" }}>No nail techs to block right now.</div>}
         {blockTodos.map(r => {
-          const blocked = isBlocked(r.id);
-          const meta = (freshaBlocks && freshaBlocks[r.id]) || {};
+          const blocked = isBlocked(r.key);
+          const meta = (freshaBlocks && freshaBlocks[r.key]) || {};
           const awayLbl = fmtIncidentDate(r.start_date) + (r.end_date !== r.start_date ? " → " + fmtIncidentDate(r.end_date) : "");
           return (
-            <div key={"b-" + r.id} style={{ ...card, opacity: blocked ? 0.7 : 1 }}>
+            <div key={"b-" + r.key} style={{ ...card, opacity: blocked ? 0.7 : 1 }}>
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                 <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
                 {chip(r.leave_type === "Sick" ? "#fef3c7" : "#ede9fe", r.leave_type === "Sick" ? "#b45309" : "#6b21a8", LEAVE_TYPE[r.leave_type] || r.leave_type)}
+                {r.emergency && chip("#fee2e2", "#b91c1c", "🚨 Emergency")}
                 <span style={{ color: "#374151", fontSize: 13 }}>{awayLbl}</span>
                 {r.store && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {r.store}</span>}
                 {r.ec && <span style={{ color: "#9ca3af", fontSize: 12, fontFamily: "monospace" }}>{r.ec}</span>}
                 <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
                   {blocked
-                    ? <>{chip("#dcfce7", "#166534", "✓ Blocked" + (meta.by ? " · " + meta.by : ""))}{undo(() => markFreshaBlocked(r.id, false))}</>
-                    : openBtn("Mark blocked on Fresha", () => markFreshaBlocked(r.id, true))}
+                    ? <>{chip("#dcfce7", "#166534", "✓ Blocked" + (meta.by ? " · " + meta.by : ""))}{undo(() => markFreshaBlocked(r.key, false))}</>
+                    : openBtn("Mark blocked on Fresha", () => markFreshaBlocked(r.key, true))}
                 </span>
               </div>
               {r.ref_code && <div style={{ fontSize: 11, color: "#9d6a82", marginTop: 5 }}>Ref {r.ref_code}</div>}
@@ -13094,8 +13135,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const trialToOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened).length;
                     const monthToOpen = (trialList || []).filter(c => _nt(c) && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c)).length;
                     const isBlocked = (id) => !!(freshaBlocks && freshaBlocks[id] && freshaBlocks[id].blocked);
-                    const toBlock = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec) && !isBlocked(r.id)).length;
-                    const n = extraToOpen + trialToOpen + monthToOpen + toBlock;
+                    const sickToBlock = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec) && !isBlocked(r.id)).length;
+                    const leaveToBlock = freshaLeaveBlocks(leaveRecs, staff).filter(b => !isBlocked(b.key)).length;
+                    const n = extraToOpen + trialToOpen + monthToOpen + sickToBlock + leaveToBlock;
                     return { t: "freshaTodo", l: "💇‍♀️ Fresha To-Do" + (n ? "  (" + n + ")" : "") };
                   })()] : []),
                   { t: "storeOpenings", l: "🔓 Store Openings" },
@@ -13795,10 +13837,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   .filter(c => c._d !== null && c._d >= 0 && c._d < URGENT)
                   .sort((a, b) => a._d - b._d);
 
-                // CLOSE — sick/absent nail techs (today/tomorrow) not yet blocked
+                // CLOSE — nail techs needing blocking (sick/absent today/tomorrow,
+                // or annual/emergency leave in the current cycle) whose first day
+                // off is less than 3 days away (or already underway) and not blocked.
                 const isBlocked = (id) => !!(freshaBlocks && freshaBlocks[id] && freshaBlocks[id].blocked);
-                const urgentBlock = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec) && !isBlocked(r.id))
+                const sickClose = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec))
+                  .map(r => ({ key: r.id, name: r.name, store: r.store, start_date: r.start_date, leave_type: r.leave_type, emergency: false }));
+                const urgentBlock = [...sickClose, ...freshaLeaveBlocks(leaveRecs, staff)]
+                  .filter(r => !isBlocked(r.key))
                   .map(r => ({ ...r, _d: daysUntil(r.start_date) }))
+                  .filter(r => r._d !== null && r._d < URGENT)
                   .sort((a, b) => (a._d ?? 0) - (b._d ?? 0));
 
                 const total = urgentExtra.length + urgentTrial.length + urgentBlock.length;
@@ -13826,7 +13874,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </div>
                     {urgentExtra.map(r => row("ue-" + r.id, r.name, "💰 Open for extra day · " + fmtIncidentDate(r.work_date) + (r.store ? " · 📍 " + r.store : ""), "open " + dl(r._d)))}
                     {urgentTrial.map(c => row("ut-" + c._id, c.name, "🧪 Open for trial start · " + fmtIncidentDate(c.startDate) + (c.branch ? " · 📍 " + c.branch : ""), "open " + dl(c._d)))}
-                    {urgentBlock.map(r => row("ub-" + r.id, r.name, "🚫 Block — " + (LEAVE_TYPE[r.leave_type] || r.leave_type) + " · " + fmtIncidentDate(r.start_date) + (r.store ? " · 📍 " + r.store : ""), "close " + dl(Math.max(0, r._d ?? 0))))}
+                    {urgentBlock.map(r => row("ub-" + r.key, r.name, "🚫 Block — " + (r.emergency ? "Emergency leave" : (LEAVE_TYPE[r.leave_type] || r.leave_type)) + " · " + fmtIncidentDate(r.start_date) + (r.store ? " · 📍 " + r.store : ""), "close " + dl(Math.max(0, r._d ?? 0))))}
                   </div>
                 );
               })()}
@@ -16875,7 +16923,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         )}
 
         {tab === "freshaTodo" && (
-          <FreshaTodoTab extraDayRequests={extraDayRequests} freshaExtraOpen={freshaExtraOpen} markFreshaExtraOpen={markFreshaExtraOpen} trialList={trialList} setTrialFresha={setTrialFresha} leaveRequests={leaveRequests} freshaBlocks={freshaBlocks} markFreshaBlocked={markFreshaBlocked} />
+          <FreshaTodoTab extraDayRequests={extraDayRequests} freshaExtraOpen={freshaExtraOpen} markFreshaExtraOpen={markFreshaExtraOpen} trialList={trialList} setTrialFresha={setTrialFresha} leaveRequests={leaveRequests} freshaBlocks={freshaBlocks} markFreshaBlocked={markFreshaBlocked} leaveRecs={leaveRecs} staff={staff} />
         )}
 
         {/* ── ALERTS TAB ── */}
