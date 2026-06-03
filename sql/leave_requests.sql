@@ -144,6 +144,15 @@ begin
    where id = p_id;
 end $$;
 
+-- ---- PORTAL: owner delete (remove a test / erroneous request) --------------
+create or replace function delete_leave_request(p_key text, p_id uuid)
+returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _check_hr_key(p_key);
+  delete from leave_requests where id = p_id;
+end $$;
+
 -- ---- Grants ----------------------------------------------------------------
 revoke execute on function _check_hr_key(text) from public;
 grant execute on function submit_leave_request(text,text,text,text,text,date,date,text) to anon;
@@ -151,3 +160,4 @@ grant execute on function list_leave_requests(text)                  to anon;
 grant execute on function set_leave_status(text,uuid,text,text,text)  to anon;
 grant execute on function mark_leave_reviewed(text,uuid)              to anon;
 grant execute on function add_leave_note(text,uuid,text,text)         to anon;
+grant execute on function delete_leave_request(text,uuid)             to anon;
