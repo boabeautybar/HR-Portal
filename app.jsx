@@ -8754,11 +8754,12 @@ function freshaLeaveBlocks(leaveRecs, staff) {
     && lv.endDate >= ymdNow
   ).forEach(lv => {
     const ecU = String(lv.ec).toUpperCase().trim();
+    const s = byEc[ecU];
+    if (!s) return;   // can't tie this code to a current nail tech — skip stale/unknown records
     const key = "lv-" + ecU + "-" + lv.startDate + "-" + lv.endDate;
     if (seen.has(key)) { if (lv.emergency) { const e = out.find(o => o.key === key); if (e) e.emergency = true; } return; }
     seen.add(key);
-    const s = byEc[ecU] || {};
-    out.push({ key, ec: lv.ec, name: s.name || lv.ec, store: s.branch || "", start_date: lv.startDate, end_date: lv.endDate, leave_type: "Annual", emergency: !!lv.emergency });
+    out.push({ key, ec: lv.ec, name: s.name, store: s.branch || "", start_date: lv.startDate, end_date: lv.endDate, leave_type: "Annual", emergency: !!lv.emergency });
   });
   return out;
 }
@@ -22591,6 +22592,33 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               )}
             </div>
+            {(() => {
+              // Orphaned leave records: logged against an employee code that no
+              // longer matches anyone (e.g. a tech who was deleted). They don't
+              // show in the list above (no person to attach to) and can't be
+              // removed there — surface them here so they can be cleaned up.
+              const known = new Set();
+              (staff || []).forEach(s => { if (s && s.ec) known.add(String(s.ec).toUpperCase().trim()); });
+              (managers || []).forEach(s => { if (s && s.ec) known.add(String(s.ec).toUpperCase().trim()); });
+              const orphans = (leaveRecs || []).filter(lv => lv && lv.ec && !known.has(String(lv.ec).toUpperCase().trim()))
+                .slice().sort((a, b) => (a.startDate || "").localeCompare(b.startDate || ""));
+              if (orphans.length === 0) return null;
+              return (
+                <div style={{ marginTop: 18, border: "1px solid #fecaca", background: "#fef2f2", borderRadius: 12, padding: "12px 14px" }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, color: "#b91c1c", marginBottom: 4 }}>⚠️ Orphaned leave records · {orphans.length}</div>
+                  <div style={{ fontSize: 11, color: "#9d6a82", marginBottom: 8 }}>Leave logged against an employee code that no longer matches anyone — likely someone who was deleted. They can't be tied to a person, so remove them here.</div>
+                  {orphans.map(lv => (
+                    <div key={lv._id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderTop: "1px solid #fee2e2", fontSize: 12, flexWrap: "wrap" }}>
+                      <span style={{ fontFamily: "monospace", fontWeight: 700, color: "#7f1d1d" }}>{lv.ec}</span>
+                      <span style={{ color: "#6b7280" }}>{lv.type}{lv.emergency ? " · emergency" : ""}</span>
+                      <span style={{ color: "#374151" }}>{lv.startDate} → {lv.endDate}</span>
+                      <button onClick={() => { if (confirm("Delete this orphaned leave record?\n\n" + lv.ec + " · " + lv.startDate + " → " + lv.endDate + "\n\nThis can't be undone.")) removeLeave(lv._id); }}
+                        style={{ marginLeft: "auto", background: "transparent", border: "none", color: "#dc2626", cursor: "pointer", fontSize: 14 }} title="Delete this orphaned record">✕</button>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
           </div>
         );
       })()}
