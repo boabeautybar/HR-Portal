@@ -9022,7 +9022,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
 //   • approved nail-tech extra days (open the tech for that single day), and
 //   • trial techs awaiting their Fresha opening (trial window, then the month
 //     once they pass). Tick each one once it's opened on Fresha.
-function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen, trialList, setTrialFresha }) {
+function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen, trialList, setTrialFresha, leaveRequests, freshaBlocks, markFreshaBlocked }) {
   const card = { background: "#fff", border: "1px solid #e9d5ff", borderRadius: 12, padding: "12px 14px", marginBottom: 10 };
   const chip = (bg, fg, txt) => <span style={{ background: bg, color: fg, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 800 }}>{txt}</span>;
   const openBtn = (label, onClick) => <button onClick={onClick} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "6px 13px", fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>{label}</button>;
@@ -9038,14 +9038,20 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
   const trialOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened);
   const monthOpen = (trialList || []).filter(c => _nt(c) && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c));
 
-  const pendingCount = extraTodos.filter(r => !isOpen(r.id)).length + trialOpen.length + monthOpen.length;
+  // Closing side: sick / absent nail techs (today & tomorrow) who need
+  // greying out on Fresha so no client bookings land while they're off.
+  const isBlocked = (id) => !!(freshaBlocks && freshaBlocks[id] && freshaBlocks[id].blocked);
+  const blockTodos = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec))
+    .sort((a, b) => (Number(isBlocked(a.id)) - Number(isBlocked(b.id))) || (a.start_date || "").localeCompare(b.start_date || ""));
+
+  const pendingCount = extraTodos.filter(r => !isOpen(r.id)).length + trialOpen.length + monthOpen.length + blockTodos.filter(r => !isBlocked(r.id)).length;
   const secHead = (txt) => <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase", color: "#6b21a8", margin: "0 0 2px" }}>{txt}</div>;
 
   return (
     <div>
       <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#6b21a8", margin: 0 }}>💇‍♀️ Fresha To-Do</h2>
       <p style={{ color: "#9333ea", fontSize: 13.5, margin: "6px 0 18px", maxWidth: 700 }}>
-        Who needs opening on Fresha — approved extra-day cover and trial techs. Tick each one once it's opened so the team knows it's done.{pendingCount > 0 && <strong> · {pendingCount} to open</strong>}
+        Fresha reminders — open approved extra-day cover and trial techs, and block sick/absent techs so no bookings land while they're off. Tick each one once it's done so the team knows.{pendingCount > 0 && <strong> · {pendingCount} to do</strong>}
       </p>
 
       <div style={{ marginBottom: 22 }}>
@@ -9100,6 +9106,34 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
             </div>
           </div>
         ))}
+      </div>
+
+      <div style={{ marginTop: 22 }}>
+        {secHead("🚫 Block on Fresha · " + blockTodos.filter(r => !isBlocked(r.id)).length + " to block")}
+        <div style={{ fontSize: 12, color: "#9333ea", marginBottom: 10 }}>Nail techs who called in sick or are absent today/tomorrow — grey them out on Fresha so no new client bookings land while they're off.</div>
+        {blockTodos.length === 0 && <div style={{ ...card, color: "#9d6a82" }}>No sick or absent nail techs right now.</div>}
+        {blockTodos.map(r => {
+          const blocked = isBlocked(r.id);
+          const meta = (freshaBlocks && freshaBlocks[r.id]) || {};
+          const awayLbl = fmtIncidentDate(r.start_date) + (r.end_date !== r.start_date ? " → " + fmtIncidentDate(r.end_date) : "");
+          return (
+            <div key={"b-" + r.id} style={{ ...card, opacity: blocked ? 0.7 : 1 }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
+                {chip(r.leave_type === "Sick" ? "#fef3c7" : "#ede9fe", r.leave_type === "Sick" ? "#b45309" : "#6b21a8", LEAVE_TYPE[r.leave_type] || r.leave_type)}
+                <span style={{ color: "#374151", fontSize: 13 }}>{awayLbl}</span>
+                {r.store && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {r.store}</span>}
+                {r.ec && <span style={{ color: "#9ca3af", fontSize: 12, fontFamily: "monospace" }}>{r.ec}</span>}
+                <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+                  {blocked
+                    ? <>{chip("#dcfce7", "#166534", "✓ Blocked" + (meta.by ? " · " + meta.by : ""))}{undo(() => markFreshaBlocked(r.id, false))}</>
+                    : openBtn("Mark blocked on Fresha", () => markFreshaBlocked(r.id, true))}
+                </span>
+              </div>
+              {r.ref_code && <div style={{ fontSize: 11, color: "#9d6a82", marginTop: 5 }}>Ref {r.ref_code}</div>}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -10498,6 +10532,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     try { if (window.BOA_DB.saveFreshaExtraOpenings) await window.BOA_DB.saveFreshaExtraOpenings(next); }
     catch (e) { window.alert("Could not save Fresha to-do: " + (e.message || e)); }
   };
+  // Fresha To-Do (closing side): block-status for sick/absent nail techs,
+  // keyed by leave-request id → { blocked, by, at }. Persisted to
+  // boa_fresha_blocks_v1.
+  const [freshaBlocks, setFreshaBlocks] = useState({});
+  const markFreshaBlocked = async (id, on) => {
+    const next = { ...freshaBlocks };
+    if (on) next[id] = { blocked: true, by: (currentUser && currentUser.name) || "", at: new Date().toISOString() };
+    else delete next[id];
+    setFreshaBlocks(next);
+    try { if (window.BOA_DB.saveFreshaBlocks) await window.BOA_DB.saveFreshaBlocks(next); }
+    catch (e) { window.alert("Could not save Fresha to-do: " + (e.message || e)); }
+  };
   const [overtimeShortCache, setOvertimeShortCache] = useState({});    // { ec|cycleYm: hours } from early-leave sidecar
   const [overtimeShortLoading, setOvertimeShortLoading] = useState(false);
   const [otForm, setOtForm] = useState({ ec: "", date: "", hours: "", reason: "" });
@@ -11467,8 +11513,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       (window.BOA_DB.loadIncidentReports && canSeeIncidents(currentUser)) ? window.BOA_DB.loadIncidentReports() : Promise.resolve([]),
       (window.BOA_DB.loadLeaveRequests && canSeeIncidents(currentUser)) ? window.BOA_DB.loadLeaveRequests() : Promise.resolve([]),
       (window.BOA_DB.loadExtraDayRequests && canSeeIncidents(currentUser)) ? window.BOA_DB.loadExtraDayRequests() : Promise.resolve([]),
-      window.BOA_DB.loadFreshaExtraOpenings ? window.BOA_DB.loadFreshaExtraOpenings() : Promise.resolve({})
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap]) => {
+      window.BOA_DB.loadFreshaExtraOpenings ? window.BOA_DB.loadFreshaExtraOpenings() : Promise.resolve({}),
+      window.BOA_DB.loadFreshaBlocks ? window.BOA_DB.loadFreshaBlocks() : Promise.resolve({})
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap]) => {
       setStaff(d.staff);
       setManagers(d.managers);
       setMatRecs(d.matRecs);
@@ -11486,6 +11533,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setLeaveRequests(Array.isArray(leaveReqs) ? leaveReqs : []);
       setExtraDayRequests(Array.isArray(extraReqs) ? extraReqs : []);
       setFreshaExtraOpen(freshaExtraOpenMap && typeof freshaExtraOpenMap === "object" ? freshaExtraOpenMap : {});
+      setFreshaBlocks(freshaBlocksMap && typeof freshaBlocksMap === "object" ? freshaBlocksMap : {});
       setLoading(false);
     }).catch((err) => {
       setLoadError("Could not load data: " + (err.message || err));
@@ -13027,7 +13075,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const _recent = (c) => { const t = Date.parse(c.promotedAt || c.updatedAt || c.addedAt || ""); return !!t && (Date.now() - t) < 45 * 86400000; };
                     const trialToOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened).length;
                     const monthToOpen = (trialList || []).filter(c => _nt(c) && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c)).length;
-                    const n = extraToOpen + trialToOpen + monthToOpen;
+                    const isBlocked = (id) => !!(freshaBlocks && freshaBlocks[id] && freshaBlocks[id].blocked);
+                    const toBlock = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec) && !isBlocked(r.id)).length;
+                    const n = extraToOpen + trialToOpen + monthToOpen + toBlock;
                     return { t: "freshaTodo", l: "💇‍♀️ Fresha To-Do" + (n ? "  (" + n + ")" : "") };
                   })()] : []),
                   { t: "storeOpenings", l: "🔓 Store Openings" },
@@ -16865,7 +16915,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         )}
 
         {tab === "freshaTodo" && (
-          <FreshaTodoTab extraDayRequests={extraDayRequests} freshaExtraOpen={freshaExtraOpen} markFreshaExtraOpen={markFreshaExtraOpen} trialList={trialList} setTrialFresha={setTrialFresha} />
+          <FreshaTodoTab extraDayRequests={extraDayRequests} freshaExtraOpen={freshaExtraOpen} markFreshaExtraOpen={markFreshaExtraOpen} trialList={trialList} setTrialFresha={setTrialFresha} leaveRequests={leaveRequests} freshaBlocks={freshaBlocks} markFreshaBlocked={markFreshaBlocked} />
         )}
 
         {/* ── ALERTS TAB ── */}
