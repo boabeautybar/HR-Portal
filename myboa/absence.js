@@ -35,6 +35,8 @@
       '<div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>',
       '<h1>Call in sick / Mark absent</h1>',
       '<p class="sub">Notify your manager and HR if you\'re unable to come to work today or tomorrow. Your submission will be reviewed by HR.</p>',
+      '<div class="note">Letting us know as early as possible helps management arrange cover and keep your branch running smoothly.',
+        '<span class="warn"><b>Managers, please note:</b> missing a scheduled working day means you will forfeit your attendance bonus for that period.</span></div>',
       '<div class="card">',
         '<label class="field"><span>Full name</span>',
           '<input type="text" id="name" placeholder="First and last name" /></label>',
