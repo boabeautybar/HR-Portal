@@ -1031,6 +1031,33 @@
     if (res.error) { console.error("loadExtras:", res.error); return {}; }
     return (res.data && res.data.value) || {};
   }
+  // Write / clear a single Extra-Day approval in the kiosk extras sidecar so
+  // the store kiosk reads "Extra Day" for that tech on that day, and the
+  // attendance sheet shows Extra Day once she's checked in. Unlike loadExtras
+  // (which takes the START-month and shifts), these take the END-month `ym`
+  // directly — the exact value ymForDate() produces and the key the kiosk
+  // itself writes (boa_extras_<branch>_<END-month>). dayKey is day-of-month.
+  async function saveExtraDay(branch, ym, dayKey, ec, approvedBy) {
+    var key = "boa_extras_" + branch + "_" + ym;
+    var res = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
+    if (res.error) { console.error("saveExtraDay load:", res.error); throw res.error; }
+    var data = (res.data && res.data.value) || {};
+    if (!data[dayKey]) data[dayKey] = {};
+    data[dayKey][String(ec).trim()] = { approvedBy: (approvedBy || "").toString().slice(0, 80), approvedAt: new Date().toISOString() };
+    var up = await sb.from("app_state").upsert({ key: key, value: data });
+    if (up.error) { console.error("saveExtraDay:", up.error); throw up.error; }
+    return data;
+  }
+  async function clearExtraDay(branch, ym, dayKey, ec) {
+    var key = "boa_extras_" + branch + "_" + ym;
+    var res = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
+    if (res.error) { console.error("clearExtraDay load:", res.error); throw res.error; }
+    var data = (res.data && res.data.value) || {};
+    if (data[dayKey]) { delete data[dayKey][String(ec).trim()]; if (Object.keys(data[dayKey]).length === 0) delete data[dayKey]; }
+    var up = await sb.from("app_state").upsert({ key: key, value: data });
+    if (up.error) { console.error("clearExtraDay:", up.error); throw up.error; }
+    return data;
+  }
   // Persist the boa_early_<branch>_<ym> sidecar (the whole nested map). Used
   // by the attendance sheet to clear a single day's 'left early' short-hours
   // when an admin overrides that cell, so the orange -Xh overlay can be
@@ -1747,6 +1774,8 @@
     loadEarlyLeaves: loadEarlyLeaves,
     saveEarlyLeaves: saveEarlyLeaves,
     loadExtras: loadExtras,
+    saveExtraDay: saveExtraDay,
+    clearExtraDay: clearExtraDay,
     deleteEarlyLeaves: deleteEarlyLeaves,
     loadKioskProof: loadKioskProof,
     probeRecentClockinsRaw: probeRecentClockinsRaw,

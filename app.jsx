@@ -8785,10 +8785,14 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
       setRequests(Array.isArray(fresh) ? fresh : []);
     }
   };
-  // Publish (or un-publish) an approved nail-tech extra day onto the live
-  // schedule grid so the tech sees it in My BOA the moment it's approved.
-  // Tech schedules live at boa_sched_<store>_<END-month ym> keyed by bare
-  // day-of-month, with "E" = extra day — exactly what the viewer reads.
+  // Publish (or un-publish) an approved nail-tech extra day so it shows up
+  // everywhere the day is read:
+  //   • schedule grid  boa_sched_<store>_<END-month ym>  (day-of-month → "E")
+  //     — the My BOA schedule viewer + portal schedule.
+  //   • extras sidecar boa_extras_<store>_<END-month ym> ({day:{ec:{…}}})
+  //     — what the STORE KIOSK reads to show "Extra Day" on check-in, and
+  //     what the attendance sheet reads to show Extra Day once she's checked
+  //     in by a manager that day.
   const applyExtraDayToSchedule = async (r, publish) => {
     try {
       if (!r || !r.work_date || !r.store || !r.ec) return;
@@ -8798,6 +8802,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
       if (!y || !m || !dom) return;
       if (dom >= 25) { m += 1; if (m > 12) { m = 1; y += 1; } }   // 25th→24th cycle, END-month ym
       const ym = y + "-" + String(m).padStart(2, "0");
+      const dayKey = String(dom);
       const sched = await window.BOA_DB.loadSchedule(r.store, ym, false);
       const grid = (sched && sched.grid) || {};
       const want = String(r.ec).trim().toUpperCase();
@@ -8806,16 +8811,35 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
       const cur = row[dom] != null ? row[dom] : row[String(dom)];
       if (publish) {
         row[String(dom)] = "E";
+        grid[ecKey] = row;
+        await window.BOA_DB.saveSchedule(r.store, ym, grid, false);
+        // Mirror into the kiosk/attendance extras sidecar.
+        if (window.BOA_DB.saveExtraDay) {
+          try { await window.BOA_DB.saveExtraDay(r.store, ym, dayKey, String(r.ec).trim(), actor); }
+          catch (e2) { console.error("saveExtraDay:", e2); }
+        }
       } else {
-        if (cur !== "E") return;            // only revert a cell we set
-        delete row[dom]; delete row[String(dom)];
+        // Only revert a schedule cell we set; always clear our sidecar entry.
+        if (cur === "E") { delete row[dom]; delete row[String(dom)]; grid[ecKey] = row; await window.BOA_DB.saveSchedule(r.store, ym, grid, false); }
+        if (window.BOA_DB.clearExtraDay) {
+          try { await window.BOA_DB.clearExtraDay(r.store, ym, dayKey, String(r.ec).trim()); }
+          catch (e2) { console.error("clearExtraDay:", e2); }
+        }
       }
-      grid[ecKey] = row;
-      await window.BOA_DB.saveSchedule(r.store, ym, grid, false);
     } catch (e) { console.error("applyExtraDayToSchedule:", e); }
   };
   const setStatus = async (r, status, note) => {
     if (busy) return;
+    if (status === "approved") {
+      const isTech = !/M$/i.test(String(r.ec || "").trim());
+      if (!window.confirm(
+        "Are you sure we need extra cover on " + fmtIncidentDate(r.work_date) + "?\n\n" +
+        "Check the schedule / demand for that day first — only approve if cover is genuinely needed.\n\n" +
+        (isTech
+          ? "Approving will auto-add this extra day to the schedule, and the store kiosk + attendance sheet for that day will read it as an Extra Day."
+          : "Approving records this extra day for the manager.")
+      )) return;
+    }
     setBusy(true);
     try {
       await window.BOA_DB.setExtraDayStatus(r.id, status, note || "", actor);
@@ -8846,11 +8870,15 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
       return (a.work_date || "").localeCompare(b.work_date || "");
     });
   const pendingCount = (requests || []).filter(r => r.status === "pending").length;
-  // Split into managers (EC ends in "M") and nail techs so each group is
-  // reviewed separately.
+  // Split into managers (EC ends in "M") and nail techs, shown as two
+  // distinct colour-coded columns side by side.
   const isMgrReq = (r) => /M$/i.test(String(r.ec || "").trim());
   const mgrReqs = filtered.filter(isMgrReq);
   const techReqs = filtered.filter(r => !isMgrReq(r));
+  const groups = [
+    { key: "mgr",  label: "👑 Managers",  items: mgrReqs,  bg: "#faf5ff", border: "#e9d5ff", headBg: "#7c3aed", headFg: "#fff" },
+    { key: "tech", label: "💅 Nail Techs", items: techReqs, bg: "#fdf2f8", border: "#fbcfe8", headBg: "#BE185D", headFg: "#fff" }
+  ];
 
   return (
     <div>
@@ -8874,9 +8902,11 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
 
       {filtered.length === 0 && <div style={{ ...card, textAlign: "center", color: "#9d6a82" }}>No requests here.</div>}
 
-      {[{ key: "mgr", label: "👑 Managers", items: mgrReqs }, { key: "tech", label: "💅 Nail Techs", items: techReqs }].map(g => g.items.length === 0 ? null : (
-        <div key={g.key} style={{ marginBottom: 8 }}>
-          <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.08em", color: "#831843", textTransform: "uppercase", margin: "6px 0 10px" }}>{g.label} · {g.items.length}</div>
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
+      {filtered.length > 0 && groups.map(g => (
+        <div key={g.key} style={{ flex: "1 1 360px", minWidth: 300, background: g.bg, border: "1px solid " + g.border, borderRadius: 14, padding: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", color: g.headFg, background: g.headBg, borderRadius: 9, padding: "8px 12px", marginBottom: 12 }}>{g.label} · {g.items.length}</div>
+          {g.items.length === 0 && <div style={{ textAlign: "center", color: "#9d6a82", fontSize: 12.5, padding: "10px 0 14px" }}>None in this view.</div>}
           {g.items.map(r => {
         const st = LEAVE_STATUS[r.status] || LEAVE_STATUS.pending;
         const isCatch = r.purpose === "catch_up";
@@ -8936,6 +8966,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
           })}
         </div>
       ))}
+      </div>
     </div>
   );
 }
