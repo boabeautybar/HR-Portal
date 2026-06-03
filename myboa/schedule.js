@@ -317,7 +317,7 @@
     var saved = {};
     try { saved = JSON.parse(localStorage.getItem(LS_KEY) || "{}"); } catch (_e) {}
     root.innerHTML = [
-      '<a class="back" href="myboa.html">‹ My BOA</a>',
+      '<a class="back" href="index.html">‹ My BOA</a>',
       '<div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>',
       '<h1>My schedule</h1>',
       '<p class="sub">Enter your details to see your roster.</p>',
@@ -455,7 +455,7 @@
 
   async function renderDash() {
     root.innerHTML = [
-      '<a class="back" href="myboa.html">‹ My BOA</a>',
+      '<a class="back" href="index.html">‹ My BOA</a>',
       '<div class="dashhead">',
         '<div><div class="hi">Hi ' + esc(state.name || "there") + ' 👋</div>',
         '<div class="meta">' + esc(state.store) + (state.role ? ' · ' + esc(state.role) : '') +
