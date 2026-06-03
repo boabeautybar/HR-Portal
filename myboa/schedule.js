@@ -131,14 +131,15 @@
   }
 
   function ymdStr(dt) { return dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate()); }
-  // Approved, still-upcoming extra days for this tech — drives the banner on
-  // their schedule. Reads only the tech's OWN rows via the public RPC (no key).
-  function loadApprovedExtras(ec) {
+  // Decided (approved / declined), still-upcoming extra days for this tech —
+  // drives the banners on their schedule. Reads only the tech's OWN rows via
+  // the public RPC (no key); declined rows carry the manager's reason.
+  function loadDecidedExtras(ec) {
     return sb.rpc("my_extra_day_requests", { p_ec: ec }).then(function (res) {
       if (res.error || !Array.isArray(res.data)) return [];
       var today = ymdStr(new Date());
       return res.data
-        .filter(function (r) { return r && r.status === "approved" && r.work_date && r.work_date >= today; })
+        .filter(function (r) { return r && (r.status === "approved" || r.status === "declined") && r.work_date && r.work_date >= today; })
         .sort(function (a, b) { return String(a.work_date).localeCompare(String(b.work_date)); });
     });
   }
@@ -451,7 +452,7 @@
 
       var today = new Date(), tom = new Date(); tom.setDate(tom.getDate() + 1);
       await Promise.all([loadCycle(ymForDate(today)), loadCycle(ymForDate(tom)), loadCycle(state.monthYm)]);
-      try { state.approvedExtras = await loadApprovedExtras(found.ecKey); } catch (_e) { state.approvedExtras = []; }
+      try { state.decidedExtras = await loadDecidedExtras(found.ecKey); } catch (_e) { state.decidedExtras = []; }
       setBusy(false);
       renderDash();
     } catch (e) {
@@ -473,16 +474,24 @@
   }
 
   async function renderDash() {
-    var ex = state.approvedExtras || [];
+    var decided = state.decidedExtras || [];
+    var appr = decided.filter(function (r) { return r.status === "approved"; });
+    var decl = decided.filter(function (r) { return r.status === "declined"; });
     var banner = "";
-    if (ex.length) {
-      var days = ex.map(function (r) { return niceDate(r.work_date); }).join(", ");
-      var many = ex.length > 1;
-      banner = '<div style="background:#dcfce7;border:1px solid #86efac;border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.5;color:#15803d;font-weight:600;margin-bottom:14px">'
+    if (appr.length) {
+      var days = appr.map(function (r) { return niceDate(r.work_date); }).join(", ");
+      var many = appr.length > 1;
+      banner += '<div style="background:#dcfce7;border:1px solid #86efac;border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.5;color:#15803d;font-weight:600;margin-bottom:14px">'
         + '✅ Your extra ' + (many ? 'days' : 'day') + ' on <b>' + esc(days) + '</b> ' + (many ? 'were' : 'was')
         + ' approved — you’re booked to work, so please come in.'
         + '</div>';
     }
+    decl.forEach(function (r) {
+      banner += '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.5;color:#b91c1c;margin-bottom:14px">'
+        + '<span style="font-weight:600">✕ Your extra day on <b>' + esc(niceDate(r.work_date)) + '</b> wasn’t approved.</span>'
+        + (r.decision_note ? '<div style="margin-top:5px;color:#7f1d1d;font-weight:400">Reason: ' + esc(r.decision_note) + '</div>' : '')
+        + '</div>';
+    });
     root.innerHTML = [
       '<a class="back" href="index.html">‹ My BOA</a>',
       '<div class="dashhead">',
