@@ -1,9 +1,9 @@
 /* ============================================================
-   My BOA — Annual leave request form (staff & managers, own phone).
-   Standalone page reached from the My BOA hub. Submits an annual
-   (holiday) leave request that HR reviews in the portal's Leave
-   Requests tab. Sick leave has its own page (sick.html / sick.js).
-   Insert-only via submit_leave_request RPC — cannot read others.
+   My BOA — Sick leave request form (staff & managers, own phone).
+   Standalone page reached from the My BOA hub. Submits a SICK
+   leave request that HR reviews in the portal's Leave Requests
+   tab (tagged "Sick leave"). Reuses the same insert-only
+   submit_leave_request RPC — cannot read others' requests.
    ============================================================ */
 (function () {
   var cfg = window.BOA_SUPABASE_CONFIG || {};
@@ -20,6 +20,16 @@
     "Green Point", "Plumstead", "Sandown", "Cape Gate", "Winelands", "Betty",
     "Fourways", "Eastgate", "Mall of the South", "Mushroom Farm", "Verdi", "Ballito"
   ];
+  // Medical-certificate status — folded into the reason so HR sees it in the
+  // portal without needing a schema change.
+  var CERTS = [
+    { v: "", l: "— choose —" },
+    { v: "Attached / will email", l: "I have a certificate to submit" },
+    { v: "Bringing to work", l: "I'll bring it to work" },
+    { v: "Seeing a doctor", l: "Seeing a doctor — will follow up" },
+    { v: "None", l: "No certificate (1 day / minor)" }
+  ];
+
   var state = { busy: false };
 
   function render() {
@@ -27,8 +37,8 @@
     try { saved = JSON.parse(localStorage.getItem("myboa_sched_v1") || "{}"); } catch (_e) {}
     root.innerHTML = [
       '<div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>',
-      '<h1>Request annual leave</h1>',
-      '<p class="sub">Send an annual (holiday) leave request to HR. You\'ll get a reference number. <br/>For sick leave, use the Sick leave option on My BOA.</p>',
+      '<h1>Sick leave</h1>',
+      '<p class="sub">Let HR know you were/are off sick. You\'ll get a reference number.</p>',
       '<div class="card">',
         '<label class="field"><span>Your name</span>',
           '<input type="text" id="name" placeholder="First and last name" /></label>',
@@ -41,10 +51,15 @@
             '<input type="text" id="ec" autocapitalize="characters" autocomplete="off" placeholder="e.g. B379" value="' + esc(saved.ec || "") + '" /></label>',
         '</div>',
         '<div class="row2">',
-          '<label class="field"><span>From</span><input type="date" id="start" /></label>',
-          '<label class="field"><span>To</span><input type="date" id="end" /></label>',
+          '<label class="field"><span>First day off sick</span><input type="date" id="start" /></label>',
+          '<label class="field"><span>Last day off sick</span><input type="date" id="end" /></label>',
         '</div>',
         '<div class="span" id="span" style="display:none"></div>',
+        '<label class="field"><span>Medical certificate</span>',
+          '<select id="cert">',
+            CERTS.map(function (c) { return '<option value="' + esc(c.v) + '">' + esc(c.l) + '</option>'; }).join(""),
+          '</select>',
+          '<span class="hint">2+ consecutive sick days usually need a doctor\'s note.</span></label>',
         '<label class="field"><span>Reason / notes <em style="font-weight:400;color:#a07487">(optional)</em></span>',
           '<textarea id="reason" placeholder="Anything HR should know."></textarea></label>',
         '<label class="field"><span>Contact <em style="font-weight:400;color:#a07487">(optional)</em></span>',
@@ -52,7 +67,7 @@
         '<button type="button" id="submit" class="submit">Send request</button>',
         '<p class="err" id="err"></p>',
       '</div>',
-      '<p class="foot">My BOA · leave requests go to HR</p>'
+      '<p class="foot">My BOA · sick leave goes to HR</p>'
     ].join("");
     wire();
   }
@@ -65,7 +80,7 @@
       if (s && e && e >= s) {
         var days = Math.round((new Date(e) - new Date(s)) / 86400000) + 1;
         box.style.display = "block";
-        box.textContent = "🌴 " + days + " day" + (days === 1 ? "" : "s") + " (" + fmt(s) + " → " + fmt(e) + ")";
+        box.textContent = "🤒 " + days + " day" + (days === 1 ? "" : "s") + " (" + fmt(s) + " → " + fmt(e) + ")";
       } else { box.style.display = "none"; }
     };
     $("start").onchange = function () { if (!$("end").value) $("end").value = this.value; upd(); };
@@ -83,17 +98,23 @@
     if (!name) { setErr("Please enter your name."); $("name").focus(); return; }
     if (!store) { setErr("Please choose your store."); return; }
     if (!start || !end) { setErr("Please choose both dates."); return; }
-    if (end < start) { setErr("The 'To' date can't be before the 'From' date."); return; }
+    if (end < start) { setErr("The last day can't be before the first day."); return; }
+
+    // Prefix the medical-certificate status onto the reason so it shows in the
+    // portal (the RPC has no dedicated field for it).
+    var cert = $("cert").value;
+    var notes = ($("reason").value || "").trim();
+    var reason = (cert ? "Medical certificate: " + cert + (notes ? "\n" : "") : "") + notes;
 
     var payload = {
       p_store: store,
       p_ec: ($("ec").value || "").trim() || null,
       p_name: name,
       p_contact: ($("contact").value || "").trim() || null,
-      p_leave_type: "Annual",
+      p_leave_type: "Sick",
       p_start_date: start,
       p_end_date: end,
-      p_reason: ($("reason").value || "").trim() || null
+      p_reason: reason || null
     };
 
     state.busy = true; $("submit").disabled = true; $("submit").textContent = "Sending…";
@@ -111,9 +132,9 @@
       '<div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>',
       '<div class="done">',
         '<div class="tick">✅</div>',
-        '<h2>Your leave request has been sent</h2>',
+        '<h2>Your sick leave has been sent</h2>',
         (ref ? '<div class="ref">' + esc(ref) + '</div>' : ''),
-        '<p>HR has received it and will review it. They may contact you about the outcome.</p>',
+        '<p>HR has received it and will review it. Please send any medical certificate to HR if you said you have one.</p>',
         '<p style="margin-top:18px"><a href="index.html" style="color:#BE185D;font-weight:700">Back to My BOA</a></p>',
       '</div>',
       '<p class="foot">My BOA</p>'

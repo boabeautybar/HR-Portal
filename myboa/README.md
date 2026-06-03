@@ -16,8 +16,12 @@ It's a standalone static site that only talks to Supabase (no build step).
 | `index.html`   | The hub (the QR points here). |
 | `schedule.html` / `schedule.js` | Schedule viewer. |
 | `report.html` / `report.js`     | Incident report form. |
-| `leave.html` / `leave.js`       | Leave request form. |
+| `leave.html` / `leave.js`       | Annual (holiday) leave request form. |
+| `sick.html` / `sick.js`         | Sick leave request form. |
 | `boa-logo.png`, `BOA.png`       | Brand wordmark + favicon. |
+
+Both leave forms submit through the same `submit_leave_request` RPC and land in
+the portal's **Leave Requests** tab, tagged `Annual` or `Sick`.
 
 ## Deploy (separate Netlify site)
 
