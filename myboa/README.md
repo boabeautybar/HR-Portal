@@ -18,6 +18,7 @@ It's a standalone static site that only talks to Supabase (no build step).
 | `report.html` / `report.js`     | Incident report form. |
 | `leave.html` / `leave.js`       | Annual (holiday) leave request form (capped at 21 days). |
 | `absence.html` / `absence.js`   | Call in sick / mark absent — today or tomorrow only, description + optional proof (sick note etc.). |
+| `extra.html` / `extra.js`       | Offer an extra day — reads the schedule, lets staff offer an OFF day; RM approves in the portal. |
 | `boa-logo.png`, `BOA.png`       | Brand wordmark + favicon. |
 
 Both forms submit through the same `submit_leave_request` RPC and land in the
