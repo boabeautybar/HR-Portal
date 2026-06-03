@@ -122,9 +122,19 @@ begin
   update extra_day_requests set reviewed = true, updated_at = now() where id = p_id;
 end $$;
 
+-- ---- PORTAL: delete a request (HR key required) ----------------------------
+create or replace function delete_extra_day_request(p_key text, p_id uuid)
+returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _check_hr_key(p_key);
+  delete from extra_day_requests where id = p_id;
+end $$;
+
 -- ---- Grants ----------------------------------------------------------------
 revoke execute on function _check_hr_key(text) from public;
 grant execute on function submit_extra_day_request(text,text,text,text,date,text) to anon;
 grant execute on function list_extra_day_requests(text)                          to anon;
 grant execute on function set_extra_day_status(text,uuid,text,text,text)          to anon;
 grant execute on function mark_extra_day_reviewed(text,uuid)                      to anon;
+grant execute on function delete_extra_day_request(text,uuid)                     to anon;

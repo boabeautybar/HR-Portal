@@ -1812,6 +1812,7 @@
     addLeaveNote: addLeaveNote,
     loadExtraDayRequests: loadExtraDayRequests,
     setExtraDayStatus: setExtraDayStatus,
+    deleteExtraDayRequest: deleteExtraDayRequest,
 
     // Kiosk device lock (Tier 3A) — server-validated enrolment RPCs
     createKioskEnrollment: createKioskEnrollment,
@@ -1914,6 +1915,11 @@
       p_key: incidentKey(), p_id: id, p_status: status, p_note: note || "", p_actor: actor || ""
     });
     if (res.error) { console.error("setExtraDayStatus:", res.error); throw res.error; }
+    return true;
+  }
+  async function deleteExtraDayRequest(id) {
+    var res = await sb.rpc("delete_extra_day_request", { p_key: incidentKey(), p_id: id });
+    if (res.error) { console.error("deleteExtraDayRequest:", res.error); throw res.error; }
     return true;
   }
 

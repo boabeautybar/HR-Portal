@@ -8793,6 +8793,16 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
     } catch (e) { alert("Could not update: " + (e.message || e)); }
     setBusy(false);
   };
+  const removeReq = async (r) => {
+    if (busy) return;
+    if (!window.confirm("Delete this extra-day request from " + (r.name || "this person") + "? This can't be undone.")) return;
+    setBusy(true);
+    try {
+      await window.BOA_DB.deleteExtraDayRequest(r.id);
+      await refresh();
+    } catch (e) { alert("Could not delete: " + (e.message || e)); }
+    setBusy(false);
+  };
 
   const filtered = (requests || []).filter(r => statusFilter === "all" ? true : r.status === statusFilter)
     .sort((a, b) => (a.work_date || "").localeCompare(b.work_date || ""));
@@ -8852,6 +8862,10 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
               <button disabled={busy || r.status === "declined"} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }}
                 style={{ border: "1.5px solid #b91c1c", background: r.status === "declined" ? "#b91c1c" : "#fff", color: r.status === "declined" ? "#fff" : "#b91c1c", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: r.status === "declined" ? "default" : "pointer" }}>
                 {r.status === "declined" ? "● Declined" : "Decline"}
+              </button>
+              <button disabled={busy} onClick={() => removeReq(r)} title="Delete this request"
+                style={{ marginLeft: "auto", border: "1px solid #e5e7eb", background: "#fff", color: "#9ca3af", borderRadius: 9, padding: "7px 12px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>
+                🗑 Delete
               </button>
             </div>
 
