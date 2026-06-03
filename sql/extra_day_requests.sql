@@ -108,16 +108,20 @@ end $$;
 
 -- ---- MY BOA: a tech reads their OWN extra-day requests by employee code -----
 -- Public (no HR key), like submit_*. Returns only a tech's own rows and only
--- the non-sensitive fields needed to show "your extra day on X was approved".
+-- the fields needed to show "your extra day on X was approved / declined".
+-- The decision_note carries the manager's reason when declined. Drop first —
+-- the return shape changed (added decision_note), which CREATE OR REPLACE
+-- can't do in place.
+drop function if exists my_extra_day_requests(text);
 create or replace function my_extra_day_requests(p_ec text)
-returns table(ref_code text, work_date date, status text, decided_at timestamptz)
+returns table(ref_code text, work_date date, status text, decided_at timestamptz, decision_note text)
 language plpgsql security definer set search_path = public as $$
 begin
   if coalesce(btrim(p_ec), '') = '' then return; end if;
   return query
-    select e.ref_code, e.work_date, e.status, e.decided_at
+    select e.ref_code, e.work_date, e.status, e.decided_at, e.decision_note
     from extra_day_requests e
-    where e.ec = nullif(btrim(p_ec), '')
+    where upper(btrim(e.ec)) = upper(btrim(p_ec))
     order by e.work_date desc;
 end $$;
 
