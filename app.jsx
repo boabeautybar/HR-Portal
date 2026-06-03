@@ -7055,6 +7055,7 @@ const SETTINGS_TABS = [
   { t: "dashSecurityAlerts", l: "Security Alerts", cat: "Home/Dashboard", icon: "🚨" },
   { t: "dashHrActions", l: "HR Actions & Tasks", cat: "Home/Dashboard", icon: "📝" },
   { t: "dashMgrAbsences", l: "Manager Absences (Action required)", cat: "Home/Dashboard", icon: "📌" },
+  { t: "dashCalledInSick", l: "Called in Sick / Absent (today & tomorrow)", cat: "Home/Dashboard", icon: "🤒" },
   { t: "dashAbscond", l: "Abscond / Absence Warnings", cat: "Home/Dashboard", icon: "🚨" },
   { t: "staff", l: "Staff List", cat: "People", icon: "👥" },
   { t: "onboard", l: "Onboarding", cat: "People", icon: "🌱" },
@@ -13676,6 +13677,53 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           ))}
                         </div>
                       ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* ── SECTION: CALLED IN SICK / ABSENT (today & tomorrow) ──
+                  Overview of team members who called in via My BOA. Read-only
+                  summary; click through to the Called in Sick tab for details. */}
+              {!(new Set(currentUser?.hideTabs || []).has("dashCalledInSick")) && canSeeIncidents(currentUser) && (() => {
+                const { today, tomorrow, list } = calledInSickWindow(leaveRequests);
+                if (!list.length) return null;
+                const todayList = list.filter(r => r.start_date <= today && r.end_date >= today);
+                const tomorrowList = list.filter(r => r.start_date <= tomorrow && r.end_date >= tomorrow);
+                const typeChip = (t) => ({ display: "inline-flex", padding: "1px 8px", borderRadius: 999, fontSize: 10.5, fontWeight: 700,
+                  color: t === "Sick" ? "#b45309" : "#6b21a8", background: t === "Sick" ? "#fef3c7" : "#ede9fe" });
+                const row = (r) => (
+                  <div key={r.id} onClick={() => tryChangeTab("calledInSick")}
+                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderTop: "1px dashed #FBCFE8", cursor: "pointer" }}>
+                    <span style={{ fontSize: 12.5, fontWeight: 700, color: "#831843" }}>{r.name}</span>
+                    <span style={typeChip(r.leave_type)}>{LEAVE_TYPE[r.leave_type] || r.leave_type}</span>
+                    {r.store && <span style={{ fontSize: 11, color: "#9d6a82" }}>· {r.store}</span>}
+                  </div>
+                );
+                const sentence = [
+                  todayList.length ? todayList.length + " for today" : null,
+                  tomorrowList.length ? tomorrowList.length + " for tomorrow" : null
+                ].filter(Boolean).join(" · ");
+                return (
+                  <div style={{ background: "linear-gradient(135deg,#fff7fb 0%,#FFFFFF 70%)", border: "2px solid #f6c9dd", borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: "0 4px 16px rgba(190,24,93,0.08)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: "#9d174d" }}>🤒 Called in sick / absent</div>
+                      <div style={{ fontSize: 12.5, color: "#83476a", fontWeight: 700 }}>{sentence}</div>
+                      <div style={{ flex: 1 }} />
+                      <button onClick={() => tryChangeTab("calledInSick")}
+                        style={{ background: "#fff", color: "#9d174d", border: "1px solid #f6c9dd", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
+                        Open Called in Sick →
+                      </button>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 8 }}>
+                      <div style={{ background: "#fff", border: "1px solid #f6c9dd", borderRadius: 10, padding: "8px 12px" }}>
+                        <div style={{ fontSize: 11, fontWeight: 800, color: "#9d174d", letterSpacing: "0.04em", marginBottom: 2 }}>TODAY · {todayList.length}</div>
+                        {todayList.length ? todayList.map(row) : <div style={{ fontSize: 12, color: "#9d6a82", paddingTop: 4 }}>Nobody called in.</div>}
+                      </div>
+                      <div style={{ background: "#fff", border: "1px solid #f6c9dd", borderRadius: 10, padding: "8px 12px" }}>
+                        <div style={{ fontSize: 11, fontWeight: 800, color: "#9d174d", letterSpacing: "0.04em", marginBottom: 2 }}>TOMORROW · {tomorrowList.length}</div>
+                        {tomorrowList.length ? tomorrowList.map(row) : <div style={{ fontSize: 12, color: "#9d6a82", paddingTop: 4 }}>Nobody called in.</div>}
+                      </div>
                     </div>
                   </div>
                 );
