@@ -156,7 +156,16 @@
       };
       sb.rpc("submit_leave_request", payload).then(function (res) {
         state.busy = false;
-        if (res.error) { render(); setErr("Sorry — could not send. Please try again. (" + (res.error.message || "error") + ")"); return; }
+        if (res.error) {
+          render();
+          var msg = res.error.message || "";
+          if (/duplicate_request/i.test(msg)) {
+            setErr("You've already told us you're off for that day — it's with your manager. No need to send it again.");
+          } else {
+            setErr("Sorry — could not send. Please try again. (" + (msg || "error") + ")");
+          }
+          return;
+        }
         done(res.data);
       }).catch(function () {
         state.busy = false; render(); setErr("Sorry — could not send. Check your signal and try again.");

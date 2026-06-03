@@ -66,6 +66,21 @@ begin
   if coalesce(btrim(p_name), '') = '' then raise exception 'name required'; end if;
   if p_work_date is null then raise exception 'date required'; end if;
 
+  -- Block duplicate offers: one tech can only offer a given day once, no matter
+  -- the status of the earlier request (pending / approved / declined). Match on
+  -- the employee code when present, else fall back to the name. The frontend
+  -- turns the 'duplicate_request' message into a friendly notice.
+  if exists (
+    select 1 from extra_day_requests
+    where work_date = p_work_date
+      and case
+        when nullif(btrim(p_ec), '') is not null then ec = nullif(btrim(p_ec), '')
+        else lower(btrim(name)) = lower(btrim(p_name))
+      end
+  ) then
+    raise exception 'duplicate_request';
+  end if;
+
   v_ref := 'EX-' || to_char(now() at time zone 'Africa/Johannesburg', 'YYMMDD')
            || '-' || upper(substr(md5(random()::text), 1, 4));
 
