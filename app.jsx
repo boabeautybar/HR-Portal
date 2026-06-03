@@ -8717,10 +8717,23 @@ function calledInSickWindow(requests) {
 }
 
 // Operations board: who's called in sick / absent for today & tomorrow.
-function CalledInSickTab({ requests }) {
+function CalledInSickTab({ requests, setRequests, currentUser }) {
   const card = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 18px", marginBottom: 12 };
   const chip = (c) => ({ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: c.color, background: c.bg });
   const { today, tomorrow, list } = calledInSickWindow(requests);
+  const isOwner = !!(currentUser && currentUser.isOwner);
+  const [busy, setBusy] = useState(false);
+  // Owner-only delete — for clearing test entries or a mistaken self-report.
+  const removeReq = async (r) => {
+    if (busy) return;
+    if (!window.confirm("Delete " + (r.name || "this person") + "'s " + (r.leave_type === "Sick" ? "sick" : "absence") + " mark (Ref " + (r.ref_code || "—") + ")?\n\nThis permanently removes it.")) return;
+    setBusy(true);
+    try {
+      await window.BOA_DB.deleteLeaveRequest(r.id);
+      if (setRequests) setRequests(prev => (prev || []).filter(x => x.id !== r.id));
+    } catch (e) { alert("Could not delete: " + ((e && e.message) || e)); }
+    setBusy(false);
+  };
 
   const sect = (label, ymd) => {
     const rows = list.filter(r => r.start_date <= ymd && r.end_date >= ymd)
@@ -8734,6 +8747,11 @@ function CalledInSickTab({ requests }) {
         {rows.length === 0 && <div style={{ ...card, textAlign: "center", color: "#9d6a82" }}>Nobody’s called in.</div>}
         {rows.map(r => {
           const st = LEAVE_STATUS[r.status] || LEAVE_STATUS.pending;
+          // Nail techs take Fresha bookings (manager ECs end in "M"); suggest
+          // blocking them so no clients book a tech who's off.
+          const isTech = !/M$/i.test((r.ec || "").trim());
+          const firstName = (r.name || "").trim().split(/\s+/)[0] || "this tech";
+          const awayLbl = fmtIncidentDate(r.start_date) + (r.end_date !== r.start_date ? "–" + fmtIncidentDate(r.end_date) : "");
           return (
             <div key={r.id} style={card}>
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -8747,6 +8765,22 @@ function CalledInSickTab({ requests }) {
               </div>
               {r.reason && <div style={{ marginTop: 8, fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{linkifyText(r.reason)}</div>}
               <div style={{ marginTop: 6, fontSize: 11, color: "#9d6a82" }}>Ref {r.ref_code} · {fmtIncidentTime(r.created_at)}{r.contact ? " · " + r.contact : ""}</div>
+              {isTech && (
+                <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "flex-start", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "9px 12px" }}>
+                  <span style={{ fontSize: 15, lineHeight: 1.2 }}>💆‍♀️</span>
+                  <div style={{ fontSize: 12.5, color: "#1e3a8a", lineHeight: 1.45 }}>
+                    <strong>Block on Fresha:</strong> set {firstName} as unavailable on Fresha for <strong>{awayLbl}</strong> so no new client bookings land while she's off.
+                  </div>
+                </div>
+              )}
+              {isOwner && (
+                <div style={{ marginTop: 10, textAlign: "right" }}>
+                  <button disabled={busy} onClick={() => removeReq(r)} title="Owner: permanently delete this absence mark"
+                    style={{ border: "1px solid #fecaca", background: "#fff", color: "#b91c1c", borderRadius: 8, padding: "5px 12px", fontWeight: 700, fontSize: 12, fontFamily: "inherit", cursor: busy ? "default" : "pointer" }}>
+                    🗑 Delete mark
+                  </button>
+                </div>
+              )}
             </div>
           );
         })}
@@ -16617,7 +16651,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* ── CALLED IN SICK TAB ── */}
         {tab === "calledInSick" && canSeeIncidents(currentUser) && (
-          <CalledInSickTab requests={leaveRequests} />
+          <CalledInSickTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} />
         )}
 
         {/* ── EXTRA-DAY REQUESTS TAB ── */}

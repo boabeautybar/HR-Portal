@@ -125,6 +125,7 @@
     var today = todayYmd();
     var tomorrow = addDays(today, 1);
     if (!name) { setErr("Please enter your full name."); $("name").focus(); return; }
+    if (name.split(/\s+/).filter(Boolean).length < 2) { setErr("Please enter both your first and last name."); $("name").focus(); return; }
     if (!store) { setErr("Please choose your branch."); return; }
     if (!ec) { setErr("Please enter your employee code."); $("ec").focus(); return; }
     if (!start || !end) { setErr("Please choose the dates you'll be away."); return; }
@@ -162,18 +163,59 @@
       });
     };
 
-    state.busy = true; $("submit").disabled = true;
-    if (file) {
-      $("submit").textContent = "Uploading…";
-      uploadFile(sb, file, "absence-proof").then(function (url) {
-        $("submit").textContent = "Sending…"; finish(url);
-      }).catch(function (e) {
+    var proceed = function () {
+      if (file) {
+        $("submit").textContent = "Uploading…";
+        uploadFile(sb, file, "absence-proof").then(function (url) {
+          $("submit").textContent = "Sending…"; finish(url);
+        }).catch(function (e) {
+          state.busy = false; $("submit").disabled = false; $("submit").textContent = "Send to HR";
+          setErr("Couldn't upload the file (" + ((e && e.message) || "error") + "). You can send without it and get it to HR another way.");
+        });
+      } else {
+        $("submit").textContent = "Sending…"; finish(null);
+      }
+    };
+
+    // Check the employee code is registered at the chosen branch before
+    // sending, so people can't mark themselves absent against a store that
+    // isn't their home branch.
+    state.busy = true; $("submit").disabled = true; $("submit").textContent = "Checking…";
+    verifyEcBranch(ec, store).then(function (v) {
+      if (!v.ok) {
         state.busy = false; $("submit").disabled = false; $("submit").textContent = "Send to HR";
-        setErr("Couldn't upload the file (" + ((e && e.message) || "error") + "). You can send without it and get it to HR another way.");
-      });
-    } else {
-      $("submit").textContent = "Sending…"; finish(null);
-    }
+        setErr(v.msg); try { $("ec").focus(); } catch (_e) {}
+        return;
+      }
+      proceed();
+    });
+  }
+
+  // Confirm the employee code exists and its home branch matches the chosen
+  // store. Blocks a definite mismatch (code found at a different branch) or an
+  // unknown code; on a lookup error we fail OPEN so a transient DB/permission
+  // issue can never stop a genuine call-in from reaching HR.
+  function verifyEcBranch(ec, store) {
+    var want = String(ec || "").trim().toUpperCase();
+    var wantStore = String(store || "").trim();
+    if (!want) return Promise.resolve({ ok: true });
+    return sb.from("staff").select("employee_code,branch").ilike("employee_code", want)
+      .then(function (res) {
+        if (res.error) { console.warn("verifyEcBranch lookup failed:", res.error); return { ok: true }; }
+        var rows = (res.data || []).filter(function (r) {
+          return String(r.employee_code || "").trim().toUpperCase() === want;
+        });
+        if (rows.length === 0) {
+          return { ok: false, msg: "We couldn't find employee code " + want + ". Please check it — enter the exact code on your contract." };
+        }
+        var atStore = rows.some(function (r) { return String(r.branch || "").trim() === wantStore; });
+        if (!atStore) {
+          var theirBranch = String(rows[0].branch || "").trim();
+          return { ok: false, msg: "Employee code " + want + " isn't registered at " + wantStore + (theirBranch ? " — it's at " + theirBranch + "." : ".") + " Please choose your home branch." };
+        }
+        return { ok: true };
+      })
+      .catch(function (e) { console.warn("verifyEcBranch error:", e); return { ok: true }; });
   }
 
   function done(ref) {

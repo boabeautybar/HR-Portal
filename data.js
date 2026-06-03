@@ -1810,6 +1810,7 @@
     setLeaveStatus: setLeaveStatus,
     markLeaveReviewed: markLeaveReviewed,
     addLeaveNote: addLeaveNote,
+    deleteLeaveRequest: deleteLeaveRequest,
     loadExtraDayRequests: loadExtraDayRequests,
     setExtraDayStatus: setExtraDayStatus,
     deleteExtraDayRequest: deleteExtraDayRequest,
@@ -1901,6 +1902,11 @@
   async function addLeaveNote(id, note, author) {
     var res = await sb.rpc("add_leave_note", { p_key: incidentKey(), p_id: id, p_note: note, p_author: author || "" });
     if (res.error) { console.error("addLeaveNote:", res.error); throw res.error; }
+    return true;
+  }
+  async function deleteLeaveRequest(id) {
+    var res = await sb.rpc("delete_leave_request", { p_key: incidentKey(), p_id: id });
+    if (res.error) { console.error("deleteLeaveRequest:", res.error); throw res.error; }
     return true;
   }
 
