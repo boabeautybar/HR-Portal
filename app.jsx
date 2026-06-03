@@ -22261,6 +22261,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const addLeave = () => {
           if (!f.ec || !f.startDate || !f.endDate) { alert("Please fill in " + peopleType + ", from, and to dates."); return; }
           if (new Date(f.startDate) > new Date(f.endDate)) { alert("Start date must be on or before end date."); return; }
+          // Block double-logging: same person already has annual / emergency leave
+          // whose dates overlap these ones. Stops duplicate planner entries (which
+          // also doubled up the Fresha block reminder).
+          const dup = leaveRecs.find(lv => lv.ec === f.ec && lv.type === "Annual leave"
+            && lv.startDate <= f.endDate && lv.endDate >= f.startDate);
+          if (dup) {
+            alert("Cannot add: this person already has annual leave logged for " + fmtIncidentDate(dup.startDate) + " → " + fmtIncidentDate(dup.endDate) + ", which overlaps these dates. Edit or remove that entry instead of adding a duplicate.");
+            return;
+          }
           const stf = (isTechMode ? enriched : managers).find(p => p.ec === f.ec);
           if (!stf || stf.onMat || !ROLE_GUARD(stf)) { alert("This sub-tab manages annual leave for " + peopleTypePlural + " only."); return; }
           const stBr = stf.branch;
