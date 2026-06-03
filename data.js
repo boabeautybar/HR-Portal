@@ -1810,6 +1810,8 @@
     setLeaveStatus: setLeaveStatus,
     markLeaveReviewed: markLeaveReviewed,
     addLeaveNote: addLeaveNote,
+    loadExtraDayRequests: loadExtraDayRequests,
+    setExtraDayStatus: setExtraDayStatus,
 
     // Kiosk device lock (Tier 3A) — server-validated enrolment RPCs
     createKioskEnrollment: createKioskEnrollment,
@@ -1898,6 +1900,20 @@
   async function addLeaveNote(id, note, author) {
     var res = await sb.rpc("add_leave_note", { p_key: incidentKey(), p_id: id, p_note: note, p_author: author || "" });
     if (res.error) { console.error("addLeaveNote:", res.error); throw res.error; }
+    return true;
+  }
+
+  // ── Extra-day availability requests (sql/extra_day_requests.sql) ─────────
+  async function loadExtraDayRequests() {
+    var res = await sb.rpc("list_extra_day_requests", { p_key: incidentKey() });
+    if (res.error) { console.error("loadExtraDayRequests:", res.error); return []; }
+    return Array.isArray(res.data) ? res.data : [];
+  }
+  async function setExtraDayStatus(id, status, note, actor) {
+    var res = await sb.rpc("set_extra_day_status", {
+      p_key: incidentKey(), p_id: id, p_status: status, p_note: note || "", p_actor: actor || ""
+    });
+    if (res.error) { console.error("setExtraDayStatus:", res.error); throw res.error; }
     return true;
   }
 

@@ -7074,6 +7074,7 @@ const SETTINGS_TABS = [
   { t: "leave", l: "Leave Planner", cat: "Operations", icon: "🌴" },
   { t: "leaveRequests", l: "Leave Requests", cat: "Operations", icon: "📨" },
   { t: "calledInSick", l: "Called in Sick", cat: "Operations", icon: "🤒" },
+  { t: "extraDayRequests", l: "Extra-Day Requests", cat: "Operations", icon: "➕" },
   { t: "storeOpenings", l: "Store Openings", cat: "Operations", icon: "🔓" },
   { t: "movements", l: "Today's Movements", cat: "Operations", icon: "🔀" },
   { t: "dailyTasks", l: "Daily Tasks", cat: "Operations", icon: "📋" },
@@ -8765,6 +8766,116 @@ function CalledInSickTab({ requests }) {
   );
 }
 
+// Regional-manager review of staff "Offer an extra day" requests (My BOA →
+// sql/extra_day_requests.sql). Approve / decline; declining needs a reason.
+function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
+  const [statusFilter, setStatusFilter] = useState("pending");
+  const [busy, setBusy] = useState(false);
+  const [declineId, setDeclineId] = useState(null);
+  const [declineText, setDeclineText] = useState("");
+  const card = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 18px", marginBottom: 12 };
+  const chip = (c) => ({ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: c.color, background: c.bg });
+
+  const actor = (currentUser && (currentUser.name || currentUser.email)) || "";
+  const refresh = async () => {
+    if (window.BOA_DB && window.BOA_DB.loadExtraDayRequests) {
+      const fresh = await window.BOA_DB.loadExtraDayRequests();
+      setRequests(Array.isArray(fresh) ? fresh : []);
+    }
+  };
+  const setStatus = async (r, status, note) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await window.BOA_DB.setExtraDayStatus(r.id, status, note || "", actor);
+      await refresh();
+      setDeclineId(null); setDeclineText("");
+    } catch (e) { alert("Could not update: " + (e.message || e)); }
+    setBusy(false);
+  };
+
+  const filtered = (requests || []).filter(r => statusFilter === "all" ? true : r.status === statusFilter)
+    .sort((a, b) => (a.work_date || "").localeCompare(b.work_date || ""));
+  const pendingCount = (requests || []).filter(r => r.status === "pending").length;
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#831843", margin: 0 }}>➕ Extra-Day Requests</h2>
+        {pendingCount > 0 && <span style={chip({ color: "#b45309", bg: "#fef3c7" })}>{pendingCount} pending</span>}
+      </div>
+      <p style={{ color: "#9d6a82", fontSize: 13.5, margin: "6px 0 16px", maxWidth: 640 }}>
+        Team members offering to work an extra day from My BOA. Approve or decline — every extra day needs your approval before it counts.
+      </p>
+      <div style={{ marginBottom: 14 }}>
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+          style={{ fontFamily: "inherit", fontSize: 13, padding: "8px 10px", borderRadius: 9, border: "1.5px solid #e7c6d4" }}>
+          <option value="pending">Pending</option>
+          <option value="approved">Approved</option>
+          <option value="declined">Declined</option>
+          <option value="all">All</option>
+        </select>
+        <span style={{ marginLeft: 10, fontSize: 12.5, color: "#9d6a82" }}>{filtered.length} request{filtered.length === 1 ? "" : "s"}</span>
+      </div>
+
+      {filtered.length === 0 && <div style={{ ...card, textAlign: "center", color: "#9d6a82" }}>No requests here.</div>}
+
+      {filtered.map(r => {
+        const st = LEAVE_STATUS[r.status] || LEAVE_STATUS.pending;
+        const isCatch = r.purpose === "catch_up";
+        return (
+          <div key={r.id} style={card}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              {!r.reviewed && <span style={{ width: 9, height: 9, borderRadius: 999, background: "#BE185D", display: "inline-block" }} title="Not yet reviewed" />}
+              <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
+              <span style={chip(isCatch ? { color: "#9a3412", bg: "#ffedd5" } : { color: "#075985", bg: "#e0f2fe" })}>{isCatch ? "Catch-up" : "Extra"}</span>
+              <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(r.work_date)}</span>
+              <span style={{ color: "#9ca3af", fontSize: 12 }}>{r.store ? "· " + r.store : ""}{r.ec ? " · " + r.ec : ""}</span>
+              <span style={{ marginLeft: "auto", ...chip(st) }}>{st.label}</span>
+            </div>
+            {r.note && <div style={{ marginTop: 8, fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{linkifyText(r.note)}</div>}
+            <div style={{ marginTop: 6, fontSize: 11, color: "#9d6a82" }}>Ref {r.ref_code} · {fmtIncidentTime(r.created_at)}</div>
+
+            {r.status !== "pending" && r.decided_by && (
+              <div style={{ marginTop: 10, background: r.status === "approved" ? "#f0fdf4" : "#fef2f2", border: "1px solid " + (r.status === "approved" ? "#bbf7d0" : "#fecaca"), borderRadius: 11, padding: "10px 13px" }}>
+                <div style={{ fontSize: 12, fontWeight: 800, color: r.status === "approved" ? "#15803d" : "#b91c1c" }}>{r.status === "approved" ? "✅ Approved" : "✕ Declined"}</div>
+                {r.decision_note && <div style={{ fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{r.decision_note}</div>}
+                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>{r.decided_by}{r.decided_at ? " · " + fmtIncidentTime(r.decided_at) : ""}</div>
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+              <button disabled={busy || r.status === "approved"} onClick={() => setStatus(r, "approved")}
+                style={{ border: "1.5px solid #15803d", background: r.status === "approved" ? "#15803d" : "#fff", color: r.status === "approved" ? "#fff" : "#15803d", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: r.status === "approved" ? "default" : "pointer" }}>
+                {r.status === "approved" ? "● Approved" : "Approve"}
+              </button>
+              <button disabled={busy || r.status === "declined"} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }}
+                style={{ border: "1.5px solid #b91c1c", background: r.status === "declined" ? "#b91c1c" : "#fff", color: r.status === "declined" ? "#fff" : "#b91c1c", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: r.status === "declined" ? "default" : "pointer" }}>
+                {r.status === "declined" ? "● Declined" : "Decline"}
+              </button>
+            </div>
+
+            {declineId === r.id && (
+              <div style={{ marginTop: 12, background: "#fef2f2", border: "1.5px solid #fecaca", borderRadius: 11, padding: "12px 13px" }}>
+                <div style={{ fontSize: 12.5, fontWeight: 800, color: "#b91c1c", marginBottom: 6 }}>Reason for declining (required)</div>
+                <textarea value={declineText} onChange={e => setDeclineText(e.target.value)} autoFocus
+                  placeholder="Why is this being declined…"
+                  style={{ width: "100%", boxSizing: "border-box", minHeight: 64, fontFamily: "inherit", fontSize: 13.5, padding: "10px 12px", borderRadius: 9, border: "1.5px solid #fecaca", resize: "vertical" }} />
+                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                  <button disabled={busy || !declineText.trim()} onClick={() => setStatus(r, "declined", declineText)}
+                    style={{ background: "#b91c1c", color: "#fff", border: "none", borderRadius: 9, padding: "8px 16px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: declineText.trim() ? "pointer" : "default", opacity: declineText.trim() ? 1 : 0.5 }}>Confirm decline</button>
+                  <button onClick={() => { setDeclineId(null); setDeclineText(""); }}
+                    style={{ background: "#f3f4f6", color: "#6b7280", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>Cancel</button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function LeaveRequestsTab({ requests, setRequests, currentUser }) {
   const [statusFilter, setStatusFilter] = useState("pending");
   const [storeFilter, setStoreFilter] = useState("");
@@ -10145,6 +10256,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [incidentPopupSeen, setIncidentPopupSeen] = useState(false);  // dismissed for this session
   // Staff leave requests (from My BOA — see sql/leave_requests.sql)
   const [leaveRequests, setLeaveRequests] = useState([]);
+  // Extra-day availability requests (from My BOA — see sql/extra_day_requests.sql)
+  const [extraDayRequests, setExtraDayRequests] = useState([]);
   const [overtimeShortCache, setOvertimeShortCache] = useState({});    // { ec|cycleYm: hours } from early-leave sidecar
   const [overtimeShortLoading, setOvertimeShortLoading] = useState(false);
   const [otForm, setOtForm] = useState({ ec: "", date: "", hours: "", reason: "" });
@@ -11112,8 +11225,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadFreshaAccess ? window.BOA_DB.loadFreshaAccess() : Promise.resolve({}),
       window.BOA_DB.loadOvertimeAccess ? window.BOA_DB.loadOvertimeAccess() : Promise.resolve({}),
       (window.BOA_DB.loadIncidentReports && canSeeIncidents(currentUser)) ? window.BOA_DB.loadIncidentReports() : Promise.resolve([]),
-      (window.BOA_DB.loadLeaveRequests && canSeeIncidents(currentUser)) ? window.BOA_DB.loadLeaveRequests() : Promise.resolve([])
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, incidents, leaveReqs]) => {
+      (window.BOA_DB.loadLeaveRequests && canSeeIncidents(currentUser)) ? window.BOA_DB.loadLeaveRequests() : Promise.resolve([]),
+      (window.BOA_DB.loadExtraDayRequests && canSeeIncidents(currentUser)) ? window.BOA_DB.loadExtraDayRequests() : Promise.resolve([])
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, incidents, leaveReqs, extraReqs]) => {
       setStaff(d.staff);
       setManagers(d.managers);
       setMatRecs(d.matRecs);
@@ -11129,6 +11243,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setOvertimeAccess(otAccess && typeof otAccess === "object" ? otAccess : {});
       setIncidentReports(Array.isArray(incidents) ? incidents : []);
       setLeaveRequests(Array.isArray(leaveReqs) ? leaveReqs : []);
+      setExtraDayRequests(Array.isArray(extraReqs) ? extraReqs : []);
       setLoading(false);
     }).catch((err) => {
       setLoadError("Could not load data: " + (err.message || err));
@@ -12653,6 +12768,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   ...(canSeeIncidents(currentUser) ? [(() => {
                     const n = calledInSickWindow(leaveRequests).list.length;
                     return { t: "calledInSick", l: "🤒 Called in Sick" + (n ? "  (" + n + ")" : "") };
+                  })()] : []),
+                  ...(canSeeIncidents(currentUser) ? [(() => {
+                    const n = extraDayRequests.filter(r => r.status === "pending").length;
+                    return { t: "extraDayRequests", l: "➕ Extra-Day Requests" + (n ? "  (" + n + ")" : "") };
                   })()] : []),
                   { t: "storeOpenings", l: "🔓 Store Openings" },
                   { t: "movements", l: "🔀 Today's Movements" },
@@ -16470,6 +16589,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         {/* ── CALLED IN SICK TAB ── */}
         {tab === "calledInSick" && canSeeIncidents(currentUser) && (
           <CalledInSickTab requests={leaveRequests} />
+        )}
+
+        {/* ── EXTRA-DAY REQUESTS TAB ── */}
+        {tab === "extraDayRequests" && canSeeIncidents(currentUser) && (
+          <ExtraDayRequestsTab requests={extraDayRequests} setRequests={setExtraDayRequests} currentUser={currentUser} />
         )}
 
         {/* ── ALERTS TAB ── */}
