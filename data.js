@@ -1072,6 +1072,19 @@
     if (res.error) { console.error("saveFreshaExtraOpenings:", res.error); throw res.error; }
     return map || {};
   }
+  // Fresha To-Do (closing side): tick a sick/absent nail tech as "blocked on
+  // Fresha" — i.e. greyed out so no client bookings land while she's off —
+  // keyed by leave-request id, without touching the leave_requests table.
+  async function loadFreshaBlocks() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_fresha_blocks_v1").maybeSingle();
+    if (res.error) { console.error("loadFreshaBlocks:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveFreshaBlocks(map) {
+    var res = await sb.from("app_state").upsert({ key: "boa_fresha_blocks_v1", value: map || {} });
+    if (res.error) { console.error("saveFreshaBlocks:", res.error); throw res.error; }
+    return map || {};
+  }
   // Persist the boa_early_<branch>_<ym> sidecar (the whole nested map). Used
   // by the attendance sheet to clear a single day's 'left early' short-hours
   // when an admin overrides that cell, so the orange -Xh overlay can be
@@ -1792,6 +1805,8 @@
     clearExtraDay: clearExtraDay,
     loadFreshaExtraOpenings: loadFreshaExtraOpenings,
     saveFreshaExtraOpenings: saveFreshaExtraOpenings,
+    loadFreshaBlocks: loadFreshaBlocks,
+    saveFreshaBlocks: saveFreshaBlocks,
     deleteEarlyLeaves: deleteEarlyLeaves,
     loadKioskProof: loadKioskProof,
     probeRecentClockinsRaw: probeRecentClockinsRaw,
