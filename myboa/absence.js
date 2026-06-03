@@ -35,8 +35,13 @@
       '<div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>',
       '<h1>Call in sick / Mark absent</h1>',
       '<p class="sub">Notify your manager and HR if you\'re unable to come to work today or tomorrow. Your submission will be reviewed by HR.</p>',
-      '<div class="note">Letting us know as early as possible helps management arrange cover and keep your branch running smoothly.',
-        '<span class="warn"><b>Managers, please note:</b> missing a scheduled working day means you will forfeit your attendance bonus for that period.</span></div>',
+      '<div class="note">Please only call in when you genuinely can\'t work. Being at work matters — for your team and for you:',
+        '<span class="warn">',
+          '<b>Nail techs:</b> you don\'t earn commission on days you\'re not working, and absences can put your monthly bonus target out of reach.<br/>',
+          '<b>Managers:</b> missing a scheduled working day forfeits your attendance bonus for that period.<br/>',
+          '<b>Sick leave</b> needs a valid medical certificate to count as paid sick leave.<br/>',
+          'Repeated or patterned absences are monitored and may lead to a discussion with your regional manager and, where warranted, the disciplinary process.',
+        '</span></div>',
       '<div class="card">',
         '<label class="field"><span>Full name</span>',
           '<input type="text" id="name" placeholder="First and last name" /></label>',
@@ -66,6 +71,8 @@
           '<input type="file" id="file" accept="image/*,application/pdf,.pdf" /></label>',
         '<label class="field"><span>Contact <em style="font-weight:400;color:#a07487">(optional)</em></span>',
           '<input type="text" id="contact" placeholder="Phone or email, so HR can reach you" /></label>',
+        '<label class="ack"><input type="checkbox" id="ack" />',
+          '<span>I confirm I\'m genuinely unable to come to work, and I understand the impact on my commission / bonus and that repeated absences may be reviewed.</span></label>',
         '<button type="button" id="submit" class="submit">Send to HR</button>',
         '<p class="err" id="err"></p>',
       '</div>',
@@ -122,6 +129,7 @@
     if (start > tomorrow || end > tomorrow) { setErr("Calling in / marking absent is only for today or tomorrow."); return; }
     if (end < start) { setErr("The last day can't be before the first day."); return; }
     if (kind === "Absent" && !desc) { setErr("Please tell management the reason you're away."); $("desc").focus(); return; }
+    if (!$("ack").checked) { setErr("Please tick the box to confirm before sending."); return; }
 
     var back = $("back").value;
     if (back && back < today) { setErr("The 'Expected back' date can't be in the past."); return; }
