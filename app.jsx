@@ -8769,7 +8769,9 @@ function CalledInSickTab({ requests }) {
 // Regional-manager review of staff "Offer an extra day" requests (My BOA →
 // sql/extra_day_requests.sql). Approve / decline; declining needs a reason.
 function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
-  const [statusFilter, setStatusFilter] = useState("pending");
+  // Default to "all" so approved / declined requests stay visible after a
+  // decision (pending ones are sorted to the top and flagged below).
+  const [statusFilter, setStatusFilter] = useState("all");
   const [busy, setBusy] = useState(false);
   const [declineId, setDeclineId] = useState(null);
   const [declineText, setDeclineText] = useState("");
@@ -8783,11 +8785,44 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
       setRequests(Array.isArray(fresh) ? fresh : []);
     }
   };
+  // Publish (or un-publish) an approved nail-tech extra day onto the live
+  // schedule grid so the tech sees it in My BOA the moment it's approved.
+  // Tech schedules live at boa_sched_<store>_<END-month ym> keyed by bare
+  // day-of-month, with "E" = extra day — exactly what the viewer reads.
+  const applyExtraDayToSchedule = async (r, publish) => {
+    try {
+      if (!r || !r.work_date || !r.store || !r.ec) return;
+      if (!window.BOA_DB || !window.BOA_DB.loadSchedule || !window.BOA_DB.saveSchedule) return;
+      if (/M$/i.test(String(r.ec).trim())) return;   // managers use a different (mgr) schedule — skip
+      const p = String(r.work_date).split("-"); let y = +p[0], m = +p[1]; const dom = +p[2];
+      if (!y || !m || !dom) return;
+      if (dom >= 25) { m += 1; if (m > 12) { m = 1; y += 1; } }   // 25th→24th cycle, END-month ym
+      const ym = y + "-" + String(m).padStart(2, "0");
+      const sched = await window.BOA_DB.loadSchedule(r.store, ym, false);
+      const grid = (sched && sched.grid) || {};
+      const want = String(r.ec).trim().toUpperCase();
+      const ecKey = Object.keys(grid).find(k => String(k).trim().toUpperCase() === want) || String(r.ec).trim();
+      const row = grid[ecKey] || {};
+      const cur = row[dom] != null ? row[dom] : row[String(dom)];
+      if (publish) {
+        row[String(dom)] = "E";
+      } else {
+        if (cur !== "E") return;            // only revert a cell we set
+        delete row[dom]; delete row[String(dom)];
+      }
+      grid[ecKey] = row;
+      await window.BOA_DB.saveSchedule(r.store, ym, grid, false);
+    } catch (e) { console.error("applyExtraDayToSchedule:", e); }
+  };
   const setStatus = async (r, status, note) => {
     if (busy) return;
     setBusy(true);
     try {
       await window.BOA_DB.setExtraDayStatus(r.id, status, note || "", actor);
+      // Approving publishes the extra day onto the schedule (tech sees it
+      // immediately); declining clears it back off if it was published.
+      if (status === "approved") await applyExtraDayToSchedule(r, true);
+      if (status === "declined") await applyExtraDayToSchedule(r, false);
       await refresh();
       setDeclineId(null); setDeclineText("");
     } catch (e) { alert("Could not update: " + (e.message || e)); }
@@ -8805,8 +8840,17 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
   };
 
   const filtered = (requests || []).filter(r => statusFilter === "all" ? true : r.status === statusFilter)
-    .sort((a, b) => (a.work_date || "").localeCompare(b.work_date || ""));
+    .sort((a, b) => {
+      const ap = a.status === "pending" ? 0 : 1, bp = b.status === "pending" ? 0 : 1;
+      if (ap !== bp) return ap - bp;                 // pending first
+      return (a.work_date || "").localeCompare(b.work_date || "");
+    });
   const pendingCount = (requests || []).filter(r => r.status === "pending").length;
+  // Split into managers (EC ends in "M") and nail techs so each group is
+  // reviewed separately.
+  const isMgrReq = (r) => /M$/i.test(String(r.ec || "").trim());
+  const mgrReqs = filtered.filter(isMgrReq);
+  const techReqs = filtered.filter(r => !isMgrReq(r));
 
   return (
     <div>
@@ -8830,7 +8874,10 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
 
       {filtered.length === 0 && <div style={{ ...card, textAlign: "center", color: "#9d6a82" }}>No requests here.</div>}
 
-      {filtered.map(r => {
+      {[{ key: "mgr", label: "👑 Managers", items: mgrReqs }, { key: "tech", label: "💅 Nail Techs", items: techReqs }].map(g => g.items.length === 0 ? null : (
+        <div key={g.key} style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.08em", color: "#831843", textTransform: "uppercase", margin: "6px 0 10px" }}>{g.label} · {g.items.length}</div>
+          {g.items.map(r => {
         const st = LEAVE_STATUS[r.status] || LEAVE_STATUS.pending;
         const isCatch = r.purpose === "catch_up";
         return (
@@ -8849,6 +8896,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
             {r.status !== "pending" && r.decided_by && (
               <div style={{ marginTop: 10, background: r.status === "approved" ? "#f0fdf4" : "#fef2f2", border: "1px solid " + (r.status === "approved" ? "#bbf7d0" : "#fecaca"), borderRadius: 11, padding: "10px 13px" }}>
                 <div style={{ fontSize: 12, fontWeight: 800, color: r.status === "approved" ? "#15803d" : "#b91c1c" }}>{r.status === "approved" ? "✅ Approved" : "✕ Declined"}</div>
+                {r.status === "approved" && !/M$/i.test(String(r.ec || "").trim()) && <div style={{ fontSize: 11.5, color: "#15803d", marginTop: 2 }}>📅 Published to {(r.name || "the tech").split(" ")[0]}'s schedule as an extra day ({fmtIncidentDate(r.work_date)}).</div>}
                 {r.decision_note && <div style={{ fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{r.decision_note}</div>}
                 <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>{r.decided_by}{r.decided_at ? " · " + fmtIncidentTime(r.decided_at) : ""}</div>
               </div>
@@ -8885,7 +8933,9 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
             )}
           </div>
         );
-      })}
+          })}
+        </div>
+      ))}
     </div>
   );
 }
