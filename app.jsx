@@ -11954,6 +11954,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const q = (search || "").toLowerCase();
     const list = (enrichedManagers || []).filter(m => {
       if (!m) return false;
+      if (m.offHidden) return false;          // hide off-boarded managers past the 31-day display window
 
       const isTerm = m.status === "terminated" || m.active === "false" || m.active === false;
       if (fShow === "terminated" && !isTerm) return false;
@@ -11984,6 +11985,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     });
     const rank = (r) => r === "SSM" ? 0 : r === "SM" ? 1 : r === "AM" ? 2 : 3;
     return list.sort((a, b) => {
+      const ad = (a.offboarded && a.offDaysSinceLeft != null && a.offDaysSinceLeft >= 0) ? 1 : 0;
+      const bd = (b.offboarded && b.offDaysSinceLeft != null && b.offDaysSinceLeft >= 0) ? 1 : 0;
+      if (ad !== bd) return ad - bd;                                 // departed managers sink to the bottom
       const am = a.onMat ? 1 : 0, bm = b.onMat ? 1 : 0;
       if (am !== bm) return am - bm;                                 // active mgrs first
       const rd = rank(a.role) - rank(b.role);
@@ -14420,8 +14424,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       const _effRole = m.effectiveRole || m.role;
                       const icon = _effRole === "SSM" ? "💎" : _effRole === "SM" ? "👑" : "⭐";
                       const roleBg = _effRole === "SSM" ? "#92400e" : _effRole === "SM" ? "#7c3aed" : "#0369a1";
-                      const rowBg = m.onMat ? "#fdf4ff" : m.pregnant ? "#fffbeb" : "#fff";
-                      const rowOpacity = m.onMat ? 0.6 : 1;
+                      // Off-boarding parity with techs: a manager on the
+                      // off-boarding list is either already departed (leftDate
+                      // today or past) or on notice (future leftDate). Departed
+                      // rows grey out and show 'Left <date>' instead of 'Active'.
+                      const mgrDeparted = m.offboarded && m.offDaysSinceLeft != null && m.offDaysSinceLeft >= 0;
+                      const mgrOnNotice = m.offboarded && m.offDaysSinceLeft != null && m.offDaysSinceLeft < 0;
+                      const _fmtLeft = (ymd) => { try { return new Date(String(ymd).replace(/\//g, "-") + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }); } catch (_) { return ymd; } };
+                      const rowBg = mgrDeparted ? "#f3f4f6" : m.onMat ? "#fdf4ff" : m.pregnant ? "#fffbeb" : "#fff";
+                      const rowOpacity = mgrDeparted ? 0.5 : m.onMat ? 0.6 : 1;
                       return (
                         <tr key={"mgr-" + (m._id || m.ec)} style={{ background: rowBg, borderTop: `1px solid ${bdr}`, opacity: rowOpacity }}>
                           <td style={{ padding: "10px 12px", fontFamily: "monospace", fontSize: 11, color: "#8E5570", fontWeight: 700 }}>{m.ec}</td>
@@ -14444,7 +14455,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <td style={{ padding: "10px 12px" }}>{m.permit ? <Chip {...(COMPLIANCE[m.permit] || { icon: "❔", color: "#6b7280", bg: "#f3f4f6", border: "#d1d5db", label: m.permit })}>{(COMPLIANCE[m.permit] || {}).label || m.permit}</Chip> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
                           <td style={{ padding: "10px 12px", fontSize: 11, color: "#831843", fontWeight: 600, whiteSpace: "nowrap" }}>{m.startDate ? new Date(m.startDate.replace(/\//g, "-") + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : <span style={{ color: "#d1d5db" }}>—</span>}</td>
                           <td style={{ padding: "10px 12px" }}>
-                            <span style={{ fontSize: 10, fontWeight: 800, background: roleBg, color: "#fff", padding: "3px 8px", borderRadius: 6, letterSpacing: "0.04em" }}>{m.active ? "Active" : "Archived"}</span>
+                            {mgrDeparted
+                              ? <span style={{ fontSize: 10, fontWeight: 800, background: "#6b7280", color: "#fff", padding: "3px 8px", borderRadius: 6, letterSpacing: "0.04em" }}>👋 {m.leftDate ? "Left " + _fmtLeft(m.leftDate) : "Off-boarded"}</span>
+                              : mgrOnNotice
+                                ? <span style={{ fontSize: 10, fontWeight: 800, background: "#b45309", color: "#fff", padding: "3px 8px", borderRadius: 6, letterSpacing: "0.04em" }}>⏳ Notice{m.leftDate ? " · leaves " + _fmtLeft(m.leftDate) : ""}</span>
+                                : <span style={{ fontSize: 10, fontWeight: 800, background: roleBg, color: "#fff", padding: "3px 8px", borderRadius: 6, letterSpacing: "0.04em" }}>{m.active ? "Active" : "Archived"}</span>}
                             {m.onMat && <span style={{ marginLeft: 6, fontSize: 10, background: "#FBCFE8", color: "#8E5570", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>🤱 mat.</span>}
                           </td>
                           <td style={{ padding: "10px 12px", fontSize: 11, color: "#831843" }}>{m.matRec && m.matRec.returnDate ? new Date(m.matRec.returnDate.replace(/\//g, "-") + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : <span style={{ color: "#d1d5db" }}>—</span>}</td>
