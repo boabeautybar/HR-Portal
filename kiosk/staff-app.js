@@ -768,6 +768,17 @@
     var todayLbl  = today.toLocaleDateString("en-ZA", { weekday: "long", day: "2-digit", month: "long" });
     var thisBranch = (window.APP_CONFIG && window.APP_CONFIG.branchName) || "";
 
+    // A completed branch transfer (transfer_date on/before today) moves a tech
+    // to their new store, but the HR portal leaves the staff row's `branch`
+    // pointing at the OLD branch until someone re-saves it — every portal view
+    // derives the move live instead. Mirror that here so the borrow picker
+    // shows the right home, checks the right branch's schedule for eligibility,
+    // and attributes the loan to the new branch rather than the stale one.
+    function effBranch(s) {
+      if (s && s.transferring && s.transfer_to && s.transfer_date && todayIso >= s.transfer_date) return s.transfer_to;
+      return (s && s.branch) || "";
+    }
+
     setMain(
       '<div class="panel">' +
         '<div class="panel-head">' +
@@ -808,7 +819,7 @@
       allStaff = loaded[0] || [];
       loansToday = loaded[1] || [];
       var branchesToCheck = {};
-      allStaff.forEach(function (s) { if (s && s.branch && s.branch !== thisBranch) branchesToCheck[s.branch] = true; });
+      allStaff.forEach(function (s) { var hb = effBranch(s); if (hb && hb !== thisBranch) branchesToCheck[hb] = true; });
       schedByBranch = await window.APP_DATA.getSchedulesForBranches(Object.keys(branchesToCheck), schedYm);
     } catch (e) {
       document.getElementById("bt-results").innerHTML =
@@ -835,9 +846,10 @@
     incomingToday.forEach(function (l) { alreadyIncomingEcs[l.ec] = true; });
     var eligible = allStaff.filter(function (s) {
       if (!s || !s.employee_code || !s.branch) return false;
-      if (s.branch === thisBranch) return false;
+      var hb = effBranch(s);
+      if (hb === thisBranch) return false;
       if (alreadyIncomingEcs[s.employee_code]) return false;
-      var grid = schedByBranch[s.branch];
+      var grid = schedByBranch[hb];
       if (!grid) return false;
       var v = grid[s.employee_code] && grid[s.employee_code][dayKey];
       // Any working shift (W / WE / WL / WB / WM / E) makes the tech borrowable.
@@ -862,12 +874,12 @@
       }
       resultsEl.innerHTML = matches.map(function (s) {
         return (
-          '<div class="bt-row" data-ec="' + esc(s.employee_code) + '" data-name="' + esc(s.name || "") + '" data-branch="' + esc(s.branch || "") + '" ' +
+          '<div class="bt-row" data-ec="' + esc(s.employee_code) + '" data-name="' + esc(s.name || "") + '" data-branch="' + esc(effBranch(s) || "") + '" ' +
               'style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:#fff;border:1px solid var(--pink-100);border-radius:12px">' +
             '<div style="flex:1;min-width:0">' +
               '<div style="font-weight:700;color:var(--pink-900);font-size:14px">' + esc(s.name || "(no name)") + '</div>' +
               '<div style="font-size:11px;color:var(--gray-500);margin-top:2px">' +
-                '<span style="font-family:monospace">' + esc(s.employee_code || "—") + '</span> · 📍 ' + esc(s.branch || "—") +
+                '<span style="font-family:monospace">' + esc(s.employee_code || "—") + '</span> · 📍 ' + esc(effBranch(s) || "—") +
               '</div>' +
             '</div>' +
             '<button type="button" class="bt-btn" style="background:var(--pink-700);color:#fff;border:none;border-radius:8px;padding:9px 16px;font-weight:700;font-size:13px;cursor:pointer">Borrow</button>' +
