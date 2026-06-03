@@ -13862,14 +13862,33 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       const _fmtCyc = (d) => d.getDate() + " " + _mAbbr[d.getMonth()];
                       const _cycEnd = new Date(since); _cycEnd.setMonth(_cycEnd.getMonth() + 1); _cycEnd.setDate(24);
                       const cycleLabel = _fmtCyc(since) + " → " + _fmtCyc(_cycEnd);
+                      // Build the clickable list: one row per manager-day that
+                      // still needs a reason, with the weekday + date on the
+                      // right so the ROM can see exactly who and which days.
+                      const _dow = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+                      const reasonsList = pending.slice()
+                        .sort((a, b) => (a.branch || "").localeCompare(b.branch || "") || (a.name || "").localeCompare(b.name || "") || a.ymd.localeCompare(b.ymd))
+                        .map(p => {
+                          const a = p.ymd.split("-").map(Number);
+                          const d = new Date(a[0], a[1] - 1, a[2]);
+                          return { name: p.name, branch: p.branch, detail: _dow[d.getDay()] + " " + a[2] + " " + _mAbbr[a[1] - 1], key: (p.name || "") + "|" + p.ymd };
+                        });
+                      const openReasons = () => setNotCheckedInModal({
+                        title: "Manager reasons to add",
+                        role: "manager",
+                        subtitle: pending.length + " manager-day" + (pending.length !== 1 ? "s" : "") + " this cycle (" + cycleLabel + ") still need a reason tagged.",
+                        list: reasonsList,
+                        tab: "mgrclockins",
+                        tabLabel: "Open Manager Clock-ins →"
+                      });
                       return {
                         l: "Manager reasons to add",
                         v: haveData ? pending.length : "…",
-                        sub: haveData ? (pending.length === 0 ? ("all explained · " + cycleLabel + " 🎉") : ("this cycle · " + cycleLabel + " · tag reasons")) : "open Manager Check-ins to scan",
+                        sub: haveData ? (pending.length === 0 ? ("all explained · " + cycleLabel + " 🎉") : ("this cycle · " + cycleLabel + " · tap to tag")) : "open Manager Check-ins to scan",
                         i: "📝",
                         c: pending.length > 0 ? "#7c2d12" : "#14532d",
                         bg: pending.length > 0 ? "#fef3c7" : "#dcfce7",
-                        click: () => tryChangeTab("mgrclockins")
+                        click: (haveData && pending.length > 0) ? openReasons : () => tryChangeTab("mgrclockins")
                       };
                     })(),
                     scheduledToday: { l: "Scheduled today", v: dashScheduledToday == null ? "…" : (_hasStoreScope ? Object.keys(dashByBranch).filter(b => scopedBranchSet.has(b)).reduce((a, b) => a + (dashByBranch[b] || 0), 0) : dashScheduledToday), sub: _hasStoreScope ? ("scope: " + (dashScope === "mine" ? "my stores" : dashScope === "other" ? "peer stores" : "all branches")) : "across all branches", i: "📅", c: "#1e3a8a", bg: "#dbeafe" },
@@ -27950,7 +27969,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
                 <div>
                   <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: "#831843" }}>⏳ {data.title || "Not checked in yet"}</div>
-                  <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>{list.length} {noun}{list.length !== 1 ? "s" : ""} scheduled today {list.length !== 1 ? "haven't" : "hasn't"} {data.role === "manager" ? "clocked in" : "checked in or been marked absent"}.</div>
+                  <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>{data.subtitle || (list.length + " " + noun + (list.length !== 1 ? "s" : "") + " scheduled today " + (list.length !== 1 ? "haven't" : "hasn't") + " " + (data.role === "manager" ? "clocked in" : "checked in or been marked absent") + ".")}</div>
                 </div>
                 <button onClick={() => setNotCheckedInModal(null)} style={{ background: "transparent", border: "none", fontSize: 18, cursor: "pointer", color: "#6b7280", lineHeight: 1 }}>✕</button>
               </div>
@@ -27963,9 +27982,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <div style={{ fontSize: 10, fontWeight: 800, color: "#BE185D", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 6 }}>📍 {b} · {byBranch[b].length}</div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                         {byBranch[b].map(t => (
-                          <div key={t.ec} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#FDEEF5", borderRadius: 8, padding: "8px 12px" }}>
+                          <div key={t.key || t.ec} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#FDEEF5", borderRadius: 8, padding: "8px 12px" }}>
                             <span style={{ fontSize: 13, fontWeight: 600, color: "#831843" }}>{t.name}</span>
-                            <span style={{ fontSize: 11, fontFamily: "monospace", color: "#9d174d", background: "#fff", padding: "2px 7px", borderRadius: 5 }}>{t.ec}</span>
+                            <span style={{ fontSize: 11, fontFamily: "monospace", color: "#9d174d", background: "#fff", padding: "2px 7px", borderRadius: 5 }}>{t.detail || t.ec}</span>
                           </div>
                         ))}
                       </div>
