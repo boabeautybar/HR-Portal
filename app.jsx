@@ -8731,7 +8731,7 @@ function calledInSickWindow(requests) {
 // the current 25th→24th payroll cycle and hasn't ended yet — she needs blocking
 // on Fresha for those days so no client bookings land. Returned in the same
 // shape as the sick/absent block rows (key / name / store / dates / leave_type).
-function freshaLeaveBlocks(leaveRecs, staff) {
+function freshaLeaveBlocks(leaveRecs, enriched) {
   const cycleYm = (window.BOA_DB && window.BOA_DB.currentSchedYm) ? window.BOA_DB.currentSchedYm() : null;
   if (!cycleYm) return [];
   const pad = (n) => String(n).padStart(2, "0");
@@ -8743,7 +8743,7 @@ function freshaLeaveBlocks(leaveRecs, staff) {
   const ymdNow = now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate());
   const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
   const byEc = {};
-  (staff || []).forEach(s => { if (s && s.ec) byEc[String(s.ec).toUpperCase().trim()] = s; });
+  (enriched || []).forEach(s => { if (s && s.ec) byEc[String(s.ec).toUpperCase().trim()] = s; });
   // Content-based key (tech + date range) so the planner holding duplicate
   // entries collapses to a single block row, and the blocked tick stays put.
   const out = [], seen = new Set();
@@ -8756,10 +8756,28 @@ function freshaLeaveBlocks(leaveRecs, staff) {
     const ecU = String(lv.ec).toUpperCase().trim();
     const s = byEc[ecU];
     if (!s) return;   // can't tie this code to a current nail tech — skip stale/unknown records
+    if (s.offboarded && s.leftDate && s.leftDate <= ymdNow) return;   // already left — handled by the removal notice, no bookings to block
     const key = "lv-" + ecU + "-" + lv.startDate + "-" + lv.endDate;
     if (seen.has(key)) { if (lv.emergency) { const e = out.find(o => o.key === key); if (e) e.emergency = true; } return; }
     seen.add(key);
     out.push({ key, ec: lv.ec, name: s.name, store: s.branch || "", start_date: lv.startDate, end_date: lv.endDate, leave_type: "Annual", emergency: !!lv.emergency });
+  });
+  return out;
+}
+
+// Off-boarded NAIL TECHS who need removing from Fresha (so no future bookings
+// land after they leave). Shown from when they're put on notice until ~31 days
+// after their last day (the same window leavers stay visible elsewhere). Keyed
+// "off-<ec>" so the "removed" tick rides on the shared freshaBlocks store.
+function freshaOffboardRemovals(enriched) {
+  const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
+  const out = [], seen = new Set();
+  (enriched || []).forEach(s => {
+    if (!s || !s.ec || !isTech(s.ec) || !s.offboarded || s.offHidden) return;
+    const ecU = String(s.ec).toUpperCase().trim();
+    if (seen.has(ecU)) return;
+    seen.add(ecU);
+    out.push({ key: "off-" + ecU, ec: s.ec, name: s.name || s.ec, store: s.branch || "", leftDate: s.leftDate || null });
   });
   return out;
 }
@@ -9072,7 +9090,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
 //   • approved nail-tech extra days (open the tech for that single day), and
 //   • trial techs awaiting their Fresha opening (trial window, then the month
 //     once they pass). Tick each one once it's opened on Fresha.
-function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen, trialList, setTrialFresha, leaveRequests, freshaBlocks, markFreshaBlocked, leaveRecs, staff }) {
+function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen, trialList, setTrialFresha, leaveRequests, freshaBlocks, markFreshaBlocked, leaveRecs, enriched }) {
   const card = { background: "#fff", border: "1px solid #e9d5ff", borderRadius: 12, padding: "12px 14px", marginBottom: 10 };
   const chip = (bg, fg, txt) => <span style={{ background: bg, color: fg, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 800 }}>{txt}</span>;
   const openBtn = (label, onClick) => <button onClick={onClick} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "6px 13px", fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>{label}</button>;
@@ -9094,17 +9112,22 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
   const isBlocked = (id) => !!(freshaBlocks && freshaBlocks[id] && freshaBlocks[id].blocked);
   const sickBlockTodos = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec))
     .map(r => ({ key: r.id, ec: r.ec, name: r.name, store: r.store, start_date: r.start_date, end_date: r.end_date, leave_type: r.leave_type, emergency: false, ref_code: r.ref_code }));
-  const blockTodos = dedupeBlockTodos([...sickBlockTodos, ...freshaLeaveBlocks(leaveRecs, staff)], isBlocked)
+  const blockTodos = dedupeBlockTodos([...sickBlockTodos, ...freshaLeaveBlocks(leaveRecs, enriched)], isBlocked)
     .sort((a, b) => (Number(isBlocked(a.key)) - Number(isBlocked(b.key))) || (a.start_date || "").localeCompare(b.start_date || ""));
 
-  const pendingCount = extraTodos.filter(r => !isOpen(r.id)).length + trialOpen.length + monthOpen.length + blockTodos.filter(r => !isBlocked(r.key)).length;
+  // Off-boarded nail techs to remove from Fresha entirely (all future dates).
+  const removeTodos = freshaOffboardRemovals(enriched)
+    .sort((a, b) => (Number(isBlocked(a.key)) - Number(isBlocked(b.key))) || (a.leftDate || "").localeCompare(b.leftDate || ""));
+
+  const pendingCount = extraTodos.filter(r => !isOpen(r.id)).length + trialOpen.length + monthOpen.length
+    + blockTodos.filter(r => !isBlocked(r.key)).length + removeTodos.filter(r => !isBlocked(r.key)).length;
   const secHead = (txt) => <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase", color: "#6b21a8", margin: "0 0 2px" }}>{txt}</div>;
 
   return (
     <div>
       <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#6b21a8", margin: 0 }}>💇‍♀️ Fresha To-Do</h2>
       <p style={{ color: "#9333ea", fontSize: 13.5, margin: "6px 0 18px", maxWidth: 700 }}>
-        Fresha reminders — open approved extra-day cover and trial techs, and block techs who are off (sick / absent, or on annual / emergency leave this cycle) so no bookings land while they're away. Tick each one once it's done so the team knows.{pendingCount > 0 && <strong> · {pendingCount} to do</strong>}
+        Fresha reminders — open approved extra-day cover and trial techs, block techs who are off (sick / absent, or on annual / emergency leave this cycle), and remove off-boarded techs from all future dates. Tick each one once it's done so the team knows.{pendingCount > 0 && <strong> · {pendingCount} to do</strong>}
       </p>
 
       <div style={{ marginBottom: 22 }}>
@@ -9185,6 +9208,35 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
                 </span>
               </div>
               {r.ref_code && <div style={{ fontSize: 11, color: "#9d6a82", marginTop: 5 }}>Ref {r.ref_code}</div>}
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ marginTop: 22 }}>
+        {secHead("👋 Remove from Fresha · " + removeTodos.filter(r => !isBlocked(r.key)).length + " to remove")}
+        <div style={{ fontSize: 12, color: "#9333ea", marginBottom: 10 }}>Nail techs who've been off-boarded — remove them from Fresha from their last day so no client bookings land on any future date.</div>
+        {removeTodos.length === 0 && <div style={{ ...card, color: "#9d6a82" }}>No off-boarded nail techs to remove right now.</div>}
+        {removeTodos.map(r => {
+          const removed = isBlocked(r.key);
+          const meta = (freshaBlocks && freshaBlocks[r.key]) || {};
+          const todayYmd = new Date().toISOString().slice(0, 10);
+          const lbl = r.leftDate ? ((r.leftDate <= todayYmd ? "Left " : "Leaving ") + fmtIncidentDate(r.leftDate)) : "Last day not set";
+          return (
+            <div key={"o-" + r.key} style={{ ...card, opacity: removed ? 0.7 : 1 }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
+                {chip("#fee2e2", "#b91c1c", "👋 Off-boarded")}
+                <span style={{ color: "#374151", fontSize: 13 }}>{lbl}</span>
+                {r.store && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {r.store}</span>}
+                {r.ec && <span style={{ color: "#9ca3af", fontSize: 12, fontFamily: "monospace" }}>{r.ec}</span>}
+                <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+                  {removed
+                    ? <>{chip("#dcfce7", "#166534", "✓ Removed" + (meta.by ? " · " + meta.by : ""))}{undo(() => markFreshaBlocked(r.key, false))}</>
+                    : openBtn("Mark removed from Fresha", () => markFreshaBlocked(r.key, true))}
+                </span>
+              </div>
+              <div style={{ fontSize: 11, color: "#9d6a82", marginTop: 5 }}>Remove from all future dates on the Fresha calendar.</div>
             </div>
           );
         })}
@@ -13149,8 +13201,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const monthToOpen = (trialList || []).filter(c => _nt(c) && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c)).length;
                     const isBlocked = (id) => !!(freshaBlocks && freshaBlocks[id] && freshaBlocks[id].blocked);
                     const sickBlk = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec)).map(r => ({ key: r.id, ec: r.ec, name: r.name, start_date: r.start_date, end_date: r.end_date, leave_type: r.leave_type }));
-                    const toBlock = dedupeBlockTodos([...sickBlk, ...freshaLeaveBlocks(leaveRecs, staff)], isBlocked).filter(r => !isBlocked(r.key)).length;
-                    const n = extraToOpen + trialToOpen + monthToOpen + toBlock;
+                    const toBlock = dedupeBlockTodos([...sickBlk, ...freshaLeaveBlocks(leaveRecs, enriched)], isBlocked).filter(r => !isBlocked(r.key)).length;
+                    const toRemove = freshaOffboardRemovals(enriched).filter(r => !isBlocked(r.key)).length;
+                    const n = extraToOpen + trialToOpen + monthToOpen + toBlock + toRemove;
                     return { t: "freshaTodo", l: "💇‍♀️ Fresha To-Do" + (n ? "  (" + n + ")" : "") };
                   })()] : []),
                   { t: "storeOpenings", l: "🔓 Store Openings" },
@@ -13856,13 +13909,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const isBlocked = (id) => !!(freshaBlocks && freshaBlocks[id] && freshaBlocks[id].blocked);
                 const sickClose = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec))
                   .map(r => ({ key: r.id, name: r.name, store: r.store, start_date: r.start_date, leave_type: r.leave_type, emergency: false }));
-                const urgentBlock = dedupeBlockTodos([...sickClose, ...freshaLeaveBlocks(leaveRecs, staff)], isBlocked)
+                const urgentBlock = dedupeBlockTodos([...sickClose, ...freshaLeaveBlocks(leaveRecs, enriched)], isBlocked)
                   .filter(r => !isBlocked(r.key))
                   .map(r => ({ ...r, _d: daysUntil(r.start_date) }))
                   .filter(r => r._d !== null && r._d < URGENT)
                   .sort((a, b) => (a._d ?? 0) - (b._d ?? 0));
+                // REMOVE — off-boarded techs whose last day is within 3 days (or past) and not yet removed.
+                const urgentRemove = freshaOffboardRemovals(enriched)
+                  .filter(r => !isBlocked(r.key))
+                  .map(r => ({ ...r, _d: r.leftDate ? daysUntil(r.leftDate) : 0 }))
+                  .filter(r => r._d < URGENT)
+                  .sort((a, b) => (a._d ?? 0) - (b._d ?? 0));
 
-                const total = urgentExtra.length + urgentTrial.length + urgentBlock.length;
+                const total = urgentExtra.length + urgentTrial.length + urgentBlock.length + urgentRemove.length;
                 if (total === 0) return null;
 
                 const dl = (d) => d <= 0 ? "today" : (d === 1 ? "tomorrow" : "in " + d + " days");
@@ -13881,13 +13940,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <div style={{ background: "#fef2f2", border: "2px solid #fecaca", borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: "0 4px 16px rgba(220,38,38,0.10)" }}>
                     <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
                       <div style={{ fontSize: 15, fontWeight: 800, color: "#7f1d1d", letterSpacing: "0.04em", textTransform: "uppercase" }}>⚠️ Fresha · due soon</div>
-                      <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700 }}>{total} {total === 1 ? "tech" : "techs"} to open/close on Fresha within 3 days</div>
+                      <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700 }}>{total} {total === 1 ? "tech" : "techs"} to action on Fresha within 3 days</div>
                       <div style={{ flex: 1 }} />
                       <button onClick={() => tryChangeTab("freshaTodo")} style={{ background: "#fff", color: "#7f1d1d", border: "1px solid #fecaca", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>Open Fresha To-Do →</button>
                     </div>
                     {urgentExtra.map(r => row("ue-" + r.id, r.name, "💰 Open for extra day · " + fmtIncidentDate(r.work_date) + (r.store ? " · 📍 " + r.store : ""), "open " + dl(r._d)))}
                     {urgentTrial.map(c => row("ut-" + c._id, c.name, "🧪 Open for trial start · " + fmtIncidentDate(c.startDate) + (c.branch ? " · 📍 " + c.branch : ""), "open " + dl(c._d)))}
                     {urgentBlock.map(r => row("ub-" + r.key, r.name, "🚫 Block — " + (r.emergency ? "Emergency leave" : (LEAVE_TYPE[r.leave_type] || r.leave_type)) + " · " + fmtIncidentDate(r.start_date) + (r.store ? " · 📍 " + r.store : ""), "close " + dl(Math.max(0, r._d ?? 0))))}
+                    {urgentRemove.map(r => row("ur-" + r.key, r.name, "👋 Remove from Fresha — off-boarded" + (r.leftDate ? " · " + fmtIncidentDate(r.leftDate) : "") + (r.store ? " · 📍 " + r.store : ""), "remove " + dl(Math.max(0, r._d ?? 0))))}
                   </div>
                 );
               })()}
@@ -16936,7 +16996,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         )}
 
         {tab === "freshaTodo" && (
-          <FreshaTodoTab extraDayRequests={extraDayRequests} freshaExtraOpen={freshaExtraOpen} markFreshaExtraOpen={markFreshaExtraOpen} trialList={trialList} setTrialFresha={setTrialFresha} leaveRequests={leaveRequests} freshaBlocks={freshaBlocks} markFreshaBlocked={markFreshaBlocked} leaveRecs={leaveRecs} staff={staff} />
+          <FreshaTodoTab extraDayRequests={extraDayRequests} freshaExtraOpen={freshaExtraOpen} markFreshaExtraOpen={markFreshaExtraOpen} trialList={trialList} setTrialFresha={setTrialFresha} leaveRequests={leaveRequests} freshaBlocks={freshaBlocks} markFreshaBlocked={markFreshaBlocked} leaveRecs={leaveRecs} enriched={enriched} />
         )}
 
         {/* ── ALERTS TAB ── */}
