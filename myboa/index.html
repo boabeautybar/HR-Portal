@@ -50,8 +50,15 @@
   .tile.leave .ic { background: #dcfce7; }
   .tile.absent .ic { background: #fef3c7; }
   .tile.extra .ic { background: #dbeafe; }
-  .tile.soon { opacity: .65; cursor: default; }
-  .tile.soon .arr { font-size: 11px; font-weight: 700; color: #b58aa0; background:#f7e7ee; padding:3px 8px; border-radius:999px; }
+  .tile.milestone { background: linear-gradient(180deg, #FBF6FF 0%, #FFFDFF 100%); border-color: #E9D5FF;
+    box-shadow: 0 0 0 1.5px rgba(168,85,247,0.20), 0 0 16px rgba(168,85,247,0.16), 0 8px 20px rgba(124,58,237,0.08); }
+  .tile.milestone .ic { background: linear-gradient(135deg, #ede9fe 0%, #fae8ff 100%); }
+  .tile.milestone .t { color: #6b21a8; }
+  .tile.soon { opacity: .9; cursor: default; }
+  .tile.soon:hover, .tile.soon:active { transform: none;
+    box-shadow: 0 0 0 1.5px rgba(168,85,247,0.20), 0 0 16px rgba(168,85,247,0.16), 0 8px 20px rgba(124,58,237,0.08); }
+  .tile.soon .arr { font-size: 10.5px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase;
+    color: #6b21a8; background: #ede9fe; padding: 4px 10px; border-radius: 999px; white-space: nowrap; }
   .foot { text-align: center; font-size: 11.5px; color: #bf94a5; margin-top: 24px; }
 </style>
 </head>
@@ -90,6 +97,18 @@
       <div class="tx"><div class="t">Offer an extra day</div><div class="d">Offer to work one of your off days — your regional manager approves it</div></div>
       <div class="arr">›</div>
     </a>
+
+    <div class="tile soon milestone">
+      <div class="ic"><svg width="30" height="30" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect x="4" y="2" width="16" height="20" rx="2.6" fill="#7c3aed"/>
+        <rect x="6.5" y="4.4" width="11" height="4" rx="1" fill="#ede9fe"/>
+        <circle cx="8" cy="12" r="1.15" fill="#fff"/><circle cx="12" cy="12" r="1.15" fill="#fff"/><circle cx="16" cy="12" r="1.15" fill="#fff"/>
+        <circle cx="8" cy="15.5" r="1.15" fill="#fff"/><circle cx="12" cy="15.5" r="1.15" fill="#fff"/><circle cx="16" cy="15.5" r="1.15" fill="#fff"/>
+        <circle cx="8" cy="19" r="1.15" fill="#fff"/><circle cx="12" cy="19" r="1.15" fill="#fff"/><circle cx="16" cy="19" r="1.15" fill="#fbbf24"/>
+      </svg></div>
+      <div class="tx"><div class="t">Bonus &amp; Commission Calculator</div><div class="d">Pop in your turnover and instantly see what you'll earn in bonus &amp; commission</div></div>
+      <div class="arr">Coming soon</div>
+    </div>
 
     <p class="foot">My BOA · for BOA team members</p>
   </div>
