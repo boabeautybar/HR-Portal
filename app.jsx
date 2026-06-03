@@ -10028,6 +10028,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // submitOff() now reads this state instead of an uncontrolled <select> DOM
   // node so the searchable picker can drive it cleanly.
   const [offEcInput, setOffEcInput] = useState("");
+  const [offRestoreQuery, setOffRestoreQuery] = useState("");  // search earlier departures to restore
   const [obForm, setObForm] = useState({              // onboarding registration form
     name: "", ec: "", branch: SALONS[0].name, position: "Nail Tech",
     positionOther: "", startDate: "", notes: "",
@@ -18408,6 +18409,56 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               )}
             </div>
+
+            {/* Earlier departures — restore anyone, regardless of how long ago */}
+            {(() => {
+              const q = (offRestoreQuery || "").trim().toLowerCase();
+              const earlier = offList
+                .filter(o => o.leftDate < t30Str)
+                .filter(o => !q || (o.name || "").toLowerCase().includes(q) || (o.ec || "").toLowerCase().includes(q) || (o.branch || "").toLowerCase().includes(q))
+                .slice().sort((a, b) => (b.leftDate || "").localeCompare(a.leftDate || ""));
+              return (
+                <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "16px 18px", border: "1px solid #FBCFE8", marginTop: 14 }}>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 4, flexWrap: "wrap" }}>
+                    <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 16, fontWeight: 600, color: "#831843" }}>Earlier departures</div>
+                    <div style={{ fontSize: 11, color: "#BE185D", fontWeight: 600 }}>· left over 30 days ago</div>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: "#9d6a82", marginBottom: 10 }}>
+                    Off-boarded by mistake? Search for them and press Restore — it clears their leave date and
+                    puts them back on the schedule &amp; Locations. Their attendance history is never deleted, so
+                    it returns too. (You may need to re-generate the current schedule to slot them back in.)
+                  </div>
+                  <input value={offRestoreQuery} onChange={e => setOffRestoreQuery(e.target.value)} placeholder="Search by name, code or store…"
+                    style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px", border: "1px solid #FBCFE8", borderRadius: 9, fontSize: 13, fontFamily: "inherit", marginBottom: 12 }} />
+                  {earlier.length === 0 ? (
+                    <div style={{ fontSize: 12, color: "#9ca3af", padding: "12px 4px", textAlign: "center" }}>
+                      {q ? "No earlier departures match that search." : "Start typing to find someone who left more than 30 days ago."}
+                    </div>
+                  ) : (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 10 }}>
+                      {earlier.map(o => {
+                        const d = new Date(o.leftDate + "T00:00:00");
+                        const dStr = isNaN(d.getTime()) ? o.leftDate : d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" });
+                        return (
+                          <div key={o.ec} style={{ background: "#FDEEF5", borderRadius: 11, padding: "13px 14px", border: "1px solid #FBCFE8" }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6, marginBottom: 6 }}>
+                              <div>
+                                <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{o.name}</div>
+                                <div style={{ fontSize: 10, fontFamily: "monospace", color: "#E84B9B", fontWeight: 700 }}>{o.ec} · {o.branch}</div>
+                              </div>
+                              {o.reason && <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 99, background: "#fef3c7", color: "#92400e" }}>{o.reason}</span>}
+                            </div>
+                            <div style={{ fontSize: 11, color: "#BE185D", marginTop: 4 }}>Left {dStr}</div>
+                            {o.notes && <div style={{ fontSize: 11, color: "#831843", marginTop: 6, fontStyle: "italic", whiteSpace: "pre-wrap" }}>{o.notes}</div>}
+                            <button onClick={() => undoOff(o.ec)} style={{ marginTop: 8, background: "#BE185D", border: "none", color: "#fff", padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Restore</button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         );
       })()}
