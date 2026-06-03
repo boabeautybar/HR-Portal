@@ -11262,7 +11262,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // Load recent manager clock-ins when the viewer tab opens.
   useEffect(() => {
-    if (tab !== "mgrclockins" && tab !== "mgrCoverage" && tab !== "attendance" && tab !== "overtime") return;
+    if (tab !== "mgrclockins" && tab !== "mgrCoverage" && tab !== "attendance" && tab !== "overtime" && tab !== "dashboard") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     let cancelled = false;
     (async () => {
@@ -11276,6 +11276,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         if ((tab === "attendance" || tab === "overtime") && attYM) {
           const ap = attYM.split("-").map(Number);
           const cyStart = new Date(ap[0], ap[1] - 1, 25);
+          const spanDays = Math.ceil((Date.now() - cyStart.getTime()) / 86400000) + 2;
+          if (spanDays > effDays) effDays = spanDays;
+        }
+        // The dashboard "Manager reasons to add" card scans the current payroll
+        // cycle, so make sure the loaded window always reaches its opening 25th.
+        if (tab === "dashboard") {
+          const _n = new Date();
+          const cyStart = _n.getDate() >= 25
+            ? new Date(_n.getFullYear(), _n.getMonth(), 25)
+            : new Date(_n.getFullYear(), _n.getMonth() - 1, 25);
           const spanDays = Math.ceil((Date.now() - cyStart.getTime()) / 86400000) + 2;
           if (spanDays > effDays) effDays = spanDays;
         }
@@ -13795,18 +13805,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       subClick: mgrMissing.length > 0 ? () => setNotCheckedInModal({ title: "Managers absent today", role: "manager", list: mgrMissing.slice().sort((x, y) => (x.branch || "").localeCompare(y.branch || "") || (x.name || "").localeCompare(y.name || "")), tab: "mgrclockins", tabLabel: "Open Manager Clock-ins →" }) : null
                     },
                     mgrAbsentReason: (() => {
-                      // To-do tile for ROMs: count of recent manager no-shows
-                      // that DON'T yet have a reason recorded. We use the
-                      // mgrDayStatuses set loaded for the mgrclockins/attendance
-                      // tabs and the past 14 days of mgrClockinRows when the
-                      // viewer has already opened that tab. Otherwise the count
-                      // shows "…" and clicking still takes them to the page.
+                      // To-do tile for ROMs: count of manager no-shows in the
+                      // CURRENT payroll cycle (25th→24th) that DON'T yet have a
+                      // reason recorded. We use the mgrDayStatuses set and the
+                      // mgrClockinRows / manager-schedule caches, all of which
+                      // are now loaded on the dashboard too (and reach back to
+                      // the cycle's opening 25th).
                       const taggedKeys = new Set((mgrDayStatuses || []).map(s => (s.staff_id || "") + "|" + s.date));
                       const ecToStaffId = {};
                       managers.forEach(m => { if (m.ec && (m._id || m.id)) ecToStaffId[m.ec] = m._id || m.id; });
-                      // Build past-day no-shows from cached clockin rows (last
-                      // 14 days). If the cache is empty (mgrclockins tab not
-                      // opened yet) the tile defers — clicking still works.
+                      // Build no-shows from cached clockin rows. If the cache is
+                      // empty (data still loading) the tile defers — clicking
+                      // still works.
                       const tdY = new Date(); const _t0 = tdY.getFullYear() + "-" + String(tdY.getMonth() + 1).padStart(2, "0") + "-" + String(tdY.getDate()).padStart(2, "0");
                       const _ymdOf = (ts) => { const d = new Date(ts); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
                       const clockedInByEcDate = new Set();
@@ -13815,10 +13825,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         if (r.type !== "in") return;
                         clockedInByEcDate.add(String(r.staff.employee_code).trim() + "|" + _ymdOf(r.ts));
                       });
-                      // Look at last 14 days excluding today (today still
-                      // pending — they may still clock in).
+                      // Scan the CURRENT payroll cycle (the 25th → the 24th),
+                      // excluding today (they may still clock in). A rolling
+                      // 14-day window reached into the PREVIOUS cycle and
+                      // inflated the count with days from a cycle already
+                      // closed off — anchor to this cycle's opening 25th instead.
                       const pending = [];
-                      const since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - 14);
+                      const since = new Date(); since.setHours(0, 0, 0, 0);
+                      if (since.getDate() >= 25) { since.setDate(25); }
+                      else { since.setMonth(since.getMonth() - 1); since.setDate(25); }
                       for (let dt = new Date(since); dt < tdY && dt.toISOString().slice(0, 10) < _t0; dt.setDate(dt.getDate() + 1)) {
                         const ymd = dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
                         const dom = dt.getDate();
@@ -13842,10 +13857,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         });
                       }
                       const haveData = (mgrClockinRows || []).length > 0 || Object.keys(mgrClockinSchedCache || {}).length > 0;
+                      // Readable label for the cycle being scanned, e.g. "25 May → 24 Jun".
+                      const _mAbbr = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+                      const _fmtCyc = (d) => d.getDate() + " " + _mAbbr[d.getMonth()];
+                      const _cycEnd = new Date(since); _cycEnd.setMonth(_cycEnd.getMonth() + 1); _cycEnd.setDate(24);
+                      const cycleLabel = _fmtCyc(since) + " → " + _fmtCyc(_cycEnd);
                       return {
                         l: "Manager reasons to add",
                         v: haveData ? pending.length : "…",
-                        sub: haveData ? (pending.length === 0 ? "all manager absences explained 🎉" : "past 14d · click to tag reasons") : "open Manager Check-ins to scan",
+                        sub: haveData ? (pending.length === 0 ? ("all explained · " + cycleLabel + " 🎉") : ("this cycle · " + cycleLabel + " · tag reasons")) : "open Manager Check-ins to scan",
                         i: "📝",
                         c: pending.length > 0 ? "#7c2d12" : "#14532d",
                         bg: pending.length > 0 ? "#fef3c7" : "#dcfce7",
