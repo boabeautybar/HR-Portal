@@ -7072,6 +7072,7 @@ const SETTINGS_TABS = [
   { t: "mgrclockins", l: "Manager Check-ins", cat: "Operations", icon: "🕐" },
   { t: "leave", l: "Leave Planner", cat: "Operations", icon: "🌴" },
   { t: "leaveRequests", l: "Leave Requests", cat: "Operations", icon: "📨" },
+  { t: "calledInSick", l: "Called in Sick", cat: "Operations", icon: "🤒" },
   { t: "storeOpenings", l: "Store Openings", cat: "Operations", icon: "🔓" },
   { t: "movements", l: "Today's Movements", cat: "Operations", icon: "🔀" },
   { t: "dailyTasks", l: "Daily Tasks", cat: "Operations", icon: "📋" },
@@ -8697,6 +8698,68 @@ function leaveDays(s, e) {
   if (!s || !e) return 0;
   try { return Math.round((new Date(e + "T00:00:00") - new Date(s + "T00:00:00")) / 86400000) + 1; }
   catch (_e) { return 0; }
+}
+
+// People who used the My BOA "Call in sick / Mark absent" tile (leave_type
+// "Absent") whose away-period overlaps today or tomorrow.
+function calledInSickWindow(requests) {
+  const ymd = (x) => x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0");
+  const today = ymd(new Date());
+  const t2 = new Date(); t2.setDate(t2.getDate() + 1);
+  const tomorrow = ymd(t2);
+  const list = (requests || []).filter(r =>
+    r && r.leave_type === "Absent" && r.start_date && r.end_date &&
+    r.start_date <= tomorrow && r.end_date >= today);
+  return { today, tomorrow, list };
+}
+
+// Operations board: who's called in sick / absent for today & tomorrow.
+function CalledInSickTab({ requests }) {
+  const card = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 18px", marginBottom: 12 };
+  const chip = (c) => ({ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: c.color, background: c.bg });
+  const { today, tomorrow, list } = calledInSickWindow(requests);
+
+  const sect = (label, ymd) => {
+    const rows = list.filter(r => r.start_date <= ymd && r.end_date >= ymd)
+      .sort((a, b) => (a.store || "").localeCompare(b.store || "") || (a.name || "").localeCompare(b.name || ""));
+    return (
+      <div style={{ marginBottom: 22 }}>
+        <h3 style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 16, color: "#831843", margin: "0 0 10px" }}>
+          {label} · {fmtIncidentDate(ymd)}
+          <span style={{ color: "#9d6a82", fontWeight: 600 }}> · {rows.length} {rows.length === 1 ? "person" : "people"}</span>
+        </h3>
+        {rows.length === 0 && <div style={{ ...card, textAlign: "center", color: "#9d6a82" }}>Nobody’s called in.</div>}
+        {rows.map(r => {
+          const st = LEAVE_STATUS[r.status] || LEAVE_STATUS.pending;
+          return (
+            <div key={r.id} style={card}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                {!r.reviewed && <span style={{ width: 9, height: 9, borderRadius: 999, background: "#BE185D", display: "inline-block" }} title="Not yet opened in Leave Requests" />}
+                <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
+                {r.store && <span style={chip({ color: "#075985", bg: "#e0f2fe" })}>{r.store}</span>}
+                {r.ec && <span style={{ color: "#9ca3af", fontSize: 12 }}>{r.ec}</span>}
+                <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(r.start_date)}{r.end_date !== r.start_date ? " → " + fmtIncidentDate(r.end_date) : ""}</span>
+                <span style={{ marginLeft: "auto", ...chip(st) }}>{st.label}</span>
+              </div>
+              {r.reason && <div style={{ marginTop: 8, fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{linkifyText(r.reason)}</div>}
+              <div style={{ marginTop: 6, fontSize: 11, color: "#9d6a82" }}>Ref {r.ref_code} · {fmtIncidentTime(r.created_at)}{r.contact ? " · " + r.contact : ""}</div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#831843", margin: 0 }}>🤒 Called in Sick</h2>
+      <p style={{ color: "#9d6a82", fontSize: 13.5, margin: "6px 0 18px", maxWidth: 640 }}>
+        Team members who called in sick or marked themselves absent from My BOA for today or tomorrow. Approve or decline them in the Leave Requests tab.
+      </p>
+      {sect("Today", today)}
+      {sect("Tomorrow", tomorrow)}
+    </div>
+  );
 }
 
 function LeaveRequestsTab({ requests, setRequests, currentUser }) {
@@ -12584,6 +12647,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const pend = leaveRequests.filter(r => r.status === "pending").length;
                     return { t: "leaveRequests", l: "📨 Leave Requests" + (pend ? "  (" + pend + ")" : "") };
                   })()] : []),
+                  ...(canSeeIncidents(currentUser) ? [(() => {
+                    const n = calledInSickWindow(leaveRequests).list.length;
+                    return { t: "calledInSick", l: "🤒 Called in Sick" + (n ? "  (" + n + ")" : "") };
+                  })()] : []),
                   { t: "storeOpenings", l: "🔓 Store Openings" },
                   { t: "movements", l: "🔀 Today's Movements" },
                   { t: "dailyTasks", l: "📋 Daily Tasks" },
@@ -16348,6 +16415,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         {/* ── LEAVE REQUESTS TAB ── */}
         {tab === "leaveRequests" && canSeeIncidents(currentUser) && (
           <LeaveRequestsTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} />
+        )}
+
+        {/* ── CALLED IN SICK TAB ── */}
+        {tab === "calledInSick" && canSeeIncidents(currentUser) && (
+          <CalledInSickTab requests={leaveRequests} />
         )}
 
         {/* ── ALERTS TAB ── */}

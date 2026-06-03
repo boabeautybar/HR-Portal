@@ -30,6 +30,7 @@
     var saved = {};
     try { saved = JSON.parse(localStorage.getItem("myboa_sched_v1") || "{}"); } catch (_e) {}
     var today = todayYmd();
+    var tomorrow = addDays(today, 1);
     root.innerHTML = [
       '<div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>',
       '<h1>Call in sick / Mark absent</h1>',
@@ -46,11 +47,11 @@
             '<input type="text" id="ec" autocapitalize="characters" autocomplete="off" placeholder="e.g. B379" value="' + esc(saved.ec || "") + '" /></label>',
         '</div>',
         '<div class="row2">',
-          '<label class="field"><span>First day away</span><input type="date" id="start" min="' + today + '" /></label>',
-          '<label class="field"><span>Last day away</span><input type="date" id="end" min="' + today + '" /></label>',
+          '<label class="field"><span>First day away</span><input type="date" id="start" min="' + today + '" max="' + tomorrow + '" /></label>',
+          '<label class="field"><span>Last day away</span><input type="date" id="end" min="' + today + '" max="' + tomorrow + '" /></label>',
         '</div>',
         '<label class="field"><span>Expected back at work <em style="font-weight:400;color:#a07487">(if known)</em></span><input type="date" id="back" min="' + today + '" />',
-          '<span class="hint">Defaults to the day after your last day away.</span></label>',
+          '<span class="hint">Today or tomorrow only — defaults to the day after your last day away.</span></label>',
         '<div class="span" id="span" style="display:none"></div>',
         '<label class="field"><span>What\'s happening?</span>',
           '<textarea id="desc" placeholder="Tell management why you can\'t come in — e.g. sick, family emergency…"></textarea></label>',
@@ -95,11 +96,13 @@
     var start = $("start").value, end = $("end").value;
     var desc = ($("desc").value || "").trim();
     var today = todayYmd();
+    var tomorrow = addDays(today, 1);
     if (!name) { setErr("Please enter your full name."); $("name").focus(); return; }
     if (!store) { setErr("Please choose your branch."); return; }
     if (!ec) { setErr("Please enter your employee code."); $("ec").focus(); return; }
     if (!start || !end) { setErr("Please choose the dates you'll be away."); return; }
-    if (start < today || end < today) { setErr("This can only be for today or future days — not the past."); return; }
+    if (start < today || end < today) { setErr("This can only be for today or tomorrow — not the past."); return; }
+    if (start > tomorrow || end > tomorrow) { setErr("Calling in / marking absent is only for today or tomorrow."); return; }
     if (end < start) { setErr("The last day can't be before the first day."); return; }
     if (!desc) { setErr("Please describe why you can't come in."); $("desc").focus(); return; }
 
@@ -160,8 +163,9 @@
 
   function setErr(m) { var e = document.getElementById("err"); if (e) e.textContent = m || ""; }
   function todayYmd() { var d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
-  function nextDay(ymd) { try { var d = new Date(ymd + "T00:00:00"); d.setDate(d.getDate() + 1);
+  function addDays(ymd, n) { try { var d = new Date(ymd + "T00:00:00"); d.setDate(d.getDate() + n);
     return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); } catch (_e) { return ""; } }
+  function nextDay(ymd) { return addDays(ymd, 1); }
   function fmt(d) { try { return new Date(d + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }); } catch (_e) { return d; } }
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
