@@ -8744,24 +8744,36 @@ function freshaLeaveBlocks(leaveRecs, staff) {
   const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
   const byEc = {};
   (staff || []).forEach(s => { if (s && s.ec) byEc[String(s.ec).toUpperCase().trim()] = s; });
-  return (leaveRecs || []).filter(lv =>
+  // Content-based key (tech + date range) so the planner holding duplicate
+  // entries collapses to a single block row, and the blocked tick stays put.
+  const out = [], seen = new Set();
+  (leaveRecs || []).filter(lv =>
     lv && lv.ec && lv.startDate && lv.endDate && isTech(lv.ec)
     && (lv.emergency || /annual/i.test(String(lv.type || "")))
     && lv.startDate <= cycleEnd && lv.endDate >= cycleStart
     && lv.endDate >= ymdNow
-  ).map(lv => {
-    const s = byEc[String(lv.ec).toUpperCase().trim()] || {};
-    return {
-      key: "rec-" + lv._id,
-      ec: lv.ec,
-      name: s.name || lv.ec,
-      store: s.branch || "",
-      start_date: lv.startDate,
-      end_date: lv.endDate,
-      leave_type: "Annual",
-      emergency: !!lv.emergency
-    };
+  ).forEach(lv => {
+    const ecU = String(lv.ec).toUpperCase().trim();
+    const key = "lv-" + ecU + "-" + lv.startDate + "-" + lv.endDate;
+    if (seen.has(key)) { if (lv.emergency) { const e = out.find(o => o.key === key); if (e) e.emergency = true; } return; }
+    seen.add(key);
+    const s = byEc[ecU] || {};
+    out.push({ key, ec: lv.ec, name: s.name || lv.ec, store: s.branch || "", start_date: lv.startDate, end_date: lv.endDate, leave_type: "Annual", emergency: !!lv.emergency });
   });
+  return out;
+}
+
+// Collapse duplicate block rows (same tech + same dates + type) — the Leave
+// Planner can hold repeats and sick/leave sources can overlap. Keeps the first,
+// but prefers an already-blocked duplicate so its ✓ stays visible.
+function dedupeBlockTodos(list, isBlocked) {
+  const out = [], idx = {};
+  (list || []).forEach(r => {
+    const sig = String(r.ec || r.name).toUpperCase().trim() + "|" + r.start_date + "|" + r.end_date + "|" + r.leave_type;
+    if (idx[sig] === undefined) { idx[sig] = out.length; out.push(r); }
+    else if (isBlocked && isBlocked(r.key) && !isBlocked(out[idx[sig]].key)) { out[idx[sig]] = r; }
+  });
+  return out;
 }
 
 // Operations board: who's called in sick / absent for today & tomorrow.
@@ -9081,7 +9093,7 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
   const isBlocked = (id) => !!(freshaBlocks && freshaBlocks[id] && freshaBlocks[id].blocked);
   const sickBlockTodos = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec))
     .map(r => ({ key: r.id, ec: r.ec, name: r.name, store: r.store, start_date: r.start_date, end_date: r.end_date, leave_type: r.leave_type, emergency: false, ref_code: r.ref_code }));
-  const blockTodos = [...sickBlockTodos, ...freshaLeaveBlocks(leaveRecs, staff)]
+  const blockTodos = dedupeBlockTodos([...sickBlockTodos, ...freshaLeaveBlocks(leaveRecs, staff)], isBlocked)
     .sort((a, b) => (Number(isBlocked(a.key)) - Number(isBlocked(b.key))) || (a.start_date || "").localeCompare(b.start_date || ""));
 
   const pendingCount = extraTodos.filter(r => !isOpen(r.id)).length + trialOpen.length + monthOpen.length + blockTodos.filter(r => !isBlocked(r.key)).length;
@@ -13135,9 +13147,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const trialToOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened).length;
                     const monthToOpen = (trialList || []).filter(c => _nt(c) && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c)).length;
                     const isBlocked = (id) => !!(freshaBlocks && freshaBlocks[id] && freshaBlocks[id].blocked);
-                    const sickToBlock = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec) && !isBlocked(r.id)).length;
-                    const leaveToBlock = freshaLeaveBlocks(leaveRecs, staff).filter(b => !isBlocked(b.key)).length;
-                    const n = extraToOpen + trialToOpen + monthToOpen + sickToBlock + leaveToBlock;
+                    const sickBlk = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec)).map(r => ({ key: r.id, ec: r.ec, name: r.name, start_date: r.start_date, end_date: r.end_date, leave_type: r.leave_type }));
+                    const toBlock = dedupeBlockTodos([...sickBlk, ...freshaLeaveBlocks(leaveRecs, staff)], isBlocked).filter(r => !isBlocked(r.key)).length;
+                    const n = extraToOpen + trialToOpen + monthToOpen + toBlock;
                     return { t: "freshaTodo", l: "💇‍♀️ Fresha To-Do" + (n ? "  (" + n + ")" : "") };
                   })()] : []),
                   { t: "storeOpenings", l: "🔓 Store Openings" },
@@ -13843,7 +13855,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const isBlocked = (id) => !!(freshaBlocks && freshaBlocks[id] && freshaBlocks[id].blocked);
                 const sickClose = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec))
                   .map(r => ({ key: r.id, name: r.name, store: r.store, start_date: r.start_date, leave_type: r.leave_type, emergency: false }));
-                const urgentBlock = [...sickClose, ...freshaLeaveBlocks(leaveRecs, staff)]
+                const urgentBlock = dedupeBlockTodos([...sickClose, ...freshaLeaveBlocks(leaveRecs, staff)], isBlocked)
                   .filter(r => !isBlocked(r.key))
                   .map(r => ({ ...r, _d: daysUntil(r.start_date) }))
                   .filter(r => r._d !== null && r._d < URGENT)
