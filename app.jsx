@@ -8756,7 +8756,7 @@ function CalledInSickTab({ requests }) {
     <div>
       <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#831843", margin: 0 }}>🤒 Called in Sick</h2>
       <p style={{ color: "#9d6a82", fontSize: 13.5, margin: "6px 0 18px", maxWidth: 640 }}>
-        Team members who called in sick or marked themselves absent from My BOA for today or tomorrow. Approve or decline them in the Leave Requests tab.
+        Team members who called in sick or marked themselves absent from My BOA for today or tomorrow. Record the reason for their absence in the Manager Check-ins tab or on the Manager Coverage overview.
       </p>
       {sect("Today", today)}
       {sect("Tomorrow", tomorrow)}
