@@ -22171,11 +22171,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const set = (k, v) => setLoanModal({ ...m, [k]: v });
         // Eligible pool: active, on-site staff. Exclude maternity,
         // unpaid-legal, and anyone already off-boarded with a past leftDate.
+        // `branch` is overridden with the effective home as of the loan date so
+        // the picker list, the "From (home)" field, and the saved record all
+        // follow a completed transfer instead of the stale stored branch.
         const todayPool = (enriched || []).filter(s =>
           s && s.ec && /^[BT]/.test(s.ec) &&
           !s.onMat && !s.onUnpaidLegal &&
           !(s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft > 0)
-        );
+        ).map(s => ({ ...s, branch: effHomeBranch(s, m.date) }));
         const selected = m.ec ? todayPool.find(p => p.ec === m.ec) : null;
         // When a tech is picked, fromBranch is locked to their home as of the
         // loan date — following a completed transfer, not the stale stored branch.
