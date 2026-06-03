@@ -10028,6 +10028,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // submitOff() now reads this state instead of an uncontrolled <select> DOM
   // node so the searchable picker can drive it cleanly.
   const [offEcInput, setOffEcInput] = useState("");
+  // Search box for the Off-boarding "Earlier departures" archive — lets the
+  // user find and restore staff who left more than 30 days ago (those fall
+  // outside the Recently Left card, so without this there's no UI path to
+  // undo a stale off-boarding).
+  const [offArchiveQuery, setOffArchiveQuery] = useState("");
   const [obForm, setObForm] = useState({              // onboarding registration form
     name: "", ec: "", branch: SALONS[0].name, position: "Nail Tech",
     positionOther: "", startDate: "", notes: "",
@@ -18183,6 +18188,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const t30Str = t30.getFullYear() + "-" + p2(t30.getMonth() + 1) + "-" + p2(t30.getDate());
         const notice = offList.filter(o => o.leftDate >= todayStr).slice().sort((a, b) => a.leftDate.localeCompare(b.leftDate));
         const recent = offList.filter(o => o.leftDate < todayStr && o.leftDate >= t30Str).slice().sort((a, b) => b.leftDate.localeCompare(a.leftDate));
+        // Everyone who left MORE than 30 days ago — they drop off the Recently
+        // Left card but their off-board record still lingers (and still hides
+        // them from the schedule / attendance). Surface them in a searchable
+        // archive so a mistaken off-boarding can always be undone, however old.
+        const archiveAll = offList.filter(o => o.leftDate < t30Str).slice().sort((a, b) => b.leftDate.localeCompare(a.leftDate));
+        const _aq = offArchiveQuery.trim().toLowerCase();
+        const archive = _aq
+          ? archiveAll.filter(o => ((o.name || "") + " " + (o.ec || "") + " " + (o.branch || "")).toLowerCase().includes(_aq))
+          : archiveAll;
         const persistOff = async (next) => {
           setOffList(next);
           try { await window.BOA_DB.saveOffboarding(next); }
@@ -18408,6 +18422,52 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               )}
             </div>
+
+            {/* Earlier departures archive — restore anyone who left >30 days ago */}
+            {archiveAll.length > 0 && (
+              <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "16px 18px", border: "1px solid #FBCFE8", marginTop: 14 }}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 16, fontWeight: 600, color: "#831843" }}>Earlier departures</div>
+                  <div style={{ fontSize: 11, color: "#BE185D", fontWeight: 600 }}>· left over 30 days ago · {archiveAll.length} {archiveAll.length === 1 ? "person" : "people"}</div>
+                </div>
+                <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 12 }}>Off-boarded by mistake? Search and Restore to bring them back as active staff — their schedule and attendance history return automatically.</div>
+                <input
+                  value={offArchiveQuery}
+                  onChange={(e) => setOffArchiveQuery(e.target.value)}
+                  placeholder="Search by name, EC or branch…"
+                  style={{ width: "100%", padding: "8px 10px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 13, fontFamily: "inherit", marginBottom: 12 }}
+                />
+                {archive.length === 0 ? (
+                  <div style={{ fontSize: 12, color: "#9ca3af", padding: "16px 4px", textAlign: "center" }}>No earlier departures match “{offArchiveQuery}”.</div>
+                ) : (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 10 }}>
+                    {archive.map(o => {
+                      const d = new Date(o.leftDate + "T00:00:00");
+                      const dStr = d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" });
+                      const daysAgo = Math.floor((now - d) / 86400000);
+                      const reasonBg = o.reason === "Terminated" ? "#fee2e2" : o.reason === "Resigned" ? "#dbeafe" : "#fef3c7";
+                      const reasonColor = o.reason === "Terminated" ? "#991b1b" : o.reason === "Resigned" ? "#1e3a8a" : "#92400e";
+                      return (
+                        <div key={o.ec} style={{ background: "#F9FAFB", borderRadius: 11, padding: "13px 14px", border: "1px solid #e5e7eb" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6, marginBottom: 6 }}>
+                            <div>
+                              <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{o.name}</div>
+                              <div style={{ fontSize: 10, fontFamily: "monospace", color: "#E84B9B", fontWeight: 700 }}>{o.ec} · {o.branch}</div>
+                            </div>
+                            {o.reason && <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 99, background: reasonBg, color: reasonColor, letterSpacing: "0.02em" }}>{o.reason}</span>}
+                          </div>
+                          <div style={{ fontSize: 11, color: "#BE185D", marginTop: 4 }}>
+                            Left {dStr}<span style={{ opacity: 0.7 }}> · {daysAgo} days ago</span>
+                          </div>
+                          {o.notes && <div style={{ fontSize: 11, color: "#831843", marginTop: 6, fontStyle: "italic", whiteSpace: "pre-wrap" }}>{o.notes}</div>}
+                          <button onClick={() => undoOff(o.ec)} style={{ marginTop: 8, background: "transparent", border: "1px solid #FBCFE8", color: "#831843", padding: "4px 10px", borderRadius: 5, fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Restore</button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         );
       })()}
