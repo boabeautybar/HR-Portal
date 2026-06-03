@@ -7075,6 +7075,7 @@ const SETTINGS_TABS = [
   { t: "leaveRequests", l: "Leave Requests", cat: "Operations", icon: "📨" },
   { t: "calledInSick", l: "Called in Sick", cat: "Operations", icon: "🤒" },
   { t: "extraDayRequests", l: "Extra-Day Requests", cat: "Operations", icon: "💰" },
+  { t: "freshaTodo", l: "Fresha To-Do", cat: "Operations", icon: "💇‍♀️" },
   { t: "storeOpenings", l: "Store Openings", cat: "Operations", icon: "🔓" },
   { t: "movements", l: "Today's Movements", cat: "Operations", icon: "🔀" },
   { t: "dailyTasks", l: "Daily Tasks", cat: "Operations", icon: "📋" },
@@ -8365,6 +8366,16 @@ function fmtIncidentDate(d) {
   try { return new Date(d + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }); }
   catch (_e) { return String(d); }
 }
+// Day-of-week for a YYYY-MM-DD date, plus whether it's a high-demand day
+// (Thu/Fri/Sat/Sun) when extra cover is almost always needed.
+function dowInfo(d) {
+  try {
+    const dt = new Date(d + "T00:00:00");
+    const idx = dt.getDay(); // 0=Sun … 6=Sat
+    const name = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][idx];
+    return { idx, name, busy: idx === 0 || idx >= 4 }; // Sun, Thu, Fri, Sat
+  } catch (_e) { return { idx: -1, name: "", busy: false }; }
+}
 
 // Renders the printable QR pointing at the live /report.html on this origin.
 function IncidentQR({ url, size }) {
@@ -8910,6 +8921,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
           {g.items.map(r => {
         const st = LEAVE_STATUS[r.status] || LEAVE_STATUS.pending;
         const isCatch = r.purpose === "catch_up";
+        const dw = dowInfo(r.work_date);
         return (
           <div key={r.id} style={card}>
             <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -8917,6 +8929,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
               <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
               <span style={chip(isCatch ? { color: "#9a3412", bg: "#ffedd5" } : { color: "#075985", bg: "#e0f2fe" })}>{isCatch ? "Catch-up" : "Extra"}</span>
               <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(r.work_date)}</span>
+              {dw.name && <span title={dw.busy ? "High-demand day — extra cover almost always needed" : ""} style={{ fontSize: 11, fontWeight: 800, padding: "2px 8px", borderRadius: 6, color: dw.busy ? "#9a3412" : "#6b7280", background: dw.busy ? "#ffedd5" : "#f3f4f6" }}>{dw.busy ? "🔥 " : ""}{dw.name}</span>}
               <span style={{ color: "#9ca3af", fontSize: 12 }}>{r.store ? "· " + r.store : ""}{r.ec ? " · " + r.ec : ""}</span>
               <span style={{ marginLeft: "auto", ...chip(st) }}>{st.label}</span>
             </div>
@@ -8966,6 +8979,93 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
           })}
         </div>
       ))}
+      </div>
+    </div>
+  );
+}
+
+// Operations: Fresha "to-do" — who needs opening on Fresha. Two sources:
+//   • approved nail-tech extra days (open the tech for that single day), and
+//   • trial techs awaiting their Fresha opening (trial window, then the month
+//     once they pass). Tick each one once it's opened on Fresha.
+function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen, trialList, setTrialFresha }) {
+  const card = { background: "#fff", border: "1px solid #e9d5ff", borderRadius: 12, padding: "12px 14px", marginBottom: 10 };
+  const chip = (bg, fg, txt) => <span style={{ background: bg, color: fg, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 800 }}>{txt}</span>;
+  const openBtn = (label, onClick) => <button onClick={onClick} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "6px 13px", fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>{label}</button>;
+  const undo = (onClick) => <button onClick={onClick} style={{ background: "transparent", color: "#15803d", border: "none", fontSize: 11, fontWeight: 700, cursor: "pointer", textDecoration: "underline" }}>undo</button>;
+
+  const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
+  const isOpen = (id) => !!(freshaExtraOpen && freshaExtraOpen[id] && freshaExtraOpen[id].opened);
+  const extraTodos = (extraDayRequests || []).filter(r => r.status === "approved" && isTech(r.ec))
+    .sort((a, b) => (Number(isOpen(a.id)) - Number(isOpen(b.id))) || (a.work_date || "").localeCompare(b.work_date || ""));
+
+  const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
+  const _recent = (c) => { const t = Date.parse(c.promotedAt || c.updatedAt || c.addedAt || ""); return !!t && (Date.now() - t) < 45 * 86400000; };
+  const trialOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened);
+  const monthOpen = (trialList || []).filter(c => _nt(c) && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c));
+
+  const pendingCount = extraTodos.filter(r => !isOpen(r.id)).length + trialOpen.length + monthOpen.length;
+  const secHead = (txt) => <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase", color: "#6b21a8", margin: "0 0 2px" }}>{txt}</div>;
+
+  return (
+    <div>
+      <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#6b21a8", margin: 0 }}>💇‍♀️ Fresha To-Do</h2>
+      <p style={{ color: "#9333ea", fontSize: 13.5, margin: "6px 0 18px", maxWidth: 700 }}>
+        Who needs opening on Fresha — approved extra-day cover and trial techs. Tick each one once it's opened so the team knows it's done.{pendingCount > 0 && <strong> · {pendingCount} to open</strong>}
+      </p>
+
+      <div style={{ marginBottom: 22 }}>
+        {secHead("💰 Extra-day cover · " + extraTodos.filter(r => !isOpen(r.id)).length + " to open")}
+        <div style={{ fontSize: 12, color: "#9333ea", marginBottom: 10 }}>Each approved extra day means opening that nail tech on Fresha for that single day so she can take bookings.</div>
+        {extraTodos.length === 0 && <div style={{ ...card, color: "#9d6a82" }}>No approved extra days right now.</div>}
+        {extraTodos.map(r => {
+          const dw = dowInfo(r.work_date);
+          const open = isOpen(r.id);
+          const meta = (freshaExtraOpen && freshaExtraOpen[r.id]) || {};
+          return (
+            <div key={r.id} style={{ ...card, opacity: open ? 0.7 : 1 }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
+                <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(r.work_date)}</span>
+                {dw.name && chip(dw.busy ? "#ffedd5" : "#f3f4f6", dw.busy ? "#9a3412" : "#6b7280", (dw.busy ? "🔥 " : "") + dw.name)}
+                {r.store && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {r.store}</span>}
+                {r.ec && <span style={{ color: "#9ca3af", fontSize: 12, fontFamily: "monospace" }}>{r.ec}</span>}
+                <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+                  {open
+                    ? <>{chip("#dcfce7", "#166534", "✓ Opened" + (meta.by ? " · " + meta.by : ""))}{undo(() => markFreshaExtraOpen(r.id, false))}</>
+                    : openBtn("Mark opened on Fresha", () => markFreshaExtraOpen(r.id, true))}
+                </span>
+              </div>
+              <div style={{ fontSize: 11, color: "#9d6a82", marginTop: 5 }}>Extra cover{r.decided_by ? " · approved by " + r.decided_by : ""}{r.decided_at ? " · " + fmtIncidentTime(r.decided_at) : ""}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div>
+        {secHead("🧪 Trial techs · " + (trialOpen.length + monthOpen.length) + " to open")}
+        <div style={{ fontSize: 12, color: "#9333ea", marginBottom: 10 }}>Open trial techs on Fresha for their trial window, and again for the month once they pass.</div>
+        {trialOpen.length === 0 && monthOpen.length === 0 && <div style={{ ...card, color: "#9d6a82" }}>No trial openings pending.</div>}
+        {trialOpen.map(c => (
+          <div key={"t-" + c._id} style={card}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <strong style={{ color: "#581c87", fontSize: 14 }}>{c.name}</strong>
+              {c.branch && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {c.branch}</span>}
+              {chip("#ede9fe", "#6b21a8", "Trial opening")}
+              <span style={{ marginLeft: "auto" }}>{openBtn("Mark opened on Fresha", () => setTrialFresha(c._id, "freshaTrialOpened", true))}</span>
+            </div>
+          </div>
+        ))}
+        {monthOpen.map(c => (
+          <div key={"m-" + c._id} style={card}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <strong style={{ color: "#581c87", fontSize: 14 }}>{c.name}</strong>
+              {c.branch && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {c.branch}</span>}
+              {chip("#dcfce7", "#166534", "✅ Passed — open for the month")}
+              <span style={{ marginLeft: "auto" }}>{openBtn("Mark month opened", () => setTrialFresha(c._id, "freshaMonthOpened", true))}</span>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -10353,6 +10453,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [leaveRequests, setLeaveRequests] = useState([]);
   // Extra-day availability requests (from My BOA — see sql/extra_day_requests.sql)
   const [extraDayRequests, setExtraDayRequests] = useState([]);
+  // Fresha To-Do: open-status for approved extra-day requests, keyed by
+  // request id → { opened, by, at }. Persisted to boa_fresha_extra_open_v1.
+  const [freshaExtraOpen, setFreshaExtraOpen] = useState({});
+  const markFreshaExtraOpen = async (id, on) => {
+    const next = { ...freshaExtraOpen };
+    if (on) next[id] = { opened: true, by: (currentUser && currentUser.name) || "", at: new Date().toISOString() };
+    else delete next[id];
+    setFreshaExtraOpen(next);
+    try { if (window.BOA_DB.saveFreshaExtraOpenings) await window.BOA_DB.saveFreshaExtraOpenings(next); }
+    catch (e) { window.alert("Could not save Fresha to-do: " + (e.message || e)); }
+  };
   const [overtimeShortCache, setOvertimeShortCache] = useState({});    // { ec|cycleYm: hours } from early-leave sidecar
   const [overtimeShortLoading, setOvertimeShortLoading] = useState(false);
   const [otForm, setOtForm] = useState({ ec: "", date: "", hours: "", reason: "" });
@@ -11321,8 +11432,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadOvertimeAccess ? window.BOA_DB.loadOvertimeAccess() : Promise.resolve({}),
       (window.BOA_DB.loadIncidentReports && canSeeIncidents(currentUser)) ? window.BOA_DB.loadIncidentReports() : Promise.resolve([]),
       (window.BOA_DB.loadLeaveRequests && canSeeIncidents(currentUser)) ? window.BOA_DB.loadLeaveRequests() : Promise.resolve([]),
-      (window.BOA_DB.loadExtraDayRequests && canSeeIncidents(currentUser)) ? window.BOA_DB.loadExtraDayRequests() : Promise.resolve([])
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, incidents, leaveReqs, extraReqs]) => {
+      (window.BOA_DB.loadExtraDayRequests && canSeeIncidents(currentUser)) ? window.BOA_DB.loadExtraDayRequests() : Promise.resolve([]),
+      window.BOA_DB.loadFreshaExtraOpenings ? window.BOA_DB.loadFreshaExtraOpenings() : Promise.resolve({})
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap]) => {
       setStaff(d.staff);
       setManagers(d.managers);
       setMatRecs(d.matRecs);
@@ -11339,6 +11451,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setIncidentReports(Array.isArray(incidents) ? incidents : []);
       setLeaveRequests(Array.isArray(leaveReqs) ? leaveReqs : []);
       setExtraDayRequests(Array.isArray(extraReqs) ? extraReqs : []);
+      setFreshaExtraOpen(freshaExtraOpenMap && typeof freshaExtraOpenMap === "object" ? freshaExtraOpenMap : {});
       setLoading(false);
     }).catch((err) => {
       setLoadError("Could not load data: " + (err.message || err));
@@ -16704,6 +16817,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         {/* ── EXTRA-DAY REQUESTS TAB ── */}
         {tab === "extraDayRequests" && canSeeIncidents(currentUser) && (
           <ExtraDayRequestsTab requests={extraDayRequests} setRequests={setExtraDayRequests} currentUser={currentUser} />
+        )}
+
+        {tab === "freshaTodo" && (
+          <FreshaTodoTab extraDayRequests={extraDayRequests} freshaExtraOpen={freshaExtraOpen} markFreshaExtraOpen={markFreshaExtraOpen} trialList={trialList} setTrialFresha={setTrialFresha} />
         )}
 
         {/* ── ALERTS TAB ── */}

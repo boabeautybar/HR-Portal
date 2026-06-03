@@ -112,6 +112,7 @@
     var store = val("store");
     setErr("");
     if (!name) { setErr("Please enter your full name."); focus("name"); return; }
+    if (name.split(/\s+/).filter(Boolean).length < 2) { setErr("Please enter both your first name and surname."); focus("name"); return; }
     if (!ec) { setErr("Please enter your employee code."); focus("ec"); return; }
     if (!store) { setErr("Please choose your branch."); return; }
 

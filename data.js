@@ -1058,6 +1058,20 @@
     if (up.error) { console.error("clearExtraDay:", up.error); throw up.error; }
     return data;
   }
+  // Fresha "to-do" open-status for approved extra days — a single app_state
+  // row { [requestId]: { opened, by, at } }. Lets the Fresha To-Do ops tab
+  // tick an approved extra day as "opened on Fresha" without touching the
+  // extra_day_requests table.
+  async function loadFreshaExtraOpenings() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_fresha_extra_open_v1").maybeSingle();
+    if (res.error) { console.error("loadFreshaExtraOpenings:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveFreshaExtraOpenings(map) {
+    var res = await sb.from("app_state").upsert({ key: "boa_fresha_extra_open_v1", value: map || {} });
+    if (res.error) { console.error("saveFreshaExtraOpenings:", res.error); throw res.error; }
+    return map || {};
+  }
   // Persist the boa_early_<branch>_<ym> sidecar (the whole nested map). Used
   // by the attendance sheet to clear a single day's 'left early' short-hours
   // when an admin overrides that cell, so the orange -Xh overlay can be
@@ -1776,6 +1790,8 @@
     loadExtras: loadExtras,
     saveExtraDay: saveExtraDay,
     clearExtraDay: clearExtraDay,
+    loadFreshaExtraOpenings: loadFreshaExtraOpenings,
+    saveFreshaExtraOpenings: saveFreshaExtraOpenings,
     deleteEarlyLeaves: deleteEarlyLeaves,
     loadKioskProof: loadKioskProof,
     probeRecentClockinsRaw: probeRecentClockinsRaw,
