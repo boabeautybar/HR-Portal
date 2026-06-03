@@ -10261,7 +10261,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Map of tab → category name. Kept in sync with the groups list below.
   const NAV_TAB_TO_CATEGORY = {
     onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
-    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
+    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", freshaTodo: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
     attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll",
     alerts: "Insights", activity: "Insights",
     settings: "Admin", voucherAdmin: "Admin"
@@ -13018,6 +13018,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   ...(canSeeIncidents(currentUser) ? [(() => {
                     const n = extraDayRequests.filter(r => r.status === "pending").length;
                     return { t: "extraDayRequests", l: "💰 Extra-Day Requests" + (n ? "  (" + n + ")" : "") };
+                  })()] : []),
+                  ...(canSeeIncidents(currentUser) ? [(() => {
+                    const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
+                    const isOpen = (id) => !!(freshaExtraOpen && freshaExtraOpen[id] && freshaExtraOpen[id].opened);
+                    const extraToOpen = (extraDayRequests || []).filter(r => r.status === "approved" && isTech(r.ec) && !isOpen(r.id)).length;
+                    const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
+                    const _recent = (c) => { const t = Date.parse(c.promotedAt || c.updatedAt || c.addedAt || ""); return !!t && (Date.now() - t) < 45 * 86400000; };
+                    const trialToOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened).length;
+                    const monthToOpen = (trialList || []).filter(c => _nt(c) && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c)).length;
+                    const n = extraToOpen + trialToOpen + monthToOpen;
+                    return { t: "freshaTodo", l: "💇‍♀️ Fresha To-Do" + (n ? "  (" + n + ")" : "") };
                   })()] : []),
                   { t: "storeOpenings", l: "🔓 Store Openings" },
                   { t: "movements", l: "🔀 Today's Movements" },
