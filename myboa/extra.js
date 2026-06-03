@@ -227,7 +227,8 @@
         '<div class="tick">✅</div>',
         '<h2>Sent to your regional manager</h2>',
         (ref ? '<div class="ref">' + esc(ref) + '</div>' : ''),
-        '<p>Your offer to work an extra day has been received. It only counts once your regional manager approves it — they\'ll be in touch.</p>',
+        '<p>Your offer to work an extra day has been received. It only counts once your regional manager approves it.</p>',
+        '<p>Please keep checking <b>My BOA → My schedule</b> — once it\'s approved, the day will show as <b>Extra</b> on your schedule. If it doesn\'t appear, it hasn\'t been approved yet.</p>',
         '<p style="margin-top:18px"><a href="index.html" style="color:#BE185D;font-weight:700">Back to My BOA</a></p>',
       '</div>',
       '<p class="foot">My BOA</p>'
