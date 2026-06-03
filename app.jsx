@@ -13750,123 +13750,65 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 );
               })()}
 
-              {/* ── SECTION: TRIAL TECHS — FRESHA TO OPEN ──
-                  Reminder for the people responsible for opening trial nail
-                  techs on Fresha (the booking platform). Visible only to the
-                  configured openers (default Rochelle & Farida — they can tick
-                  items done) and viewers (National Ops + Regional managers,
-                  read-only). Who opens/sees is editable in Settings. */}
-              {(() => {
-                const _role = (currentUser?.role || "").toLowerCase();
-                // Robust role matching: "regional" catches every ROM variant
-                // (incl. "ROM"/"Regional Manager") via isRomRole; "national"
-                // catches National Ops/Operations. Any other stored keyword
-                // falls back to a plain substring test.
-                const roleMatch = (key) => {
-                  const k = String(key).toLowerCase();
-                  if (k === "regional") return isRomRole(currentUser?.role) || _role.includes("regional");
-                  if (k === "national") return _role.includes("national ops") || _role.includes("national operations") || _role.includes("national");
-                  return _role.includes(k);
-                };
-                const isOpener = (freshaCfg.openerPins || []).includes(currentUser?.pin);
-                const isViewer = !!currentUser?.isOwner
-                  || (freshaCfg.viewerPins || []).includes(currentUser?.pin)
-                  || (freshaCfg.viewerRoles || []).some(roleMatch);
-                if (!isOpener && !isViewer) return null;
+              {/* ── SECTION: FRESHA — DUE SOON (< 3 days) ──
+                  The full Fresha open/close checklist now lives on the Fresha
+                  To-Do tab. Here we only surface the URGENT ones as a warning:
+                  a tech who needs opening (approved extra day / trial start) or
+                  closing (called in sick / absent) where that day is less than
+                  3 days away and still not done. Links through to the tab. */}
+              {canSeeIncidents(currentUser) && (() => {
+                const _now0 = new Date(); _now0.setHours(0, 0, 0, 0);
+                const daysUntil = (ymd) => ymd ? Math.ceil((new Date(ymd + "T00:00:00") - _now0) / 86400000) : null;
+                const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
+                const URGENT = 3;   // less than 3 days away
+
+                // OPEN — approved extra-day cover not yet opened on Fresha
+                const isOpen = (id) => !!(freshaExtraOpen && freshaExtraOpen[id] && freshaExtraOpen[id].opened);
+                const urgentExtra = (extraDayRequests || []).filter(r => r.status === "approved" && isTech(r.ec) && !isOpen(r.id))
+                  .map(r => ({ ...r, _d: daysUntil(r.work_date) }))
+                  .filter(r => r._d !== null && r._d >= 0 && r._d < URGENT)
+                  .sort((a, b) => a._d - b._d);
+
+                // OPEN — trial techs whose trial start is imminent and not opened
                 const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
-                const canAct = isOpener || !!currentUser?.isOwner;   // owners can tick items done too
-                // Only surface "open for the month" for techs who passed / were
-                // promoted recently. Older ones have long since been handled and
-                // would otherwise linger on the dashboard forever.
-                const _recent = (c) => { const t = Date.parse(c.promotedAt || c.updatedAt || c.addedAt || ""); return !!t && (Date.now() - t) < 45 * 86400000; };
-                // Safety net for records orphaned before the owner-delete cascade
-                // existed: drop any already-hired tech whose person is no longer
-                // an active staff member (i.e. they were hard-deleted).
-                const _nm2 = (s) => (s || "").trim().toLowerCase();
-                const _liveStaff = new Set((staff || []).map(s => _nm2(s.name) + "|" + s.branch));
-                const _gone = (c) => c.status === "hired" && !_liveStaff.has(_nm2(c.name) + "|" + c.branch);
-                // Once a tech is ticked "opened on Fresha", keep the row for ~1
-                // day (so the opener sees the confirmation + can undo), then
-                // clear it from the reminder. Legacy rows ticked before we
-                // timestamped are treated as already handled and hidden. The
-                // tech re-surfaces in "open for the month" once promoted to
-                // onboarding (see monthPending below).
-                const _trialFreshaStillVisible = (c) => {
-                  if (!c.freshaTrialOpened) return true;        // not opened yet → always show
-                  const t = Date.parse(c.freshaTrialOpenedAt || "");
-                  if (!t) return false;                         // opened, no timestamp (legacy) → hide
-                  return (Date.now() - t) < 86400000;           // 1 day after opening, clear it
-                };
-                const activeTrials = (trialList || []).filter(c => _nt(c) && c.startDate
-                  && c.status !== "passed" && c.status !== "failed" && c.status !== "hired"
-                  && _trialFreshaStillVisible(c));
-                const monthPending = (trialList || []).filter(c => _nt(c)
-                  && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c) && !_gone(c));
-                if (activeTrials.length === 0 && monthPending.length === 0) return null;
-                const _pad = n => String(n).padStart(2, "0");
-                const trialWindow = (startDate) => {
-                  const start = new Date(startDate + "T12:00:00");
-                  if (isNaN(start)) return { first: null, last: null };
-                  const cur = new Date(start); let first = null, last = null, n = 0;
-                  for (let g = 0; g < 60 && n < 10; g++) {
-                    const y = cur.getFullYear(), m = cur.getMonth() + 1, d = cur.getDate();
-                    const ymd = y + "-" + _pad(m) + "-" + _pad(d), dow = cur.getDay();
-                    if (dow !== 0 && dow !== 6 && !(saHolidays(y) || {})[ymd]) { if (!first) first = ymd; last = ymd; n++; }
-                    cur.setDate(cur.getDate() + 1);
-                  }
-                  return { first, last };
-                };
-                const fmt = ymd => ymd ? new Date(ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : "—";
-                const stageLbl = { induction: "Induction", trial_w1: "Trial weeks 1 & 2", trial_w2: "Trial weeks 1 & 2", pending_mid_review: "⏰ Mid-review due", pending_final_review: "⏰ Final review due" };
-                const needTrial = activeTrials.filter(c => !c.freshaTrialOpened).length;
-                const openerNames = (freshaCfg.openerPins || []).map(p => (appUsers && appUsers[p] && appUsers[p].name) || p).join(" or ");
-                const pill = (bg, fg, txt) => <span style={{ background: bg, color: fg, padding: "2px 8px", borderRadius: 6, fontSize: 10, fontWeight: 800, letterSpacing: "0.03em" }}>{txt}</span>;
-                const actionBtn = (label, onClick) => <button onClick={onClick} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 6, padding: "4px 11px", fontSize: 11, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>{label}</button>;
-                const undoBtn = (onClick) => <button onClick={onClick} title="Mark as not opened" style={{ background: "transparent", color: "#15803d", border: "none", fontSize: 10, fontWeight: 700, cursor: "pointer", textDecoration: "underline", whiteSpace: "nowrap" }}>undo</button>;
-                const rowWrap = { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "1px dashed #e9d5ff", flexWrap: "wrap" };
+                const urgentTrial = (trialList || []).filter(c => _nt(c) && c.startDate
+                  && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened)
+                  .map(c => ({ ...c, _d: daysUntil(c.startDate) }))
+                  .filter(c => c._d !== null && c._d >= 0 && c._d < URGENT)
+                  .sort((a, b) => a._d - b._d);
+
+                // CLOSE — sick/absent nail techs (today/tomorrow) not yet blocked
+                const isBlocked = (id) => !!(freshaBlocks && freshaBlocks[id] && freshaBlocks[id].blocked);
+                const urgentBlock = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec) && !isBlocked(r.id))
+                  .map(r => ({ ...r, _d: daysUntil(r.start_date) }))
+                  .sort((a, b) => (a._d ?? 0) - (b._d ?? 0));
+
+                const total = urgentExtra.length + urgentTrial.length + urgentBlock.length;
+                if (total === 0) return null;
+
+                const dl = (d) => d <= 0 ? "today" : (d === 1 ? "tomorrow" : "in " + d + " days");
+                const badge = (txt) => <span style={{ background: "#fee2e2", color: "#7f1d1d", padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 800, whiteSpace: "nowrap" }}>{txt}</span>;
+                const row = (key, name, sub, tone) => (
+                  <div key={key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "1px dashed #fecaca", flexWrap: "wrap" }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#7f1d1d" }}>{name}</div>
+                      <div style={{ fontSize: 11, color: "#b91c1c", marginTop: 1 }}>{sub}</div>
+                    </div>
+                    {badge(tone)}
+                  </div>
+                );
+
                 return (
-                  <div style={{ background: "#faf5ff", border: "2px solid #d8b4fe", borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: "0 4px 16px rgba(124,58,237,0.10)" }}>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 4 }}>
-                      <div onClick={() => setDashCollapsed(p => ({ ...p, trialTechs: !p.trialTechs }))} style={{ fontSize: 15, fontWeight: 800, color: "#6b21a8", letterSpacing: "0.04em", textTransform: "uppercase", cursor: "pointer" }}>🧪 Trial techs · Fresha <span style={{ fontSize: 12, opacity: 0.6 }}>{dashCollapsed.trialTechs ? "▸" : "▾"}</span></div>
-                      <div style={{ fontSize: 12, color: "#7c3aed", fontWeight: 700 }}>
-                        {needTrial > 0 ? `${needTrial} to open for trial` : "all trials opened"}{monthPending.length ? ` · ${monthPending.length} to open for the month` : ""}
-                      </div>
+                  <div style={{ background: "#fef2f2", border: "2px solid #fecaca", borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: "0 4px 16px rgba(220,38,38,0.10)" }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: "#7f1d1d", letterSpacing: "0.04em", textTransform: "uppercase" }}>⚠️ Fresha · due soon</div>
+                      <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700 }}>{total} {total === 1 ? "tech" : "techs"} to open/close on Fresha within 3 days</div>
                       <div style={{ flex: 1 }} />
-                      <button onClick={() => tryChangeTab("trialPeriod")} style={{ background: "#fff", color: "#6b21a8", border: "1px solid #d8b4fe", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>Open Trial Period →</button>
+                      <button onClick={() => tryChangeTab("freshaTodo")} style={{ background: "#fff", color: "#7f1d1d", border: "1px solid #fecaca", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>Open Fresha To-Do →</button>
                     </div>
-                    <div style={{ display: dashCollapsed.trialTechs ? "none" : "block" }}>
-                    <div style={{ fontSize: 11, color: "#9333ea", marginBottom: 8, fontStyle: "italic" }}>
-                      {canAct ? `Tick each tech once they're opened on Fresha — it clears the reminder.` : `Opened by ${openerNames || "the assigned team"}.`}
-                    </div>
-                    {activeTrials.map(c => {
-                      const w = trialWindow(c.startDate);
-                      const opened = !!c.freshaTrialOpened;
-                      return (
-                        <div key={"ft-" + c._id} style={rowWrap}>
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ fontSize: 13, fontWeight: 700, color: "#581c87" }}>{c.name} <span style={{ color: "#a78bfa", fontWeight: 600 }}>· 📍 {c.branch}</span></div>
-                            <div style={{ fontSize: 11, color: "#9333ea", marginTop: 1 }}>Trial {fmt(w.first)} → {fmt(w.last)} · {stageLbl[c.status] || c.status}</div>
-                          </div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            {opened
-                              ? <>{pill("#dcfce7", "#166534", "✓ Fresha opened" + (c.freshaTrialOpenedBy ? " · " + c.freshaTrialOpenedBy : ""))}{canAct && undoBtn(() => setTrialFresha(c._id, "freshaTrialOpened", false))}</>
-                              : (canAct ? actionBtn("Mark opened on Fresha", () => setTrialFresha(c._id, "freshaTrialOpened", true)) : pill("#fef3c7", "#92400e", "⏳ awaiting Fresha"))}
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {monthPending.map(c => (
-                      <div key={"fm-" + c._id} style={{ ...rowWrap, borderTop: "1px dashed #c4b5fd" }}>
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontSize: 13, fontWeight: 700, color: "#581c87" }}>{c.name} <span style={{ color: "#a78bfa", fontWeight: 600 }}>· 📍 {c.branch}</span></div>
-                          <div style={{ fontSize: 11, color: "#15803d", fontWeight: 700, marginTop: 1 }}>✅ Passed trial — open on Fresha for the rest of the month (after the schedule is synced)</div>
-                        </div>
-                        <div>
-                          {canAct ? actionBtn("Mark month opened", () => setTrialFresha(c._id, "freshaMonthOpened", true)) : pill("#fef3c7", "#92400e", "⏳ awaiting Fresha")}
-                        </div>
-                      </div>
-                    ))}
-                    </div>
+                    {urgentExtra.map(r => row("ue-" + r.id, r.name, "💰 Open for extra day · " + fmtIncidentDate(r.work_date) + (r.store ? " · 📍 " + r.store : ""), "open " + dl(r._d)))}
+                    {urgentTrial.map(c => row("ut-" + c._id, c.name, "🧪 Open for trial start · " + fmtIncidentDate(c.startDate) + (c.branch ? " · 📍 " + c.branch : ""), "open " + dl(c._d)))}
+                    {urgentBlock.map(r => row("ub-" + r.id, r.name, "🚫 Block — " + (LEAVE_TYPE[r.leave_type] || r.leave_type) + " · " + fmtIncidentDate(r.start_date) + (r.store ? " · 📍 " + r.store : ""), "close " + dl(Math.max(0, r._d ?? 0))))}
                   </div>
                 );
               })()}
