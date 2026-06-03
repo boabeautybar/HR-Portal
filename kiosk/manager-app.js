@@ -1607,13 +1607,15 @@
         }
         // (Manager early-leave is no longer self-recorded here — the HR portal
         // derives it from this clock-out time. See note at "1b" above.)
-        // Post-clock-out witness prompt: catch colleagues who walked out
+        // Post-clock-out witness prompt: catch MANAGERS who walked out
         // without clocking out (so no early-leave reason was logged). The
-        // clocking-out manager names them; the report goes to boa_mgr_early_reports_v1
-        // for ROM review. Skipped on clock-in.
+        // clocking-out manager ticks them from a manager-only checklist —
+        // nail techs are deliberately not selectable here (those go through
+        // Nail Tech Check-ins → Mark left early). The report goes to
+        // boa_mgr_early_reports_v1 for ROM review. Skipped on clock-in.
         if (type === "out") {
           try {
-            var report = await openMgrEarlyLeaveReportModal({ name: name });
+            var report = await openMgrEarlyLeaveReportModal({ name: name, selfEc: ec, managers: hereMgrs });
             if (report && report.names) {
               await window.APP_DATA.submitEarlyLeaveReport({
                 reportedByEc:   ec,
@@ -1730,60 +1732,103 @@
     return new Promise(function (resolve) {
       var prev = document.getElementById("boa-mgr-early-report-modal");
       if (prev) prev.remove();
+
+      // Candidates are MANAGERS at this store only, minus the person clocking
+      // out. Reporting is a tick-box pick from this list — there is no free
+      // text — so a nail tech can never be entered here by mistake. Nail-tech
+      // early-leaves have their own flow (Nail Tech Check-ins → Mark left
+      // early), called out prominently below.
+      var selfEc = String(opts.selfEc || "").trim();
+      var seen = {};
+      var candidates = (opts.managers || []).filter(function (m) {
+        if (!m || !m.name) return false;
+        var ec = String(m.employee_code || "").trim();
+        if (ec && ec === selfEc) return false;       // not yourself
+        if (ec && seen[ec]) return false;            // de-dupe
+        if (ec) seen[ec] = true;
+        return true;
+      });
+
+      var nailTechCallout =
+        '<div style="margin-top:12px;padding:11px 13px;background:#FFF7ED;border:1px solid #FED7AA;border-radius:10px;font-size:13px;line-height:1.45;color:#9A3412">' +
+          '💅 <strong>A nail tech left early?</strong> Don\'t report them here. ' +
+          'Go back and open <strong>Nail Tech Check-ins</strong>, then tap ' +
+          '<strong>🏃 Mark left early</strong> on her row. This list is for <strong>managers only</strong>.' +
+        '</div>';
+
       var modal = document.createElement("div");
       modal.id = "boa-mgr-early-report-modal";
       modal.className = "boa-modal-backdrop";
       modal.innerHTML =
         '<div class="boa-modal-card">' +
-          '<h2 class="boa-modal-title">👀 Did anyone leave early today?</h2>' +
+          '<h2 class="boa-modal-title">👀 Did another manager leave early today?</h2>' +
           '<p class="boa-modal-body">' +
             'Thanks for clocking out, ' + esc(opts.name) + '. Before you go — ' +
-            'did any manager leave their shift early today without clocking out? ' +
-            'A quick yes/no helps payroll catch missed deductions.' +
+            'did any <strong>manager</strong> leave their shift early today without ' +
+            'clocking out? A quick yes/no helps payroll catch missed deductions.' +
           '</p>' +
-          '<div class="btn-row" style="justify-content:center;gap:10px;margin-top:12px">' +
-            '<button type="button" class="link-btn link-btn-dark" id="boa-mgr-er-no">No, everyone stayed</button>' +
-            '<button type="button" class="btn btn-primary" id="boa-mgr-er-yes">Yes, name them</button>' +
-          '</div>' +
-          '<div id="boa-mgr-er-detail" style="display:none;margin-top:14px">' +
-            '<label class="lbl">Who left early?</label>' +
-            '<input id="boa-mgr-er-names" type="text" class="input" ' +
-              'placeholder="Comma-separated names" autocomplete="off">' +
-            '<label class="lbl" style="margin-top:10px">Note (optional — when they left, why if you know)</label>' +
-            '<textarea id="boa-mgr-er-note" class="input" rows="2" ' +
-              'placeholder="e.g. around 14:00, said she was sick"></textarea>' +
-            '<div id="boa-mgr-er-err" class="err-line"></div>' +
-            '<div class="btn-row" style="justify-content:space-between;gap:8px;margin-top:10px">' +
-              '<button type="button" class="link-btn link-btn-dark" id="boa-mgr-er-cancel">Skip</button>' +
-              '<button type="button" class="btn btn-primary" id="boa-mgr-er-save">Submit report</button>' +
-            '</div>' +
-          '</div>' +
+          nailTechCallout +
+          (candidates.length
+            ? '<div class="btn-row" style="justify-content:center;gap:10px;margin-top:14px">' +
+                '<button type="button" class="link-btn link-btn-dark" id="boa-mgr-er-no">No, every manager stayed</button>' +
+                '<button type="button" class="btn btn-primary" id="boa-mgr-er-yes">Yes, a manager did</button>' +
+              '</div>' +
+              '<div id="boa-mgr-er-detail" style="display:none;margin-top:14px">' +
+                '<label class="lbl">Which manager(s) left early?</label>' +
+                '<div id="boa-mgr-er-list" style="margin-top:6px">' +
+                  candidates.map(function (m) {
+                    return '<label style="display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px;cursor:pointer">' +
+                      '<input type="checkbox" class="boa-mgr-er-cb" value="' + esc(m.name) + '" style="width:18px;height:18px;flex:none">' +
+                      '<span style="font-weight:600;color:#374151">' + esc(m.name) +
+                        (m.role ? ' <span style="font-weight:400;color:#9ca3af">· ' + esc(m.role) + '</span>' : '') +
+                      '</span>' +
+                    '</label>';
+                  }).join("") +
+                '</div>' +
+                '<label class="lbl" style="margin-top:10px">Note (optional — when they left, why if you know)</label>' +
+                '<textarea id="boa-mgr-er-note" class="input" rows="2" ' +
+                  'placeholder="e.g. around 14:00, said she was sick"></textarea>' +
+                '<div id="boa-mgr-er-err" class="err-line"></div>' +
+                '<div class="btn-row" style="justify-content:space-between;gap:8px;margin-top:10px">' +
+                  '<button type="button" class="link-btn link-btn-dark" id="boa-mgr-er-cancel">Skip</button>' +
+                  '<button type="button" class="btn btn-primary" id="boa-mgr-er-save">Submit report</button>' +
+                '</div>' +
+              '</div>'
+            : '<p class="boa-modal-body" style="margin-top:12px;color:#9ca3af">' +
+                'No other managers are based at this store, so there\'s nobody to report here.' +
+              '</p>' +
+              '<div class="btn-row" style="justify-content:center;margin-top:12px">' +
+                '<button type="button" class="btn btn-primary" id="boa-mgr-er-done">Done</button>' +
+              '</div>') +
         '</div>';
       document.body.appendChild(modal);
 
-      var noBtn   = document.getElementById("boa-mgr-er-no");
-      var yesBtn  = document.getElementById("boa-mgr-er-yes");
-      var detail  = document.getElementById("boa-mgr-er-detail");
-      var namesEl = document.getElementById("boa-mgr-er-names");
-      var noteEl  = document.getElementById("boa-mgr-er-note");
-      var errEl   = document.getElementById("boa-mgr-er-err");
-      var saveBtn = document.getElementById("boa-mgr-er-save");
-      var cancelBtn = document.getElementById("boa-mgr-er-cancel");
       function close(result) { modal.remove(); resolve(result); }
+      modal.addEventListener("click", function (e) { if (e.target === modal) close(null); });
+
+      var doneBtn = document.getElementById("boa-mgr-er-done");
+      if (doneBtn) { doneBtn.onclick = function () { close(null); }; return; }
+
+      var noBtn     = document.getElementById("boa-mgr-er-no");
+      var yesBtn    = document.getElementById("boa-mgr-er-yes");
+      var detail    = document.getElementById("boa-mgr-er-detail");
+      var noteEl    = document.getElementById("boa-mgr-er-note");
+      var errEl     = document.getElementById("boa-mgr-er-err");
+      var saveBtn   = document.getElementById("boa-mgr-er-save");
+      var cancelBtn = document.getElementById("boa-mgr-er-cancel");
       noBtn.onclick     = function () { close(null); };
       cancelBtn.onclick = function () { close(null); };
-      modal.addEventListener("click", function (e) { if (e.target === modal) close(null); });
       yesBtn.onclick = function () {
         detail.style.display = "block";
         yesBtn.style.display = "none";
         noBtn.style.display  = "none";
-        setTimeout(function () { try { namesEl.focus(); } catch (_e) {} }, 50);
       };
       saveBtn.onclick = function () {
         errEl.textContent = "";
-        var names = (namesEl.value || "").trim();
-        if (names.length < 2) { errEl.textContent = "Add at least one name."; return; }
-        close({ names: names, note: (noteEl.value || "").trim() });
+        var picked = [].slice.call(modal.querySelectorAll(".boa-mgr-er-cb:checked"))
+          .map(function (cb) { return cb.value; });
+        if (!picked.length) { errEl.textContent = "Tick at least one manager."; return; }
+        close({ names: picked.join(", "), note: (noteEl.value || "").trim() });
       };
     });
   }
