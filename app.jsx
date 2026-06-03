@@ -2524,12 +2524,7 @@ function TransferModal({ s, onClose, onConfirm, onCancelTransfer }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const inp = { width: "100%", padding: "8px 11px", borderRadius: 8, border: "1px solid #FBCFE8", background: "#FCE7F3", fontFamily: "inherit", fontSize: 13, boxSizing: "border-box" };
   const lbl = { display: "block", fontSize: 10, fontWeight: 700, color: "#BE185D", letterSpacing: "0.08em", marginBottom: 4, textTransform: "uppercase" };
-  // A transfer is "pending" only if its date is still in the FUTURE. Compared
-  // against the real current date (ISO string compare, TZ-safe) — using a
-  // hardcoded reference date meant a transfer dated in the past was wrongly
-  // treated as pending forever, so the tech's home branch never actually
-  // flipped to the new store.
-  const isPending = transferDate && String(transferDate).slice(0, 10) > new Date().toISOString().slice(0, 10);
+  const isPending = transferDate && new Date(transferDate) > new Date("2026-04-27");
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
@@ -11026,42 +11021,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return () => { cancelled = true; };
   }, [tab, currentUser.pin]);
 
-  // One-time auto-settle of completed transfers. The portal models a transfer
-  // as flags (transferring / transferTo / transferDate) and only renders the
-  // tech as "arriving" at the destination while the date is still in the
-  // FUTURE; once the date passes the record is meant to be committed — branch
-  // becomes the new store and the flags clear. Nothing performed that commit,
-  // so a tech whose transfer date had passed (e.g. effective 1 Jun) fell into
-  // a gap: no longer arriving at the new branch, yet still stored at the OLD
-  // one — so she showed on the wrong store in the borrow picker, the schedule
-  // and payroll. We commit it here so she lands on the new branch everywhere.
-  // Owners only (full access, not behind the read-only guard); later loads
-  // find nothing left to settle, so this self-heals once and then no-ops.
-  async function settleCompletedTransfers(staffArr, mgrArr) {
-    if (!currentUser || !currentUser.isOwner || !window.BOA_DB) return;
-    const todayIso = new Date().toISOString().slice(0, 10);
-    const isDue = (x) => x && x.transferring && x.transferTo && x.transferDate
-      && String(x.transferDate).slice(0, 10) <= todayIso && x.transferTo !== x.branch;
-    const dueStaff = (staffArr || []).filter(isDue);
-    const dueMgrs = (mgrArr || []).filter(isDue);
-    if (!dueStaff.length && !dueMgrs.length) return;
-    const commit = async (rec, saveFn, setList) => {
-      const from = rec.branch, eff = String(rec.transferDate).slice(0, 10);
-      const payload = { ...rec, branch: rec.transferTo, transferring: false, transferTo: null, transferDate: null, id: rec.id || rec._id };
-      let saved;
-      try { saved = await saveFn(payload); }
-      catch (e) { console.error("Auto-settle transfer failed for", rec && rec.ec, e); return; }
-      if (!saved) return; // read-only guard short-circuited the write
-      setList(p => p
-        .filter(x => !(x.isShadow && x.ec === rec.ec))
-        .map(x => x._id === rec._id ? { ...x, ...saved } : x));
-      logActivity("Transfer completed", (rec.name || "") + (rec.ec ? " (" + rec.ec + ")" : ""),
-        (from || "—") + " → " + (rec.transferTo || "—") + " · effective " + eff);
-    };
-    for (const r of dueStaff) await commit(r, window.BOA_DB.saveStaff, setStaff);
-    for (const r of dueMgrs) await commit(r, window.BOA_DB.saveManager, setManagers);
-  }
-
   useEffect(() => {
     if (!window.BOA_DB || !window.BOA_DB.isReady) {
       setLoadError("Supabase isn't configured yet — fill in BOA_SUPABASE_CONFIG and reload.");
@@ -11099,7 +11058,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setIncidentReports(Array.isArray(incidents) ? incidents : []);
       setLeaveRequests(Array.isArray(leaveReqs) ? leaveReqs : []);
       setLoading(false);
-      settleCompletedTransfers(d.staff, d.managers);
     }).catch((err) => {
       setLoadError("Could not load data: " + (err.message || err));
       setLoading(false);
