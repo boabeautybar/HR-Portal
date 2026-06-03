@@ -22255,6 +22255,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           return ct;
         };
         const persistLeaves = async (next) => {
+          // Hard guard: never persist a NEW leave record whose employee code
+          // matches no current staff member or manager. This is the single
+          // write path for leave records, so an orphan can't be created from
+          // any entry point. Existing records (incl. already-orphaned ones)
+          // pass through untouched so removals still work.
+          const known = new Set();
+          [...(staff || []), ...(managers || [])].forEach(p => { if (p && p.ec) known.add(String(p.ec).toUpperCase().trim()); });
+          const existingIds = new Set((leaveRecs || []).map(r => r._id));
+          const badNew = (next || []).find(r => r && !existingIds.has(r._id) && r.ec && !known.has(String(r.ec).toUpperCase().trim()));
+          if (badNew) { alert("Cannot save leave: no staff member or manager matches employee code \"" + badNew.ec + "\". Pick an existing person."); return; }
           setLeaveRecs(next);
           try { await window.BOA_DB.saveLeaveRecords(next); }
           catch (e) { alert("Could not save: " + (e.message || e)); }
