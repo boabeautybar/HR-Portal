@@ -11478,11 +11478,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const mgrMap = {};
       const techMap = {};
       let total = 0;
+      // Anyone on annual / emergency leave today (Leave Planner) — exclude from
+      // "scheduled today" even if their saved grid cell still reads working.
+      const _onLeaveToday = new Set();
+      (leaveRecs || []).forEach(lv => {
+        if (lv && lv.ec && lv.startDate && lv.endDate && ymd >= lv.startDate && ymd <= lv.endDate) _onLeaveToday.add(String(lv.ec).toUpperCase().trim());
+      });
       for (const r of rows) {
         const { name, techGrid, mgrGrid, attGrid } = r;
         let count = 0;
         let tScheduled = 0, tCheckedIn = 0, tAbsent = 0;
         const techByEc = {};
+        // Active nail techs who actually belong to this branch — mirrors the
+        // manager guard below. Without this the raw grid also counts techs who
+        // have LEFT, guest/loan rows from other stores, and stale codes, which
+        // badly inflates the "scheduled today" numbers.
+        const _branchTechEcs = new Set(
+          (enriched || [])
+            .filter(s => s && s.branch === name && !s.onMat && !s.onUnpaidLegal && !s.offboarded && !(s.leftDate && ymd > s.leftDate))
+            .map(s => String(s.ec || "").toUpperCase().trim())
+            .filter(Boolean)
+        );
         // Gate on the kiosk Daily Check-in sign-off: until the manager
         // taps "Submit today's check-in" on the kiosk (writes
         // boa_dly_<branch>_<ymd> with signedBy), the att-grid taps are
@@ -11492,6 +11508,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // honours the same rule against the DESTINATION branch.
         const _branchSubmitted = signedOffSet.has(name);
         for (const ec in techGrid) {
+          const ecT = String(ec).toUpperCase().trim();
+          if (!_branchTechEcs.has(ecT)) continue;   // only active techs who belong to this branch
+          if (_onLeaveToday.has(ecT)) continue;       // on annual / emergency leave today
           const v = techGrid[ec][todayDay];
           if (!isWorking(v)) continue;
           count++; tScheduled++;
