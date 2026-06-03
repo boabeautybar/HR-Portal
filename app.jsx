@@ -7074,7 +7074,7 @@ const SETTINGS_TABS = [
   { t: "leave", l: "Leave Planner", cat: "Operations", icon: "🌴" },
   { t: "leaveRequests", l: "Leave Requests", cat: "Operations", icon: "📨" },
   { t: "calledInSick", l: "Called in Sick", cat: "Operations", icon: "🤒" },
-  { t: "extraDayRequests", l: "Extra-Day Requests", cat: "Operations", icon: "➕" },
+  { t: "extraDayRequests", l: "Extra-Day Requests", cat: "Operations", icon: "💰" },
   { t: "storeOpenings", l: "Store Openings", cat: "Operations", icon: "🔓" },
   { t: "movements", l: "Today's Movements", cat: "Operations", icon: "🔀" },
   { t: "dailyTasks", l: "Daily Tasks", cat: "Operations", icon: "📋" },
@@ -8801,7 +8801,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#831843", margin: 0 }}>➕ Extra-Day Requests</h2>
+        <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#831843", margin: 0 }}>💰 Extra-Day Requests</h2>
         {pendingCount > 0 && <span style={chip({ color: "#b45309", bg: "#fef3c7" })}>{pendingCount} pending</span>}
       </div>
       <p style={{ color: "#9d6a82", fontSize: 13.5, margin: "6px 0 16px", maxWidth: 640 }}>
@@ -12771,7 +12771,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   })()] : []),
                   ...(canSeeIncidents(currentUser) ? [(() => {
                     const n = extraDayRequests.filter(r => r.status === "pending").length;
-                    return { t: "extraDayRequests", l: "➕ Extra-Day Requests" + (n ? "  (" + n + ")" : "") };
+                    return { t: "extraDayRequests", l: "💰 Extra-Day Requests" + (n ? "  (" + n + ")" : "") };
                   })()] : []),
                   { t: "storeOpenings", l: "🔓 Store Openings" },
                   { t: "movements", l: "🔀 Today's Movements" },
