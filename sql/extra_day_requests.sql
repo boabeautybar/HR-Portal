@@ -106,6 +106,21 @@ begin
   return query select * from extra_day_requests order by created_at desc;
 end $$;
 
+-- ---- MY BOA: a tech reads their OWN extra-day requests by employee code -----
+-- Public (no HR key), like submit_*. Returns only a tech's own rows and only
+-- the non-sensitive fields needed to show "your extra day on X was approved".
+create or replace function my_extra_day_requests(p_ec text)
+returns table(ref_code text, work_date date, status text, decided_at timestamptz)
+language plpgsql security definer set search_path = public as $$
+begin
+  if coalesce(btrim(p_ec), '') = '' then return; end if;
+  return query
+    select e.ref_code, e.work_date, e.status, e.decided_at
+    from extra_day_requests e
+    where e.ec = nullif(btrim(p_ec), '')
+    order by e.work_date desc;
+end $$;
+
 -- ---- PORTAL: approve / decline (declining requires a note) -----------------
 create or replace function set_extra_day_status(p_key text, p_id uuid, p_status text, p_note text default '', p_actor text default '')
 returns void
@@ -150,6 +165,7 @@ end $$;
 revoke execute on function _check_hr_key(text) from public;
 grant execute on function submit_extra_day_request(text,text,text,text,date,text) to anon;
 grant execute on function list_extra_day_requests(text)                          to anon;
+grant execute on function my_extra_day_requests(text)                            to anon;
 grant execute on function set_extra_day_status(text,uuid,text,text,text)          to anon;
 grant execute on function mark_extra_day_reviewed(text,uuid)                      to anon;
 grant execute on function delete_extra_day_request(text,uuid)                     to anon;
