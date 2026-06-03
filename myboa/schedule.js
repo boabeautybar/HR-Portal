@@ -131,6 +131,24 @@
   }
 
   function ymdStr(dt) { return dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate()); }
+  // Approved, still-upcoming extra days for this tech — drives the banner on
+  // their schedule. Reads only the tech's OWN rows via the public RPC (no key).
+  function loadApprovedExtras(ec) {
+    return sb.rpc("my_extra_day_requests", { p_ec: ec }).then(function (res) {
+      if (res.error || !Array.isArray(res.data)) return [];
+      var today = ymdStr(new Date());
+      return res.data
+        .filter(function (r) { return r && r.status === "approved" && r.work_date && r.work_date >= today; })
+        .sort(function (a, b) { return String(a.work_date).localeCompare(String(b.work_date)); });
+    });
+  }
+  function niceDate(ymd) {
+    var p = String(ymd || "").split("-");
+    if (p.length !== 3) return ymd;
+    var d = new Date(+p[0], +p[1] - 1, +p[2]);
+    if (isNaN(d)) return ymd;
+    return d.getDate() + " " + MONTHS[d.getMonth()].slice(0, 3) + " " + d.getFullYear();
+  }
   var WORK_CODES = { W: 1, WE: 1, WL: 1, WM: 1, WB: 1, E: 1 };
 
   // ── SA public holidays (mirrors the portal's saHolidays) ─────
@@ -433,6 +451,7 @@
 
       var today = new Date(), tom = new Date(); tom.setDate(tom.getDate() + 1);
       await Promise.all([loadCycle(ymForDate(today)), loadCycle(ymForDate(tom)), loadCycle(state.monthYm)]);
+      try { state.approvedExtras = await loadApprovedExtras(found.ecKey); } catch (_e) { state.approvedExtras = []; }
       setBusy(false);
       renderDash();
     } catch (e) {
@@ -454,6 +473,16 @@
   }
 
   async function renderDash() {
+    var ex = state.approvedExtras || [];
+    var banner = "";
+    if (ex.length) {
+      var days = ex.map(function (r) { return niceDate(r.work_date); }).join(", ");
+      var many = ex.length > 1;
+      banner = '<div style="background:#dcfce7;border:1px solid #86efac;border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.5;color:#15803d;font-weight:600;margin-bottom:14px">'
+        + '✅ Your extra ' + (many ? 'days' : 'day') + ' on <b>' + esc(days) + '</b> ' + (many ? 'were' : 'was')
+        + ' approved — you’re booked to work, so please come in.'
+        + '</div>';
+    }
     root.innerHTML = [
       '<a class="back" href="index.html">‹ My BOA</a>',
       '<div class="dashhead">',
@@ -463,6 +492,7 @@
           (state.isManager ? ' · Manager' : '') + '</div></div>',
         '<button type="button" id="chg" class="chg">Change</button>',
       '</div>',
+      banner,
       '<div class="tabs">',
         tabBtn("soon", "Today / Tomorrow"),
         tabBtn("week", "This week"),
