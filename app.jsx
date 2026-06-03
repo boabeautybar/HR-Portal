@@ -8376,15 +8376,12 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
   const [resolvingId, setResolvingId] = useState(null);   // report awaiting a resolution note
   const [resolveText, setResolveText] = useState("");
 
-  // Where the QR points: the "My BOA" staff hub. A custom address
-  // (window.BOA_STAFF_URL) wins so staff land on a separate site instead of the
-  // portal's own domain; "/myboa.html" is appended if it has no path of its own.
+  // Where the QR points: the "My BOA" staff site. window.BOA_STAFF_URL is the
+  // address of the dedicated My BOA deploy (its root serves the hub). If unset,
+  // fall back to this origin's /myboa.html (legacy single-site layout).
   const reportUrl = (() => {
     const custom = (typeof window !== "undefined" && (window.BOA_STAFF_URL || window.BOA_REPORT_URL) || "").trim();
-    if (custom) {
-      try { const u = new URL(custom); return (u.pathname && u.pathname !== "/") ? custom : custom.replace(/\/+$/, "") + "/myboa.html"; }
-      catch (_e) { return custom; }
-    }
+    if (custom) return custom.replace(/\/+$/, "");
     return (typeof window !== "undefined" ? window.location.origin : "") + "/myboa.html";
   })();
   const stores = Array.from(new Set(reports.map(r => r.store).filter(Boolean))).sort();

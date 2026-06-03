@@ -125,7 +125,7 @@
         '<h2>Your leave request has been sent</h2>',
         (ref ? '<div class="ref">' + esc(ref) + '</div>' : ''),
         '<p>HR has received it and will review it. They may contact you about the outcome.</p>',
-        '<p style="margin-top:18px"><a href="myboa.html" style="color:#BE185D;font-weight:700">Back to My BOA</a></p>',
+        '<p style="margin-top:18px"><a href="index.html" style="color:#BE185D;font-weight:700">Back to My BOA</a></p>',
       '</div>',
       '<p class="foot">My BOA</p>'
     ].join("");
