@@ -38,7 +38,7 @@
       '<div class="note">Please only call in when you genuinely can\'t work. Being at work matters — for your team and for you:',
         '<span class="warn">',
           '<b>Nail techs:</b> you don\'t earn commission on days you\'re not working, and absences can put your monthly bonus target out of reach.<br/>',
-          '<b>Managers:</b> missing a scheduled working day forfeits your attendance bonus for that period.<br/>',
+          '<b>Managers:</b> missing a scheduled work day forfeits your attendance bonus for that period.<br/>',
           '<b>Sick leave</b> needs a valid medical certificate to count as paid sick leave.<br/>',
           'Repeated or patterned absences are monitored and may lead to a discussion with your regional manager and, where warranted, the disciplinary process.',
         '</span></div>',
