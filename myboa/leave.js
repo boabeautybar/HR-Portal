@@ -20,6 +20,8 @@
     "Green Point", "Plumstead", "Sandown", "Cape Gate", "Winelands", "Betty",
     "Fourways", "Eastgate", "Mall of the South", "Mushroom Farm", "Verdi", "Ballito"
   ];
+  var MAX_DAYS = 21; // annual leave requests longer than this must go via HR.
+
   var state = { busy: false };
 
   function render() {
@@ -65,7 +67,12 @@
       if (s && e && e >= s) {
         var days = Math.round((new Date(e) - new Date(s)) / 86400000) + 1;
         box.style.display = "block";
-        box.textContent = "🌴 " + days + " day" + (days === 1 ? "" : "s") + " (" + fmt(s) + " → " + fmt(e) + ")";
+        var over = days > MAX_DAYS;
+        box.style.color = over ? "#b91c1c" : "";
+        box.style.borderColor = over ? "#fca5a5" : "";
+        box.style.background = over ? "#fef2f2" : "";
+        box.textContent = (over ? "⚠️ " : "🌴 ") + days + " day" + (days === 1 ? "" : "s") + " (" + fmt(s) + " → " + fmt(e) + ")"
+          + (over ? " — over the " + MAX_DAYS + "-day limit" : "");
       } else { box.style.display = "none"; }
     };
     $("start").onchange = function () { if (!$("end").value) $("end").value = this.value; upd(); };
@@ -84,6 +91,8 @@
     if (!store) { setErr("Please choose your store."); return; }
     if (!start || !end) { setErr("Please choose both dates."); return; }
     if (end < start) { setErr("The 'To' date can't be before the 'From' date."); return; }
+    var days = Math.round((new Date(end) - new Date(start)) / 86400000) + 1;
+    if (days > MAX_DAYS) { setErr("Annual leave requests are limited to " + MAX_DAYS + " days. Please speak to HR for anything longer."); return; }
 
     var payload = {
       p_store: store,
