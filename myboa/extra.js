@@ -140,27 +140,24 @@
       }
       state.name = name; state.store = store; state.ec = found.ecKey; state.isManager = found.isManager;
       try { localStorage.setItem("myboa_sched_v1", JSON.stringify({ store: store, ec: found.ecKey })); } catch (_e) {}
-      // Collect OFF days that are today or in the future, from both cycles.
+      // Collect OFF days that are today or later, from the CURRENT pay cycle only
+      // (25th → 24th). Next cycle isn't offered — extra days are for this cycle.
       var today = new Date(); today.setHours(0, 0, 0, 0);
-      return Promise.all(cycles.map(function (cy) { return fetchGrid(store, found.isManager, cy); }))
-        .then(function (grids) {
-          var seen = {}, offs = [];
-          grids.forEach(function (grid) {
-            if (!grid) return;
-            var row = grid[found.ecKey];
-            periodDays(currentSchedYm()).concat(periodDays(shiftYm(currentSchedYm(), 1))).forEach(function (dt) {
-              if (dt < today) return;
-              var ymd = ymdStr(dt);
-              if (seen[ymd]) return;
-              if (cellOff(getCell(row, dt), found.isManager)) { seen[ymd] = 1; offs.push(dt); }
-            });
+      return fetchGrid(store, found.isManager, ymEnd).then(function (grid) {
+        var offs = [];
+        if (grid) {
+          var row = grid[found.ecKey];
+          periodDays(ymEnd).forEach(function (dt) {
+            if (dt < today) return;
+            if (cellOff(getCell(row, dt), found.isManager)) offs.push(dt);
           });
-          offs.sort(function (a, b) { return a - b; });
-          state.offDays = offs;
-          setBusy(false, "find", "Find my off days");
-          if (!offs.length) { renderIdentify("You have no upcoming off days in the published schedule, so there's no extra day to offer."); return; }
-          renderPick();
-        });
+        }
+        offs.sort(function (a, b) { return a - b; });
+        state.offDays = offs;
+        setBusy(false, "find", "Find my off days");
+        if (!offs.length) { renderIdentify("You have no remaining off days in this pay cycle, so there's no extra day to offer."); return; }
+        renderPick();
+      });
     }).catch(function () {
       setBusy(false, "find", "Find my off days");
       setErr("Sorry — could not load your schedule. Check your signal and try again.");
@@ -187,6 +184,7 @@
           '</select></label>',
         '<label class="field"><span>Note <em style="font-weight:400;color:#a07487">(optional)</em></span>',
           '<textarea id="note" placeholder="Anything your manager should know — e.g. available from 10am."></textarea></label>',
+        '<div class="note">Please note: once approved, an extra day is a <b>committed shift</b>. If you don\'t show up for an approved extra day, it will be recorded as a <b>no-show</b>.</div>',
         '<button type="button" id="submit" class="submit">Send to regional manager</button>',
         '<p class="err" id="err"></p>',
         '<p style="text-align:center;margin:10px 0 0"><a href="#" id="reset" style="color:#9d6a82;font-size:13px;font-weight:600">‹ Use a different code</a></p>',
@@ -202,6 +200,7 @@
     var day = val("day");
     setErr("");
     if (!day) { setErr("Please pick the off day you're offering."); return; }
+    if (!window.confirm("Once approved, this is a committed shift. If you don't show up for an approved extra day, it will be recorded as a no-show.\n\nSend this offer to your regional manager?")) return;
     var payload = {
       p_store: state.store,
       p_ec: state.ec || null,
