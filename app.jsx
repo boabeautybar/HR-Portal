@@ -13846,6 +13846,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         });
                         managers.forEach(m => {
                           if (_onLeaveEcs.has(String(m.ec || "").trim())) return;   // annual leave
+                          if (offboardedMap[String(m.ec || "").trim()]) return;     // resigned / off-boarded — don't chase reasons
+                          if (m.active === false) return;                            // deactivated record
                           const grid = mgrClockinSchedCache[(m.branch || "") + "|" + ymOf];
                           if (!grid) return;
                           const cell = (grid[m.ec]) ? (grid[m.ec][ymd] || grid[m.ec][dom]) : undefined;
