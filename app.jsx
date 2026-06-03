@@ -10779,7 +10779,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // again after the actioned date.
   const [abscondActions, setAbscondActions] = useState({});
   useEffect(() => {
-    if (tab !== "dashboard") return;
+    if (tab !== "dashboard" && tab !== "payrollReports") return;
     if (!window.BOA_DB || !window.BOA_DB.loadAbscondActions) return;
     let cancelled = false;
     window.BOA_DB.loadAbscondActions().then(m => { if (!cancelled) setAbscondActions(m || {}); });
@@ -20965,6 +20965,43 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700, marginBottom: 4 }}>📈 Attendance Reports</div>
               <div style={{ fontSize: 12, color: "#9d4d6e" }}>Who misses the most work, who attends best, and recurring patterns (Monday / weekend / month-end clusters) that flag possible sick-leave abuse. Annual leave &amp; maternity are never counted as missed days.</div>
             </div>
+
+            {/* Abscond / absence cases that were "marked done" on the dashboard
+                warning. They aren't deleted — they're surfaced here so payroll
+                can see the case is being handled (disciplinary, replacement…)
+                instead of silently disappearing. Re-appears on the dashboard if
+                the person misses again after the actioned date. */}
+            {(() => {
+              const acts = Object.entries(abscondActions || {}).filter(([, a]) => a && (a.note || a.throughYmd || a.by));
+              if (acts.length === 0) return null;
+              const mgrEcs = new Set((managers || []).map(m => String(m.ec || "").trim()).filter(Boolean));
+              const byEc = {};
+              (staff || []).concat(managers || []).forEach(p => { if (p && p.ec) byEc[String(p.ec).trim()] = p; });
+              const _fmt = ymd => { if (!ymd) return ""; try { return new Date(String(ymd).slice(0, 10) + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }); } catch (_) { return ymd; } };
+              const rows = acts.map(([ec, a]) => {
+                const p = byEc[String(ec).trim()] || {};
+                return { ec, name: p.name || ec, branch: p.branch || "—", role: mgrEcs.has(String(ec).trim()) ? "Manager" : "Nail tech", note: a.note || "", by: a.by || "", at: a.at || "", throughYmd: a.throughYmd || "" };
+              }).sort((x, y) => (y.at || "").localeCompare(x.at || ""));
+              return (
+                <div style={{ background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 12, padding: "14px 16px", marginBottom: 16 }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "#92400e", letterSpacing: "0.04em", marginBottom: 4 }}>🛠️ ABSCOND / ABSENCE CASES BEING DEALT WITH · {rows.length}</div>
+                  <div style={{ fontSize: 11, color: "#9d4d6e", marginBottom: 10 }}>Marked done on the dashboard warning — kept here so payroll can see the case is in hand. It re-appears on the dashboard if the person misses again.</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {rows.map((r, i) => (
+                      <div key={r.ec + i} style={{ background: "#fff", border: "1px solid #fde68a", borderRadius: 9, padding: "9px 12px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{r.name} <span style={{ color: "#9d4d6e", fontWeight: 600, fontSize: 11 }}>· 📍 {r.branch} · {r.role}</span></div>
+                          {r.note && <div style={{ fontSize: 12, color: "#7c2d12", marginTop: 3 }}>“{r.note}”</div>}
+                          <div style={{ fontSize: 10.5, color: "#9ca3af", marginTop: 3 }}>{r.by ? "by " + r.by : ""}{r.at ? (r.by ? " · " : "") + _fmt(r.at) : ""}{r.throughYmd ? " · covers up to " + _fmt(r.throughYmd) : ""}</div>
+                        </div>
+                        <button onClick={() => { if (window.confirm("Reopen " + r.name + "'s warning? It returns to the dashboard for action.")) clearAbscondDone(r.ec); }}
+                          style={{ background: "#fff", color: "#92400e", border: "1px solid #fcd34d", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>↩ Reopen</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* View toggle: snapshot vs multi-cycle trend */}
             <div style={{ display: "flex", gap: 6, marginBottom: 14, borderBottom: "1px solid #FBCFE8", paddingBottom: 12 }}>
