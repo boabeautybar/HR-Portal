@@ -17,15 +17,15 @@ It's a standalone static site that only talks to Supabase (no build step).
 | `schedule.html` / `schedule.js` | Schedule viewer. |
 | `report.html` / `report.js`     | Incident report form. |
 | `leave.html` / `leave.js`       | Annual (holiday) leave request form (capped at 21 days). |
-| `sick.html` / `sick.js`         | Sick leave request form (sick-note options + optional note upload). |
-| `absence.html` / `absence.js`   | Call in sick / mark absent — today/future only, description + optional proof. |
+| `absence.html` / `absence.js`   | Call in sick / mark absent — today or tomorrow only, description + optional proof (sick note etc.). |
 | `boa-logo.png`, `BOA.png`       | Brand wordmark + favicon. |
 
-All leave/absence forms submit through the same `submit_leave_request` RPC and
-land in the portal's **Leave Requests** tab, tagged `Annual`, `Sick` or
-`Absent`, where HR reviews (approve / decline) them.
+Both forms submit through the same `submit_leave_request` RPC and land in the
+portal's **Leave Requests** tab, tagged `Annual` or `Absent`, where HR reviews
+(approve / decline) them. Absences for today/tomorrow also surface on the
+**Called in Sick** tab (Operations).
 
-**Attachments:** sick notes and absence proof upload to a public Supabase
+**Attachments:** the absence proof / sick note uploads to a public Supabase
 Storage bucket — run `sql/staff_uploads.sql` once to create it. The file link is
 saved on the request and is clickable in the portal.
 

@@ -2,7 +2,8 @@
    My BOA — Annual leave request form (staff & managers, own phone).
    Standalone page reached from the My BOA hub. Submits an annual
    (holiday) leave request that HR reviews in the portal's Leave
-   Requests tab. Sick leave has its own page (sick.html / sick.js).
+   Requests tab. Calling in sick / marking absent has its own page
+   (absence.html / absence.js).
    Insert-only via submit_leave_request RPC — cannot read others.
    ============================================================ */
 (function () {
@@ -30,7 +31,7 @@
     root.innerHTML = [
       '<div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>',
       '<h1>Request annual leave</h1>',
-      '<p class="sub">Send an annual (holiday) leave request to HR. You\'ll get a reference number. <br/>For sick leave, use the Sick leave option on My BOA.</p>',
+      '<p class="sub">Send an annual (holiday) leave request to HR. You\'ll get a reference number. <br/>Off sick or can\'t come in? Use "Call in sick / Mark absent" on My BOA.</p>',
       '<div class="card">',
         '<label class="field"><span>Your name</span>',
           '<input type="text" id="name" placeholder="First and last name" /></label>',
