@@ -489,14 +489,16 @@
         }
       } catch (_) {}
 
-      // Don't nag anyone who's on approved emergency leave today — that's a
-      // "no action required" day, surfaced separately on the home screen.
-      var emergLeave = await _onLeaveEcsToday(true);
+      // Don't nag anyone who's on approved leave today — annual OR emergency.
+      // A leave day is "no action required", not a missed clock-in. (The
+      // schedule grid often still shows a working code because leave lives in
+      // the Leave Calendar, so we must check leave records, not the grid.)
+      var onLeave = await _onLeaveEcsToday(false);
 
       var missing = hereMgrs.filter(function (m) {
         var ec = String(m.employee_code || "").trim();
         if (!isWorking(schedByEc[ec])) return false;     // not scheduled today
-        if (emergLeave[ec] === "el") return false;       // on emergency leave
+        if (onLeave[ec]) return false;                   // on approved leave (annual or emergency)
         if (clockedInEcs[ec]) return false;              // already in
         if (taggedStaffIds[m.id]) return false;          // ROM explained
         return true;
@@ -1188,7 +1190,7 @@
     document.getElementById("back-home").onclick = renderManagerLanding;
     document.getElementById("mc-refresh").onclick = renderMgrClockin;
 
-    var pins, mgrs, recent, smTrialEcs, trialCand, mgrTaggedStaffIds = {};
+    var pins, mgrs, recent, smTrialEcs, trialCand, mgrTaggedStaffIds = {}, mgrOnLeaveToday = {};
     var schedByEcYmd = {};
     // Resolve current + previous cycle ym (25th-of-month convention) up
     // front so we can fire the schedule loads in parallel below.
@@ -1257,12 +1259,14 @@
         window.APP_DATA.listRecentManagerClockins(2, _mgrIds),
         window.APP_DATA.getSchedule ? window.APP_DATA.getSchedule(_curEndYm, "mgr").catch(function () { return null; }) : Promise.resolve(null),
         window.APP_DATA.getSchedule ? window.APP_DATA.getSchedule(_prevEndYm, "mgr").catch(function () { return null; }) : Promise.resolve(null),
-        window.APP_DATA.listManagerDayStatusesToday ? window.APP_DATA.listManagerDayStatusesToday().catch(function () { return []; }) : Promise.resolve([])
+        window.APP_DATA.listManagerDayStatusesToday ? window.APP_DATA.listManagerDayStatusesToday().catch(function () { return []; }) : Promise.resolve([]),
+        _onLeaveEcsToday(false).catch(function () { return {}; })   // ec → al/el on approved leave today
       ]);
       recent = _stage2[0];
       _ingestSched(_curCycleYm, _stage2[1]);
       _ingestSched(_prevCycleYm, _stage2[2]);
       (_stage2[3] || []).forEach(function (r) { if (r && r.staff_id) mgrTaggedStaffIds[r.staff_id] = true; });
+      mgrOnLeaveToday = _stage2[4] || {};
     } catch (e) {
       document.getElementById("mc-body").innerHTML =
         '<div class="warn">Could not load: ' + esc(e.message || e) + '</div>';
@@ -1386,13 +1390,22 @@
         lastLabel += ' <span class="pill pill-mute">clocked in ' + fmtTime(inTodayByEc[ec].ts) + '</span>';
       }
       var autoBadge = autoYesterday[ec] ? ' <span class="pill" style="background:#fee2e2;color:#7f1d1d">⚠ auto-out yesterday</span>' : "";
-      // Blinking nag: scheduled, no clock-in today, not ROM-tagged, past
-      // the warning cutoff time. Only nag for THIS branch's managers.
+      // On approved leave today (annual or emergency) → no clock-in expected,
+      // so show a calm pill and never nag. The schedule grid often still
+      // carries a working code (W) because leave is recorded in the Leave
+      // Calendar rather than re-written onto the grid.
+      var _onLeaveCode = mgrOnLeaveToday[ec];
+      var _leaveBadge = _onLeaveCode
+        ? ' <span class="pill" style="background:#dbeafe;color:#1e3a8a">🌴 on leave today' + (_onLeaveCode === "el" ? " (emergency)" : "") + '</span>'
+        : "";
+      // Blinking nag: scheduled, no clock-in today, not ROM-tagged, not on
+      // leave, past the warning cutoff time. Only nag for THIS branch's managers.
       var _nagBadge = "";
       if (m.branch === thisBranch
           && _pastWarnCutoff
           && !inTodayByEc[ec]
           && _isWorkingCode(mgrTodaySched[ec])
+          && !_onLeaveCode
           && !mgrTaggedStaffIds[m.id]) {
         _nagBadge = ' <span class="mgr-clockin-nag" title="No clock-in recorded yet today. No clock-in = unpaid day. Clock in now, or ask the ROM to tag the absence reason.">⚠ HAVEN\'T CLOCKED IN</span>';
       }
@@ -1404,7 +1417,7 @@
       var _schedCodeToday = mgrTodaySched[ec];
       var _isWorkingToday = _schedCodeToday === "W" || _schedCodeToday === "WL" || _schedCodeToday === "WE" || _schedCodeToday === "WM" || _schedCodeToday === "WB" || _schedCodeToday === "E";
       var shiftLine = "";
-      if (m.branch === thisBranch && _isWorkingToday) {
+      if (m.branch === thisBranch && _isWorkingToday && !_onLeaveCode) {
         var _effRole = onSmTrial ? "SM" : (m.role || "");
         var _hrs = shiftTimes(_effRole, _schedCodeToday, thisBranch, _todayDow);
         shiftLine = '<div class="staff-shift-hours" style="font-size:11px;color:var(--pink-700);font-weight:700;letter-spacing:0.02em;margin-top:2px">🕐 Today · ' + esc(_hrs) + '</div>';
@@ -1414,7 +1427,7 @@
         '<div class="staff-name">' + esc(m.name) +
         rolePill +
         (m.branch !== thisBranch ? ' <span class="pill pill-mute">' + esc(m.branch || "—") + "</span>" : "") +
-        (has ? "" : ' <span class="pill pill-warn">NO PIN</span>') + autoBadge + _nagBadge +
+        (has ? "" : ' <span class="pill pill-warn">NO PIN</span>') + autoBadge + _leaveBadge + _nagBadge +
         '</div>' +
         shiftLine +
         '<div class="staff-code" style="margin-top:3px">' + lastLabel + '</div>' +
