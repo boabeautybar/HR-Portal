@@ -72,6 +72,26 @@ begin
   if p_start_date is null or p_end_date is null then raise exception 'dates required'; end if;
   if p_end_date < p_start_date then raise exception 'end before start'; end if;
 
+  -- Block double sick/absent marks: you can only call in once for a given day.
+  -- Only applies to Sick/Absent marks (not planned Annual leave). Rejects when
+  -- the same person (employee code, or name when no code) already has a
+  -- Sick/Absent mark whose dates overlap these ones, regardless of status. The
+  -- absence form turns the 'duplicate_request' message into a friendly notice.
+  if btrim(coalesce(p_leave_type, '')) in ('Sick', 'Absent') then
+    if exists (
+      select 1 from leave_requests
+      where leave_type in ('Sick', 'Absent')
+        and start_date <= p_end_date
+        and end_date   >= p_start_date
+        and case
+          when nullif(btrim(p_ec), '') is not null then ec = nullif(btrim(p_ec), '')
+          else lower(btrim(name)) = lower(btrim(p_name))
+        end
+    ) then
+      raise exception 'duplicate_request';
+    end if;
+  end if;
+
   v_ref := 'LV-' || to_char(now() at time zone 'Africa/Johannesburg', 'YYMMDD')
            || '-' || upper(substr(md5(random()::text), 1, 4));
 
