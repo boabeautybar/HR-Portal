@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <meta name="robots" content="noindex,nofollow" />
-<title>My BOA · Request Annual Leave</title>
+<title>My BOA · Call in sick / Mark absent</title>
 <meta name="theme-color" content="#BE185D" />
 <link rel="icon" type="image/png" href="BOA.png" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -43,6 +43,20 @@ window.BOA_SUPABASE_CONFIG = {
   .row2 { display:flex; gap:12px; }
   .row2 > label { flex:1; }
   .span { background:#fdf2f8; border:1px solid #f9a8d4; border-radius:10px; padding:9px 12px; font-size:13px; color:var(--deep); font-weight:600; margin-bottom:16px; }
+  .note { background:#fff7fb; border:1px solid #f6c9dd; border-radius:12px; padding:12px 14px; font-size:12.5px; line-height:1.5; color:#83476a; margin-bottom:16px; }
+  .note b { color:#9d174d; }
+  .note .lead { font-weight:700; color:#9d174d; }
+  .note details { margin-top:8px; }
+  .note summary { cursor:pointer; font-weight:700; color:#be185d; font-size:12px; list-style:none; outline:none; }
+  .note summary::-webkit-details-marker { display:none; }
+  .note summary::after { content:" ▾"; }
+  .note details[open] summary::after { content:" ▴"; }
+  .note ul { margin:8px 0 0; padding:0; list-style:none; }
+  .note li { padding:6px 0; border-top:1px solid #f6c9dd; }
+  .note li:first-child { border-top:none; }
+  .ack { display:flex; align-items:flex-start; gap:10px; background:#fdf2f8; border:1.5px solid #f9a8d4; border-radius:12px; padding:12px 14px; margin-bottom:16px; cursor:pointer; }
+  .ack input { width:20px; height:20px; flex:0 0 20px; margin-top:1px; accent-color:var(--pink); }
+  .ack span { font-size:13px; color:var(--deep); font-weight:600; line-height:1.4; }
   .submit { width:100%; border:none; border-radius:14px; cursor:pointer; background:var(--pink); color:#fff;
     font-family:"Outfit",sans-serif; font-weight:800; font-size:17px; padding:16px; box-shadow:0 6px 16px rgba(190,24,93,.28); }
   .submit:disabled { opacity:.55; box-shadow:none; }
@@ -60,11 +74,11 @@ window.BOA_SUPABASE_CONFIG = {
   <div class="wrap"><a class="back" href="index.html">‹ My BOA</a></div>
   <div class="wrap" id="root">
     <div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>
-    <h1>Request annual leave</h1>
+    <h1>Call in sick / Mark absent</h1>
     <p class="sub">Loading…</p>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-  <script src="leave.js"></script>
+  <script src="absence.js"></script>
 </body>
 </html>

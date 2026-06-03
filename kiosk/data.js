@@ -289,6 +289,48 @@
     return (res.data || []).filter(function (s) { return s && s.branch !== toBranch; });
   }
 
+  // Read-only: who called in sick / absent for TODAY via My BOA, scoped to the
+  // people expected at THIS branch today — home-branch staff who weren't loaned
+  // out, plus anyone loaned IN to us today. Uses the public list_called_in_today()
+  // RPC (anon-safe; returns names only, no reason/proof). The kiosk only shows
+  // this; it cannot review or change anything (that's for regional managers).
+  async function calledInTodayForBranch() {
+    var c = client(); if (!c) return [];
+    var res;
+    try { res = await c.rpc("list_called_in_today"); }
+    catch (e) { console.error("calledInToday rpc:", e); return []; }
+    if (res.error) { console.error("calledInToday:", res.error); return []; }
+    var rows = (res.data || []).filter(function (r) { return r && r.name; });
+    if (!rows.length) return [];
+    var today = isoDate(new Date());
+    var ecs = rows.map(function (r) { return r.ec; }).filter(Boolean);
+    var staffRows = await _fetchStaffByEcs(ecs);
+    var byEc = {};
+    staffRows.forEach(function (s) { if (s && s.employee_code) byEc[String(s.employee_code).trim()] = s; });
+    var loans = await listTechLoans(today);
+    var loanByEc = {};
+    (loans || []).forEach(function (l) { if (l && l.ec) loanByEc[String(l.ec).trim()] = l; });
+    var thisBranch = branch();
+    var out = [];
+    rows.forEach(function (r) {
+      var ec = r.ec ? String(r.ec).trim() : "";
+      var s = ec ? byEc[ec] : null;
+      var home = (s && s.branch) || r.store || "";
+      var loan = ec ? loanByEc[ec] : null;
+      var workBranch = (loan && loan.toBranch) ? loan.toBranch : home;     // home, or borrowed-to
+      if (workBranch !== thisBranch) return;
+      out.push({
+        name: r.name,
+        ec: ec,
+        type: r.leave_type === "Sick" ? "sick" : "absent",
+        role: isManagerRow(s) ? "manager" : "tech",
+        borrowed: !!loan
+      });
+    });
+    out.sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
+    return out;
+  }
+
   async function categorizeStaff(refDate, opts) {
     var refIso = isoDate(refDate || new Date());
     var monthStart = _firstOfMonthIso(refDate || new Date());
@@ -1379,6 +1421,7 @@
     branch: branch, branchDisplay: branchDisplay, todayStr: todayStr,
     listStaff: listStaff, listMaternity: listMaternity, listLeaveRecords: listLeaveRecords, loadOffboarding: loadOffboarding,
     listTechLoans: listTechLoans, saveTechLoan: saveTechLoan, listStaffAllBranches: listStaffAllBranches,
+    calledInTodayForBranch: calledInTodayForBranch,
     listTransfersInto: listTransfersInto,
     listKioskReminders: listKioskReminders,
     listTrialCandidates: listTrialCandidates,

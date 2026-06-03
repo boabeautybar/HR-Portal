@@ -7055,6 +7055,7 @@ const SETTINGS_TABS = [
   { t: "dashSecurityAlerts", l: "Security Alerts", cat: "Home/Dashboard", icon: "🚨" },
   { t: "dashHrActions", l: "HR Actions & Tasks", cat: "Home/Dashboard", icon: "📝" },
   { t: "dashMgrAbsences", l: "Manager Absences (Action required)", cat: "Home/Dashboard", icon: "📌" },
+  { t: "dashCalledInSick", l: "Called in Sick / Absent (today & tomorrow)", cat: "Home/Dashboard", icon: "🤒" },
   { t: "dashAbscond", l: "Abscond / Absence Warnings", cat: "Home/Dashboard", icon: "🚨" },
   { t: "staff", l: "Staff List", cat: "People", icon: "👥" },
   { t: "onboard", l: "Onboarding", cat: "People", icon: "🌱" },
@@ -7072,6 +7073,7 @@ const SETTINGS_TABS = [
   { t: "mgrclockins", l: "Manager Check-ins", cat: "Operations", icon: "🕐" },
   { t: "leave", l: "Leave Planner", cat: "Operations", icon: "🌴" },
   { t: "leaveRequests", l: "Leave Requests", cat: "Operations", icon: "📨" },
+  { t: "calledInSick", l: "Called in Sick", cat: "Operations", icon: "🤒" },
   { t: "storeOpenings", l: "Store Openings", cat: "Operations", icon: "🔓" },
   { t: "movements", l: "Today's Movements", cat: "Operations", icon: "🔀" },
   { t: "dailyTasks", l: "Daily Tasks", cat: "Operations", icon: "📋" },
@@ -8676,9 +8678,18 @@ function IncidentPopup({ reports, onView, onDismiss }) {
 // Submitted from My BOA (leave.html); reviewed here. Same key-gated RPCs as
 // incidents (sql/leave_requests.sql). Visible to Owner / HR / senior ops.
 const LEAVE_TYPE = {
-  Annual: "Annual leave", Sick: "Sick leave", Family: "Family responsibility",
-  Unpaid: "Unpaid leave", Other: "Other"
+  Annual: "Annual leave", Sick: "Sick", Family: "Family responsibility",
+  Unpaid: "Unpaid leave", Absent: "Absent (other reason)", Other: "Other"
 };
+// Render free-text (e.g. a request reason) with any http(s) links — sick notes
+// / absence proof uploaded from My BOA — turned into clickable anchors.
+function linkifyText(text) {
+  return String(text == null ? "" : text).split(/(https?:\/\/[^\s]+)/g).map((p, i) =>
+    /^https?:\/\//.test(p)
+      ? <a key={i} href={p} target="_blank" rel="noopener noreferrer" style={{ color: "#BE185D", fontWeight: 600, wordBreak: "break-all" }}>{p}</a>
+      : p
+  );
+}
 const LEAVE_STATUS = {
   pending:  { label: "Pending",  color: "#b45309", bg: "#fef3c7" },
   approved: { label: "Approved", color: "#15803d", bg: "#dcfce7" },
@@ -8688,6 +8699,70 @@ function leaveDays(s, e) {
   if (!s || !e) return 0;
   try { return Math.round((new Date(e + "T00:00:00") - new Date(s + "T00:00:00")) / 86400000) + 1; }
   catch (_e) { return 0; }
+}
+
+// People who used the My BOA "Call in sick / Mark absent" tile — either sick
+// (leave_type "Sick") or absent for another reason ("Absent") — whose
+// away-period overlaps today or tomorrow.
+function calledInSickWindow(requests) {
+  const ymd = (x) => x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0");
+  const today = ymd(new Date());
+  const t2 = new Date(); t2.setDate(t2.getDate() + 1);
+  const tomorrow = ymd(t2);
+  const list = (requests || []).filter(r =>
+    r && (r.leave_type === "Sick" || r.leave_type === "Absent") && r.start_date && r.end_date &&
+    r.start_date <= tomorrow && r.end_date >= today);
+  return { today, tomorrow, list };
+}
+
+// Operations board: who's called in sick / absent for today & tomorrow.
+function CalledInSickTab({ requests }) {
+  const card = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 18px", marginBottom: 12 };
+  const chip = (c) => ({ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: c.color, background: c.bg });
+  const { today, tomorrow, list } = calledInSickWindow(requests);
+
+  const sect = (label, ymd) => {
+    const rows = list.filter(r => r.start_date <= ymd && r.end_date >= ymd)
+      .sort((a, b) => (a.store || "").localeCompare(b.store || "") || (a.name || "").localeCompare(b.name || ""));
+    return (
+      <div style={{ marginBottom: 22 }}>
+        <h3 style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 16, color: "#831843", margin: "0 0 10px" }}>
+          {label} · {fmtIncidentDate(ymd)}
+          <span style={{ color: "#9d6a82", fontWeight: 600 }}> · {rows.length} {rows.length === 1 ? "person" : "people"}</span>
+        </h3>
+        {rows.length === 0 && <div style={{ ...card, textAlign: "center", color: "#9d6a82" }}>Nobody’s called in.</div>}
+        {rows.map(r => {
+          const st = LEAVE_STATUS[r.status] || LEAVE_STATUS.pending;
+          return (
+            <div key={r.id} style={card}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                {!r.reviewed && <span style={{ width: 9, height: 9, borderRadius: 999, background: "#BE185D", display: "inline-block" }} title="Not yet opened in Leave Requests" />}
+                <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
+                <span style={chip(r.leave_type === "Sick" ? { color: "#b45309", bg: "#fef3c7" } : { color: "#6b21a8", bg: "#ede9fe" })}>{LEAVE_TYPE[r.leave_type] || r.leave_type}</span>
+                {r.store && <span style={chip({ color: "#075985", bg: "#e0f2fe" })}>{r.store}</span>}
+                {r.ec && <span style={{ color: "#9ca3af", fontSize: 12 }}>{r.ec}</span>}
+                <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(r.start_date)}{r.end_date !== r.start_date ? " → " + fmtIncidentDate(r.end_date) : ""}</span>
+                <span style={{ marginLeft: "auto", ...chip(st) }}>{st.label}</span>
+              </div>
+              {r.reason && <div style={{ marginTop: 8, fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{linkifyText(r.reason)}</div>}
+              <div style={{ marginTop: 6, fontSize: 11, color: "#9d6a82" }}>Ref {r.ref_code} · {fmtIncidentTime(r.created_at)}{r.contact ? " · " + r.contact : ""}</div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#831843", margin: 0 }}>🤒 Called in Sick</h2>
+      <p style={{ color: "#9d6a82", fontSize: 13.5, margin: "6px 0 18px", maxWidth: 640 }}>
+        Team members who called in sick or marked themselves absent from My BOA for today or tomorrow. Record the reason for their absence in the Manager Check-ins tab or on the Manager Coverage overview.
+      </p>
+      {sect("Today", today)}
+      {sect("Tomorrow", tomorrow)}
+    </div>
+  );
 }
 
 function LeaveRequestsTab({ requests, setRequests, currentUser }) {
@@ -8802,7 +8877,7 @@ function LeaveRequestsTab({ requests, setRequests, currentUser }) {
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Requested</span><span>{fmtIncidentTime(r.created_at)}</span>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Employee code</span><span>{r.ec || "—"}</span>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Contact</span><span>{r.contact || "—"}</span>
-                  {r.reason && (<><span style={{ color: "#9d6a82", fontWeight: 700 }}>Reason</span><span style={{ whiteSpace: "pre-wrap" }}>{r.reason}</span></>)}
+                  {r.reason && (<><span style={{ color: "#9d6a82", fontWeight: 700 }}>Reason</span><span style={{ whiteSpace: "pre-wrap" }}>{linkifyText(r.reason)}</span></>)}
                 </div>
 
                 {r.status !== "pending" && r.decided_by && (
@@ -12575,6 +12650,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const pend = leaveRequests.filter(r => r.status === "pending").length;
                     return { t: "leaveRequests", l: "📨 Leave Requests" + (pend ? "  (" + pend + ")" : "") };
                   })()] : []),
+                  ...(canSeeIncidents(currentUser) ? [(() => {
+                    const n = calledInSickWindow(leaveRequests).list.length;
+                    return { t: "calledInSick", l: "🤒 Called in Sick" + (n ? "  (" + n + ")" : "") };
+                  })()] : []),
                   { t: "storeOpenings", l: "🔓 Store Openings" },
                   { t: "movements", l: "🔀 Today's Movements" },
                   { t: "dailyTasks", l: "📋 Daily Tasks" },
@@ -13598,6 +13677,53 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           ))}
                         </div>
                       ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* ── SECTION: CALLED IN SICK / ABSENT (today & tomorrow) ──
+                  Overview of team members who called in via My BOA. Read-only
+                  summary; click through to the Called in Sick tab for details. */}
+              {!(new Set(currentUser?.hideTabs || []).has("dashCalledInSick")) && canSeeIncidents(currentUser) && (() => {
+                const { today, tomorrow, list } = calledInSickWindow(leaveRequests);
+                if (!list.length) return null;
+                const todayList = list.filter(r => r.start_date <= today && r.end_date >= today);
+                const tomorrowList = list.filter(r => r.start_date <= tomorrow && r.end_date >= tomorrow);
+                const typeChip = (t) => ({ display: "inline-flex", padding: "1px 8px", borderRadius: 999, fontSize: 10.5, fontWeight: 700,
+                  color: t === "Sick" ? "#b45309" : "#6b21a8", background: t === "Sick" ? "#fef3c7" : "#ede9fe" });
+                const row = (r) => (
+                  <div key={r.id} onClick={() => tryChangeTab("calledInSick")}
+                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderTop: "1px dashed #FBCFE8", cursor: "pointer" }}>
+                    <span style={{ fontSize: 12.5, fontWeight: 700, color: "#831843" }}>{r.name}</span>
+                    <span style={typeChip(r.leave_type)}>{LEAVE_TYPE[r.leave_type] || r.leave_type}</span>
+                    {r.store && <span style={{ fontSize: 11, color: "#9d6a82" }}>· {r.store}</span>}
+                  </div>
+                );
+                const sentence = [
+                  todayList.length ? todayList.length + " for today" : null,
+                  tomorrowList.length ? tomorrowList.length + " for tomorrow" : null
+                ].filter(Boolean).join(" · ");
+                return (
+                  <div style={{ background: "linear-gradient(135deg,#fff7fb 0%,#FFFFFF 70%)", border: "2px solid #f6c9dd", borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: "0 4px 16px rgba(190,24,93,0.08)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: "#9d174d" }}>🤒 Called in sick / absent</div>
+                      <div style={{ fontSize: 12.5, color: "#83476a", fontWeight: 700 }}>{sentence}</div>
+                      <div style={{ flex: 1 }} />
+                      <button onClick={() => tryChangeTab("calledInSick")}
+                        style={{ background: "#fff", color: "#9d174d", border: "1px solid #f6c9dd", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
+                        Open Called in Sick →
+                      </button>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 8 }}>
+                      <div style={{ background: "#fff", border: "1px solid #f6c9dd", borderRadius: 10, padding: "8px 12px" }}>
+                        <div style={{ fontSize: 11, fontWeight: 800, color: "#9d174d", letterSpacing: "0.04em", marginBottom: 2 }}>TODAY · {todayList.length}</div>
+                        {todayList.length ? todayList.map(row) : <div style={{ fontSize: 12, color: "#9d6a82", paddingTop: 4 }}>Nobody called in.</div>}
+                      </div>
+                      <div style={{ background: "#fff", border: "1px solid #f6c9dd", borderRadius: 10, padding: "8px 12px" }}>
+                        <div style={{ fontSize: 11, fontWeight: 800, color: "#9d174d", letterSpacing: "0.04em", marginBottom: 2 }}>TOMORROW · {tomorrowList.length}</div>
+                        {tomorrowList.length ? tomorrowList.map(row) : <div style={{ fontSize: 12, color: "#9d6a82", paddingTop: 4 }}>Nobody called in.</div>}
+                      </div>
                     </div>
                   </div>
                 );
@@ -16339,6 +16465,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         {/* ── LEAVE REQUESTS TAB ── */}
         {tab === "leaveRequests" && canSeeIncidents(currentUser) && (
           <LeaveRequestsTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} />
+        )}
+
+        {/* ── CALLED IN SICK TAB ── */}
+        {tab === "calledInSick" && canSeeIncidents(currentUser) && (
+          <CalledInSickTab requests={leaveRequests} />
         )}
 
         {/* ── ALERTS TAB ── */}

@@ -48,6 +48,7 @@
   .tile.sched .ic { background: #e0f2fe; }
   .tile.incident .ic { background: #fee2e2; }
   .tile.leave .ic { background: #dcfce7; }
+  .tile.absent .ic { background: #fef3c7; }
   .tile.soon { opacity: .65; cursor: default; }
   .tile.soon .arr { font-size: 11px; font-weight: 700; color: #b58aa0; background:#f7e7ee; padding:3px 8px; border-radius:999px; }
   .foot { text-align: center; font-size: 11.5px; color: #bf94a5; margin-top: 24px; }
@@ -73,7 +74,13 @@
 
     <a class="tile leave" href="leave.html">
       <div class="ic">🌴</div>
-      <div class="tx"><div class="t">Request leave</div><div class="d">Send a leave request to HR</div></div>
+      <div class="tx"><div class="t">Request annual leave</div><div class="d">Holiday / annual leave — sent to HR</div></div>
+      <div class="arr">›</div>
+    </a>
+
+    <a class="tile absent" href="absence.html">
+      <div class="ic">🤒</div>
+      <div class="tx"><div class="t">Call in sick / Mark absent</div><div class="d">Notify management if you're unable to work today or tomorrow — illness or another reason</div></div>
       <div class="arr">›</div>
     </a>
 

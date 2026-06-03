@@ -1,7 +1,9 @@
 /* ============================================================
-   My BOA — Leave request form (staff & managers, own phone).
-   Standalone page reached from the My BOA hub. Submits a leave
-   request that HR reviews in the portal's Leave Requests tab.
+   My BOA — Annual leave request form (staff & managers, own phone).
+   Standalone page reached from the My BOA hub. Submits an annual
+   (holiday) leave request that HR reviews in the portal's Leave
+   Requests tab. Calling in sick / marking absent has its own page
+   (absence.html / absence.js).
    Insert-only via submit_leave_request RPC — cannot read others.
    ============================================================ */
 (function () {
@@ -19,13 +21,7 @@
     "Green Point", "Plumstead", "Sandown", "Cape Gate", "Winelands", "Betty",
     "Fourways", "Eastgate", "Mall of the South", "Mushroom Farm", "Verdi", "Ballito"
   ];
-  var TYPES = [
-    { v: "Annual", l: "Annual leave (holiday)" },
-    { v: "Sick", l: "Sick leave" },
-    { v: "Family", l: "Family responsibility" },
-    { v: "Unpaid", l: "Unpaid leave" },
-    { v: "Other", l: "Other" }
-  ];
+  var MAX_DAYS = 21; // annual leave requests longer than this must go via HR.
 
   var state = { busy: false };
 
@@ -34,8 +30,8 @@
     try { saved = JSON.parse(localStorage.getItem("myboa_sched_v1") || "{}"); } catch (_e) {}
     root.innerHTML = [
       '<div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>',
-      '<h1>Request leave</h1>',
-      '<p class="sub">Send a leave request to HR. You\'ll get a reference number.</p>',
+      '<h1>Request annual leave</h1>',
+      '<p class="sub">Send an annual (holiday) leave request to HR. You\'ll get a reference number. <br/>Off sick or can\'t come in? Use "Call in sick / Mark absent" on My BOA.</p>',
       '<div class="card">',
         '<label class="field"><span>Your name</span>',
           '<input type="text" id="name" placeholder="First and last name" /></label>',
@@ -47,14 +43,12 @@
           '<label class="field"><span>Employee code <em style="font-weight:400;color:#a07487">(if you know)</em></span>',
             '<input type="text" id="ec" autocapitalize="characters" autocomplete="off" placeholder="e.g. B379" value="' + esc(saved.ec || "") + '" /></label>',
         '</div>',
-        '<label class="field"><span>Type of leave</span>',
-          '<select id="ltype">',
-            TYPES.map(function (t) { return '<option value="' + t.v + '">' + esc(t.l) + '</option>'; }).join(""),
-          '</select></label>',
         '<div class="row2">',
           '<label class="field"><span>From</span><input type="date" id="start" /></label>',
           '<label class="field"><span>To</span><input type="date" id="end" /></label>',
         '</div>',
+        '<label class="field"><span>Back at work</span><input type="date" id="back" />',
+          '<span class="hint">First day back — defaults to the day after your last day of leave.</span></label>',
         '<div class="span" id="span" style="display:none"></div>',
         '<label class="field"><span>Reason / notes <em style="font-weight:400;color:#a07487">(optional)</em></span>',
           '<textarea id="reason" placeholder="Anything HR should know."></textarea></label>',
@@ -76,11 +70,19 @@
       if (s && e && e >= s) {
         var days = Math.round((new Date(e) - new Date(s)) / 86400000) + 1;
         box.style.display = "block";
-        box.textContent = "🌴 " + days + " day" + (days === 1 ? "" : "s") + " (" + fmt(s) + " → " + fmt(e) + ")";
+        var over = days > MAX_DAYS;
+        box.style.color = over ? "#b91c1c" : "";
+        box.style.borderColor = over ? "#fca5a5" : "";
+        box.style.background = over ? "#fef2f2" : "";
+        var back = $("back").value;
+        box.textContent = (over ? "⚠️ " : "🌴 ") + days + " day" + (days === 1 ? "" : "s") + " (" + fmt(s) + " → " + fmt(e) + ")"
+          + (back && back > e ? " · back " + fmt(back) : "")
+          + (over ? " — over the " + MAX_DAYS + "-day limit" : "");
       } else { box.style.display = "none"; }
     };
     $("start").onchange = function () { if (!$("end").value) $("end").value = this.value; upd(); };
-    $("end").onchange = upd;
+    $("end").onchange = function () { if (this.value && (!$("back").value || $("back").value <= this.value)) $("back").value = nextDay(this.value); upd(); };
+    $("back").onchange = upd;
     $("submit").onclick = submit;
   }
 
@@ -95,16 +97,24 @@
     if (!store) { setErr("Please choose your store."); return; }
     if (!start || !end) { setErr("Please choose both dates."); return; }
     if (end < start) { setErr("The 'To' date can't be before the 'From' date."); return; }
+    var days = Math.round((new Date(end) - new Date(start)) / 86400000) + 1;
+    if (days > MAX_DAYS) { setErr("Annual leave requests are limited to " + MAX_DAYS + " days. Please speak to HR for anything longer."); return; }
+    var back = $("back").value;
+    if (!back) { setErr("Please choose the date you'll be back at work."); return; }
+    if (back <= end) { setErr("The 'Back at work' date must be after your last day of leave."); return; }
+
+    var notes = ($("reason").value || "").trim();
+    var reason = "Back at work: " + fmt(back) + (notes ? "\n" + notes : "");
 
     var payload = {
       p_store: store,
       p_ec: ($("ec").value || "").trim() || null,
       p_name: name,
       p_contact: ($("contact").value || "").trim() || null,
-      p_leave_type: $("ltype").value || "Annual",
+      p_leave_type: "Annual",
       p_start_date: start,
       p_end_date: end,
-      p_reason: ($("reason").value || "").trim() || null
+      p_reason: reason
     };
 
     state.busy = true; $("submit").disabled = true; $("submit").textContent = "Sending…";
@@ -132,6 +142,8 @@
   }
 
   function setErr(m) { var e = document.getElementById("err"); if (e) e.textContent = m || ""; }
+  function nextDay(ymd) { try { var d = new Date(ymd + "T00:00:00"); d.setDate(d.getDate() + 1);
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); } catch (_e) { return ""; } }
   function fmt(d) { try { return new Date(d + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }); } catch (_e) { return d; } }
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {

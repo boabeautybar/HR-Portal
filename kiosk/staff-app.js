@@ -118,6 +118,7 @@
         '<div class="hero-brand">' + esc(cfg.branchDisplayName || cfg.branchName || "BOA Check-in") + '</div>' +
         '<div class="hero-title">What would you like to do?</div>' +
       '</div>' +
+      '<div id="sick-today-slot"></div>' +
       '<div id="checkin-nag-slot"></div>' +
       '<div id="cashup-nag-slot"></div>' +
       '<div class="tile-grid tile-grid-4">' +
@@ -149,6 +150,7 @@
     document.getElementById("tile-cashup").onclick   = function () { renderCashup(); };
     refreshCheckinNag();
     refreshCashupNag();
+    refreshSickToday();
   }
 
   // ---------------- News (read-only viewer) ----------------
@@ -2966,6 +2968,46 @@
     Array.prototype.forEach.call(el.querySelectorAll(".cashup-nag-do"), function (btn) {
       btn.onclick = function () { renderCashup(btn.dataset.date); };
     });
+  }
+
+  // Home-screen, READ-ONLY notice of who called in sick / absent for today via
+  // My BOA — scoped to this branch (home staff not loaned out, plus anyone
+  // loaned in). The kiosk only shows it; it can't review or change anything
+  // (absences are handled by regional managers in the HR portal).
+  async function refreshSickToday() {
+    var el = document.getElementById("sick-today-slot");
+    if (!el) return;
+    if (!window.APP_DATA || !window.APP_DATA.calledInTodayForBranch) { el.innerHTML = ""; return; }
+    var list;
+    try { list = await window.APP_DATA.calledInTodayForBranch(); }
+    catch (e) { console.warn("called-in-today check failed (non-fatal):", e); el.innerHTML = ""; return; }
+    if (!list || !list.length) { el.innerHTML = ""; return; }
+    var mgrs = list.filter(function (p) { return p.role === "manager"; });
+    var techs = list.filter(function (p) { return p.role !== "manager"; });
+    var parts = [];
+    if (techs.length) parts.push(techs.length + " nail tech" + (techs.length === 1 ? "" : "s"));
+    if (mgrs.length) parts.push(mgrs.length + " manager" + (mgrs.length === 1 ? "" : "s"));
+    var summary = parts.join(" and ");
+    var rows = list.map(function (p) {
+      var tag = p.type === "sick" ? "🤒 sick" : "🚫 absent";
+      var role = p.role === "manager" ? " · manager" : "";
+      var borrowed = p.borrowed ? " (borrowed in)" : "";
+      return '<div style="display:flex;align-items:center;gap:8px;justify-content:space-between;padding:6px 0;border-top:1px solid rgba(255,255,255,0.25)">' +
+               '<span style="font-weight:700">' + esc(p.name) + esc(borrowed) + '</span>' +
+               '<span style="opacity:.9;font-size:13px">' + tag + role + '</span>' +
+             '</div>';
+    }).join("");
+    el.innerHTML =
+      '<div class="checkin-nag" role="status" style="flex-direction:column;align-items:stretch">' +
+        '<div style="display:flex;align-items:center;gap:12px">' +
+          '<div class="checkin-nag-icon">🤒</div>' +
+          '<div class="checkin-nag-text">' +
+            '<div class="checkin-nag-title">OUT TODAY — ' + esc(summary) + '</div>' +
+            '<div class="checkin-nag-sub">Called in via My BOA. For your information only.</div>' +
+          '</div>' +
+        '</div>' +
+        '<div style="margin-top:8px">' + rows + '</div>' +
+      '</div>';
   }
 
   // ---------- Shared flows (used by manager-app.js too) ----------
