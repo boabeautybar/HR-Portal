@@ -173,7 +173,7 @@
       '<div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>',
       '<h1>Offer an extra day</h1>',
       '<p class="sub">' + esc(state.name) + ' · ' + esc(state.store) + ' · ' + esc(state.ec) + '</p>',
-      '<div class="note">Pick one of <b>your off days</b> below to offer. It only counts once your <b>regional manager approves</b> it.</div>',
+      '<div class="note">Pick one of <b>your off days</b> below to offer. It only counts once your <b>regional manager approves</b> it — keep checking <b>My BOA → My schedule</b>, where an approved day shows as <b>Extra</b>.</div>',
       '<div class="card">',
         '<label class="field"><span>Off day you\'re offering to work</span>',
           '<select id="day">' + opts + '</select></label>',
