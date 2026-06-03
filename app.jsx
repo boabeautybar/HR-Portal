@@ -9199,6 +9199,16 @@ function LeaveRequestsTab({ requests, setRequests, currentUser }) {
   const card = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 18px", marginBottom: 16 };
   const chip = (c) => ({ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: c.color, background: c.bg });
 
+  // Split into managers (EC ends in "M") and nail techs, shown as two distinct
+  // colour-coded columns side by side — same as the Extra-Day Requests tab.
+  const isMgrReq = (r) => /M$/i.test(String(r.ec || "").trim());
+  const mgrReqs = filtered.filter(isMgrReq);
+  const techReqs = filtered.filter(r => !isMgrReq(r));
+  const groups = [
+    { key: "mgr",  label: "👑 Managers",   items: mgrReqs,  bg: "#faf5ff", border: "#e9d5ff", headBg: "#7c3aed", headFg: "#fff" },
+    { key: "tech", label: "💅 Nail Techs", items: techReqs, bg: "#fdf2f8", border: "#fbcfe8", headBg: "#BE185D", headFg: "#fff" }
+  ];
+
   return (
     <div>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 4 }}>
@@ -9227,7 +9237,12 @@ function LeaveRequestsTab({ requests, setRequests, currentUser }) {
 
       {filtered.length === 0 && <div style={{ ...card, textAlign: "center", color: "#9d6a82" }}>No requests here.</div>}
 
-      {filtered.map(r => {
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
+      {filtered.length > 0 && groups.map(g => (
+        <div key={g.key} style={{ flex: "1 1 360px", minWidth: 300, background: g.bg, border: "1px solid " + g.border, borderRadius: 14, padding: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", color: g.headFg, background: g.headBg, borderRadius: 9, padding: "8px 12px", marginBottom: 12 }}>{g.label} · {g.items.length}</div>
+          {g.items.length === 0 && <div style={{ textAlign: "center", color: "#9d6a82", fontSize: 12.5, padding: "10px 0 14px" }}>None in this view.</div>}
+          {g.items.map(r => {
         const st = LEAVE_STATUS[r.status] || LEAVE_STATUS.pending;
         const open = openId === r.id;
         const notes = Array.isArray(r.internal_notes) ? r.internal_notes : [];
@@ -9308,7 +9323,10 @@ function LeaveRequestsTab({ requests, setRequests, currentUser }) {
             )}
           </div>
         );
-      })}
+          })}
+        </div>
+      ))}
+      </div>
     </div>
   );
 }
