@@ -46,6 +46,8 @@
           '<label class="field"><span>From</span><input type="date" id="start" /></label>',
           '<label class="field"><span>To</span><input type="date" id="end" /></label>',
         '</div>',
+        '<label class="field"><span>Back at work</span><input type="date" id="back" />',
+          '<span class="hint">First day back — defaults to the day after your last day of leave.</span></label>',
         '<div class="span" id="span" style="display:none"></div>',
         '<label class="field"><span>Reason / notes <em style="font-weight:400;color:#a07487">(optional)</em></span>',
           '<textarea id="reason" placeholder="Anything HR should know."></textarea></label>',
@@ -71,12 +73,15 @@
         box.style.color = over ? "#b91c1c" : "";
         box.style.borderColor = over ? "#fca5a5" : "";
         box.style.background = over ? "#fef2f2" : "";
+        var back = $("back").value;
         box.textContent = (over ? "⚠️ " : "🌴 ") + days + " day" + (days === 1 ? "" : "s") + " (" + fmt(s) + " → " + fmt(e) + ")"
+          + (back && back > e ? " · back " + fmt(back) : "")
           + (over ? " — over the " + MAX_DAYS + "-day limit" : "");
       } else { box.style.display = "none"; }
     };
     $("start").onchange = function () { if (!$("end").value) $("end").value = this.value; upd(); };
-    $("end").onchange = upd;
+    $("end").onchange = function () { if (this.value && (!$("back").value || $("back").value <= this.value)) $("back").value = nextDay(this.value); upd(); };
+    $("back").onchange = upd;
     $("submit").onclick = submit;
   }
 
@@ -93,6 +98,12 @@
     if (end < start) { setErr("The 'To' date can't be before the 'From' date."); return; }
     var days = Math.round((new Date(end) - new Date(start)) / 86400000) + 1;
     if (days > MAX_DAYS) { setErr("Annual leave requests are limited to " + MAX_DAYS + " days. Please speak to HR for anything longer."); return; }
+    var back = $("back").value;
+    if (!back) { setErr("Please choose the date you'll be back at work."); return; }
+    if (back <= end) { setErr("The 'Back at work' date must be after your last day of leave."); return; }
+
+    var notes = ($("reason").value || "").trim();
+    var reason = "Back at work: " + fmt(back) + (notes ? "\n" + notes : "");
 
     var payload = {
       p_store: store,
@@ -102,7 +113,7 @@
       p_leave_type: "Annual",
       p_start_date: start,
       p_end_date: end,
-      p_reason: ($("reason").value || "").trim() || null
+      p_reason: reason
     };
 
     state.busy = true; $("submit").disabled = true; $("submit").textContent = "Sending…";
@@ -130,6 +141,8 @@
   }
 
   function setErr(m) { var e = document.getElementById("err"); if (e) e.textContent = m || ""; }
+  function nextDay(ymd) { try { var d = new Date(ymd + "T00:00:00"); d.setDate(d.getDate() + 1);
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); } catch (_e) { return ""; } }
   function fmt(d) { try { return new Date(d + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }); } catch (_e) { return d; } }
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {

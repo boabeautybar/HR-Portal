@@ -1,12 +1,12 @@
 /* ============================================================
-   My BOA — Sick leave request form (staff & managers, own phone).
-   Standalone page reached from the My BOA hub. Submits a SICK
-   leave request that HR reviews in the portal's Leave Requests
-   tab (tagged "Sick leave"). Reuses the same insert-only
-   submit_leave_request RPC — cannot read others' requests.
-   An optional sick-note file uploads to the public "staff-uploads"
-   Storage bucket (see sql/staff_uploads.sql) and its link is added
-   to the request so HR can open it.
+   My BOA — Call in sick / Mark yourself as absent.
+   For letting management know you won't be able to come to work
+   today / tomorrow (or a short stretch ahead) — TODAY OR FUTURE
+   dates only, never the past. Goes to HR for review in the
+   portal's Leave Requests tab (tagged "Absent").
+   Reuses the insert-only submit_leave_request RPC. An optional
+   proof file uploads to the public "staff-uploads" Storage bucket
+   (see sql/staff_uploads.sql) and its link rides along.
    ============================================================ */
 (function () {
   var cfg = window.BOA_SUPABASE_CONFIG || {};
@@ -23,58 +23,45 @@
     "Green Point", "Plumstead", "Sandown", "Cape Gate", "Winelands", "Betty",
     "Fourways", "Eastgate", "Mall of the South", "Mushroom Farm", "Verdi", "Ballito"
   ];
-  // Sick-note status. The chosen value is folded into the reason so HR sees it
-  // in the portal without a schema change. "Sick note attached" reveals a file
-  // upload.
-  var CERTS = [
-    { v: "", l: "— choose —" },
-    { v: "No sick note", l: "No sick note" },
-    { v: "Sick note attached", l: "Attach sick note" },
-    { v: "Note to follow — sick without note for now", l: "Going to the doctor to get a note (none yet)" }
-  ];
 
   var state = { busy: false };
 
   function render() {
     var saved = {};
     try { saved = JSON.parse(localStorage.getItem("myboa_sched_v1") || "{}"); } catch (_e) {}
+    var today = todayYmd();
     root.innerHTML = [
       '<div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>',
-      '<h1>Sick leave</h1>',
-      '<p class="sub">Let HR know you were/are off sick. You\'ll get a reference number.</p>',
+      '<h1>Call in sick / Mark absent</h1>',
+      '<p class="sub">Let management know you won\'t be able to come to work today / tomorrow or so. HR will review it.</p>',
       '<div class="card">',
-        '<label class="field"><span>Your name</span>',
+        '<label class="field"><span>Full name</span>',
           '<input type="text" id="name" placeholder="First and last name" /></label>',
         '<div class="row2">',
-          '<label class="field"><span>Your store</span>',
+          '<label class="field"><span>Branch</span>',
             '<select id="store"><option value="">— choose —</option>',
               STORES.map(function (s) { return '<option' + (saved.store === s ? ' selected' : '') + '>' + esc(s) + '</option>'; }).join(""),
             '</select></label>',
-          '<label class="field"><span>Employee code <em style="font-weight:400;color:#a07487">(if you know)</em></span>',
+          '<label class="field"><span>Employee code</span>',
             '<input type="text" id="ec" autocapitalize="characters" autocomplete="off" placeholder="e.g. B379" value="' + esc(saved.ec || "") + '" /></label>',
         '</div>',
         '<div class="row2">',
-          '<label class="field"><span>First day off sick</span><input type="date" id="start" /></label>',
-          '<label class="field"><span>Last day off sick</span><input type="date" id="end" /></label>',
+          '<label class="field"><span>First day away</span><input type="date" id="start" min="' + today + '" /></label>',
+          '<label class="field"><span>Last day away</span><input type="date" id="end" min="' + today + '" /></label>',
         '</div>',
-        '<label class="field"><span>Back at work</span><input type="date" id="back" />',
-          '<span class="hint">First day back — defaults to the day after your last day off sick.</span></label>',
+        '<label class="field"><span>Expected back at work <em style="font-weight:400;color:#a07487">(if known)</em></span><input type="date" id="back" min="' + today + '" />',
+          '<span class="hint">Defaults to the day after your last day away.</span></label>',
         '<div class="span" id="span" style="display:none"></div>',
-        '<label class="field"><span>Sick note</span>',
-          '<select id="cert">',
-            CERTS.map(function (c) { return '<option value="' + esc(c.v) + '">' + esc(c.l) + '</option>'; }).join(""),
-          '</select>',
-          '<span class="hint">2+ consecutive sick days usually need a doctor\'s note.</span></label>',
-        '<label class="field" id="filewrap" style="display:none"><span>Sick note file <em style="font-weight:400;color:#a07487">(photo or PDF)</em></span>',
+        '<label class="field"><span>What\'s happening?</span>',
+          '<textarea id="desc" placeholder="Tell management why you can\'t come in — e.g. sick, family emergency…"></textarea></label>',
+        '<label class="field"><span>Attach proof <em style="font-weight:400;color:#a07487">(optional — photo or PDF)</em></span>',
           '<input type="file" id="file" accept="image/*,application/pdf,.pdf" /></label>',
-        '<label class="field"><span>Reason / notes <em style="font-weight:400;color:#a07487">(optional)</em></span>',
-          '<textarea id="reason" placeholder="Anything HR should know."></textarea></label>',
         '<label class="field"><span>Contact <em style="font-weight:400;color:#a07487">(optional)</em></span>',
           '<input type="text" id="contact" placeholder="Phone or email, so HR can reach you" /></label>',
-        '<button type="button" id="submit" class="submit">Send request</button>',
+        '<button type="button" id="submit" class="submit">Send to HR</button>',
         '<p class="err" id="err"></p>',
       '</div>',
-      '<p class="foot">My BOA · sick leave goes to HR</p>'
+      '<p class="foot">My BOA · goes to HR for review</p>'
     ].join("");
     wire();
   }
@@ -88,14 +75,13 @@
         var days = Math.round((new Date(e) - new Date(s)) / 86400000) + 1;
         box.style.display = "block";
         var back = $("back").value;
-        box.textContent = "🤒 " + days + " day" + (days === 1 ? "" : "s") + " (" + fmt(s) + " → " + fmt(e) + ")"
+        box.textContent = "🚫 " + days + " day" + (days === 1 ? "" : "s") + " away (" + fmt(s) + " → " + fmt(e) + ")"
           + (back && back > e ? " · back " + fmt(back) : "");
       } else { box.style.display = "none"; }
     };
     $("start").onchange = function () { if (!$("end").value) $("end").value = this.value; upd(); };
     $("end").onchange = function () { if (this.value && (!$("back").value || $("back").value <= this.value)) $("back").value = nextDay(this.value); upd(); };
     $("back").onchange = upd;
-    $("cert").onchange = function () { $("filewrap").style.display = (this.value === "Sick note attached") ? "block" : "none"; };
     $("submit").onclick = submit;
   }
 
@@ -105,33 +91,32 @@
     setErr("");
     var name = ($("name").value || "").trim();
     var store = $("store").value;
+    var ec = ($("ec").value || "").trim();
     var start = $("start").value, end = $("end").value;
-    if (!name) { setErr("Please enter your name."); $("name").focus(); return; }
-    if (!store) { setErr("Please choose your store."); return; }
-    if (!start || !end) { setErr("Please choose both dates."); return; }
+    var desc = ($("desc").value || "").trim();
+    var today = todayYmd();
+    if (!name) { setErr("Please enter your full name."); $("name").focus(); return; }
+    if (!store) { setErr("Please choose your branch."); return; }
+    if (!ec) { setErr("Please enter your employee code."); $("ec").focus(); return; }
+    if (!start || !end) { setErr("Please choose the dates you'll be away."); return; }
+    if (start < today || end < today) { setErr("This can only be for today or future days — not the past."); return; }
     if (end < start) { setErr("The last day can't be before the first day."); return; }
+    if (!desc) { setErr("Please describe why you can't come in."); $("desc").focus(); return; }
+
     var back = $("back").value;
-    if (!back) { setErr("Please choose the date you'll be back at work."); return; }
-    if (back <= end) { setErr("The 'Back at work' date must be after your last day off sick."); return; }
-
-    var cert = $("cert").value;
+    if (back && back < today) { setErr("The 'Expected back' date can't be in the past."); return; }
     var file = ($("file").files && $("file").files[0]) || null;
-    if (cert === "Sick note attached" && !file) {
-      setErr("Please choose the sick note file, or pick another option."); return;
-    }
-    var notes = ($("reason").value || "").trim();
 
-    var finish = function (noteUrl) {
-      var lines = ["Back at work: " + fmt(back)];
-      if (cert) lines.push("Sick note: " + cert);
-      if (noteUrl) lines.push("Sick note file: " + noteUrl);
-      if (notes) lines.push(notes);
+    var finish = function (proofUrl) {
+      var lines = [desc];
+      if (back && back > end) lines.push("Expected back at work: " + fmt(back));
+      if (proofUrl) lines.push("Proof: " + proofUrl);
       var payload = {
         p_store: store,
-        p_ec: ($("ec").value || "").trim() || null,
+        p_ec: ec || null,
         p_name: name,
         p_contact: ($("contact").value || "").trim() || null,
-        p_leave_type: "Sick",
+        p_leave_type: "Absent",
         p_start_date: start,
         p_end_date: end,
         p_reason: lines.join("\n")
@@ -146,13 +131,13 @@
     };
 
     state.busy = true; $("submit").disabled = true;
-    if (cert === "Sick note attached" && file) {
+    if (file) {
       $("submit").textContent = "Uploading…";
-      uploadFile(sb, file, "sick-notes").then(function (url) {
+      uploadFile(sb, file, "absence-proof").then(function (url) {
         $("submit").textContent = "Sending…"; finish(url);
       }).catch(function (e) {
-        state.busy = false; $("submit").disabled = false; $("submit").textContent = "Send request";
-        setErr("Couldn't upload the file (" + ((e && e.message) || "error") + "). Pick 'Going to the doctor' and email HR the note instead.");
+        state.busy = false; $("submit").disabled = false; $("submit").textContent = "Send to HR";
+        setErr("Couldn't upload the file (" + ((e && e.message) || "error") + "). You can send without it and get it to HR another way.");
       });
     } else {
       $("submit").textContent = "Sending…"; finish(null);
@@ -164,9 +149,9 @@
       '<div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>',
       '<div class="done">',
         '<div class="tick">✅</div>',
-        '<h2>Your sick leave has been sent</h2>',
+        '<h2>Management has been notified</h2>',
         (ref ? '<div class="ref">' + esc(ref) + '</div>' : ''),
-        '<p>HR has received it and will review it. If you said you\'re bringing a note later, please get it to HR when you have it.</p>',
+        '<p>HR has received this and will review it. Please keep your manager updated if anything changes.</p>',
         '<p style="margin-top:18px"><a href="index.html" style="color:#BE185D;font-weight:700">Back to My BOA</a></p>',
       '</div>',
       '<p class="foot">My BOA</p>'
@@ -174,6 +159,7 @@
   }
 
   function setErr(m) { var e = document.getElementById("err"); if (e) e.textContent = m || ""; }
+  function todayYmd() { var d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
   function nextDay(ymd) { try { var d = new Date(ymd + "T00:00:00"); d.setDate(d.getDate() + 1);
     return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); } catch (_e) { return ""; } }
   function fmt(d) { try { return new Date(d + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }); } catch (_e) { return d; } }
@@ -183,14 +169,6 @@
     });
   }
 
-  sb.from("app_state").select("value").eq("key", "boa_custom_salons").maybeSingle()
-    .then(function (res) {
-      var v = res && res.data && res.data.value;
-      if (Array.isArray(v)) { v.forEach(function (s) { var nm = s && (s.name || s.branch); if (nm && STORES.indexOf(nm) === -1) STORES.push(nm); }); STORES.sort(); }
-    }).catch(function () {}).then(render);
-
-  // Upload a file to the public "staff-uploads" bucket (sql/staff_uploads.sql)
-  // under an unguessable path and return its public URL.
   function uploadFile(sb, file, folder) {
     var clean = String(file.name || "file").replace(/[^a-zA-Z0-9._-]/g, "_").slice(-60);
     var path = folder + "/" + Date.now() + "-" + Math.random().toString(36).slice(2, 8) + "-" + clean;
@@ -200,4 +178,10 @@
         return sb.storage.from("staff-uploads").getPublicUrl(path).data.publicUrl;
       });
   }
+
+  sb.from("app_state").select("value").eq("key", "boa_custom_salons").maybeSingle()
+    .then(function (res) {
+      var v = res && res.data && res.data.value;
+      if (Array.isArray(v)) { v.forEach(function (s) { var nm = s && (s.name || s.branch); if (nm && STORES.indexOf(nm) === -1) STORES.push(nm); }); STORES.sort(); }
+    }).catch(function () {}).then(render);
 })();

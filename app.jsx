@@ -8677,8 +8677,17 @@ function IncidentPopup({ reports, onView, onDismiss }) {
 // incidents (sql/leave_requests.sql). Visible to Owner / HR / senior ops.
 const LEAVE_TYPE = {
   Annual: "Annual leave", Sick: "Sick leave", Family: "Family responsibility",
-  Unpaid: "Unpaid leave", Other: "Other"
+  Unpaid: "Unpaid leave", Absent: "Called in / Absent", Other: "Other"
 };
+// Render free-text (e.g. a request reason) with any http(s) links — sick notes
+// / absence proof uploaded from My BOA — turned into clickable anchors.
+function linkifyText(text) {
+  return String(text == null ? "" : text).split(/(https?:\/\/[^\s]+)/g).map((p, i) =>
+    /^https?:\/\//.test(p)
+      ? <a key={i} href={p} target="_blank" rel="noopener noreferrer" style={{ color: "#BE185D", fontWeight: 600, wordBreak: "break-all" }}>{p}</a>
+      : p
+  );
+}
 const LEAVE_STATUS = {
   pending:  { label: "Pending",  color: "#b45309", bg: "#fef3c7" },
   approved: { label: "Approved", color: "#15803d", bg: "#dcfce7" },
@@ -8802,7 +8811,7 @@ function LeaveRequestsTab({ requests, setRequests, currentUser }) {
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Requested</span><span>{fmtIncidentTime(r.created_at)}</span>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Employee code</span><span>{r.ec || "—"}</span>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Contact</span><span>{r.contact || "—"}</span>
-                  {r.reason && (<><span style={{ color: "#9d6a82", fontWeight: 700 }}>Reason</span><span style={{ whiteSpace: "pre-wrap" }}>{r.reason}</span></>)}
+                  {r.reason && (<><span style={{ color: "#9d6a82", fontWeight: 700 }}>Reason</span><span style={{ whiteSpace: "pre-wrap" }}>{linkifyText(r.reason)}</span></>)}
                 </div>
 
                 {r.status !== "pending" && r.decided_by && (
