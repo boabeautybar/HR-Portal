@@ -39,6 +39,7 @@
         '<span class="warn">',
           '<b>Nail techs:</b> you don\'t earn commission on days you\'re not working, and absences can put your monthly bonus target out of reach.<br/>',
           '<b>Managers:</b> missing a scheduled work day forfeits your attendance bonus for that period.<br/>',
+          '<b>No catch-up days:</b> missing a day blocks extra (catch-up) days for the rest of this pay cycle — you can\'t make up the day by working an additional one unless your regional manager explicitly approves it.<br/>',
           '<b>Sick leave</b> needs a valid medical certificate to count as paid sick leave.<br/>',
           'Repeated or patterned absences are monitored and may lead to a discussion with your regional manager and, where warranted, the disciplinary process.',
         '</span></div>',
