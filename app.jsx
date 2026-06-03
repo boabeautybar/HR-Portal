@@ -2524,7 +2524,12 @@ function TransferModal({ s, onClose, onConfirm, onCancelTransfer }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const inp = { width: "100%", padding: "8px 11px", borderRadius: 8, border: "1px solid #FBCFE8", background: "#FCE7F3", fontFamily: "inherit", fontSize: 13, boxSizing: "border-box" };
   const lbl = { display: "block", fontSize: 10, fontWeight: 700, color: "#BE185D", letterSpacing: "0.08em", marginBottom: 4, textTransform: "uppercase" };
-  const isPending = transferDate && new Date(transferDate) > new Date("2026-04-27");
+  // A transfer is "pending" only if its date is still in the FUTURE. Compared
+  // against the real current date (ISO string compare, TZ-safe) — using a
+  // hardcoded reference date meant a transfer dated in the past was wrongly
+  // treated as pending forever, so the tech's home branch never actually
+  // flipped to the new store.
+  const isPending = transferDate && String(transferDate).slice(0, 10) > new Date().toISOString().slice(0, 10);
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
