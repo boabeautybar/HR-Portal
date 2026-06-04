@@ -9497,6 +9497,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
   const [adjDays, setAdjDays] = useState("");
   const [adjSign, setAdjSign] = useState(-1);
   const [adjReason, setAdjReason] = useState("");
+  const [showMissing, setShowMissing] = useState(false);
   const fileRef = useRef(null);
 
   const lookups = useMemo(() => {
@@ -9514,14 +9515,25 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
   }, [enriched, managers]);
   const resolve = (rawEc) => { const n = lbNormEc(rawEc); return lookups.byNorm[n] || lookups.byCore[lbCoreEc(n)] || null; };
   // Everyone on the HR portal (techs + managers), deduped — the source for the
-  // "add by name" lookup. Only these people can be added; nobody off-system.
+  // "add by name" lookup and the "missing a leave record" list. Departed people
+  // (off-boarded / past their last day) are flagged so we don't nag about them.
   const allPeople = useMemo(() => {
+    const todayYmd = new Date().toISOString().slice(0, 10);
     const seen = new Set(); const out = [];
-    const add = (p, role) => { if (!p || !p.ec) return; const n = lbNormEc(p.ec); if (!n || seen.has(n)) return; seen.add(n); out.push({ ec: p.ec, norm: n, name: p.name || "", branch: p.branch || "", role }); };
+    const add = (p, role) => {
+      if (!p || !p.ec) return; const n = lbNormEc(p.ec); if (!n || seen.has(n)) return; seen.add(n);
+      const departed = !!p.offboarded || (p.leftDate && String(p.leftDate) < todayYmd);
+      out.push({ ec: p.ec, norm: n, name: p.name || "", branch: p.branch || "", role, departed: !!departed, onMat: !!p.onMat });
+    };
     (enriched || []).forEach(p => add(p, "Nail tech"));
     (managers || []).forEach(m => add(m, m.role || "Manager"));
     return out.sort((a, b) => (a.name || a.ec).localeCompare(b.name || b.ec));
   }, [enriched, managers]);
+  // Active portal staff who have no leave-balance record yet.
+  const missing = useMemo(() => {
+    if (!data) return [];
+    return allPeople.filter(p => !p.departed && !data.entries[p.norm]);
+  }, [allPeople, data]);
 
   useEffect(() => {
     let cancelled = false;
@@ -9633,6 +9645,25 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
     await persist({ ...data, entries: entries });
     setExpanded(key);
   };
+  // Remove one employee's balance record entirely.
+  const removeEntry = async (norm) => {
+    const e = data.entries[norm]; if (!e) return;
+    if (!window.confirm("Remove the leave-balance record for " + (e.name || e.rawEc) + "?\n\nThis deletes their opening balance and all adjustments.")) return;
+    const entries = { ...data.entries }; delete entries[norm];
+    setExpanded(null);
+    await persist({ ...data, entries: entries });
+    if (logActivity) logActivity("Removed leave-balance record", e.name || e.rawEc, "", "Payroll");
+  };
+  // Wipe everything that was uploaded/added (the balances live in Supabase, so
+  // this is the only way to clear them — a new deploy does NOT reset them).
+  const clearAll = async () => {
+    const n = data ? Object.keys(data.entries).length : 0;
+    if (n === 0) return;
+    if (!window.confirm("Clear ALL " + n + " leave-balance records?\n\nThis wipes every uploaded balance and adjustment from Supabase. This cannot be undone — you'd re-upload the file to start again.")) return;
+    if (!window.confirm("Are you sure? This permanently deletes all " + n + " records.")) return;
+    await persist({ ...data, entries: {} });
+    if (logActivity) logActivity("Cleared all leave balances", n + " records", "", "Payroll");
+  };
 
   const rows = useMemo(() => {
     if (!data) return [];
@@ -9675,6 +9706,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <span style={{ fontSize: 11.5, color: saving ? "#b45309" : "#15803d", fontWeight: 700 }}>{saving ? "Saving…" : "✓ Saved"}</span>
+          {stats.n > 0 && <button onClick={clearAll} title="Delete every uploaded balance from Supabase" style={{ background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 9, padding: "9px 14px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>🗑 Clear all</button>}
           <button onClick={() => { setShowImport(v => !v); setPreview(null); }} style={{ background: "#9333ea", color: "#fff", border: "none", borderRadius: 9, padding: "9px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{showImport ? "Close importer" : "⬆ Upload / import"}</button>
         </div>
       </div>
@@ -9762,6 +9794,33 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
         </div>
       </div>
 
+      {/* Active staff with no leave record yet */}
+      {missing.length > 0 && (
+        <div style={{ ...card, marginBottom: 12, background: "#fffbeb", border: "1px solid #fde68a" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: "#92400e" }}>⚠ {missing.length} active staff have no leave record</div>
+            <button onClick={() => setShowMissing(v => !v)} style={{ background: "#f59e0b", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{showMissing ? "Hide" : "Show who"}</button>
+          </div>
+          {showMissing && (
+            <div style={{ marginTop: 10, maxHeight: 300, overflow: "auto", border: "1px solid #fde68a", borderRadius: 8, background: "#fff" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead><tr><th style={th}>Code</th><th style={th}>Name</th><th style={th}>Store · role</th><th style={{ ...th, textAlign: "right" }}></th></tr></thead>
+                <tbody>
+                  {missing.map(p => (
+                    <tr key={p.norm}>
+                      <td style={td}>{p.ec}</td>
+                      <td style={td}>{p.name || "(no name)"}{p.onMat ? <span style={{ color: "#9d6a82", fontSize: 11 }}> · 🤱 maternity</span> : null}</td>
+                      <td style={{ ...td, color: "#9d6a82" }}>{p.branch || "—"}{p.role ? " · " + p.role : ""}</td>
+                      <td style={{ ...td, textAlign: "right" }}><button onClick={() => addByEc(p.ec)} style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 7, padding: "4px 10px", fontWeight: 700, fontSize: 11.5, cursor: "pointer" }}>+ Add</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Table */}
       {stats.n === 0 ? (
         <div style={{ ...card, textAlign: "center", color: "#9d6a82", padding: "40px 20px" }}>
@@ -9810,6 +9869,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
                               <input value={adjDays} onChange={e => setAdjDays(e.target.value)} inputMode="decimal" placeholder="days (e.g. 1.5)" style={{ ...inp, width: 130 }} />
                               <input value={adjReason} onChange={e => setAdjReason(e.target.value)} placeholder="reason (optional, e.g. June leave already taken)" style={{ ...inp, flex: "1 1 240px", minWidth: 180 }} />
                               <button onClick={() => addAdjustment(r.norm)} style={{ background: "#9333ea", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Apply</button>
+                              <button onClick={() => removeEntry(r.norm)} title="Remove this employee's whole balance record" style={{ marginLeft: "auto", background: "transparent", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 8, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>🗑 Remove employee</button>
                             </div>
                             {r.adjustments.length > 0 && (
                               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -18616,7 +18676,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* ── LEAVE BALANCES TAB ── */}
         {tab === "leaveBalances" && accessAllows(currentUser, leaveBalancesCfg) && (
-          <LeaveBalancesTab enriched={enriched} managers={managers} currentUser={currentUser} logActivity={logActivity} />
+          <LeaveBalancesTab enriched={enriched} managers={enrichedManagers} currentUser={currentUser} logActivity={logActivity} />
         )}
 
         {/* ── CALLED IN SICK TAB ── */}
