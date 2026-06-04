@@ -47,6 +47,14 @@
     var root = document.getElementById("app-root");
     if (!root) return;
 
+    // Admin devices (security.js) can roam every branch — give them a one-tap
+    // "Switch branch" that returns to the store picker. Branch devices are pinned
+    // to their store and never see it.
+    var isAdminDevice = !!window.APP_DEVICE_ADMIN;
+    var switchBranchBtn = isAdminDevice
+      ? '<button class="gp-btn" data-action="switchbranch" type="button"><span>🔀</span> Switch branch</button>'
+      : '';
+
     // Wire the shared staff-flow render functions to write into OUR container,
     // and route their "← Back" button to the manager landing.
     if (window.BOA_FLOWS) {
@@ -69,6 +77,7 @@
       '<div class="gp-actions">' +
       '<button class="gp-btn" id="pwa-install-btn" style="display:none; margin-right:12px; font-weight:700;" type="button"><span>⬇️</span> Install to Device</button>' +
       '<button class="gp-btn"  data-action="home"     type="button"><span>🏠</span> Home</button>' +
+      switchBranchBtn +
       '<button class="gp-btn"  data-action="news"     type="button"><span>📰</span> News<span class="gp-badge" id="gp-news-count" style="display:none">0</span></button>' +
       '<button class="gp-btn"  data-action="schedule" type="button"><span>📅</span> Schedule</button>' +
       '<button class="gp-btn"  data-action="staff"    type="button"><span>👥</span> Staff</button>' +
@@ -113,6 +122,9 @@
       var a = btn.dataset.action;
       closeMenu(); // collapse the mobile menu after any choice
       if (a === "logout") { window.APP_LOGOUT(); return; }
+      // Switch branch (admin devices only): back to the store picker. Allowed
+      // even during the store-open gate so an admin is never trapped on a store.
+      if (a === "switchbranch") { window.location.href = window.location.pathname; return; }
       // While the store-open gate is showing, only LOG OUT is allowed —
       // every other nav action is blocked so the manager can't navigate
       // away from the gate without first marking the store as open.
@@ -187,6 +199,9 @@
     // Before anything else, check whether someone has marked the store as
     // open today. If not, show the gate and block all nav buttons (except
     // LOG OUT). Once opened we fall through to the normal landing.
+    // Admin devices roam every branch and never open/check in — skip the gate
+    // and go straight to the branch home.
+    if (window.APP_DEVICE_ADMIN) { renderManagerLanding(); return; }
     if (configMissing()) { renderManagerLanding(); return; }
     try {
       var opened = await window.APP_DATA.getStoreOpenedToday();

@@ -17,12 +17,18 @@ create table if not exists kiosk_devices (
   device_token text not null unique,        -- long random secret, held only by the iPad
   label        text,
   active       boolean not null default true,
+  is_admin     boolean not null default false,  -- admin device: all branches, no PIN
   enrolled_at  timestamptz default now(),
   last_seen    timestamptz
 );
--- At most ONE active device per branch.
+-- Two device classes:
+--   • branch device — one active per branch (the reception iPad)
+--   • admin device  — is_admin = true, recognised across ALL branches, unlimited count
+alter table kiosk_devices add column if not exists is_admin boolean not null default false;
+-- At most ONE active *branch* device per branch; admin devices are unconstrained.
+drop index if exists kiosk_devices_one_active_per_branch;
 create unique index if not exists kiosk_devices_one_active_per_branch
-  on kiosk_devices (branch) where active;
+  on kiosk_devices (branch) where active and not is_admin;
 
 create table if not exists kiosk_enrollments (
   code       text primary key,              -- short 6-digit code
@@ -110,6 +116,8 @@ set search_path = public
 as $$
 declare
   v_branch text;
+  v_is_admin boolean;
+  v_found boolean := false;
 begin
   if p_token is null or length(p_token) = 0 then
     return jsonb_build_object('ok', false);
@@ -117,15 +125,20 @@ begin
   update kiosk_devices
     set last_seen = now()
     where device_token = p_token and active
-    returning branch into v_branch;
-  if v_branch is null then
+    returning branch, is_admin into v_branch, v_is_admin;
+  get diagnostics v_found = row_count;
+  if not v_found then
     return jsonb_build_object('ok', false);
   end if;
-  return jsonb_build_object('ok', true, 'branch', v_branch);
+  -- Admin devices are recognised on every branch; branch devices carry their branch.
+  return jsonb_build_object('ok', true, 'branch', v_branch, 'admin', coalesce(v_is_admin, false));
 end;
 $$;
 
--- iPad fallback (0864 admin path): self-enrol the current device for a branch.
+-- iPad/owner device (0864 admin path): self-enrol the current device as an ADMIN
+-- device — recognised across ALL branches, no per-branch PIN, unlimited count.
+-- Does NOT evict any branch's reception device. p_branch is kept only as a label
+-- hint (the branch the owner happened to be on when enrolling).
 create or replace function admin_self_enroll(p_branch text)
 returns text
 language plpgsql
@@ -135,13 +148,9 @@ as $$
 declare
   v_token text;
 begin
-  if p_branch is null or length(trim(p_branch)) = 0 then
-    raise exception 'branch required';
-  end if;
   v_token := replace(gen_random_uuid()::text || gen_random_uuid()::text, '-', '');
-  update kiosk_devices set active = false where branch = p_branch and active;
-  insert into kiosk_devices (branch, device_token, label, active, enrolled_at, last_seen)
-  values (p_branch, v_token, 'admin-self-enrol', true, now(), now());
+  insert into kiosk_devices (branch, device_token, label, active, is_admin, enrolled_at, last_seen)
+  values (coalesce(nullif(trim(p_branch), ''), 'admin'), v_token, 'admin-device', true, true, now(), now());
   return v_token;
 end;
 $$;
@@ -155,6 +164,7 @@ set search_path = public
 as $$
   select id, branch, label, active, enrolled_at, last_seen
   from kiosk_devices
+  where not is_admin                       -- admin devices aren't per-branch; hide from the table
   order by branch, active desc, last_seen desc nulls last;
 $$;
 
@@ -175,3 +185,12 @@ grant execute on function verify_kiosk_device(text)     to anon, authenticated;
 grant execute on function admin_self_enroll(text)       to anon, authenticated;
 grant execute on function list_kiosk_devices()          to anon, authenticated;
 grant execute on function revoke_kiosk_device(uuid)     to anon, authenticated;
+
+-- ---- One-time cleanup ------------------------------------------------------
+-- The OLD admin path (pre two-class model) self-enrolled the owner's phone AS
+-- the branch device (label 'admin-self-enrol'), evicting the real iPad and
+-- holding that branch's single slot. Retire any such rows so the slot is freed,
+-- then re-enrol each affected store's real reception iPad with a branch code.
+-- Idempotent: a second run is a no-op (those rows are already inactive).
+update kiosk_devices set active = false
+where label = 'admin-self-enrol' and active;

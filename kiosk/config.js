@@ -66,6 +66,18 @@
 
   var params    = new URLSearchParams(window.location.search);
   var requested = (params.get("branch") || "").trim();
+
+  // Device class (set by security.js on prior loads):
+  //   • branch device → pinned to its branch: ignore the URL and never show the
+  //     picker, so staff can't accidentally open another store.
+  //   • admin device  → all-branch: keep URL/picker behaviour so it can open any store.
+  var _pinnedBranch = "", _isAdmin = false;
+  try {
+    _isAdmin = localStorage.getItem("boa_kiosk_device_admin") === "1";
+    _pinnedBranch = (localStorage.getItem("boa_kiosk_device_branch") || "").trim();
+  } catch (_e) {}
+  if (_pinnedBranch && !_isAdmin) requested = _pinnedBranch;
+
   var resolved  = null;
   if (requested) {
     var rn = norm(requested);

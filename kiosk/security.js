@@ -25,8 +25,22 @@
 
   var TOKEN_KEY  = "boa_kiosk_device_token_v2";   // FROZEN
   var LASTOK_KEY = "boa_kiosk_device_lastok_v2";
+  var BRANCH_KEY = "boa_kiosk_device_branch";     // pinned branch for a branch device
+  var ADMIN_KEY  = "boa_kiosk_device_admin";      // "1" for an all-branch admin device
   var GRACE_MS   = 24 * 60 * 60 * 1000;            // 24h outage grace
   var branchName = cfg.branchName;
+
+  // Record this device's class so config.js (next load) can pin a branch device to
+  // its branch, and so pin-gate.js can let an admin device skip the PIN.
+  function markBranchDevice(branch) {
+    try { localStorage.setItem(BRANCH_KEY, String(branch || "")); localStorage.removeItem(ADMIN_KEY); } catch (_e) {}
+  }
+  function markAdminDevice() {
+    try { localStorage.setItem(ADMIN_KEY, "1"); localStorage.removeItem(BRANCH_KEY); } catch (_e) {}
+  }
+  // Seed from last-known class so the break-glass / outage-grace paths (which allow()
+  // without a fresh verify) still let a known admin device skip the PIN.
+  try { window.APP_DEVICE_ADMIN = (localStorage.getItem(ADMIN_KEY) === "1"); } catch (_e) {}
 
   // The gate pin-gate.js waits on: resolve(true)=boot, resolve(false)=blocked.
   var _resolveGate;
@@ -68,10 +82,19 @@
       try {
         var res = await sb.rpc("verify_kiosk_device", { p_token: token });
         if (!res.error && res.data && res.data.ok) {
-          // Token must be the active device FOR THIS branch — a token enrolled
-          // for another branch must not unlock this one.
+          if (res.data.admin === true) {
+            // Admin device — recognised on every branch, no PIN (pin-gate reads this).
+            markAdminDevice();
+            window.APP_DEVICE_ADMIN = true;
+            try { localStorage.setItem(LASTOK_KEY, String(Date.now())); } catch (_e) {}
+            allow();
+            return;
+          }
+          // Branch device: token must be the active device FOR THIS branch — a token
+          // enrolled for another branch must not unlock this one.
           var okBranch = String(res.data.branch || "").trim() === String(branchName).trim();
           if (okBranch) {
+            markBranchDevice(res.data.branch);
             try { localStorage.setItem(LASTOK_KEY, String(Date.now())); } catch (_e) {}
             allow();
             return;
@@ -152,11 +175,14 @@
     else build();
   }
 
-  function persistTokenAndReload(token) {
+  // kind: "admin" → all-branch admin device; otherwise pin to the current branch.
+  function persistTokenAndReload(token, kind) {
     try {
       localStorage.setItem(TOKEN_KEY, token);
       localStorage.setItem(LASTOK_KEY, String(Date.now()));
     } catch (_e) {}
+    if (kind === "admin") markAdminDevice();
+    else markBranchDevice(branchName);
     location.reload();
   }
 
@@ -205,7 +231,7 @@
           var res = await sb.rpc("admin_self_enroll", { p_branch: branchName });
           if (res.error || !res.data) throw new Error(res.error ? res.error.message : "failed");
           errEl.textContent = "Authorised! Reloading…";
-          persistTokenAndReload(String(res.data));
+          persistTokenAndReload(String(res.data), "admin");
         } catch (e) {
           errEl.style.color = ""; errEl.textContent = "Error: " + ((e && e.message) || e);
           inputs.forEach(function (i) { i.value = ""; }); inputs[0].focus();
