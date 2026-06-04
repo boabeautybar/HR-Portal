@@ -269,7 +269,21 @@
     return NORMAL_TECH[dow === 0 ? 0 : dow === 6 ? 6 : 1] + variant;
   }
 
+  // Maternity overlay — once HR flips someone to maternity, reflect ML
+  // immediately. With a start date, ML shows from that date on (real shifts
+  // before it are untouched); with no date yet ("dates TBC"), they read as on
+  // leave throughout. This wins over whatever the saved grid cell says, so the
+  // app updates the instant HR sets the status — no roster regenerate needed.
+  function matMlOn(dt) {
+    if (state.matStatus !== "on_mat" && state.matStatus !== "dates_tbc") return false;
+    if (!state.matStart) return true;
+    var ymd = dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate());
+    return ymd >= state.matStart;
+  }
+  var ML_INFO = { kind: "leave", label: "Maternity leave", sub: "" };
+
   function cellStatus(row, dt) {
+    if (matMlOn(dt)) return ML_INFO;
     var code = getCell(row, dt);
     var c = (code == null ? "" : String(code)).toUpperCase();
     if (c === "O") return { kind: "off", label: "Off", sub: "" };
@@ -325,6 +339,8 @@
   }
   // Status for a specific calendar date (loads its cycle as needed).
   async function statusForDate(dt) {
+    // Maternity wins even if this cycle's roster hasn't been published yet.
+    if (matMlOn(dt)) return { published: true, info: ML_INFO };
     var grid = await loadCycle(ymForDate(dt));
     var row = rowFor(grid);
     if (!row) return { published: false };
@@ -406,6 +422,8 @@
       state.name = "";
       state.role = "";
       state.effRole = "";
+      state.matStatus = "";
+      state.matStart = null;
       state.custom = {};
       state.cache = {};
       state.monthYm = found.ym || ymEnd;
@@ -425,7 +443,11 @@
         var rr = await Promise.all([
           sb.from("staff").select("employee_code,name,role,role_type").ilike("employee_code", ecTrim + "%").limit(10),
           sb.from("app_state").select("value").eq("key", "boa_sm_trial_v1").maybeSingle(),
-          sb.from("app_state").select("value").eq("key", "boa_mgr_times_v1").maybeSingle()
+          sb.from("app_state").select("value").eq("key", "boa_mgr_times_v1").maybeSingle(),
+          // Maternity record — so the schedule flips to ML straight from the
+          // start date the moment HR sets it, without waiting for the roster
+          // to be regenerated.
+          sb.from("maternity").select("employee_code,mat_status,mat_start").ilike("employee_code", ecTrim + "%").limit(10)
         ]);
         var rows = (rr[0] && rr[0].data) || [];
         var row = rows.filter(function (x) { return String(x.employee_code || "").trim().toUpperCase() === ecUp; })[0];
@@ -445,6 +467,13 @@
         if (times && typeof times === "object") {
           if (times[found.ecKey]) state.custom = times[found.ecKey];
           else { for (var tk in times) { if (String(tk).toUpperCase().trim() === ecUp) { state.custom = times[tk]; break; } } }
+        }
+        // Maternity status + start date (trim-tolerant EC match, same as above).
+        var matRows = (rr[3] && rr[3].data) || [];
+        var matRow = matRows.filter(function (x) { return String(x.employee_code || "").trim().toUpperCase() === ecUp; })[0];
+        if (matRow) {
+          state.matStatus = matRow.mat_status || "";
+          state.matStart = matRow.mat_start || null;
         }
       } catch (_e) {}
 
@@ -550,8 +579,8 @@
     var days2 = periodDays(ym);
     var rows = days2.map(function (x) {
       var st = { published: false };
-      var grid = state.cache[ym], row = rowFor(grid);
-      if (row) st = { published: true, info: cellStatus(row, x.date) };
+      if (matMlOn(x.date)) { st = { published: true, info: ML_INFO }; }
+      else { var grid = state.cache[ym], row = rowFor(grid); if (row) st = { published: true, info: cellStatus(row, x.date) }; }
       return dayCard(x.date, st, false);
     }).join("");
     el.innerHTML =
