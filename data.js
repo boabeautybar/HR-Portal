@@ -365,6 +365,136 @@
     return v;
   }
 
+  // ---------- Employee-code migration ----------
+  // Schedule, attendance, leave, request, custom-hours and leave-balance data
+  // are all keyed by EMPLOYEE CODE. Clock-ins and absence reasons are keyed by
+  // the stable staff_id, so those follow a person automatically — but the
+  // code-keyed stores get orphaned when a code is corrected. This moves every
+  // code-keyed record from oldEc → newEc across ALL existing cycles, in one go,
+  // so a code correction is seamless. Returns a per-store summary of moves.
+  async function migrateEmployeeCode(oldEc, newEc) {
+    var _o = String(oldEc == null ? "" : oldEc).trim();
+    var _n = String(newEc == null ? "" : newEc).trim();
+    var norm = function (s) { return String(s == null ? "" : s).replace(/[^A-Za-z0-9]/g, "").toUpperCase(); };
+    var oN = norm(_o), nN = norm(_n);
+    var summary = { schedules: 0, attendance: 0, history: 0, approved: 0, earlyLeaves: 0, leave: 0, requests: 0, customTimes: 0, balances: 0 };
+    if (!_o || !_n || oN === nN) return summary;   // nothing to do (no change, or only case/dash diff which reads already tolerate)
+
+    // Rewrite an {ec:{...}} grid: move the row whose key matches oldEc → newEc.
+    function rewriteGrid(grid) {
+      if (!grid || typeof grid !== "object") return false;
+      var changed = false;
+      Object.keys(grid).forEach(function (k) {
+        if (norm(k) !== oN || k === _n) return;
+        var src = grid[k] || {};
+        if (grid[_n] && typeof grid[_n] === "object") {
+          Object.keys(src).forEach(function (d) { if (!(d in grid[_n])) grid[_n][d] = src[d]; });
+        } else { grid[_n] = src; }
+        delete grid[k]; changed = true;
+      });
+      return changed;
+    }
+    // Rewrite an {ec:name} names sidecar map.
+    function rewriteNames(names) {
+      if (!names || typeof names !== "object") return false;
+      var changed = false;
+      Object.keys(names).forEach(function (k) {
+        if (norm(k) !== oN || k === _n) return;
+        if (!(_n in names)) names[_n] = names[k];
+        delete names[k]; changed = true;
+      });
+      return changed;
+    }
+
+    async function processGridRows(pattern, kind) {
+      var res = await sb.from("app_state").select("key, value").like("key", pattern);
+      if (res.error || !Array.isArray(res.data)) return;
+      for (var i = 0; i < res.data.length; i++) {
+        var row = res.data[i], v = row.value, changed = false;
+        if (!v) continue;
+        if (Array.isArray(v)) {                          // history / approved: array of {grid, names}
+          v.forEach(function (snap) { if (snap) { if (rewriteGrid(snap.grid)) changed = true; if (rewriteNames(snap.names)) changed = true; } });
+        } else {                                          // live grid: {grid, names}
+          if (rewriteGrid(v.grid)) changed = true;
+          if (rewriteNames(v.names)) changed = true;
+        }
+        if (changed) { await sb.from("app_state").upsert({ key: row.key, value: v }); summary[kind]++; }
+      }
+    }
+    await processGridRows("boa_sched_%", "schedules");
+    await processGridRows("boa_mgrsched_%", "schedules");
+    await processGridRows("boa_schedhist_%", "history");
+    await processGridRows("boa_mgrschedhist_%", "history");
+    await processGridRows("boa_schedapproved_%", "approved");
+    await processGridRows("boa_mgrschedapproved_%", "approved");
+    await processGridRows("boa_att_%", "attendance");
+
+    // Early-leave sidecar boa_early_<branch>_<ym>: shape { day: { ec: hours } }.
+    try {
+      var eRes = await sb.from("app_state").select("key, value").like("key", "boa_early_%");
+      if (!eRes.error && Array.isArray(eRes.data)) {
+        for (var e = 0; e < eRes.data.length; e++) {
+          var eRow = eRes.data[e], ev = eRow.value, eChanged = false;
+          if (ev && typeof ev === "object") {
+            Object.keys(ev).forEach(function (day) {
+              var dayMap = ev[day]; if (!dayMap || typeof dayMap !== "object") return;
+              Object.keys(dayMap).forEach(function (k) {
+                if (norm(k) !== oN || k === _n) return;
+                if (!(_n in dayMap)) dayMap[_n] = dayMap[k];
+                delete dayMap[k]; eChanged = true;
+              });
+            });
+          }
+          if (eChanged) { await sb.from("app_state").upsert({ key: eRow.key, value: ev }); summary.earlyLeaves++; }
+        }
+      }
+    } catch (_e) { /* non-fatal */ }
+
+    // List rows keyed by item.ec: leave records + off-day requests.
+    async function rewriteEcList(key, kind) {
+      var res = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
+      if (res.error) return;
+      var arr = res.data && res.data.value;
+      if (!Array.isArray(arr)) return;
+      var changed = false;
+      arr.forEach(function (it) { if (it && it.ec != null && norm(it.ec) === oN && String(it.ec) !== _n) { it.ec = _n; changed = true; } });
+      if (changed) { await sb.from("app_state").upsert({ key: key, value: arr }); summary[kind]++; }
+    }
+    await rewriteEcList("boa_leave_v1", "leave");
+    await rewriteEcList("boa_mgr_requests_v1", "requests");
+    await rewriteEcList("boa_tech_requests_v1", "requests");
+
+    // Maps keyed by ec: custom manager hours.
+    try {
+      var ctRes = await sb.from("app_state").select("value").eq("key", "boa_mgr_times_v1").maybeSingle();
+      var ct = ctRes && ctRes.data && ctRes.data.value;
+      if (ct && typeof ct === "object") {
+        var ctChanged = false;
+        Object.keys(ct).forEach(function (k) {
+          if (norm(k) !== oN || k === _n) return;
+          if (!(_n in ct)) ct[_n] = ct[k]; else Object.keys(ct[k] || {}).forEach(function (d) { if (!(d in ct[_n])) ct[_n][d] = ct[k][d]; });
+          delete ct[k]; ctChanged = true;
+        });
+        if (ctChanged) { await sb.from("app_state").upsert({ key: "boa_mgr_times_v1", value: ct }); summary.customTimes++; }
+      }
+    } catch (_e2) { /* non-fatal */ }
+
+    // Leave balances (entries keyed by NORMALISED ec).
+    try {
+      var lbRes = await sb.from("app_state").select("value").eq("key", "boa_leave_balances_v1").maybeSingle();
+      var lb = lbRes && lbRes.data && lbRes.data.value;
+      if (lb && lb.entries && typeof lb.entries === "object" && lb.entries[oN]) {
+        var ent = lb.entries[oN];
+        ent.ec = nN; ent.rawEc = _n;
+        if (nN !== oN) { lb.entries[nN] = ent; delete lb.entries[oN]; } else { lb.entries[oN] = ent; }
+        await sb.from("app_state").upsert({ key: "boa_leave_balances_v1", value: lb });
+        summary.balances++;
+      }
+    } catch (_e3) { /* non-fatal */ }
+
+    return summary;
+  }
+
   // ---------- Schedule trash (7-day soft-delete) ----------
   // Single global key holding an array of trash entries. Each entry:
   //   { id, kind:"manager"|"tech", branch, ym, grid, deletedAt, expiresAt }
@@ -1961,6 +2091,7 @@
     saveLeaveBalances: saveLeaveBalances,
     loadLeaveBalancesAccess: loadLeaveBalancesAccess,
     saveLeaveBalancesAccess: saveLeaveBalancesAccess,
+    migrateEmployeeCode: migrateEmployeeCode,
     loadComplianceActions: loadComplianceActions,
     saveComplianceActions: saveComplianceActions,
     loadUnpaidLegalRecords: loadUnpaidLegalRecords,

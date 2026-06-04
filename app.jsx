@@ -14273,6 +14273,28 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const uColor = { critical: "#dc2626", high: "#f97316", low: "#eab308", full: "#16a34a", preopen: "#7c3aed" };
   const uLabel = { critical: "UNSTAFFED", high: "UNDERSTAFFED", low: "NEEDS STAFF", full: "AT CAPACITY", preopen: "PRE-OPENING" };
 
+  // When an employee CODE is corrected, move all code-keyed data (schedules,
+  // attendance, leave, requests, custom hours, balances) from old → new code
+  // across every cycle, so a correction is seamless and nothing is orphaned.
+  // Clock-ins + absence reasons are keyed by the stable staff_id and follow
+  // automatically. No-op when the code is unchanged.
+  async function migrateCodeIfChanged(oldEc, newEc) {
+    const _o = String(oldEc || "").trim(), _n = String(newEc || "").trim();
+    if (!_o || !_n || _o === _n) return;
+    if (!window.BOA_DB.migrateEmployeeCode) return;
+    try {
+      const sum = await window.BOA_DB.migrateEmployeeCode(_o, _n);
+      const moved = Object.keys(sum || {}).reduce((a, k) => a + (sum[k] || 0), 0);
+      logActivity("Corrected employee code", _o + " → " + _n, moved + " data store(s) moved", "Admin");
+      // Refresh in-memory + cached code-keyed data so it shows under the new code.
+      try { const lv = await window.BOA_DB.loadLeaveRecords(); setLeaveRecs(Array.isArray(lv) ? lv : []); } catch (_) { }
+      setMgrClockinSchedCache({}); setMgrApprovedFallbackCache({}); setMgrSchedNamesCache({}); setSchedCache({});
+      alert("Employee code changed: " + _o + " → " + _n + ".\n\nAll existing schedules, attendance, leave, day-off requests, custom hours and leave balances were moved to the new code, so nothing is lost. Clock-ins and absence reasons follow automatically.");
+    } catch (e) {
+      alert("The new code was saved, but moving the existing schedule/attendance data failed:\n\n" + (e.message || e) + "\n\nYou can retry by saving the code again.");
+    }
+  }
+
   async function saveStaff(f) {
     // Shadow records are derived UI rows — closing the edit modal on one
     // is a no-op, not a DB write. (The real record at the source branch
@@ -14280,9 +14302,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     if (f && f.isShadow) { setStaffModal(null); return; }
     try {
       const isEdit = f._id !== undefined;
+      const _prior = isEdit ? (staff || []).find(x => x._id === f._id) : null;
+      const _oldEc = _prior && _prior.ec ? String(_prior.ec).trim() : "";
       const saved = await window.BOA_DB.saveStaff(f);
       setStaff(p => isEdit ? p.map(x => x._id === f._id ? saved : x) : [...p, saved]);
       setStaffModal(null);
+      await migrateCodeIfChanged(_oldEc, (saved.ec || f.ec));
       // Carry the maternity-section fields from the form onto the saved
       // record (they're not persisted on the staff row itself, but the
       // sync helper needs them) and reconcile with matRecs.
@@ -14556,8 +14581,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     if (f && f.isShadow) { setMgrModal(null); return; }
     try {
       const isEdit = f._id !== undefined;
+      const _priorMgr = isEdit ? (managers || []).find(x => x._id === f._id) : null;
+      const _oldMgrEc = _priorMgr && _priorMgr.ec ? String(_priorMgr.ec).trim() : "";
       const saved = await window.BOA_DB.saveManager(f);
       setManagers(p => isEdit ? p.map(x => x._id === f._id ? saved : x) : [...p, saved]);
+      await migrateCodeIfChanged(_oldMgrEc, (saved.ec || f.ec));
       // Persist personal PIN if it was edited (validates 6 digits or empty-to-clear)
       if (newPin !== undefined) {
         const ec = saved.ec || f.ec;
