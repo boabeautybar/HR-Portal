@@ -21144,14 +21144,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const _mgrRecorderByEcYmd = {};
         const _mgrRecordedAtByEcYmd = {};
         (mgrDayStatuses || []).forEach(r => {
+          // Compare staff_id as STRINGS. loadManagerDayStatuses can return it as
+          // a different JS type than the managers-list id (e.g. string vs
+          // number), so a strict === silently dropped the row on reload and the
+          // manager's saved status (Sick / Annual / …) reverted to the clock-in.
+          const rid = r && r.staff_id != null ? String(r.staff_id) : null;
+          if (!rid) return;
           for (const ec in _mgrEcToStaffId) {
-            if (_mgrEcToStaffId[ec] === r.staff_id) {
+            if (String(_mgrEcToStaffId[ec]) === rid) {
               (_mgrStatusByEcYmd[ec] = _mgrStatusByEcYmd[ec] || {})[r.date] = r.status;
               if (r.proof) (_mgrProofByEcYmd[ec] = _mgrProofByEcYmd[ec] || {})[r.date] = r.proof;
               if (r.note) (_mgrNoteByEcYmd[ec] = _mgrNoteByEcYmd[ec] || {})[r.date] = r.note;
               (_mgrRecorderByEcYmd[ec] = _mgrRecorderByEcYmd[ec] || {})[r.date] = r.updated_by || r.recorded_by || null;
               (_mgrRecordedAtByEcYmd[ec] = _mgrRecordedAtByEcYmd[ec] || {})[r.date] = r.updated_at || r.created_at || null;
-              break;
+              // No break — set every EC variant (raw + trimmed) that maps to this
+              // staff_id so getStatus matches whichever variant the grid row uses.
             }
           }
         });
