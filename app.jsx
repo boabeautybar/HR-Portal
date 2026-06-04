@@ -9782,7 +9782,9 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     const isMgr = isManagerEc(ec);
     const asOf = (data && data.asOf) || "2026-05-24";
     const opts = { schedCache, ymdToSchedYm, ec, branch };
-    const annual = (leaveRecs || []).filter(lv => lv && lv.type === "Annual leave" && lv.startDate && lv.endDate && lbNormEc(lv.ec) === norm);
+    // Only PAID annual leave reduces the balance. Emergency leave (lv.emergency)
+    // is unpaid, so it's excluded from taken/booked/recon entirely.
+    const annual = (leaveRecs || []).filter(lv => lv && lv.type === "Annual leave" && !lv.emergency && lv.startDate && lv.endDate && lbNormEc(lv.ec) === norm);
     let taken = 0, bookedCycle = 0, bookedBeyond = 0;
     const future = [];
     const cEnd = cycle ? cycle.end : todayYmd;   // last day of the current pay cycle
@@ -9870,7 +9872,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 14 }}>
         <div>
           <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700 }}>🧾 Leave Balances</div>
-          <div style={{ fontSize: 12.5, color: "#9d6a82", marginTop: 2 }}>Opening balance (as of the date below) minus Annual leave from the calendar — <strong>Taken</strong> (past) and <strong>Booked</strong> (future) — gives the current and projected balance. Stored in Supabase, nothing hard-coded.</div>
+          <div style={{ fontSize: 12.5, color: "#9d6a82", marginTop: 2 }}>Opening balance (as of the date below) minus paid Annual leave from the calendar — <strong>Taken</strong> (past) and <strong>Booked</strong> (future) — gives the current and projected balance. Unpaid emergency leave isn't counted. Stored in Supabase, nothing hard-coded.</div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <span style={{ fontSize: 11.5, color: saving ? "#b45309" : "#15803d", fontWeight: 700 }}>{saving ? "Saving…" : "✓ Saved"}</span>
