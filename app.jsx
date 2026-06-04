@@ -9783,20 +9783,29 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     const asOf = (data && data.asOf) || "2026-05-24";
     const opts = { schedCache, ymdToSchedYm, ec, branch };
     const annual = (leaveRecs || []).filter(lv => lv && lv.type === "Annual leave" && lv.startDate && lv.endDate && lbNormEc(lv.ec) === norm);
-    let taken = 0, booked = 0;
+    let taken = 0, bookedCycle = 0, bookedBeyond = 0;
     const future = [];
+    const cEnd = cycle ? cycle.end : todayYmd;   // last day of the current pay cycle
     annual.forEach(lv => {
       // Taken: after the as-of cutoff (already in opening), up to & incl. today.
       const ps = maxYmd(lv.startDate, addDaysYmd(asOf, 1)), pe = minYmd(lv.endDate, todayYmd);
       if (ps <= pe) taken += leaveDayBreakdown(ps, pe, isMgr, opts).real;
-      // Booked: strictly after today.
+      // Booked: strictly after today. A range that straddles the cycle end is
+      // split — the part within this cycle vs the part beyond it.
       const fs = maxYmd(lv.startDate, addDaysYmd(todayYmd, 1));
-      if (fs <= lv.endDate) {
-        const fb = leaveDayBreakdown(fs, lv.endDate, isMgr, opts).real;
-        booked += fb;
-        if (fb > 0) future.push({ start: fs, end: lv.endDate, days: fb, emergency: !!lv.emergency });
+      if (fs > lv.endDate) return;
+      const tcEnd = minYmd(lv.endDate, cEnd);
+      if (cycle && fs <= tcEnd) {
+        const d = leaveDayBreakdown(fs, tcEnd, isMgr, opts).real;
+        if (d > 0) { bookedCycle += d; future.push({ start: fs, end: tcEnd, days: d, emergency: !!lv.emergency, bucket: "cycle" }); }
+      }
+      const bStart = cycle ? maxYmd(fs, addDaysYmd(cEnd, 1)) : fs;
+      if (bStart <= lv.endDate) {
+        const d = leaveDayBreakdown(bStart, lv.endDate, isMgr, opts).real;
+        if (d > 0) { bookedBeyond += d; future.push({ start: bStart, end: lv.endDate, days: d, emergency: !!lv.emergency, bucket: "later" }); }
       }
     });
+    const booked = bookedCycle + bookedBeyond;
     // Reconciliation: planned annual-leave days this cycle that are in the past.
     const recon = [];
     if (cycle) {
@@ -9814,7 +9823,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     const projected = current - booked;
     return {
       norm, rawEc: e.rawEc || norm, name: e.name || (r ? r.name : ""), branch, role: r ? r.role : "", isMgr,
-      opening, openingSet: e.opening != null, net, taken, booked, current, projected, adjustments: adjs,
+      opening, openingSet: e.opening != null, net, taken, booked, bookedCycle, bookedBeyond, current, projected, adjustments: adjs,
       recon, future, workedCount: recon.filter(x => x.status === "worked").length, overbooked: projected < -0.001
     };
   };
@@ -9831,9 +9840,9 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
   }, [allRows, q]);
 
   const stats = useMemo(() => {
-    let current = 0, projected = 0, taken = 0, booked = 0, adjusted = 0, overbooked = 0;
-    allRows.forEach(r => { current += r.current; projected += r.projected; taken += r.taken; booked += r.booked; if (r.adjustments.length) adjusted++; if (r.overbooked) overbooked++; });
-    return { n: allRows.length, current, projected, taken, booked, adjusted, overbooked };
+    let current = 0, projected = 0, taken = 0, booked = 0, bookedCycle = 0, bookedBeyond = 0, adjusted = 0, overbooked = 0;
+    allRows.forEach(r => { current += r.current; projected += r.projected; taken += r.taken; booked += r.booked; bookedCycle += r.bookedCycle; bookedBeyond += r.bookedBeyond; if (r.adjustments.length) adjusted++; if (r.overbooked) overbooked++; });
+    return { n: allRows.length, current, projected, taken, booked, bookedCycle, bookedBeyond, adjusted, overbooked };
   }, [allRows]);
 
   const fmtDays = (x) => { const v = Math.round((Number(x) || 0) * 100) / 100; return (v === Math.floor(v)) ? String(v) : v.toFixed(2).replace(/0$/, ""); };
@@ -9885,10 +9894,18 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
           <div style={{ fontSize: 26, fontWeight: 800, color: "#831843", marginTop: 4 }}>{fmtDays(stats.current)}</div>
           <div style={{ fontSize: 10.5, color: "#9d6a82" }}>after {fmtDays(stats.taken)}d taken</div>
         </div>
-        <div style={{ ...card, flex: "1 1 140px", minWidth: 130 }}>
+        <div style={{ ...card, flex: "1 1 160px", minWidth: 150 }}>
           <div style={{ fontSize: 10, fontWeight: 800, color: "#9d174d", letterSpacing: "0.06em", textTransform: "uppercase" }}>Booked ahead</div>
-          <div style={{ fontSize: 26, fontWeight: 800, color: "#b45309", marginTop: 4 }}>{fmtDays(stats.booked)}</div>
-          <div style={{ fontSize: 10.5, color: "#9d6a82" }}>future annual leave</div>
+          <div style={{ display: "flex", gap: 14, marginTop: 4 }}>
+            <div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: "#b45309" }}>{fmtDays(stats.bookedCycle)}</div>
+              <div style={{ fontSize: 10, color: "#9d6a82" }}>this cycle</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: "#9333ea" }}>{fmtDays(stats.bookedBeyond)}</div>
+              <div style={{ fontSize: 10, color: "#9d6a82" }}>later</div>
+            </div>
+          </div>
         </div>
         <div style={{ ...card, flex: "1 1 140px", minWidth: 130 }}>
           <div style={{ fontSize: 10, fontWeight: 800, color: "#9d174d", letterSpacing: "0.06em", textTransform: "uppercase" }}>Projected total</div>
@@ -9995,7 +10012,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
       ) : (
         <div style={{ ...card, padding: 0, overflow: "hidden" }}>
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1000 }}>
               <thead>
                 <tr>
                   <th style={th}>Employee</th>
@@ -10003,8 +10020,9 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
                   <th style={{ ...th, textAlign: "right" }} title="Manual add/remove-day adjustments">Adj</th>
                   <th style={{ ...th, textAlign: "right" }} title="Annual leave taken since the as-of date (past, up to today)">Taken</th>
                   <th style={{ ...th, textAlign: "right" }} title="Opening + adjustments − taken">Current</th>
-                  <th style={{ ...th, textAlign: "right" }} title="Future annual leave still booked on the calendar">Booked</th>
-                  <th style={{ ...th, textAlign: "right" }} title="Current − booked: balance once all booked leave is taken">Projected</th>
+                  <th style={{ ...th, textAlign: "right" }} title="Annual leave booked for the rest of this pay cycle (after today)">Booked·cycle</th>
+                  <th style={{ ...th, textAlign: "right" }} title="Annual leave booked beyond this pay cycle">Booked·later</th>
+                  <th style={{ ...th, textAlign: "right" }} title="Current − all booked leave: balance once every booked day is taken">Projected</th>
                   <th style={{ ...th, textAlign: "right" }}>Actions</th>
                 </tr>
               </thead>
@@ -10027,7 +10045,8 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
                           {r.workedCount > 0 ? <span title={r.workedCount + " planned leave day(s) this cycle were actually worked — open the row to reconcile"} style={{ color: "#b45309", fontWeight: 800 }}> ⚠</span> : null}
                         </td>
                         <td style={{ ...td, textAlign: "right", fontWeight: 800, fontSize: 14 }}>{fmtDays(r.current)}</td>
-                        <td style={{ ...td, textAlign: "right", color: r.booked > 0 ? "#b45309" : "#cbb1bd", fontWeight: r.booked > 0 ? 700 : 400 }}>{r.booked > 0 ? "−" + fmtDays(r.booked) : "—"}</td>
+                        <td style={{ ...td, textAlign: "right", color: r.bookedCycle > 0 ? "#b45309" : "#cbb1bd", fontWeight: r.bookedCycle > 0 ? 700 : 400 }}>{r.bookedCycle > 0 ? "−" + fmtDays(r.bookedCycle) : "—"}</td>
+                        <td style={{ ...td, textAlign: "right", color: r.bookedBeyond > 0 ? "#9333ea" : "#cbb1bd", fontWeight: r.bookedBeyond > 0 ? 700 : 400 }}>{r.bookedBeyond > 0 ? "−" + fmtDays(r.bookedBeyond) : "—"}</td>
                         <td style={{ ...td, textAlign: "right", fontWeight: 800, fontSize: 14, color: r.overbooked ? "#b91c1c" : "#15803d" }}>{fmtDays(r.projected)}{r.overbooked ? <span title="Projected to go negative — more booked leave than balance" style={{ marginLeft: 3 }}>⚠</span> : null}</td>
                         <td style={{ ...td, textAlign: "right" }}>
                           <button onClick={() => { setExpanded(open ? null : r.norm); setAdjDays(""); setAdjReason(""); setAdjSign(-1); }} style={{ background: open ? "#831843" : "#fce7f3", color: open ? "#fff" : "#9d174d", border: "none", borderRadius: 7, padding: "5px 10px", fontWeight: 700, fontSize: 11.5, cursor: "pointer", whiteSpace: "nowrap" }}>{open ? "Close" : "Details"}</button>
@@ -10035,7 +10054,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
                       </tr>
                       {open && (
                         <tr style={{ background: "#FDF2F8" }}>
-                          <td style={{ ...td, borderBottom: "2px solid #FBCFE8" }} colSpan={8}>
+                          <td style={{ ...td, borderBottom: "2px solid #FBCFE8" }} colSpan={9}>
                             {/* Reconciliation — this cycle's past leave days vs what actually happened */}
                             {cycle && (
                               <div style={{ marginBottom: 12, background: "#fff", border: "1px solid #FCE7F3", borderRadius: 9, padding: "10px 12px" }}>
@@ -10059,19 +10078,28 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
                                 )}
                               </div>
                             )}
-                            {/* Booked ahead — future annual leave still to be taken */}
+                            {/* Booked ahead — future annual leave, split by this cycle vs later */}
                             {r.future.length > 0 && (
                               <div style={{ marginBottom: 12, background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 9, padding: "10px 12px" }}>
-                                <div style={{ fontSize: 11.5, fontWeight: 800, color: "#92400e", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Booked ahead — {fmtDays(r.booked)} day{r.booked === 1 ? "" : "s"} → projected {fmtDays(r.projected)}{r.overbooked ? " ⚠ negative" : ""}</div>
-                                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                                  {r.future.map((f, i) => (
-                                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#92400e" }}>
-                                      <span style={{ fontWeight: 800, minWidth: 44 }}>−{fmtDays(f.days)}d</span>
-                                      <span>{fmtDayShort(f.start)}{f.end !== f.start ? " – " + fmtDayShort(f.end) : ""}</span>
-                                      {f.emergency ? <span style={{ fontSize: 10.5, color: "#9d6a82" }}>· with proof</span> : null}
+                                <div style={{ fontSize: 11.5, fontWeight: 800, color: "#92400e", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Booked ahead — {fmtDays(r.bookedCycle)} this cycle · {fmtDays(r.bookedBeyond)} later → projected {fmtDays(r.projected)}{r.overbooked ? " ⚠ negative" : ""}</div>
+                                {[{ k: "cycle", lbl: "Rest of this cycle" + (cycle ? " (to " + fmtDayShort(cycle.end) + ")" : ""), col: "#b45309" }, { k: "later", lbl: "Further into the future", col: "#9333ea" }].map(grp => {
+                                  const items = r.future.filter(f => f.bucket === grp.k);
+                                  if (items.length === 0) return null;
+                                  return (
+                                    <div key={grp.k} style={{ marginTop: 4 }}>
+                                      <div style={{ fontSize: 10.5, fontWeight: 700, color: grp.col, marginBottom: 3 }}>{grp.lbl}</div>
+                                      <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 6 }}>
+                                        {items.map((f, i) => (
+                                          <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#92400e" }}>
+                                            <span style={{ fontWeight: 800, minWidth: 44 }}>−{fmtDays(f.days)}d</span>
+                                            <span>{fmtDayShort(f.start)}{f.end !== f.start ? " – " + fmtDayShort(f.end) : ""}</span>
+                                            {f.emergency ? <span style={{ fontSize: 10.5, color: "#9d6a82" }}>· with proof</span> : null}
+                                          </div>
+                                        ))}
+                                      </div>
                                     </div>
-                                  ))}
-                                </div>
+                                  );
+                                })}
                               </div>
                             )}
                             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: (r.adjustments.length ? 10 : 0) }}>
@@ -10102,7 +10130,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
                     </React.Fragment>
                   );
                 })}
-                {rows.length === 0 && <tr><td style={{ ...td, textAlign: "center", color: "#9d6a82" }} colSpan={8}>No matches for “{q}”.</td></tr>}
+                {rows.length === 0 && <tr><td style={{ ...td, textAlign: "center", color: "#9d6a82" }} colSpan={9}>No matches for “{q}”.</td></tr>}
               </tbody>
             </table>
           </div>
