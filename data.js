@@ -1580,6 +1580,33 @@
     return config || {};
   }
 
+  // ---------- Leave balances (Payroll → Leave Balances tab) ----------
+  // The payroll-supplied annual-leave balance per employee, plus any manual
+  // add/remove-day adjustments, kept as one JSON blob in app_state. Shape:
+  //   { asOf: "YYYY-MM-DD", entries: { <ec>: { ec, rawEc, name, opening,
+  //     adjustments: [{ id, days, reason, by, ts }] } }, updatedBy, updatedAt }
+  async function loadLeaveBalances() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_leave_balances_v1").maybeSingle();
+    if (res.error) { console.error("loadLeaveBalances:", res.error); return null; }
+    return (res.data && res.data.value) || null;
+  }
+  async function saveLeaveBalances(data) {
+    var res = await sb.from("app_state").upsert({ key: "boa_leave_balances_v1", value: data || {} });
+    if (res.error) { console.error("saveLeaveBalances:", res.error); throw res.error; }
+    return data || {};
+  }
+  // Who may see / edit the Leave Balances tab. Defaults to empty → owners only.
+  async function loadLeaveBalancesAccess() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_leave_balances_access_v1").maybeSingle();
+    if (res.error) { console.error("loadLeaveBalancesAccess:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveLeaveBalancesAccess(config) {
+    var res = await sb.from("app_state").upsert({ key: "boa_leave_balances_access_v1", value: config || {} });
+    if (res.error) { console.error("saveLeaveBalancesAccess:", res.error); throw res.error; }
+    return config || {};
+  }
+
   // ---------- Attendance grid (boa_att_<branch>_<ym>) ----------
   // Same key the check-in kiosk app writes to. Status codes include:
   //   on, late, off, ext, sick_n, sick, frl, al, ph, mat, no, unpaid,
@@ -1924,6 +1951,10 @@
     saveLeaveOpsAccess: saveLeaveOpsAccess,
     loadLeavePayrollAccess: loadLeavePayrollAccess,
     saveLeavePayrollAccess: saveLeavePayrollAccess,
+    loadLeaveBalances: loadLeaveBalances,
+    saveLeaveBalances: saveLeaveBalances,
+    loadLeaveBalancesAccess: loadLeaveBalancesAccess,
+    saveLeaveBalancesAccess: saveLeaveBalancesAccess,
     loadComplianceActions: loadComplianceActions,
     saveComplianceActions: saveComplianceActions,
     loadUnpaidLegalRecords: loadUnpaidLegalRecords,
