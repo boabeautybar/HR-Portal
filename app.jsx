@@ -21202,7 +21202,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const isWork = code === "W" || code === "WE" || code === "WL" || code === "WM" || code === "WB" || code === "E";
           if (!custom && !isWork) return 0;                       // not a scheduled working day
           let dow = -1; try { dow = new Date(ymd + "T12:00:00").getDay(); } catch (_) {}
-          const range = parseShiftRange(custom || shiftTimes(s.role, code, s.branch || attBranch, dow));
+          // Use the EFFECTIVE role so an AM on an SM trial is measured against SM
+          // hours (08:00-17:00) — the same shift Manager Coverage shows via
+          // _effectiveRole. Reading the raw "AM" role charged them the late AM
+          // close (e.g. 20:00), so a normal ~17:00 SM finish looked like a 3h
+          // early leave. Custom hours (set on the Coverage overview) still win.
+          const effRole = (s.role === "AM" && (s.smTrial || _smTrialEcSet.has(ec))) ? "SM" : s.role;
+          const range = parseShiftRange(custom || shiftTimes(effRole, code, s.branch || attBranch, dow));
           if (!range) return 0;
           const out = new Date(outTs);
           const shortMin = range.end - (out.getHours() * 60 + out.getMinutes());
