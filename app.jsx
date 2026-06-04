@@ -9782,7 +9782,9 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     const isMgr = isManagerEc(ec);
     const asOf = (data && data.asOf) || "2026-05-24";
     const opts = { schedCache, ymdToSchedYm, ec, branch };
-    const annual = (leaveRecs || []).filter(lv => lv && lv.type === "Annual leave" && lv.startDate && lv.endDate && lbNormEc(lv.ec) === norm);
+    // Only PAID annual leave reduces the balance. Emergency leave (lv.emergency)
+    // is unpaid, so it's excluded from taken/booked/recon entirely.
+    const annual = (leaveRecs || []).filter(lv => lv && lv.type === "Annual leave" && !lv.emergency && lv.startDate && lv.endDate && lbNormEc(lv.ec) === norm);
     let taken = 0, bookedCycle = 0, bookedBeyond = 0;
     const future = [];
     const cEnd = cycle ? cycle.end : todayYmd;   // last day of the current pay cycle
@@ -9859,7 +9861,12 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
   }[status] || { icon: "◷", label: status, color: "#6b7280", bg: "#f3f4f6" });
   const card = { background: "#fff", border: "1px solid #FBCFE8", borderRadius: 14, padding: "16px 18px" };
   const inp = { padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, color: "#831843" };
-  const th = { textAlign: "left", padding: "8px 10px", fontSize: 10, fontWeight: 800, color: "#9d174d", textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "2px solid #FBCFE8", whiteSpace: "nowrap" };
+  // Sticky header: stays pinned while the table body scrolls so the column
+  // meaning is always visible. boxShadow (not borderBottom) keeps the divider
+  // attached during sticky with border-collapse.
+  const th = { textAlign: "left", padding: "8px 10px", fontSize: 10, fontWeight: 800, color: "#9d174d", textTransform: "uppercase", letterSpacing: "0.06em", whiteSpace: "nowrap", position: "sticky", top: 0, zIndex: 2, background: "#FDF2F8", boxShadow: "inset 0 -2px 0 #FBCFE8" };
+  // Small "?" badge with a hover explanation for a column header.
+  const qmark = (tip) => <span title={tip} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 13, height: 13, marginLeft: 4, borderRadius: "50%", border: "1px solid #d8a7bd", color: "#9d174d", fontSize: 9, fontWeight: 800, cursor: "help", verticalAlign: "middle", lineHeight: 1 }}>?</span>;
   const td = { padding: "8px 10px", fontSize: 13, color: "#831843", borderBottom: "1px solid #FCE7F3", verticalAlign: "top" };
 
   if (loading) return <div style={{ padding: 24, color: "#9ca3af", fontStyle: "italic" }}>Loading leave balances…</div>;
@@ -9870,7 +9877,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 14 }}>
         <div>
           <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700 }}>🧾 Leave Balances</div>
-          <div style={{ fontSize: 12.5, color: "#9d6a82", marginTop: 2 }}>Opening balance (as of the date below) minus Annual leave from the calendar — <strong>Taken</strong> (past) and <strong>Booked</strong> (future) — gives the current and projected balance. Stored in Supabase, nothing hard-coded.</div>
+          <div style={{ fontSize: 12.5, color: "#9d6a82", marginTop: 2 }}>Opening balance (as of the date below) minus paid Annual leave from the calendar — <strong>Taken</strong> (past) and <strong>Booked</strong> (future) — gives the current and projected balance. Unpaid emergency leave isn't counted. Stored in Supabase, nothing hard-coded.</div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <span style={{ fontSize: 11.5, color: saving ? "#b45309" : "#15803d", fontWeight: 700 }}>{saving ? "Saving…" : "✓ Saved"}</span>
@@ -10011,19 +10018,19 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
         </div>
       ) : (
         <div style={{ ...card, padding: 0, overflow: "hidden" }}>
-          <div style={{ overflowX: "auto" }}>
+          <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "70vh" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1000 }}>
               <thead>
                 <tr>
-                  <th style={th}>Employee</th>
-                  <th style={{ ...th, textAlign: "right" }} title="Opening balance as of the as-of date">Opening</th>
-                  <th style={{ ...th, textAlign: "right" }} title="Manual add/remove-day adjustments">Adj</th>
-                  <th style={{ ...th, textAlign: "right" }} title="Annual leave taken since the as-of date (past, up to today)">Taken</th>
-                  <th style={{ ...th, textAlign: "right" }} title="Opening + adjustments − taken">Current</th>
-                  <th style={{ ...th, textAlign: "right" }} title="Annual leave booked for the rest of this pay cycle (after today)">Booked·cycle</th>
-                  <th style={{ ...th, textAlign: "right" }} title="Annual leave booked beyond this pay cycle">Booked·later</th>
-                  <th style={{ ...th, textAlign: "right" }} title="Current − all booked leave: balance once every booked day is taken">Projected</th>
-                  <th style={{ ...th, textAlign: "right" }}>Actions</th>
+                  <th style={th}>Employee{qmark("The staff member. Click a row to see this cycle's leave reconciliation and what's booked ahead.")}</th>
+                  <th style={{ ...th, textAlign: "right" }}>Opening{qmark("Opening annual-leave balance from payroll, as of the as-of date set above.")}</th>
+                  <th style={{ ...th, textAlign: "right" }}>Adj{qmark("Manual add/remove-day adjustments you've applied (e.g. a correction). + adds days, − removes.")}</th>
+                  <th style={{ ...th, textAlign: "right" }}>Taken{qmark("Paid annual leave already taken since the as-of date, up to today. Unpaid emergency leave is not counted.")}</th>
+                  <th style={{ ...th, textAlign: "right" }}>Current{qmark("Balance right now = Opening + Adjustments − Taken.")}</th>
+                  <th style={{ ...th, textAlign: "right" }}>Booked·cycle{qmark("Paid annual leave booked for the rest of THIS pay cycle (after today, up to the 24th).")}</th>
+                  <th style={{ ...th, textAlign: "right" }}>Booked·later{qmark("Paid annual leave booked beyond this pay cycle (future cycles).")}</th>
+                  <th style={{ ...th, textAlign: "right" }}>Projected{qmark("Balance once all booked leave is taken = Current − Booked (cycle + later). Red ⚠ means it goes negative.")}</th>
+                  <th style={{ ...th, textAlign: "right" }}>Actions{qmark("Open the row to add/remove adjustment days or view the leave breakdown.")}</th>
                 </tr>
               </thead>
               <tbody>
