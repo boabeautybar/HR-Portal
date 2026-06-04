@@ -21007,6 +21007,38 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           setAttGrid(next);
           try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
           catch (e) { alert("Could not save: " + (e.message || e)); }
+          // Managers carry their payroll status in the manager_day_status store,
+          // which OVERRIDES the attendance grid on the sheet (see getStatus). So
+          // an attGrid-only edit never sticks for a manager — e.g. changing
+          // Sick+note → FRL would silently revert. Mirror the edit into that
+          // store so the override actually updates: absence/leave reasons are
+          // upserted; present/off codes (and clearing) remove the override so
+          // the day reverts to the clock-in / schedule reading.
+          const _mgrStaffId = _mgrEcToStaffId[ec];
+          if (_mgrStaffId) {
+            const _do = days.find(x => x.d === d);
+            const _ymd = _do && _do.ymd;
+            if (_ymd) {
+              const _bare = (v && v.indexOf("~") === 0) ? v.slice(1) : (v || "");
+              // Codes that mean "present / legitimately off" — these don't
+              // belong in the absence-reason store, so they clear it instead.
+              const _present = new Set(["on", "late", "off", "ph", "ext", "swap_o", "swap_i"]);
+              const _recorder = (currentUser && (currentUser.name || currentUser.email)) || "admin";
+              try {
+                if (!_bare || _present.has(_bare)) {
+                  if (window.BOA_DB.deleteManagerDayStatus) await window.BOA_DB.deleteManagerDayStatus({ staffId: _mgrStaffId, date: _ymd });
+                  setMgrDayStatuses(p => (p || []).filter(r => !(String(r.staff_id) === String(_mgrStaffId) && r.date === _ymd)));
+                } else if (window.BOA_DB.saveManagerDayStatus) {
+                  const _rec = await window.BOA_DB.saveManagerDayStatus({ staffId: _mgrStaffId, date: _ymd, status: _bare, recordedBy: _recorder });
+                  setMgrDayStatuses(p => {
+                    const arr = (p || []).filter(r => !(String(r.staff_id) === String(_mgrStaffId) && r.date === _ymd));
+                    arr.push(_rec || { staff_id: _mgrStaffId, date: _ymd, status: _bare, updated_by: _recorder, updated_at: new Date().toISOString() });
+                    return arr;
+                  });
+                }
+              } catch (e) { alert("Could not update the manager's status: " + (e.message || e)); }
+            }
+          }
           const staffName = (attStaff.find(s => s.ec === ec) || {}).name || ec;
           const dayObj = days.find(x => x.d === d);
           const dayDesc = dayObj ? new Date(dayObj.ymd + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ("day " + d);
