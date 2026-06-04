@@ -700,6 +700,30 @@ function saHolidays(year) {
   return out;
 }
 
+// ─── MATERNITY-LEAVE WINDOW for a single 25th→24th schedule cycle ──────────────────
+// Maternity used to blank a person's ENTIRE row the instant their status
+// flipped to "on maternity". Instead we honour the Maternity tab's start
+// date: schedule them normally up to that date and only show 'ML' from it
+// onward. Returns { full, fromYmd }:
+//   • full=true               → on mat for the whole cycle (no start date on
+//                               file, or it began on/before the cycle began)
+//                               → the entire row is ML, exactly as before.
+//   • full=false, fromYmd set → maternity STARTS mid-cycle on fromYmd: real
+//                               working days before it, ML on/after it.
+//   • full=false, fromYmd=null→ not on maternity during this cycle (a known
+//                               start date that lands after the cycle ends).
+// matStart is read from the joined maternity record (person.matRec.matStart)
+// with a flat person.matStart fallback for callers that pass it directly.
+function matCycleWindow(person, cycleStartYmd, cycleEndYmd) {
+  const onMat = !!(person && (person.onMat || person._onMat));
+  if (!onMat) return { full: false, fromYmd: null };
+  const ms = (person && person.matRec && person.matRec.matStart) || (person && person.matStart) || null;
+  if (!ms) return { full: true, fromYmd: cycleStartYmd };          // date unknown → whole cycle
+  if (ms <= cycleStartYmd) return { full: true, fromYmd: cycleStartYmd };  // already underway
+  if (cycleEndYmd && ms > cycleEndYmd) return { full: false, fromYmd: null }; // starts a later cycle
+  return { full: false, fromYmd: ms };                             // mid-cycle start
+}
+
 // ─── MANAGER SCHEDULE GENERATOR (mgrSched) ────────────────────────────────────────
 // Ported 1:1 from the old HR portal HTML (function originally on line 842).
 // Generates a per-manager × per-day grid for one branch over a single 25th→24th
@@ -1668,6 +1692,7 @@ function shiftTimes(role, code, branch, dow) {
       if (code === "WL") return "10:00 - 19:00";
       return "10:00 - 19:00";
     }
+    if (code === "WE") return "08:00 - 17:00";   // AM opener when no SM is in
     if (code === "WM") return "10:00 - 19:00";
     if (code === "WL") return "11:00 - 20:00";
     return "11:00 - 20:00";
@@ -1690,6 +1715,266 @@ function shiftTimes(role, code, branch, dow) {
   if (code === "E")  return "09:00 - 18:30";
   return "09:00 - 18:30";
 }
+
+// ─── PER-STORE MANAGER SHIFT LABELLING ────────────────────────────────────────────
+// Turns plain "W" working cells into the per-store WE/WM/WL/WB shift labels that
+// the schedule tab shows. Pulled out to module scope (from the manager-schedule
+// render) so Manager Coverage can derive the SAME labels — coverage used to read
+// whatever raw/stale label sat in the saved grid, which disagreed with the
+// schedule tab (e.g. Sandown gave a WL where the schedule said WM). All of these
+// are re-run-safe: they reset every working cell to "W" first, then re-assign
+// purely from WHO is working that day + their role, so the result depends only on
+// the work/off pattern, never on the labels already in the grid.
+//   grid:     { ec: { dayKey: code } }   (dayKey = whatever the caller uses)
+//   dates:    [{ d: dayKey, dow }]
+//   managers: [{ ec, role }]
+function applyMgrShiftSplit(grid, dates, managers, wmDows) {
+  if (!grid) return;
+  const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
+  const _earlyCount = {};
+  const _middleCount = {};
+  (managers || []).forEach(m => { _earlyCount[m.ec] = 0; _middleCount[m.ec] = 0; });
+  const _pickLowest = (list, counter) => {
+    const sorted = list.slice().sort((a, b) =>
+      ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
+      (a.ec || "").localeCompare(b.ec || "")
+    );
+    const winner = sorted[0];
+    counter[winner.ec] = (counter[winner.ec] || 0) + 1;
+    return winner;
+  };
+  (dates || []).forEach(dy => {
+    const workers = (managers || []).filter(m =>
+      m && m.ec && grid[m.ec] && (
+        grid[m.ec][dy.d] === "W" ||
+        grid[m.ec][dy.d] === "WE" ||
+        grid[m.ec][dy.d] === "WM" ||
+        grid[m.ec][dy.d] === "WL"
+      )
+    );
+    if (workers.length === 0) return;
+    // Reset to W so a re-run lands on the right labels (re-run-safe).
+    workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
+    const wmAllowedToday = wmDows && wmDows.has(dy.dow);
+    const sm = workers.find(_isSM);
+    const ams = workers.filter(m => !_isSM(m));
+    if (sm) {
+      grid[sm.ec][dy.d] = "WE";
+      // SM + 2+ AMs on a WM-eligible day → 1 middle shift, rest late.
+      if (wmAllowedToday && ams.length >= 2) {
+        const mid = _pickLowest(ams, _middleCount);
+        grid[mid.ec][dy.d] = "WM";
+        ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      } else {
+        ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      }
+    } else if (ams.length > 0) {
+      const opener = _pickLowest(ams, _earlyCount);
+      grid[opener.ec][dy.d] = "WE";
+      const rest = ams.filter(m => m.ec !== opener.ec);
+      // No-SM + 3+ AMs on a WM-eligible day → 1 early + 1 middle + rest late.
+      // (Need at least 2 non-opener AMs to spawn a WM so a WL still exists.)
+      if (wmAllowedToday && rest.length >= 2) {
+        const mid = _pickLowest(rest, _middleCount);
+        grid[mid.ec][dy.d] = "WM";
+        rest.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      } else {
+        rest.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      }
+    }
+  });
+}
+
+// Riverlands — Mon-Fri WE/WL split with a 4+ "WB" bonus-early; Sat/Sun single WE.
+function applyRiverlandsShifts(grid, dates, managers) {
+  if (!grid) return;
+  const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
+  const _earlyCount = {};
+  const _extraEarlyCount = {};
+  (managers || []).forEach(m => { _earlyCount[m.ec] = 0; _extraEarlyCount[m.ec] = 0; });
+  const _pickLowest = (list, counter) => {
+    const sorted = list.slice().sort((a, b) =>
+      ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
+      (a.ec || "").localeCompare(b.ec || "")
+    );
+    const winner = sorted[0];
+    counter[winner.ec] = (counter[winner.ec] || 0) + 1;
+    return winner;
+  };
+  (dates || []).forEach(dy => {
+    const workers = (managers || []).filter(m =>
+      m && m.ec && grid[m.ec] && (
+        grid[m.ec][dy.d] === "W" ||
+        grid[m.ec][dy.d] === "WE" ||
+        grid[m.ec][dy.d] === "WB" ||
+        grid[m.ec][dy.d] === "WM" ||
+        grid[m.ec][dy.d] === "WL"
+      )
+    );
+    if (workers.length === 0) return;
+    workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
+    const isMonFri = dy.dow >= 1 && dy.dow <= 5;
+    if (!isMonFri) {
+      workers.forEach(m => { grid[m.ec][dy.d] = "WE"; });
+      return;
+    }
+    const sm = workers.find(_isSM);
+    const ams = workers.filter(m => !_isSM(m));
+    if (sm) {
+      grid[sm.ec][dy.d] = "WE";
+      if (workers.length >= 4 && ams.length >= 1) {
+        const extra = _pickLowest(ams, _extraEarlyCount);
+        grid[extra.ec][dy.d] = "WB";
+        ams.filter(m => m.ec !== extra.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      } else {
+        ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      }
+    } else if (ams.length > 0) {
+      const opener = _pickLowest(ams, _earlyCount);
+      grid[opener.ec][dy.d] = "WE";
+      const rest = ams.filter(m => m.ec !== opener.ec);
+      if (workers.length >= 4 && rest.length >= 1) {
+        const extra = _pickLowest(rest, _extraEarlyCount);
+        grid[extra.ec][dy.d] = "WB";
+        rest.filter(m => m.ec !== extra.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      } else {
+        rest.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      }
+    }
+  });
+}
+
+// Ballito / Mall of the South — Mon-Sat: SM=WE, else WM(opener)+WL; Sunday single WE.
+function applyBallitoShifts(grid, dates, managers) {
+  if (!grid) return;
+  const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
+  const _middleCount = {};
+  (managers || []).forEach(m => { _middleCount[m.ec] = 0; });
+  const _pickLowest = (list, counter) => {
+    const sorted = list.slice().sort((a, b) =>
+      ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
+      (a.ec || "").localeCompare(b.ec || "")
+    );
+    const winner = sorted[0];
+    counter[winner.ec] = (counter[winner.ec] || 0) + 1;
+    return winner;
+  };
+  (dates || []).forEach(dy => {
+    const workers = (managers || []).filter(m =>
+      m && m.ec && grid[m.ec] && (
+        grid[m.ec][dy.d] === "W" ||
+        grid[m.ec][dy.d] === "WE" ||
+        grid[m.ec][dy.d] === "WB" ||
+        grid[m.ec][dy.d] === "WM" ||
+        grid[m.ec][dy.d] === "WL"
+      )
+    );
+    if (workers.length === 0) return;
+    workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
+    const isMonSat = dy.dow >= 1 && dy.dow <= 6;
+    if (!isMonSat) {
+      workers.forEach(m => { grid[m.ec][dy.d] = "WE"; });
+      return;
+    }
+    const sm = workers.find(_isSM);
+    const ams = workers.filter(m => !_isSM(m));
+    if (sm) {
+      grid[sm.ec][dy.d] = "WE";
+      if (ams.length >= 2) {
+        const mid = _pickLowest(ams, _middleCount);
+        grid[mid.ec][dy.d] = "WM";
+        ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      } else {
+        ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      }
+    } else if (ams.length === 1) {
+      grid[ams[0].ec][dy.d] = "WL";
+    } else if (ams.length > 0) {
+      const mid = _pickLowest(ams, _middleCount);
+      grid[mid.ec][dy.d] = "WM";
+      ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+    }
+  });
+}
+
+// Fourways — SM always WE; no-SM Mon-Sat gives a WE opener + WL; Sunday WE+WL.
+function applyFourwaysShifts(grid, dates, managers) {
+  if (!grid) return;
+  const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
+  const _middleCount = {};
+  const _earlyCount = {};
+  (managers || []).forEach(m => { _middleCount[m.ec] = 0; _earlyCount[m.ec] = 0; });
+  const _pickLowest = (list, counter) => {
+    const sorted = list.slice().sort((a, b) =>
+      ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
+      (a.ec || "").localeCompare(b.ec || "")
+    );
+    const winner = sorted[0];
+    counter[winner.ec] = (counter[winner.ec] || 0) + 1;
+    return winner;
+  };
+  (dates || []).forEach(dy => {
+    const workers = (managers || []).filter(m =>
+      m && m.ec && grid[m.ec] && (
+        grid[m.ec][dy.d] === "W" ||
+        grid[m.ec][dy.d] === "WE" ||
+        grid[m.ec][dy.d] === "WB" ||
+        grid[m.ec][dy.d] === "WM" ||
+        grid[m.ec][dy.d] === "WL"
+      )
+    );
+    if (workers.length === 0) return;
+    workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
+    const sms = workers.filter(_isSM);
+    const ams = workers.filter(m => !_isSM(m));
+    sms.forEach(m => { grid[m.ec][dy.d] = "WE"; });
+    const isSun = dy.dow === 0;
+    if (isSun) {
+      if (sms.length >= 1) {
+        ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      } else if (ams.length === 1) {
+        grid[ams[0].ec][dy.d] = "WE";
+      } else if (ams.length > 0) {
+        const opener = _pickLowest(ams, _earlyCount);
+        grid[opener.ec][dy.d] = "WE";
+        ams.filter(m => m.ec !== opener.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      }
+      return;
+    }
+    if (ams.length === 0) {
+      // pure SM day — already handled above
+    } else if (sms.length >= 1) {
+      if (ams.length >= 2) {
+        const mid = _pickLowest(ams, _middleCount);
+        grid[mid.ec][dy.d] = "WM";
+        ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      } else {
+        ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      }
+    } else if (ams.length === 1) {
+      grid[ams[0].ec][dy.d] = "WE";
+    } else {
+      const opener = _pickLowest(ams, _earlyCount);
+      grid[opener.ec][dy.d] = "WE";
+      ams.filter(m => m.ec !== opener.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+    }
+  });
+}
+
+// Dispatch to the right per-store labeller. Stores without a split rule are
+// left untouched (their cells keep the plain "W"/explicit code they came with).
+function applyBranchShiftRules(grid, dates, managers, branch) {
+  if (!grid) return;
+  if (branch === "Sandown") return applyMgrShiftSplit(grid, dates, managers, new Set([1, 2, 3, 4, 5]));
+  if (branch === "Table Bay") return applyMgrShiftSplit(grid, dates, managers, new Set([1, 2, 3, 4, 5, 6]));
+  if (branch === "Riverlands") return applyRiverlandsShifts(grid, dates, managers);
+  if (branch === "Ballito") return applyBallitoShifts(grid, dates, managers);
+  if (branch === "Mall of the South") return applyBallitoShifts(grid, dates, managers);
+  if (branch === "Fourways") return applyFourwaysShifts(grid, dates, managers);
+}
+// Branches whose manager shifts carry a per-day WE/WM/WL split (used to decide
+// whether Coverage needs to re-derive labels for a store).
+const SPLIT_SHIFT_STORES = { "Sandown": 1, "Table Bay": 1, "Riverlands": 1, "Ballito": 1, "Mall of the South": 1, "Fourways": 1 };
 
 // Parse a "HH:MM - HH:MM" range into {start,end} minutes-from-midnight, or null.
 function parseShiftRange(s) {
@@ -3150,13 +3435,21 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     });
     if (cur.length) weeks.push(cur);
 
-    // Active techs only (exclude staff currently on maternity leave) — they
-    // don't count toward coverage targets and shouldn't get scheduled days.
-    // We'll mark their grid rows as Leave separately at the end.
-    const allActive = [...techs].filter(t => !t.onMat);
+    // Maternity windows for this cycle. Someone on mat for the WHOLE cycle is
+    // excluded from scheduling (as before). Someone whose maternity STARTS
+    // mid-cycle is scheduled normally — we overlay 'ML' on their on/after-start
+    // days at the very end, so their real working days up to the start date
+    // are preserved instead of the whole row being blanked.
+    const _cycStartYmd = days.length ? days[0].year + "-" + String(days[0].monthIdx + 1).padStart(2, "0") + "-" + String(days[0].d).padStart(2, "0") : "";
+    const _cycEndYmd = days.length ? days[days.length - 1].year + "-" + String(days[days.length - 1].monthIdx + 1).padStart(2, "0") + "-" + String(days[days.length - 1].d).padStart(2, "0") : "";
+    const matWin = {};
+    techs.forEach(t => { matWin[t.ec] = matCycleWindow(t, _cycStartYmd, _cycEndYmd); });
+    // Active techs = everyone not on maternity for the full cycle (a mid-cycle
+    // mat tech is active here so they get real days before their start date).
+    const allActive = [...techs].filter(t => !matWin[t.ec].full);
     const sortedTechs = allActive
       .sort((a, b) => (a.ec || "").localeCompare(b.ec || ""));
-    const onMatTechs = techs.filter(t => t.onMat);
+    const onMatTechs = techs.filter(t => matWin[t.ec].full);
     const totalStaff = sortedTechs.length;
     const sundayGroup = {};
     sortedTechs.forEach((s, i) => { sundayGroup[s.ec] = (i % 2 === 0) ? "A" : "B"; });
@@ -4207,7 +4500,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     //   Table Bay: designate up to 3 working techs per non-Sunday as "WL"
     //              (work late). Existing rule, unchanged.
     //   Sandown:   split working techs 50/50 each non-Sunday between
-    //              "WE" (work early, 08:00–17:15) and "WL" (work late,
+    //              "WE" (work early, 08:00–17:30) and "WL" (work late,
     //              11:00–20:00). Both cells render green; the WE/WL text
     //              labels who is on which shift. With an odd headcount,
     //              WE gets the extra (more morning coverage).
@@ -4330,8 +4623,10 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
       }
     });
 
-    // On-maternity-leave staff: mark every day as L (Leave) so the cell shows
-    // a clear leave indicator. They were excluded from the algorithm above.
+    // Full-cycle maternity staff: mark every day as L (Leave). They were
+    // excluded from the algorithm above. (Mid-cycle mat techs are handled by
+    // the ML overlay at the very end of this function — they keep real working
+    // days up to their start date.)
     onMatTechs.forEach(t => {
       newGrid[t.ec] = newGrid[t.ec] || {};
       days.forEach(d => { newGrid[t.ec][d.d] = "L"; });
@@ -4453,6 +4748,21 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
         }
       }
     }
+
+    // Mid-cycle maternity overlay — runs LAST so nothing overwrites it. For
+    // any tech whose maternity starts partway through this cycle, stamp 'ML'
+    // on every day on/after the start date; days before it keep the real
+    // shift the generator just assigned. (Full-cycle mat techs were already
+    // filled above.)
+    techs.forEach(t => {
+      const w = matWin[t.ec];
+      if (!w || w.full || !w.fromYmd) return;
+      newGrid[t.ec] = newGrid[t.ec] || {};
+      days.forEach(d => {
+        const dy = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
+        if (dy >= w.fromYmd) newGrid[t.ec][d.d] = "ML";
+      });
+    });
 
     setGrid(newGrid);
     setDirty(true);
@@ -5127,7 +5437,13 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     const row = {};
     const unhonored = [];
     const _ymd = (d) => d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
-    if (tech.onMat) {
+    // Maternity: a full-cycle mat blanks the whole row (Leave). A mid-cycle
+    // start is scheduled normally below and gets an 'ML' overlay on/after the
+    // start date just before we return — so real working days are kept.
+    const _matCycStart = days.length ? _ymd(days[0]) : "";
+    const _matCycEndF = days.length ? _ymd(days[days.length - 1]) : "";
+    const _techMatWin = matCycleWindow(tech, _matCycStart, _matCycEndF);
+    if (_techMatWin.full) {
       days.forEach(d => { row[d.d] = "L"; });
       return { row, unhonored };
     }
@@ -5330,6 +5646,12 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
         break;
       }
       if (!inserted) break;
+    }
+
+    // Mid-cycle maternity overlay — stamp ML on/after the start date, keeping
+    // the real shifts the fill just assigned for the days before it.
+    if (_techMatWin.fromYmd) {
+      days.forEach(d => { if (_ymd(d) >= _techMatWin.fromYmd) row[d.d] = "ML"; });
     }
 
     return { row, unhonored };
@@ -5948,8 +6270,8 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
           {branch === "Sandown" && (
             <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 14px", marginBottom: 10, fontSize: 12, color: "#065f46", display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center" }}>
               <span style={{ fontSize: 11, fontWeight: 800, color: "#065f46", letterSpacing: "0.08em", textTransform: "uppercase" }}>🕐 Sandown shift times</span>
-              <span><strong>Mon–Fri</strong> · WE 08:00–17:15 · WL 11:00–20:00</span>
-              <span><strong>Saturday</strong> · WE 08:15–17:15 · WL 10:00–19:00</span>
+              <span><strong>Mon–Fri</strong> · WE 08:00–17:30 · WL 11:00–20:00</span>
+              <span><strong>Saturday</strong> · WE 08:00–17:30 · WL 10:00–19:00</span>
               <span><strong>Sunday</strong> · all shifts 09:00–18:00 (no early/late split)</span>
             </div>
           )}
@@ -6002,25 +6324,33 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
               <tbody>
                 {techs.map(s => {
                   const counts = rowCounts(s.ec);
-                  const onMat = !!s.onMat;
+                  // Maternity window for this cycle. fullMat = on mat the whole
+                  // cycle (whole row ML, greyed, as before). matFromYmd = a
+                  // mid-cycle start date — the row stays a normal working row
+                  // and only the days on/after that date read 'ML'.
+                  const _cycStartYmd = days.length ? days[0].year + "-" + String(days[0].monthIdx + 1).padStart(2, "0") + "-" + String(days[0].d).padStart(2, "0") : "";
+                  const _cycEndYmd = days.length ? days[days.length - 1].year + "-" + String(days[days.length - 1].monthIdx + 1).padStart(2, "0") + "-" + String(days[days.length - 1].d).padStart(2, "0") : "";
+                  const _matWin = matCycleWindow(s, _cycStartYmd, _cycEndYmd);
+                  const fullMat = _matWin.full;
+                  const matFromYmd = _matWin.fromYmd;
                   // Off-boarding visibility: row is greyed-out for the
                   // entire cycle they leave in. Cells on/before leftDate
                   // remain editable (real schedule for the days worked);
                   // cells after leftDate are stamped X by PHASE 18 / sync.
                   const isLeaving = !!s.leftDate;
-                  // On-mat takes precedence for styling (full lock-out);
-                  // leaving rows get a softer grey so the pre-leftDate
-                  // cells stay readable.
-                  const rowOpacity = onMat ? 0.55 : (isLeaving ? 0.7 : 1);
-                  const nameBg = onMat ? "#f3f4f6" : (isLeaving ? "#f9fafb" : "#fff");
-                  const nameColor = onMat ? "#6b7280" : (isLeaving ? "#6b7280" : "#831843");
+                  // Only a FULL-cycle maternity greys the whole row; a mid-cycle
+                  // start keeps the row readable so the worked days show.
+                  const rowOpacity = fullMat ? 0.55 : (isLeaving ? 0.7 : 1);
+                  const nameBg = fullMat ? "#f3f4f6" : (isLeaving ? "#f9fafb" : "#fff");
+                  const nameColor = fullMat ? "#6b7280" : (isLeaving ? "#6b7280" : "#831843");
                   return (
                     <tr key={s.ec} style={{ opacity: rowOpacity }}>
                       <td style={{ position: "sticky", left: 0, background: nameBg, padding: "6px 10px", borderBottom: "1px solid #FCE7F3", color: nameColor, fontWeight: 600, fontSize: 12, zIndex: 1 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                           <span>{s.name}</span>
-                          {onMat && <span style={{ background: "#e5e7eb", color: "#374151", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>🤱 ON MAT</span>}
-                          {!onMat && isLeaving && <span style={{ background: "#fee2e2", color: "#991b1b", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>👋 LEFT {s.leftDate}</span>}
+                          {fullMat && <span style={{ background: "#e5e7eb", color: "#374151", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>🤱 ON MAT</span>}
+                          {!fullMat && matFromYmd && <span style={{ background: "#ede9fe", color: "#6b21a8", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>🤱 ML FROM {new Date(matFromYmd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}</span>}
+                          {!fullMat && isLeaving && <span style={{ background: "#fee2e2", color: "#991b1b", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>👋 LEFT {s.leftDate}</span>}
                           {/* Transfer chips — surface mid-month moves so the
                             manager sees the cross-over at a glance. */}
                           {s.isShadow && s.transferFrom && <span style={{ background: "#dbeafe", color: "#1e40af", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>🔄 FROM {s.transferFrom}{s.transferDate ? " · " + new Date(s.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
@@ -6041,6 +6371,11 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         // sync pass to stamp X.
                         const dYmd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
                         const isPastLeft = isLeaving && dYmd > s.leftDate;
+                        // Maternity cell: lavender 'ML' from the start date on.
+                        // A full-cycle mat means every cell; a mid-cycle start
+                        // means only days on/after it — days before stay the
+                        // real worked shift.
+                        const cellMat = fullMat || (!!matFromYmd && dYmd >= matFromYmd);
                         // Transfer-edge: for a mid-month branch move, cells
                         // on the wrong side of transferDate render as locked,
                         // greyed placeholders showing where they're moving
@@ -6057,13 +6392,13 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         const transferOtherBranch = transferEdge === "in" ? (s.transferFrom || "")
                           : transferEdge === "out" ? (s.transferTo || "")
                             : null;
-                        const cellLocked = onMat || isPastLeft || !!transferEdge;
+                        const cellLocked = cellMat || isPastLeft || !!transferEdge;
                         // Cross-store loan: if this tech has a same-day loan FROM
                         // this branch, the cell is tinted teal and shows the
                         // destination store (e.g. Betty's first-Sunday Bree/GP
                         // split, or any manually-logged movement).
                         const _outgoingLoan = (techLoans || []).find(l => l && l.ec === s.ec && l.date === dYmd && l.fromBranch === branch);
-                        const _loanCell = _outgoingLoan && !onMat && !isPastLeft
+                        const _loanCell = _outgoingLoan && !cellMat && !isPastLeft
                           ? (_outgoingLoan.toBranch === "Bree" ? { background: "#cffafe", color: "#155e75" }
                             : _outgoingLoan.toBranch === "Green Point" ? { background: "#fce7f3", color: "#9d174d" }
                               : { background: "#e0e7ff", color: "#3730a3" })
@@ -6071,7 +6406,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         // Maternity leave cells: distinct lavender tint so
                         // ML reads differently from a regular L (annual
                         // leave) and from a post-departure ghost cell.
-                        const matCell = onMat
+                        const matCell = cellMat
                           ? { background: "#ede9fe", color: "#6b21a8" }
                           : isPastLeft
                             ? { background: "#e5e7eb", color: "#9ca3af" }
@@ -6088,8 +6423,8 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                             : d.isToday ? "1px dashed rgba(190,24,93,0.45)"
                               : "none";
                         const dragCursor = cellLocked ? "default" : (v ? "grab" : "pointer");
-                        const cellTitle = onMat
-                          ? `${s.name} · on maternity leave`
+                        const cellTitle = cellMat
+                          ? `${s.name} · on maternity leave${matFromYmd && !fullMat ? " (from " + matFromYmd + ")" : ""}`
                           : isPastLeft
                             ? `${s.name} · left ${s.leftDate} — no longer scheduled`
                             : transferEdge === "out"
@@ -6109,7 +6444,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                             onClick={cellLocked ? undefined : () => cycleCell(s.ec, d.d)}
                             title={cellTitle}
                             style={{ ...matCell, padding: 0, height: 30, textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", borderRight: weekEnd ? "3px solid #BE185D" : "none", cursor: dragCursor, fontSize: 11, fontWeight: 700, userSelect: "none", outline: dropOutline, outlineOffset: -1, opacity: isSrc ? 0.4 : undefined, position: "relative" }}>
-                            {onMat ? "ML"
+                            {cellMat ? "ML"
                               : isPastLeft ? "—"
                                 : transferEdge === "out" ? (
                                   <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: "0.04em" }}>
@@ -6133,8 +6468,8 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                           </td>
                         );
                       })}
-                      <td style={{ padding: "6px 8px", borderLeft: "2px solid #FBCFE8", borderBottom: "1px solid #FCE7F3", textAlign: "center", color: onMat ? "#9ca3af" : "#15803d", fontSize: 11, fontWeight: 700 }}>{onMat ? "—" : counts.w}</td>
-                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #FCE7F3", textAlign: "center", color: onMat ? "#9ca3af" : "#991b1b", fontSize: 11, fontWeight: 700 }}>{onMat ? "—" : counts.off}</td>
+                      <td style={{ padding: "6px 8px", borderLeft: "2px solid #FBCFE8", borderBottom: "1px solid #FCE7F3", textAlign: "center", color: fullMat ? "#9ca3af" : "#15803d", fontSize: 11, fontWeight: 700 }}>{fullMat ? "—" : counts.w}</td>
+                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #FCE7F3", textAlign: "center", color: fullMat ? "#9ca3af" : "#991b1b", fontSize: 11, fontWeight: 700 }}>{fullMat ? "—" : counts.off}</td>
                     </tr>
                   );
                 })}
@@ -7115,6 +7450,10 @@ const SETTINGS_TABS = [
   { t: "payrollProgress", l: "Payroll Progress", cat: "Payroll", icon: "📊" },
   { t: "payrollReports", l: "Reports", cat: "Payroll", icon: "📈" },
   { t: "overtime", l: "Overtime", cat: "Payroll", icon: "⏱️" },
+  // NOTE: Payroll Inbox is intentionally NOT in this per-user permission grid.
+  // Access to it is governed solely by the "Leave — payroll / balance check"
+  // access list (Settings), so it shows for anyone granted there regardless of
+  // their tab-visibility settings.
   { t: "alerts", l: "Alerts", cat: "Insights", icon: "🔔" },
   { t: "activity", l: "Activity Log", cat: "Insights", icon: "📜" },
   { t: "kioskPins", l: "Kiosk PINs", cat: "Admin", icon: "🔑" },
@@ -7189,7 +7528,68 @@ function canSeeIncidents(user) {
          r.includes("national") || isRomRole(user.role);
 }
 
-function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFreshaCfgSave, overtimeCfg, onOvertimeCfgSave }) {
+// Shared access-gate check: does this user fall inside an access config
+// ({ roles:[...], pins:[...] })? Owners always pass. Role keys are matched
+// loosely against the user's role title so seed/typo variants still work.
+function accessAllows(user, cfg) {
+  if (!user) return false;
+  if (user.isOwner) return true;
+  const role = (user.role || "").toLowerCase();
+  const roleMatch = (cfg && cfg.roles || []).some(k =>
+    k === "national" ? (role.includes("national ops") || role.includes("national operations") || role.includes("national"))
+      : k === "regional" ? (role.includes("regional") || /\brom\b/.test(role) || role.includes("regional ops"))
+        : k === "payroll" ? (role.includes("payroll") || role.includes("wages") || role.includes("finance"))
+          : k === "hr" ? (role.includes("hr") || role.includes("human res"))
+            : false
+  );
+  if (roleMatch) return true;
+  return (cfg && cfg.pins || []).includes(user.pin);
+}
+
+// Reusable Settings panel for granting an access list by role and/or by named
+// person (owners always included). Used for the leave-workflow gates.
+function AccessPanel({ title, blurb, cfg, onSave, users, roleOpts, accent, accentBg, border }) {
+  const c = cfg || { roles: [], pins: [] };
+  const userList = Object.keys(users || {})
+    .filter(pin => !(users[pin] && (users[pin].voucherEntryOnly || users[pin].demo)))
+    .map(pin => ({ pin, name: (users[pin] && users[pin].name) || pin, role: (users[pin] && users[pin].role) || "", isOwner: !!(users[pin] && users[pin].isOwner) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const toggleArr = (arr, val) => (arr || []).includes(val) ? (arr || []).filter(x => x !== val) : [...(arr || []), val];
+  const setCfg = (patch) => onSave({ ...c, ...patch });
+  const ac = accent || "#BE185D";
+  const chk = { width: 15, height: 15, accentColor: ac };
+  const colHead = { fontSize: 10, fontWeight: 800, color: ac, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 };
+  const rowL = { display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13, color: "#831843", cursor: "pointer" };
+  return (
+    <div style={{ marginTop: 26, background: accentBg || "#FDF2F8", border: "2px solid " + (border || "#FBCFE8"), borderRadius: 14, padding: "18px 20px" }}>
+      <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: ac, fontWeight: 700, marginBottom: 2 }}>{title}</div>
+      <div style={{ fontSize: 12, color: ac, marginBottom: 16, opacity: 0.85 }}>{blurb}</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 20 }}>
+        <div>
+          <div style={colHead}>Allowed by role</div>
+          {roleOpts.map(r => (
+            <label key={r.key} style={rowL}>
+              <input type="checkbox" style={chk} checked={(c.roles || []).includes(r.key)} onChange={() => setCfg({ roles: toggleArr(c.roles, r.key) })} />
+              {r.label}
+            </label>
+          ))}
+        </div>
+        <div>
+          <div style={colHead}>…or specific people</div>
+          {userList.map(u => (
+            <label key={u.pin} style={{ ...rowL, opacity: u.isOwner ? 0.6 : 1 }}>
+              <input type="checkbox" style={chk} checked={u.isOwner || (c.pins || []).includes(u.pin)} disabled={u.isOwner} onChange={() => setCfg({ pins: toggleArr(c.pins, u.pin) })} />
+              {u.name} <span style={{ color: "#F472B6", fontSize: 11 }}>· {u.role}{u.isOwner ? " · always" : ""}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+      <div style={{ fontSize: 11, color: ac, marginTop: 14, fontStyle: "italic", opacity: 0.85 }}>Owners always have access. Changes save automatically.</div>
+    </div>
+  );
+}
+
+function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFreshaCfgSave, overtimeCfg, onOvertimeCfgSave, cashupReviewCfg, onCashupReviewCfgSave, leaveOpsCfg, onLeaveOpsCfgSave, leavePayrollCfg, onLeavePayrollCfgSave }) {
   const users = appUsers || {};
   const [editing, setEditing] = useState(null);   // {pin, isNew, name, role, demo, isOwner, perms, originalPin}
   const [busy, setBusy] = useState(false);
@@ -7499,6 +7899,70 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
           </div>
         );
       })()}
+
+      {/* ── Cash-up review access ── who may tick off a store's daily cash-up
+          as reviewed. Owners always can; everyone else must be granted here. */}
+      {onCashupReviewCfgSave && (() => {
+        const cfg = cashupReviewCfg || { roles: ["regional"], pins: [] };
+        const userList = Object.keys(users || {})
+          .filter(pin => !(users[pin] && (users[pin].voucherEntryOnly || users[pin].demo)))
+          .map(pin => ({ pin, name: (users[pin] && users[pin].name) || pin, role: (users[pin] && users[pin].role) || "", isOwner: !!(users[pin] && users[pin].isOwner) }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+        const toggleArr = (arr, val) => (arr || []).includes(val) ? (arr || []).filter(x => x !== val) : [...(arr || []), val];
+        const setCfg = (patch) => onCashupReviewCfgSave({ ...cfg, ...patch });
+        const roleOpts = [{ key: "national", label: "National Ops Managers" }, { key: "regional", label: "Regional managers (all ROM variants)" }];
+        const chk = { width: 15, height: 15, accentColor: "#BE185D" };
+        const colHead = { fontSize: 10, fontWeight: 800, color: "#BE185D", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 };
+        const rowL = { display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13, color: "#831843", cursor: "pointer" };
+        return (
+          <div style={{ marginTop: 26, background: "#FDF2F8", border: "2px solid #FBCFE8", borderRadius: 14, padding: "18px 20px" }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: "#831843", fontWeight: 700, marginBottom: 2 }}>💰 Cash-up review — who can review</div>
+            <div style={{ fontSize: 12, color: "#BE185D", marginBottom: 16 }}>The reviewer (e.g. your portfolio / regional ops manager) ticks off each store's daily cash-up on the Cash Ups tab once they've checked it matches, and can leave a comment. Owners can always review; grant other people below. Anyone not listed sees the review status read-only.</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 20 }}>
+              <div>
+                <div style={colHead}>Allowed by role</div>
+                {roleOpts.map(r => (
+                  <label key={r.key} style={rowL}>
+                    <input type="checkbox" style={chk} checked={(cfg.roles || []).includes(r.key)} onChange={() => setCfg({ roles: toggleArr(cfg.roles, r.key) })} />
+                    {r.label}
+                  </label>
+                ))}
+              </div>
+              <div>
+                <div style={colHead}>…or specific people</div>
+                {userList.map(u => (
+                  <label key={u.pin} style={{ ...rowL, opacity: u.isOwner ? 0.6 : 1 }}>
+                    <input type="checkbox" style={chk} checked={u.isOwner || (cfg.pins || []).includes(u.pin)} disabled={u.isOwner} onChange={() => setCfg({ pins: toggleArr(cfg.pins, u.pin) })} />
+                    {u.name} <span style={{ color: "#F472B6", fontSize: 11 }}>· {u.role}{u.isOwner ? " · always" : ""}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div style={{ fontSize: 11, color: "#BE185D", marginTop: 14, fontStyle: "italic" }}>Owners always have access. Changes save automatically.</div>
+          </div>
+        );
+      })()}
+
+      {/* ── Leave workflow gates ── who clears the operational check and who
+          does the payroll / leave-balance check on the Leave Requests tab. */}
+      {onLeaveOpsCfgSave && (
+        <AccessPanel
+          title="🌴 Leave — operational check"
+          blurb="When staff request leave, an operational reviewer confirms the store can spare them (max 1 manager / 20% of techs on leave at once — the portal flags clashes automatically). Owners can always do this; grant others below."
+          cfg={leaveOpsCfg} onSave={onLeaveOpsCfgSave} users={users}
+          roleOpts={[{ key: "national", label: "National Ops Managers" }, { key: "regional", label: "Regional managers (all ROM variants)" }]}
+          accent="#7c3aed" accentBg="#faf5ff" border="#e9d5ff"
+        />
+      )}
+      {onLeavePayrollCfgSave && (
+        <AccessPanel
+          title="🧮 Leave — payroll / balance check"
+          blurb="Your payroll officer checks the leave balance on Sage, records how many days the person has, and ticks it off. Once both this and the operational check are done, the request is auto-approved and added to the Leave Planner. Owners can always do this; grant others below."
+          cfg={leavePayrollCfg} onSave={onLeavePayrollCfgSave} users={users}
+          roleOpts={[{ key: "payroll", label: "Payroll / wages / finance roles" }, { key: "hr", label: "HR roles" }]}
+          accent="#0f766e" accentBg="#f0fdfa" border="#99f6e4"
+        />
+      )}
 
       {/* ── Add / edit modal ── */}
       {editing && (
@@ -8743,6 +9207,153 @@ function leaveDays(s, e) {
   catch (_e) { return 0; }
 }
 
+// ─── Shared leave-request gate helpers ─────────────────────────────────────
+// Used by both the Leave Requests tab and the Payroll Inbox so the two-gate
+// workflow behaves identically wherever a gate is actioned.
+function findLeavePerson(ec, enriched, managers) {
+  const k = String(ec || "").trim().toUpperCase();
+  if (!k) return null;
+  return [...(enriched || []), ...(managers || [])].find(p => String(p.ec || "").toUpperCase() === k) || null;
+}
+// Operational clash verdict, mirroring the Leave Planner's rule (1 manager /
+// 20% of techs per store per day, counting approved leave on the calendar).
+function assessLeaveOps(r, enriched, managers, leaveRecs) {
+  const ec = String(r.ec || "").trim().toUpperCase();
+  const isMgr = /M$/i.test(ec);
+  const pool = isMgr ? (managers || []) : (enriched || []);
+  const person = findLeavePerson(ec, enriched, managers);
+  if (!ec || !person) return { matched: false, isMgr };
+  const branch = person.branch || r.store;
+  const _today = new Date();
+  const _todayYmd = _today.getFullYear() + "-" + String(_today.getMonth() + 1).padStart(2, "0") + "-" + String(_today.getDate()).padStart(2, "0");
+  // Active = counts toward the store's headcount and the on-leave cap. Mirrors
+  // the Leave Planner exactly: exclude maternity and anyone who has left /
+  // is off-boarded / hidden, so this check matches the calendar the user sees.
+  // (Without this, a departed tech's lingering leave inflated the count and a
+  // legitimate 3rd booking under a cap of 3 was wrongly flagged.)
+  const isActive = (p) => {
+    if (!p || p.onMat) return false;
+    if (p.offHidden) return false;
+    if (p.offboarded && p.offDaysSinceLeft != null && p.offDaysSinceLeft > 0) return false;
+    if (p.leftDate && p.leftDate <= _todayYmd) return false;
+    return true;
+  };
+  const roleGuard = isMgr
+    ? (m) => (m.role === "SM" || m.role === "SSM" || m.role === "AM") && isActive(m)
+    : (s) => /^[BT]/.test(String(s.ec || "")) && isActive(s);
+  const peers = pool.filter(p => p.branch === branch && roleGuard(p));
+  const headcount = peers.length;
+  const maxOff = Math.max(1, Math.floor(headcount * 0.2));
+  const clashDays = [];
+  let peakDays = 0;
+  const peak = (iso) => { const m = +String(iso).slice(5, 7); return m >= 10 || m <= 3; };
+  const sd = new Date(r.start_date + "T00:00:00"), ed = new Date(r.end_date + "T00:00:00");
+  for (let d = new Date(sd); d <= ed; d.setDate(d.getDate() + 1)) {
+    const iso = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    if (peak(iso)) peakDays++;
+    let ct = 1; // this request
+    for (const lv of (leaveRecs || [])) {
+      if (lv.type !== "Annual leave") continue;
+      const lp = findLeavePerson(lv.ec, enriched, managers);
+      if (!lp || lp.branch !== branch || !roleGuard(lp)) continue;
+      // don't double-count the requester if they somehow already have a record
+      if (String(lv.ec || "").toUpperCase() === ec) continue;
+      if (iso >= lv.startDate && iso <= lv.endDate) ct++;
+    }
+    if (ct > maxOff) clashDays.push(iso);
+  }
+  return { matched: true, isMgr, branch, headcount, maxOff, clashDays, peakDays, person };
+}
+// Write an approved request onto the Leave Planner. Skips if unmatched or a
+// duplicate overlapping annual record already exists. Returns true when on it.
+async function addApprovedLeaveToCalendar(r, deps) {
+  const { enriched, managers, leaveRecs, setLeaveRecs } = deps;
+  const person = findLeavePerson(r.ec, enriched, managers);
+  if (!person) return false;
+  const ecU = String(person.ec || "").toUpperCase();
+  const dup = (leaveRecs || []).find(lv => String(lv.ec || "").toUpperCase() === ecU
+    && lv.type === "Annual leave" && lv.startDate <= r.end_date && lv.endDate >= r.start_date);
+  if (dup) return true;
+  const rec = { _id: Date.now(), ec: person.ec, startDate: r.start_date, endDate: r.end_date, type: "Annual leave", notes: "[Leave request " + (r.ref_code || "") + "]", emergency: false, balanceDays: (r.balance_days != null ? Number(r.balance_days) : null), balanceCheckedBy: r.balance_checked_by || "", balanceCheckedAt: r.balance_checked_at || null };
+  const next = [...(leaveRecs || []), rec];
+  setLeaveRecs(next);
+  await window.BOA_DB.saveLeaveRecords(next);
+  return true;
+}
+// When both gates are green, auto-approve and add to the calendar.
+async function finalizeLeaveIfReady(r, deps) {
+  const { patch, actor, logActivity } = deps;
+  if (r.status === "approved") return;
+  if (!(r.ops_cleared_at && r.balance_checked_at)) return;
+  let added = false;
+  try { added = await addApprovedLeaveToCalendar(r, deps); }
+  catch (e) { alert("Both checks done, but could not add to the calendar: " + (e.message || e)); }
+  const note = added ? "" : "Auto-approved — please add to the Leave Planner manually (no matching employee code).";
+  await window.BOA_DB.setLeaveStatus(r.id, "approved", note, actor);
+  patch(r.id, { status: "approved", reviewed: true, decided_by: actor, decided_at: new Date().toISOString() });
+  if (logActivity) logActivity("Approved leave request", r.name, r.start_date + " → " + r.end_date + (added ? " · added to calendar" : ""), "Leave");
+}
+
+function isManagerEc(ec) { return /M$/i.test(String(ec || "").trim()); }
+// Split a date range into calendar days vs actual leave days. When a saved
+// schedule grid is supplied (opts: { schedCache, ymdToSchedYm, ec, branch }),
+// off-days are read EXACTLY from the roster (O / R cells) for the days the
+// schedule covers — so a 2-day request on two working days correctly counts as
+// 2 leave days. Days with no schedule yet (and the no-schedule fallback) use
+// the usual ~2 off-days/week estimate. E.g. 14 calendar days spanning two full
+// weeks ≈ 10 real leave days.
+function leaveDayBreakdown(startYmd, endYmd, _isMgr, opts) {
+  const cal = leaveDays(startYmd, endYmd);
+  const perWeek = 2; // managers ~2/week; nail techs also usually ~2/week
+  if (cal <= 0) return { cal: 0, off: 0, real: 0, perWeek, fromSchedule: false };
+  const sched = opts && opts.schedCache, ec = opts && opts.ec, branch = opts && opts.branch, toSchedYm = opts && opts.ymdToSchedYm;
+  if (sched && ec && branch && toSchedYm) {
+    const ecU = String(ec).toUpperCase();
+    let knownOff = 0, unknownDays = 0, knownDays = 0;
+    const sd = new Date(startYmd + "T00:00:00"), ed = new Date(endYmd + "T00:00:00");
+    for (let d = new Date(sd); d <= ed; d.setDate(d.getDate() + 1)) {
+      const ymd = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+      const grid = sched[branch + "|" + toSchedYm(ymd)];
+      // grids may key the employee by exact or upper-cased EC; cells by number or string
+      const row = grid && (grid[ec] || grid[ecU]);
+      if (row) {
+        knownDays++;
+        const cell = row[d.getDate()] || row[String(d.getDate())];
+        if (cell === "O" || cell === "R") knownOff++;
+      } else unknownDays++;
+    }
+    const estUnknownOff = Math.round((unknownDays / 7) * perWeek);
+    const off = knownOff + estUnknownOff;
+    return { cal, off, real: Math.max(0, cal - off), perWeek, fromSchedule: knownDays > 0, knownDays, unknownDays };
+  }
+  const off = Math.round((cal / 7) * perWeek);
+  return { cal, off, real: Math.max(0, cal - off), perWeek, fromSchedule: false };
+}
+// Existing leave that overlaps a request's dates — already-approved leave on the
+// calendar (leaveRecs) and other open requests for the same person — plus how
+// many of the requested days are already covered.
+function findLeaveOverlaps(r, leaveRecs, requests) {
+  const ec = String(r.ec || "").trim().toUpperCase();
+  const nm = String(r.name || "").trim().toLowerCase();
+  const sameByEc = (e) => !!ec && !!e && String(e).trim().toUpperCase() === ec;
+  const sameByName = (n) => !!nm && !!n && String(n).trim().toLowerCase() === nm;
+  const calOverlaps = (leaveRecs || []).filter(lv => sameByEc(lv.ec) && lv.startDate && lv.endDate && lv.startDate <= r.end_date && lv.endDate >= r.start_date);
+  const reqOverlaps = (requests || []).filter(o => o && o.id !== r.id && o.status !== "declined" && o.start_date && o.end_date && (sameByEc(o.ec) || (!o.ec && sameByName(o.name))) && o.start_date <= r.end_date && o.end_date >= r.start_date);
+  const ranges = [
+    ...calOverlaps.map(lv => ({ s: lv.startDate, e: lv.endDate })),
+    ...reqOverlaps.map(o => ({ s: o.start_date, e: o.end_date }))
+  ];
+  let coveredDays = 0;
+  try {
+    const sd = new Date(r.start_date + "T00:00:00"), ed = new Date(r.end_date + "T00:00:00");
+    for (let d = new Date(sd); d <= ed; d.setDate(d.getDate() + 1)) {
+      const iso = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+      if (ranges.some(rg => iso >= rg.s && iso <= rg.e)) coveredDays++;
+    }
+  } catch (_e) {}
+  return { calOverlaps, reqOverlaps, coveredDays };
+}
+
 // People who used the My BOA "Call in sick / Mark absent" tile — either sick
 // (leave_type "Sick") or absent for another reason ("Absent") — whose
 // away-period overlaps today or tomorrow.
@@ -8843,6 +9454,18 @@ function CalledInSickTab({ requests, setRequests, currentUser }) {
     } catch (e) { alert("Could not delete: " + ((e && e.message) || e)); }
     setBusy(false);
   };
+  // Mark an absence as actioned — once the reason is recorded on Manager
+  // Check-ins / Coverage. Flips the request to reviewed so it shows "Done"
+  // here and drops off the dashboard reminder.
+  const markDone = async (r) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await window.BOA_DB.markLeaveReviewed(r.id);
+      if (setRequests) setRequests(prev => (prev || []).map(x => x.id === r.id ? { ...x, reviewed: true } : x));
+    } catch (e) { alert("Could not mark done: " + ((e && e.message) || e)); }
+    setBusy(false);
+  };
 
   const sect = (label, ymd) => {
     const rows = list.filter(r => r.start_date <= ymd && r.end_date >= ymd)
@@ -8861,6 +9484,13 @@ function CalledInSickTab({ requests, setRequests, currentUser }) {
           const isTech = !/M$/i.test((r.ec || "").trim());
           const firstName = (r.name || "").trim().split(/\s+/)[0] || "this tech";
           const awayLbl = fmtIncidentDate(r.start_date) + (r.end_date !== r.start_date ? "–" + fmtIncidentDate(r.end_date) : "");
+          // Pull the proof URL out of the reason so we can show a compact "view"
+          // button instead of a long raw link.
+          const _proofM = /Proof:\s*(https?:\/\/\S+)/i.exec(r.reason || "");
+          const proofUrl = _proofM ? _proofM[1] : null;
+          const reasonText = proofUrl
+            ? String(r.reason).replace(/\s*Proof:\s*https?:\/\/\S+\s*/i, " ").replace(/[ \t]+\n/g, "\n").replace(/\n{2,}/g, "\n").trim()
+            : (r.reason || "");
           return (
             <div key={r.id} style={card}>
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -8870,9 +9500,15 @@ function CalledInSickTab({ requests, setRequests, currentUser }) {
                 {r.store && <span style={chip({ color: "#075985", bg: "#e0f2fe" })}>{r.store}</span>}
                 {r.ec && <span style={{ color: "#9ca3af", fontSize: 12 }}>{r.ec}</span>}
                 <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(r.start_date)}{r.end_date !== r.start_date ? " → " + fmtIncidentDate(r.end_date) : ""}</span>
-                <span style={{ marginLeft: "auto", ...chip(st) }}>{st.label}</span>
+                <span style={{ marginLeft: "auto", ...chip(r.reviewed ? { color: "#15803d", bg: "#dcfce7" } : st) }}>{r.reviewed ? "✓ Done" : st.label}</span>
               </div>
-              {r.reason && <div style={{ marginTop: 8, fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{linkifyText(r.reason)}</div>}
+              {reasonText && <div style={{ marginTop: 8, fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{linkifyText(reasonText)}</div>}
+              {proofUrl && (
+                <a href={proofUrl} target="_blank" rel="noreferrer"
+                  style={{ marginTop: 8, display: "inline-flex", alignItems: "center", gap: 6, background: "#fff", border: "1px solid #e7c6d4", borderRadius: 8, padding: "5px 11px", fontSize: 12, fontWeight: 700, color: "#9d174d", textDecoration: "none" }}>
+                  📎 View sick note
+                </a>
+              )}
               <div style={{ marginTop: 6, fontSize: 11, color: "#9d6a82" }}>Ref {r.ref_code} · {fmtIncidentTime(r.created_at)}{r.contact ? " · " + r.contact : ""}</div>
               {isTech && (
                 <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "flex-start", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "9px 12px" }}>
@@ -8882,14 +9518,28 @@ function CalledInSickTab({ requests, setRequests, currentUser }) {
                   </div>
                 </div>
               )}
-              {isOwner && (
-                <div style={{ marginTop: 10, textAlign: "right" }}>
-                  <button disabled={busy} onClick={() => removeReq(r)} title="Owner: permanently delete this absence mark"
-                    style={{ border: "1px solid #fecaca", background: "#fff", color: "#b91c1c", borderRadius: 8, padding: "5px 12px", fontWeight: 700, fontSize: 12, fontFamily: "inherit", cursor: busy ? "default" : "pointer" }}>
-                    🗑 Delete mark
-                  </button>
+              {!isTech && (
+                <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "flex-start", background: "#faf5ff", border: "1px solid #e9d5ff", borderRadius: 10, padding: "9px 12px" }}>
+                  <span style={{ fontSize: 15, lineHeight: 1.2 }}>👑</span>
+                  <div style={{ fontSize: 12.5, color: "#6b21a8", lineHeight: 1.45 }}>
+                    <strong>What to do:</strong> mark {firstName} as <strong>absent</strong> on the <strong>Manager Check-ins</strong> tab (or the <strong>Manager Coverage</strong> overview) and attach their <strong>sick note</strong> if they have one{proofUrl ? " (tap 📎 View sick note above)" : ""}. Then tap <strong>Mark done</strong> to clear it.
+                  </div>
                 </div>
               )}
+              <div style={{ marginTop: 10, display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                {!r.reviewed
+                  ? <button disabled={busy} onClick={() => markDone(r)} title="Mark this absence as actioned — clears it off the dashboard"
+                      style={{ border: "none", background: "#16a34a", color: "#fff", borderRadius: 8, padding: "6px 14px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: busy ? "default" : "pointer" }}>
+                      ✓ Mark done
+                    </button>
+                  : <span style={{ alignSelf: "center", fontSize: 12, color: "#15803d", fontWeight: 700 }}>✓ Done — actioned</span>}
+                {isOwner && (
+                  <button disabled={busy} onClick={() => removeReq(r)} title="Owner: permanently delete this absence mark"
+                    style={{ border: "1px solid #fecaca", background: "#fff", color: "#b91c1c", borderRadius: 8, padding: "6px 12px", fontWeight: 700, fontSize: 12, fontFamily: "inherit", cursor: busy ? "default" : "pointer" }}>
+                    🗑 Delete mark
+                  </button>
+                )}
+              </div>
             </div>
           );
         })}
@@ -8900,8 +9550,8 @@ function CalledInSickTab({ requests, setRequests, currentUser }) {
   return (
     <div>
       <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#831843", margin: 0 }}>🤒 Called in Sick</h2>
-      <p style={{ color: "#9d6a82", fontSize: 13.5, margin: "6px 0 18px", maxWidth: 640 }}>
-        Team members who called in sick or marked themselves absent from My BOA for today or tomorrow. Record the reason for their absence in the Manager Check-ins tab or on the Manager Coverage overview.
+      <p style={{ color: "#9d6a82", fontSize: 13.5, margin: "6px 0 18px", maxWidth: 680 }}>
+        Team members who called in sick or marked themselves absent from My BOA for today or tomorrow. <strong>Managers:</strong> mark them absent (and attach their sick note) on the <strong>Manager Check-ins</strong> tab or the <strong>Manager Coverage</strong> overview. <strong>Nail techs:</strong> block them on Fresha for the days they're off. Once you've actioned someone, tap <strong>✓ Mark done</strong> to clear them from here and the dashboard.
       </p>
       {sect("Today", today)}
       {sect("Tomorrow", tomorrow)}
@@ -8940,13 +9590,19 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
     try {
       if (!r || !r.work_date || !r.store || !r.ec) return;
       if (!window.BOA_DB || !window.BOA_DB.loadSchedule || !window.BOA_DB.saveSchedule) return;
-      if (/M$/i.test(String(r.ec).trim())) return;   // managers use a different (mgr) schedule — skip
       const p = String(r.work_date).split("-"); let y = +p[0], m = +p[1]; const dom = +p[2];
       if (!y || !m || !dom) return;
-      if (dom >= 25) { m += 1; if (m > 12) { m = 1; y += 1; } }   // 25th→24th cycle, END-month ym
-      const ym = y + "-" + String(m).padStart(2, "0");
+      if (dom >= 25) { m += 1; if (m > 12) { m = 1; y += 1; } }   // END-month ym (25th→24th cycle)
+      const endYm = y + "-" + String(m).padStart(2, "0");
       const dayKey = String(dom);
-      const sched = await window.BOA_DB.loadSchedule(r.store, ym, false);
+      // Managers live on the manager schedule (boa_mgrsched), stored under the
+      // cycle's START-month ym; nail techs on boa_sched under the END-month ym.
+      // Writing the manager grid is what makes an approved manager extra day
+      // show on the Scheduling tab AND the Manager Coverage overview.
+      const isMgr = /M$/i.test(String(r.ec).trim());
+      let smy = y, smm = m - 1; if (smm < 1) { smm = 12; smy -= 1; }
+      const schedYm = isMgr ? (smy + "-" + String(smm).padStart(2, "0")) : endYm;
+      const sched = await window.BOA_DB.loadSchedule(r.store, schedYm, isMgr);
       const grid = (sched && sched.grid) || {};
       const want = String(r.ec).trim().toUpperCase();
       const ecKey = Object.keys(grid).find(k => String(k).trim().toUpperCase() === want) || String(r.ec).trim();
@@ -8955,17 +9611,18 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
       if (publish) {
         row[String(dom)] = "E";
         grid[ecKey] = row;
-        await window.BOA_DB.saveSchedule(r.store, ym, grid, false);
-        // Mirror into the kiosk/attendance extras sidecar.
-        if (window.BOA_DB.saveExtraDay) {
-          try { await window.BOA_DB.saveExtraDay(r.store, ym, dayKey, String(r.ec).trim(), actor); }
+        await window.BOA_DB.saveSchedule(r.store, schedYm, grid, isMgr);
+        // Mirror into the kiosk/attendance extras sidecar (END-month keyed) —
+        // nail techs only; managers are clock-in based, not on the kiosk grid.
+        if (!isMgr && window.BOA_DB.saveExtraDay) {
+          try { await window.BOA_DB.saveExtraDay(r.store, endYm, dayKey, String(r.ec).trim(), actor); }
           catch (e2) { console.error("saveExtraDay:", e2); }
         }
       } else {
         // Only revert a schedule cell we set; always clear our sidecar entry.
-        if (cur === "E") { delete row[dom]; delete row[String(dom)]; grid[ecKey] = row; await window.BOA_DB.saveSchedule(r.store, ym, grid, false); }
-        if (window.BOA_DB.clearExtraDay) {
-          try { await window.BOA_DB.clearExtraDay(r.store, ym, dayKey, String(r.ec).trim()); }
+        if (cur === "E") { delete row[dom]; delete row[String(dom)]; grid[ecKey] = row; await window.BOA_DB.saveSchedule(r.store, schedYm, grid, isMgr); }
+        if (!isMgr && window.BOA_DB.clearExtraDay) {
+          try { await window.BOA_DB.clearExtraDay(r.store, endYm, dayKey, String(r.ec).trim()); }
           catch (e2) { console.error("clearExtraDay:", e2); }
         }
       }
@@ -8980,7 +9637,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
         "Check the schedule / demand for that day first — only approve if cover is genuinely needed.\n\n" +
         (isTech
           ? "Approving will auto-add this extra day to the schedule, and the store kiosk + attendance sheet for that day will read it as an Extra Day."
-          : "Approving records this extra day for the manager.")
+          : "Approving will auto-add this extra day to the manager schedule and the Manager Coverage overview, marked as Extra.")
       )) return;
     }
     setBusy(true);
@@ -9071,7 +9728,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
             {r.status !== "pending" && r.decided_by && (
               <div style={{ marginTop: 10, background: r.status === "approved" ? "#f0fdf4" : "#fef2f2", border: "1px solid " + (r.status === "approved" ? "#bbf7d0" : "#fecaca"), borderRadius: 11, padding: "10px 13px" }}>
                 <div style={{ fontSize: 12, fontWeight: 800, color: r.status === "approved" ? "#15803d" : "#b91c1c" }}>{r.status === "approved" ? "✅ Approved" : "✕ Declined"}</div>
-                {r.status === "approved" && !/M$/i.test(String(r.ec || "").trim()) && <div style={{ fontSize: 11.5, color: "#15803d", marginTop: 2 }}>📅 Published to {(r.name || "the tech").split(" ")[0]}'s schedule as an extra day ({fmtIncidentDate(r.work_date)}).</div>}
+                {r.status === "approved" && <div style={{ fontSize: 11.5, color: "#15803d", marginTop: 2 }}>📅 Published to {(r.name || "the").split(" ")[0]}'s {/M$/i.test(String(r.ec || "").trim()) ? "manager schedule & coverage" : "schedule"} as an extra day ({fmtIncidentDate(r.work_date)}).</div>}
                 {r.decision_note && <div style={{ fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{r.decision_note}</div>}
                 <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>{r.decided_by}{r.decided_at ? " · " + fmtIncidentTime(r.decided_at) : ""}</div>
               </div>
@@ -9275,30 +9932,227 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
   );
 }
 
-function LeaveRequestsTab({ requests, setRequests, currentUser }) {
+// Payroll officer's inbox — a focused worklist of leave requests waiting on the
+// leave-balance (Sage) check. Lets them record the days available and tick it
+// off; once the operational check is also done the request auto-approves and
+// lands on the Leave Planner. Shares the gate helpers with the Leave Requests tab.
+function PayrollInboxTab({ requests, setRequests, currentUser, leaveRecs, setLeaveRecs, enriched, managers, logActivity, goTo, schedCache, ymdToSchedYm }) {
+  const [balDraft, setBalDraft] = useState({});
+  const [busy, setBusy] = useState(false);
+  const actor = (currentUser && (currentUser.name || currentUser.pin)) || "";
+  const schedOpts = (ec) => { const p = findLeavePerson(ec, enriched, managers); return { schedCache, ymdToSchedYm, ec: (p && p.ec) || ec, branch: p && p.branch }; };
+  const patchLocal = (id, patch) => setRequests(requests.map(r => r.id === id ? { ...r, ...patch } : r));
+  const gateDeps = { enriched, managers, leaveRecs, setLeaveRecs, patch: patchLocal, actor, logActivity };
+
+  const needBalance = (requests || [])
+    .filter(r => r.status !== "declined" && r.leave_type !== "Sick" && r.leave_type !== "Absent" && !r.balance_checked_at)
+    .sort((a, b) => (a.start_date || "").localeCompare(b.start_date || ""));
+  // Things Justin can't action yet but should see: balance done, only waiting
+  // on the operational sign-off before they auto-approve.
+  const waitingOps = (requests || [])
+    .filter(r => r.status !== "declined" && r.status !== "approved" && r.balance_checked_at && !r.ops_cleared_at)
+    .sort((a, b) => (a.start_date || "").localeCompare(b.start_date || ""));
+  // Leave added straight onto the Leave Planner by someone without balance
+  // access (e.g. National Ops) — flagged balancePending for the payroll officer
+  // to verify how many days the person actually has.
+  const pendingCalLeave = (leaveRecs || [])
+    .filter(lv => lv && lv.balancePending)
+    .sort((a, b) => (a.startDate || "").localeCompare(b.startDate || ""));
+
+  const confirmCalBalance = async (lv) => {
+    const key = "cal:" + lv._id;
+    const days = balDraft[key];
+    if (days === "" || days == null || isNaN(Number(days)) || Number(days) < 0) { alert("Enter the days available on Sage."); return; }
+    const person = findLeavePerson(lv.ec, enriched, managers);
+    const bd = leaveDayBreakdown(lv.startDate, lv.endDate, isManagerEc(lv.ec), schedOpts(lv.ec));
+    if (Number(days) < bd.real && !window.confirm("Balance is " + days + " day(s) but this leave is ≈ " + bd.real + " actual leave day(s) (" + bd.cal + " calendar) — more than available.\n\nConfirm anyway?")) return;
+    setBusy(true);
+    try {
+      const next = (leaveRecs || []).map(x => x._id === lv._id
+        ? { ...x, balancePending: false, balanceDays: Number(days), balanceCheckedBy: actor, balanceCheckedAt: new Date().toISOString() }
+        : x);
+      setLeaveRecs(next);
+      await window.BOA_DB.saveLeaveRecords(next);
+      if (logActivity) logActivity("Checked leave balance", person ? (person.name + " (" + lv.ec + ")") : (lv.ec || ""), lv.startDate + " → " + lv.endDate + " · balance " + days + "d", "Leave");
+    } catch (e) { alert("Could not save the balance: " + (e.message || e)); }
+    setBusy(false);
+  };
+
+  const setBalance = async (r) => {
+    const days = balDraft[r.id];
+    if (days === "" || days == null || isNaN(Number(days)) || Number(days) < 0) { alert("Enter the days available on Sage."); return; }
+    const bd = leaveDayBreakdown(r.start_date, r.end_date, isManagerEc(r.ec), schedOpts(r.ec));
+    if (Number(days) < bd.real && !window.confirm("Balance is " + days + " day(s) but this leave is ≈ " + bd.real + " actual leave day(s) (" + bd.cal + " calendar) — more than available.\n\nTick it off anyway?")) return;
+    setBusy(true);
+    try {
+      await window.BOA_DB.setLeaveBalance(r.id, true, days, actor);
+      const patch = { balance_checked_at: new Date().toISOString(), balance_checked_by: actor, balance_days: Number(days), reviewed: true };
+      patchLocal(r.id, patch);
+      await finalizeLeaveIfReady({ ...r, ...patch }, gateDeps);
+    } catch (e) { alert("Could not save the balance: " + (e.message || e)); }
+    setBusy(false);
+  };
+
+  const card = { background: "#fff", border: "1px solid #99f6e4", borderRadius: 13, padding: "14px 16px", marginBottom: 12 };
+  const meta = { color: "#0f766e", fontSize: 12.5 };
+
+  return (
+    <div style={{ padding: "0 4px" }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 4 }}>
+        <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#0f766e", margin: 0 }}>📥 Payroll Inbox</h2>
+        {(needBalance.length + pendingCalLeave.length) > 0 && <span style={{ background: "#0f766e", color: "#fff", padding: "3px 11px", borderRadius: 999, fontSize: 12, fontWeight: 700 }}>{needBalance.length + pendingCalLeave.length} to check</span>}
+      </div>
+      <p style={{ color: "#0d9488", fontSize: 13.5, marginTop: 4, maxWidth: 720 }}>
+        Hi{currentUser && currentUser.name ? " " + currentUser.name.split(" ")[0] : ""} — these leave items are waiting on you to <strong>check the balance on Sage</strong>. Leave requests auto-approve once both this and the operational check are done; calendar leave added by others just needs the balance confirmed.
+      </p>
+
+      <div style={{ marginTop: 16, marginBottom: 8, fontSize: 12, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", color: "#0f766e" }}>🧮 Leave requests awaiting your balance check · {needBalance.length}</div>
+      {needBalance.length === 0 ? (
+        <div style={{ ...card, textAlign: "center", color: "#0d9488" }}>{pendingCalLeave.length === 0 ? "🎉 All caught up — no balance checks waiting." : "No leave requests waiting — see calendar leave below."}</div>
+      ) : needBalance.map(r => {
+        const oa = assessLeaveOps(r, enriched, managers, leaveRecs);
+        const bd = leaveDayBreakdown(r.start_date, r.end_date, isManagerEc(r.ec), schedOpts(r.ec));
+        const ov = findLeaveOverlaps(r, leaveRecs, requests);
+        return (
+          <div key={r.id} style={card}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+              <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
+              <span style={{ ...meta }}>{r.ec || "no EC"}{r.store ? " · " + r.store : ""}</span>
+              <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(r.start_date)} → {fmtIncidentDate(r.end_date)}</span>
+              <span style={{ color: "#9ca3af", fontSize: 12 }}>· {bd.cal} cal · <strong style={{ color: "#0f766e" }}>{bd.fromSchedule ? "" : "≈ "}{bd.real} leave day{bd.real === 1 ? "" : "s"}</strong></span>
+              <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, color: r.ops_cleared_at ? "#15803d" : "#9d6a82", background: r.ops_cleared_at ? "#dcfce7" : "#f6e8ef", padding: "2px 9px", borderRadius: 999 }}>
+                {r.ops_cleared_at ? "✓ operational done" : "operational pending"}
+              </span>
+            </div>
+            {(ov.calOverlaps.length > 0 || ov.reqOverlaps.length > 0) && (
+              <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 9, padding: "7px 11px", marginBottom: 8, fontSize: 12, color: "#92400e" }}>
+                ⚠ Already has overlapping leave — {ov.coveredDays} of {bd.cal} day{bd.cal === 1 ? "" : "s"} already covered{ov.calOverlaps[0] ? " (calendar " + fmtIncidentDate(ov.calOverlaps[0].startDate) + " → " + fmtIncidentDate(ov.calOverlaps[0].endDate) + ")" : (ov.reqOverlaps[0] ? " (another request)" : "")}. Check it's not a duplicate.
+              </div>
+            )}
+            {r.reason && <div style={{ fontSize: 12.5, color: "#4b5563", marginBottom: 8, whiteSpace: "pre-wrap" }}>{r.reason}</div>}
+            {oa.matched && (
+              <div style={{ fontSize: 11.5, color: oa.clashDays.length ? "#b91c1c" : "#15803d", marginBottom: 8 }}>
+                {oa.clashDays.length ? "⚠ Operational clash on " + oa.clashDays.length + " day(s)" : "✓ Operationally within limit (" + oa.maxOff + " of " + oa.headcount + " " + (oa.isMgr ? "managers" : "techs") + ")"}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#0f766e" }}>Balance on Sage:</span>
+              <input type="number" min="0" step="0.5" placeholder="days available"
+                value={balDraft[r.id] != null ? balDraft[r.id] : ""}
+                onChange={e => setBalDraft({ ...balDraft, [r.id]: e.target.value })}
+                style={{ width: 130, fontFamily: "inherit", fontSize: 13, padding: "7px 10px", borderRadius: 9, border: "1.5px solid #99f6e4" }} />
+              <button disabled={busy} onClick={() => setBalance(r)} style={{ background: "#0f766e", color: "#fff", border: "none", borderRadius: 9, padding: "7px 15px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>✓ Balance OK</button>
+              {goTo && <button onClick={() => goTo("leaveRequests")} style={{ background: "#fff", color: "#0f766e", border: "1.5px solid #99f6e4", borderRadius: 9, padding: "7px 13px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>Open in Leave Requests →</button>}
+            </div>
+          </div>
+        );
+      })}
+
+      {pendingCalLeave.length > 0 && (
+        <>
+          <div style={{ marginTop: 22, marginBottom: 8, fontSize: 12, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", color: "#b45309" }}>⏳ Calendar leave awaiting your balance check · {pendingCalLeave.length}</div>
+          <div style={{ fontSize: 12, color: "#9d6a82", marginBottom: 8 }}>Added straight onto the Leave Planner by someone without balance access — confirm how many days the person has on Sage.</div>
+          {pendingCalLeave.map(lv => {
+            const person = findLeavePerson(lv.ec, enriched, managers);
+            const bd = leaveDayBreakdown(lv.startDate, lv.endDate, isManagerEc(lv.ec), schedOpts(lv.ec));
+            const key = "cal:" + lv._id;
+            return (
+              <div key={lv._id} style={{ ...card, border: "1px solid #fde68a", background: "#fffdf7" }}>
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+                  <strong style={{ color: "#111827", fontSize: 14 }}>{person ? person.name : (lv.ec || "?")}</strong>
+                  <span style={{ ...meta }}>{lv.ec || "no EC"}{person && person.branch ? " · " + person.branch : ""}</span>
+                  <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(lv.startDate)} → {fmtIncidentDate(lv.endDate)}</span>
+                  <span style={{ color: "#9ca3af", fontSize: 12 }}>· {bd.cal} cal · <strong style={{ color: "#0f766e" }}>{bd.fromSchedule ? "" : "≈ "}{bd.real} leave day{bd.real === 1 ? "" : "s"}</strong></span>
+                  {lv.balanceRequestedBy && <span style={{ marginLeft: "auto", fontSize: 11, color: "#9d6a82" }}>added by {lv.balanceRequestedBy}</span>}
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "#0f766e" }}>Balance on Sage:</span>
+                  <input type="number" min="0" step="0.5" placeholder="days available"
+                    value={balDraft[key] != null ? balDraft[key] : ""}
+                    onChange={e => setBalDraft({ ...balDraft, [key]: e.target.value })}
+                    style={{ width: 130, fontFamily: "inherit", fontSize: 13, padding: "7px 10px", borderRadius: 9, border: "1.5px solid #99f6e4" }} />
+                  <button disabled={busy} onClick={() => confirmCalBalance(lv)} style={{ background: "#0f766e", color: "#fff", border: "none", borderRadius: 9, padding: "7px 15px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>✓ Confirm balance</button>
+                  {goTo && <button onClick={() => goTo("leave")} style={{ background: "#fff", color: "#0f766e", border: "1.5px solid #99f6e4", borderRadius: 9, padding: "7px 13px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>Open Leave Planner →</button>}
+                </div>
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      {waitingOps.length > 0 && (
+        <>
+          <div style={{ marginTop: 22, marginBottom: 8, fontSize: 12, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", color: "#9d6a82" }}>⏳ Done by you — waiting on operational sign-off · {waitingOps.length}</div>
+          {waitingOps.map(r => (
+            <div key={r.id} style={{ ...card, border: "1px solid #f3d4e0", opacity: 0.85 }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <strong style={{ color: "#111827", fontSize: 13.5 }}>{r.name}</strong>
+                <span style={{ color: "#9d6a82", fontSize: 12 }}>{r.store || ""} · {fmtIncidentDate(r.start_date)} → {fmtIncidentDate(r.end_date)}</span>
+                <span style={{ fontSize: 11, color: "#15803d", marginLeft: "auto" }}>✓ balance {r.balance_days != null ? r.balance_days + "d" : "checked"}</span>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLeaveRecs, enriched, managers, staff, opsCfg, payrollCfg, logActivity, schedCache, ymdToSchedYm }) {
+  const schedOpts = (r) => { const p = findLeavePerson(r.ec, enriched, managers); return { schedCache, ymdToSchedYm, ec: (p && p.ec) || r.ec, branch: p && p.branch }; };
   const [statusFilter, setStatusFilter] = useState("pending");
   const [storeFilter, setStoreFilter] = useState("");
   const [openId, setOpenId] = useState(null);
   const [noteDraft, setNoteDraft] = useState({});
   const [declineId, setDeclineId] = useState(null);
   const [declineText, setDeclineText] = useState("");
+  const [balDraft, setBalDraft] = useState({}); // per-request "days available" input
   const [busy, setBusy] = useState(false);
+
+  const actor = (currentUser && (currentUser.name || currentUser.pin)) || "";
+  const canOps = accessAllows(currentUser, opsCfg);
+  const canPayroll = accessAllows(currentUser, payrollCfg);
 
   const stores = Array.from(new Set(requests.map(r => r.store).filter(Boolean))).sort();
   const patchLocal = (id, patch) => setRequests(requests.map(r => r.id === id ? { ...r, ...patch } : r));
+
+  // Operational clash assessment + auto-approve use shared module helpers so
+  // the Payroll Inbox actions the gates identically. (Counts approved leave on
+  // the calendar; returns matched:false when no employee can be tied to it.)
+  const gateDeps = { enriched, managers, leaveRecs, setLeaveRecs, patch: patchLocal, actor, logActivity };
+  const assessOps = (r) => assessLeaveOps(r, enriched, managers, leaveRecs);
+  const maybeFinalize = (r) => finalizeLeaveIfReady(r, gateDeps);
+
+  const toggleOps = async (r, clear) => {
+    setBusy(true);
+    try {
+      await window.BOA_DB.setLeaveOps(r.id, clear, actor);
+      const patch = clear
+        ? { ops_cleared_at: new Date().toISOString(), ops_cleared_by: actor, reviewed: true }
+        : { ops_cleared_at: null, ops_cleared_by: null };
+      patchLocal(r.id, patch);
+      if (clear) await maybeFinalize({ ...r, ...patch });
+    } catch (e) { alert("Could not update the operational check: " + (e.message || e)); }
+    setBusy(false);
+  };
+  const setBalance = async (r, ok) => {
+    const days = ok ? (balDraft[r.id] != null ? balDraft[r.id] : (r.balance_days != null ? r.balance_days : "")) : "";
+    setBusy(true);
+    try {
+      await window.BOA_DB.setLeaveBalance(r.id, ok, days, actor);
+      const patch = ok
+        ? { balance_checked_at: new Date().toISOString(), balance_checked_by: actor, balance_days: (days === "" ? null : Number(days)), reviewed: true }
+        : { balance_checked_at: null, balance_checked_by: null, balance_days: null };
+      patchLocal(r.id, patch);
+      if (ok) await maybeFinalize({ ...r, ...patch });
+    } catch (e) { alert("Could not update the balance check: " + (e.message || e)); }
+    setBusy(false);
+  };
 
   const onOpen = async (r) => {
     const next = openId === r.id ? null : r.id;
     setOpenId(next);
     if (next && !r.reviewed) { try { await window.BOA_DB.markLeaveReviewed(r.id); patchLocal(r.id, { reviewed: true }); } catch (_e) {} }
-  };
-  const approve = async (r) => {
-    setBusy(true);
-    try {
-      await window.BOA_DB.setLeaveStatus(r.id, "approved", "", currentUser.name || currentUser.pin || "");
-      patchLocal(r.id, { status: "approved", reviewed: true, decided_by: currentUser.name || "", decided_at: new Date().toISOString() });
-    } catch (e) { alert("Could not approve: " + (e.message || e)); }
-    setBusy(false);
   };
   const doDecline = async (r) => {
     const text = (declineText || "").trim();
@@ -9325,12 +10179,21 @@ function LeaveRequestsTab({ requests, setRequests, currentUser }) {
     setBusy(false);
   };
 
-  const filtered = requests.filter(r => {
+  // The Leave Requests tab is the ANNUAL-leave approval workflow. Sick / Absent
+  // ("called in") aren't approved here — managers' go to the ROM (dashboard →
+  // Manager Check-ins), techs' to the Called in Sick tab — so they're excluded.
+  const annualReqs = requests.filter(r => r.leave_type !== "Sick" && r.leave_type !== "Absent");
+  const filtered = annualReqs.filter(r => {
     if (storeFilter && r.store !== storeFilter) return false;
     if (statusFilter === "all") return true;
     return r.status === statusFilter;
   });
-  const pendingCount = requests.filter(r => r.status === "pending").length;
+  const pendingCount = annualReqs.filter(r => r.status === "pending").length;
+  // Live counts for the workflow overview (open = not declined / not approved).
+  const openReqs = annualReqs.filter(r => r.status !== "approved" && r.status !== "declined");
+  const awaitingOps = openReqs.filter(r => !r.ops_cleared_at).length;
+  const awaitingBalance = openReqs.filter(r => !r.balance_checked_at).length;
+  const approvedCount = annualReqs.filter(r => r.status === "approved").length;
 
   const card = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 18px", marginBottom: 16 };
   const chip = (c) => ({ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: c.color, background: c.bg });
@@ -9351,9 +10214,48 @@ function LeaveRequestsTab({ requests, setRequests, currentUser }) {
         <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#831843", margin: 0 }}>🌴 Leave Requests</h2>
         {pendingCount > 0 && <span style={chip(LEAVE_STATUS.pending)}>{pendingCount} pending</span>}
       </div>
-      <p style={{ color: "#9d6a82", fontSize: 13.5, marginTop: 4, maxWidth: 680 }}>
-        Leave requests staff send from My BOA. Approve or decline — declining asks for a reason that's recorded.
+      <p style={{ color: "#9d6a82", fontSize: 13.5, marginTop: 4, maxWidth: 760 }}>
+        How a leave request flows from request to the calendar — and who does each step. A request is <strong>auto-approved and added to the Leave Planner</strong> only once both checks below are ticked. Anyone can <strong>decline</strong> at any point with a reason. Who can do each check is set under <strong>Settings</strong>.
       </p>
+
+      {(() => {
+        const stepWrap = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 16px 14px", marginBottom: 16 };
+        const Step = ({ n, color, bg, icon, title, who, desc, badge }) => (
+          <div style={{ flex: "1 1 200px", minWidth: 190, background: bg, border: "1px solid " + color + "33", borderRadius: 12, padding: "12px 13px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+              <span style={{ flex: "0 0 22px", width: 22, height: 22, borderRadius: "50%", background: color, color: "#fff", fontSize: 12, fontWeight: 800, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>{n}</span>
+              <span style={{ fontSize: 13.5, fontWeight: 800, color: "#1f2937" }}>{icon} {title}</span>
+            </div>
+            <div style={{ fontSize: 11, fontWeight: 800, color: color, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 4 }}>{who}</div>
+            <div style={{ fontSize: 12, color: "#4b5563", lineHeight: 1.4 }}>{desc}</div>
+            {badge != null && <div style={{ marginTop: 8, display: "inline-block", fontSize: 11, fontWeight: 700, color: color, background: "#fff", border: "1px solid " + color + "55", borderRadius: 999, padding: "2px 9px" }}>{badge}</div>}
+          </div>
+        );
+        const Arrow = () => <div style={{ alignSelf: "center", color: "#d9a7bd", fontSize: 20, fontWeight: 800, flex: "0 0 auto" }}>→</div>;
+        return (
+          <div style={stepWrap}>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "stretch" }}>
+              <Step n={1} color="#BE185D" bg="#fdf2f8" icon="🌴" title="Requested"
+                who="Staff (My BOA) or a manager"
+                desc="Sent by the staff member from My BOA, or added to the Leave Planner by a manager. It lands here for review."
+                badge={(awaitingOps + awaitingBalance) > 0 ? pendingCount + " in review" : "all clear"} />
+              <Arrow />
+              <Step n={2} color="#7c3aed" bg="#faf5ff" icon="✅" title="Operational check"
+                who="Operational reviewer (Ops/ROM)"
+                desc="Confirms the store can spare them — max 1 manager / 20% of techs off at once. The portal flags any clash automatically."
+                badge={awaitingOps + " awaiting"} />
+              <Arrow />
+              <Step n={3} color="#0f766e" bg="#f0fdfa" icon="🧮" title="Balance checked → approved"
+                who="Payroll officer"
+                desc="Confirms the leave balance on Sage. Once this and the operational check are done, it's approved and on the calendar."
+                badge={awaitingBalance + " awaiting · " + approvedCount + " approved"} />
+            </div>
+            <div style={{ fontSize: 11.5, color: "#9d6a82", marginTop: 10 }}>
+              💡 Open a request below to action your step. The coloured <strong>progress dots</strong> on each one show how far it's got. The two checks can be done in any order; a request only turns <strong>green/approved</strong> when both are ticked.
+            </div>
+          </div>
+        );
+      })()}
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
         <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
@@ -9395,15 +10297,33 @@ function LeaveRequestsTab({ requests, setRequests, currentUser }) {
               <span style={{ color: "#cbb1bd", fontSize: 18, lineHeight: 1 }}>{open ? "▾" : "▸"}</span>
             </div>
 
-            {open && (
+            {open && (() => {
+              const bd = leaveDayBreakdown(r.start_date, r.end_date, isMgrReq(r), schedOpts(r));
+              const ov = findLeaveOverlaps(r, leaveRecs, requests);
+              return (
               <div style={{ marginTop: 14, borderTop: "1px dashed #f3d4e0", paddingTop: 14 }}>
                 <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 16px", fontSize: 13.5, color: "#374151", marginBottom: 12 }}>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Ref</span><span>{r.ref_code}</span>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Requested</span><span>{fmtIncidentTime(r.created_at)}</span>
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>Leave days</span>
+                  <span><strong>{bd.cal}</strong> calendar day{bd.cal === 1 ? "" : "s"} · <strong style={{ color: "#0f766e" }}>{bd.fromSchedule ? "" : "≈ "}{bd.real} actual leave day{bd.real === 1 ? "" : "s"}</strong> <span style={{ color: "#9ca3af", fontSize: 12 }}>({bd.off} off-day{bd.off === 1 ? "" : "s"} excluded — {bd.fromSchedule ? "read from the roster" : "est. ~2/week"})</span></span>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Employee code</span><span>{r.ec || "—"}</span>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Contact</span><span>{r.contact || "—"}</span>
                   {r.reason && (<><span style={{ color: "#9d6a82", fontWeight: 700 }}>Reason</span><span style={{ whiteSpace: "pre-wrap" }}>{linkifyText(r.reason)}</span></>)}
                 </div>
+
+                {(ov.calOverlaps.length > 0 || ov.reqOverlaps.length > 0) && (
+                  <div style={{ background: "#fffbeb", border: "1.5px solid #fde68a", borderRadius: 11, padding: "10px 13px", marginBottom: 14 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 800, color: "#92400e", marginBottom: 4 }}>⚠ Already has leave overlapping these dates — {ov.coveredDays} of {bd.cal} requested day{bd.cal === 1 ? "" : "s"} already covered</div>
+                    {ov.calOverlaps.map((lv, i) => (
+                      <div key={"c" + i} style={{ fontSize: 12, color: "#78350f" }}>• On the calendar: {fmtIncidentDate(lv.startDate)} → {fmtIncidentDate(lv.endDate)}{lv.type && lv.type !== "Annual leave" ? " (" + lv.type + ")" : ""}{lv.emergency ? " · emergency" : ""}</div>
+                    ))}
+                    {ov.reqOverlaps.map((o, i) => (
+                      <div key={"r" + i} style={{ fontSize: 12, color: "#78350f" }}>• Another request ({(LEAVE_STATUS[o.status] || {}).label || o.status}): {fmtIncidentDate(o.start_date)} → {fmtIncidentDate(o.end_date)}{o.ref_code ? " · " + o.ref_code : ""}</div>
+                    ))}
+                    <div style={{ fontSize: 11, color: "#9a7b3a", marginTop: 4 }}>Check this isn't a duplicate before approving.</div>
+                  </div>
+                )}
 
                 {r.status !== "pending" && r.decided_by && (
                   <div style={{ background: r.status === "approved" ? "#f0fdf4" : "#fef2f2", border: "1px solid " + (r.status === "approved" ? "#bbf7d0" : "#fecaca"), borderRadius: 11, padding: "10px 13px", marginBottom: 14 }}>
@@ -9415,16 +10335,98 @@ function LeaveRequestsTab({ requests, setRequests, currentUser }) {
                   </div>
                 )}
 
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
-                  <button disabled={busy || r.status === "approved"} onClick={() => approve(r)}
-                    style={{ border: "1.5px solid #15803d", background: r.status === "approved" ? "#15803d" : "#fff", color: r.status === "approved" ? "#fff" : "#15803d", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: r.status === "approved" ? "default" : "pointer" }}>
-                    {r.status === "approved" ? "● Approved" : "Approve"}
-                  </button>
-                  <button disabled={busy || r.status === "declined"} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }}
-                    style={{ border: "1.5px solid #b91c1c", background: r.status === "declined" ? "#b91c1c" : "#fff", color: r.status === "declined" ? "#fff" : "#b91c1c", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: r.status === "declined" ? "default" : "pointer" }}>
-                    {r.status === "declined" ? "● Declined" : "Decline"}
-                  </button>
-                </div>
+                {/* ── Approval workflow: operational gate → balance gate → auto-approve ── */}
+                {r.status !== "declined" && (() => {
+                  const opsDone = !!r.ops_cleared_at;
+                  const balDone = !!r.balance_checked_at;
+                  const approved = r.status === "approved";
+                  const oa = assessOps(r);
+                  const peopleLabel = oa.isMgr ? "managers" : "techs";
+                  const pill = (done, n, label) => (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 10px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: done ? "#15803d" : "#9d6a82", background: done ? "#dcfce7" : "#f6e8ef" }}>
+                      <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 15, height: 15, borderRadius: "50%", background: done ? "#15803d" : "#cbb1bd", color: "#fff", fontSize: 9 }}>{done ? "✓" : n}</span>
+                      {label}
+                    </span>
+                  );
+                  const gateBox = { border: "1px solid #f3d4e0", borderRadius: 11, padding: "11px 13px", marginBottom: 10, background: "#fffdfe" };
+                  const gateHead = { fontSize: 12.5, fontWeight: 800, color: "#831843", marginBottom: 7, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" };
+                  const stampS = { fontSize: 11, color: "#15803d", fontWeight: 600 };
+                  const btn = (bg, fg, bd) => ({ border: "1.5px solid " + bd, background: bg, color: fg, borderRadius: 9, padding: "6px 13px", fontWeight: 700, fontSize: 12, fontFamily: "inherit", cursor: "pointer" });
+                  const verdict = (bg, bd, col) => ({ background: bg, border: "1px solid " + bd, color: col, borderRadius: 8, padding: "7px 10px", fontSize: 12.5, marginBottom: 8, lineHeight: 1.45 });
+                  return (
+                    <div style={{ marginBottom: 14 }}>
+                      {/* Progress dots — mirror the 3-step overview at the top of the tab */}
+                      <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 11, alignItems: "center" }}>
+                        {pill(true, 1, "Requested")}
+                        {pill(opsDone, 2, "Operational")}
+                        {pill(approved, 3, "Balance & approved")}
+                        {balDone && !approved && <span style={{ fontSize: 11, color: "#0f766e", fontWeight: 600 }}>· balance ✓, awaiting operational</span>}
+                      </div>
+
+                      {/* Gate 1 — operational */}
+                      <div style={gateBox}>
+                        <div style={gateHead}>
+                          <span>1 · Operational check</span>
+                          {opsDone && <span style={stampS}>✓ {r.ops_cleared_by || "—"}{r.ops_cleared_at ? " · " + fmtIncidentTime(r.ops_cleared_at) : ""}</span>}
+                        </div>
+                        {oa.matched ? (
+                          oa.clashDays.length > 0 ? (
+                            <div style={verdict("#fef2f2", "#fecaca", "#b91c1c")}>
+                              ⚠ <strong>Over the limit</strong> on {oa.clashDays.length} day{oa.clashDays.length === 1 ? "" : "s"} (e.g. {oa.clashDays.slice(0, 3).map(fmtIncidentDate).join(", ")}{oa.clashDays.length > 3 ? "…" : ""}). Max <strong>{oa.maxOff}</strong> of {oa.headcount} {peopleLabel} off at {oa.branch}{oa.isMgr ? "" : " (20%)"}.
+                            </div>
+                          ) : (
+                            <div style={verdict("#f0fdf4", "#bbf7d0", "#15803d")}>
+                              ✓ <strong>Within limit</strong> — max {oa.maxOff} of {oa.headcount} {peopleLabel} off at {oa.branch}{oa.isMgr ? " (1 at a time)" : " (20%)"}.{oa.peakDays > 0 ? " ⚠ " + oa.peakDays + " day(s) fall in peak season (Oct–Mar)." : ""}
+                            </div>
+                          )
+                        ) : (
+                          <div style={verdict("#fffbeb", "#fde68a", "#92400e")}>Can't auto-check — no matching employee code{r.ec ? " (" + r.ec + ")" : ""}. Confirm operationally by hand.</div>
+                        )}
+                        {canOps ? (
+                          opsDone
+                            ? <button disabled={busy} onClick={() => toggleOps(r, false)} style={btn("#fff", "#9d6a82", "#e7c6d4")}>Undo operational check</button>
+                            : <button disabled={busy} onClick={() => toggleOps(r, true)} style={btn("#fff", "#15803d", "#15803d")}>✓ Operationally clear</button>
+                        ) : (!opsDone && <span style={{ fontSize: 12, color: "#9d6a82", fontStyle: "italic" }}>Awaiting operational reviewer.</span>)}
+                      </div>
+
+                      {/* Gate 2 — leave balance (Sage) */}
+                      <div style={gateBox}>
+                        <div style={gateHead}>
+                          <span>2 · Leave balance <span style={{ fontWeight: 600, color: "#9d6a82" }}>(check on Sage)</span></span>
+                          {balDone && <span style={stampS}>✓ {r.balance_checked_by || "—"}{r.balance_days != null ? " · " + r.balance_days + " days available" : ""}</span>}
+                        </div>
+                        {canPayroll ? (
+                          balDone ? (
+                            <button disabled={busy} onClick={() => setBalance(r, false)} style={btn("#fff", "#9d6a82", "#e7c6d4")}>Undo balance check</button>
+                          ) : (
+                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                              <input type="number" min="0" step="0.5" placeholder="days available"
+                                value={balDraft[r.id] != null ? balDraft[r.id] : (r.balance_days != null ? r.balance_days : "")}
+                                onChange={e => setBalDraft({ ...balDraft, [r.id]: e.target.value })}
+                                style={{ width: 130, fontFamily: "inherit", fontSize: 13, padding: "7px 10px", borderRadius: 9, border: "1.5px solid #e7c6d4" }} />
+                              <button disabled={busy} onClick={() => setBalance(r, true)} style={btn("#0f766e", "#fff", "#0f766e")}>✓ Balance OK</button>
+                              {(() => { const _b = leaveDayBreakdown(r.start_date, r.end_date, isMgrReq(r), schedOpts(r)); return <span style={{ fontSize: 11, color: "#9d6a82" }}>Needs {_b.fromSchedule ? "" : "≈ "}{_b.real} leave day(s) ({_b.cal} cal)</span>; })()}
+                            </div>
+                          )
+                        ) : (!balDone && <span style={{ fontSize: 12, color: "#9d6a82", fontStyle: "italic" }}>Awaiting payroll officer.</span>)}
+                      </div>
+
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                        {!approved && opsDone && balDone && <span style={{ fontSize: 12, color: "#15803d", fontWeight: 700 }}>Both checks done — approving…</span>}
+                        {!approved && <button disabled={busy} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }} style={btn("#fff", "#b91c1c", "#b91c1c")}>Decline</button>}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {r.status === "declined" && (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+                    <button disabled={busy} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }}
+                      style={{ border: "1.5px solid #b91c1c", background: "#b91c1c", color: "#fff", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>
+                      ● Declined — edit reason
+                    </button>
+                  </div>
+                )}
 
                 {declineId === r.id && (
                   <div style={{ background: "#fef2f2", border: "1.5px solid #fecaca", borderRadius: 11, padding: "12px 13px", marginBottom: 14 }}>
@@ -9456,7 +10458,8 @@ function LeaveRequestsTab({ requests, setRequests, currentUser }) {
                     style={{ background: "#831843", color: "#fff", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer", opacity: (noteDraft[r.id] || "").trim() ? 1 : 0.5 }}>Add</button>
                 </div>
               </div>
-            )}
+              );
+            })()}
           </div>
         );
           })}
@@ -10450,7 +11453,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const NAV_TAB_TO_CATEGORY = {
     onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
     scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", freshaTodo: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
-    attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll",
+    attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll", payrollInbox: "Payroll",
+    leaveRequests: "Operations", calledInSick: "Operations", extraDayRequests: "Operations",
     alerts: "Insights", activity: "Insights",
     settings: "Admin", voucherAdmin: "Admin"
   };
@@ -10574,6 +11578,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Manual cash-up entry form (null = closed) for stores that forgot to submit.
   const [cashupAdd, setCashupAdd] = useState(null);
   const [cashupAddBusy, setCashupAddBusy] = useState(false);
+  // Cash-up review ("tick off") modal — holds the row being reviewed plus the
+  // reviewer's comment draft. null = closed.
+  const [cashupReviewModal, setCashupReviewModal] = useState(null);
+  const [cashupReviewBusy, setCashupReviewBusy] = useState(false);
   useEffect(() => {
     if (tab !== "cashups") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
@@ -10619,6 +11627,44 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     setOvertimeAccess(next);
     try { if (window.BOA_DB.saveOvertimeAccess) await window.BOA_DB.saveOvertimeAccess(next); }
     catch (e) { window.alert("Could not save overtime access: " + (e.message || e)); }
+  };
+  // Who may REVIEW ("tick off") a store's daily cash-up (boa_cashup_review_access_v1).
+  // Default: Regional Ops managers (owners always allowed). Editable in Settings.
+  const [cashupReviewAccess, setCashupReviewAccess] = useState({});
+  const cashupReviewCfg = useMemo(() => {
+    const c = cashupReviewAccess || {};
+    return {
+      roles: Array.isArray(c.roles) ? c.roles : ["regional"],
+      pins: Array.isArray(c.pins) ? c.pins : []
+    };
+  }, [cashupReviewAccess]);
+  const saveCashupReviewCfg = async (next) => {
+    setCashupReviewAccess(next);
+    try { if (window.BOA_DB.saveCashupReviewAccess) await window.BOA_DB.saveCashupReviewAccess(next); }
+    catch (e) { window.alert("Could not save cash-up review access: " + (e.message || e)); }
+  };
+  // Leave-request workflow gates: who clears the operational check
+  // (boa_leave_ops_access_v1, default Regional Ops) and who does the payroll /
+  // leave-balance check (boa_leave_payroll_access_v1, default Payroll roles).
+  const [leaveOpsAccess, setLeaveOpsAccess] = useState({});
+  const [leavePayrollAccess, setLeavePayrollAccess] = useState({});
+  const leaveOpsCfg = useMemo(() => {
+    const c = leaveOpsAccess || {};
+    return { roles: Array.isArray(c.roles) ? c.roles : ["regional"], pins: Array.isArray(c.pins) ? c.pins : [] };
+  }, [leaveOpsAccess]);
+  const leavePayrollCfg = useMemo(() => {
+    const c = leavePayrollAccess || {};
+    return { roles: Array.isArray(c.roles) ? c.roles : ["payroll"], pins: Array.isArray(c.pins) ? c.pins : [] };
+  }, [leavePayrollAccess]);
+  const saveLeaveOpsCfg = async (next) => {
+    setLeaveOpsAccess(next);
+    try { if (window.BOA_DB.saveLeaveOpsAccess) await window.BOA_DB.saveLeaveOpsAccess(next); }
+    catch (e) { window.alert("Could not save leave operational access: " + (e.message || e)); }
+  };
+  const saveLeavePayrollCfg = async (next) => {
+    setLeavePayrollAccess(next);
+    try { if (window.BOA_DB.saveLeavePayrollAccess) await window.BOA_DB.saveLeavePayrollAccess(next); }
+    catch (e) { window.alert("Could not save leave payroll access: " + (e.message || e)); }
   };
   // App-scope trial persistence (the trial tab has its own copy inside an
   // IIFE; the dashboard Fresha card needs one too).
@@ -10703,7 +11749,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [otForm, setOtForm] = useState({ ec: "", date: "", hours: "", reason: "" });
   const [leaveBranch, setLeaveBranch] = useState(_myStores[0] || SALONS[0].name);
   const [leaveYM, setLeaveYM] = useState(window.BOA_DB ? window.BOA_DB.currentSchedYm() : "2026-05");
-  const [leaveForm, setLeaveForm] = useState({ ec: "", startDate: "", endDate: "", emergency: false, emergencyNote: "" });
+  const [leaveForm, setLeaveForm] = useState({ ec: "", startDate: "", endDate: "", emergency: false, emergencyNote: "", balanceDays: "", balanceChecked: false });
   // Schedule cache for theoretical-off-day calculation: keyed by `<branch>|<ym>`,
   // value is the saved schedule grid (or null if not generated yet for that month).
   const [schedCache, setSchedCache] = useState({});
@@ -10720,18 +11766,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Pre-fetch schedule grids for all (branch, ym) pairs touched by leave records
   // and the currently-visible 6-month calendar range. Cached to avoid re-fetching.
   useEffect(() => {
-    if (tab !== "leave") return;
+    // Also prefetch for the leave-request flow (Leave Requests tab + Payroll
+    // Inbox) so the calendar-vs-actual leave-day breakdown can read the roster.
+    if (tab !== "leave" && tab !== "leaveRequests" && tab !== "payrollInbox") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     const needed = new Set();
+    const addRange = (branch, startYmd, endYmd) => {
+      if (!branch || !startYmd || !endYmd) return;
+      const sd = new Date(startYmd + "T00:00:00"), ed = new Date(endYmd + "T00:00:00");
+      if (isNaN(sd) || isNaN(ed)) return;
+      for (let d = new Date(sd); d <= ed; d.setDate(d.getDate() + 1)) {
+        const ymd = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+        needed.add(branch + "|" + ymdToSchedYm(ymd));
+      }
+    };
     // Months covered by leave records (need schedule per branch the leaver works at)
     leaveRecs.forEach(lv => {
       const s = staff.find(x => x.ec === lv.ec) || managers.find(x => x.ec === lv.ec);
-      if (!s) return;
-      const sd = new Date(lv.startDate), ed = new Date(lv.endDate);
-      for (let d = new Date(sd); d <= ed; d.setDate(d.getDate() + 1)) {
-        const ymd = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-        needed.add(s.branch + "|" + ymdToSchedYm(ymd));
-      }
+      if (s) addRange(s.branch, lv.startDate, lv.endDate);
+    });
+    // Months covered by open leave requests, so the request tabs can show
+    // schedule-exact leave days.
+    (leaveRequests || []).forEach(r => {
+      if (!r || r.status === "declined") return;
+      const s = staff.find(x => String(x.ec || "").toUpperCase() === String(r.ec || "").toUpperCase())
+        || managers.find(x => String(x.ec || "").toUpperCase() === String(r.ec || "").toUpperCase());
+      addRange(s ? s.branch : r.store, r.start_date, r.end_date);
     });
     // Visible 6 payroll cycles for the currently-selected branch.
     // Each cycle's ym IS the schedule key — no date-to-cycle mapping needed.
@@ -10759,7 +11819,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       });
     });
     return () => { cancelled = true; };
-  }, [tab, leaveBranch, leaveYM, leaveRecs, staff, managers]);
+  }, [tab, leaveBranch, leaveYM, leaveRecs, leaveRequests, staff, managers]);
 
   // ── Attendance tab state ───────────────────────────────────────────
   const [attBranch, setAttBranch] = useState(_myStores[0] || SALONS[0].name);
@@ -11671,6 +12731,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setLoading(false);
       return;
     }
+    // The Fresha To-Do tab needs the leave + extra-day requests as well, so
+    // load them for anyone who can SEE that tab — not only canSeeIncidents
+    // users. Otherwise a Fresha opener (e.g. Farida) sees the tab but its
+    // extra-day cover / sick-block lists come up empty.
+    const _ftHideTabs = new Set((currentUser && currentUser.hideTabs) || []);
+    const _ftHideCats = new Set((currentUser && currentUser.hideCategories) || []);
+    const _ftShowTabs = new Set((currentUser && currentUser.showTabs) || []);
+    const _canSeeFreshaTodo = !_ftHideTabs.has("freshaTodo") && (!_ftHideCats.has("Operations") || _ftShowTabs.has("freshaTodo"));
+    const _needRequests = canSeeIncidents(currentUser) || _canSeeFreshaTodo;
     Promise.all([
       window.BOA_DB.loadAll(),
       window.BOA_DB.loadOnboarding(),
@@ -11683,12 +12752,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadOvertimeRequests ? window.BOA_DB.loadOvertimeRequests() : Promise.resolve([]),
       window.BOA_DB.loadFreshaAccess ? window.BOA_DB.loadFreshaAccess() : Promise.resolve({}),
       window.BOA_DB.loadOvertimeAccess ? window.BOA_DB.loadOvertimeAccess() : Promise.resolve({}),
+      window.BOA_DB.loadCashupReviewAccess ? window.BOA_DB.loadCashupReviewAccess() : Promise.resolve({}),
+      window.BOA_DB.loadLeaveOpsAccess ? window.BOA_DB.loadLeaveOpsAccess() : Promise.resolve({}),
+      window.BOA_DB.loadLeavePayrollAccess ? window.BOA_DB.loadLeavePayrollAccess() : Promise.resolve({}),
       (window.BOA_DB.loadIncidentReports && canSeeIncidents(currentUser)) ? window.BOA_DB.loadIncidentReports() : Promise.resolve([]),
-      (window.BOA_DB.loadLeaveRequests && canSeeIncidents(currentUser)) ? window.BOA_DB.loadLeaveRequests() : Promise.resolve([]),
-      (window.BOA_DB.loadExtraDayRequests && canSeeIncidents(currentUser)) ? window.BOA_DB.loadExtraDayRequests() : Promise.resolve([]),
+      (window.BOA_DB.loadLeaveRequests && _needRequests) ? window.BOA_DB.loadLeaveRequests() : Promise.resolve([]),
+      (window.BOA_DB.loadExtraDayRequests && _needRequests) ? window.BOA_DB.loadExtraDayRequests() : Promise.resolve([]),
       window.BOA_DB.loadFreshaExtraOpenings ? window.BOA_DB.loadFreshaExtraOpenings() : Promise.resolve({}),
       window.BOA_DB.loadFreshaBlocks ? window.BOA_DB.loadFreshaBlocks() : Promise.resolve({})
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap]) => {
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, cuReviewAccess, lvOpsAccess, lvPayrollAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap]) => {
       setStaff(d.staff);
       setManagers(d.managers);
       setMatRecs(d.matRecs);
@@ -11702,6 +12774,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setOvertimeReqs(Array.isArray(ot) ? ot : []);
       setFreshaAccess(freshaAcc && typeof freshaAcc === "object" ? freshaAcc : {});
       setOvertimeAccess(otAccess && typeof otAccess === "object" ? otAccess : {});
+      setCashupReviewAccess(cuReviewAccess && typeof cuReviewAccess === "object" ? cuReviewAccess : {});
+      setLeaveOpsAccess(lvOpsAccess && typeof lvOpsAccess === "object" ? lvOpsAccess : {});
+      setLeavePayrollAccess(lvPayrollAccess && typeof lvPayrollAccess === "object" ? lvPayrollAccess : {});
       setIncidentReports(Array.isArray(incidents) ? incidents : []);
       setLeaveRequests(Array.isArray(leaveReqs) ? leaveReqs : []);
       setExtraDayRequests(Array.isArray(extraReqs) ? extraReqs : []);
@@ -13229,7 +14304,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "mgrclockins", l: "🕐 Manager Check-ins" },
                   { t: "leave", l: "🌴 Leave Planner" },
                   ...(canSeeIncidents(currentUser) ? [(() => {
-                    const pend = leaveRequests.filter(r => r.status === "pending").length;
+                    const pend = leaveRequests.filter(r => r.status === "pending" && r.leave_type !== "Sick" && r.leave_type !== "Absent").length;
                     return { t: "leaveRequests", l: "📨 Leave Requests" + (pend ? "  (" + pend + ")" : "") };
                   })()] : []),
                   ...(canSeeIncidents(currentUser) ? [(() => {
@@ -13240,7 +14315,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const n = extraDayRequests.filter(r => r.status === "pending").length;
                     return { t: "extraDayRequests", l: "💰 Extra-Day Requests" + (n ? "  (" + n + ")" : "") };
                   })()] : []),
-                  ...(canSeeIncidents(currentUser) ? [(() => {
+                  // Fresha To-Do is granted via the normal Settings show/hide
+                  // permissions (not canSeeIncidents) so the owner can give it
+                  // to the Fresha openers (e.g. Farida) who don't pass the HR
+                  // gate that hides the other request tabs.
+                  (() => {
                     const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
                     const isOpen = (id) => !!(freshaExtraOpen && freshaExtraOpen[id] && freshaExtraOpen[id].opened);
                     const extraToOpen = (extraDayRequests || []).filter(r => r.status === "approved" && isTech(r.ec) && !isOpen(r.id)).length;
@@ -13254,7 +14333,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const toRemove = freshaOffboardRemovals(enriched).filter(r => !isBlocked(r.key)).length;
                     const n = extraToOpen + trialToOpen + monthToOpen + toBlock + toRemove;
                     return { t: "freshaTodo", l: "💇‍♀️ Fresha To-Do" + (n ? "  (" + n + ")" : "") };
-                  })()] : []),
+                  })(),
                   { t: "storeOpenings", l: "🔓 Store Openings" },
                   { t: "movements", l: "🔀 Today's Movements" },
                   { t: "dailyTasks", l: "📋 Daily Tasks" },
@@ -13274,7 +14353,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "attendance", l: "📕 Attendance" },
                   { t: "payrollProgress", l: "📊 Payroll Progress" },
                   { t: "payrollReports", l: "📈 Reports" },
-                  { t: "overtime", l: "⏱️ Overtime" }
+                  { t: "overtime", l: "⏱️ Overtime" },
+                  ...(accessAllows(currentUser, leavePayrollCfg) ? [(() => {
+                    const nReq = (leaveRequests || []).filter(r => r.status !== "declined" && r.leave_type !== "Sick" && r.leave_type !== "Absent" && !r.balance_checked_at).length;
+                    const nCal = (leaveRecs || []).filter(lv => lv && lv.balancePending).length;
+                    const n = nReq + nCal;
+                    return { t: "payrollInbox", l: "📥 Payroll Inbox" + (n ? "  (" + n + ")" : ""), forceShow: true };
+                  })()] : [])
                 ]
               },
               {
@@ -13325,7 +14410,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // gets the Trial Period tab).
             const showTabs = new Set(currentUser.showTabs || []);
             const visibleGroups = groups
-              .map(g => ({ ...g, items: g.items.filter(it => !hideTabs.has(it.t) && (!hideCats.has(g.key) || showTabs.has(it.t))) }))
+              // forceShow items (access-gated tabs like the Payroll Inbox) bypass
+              // the category/tab hide filter — access is governed by their own
+              // admin access list, so a locked-down account still sees them.
+              .map(g => ({ ...g, items: g.items.filter(it => it.forceShow || (!hideTabs.has(it.t) && (!hideCats.has(g.key) || showTabs.has(it.t)))) }))
               .filter(g => g.items.length > 0);
             const tabToCategory = {};
             for (const g of visibleGroups) for (const it of g.items) tabToCategory[it.t] = g.key;
@@ -14239,11 +15327,77 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 );
               })()}
 
-              {/* ── SECTION: CALLED IN SICK / ABSENT (today & tomorrow) ──
-                  Overview of team members who called in via My BOA. Read-only
-                  summary; click through to the Called in Sick tab for details. */}
+              {/* ── SECTION: MANAGER CALLED IN SICK / ABSENT · ROM ACTION ──
+                  A manager who called in via My BOA isn't an annual-leave
+                  request — the ROM must mark them absent (and attach their sick
+                  note) on Manager Check-ins / Coverage. Shown here with the
+                  action and a "Mark done" so it can be cleared off the dashboard.
+                  Scoped to the ROM's own stores. */}
               {!(new Set(currentUser?.hideTabs || []).has("dashCalledInSick")) && canSeeIncidents(currentUser) && (() => {
                 const { today, tomorrow, list } = calledInSickWindow(leaveRequests);
+                const isMgrEc = (ec) => /M$/i.test(String(ec || "").trim());
+                const mgrSick = list.filter(r => isMgrEc(r.ec) && !r.reviewed
+                  && (!_hasStoreScope || (r.store && scopedSalonNames.has(r.store))))
+                  .sort((a, b) => (a.start_date || "").localeCompare(b.start_date || ""));
+                if (!mgrSick.length) return null;
+                const markDone = async (id) => {
+                  try {
+                    await window.BOA_DB.markLeaveReviewed(id);
+                    setLeaveRequests(prev => prev.map(x => x.id === id ? { ...x, reviewed: true } : x));
+                  } catch (e) { alert("Could not mark done: " + (e.message || e)); }
+                };
+                const proofOf = (r) => { const m = /Proof:\s*(https?:\/\/\S+)/i.exec(r.reason || ""); return m ? m[1] : null; };
+                const whenOf = (r) => {
+                  const t = r.start_date <= today && r.end_date >= today;
+                  const tm = r.start_date <= tomorrow && r.end_date >= tomorrow;
+                  return t && tm ? "today & tomorrow" : t ? "today" : tm ? "tomorrow" : (fmtIncidentDate(r.start_date) + "–" + fmtIncidentDate(r.end_date));
+                };
+                return (
+                  <div style={{ background: "#faf5ff", border: "2px solid #e9d5ff", borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: "0 4px 16px rgba(124,58,237,0.10)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: "#6b21a8" }}>👑 Manager called in sick / absent · action required</div>
+                      <div style={{ fontSize: 12.5, color: "#7c3aed", fontWeight: 700 }}>{mgrSick.length} to action</div>
+                      <div style={{ flex: 1 }} />
+                      <button onClick={() => tryChangeTab("mgrclockins")} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>Open Manager Check-ins →</button>
+                    </div>
+                    <div style={{ fontSize: 12, color: "#6b21a8", marginBottom: 10 }}>
+                      Mark them <strong>absent</strong> on <strong>Manager Check-ins</strong> (or <strong>Manager Coverage</strong>) and attach their <strong>sick note</strong> if they have one, then tap <strong>Mark done</strong> to clear it from here.
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 8 }}>
+                      {mgrSick.map(r => {
+                        const proof = proofOf(r);
+                        return (
+                          <div key={r.id} style={{ background: "#fff", border: "1px solid #e9d5ff", borderRadius: 10, padding: "9px 12px" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap", marginBottom: 4 }}>
+                              <span style={{ fontSize: 13, fontWeight: 800, color: "#831843" }}>{r.name}</span>
+                              <span style={{ display: "inline-flex", padding: "1px 8px", borderRadius: 999, fontSize: 10.5, fontWeight: 700, color: r.leave_type === "Sick" ? "#b45309" : "#6b21a8", background: r.leave_type === "Sick" ? "#fef3c7" : "#ede9fe" }}>{LEAVE_TYPE[r.leave_type] || r.leave_type}</span>
+                              {r.store && <span style={{ fontSize: 11, color: "#9d6a82" }}>· {r.store}</span>}
+                            </div>
+                            <div style={{ fontSize: 11.5, color: "#6b7280", marginBottom: 7 }}>
+                              {whenOf(r)} · {fmtIncidentDate(r.start_date)} → {fmtIncidentDate(r.end_date)}
+                              {proof
+                                ? <> · <a href={proof} target="_blank" rel="noreferrer" style={{ color: "#7c3aed", fontWeight: 700 }}>📎 sick note</a></>
+                                : (r.leave_type === "Sick" ? <span style={{ color: "#b45309" }}> · no note attached</span> : null)}
+                            </div>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                              <button onClick={() => tryChangeTab("mgrclockins")} style={{ background: "#fff", color: "#7c3aed", border: "1px solid #e9d5ff", borderRadius: 7, padding: "5px 11px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Mark in Check-ins →</button>
+                              <button onClick={() => markDone(r.id)} style={{ background: "#16a34a", color: "#fff", border: "none", borderRadius: 7, padding: "5px 11px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>✓ Mark done</button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* ── SECTION: CALLED IN SICK / ABSENT (today & tomorrow) ──
+                  Overview of NAIL TECHS who called in via My BOA. Read-only
+                  summary; click through to the Called in Sick tab for details.
+                  (Managers are handled by the ROM-action card above.) */}
+              {!(new Set(currentUser?.hideTabs || []).has("dashCalledInSick")) && canSeeIncidents(currentUser) && (() => {
+                const { today, tomorrow, list: _list } = calledInSickWindow(leaveRequests);
+                const list = _list.filter(r => !/M$/i.test(String(r.ec || "").trim()));
                 if (!list.length) return null;
                 const todayList = list.filter(r => r.start_date <= today && r.end_date >= today);
                 const tomorrowList = list.filter(r => r.start_date <= tomorrow && r.end_date >= tomorrow);
@@ -14264,7 +15418,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 return (
                   <div style={{ background: "linear-gradient(135deg,#fff7fb 0%,#FFFFFF 70%)", border: "2px solid #f6c9dd", borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: "0 4px 16px rgba(190,24,93,0.08)" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
-                      <div style={{ fontSize: 15, fontWeight: 800, color: "#9d174d" }}>🤒 Called in sick / absent</div>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: "#9d174d" }}>🤒 Nail techs called in sick / absent</div>
                       <div style={{ fontSize: 12.5, color: "#83476a", fontWeight: 700 }}>{sentence}</div>
                       <div style={{ flex: 1 }} />
                       <button onClick={() => tryChangeTab("calledInSick")}
@@ -17032,7 +18186,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* ── LEAVE REQUESTS TAB ── */}
         {tab === "leaveRequests" && canSeeIncidents(currentUser) && (
-          <LeaveRequestsTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} />
+          <LeaveRequestsTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} leaveRecs={leaveRecs} setLeaveRecs={setLeaveRecs} enriched={enriched} managers={managers} staff={staff} opsCfg={leaveOpsCfg} payrollCfg={leavePayrollCfg} logActivity={logActivity} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} />
+        )}
+
+        {/* ── PAYROLL INBOX TAB ── */}
+        {tab === "payrollInbox" && accessAllows(currentUser, leavePayrollCfg) && (
+          <PayrollInboxTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} leaveRecs={leaveRecs} setLeaveRecs={setLeaveRecs} enriched={enriched} managers={managers} logActivity={logActivity} goTo={tryChangeTab} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} />
         )}
 
         {/* ── CALLED IN SICK TAB ── */}
@@ -22283,6 +23442,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const ym = leaveYM;
         const f = leaveForm;
         const isTechMode = leaveSubTab === "techs";
+        // Only people granted the payroll/balance role can actually look up a
+        // person's leave balance (on Sage). Everyone else (e.g. National Ops)
+        // can still log the leave, but it's added "balance pending" and lands in
+        // the payroll officer's inbox to confirm the days.
+        const canCheckBalance = accessAllows(currentUser, leavePayrollCfg);
         const peopleType = isTechMode ? "nail tech" : "manager";
         const peopleTypePlural = isTechMode ? "nail techs" : "managers";
         // Off-boarded people (leftDate in the past) should not appear in
@@ -22382,6 +23546,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const addLeave = () => {
           if (!f.ec || !f.startDate || !f.endDate) { alert("Please fill in " + peopleType + ", from, and to dates."); return; }
           if (new Date(f.startDate) > new Date(f.endDate)) { alert("Start date must be on or before end date."); return; }
+          // Leave-balance gate. Payroll/balance officers must confirm the actual
+          // balance (from Sage) before the leave is added. Anyone else (e.g.
+          // National Ops) can log the leave, but it goes on "balance pending" for
+          // the payroll officer to verify the days — they can't fake a balance
+          // they can't see.
+          let balNum = null;
+          if (canCheckBalance) {
+            if (!f.balanceChecked) { alert("Please confirm you've checked this person's leave balance on Sage before adding annual leave to the calendar."); return; }
+            balNum = Number(f.balanceDays);
+            if (f.balanceDays === "" || isNaN(balNum) || balNum < 0) { alert("Enter the leave balance (days available on Sage) so it's on record."); return; }
+            const _br = ((isTechMode ? enriched : managers).find(p => p.ec === f.ec) || {}).branch;
+            const _bd = leaveDayBreakdown(f.startDate, f.endDate, !isTechMode, { schedCache, ymdToSchedYm, ec: f.ec, branch: _br });
+            if (balNum < _bd.real && !confirm("Heads up: the balance you entered is " + balNum + " day(s), but this leave works out to " + (_bd.fromSchedule ? "" : "≈ ") + _bd.real + " actual leave day(s) (" + _bd.cal + " calendar) — more than they have available.\n\nAdd it anyway?")) return;
+          }
           // Block double-logging: same person already has annual / emergency leave
           // whose dates overlap these ones. Stops duplicate planner entries (which
           // also doubled up the Fresha block reminder).
@@ -22429,11 +23607,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }
           }
           const notes = f.emergency ? "[EMERGENCY] " + f.emergencyNote : "";
-          const newRec = { _id: Date.now(), ec: f.ec, startDate: f.startDate, endDate: f.endDate, type: "Annual leave", notes, emergency: !!f.emergency };
+          const who = (currentUser && (currentUser.name || currentUser.pin)) || "";
+          const nowIso = new Date().toISOString();
+          const newRec = canCheckBalance
+            ? { _id: Date.now(), ec: f.ec, startDate: f.startDate, endDate: f.endDate, type: "Annual leave", notes, emergency: !!f.emergency, balanceDays: balNum, balanceCheckedBy: who, balanceCheckedAt: nowIso, balancePending: false }
+            : { _id: Date.now(), ec: f.ec, startDate: f.startDate, endDate: f.endDate, type: "Annual leave", notes, emergency: !!f.emergency, balanceDays: null, balanceCheckedBy: null, balanceCheckedAt: null, balancePending: true, balanceRequestedBy: who, balanceRequestedAt: nowIso };
           persistLeaves([...leaveRecs, newRec]);
           const subj = stf ? (stf.name + " (" + stf.ec + ")") : f.ec;
-          logActivity("Added leave", subj, f.startDate + " → " + f.endDate + (f.emergency ? " · emergency" : "") + (f.emergencyNote ? " · " + f.emergencyNote : ""), "Leave");
-          setLeaveForm({ ec: "", startDate: "", endDate: "", emergency: false, emergencyNote: "" });
+          logActivity("Added leave", subj, f.startDate + " → " + f.endDate + (canCheckBalance ? " · balance " + balNum + "d" : " · balance pending payroll check") + (f.emergency ? " · emergency" : "") + (f.emergencyNote ? " · " + f.emergencyNote : ""), "Leave");
+          if (!canCheckBalance) window.alert("Leave added and flagged for the payroll officer to verify the balance (you don't have access to leave balances).");
+          setLeaveForm({ ec: "", startDate: "", endDate: "", emergency: false, emergencyNote: "", balanceDays: "", balanceChecked: false });
         };
         const removeLeave = (id) => {
           const lv = leaveRecs.find(x => x._id === id);
@@ -22511,7 +23694,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               ].map(t => {
                 const active = leaveSubTab === t.k;
                 return (
-                  <button key={t.k} onClick={() => { setLeaveSubTab(t.k); setLeaveForm({ ec: "", startDate: "", endDate: "", emergency: false, emergencyNote: "" }); }}
+                  <button key={t.k} onClick={() => { setLeaveSubTab(t.k); setLeaveForm({ ec: "", startDate: "", endDate: "", emergency: false, emergencyNote: "", balanceDays: "", balanceChecked: false }); }}
                     style={{ flex: 1, padding: "14px 22px", borderRadius: 10, border: "none", background: active ? "#BE185D" : "transparent", color: active ? "#FFFFFF" : "#831843", cursor: "pointer", fontFamily: "inherit", fontSize: 15, fontWeight: 700, transition: "all .18s", boxShadow: active ? "0 4px 12px rgba(190,24,93,0.32)" : "none", letterSpacing: "0.01em", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
                     {t.label}
                   </button>
@@ -22545,7 +23728,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
             <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "14px 16px", border: "1px solid " + Y, marginBottom: 14 }}>
               <div style={{ fontWeight: 700, color: "#831843", marginBottom: 10, fontSize: 13 }}>Add Annual Leave</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr 1fr auto", gap: 8, marginBottom: 10, alignItems: "flex-end" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1.5fr 0.9fr 0.9fr 0.9fr auto", gap: 8, marginBottom: 10, alignItems: "flex-end" }}>
                 <div>
                   <label style={{ fontSize: 10, color: "#F472B6", fontWeight: 700 }}>{isTechMode ? "NAIL TECH" : "MANAGER"}</label>
                   <StaffPicker
@@ -22564,8 +23747,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <label style={{ fontSize: 10, color: "#F472B6", fontWeight: 700 }}>TO</label>
                   <input type="date" value={f.endDate} onChange={e => setLeaveForm({ ...f, endDate: e.target.value })} style={{ width: "100%", padding: "6px 9px", borderRadius: 6, border: "1px solid " + Y, fontFamily: "inherit", fontSize: 12, background: aA, boxSizing: "border-box" }} />
                 </div>
-                <button onClick={addLeave} style={{ background: "#F472B6", color: "#fff", border: "none", borderRadius: 7, padding: "8px 14px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 12 }}>+ Add</button>
+                {canCheckBalance && (
+                  <div>
+                    <label style={{ fontSize: 10, color: "#0f766e", fontWeight: 700 }}>BALANCE (SAGE)</label>
+                    <input type="number" min="0" step="0.5" value={f.balanceDays} onChange={e => setLeaveForm({ ...f, balanceDays: e.target.value })} placeholder="days" title="Days available on Sage — required" style={{ width: "100%", padding: "6px 9px", borderRadius: 6, border: "1px solid #99f6e4", fontFamily: "inherit", fontSize: 12, background: "#f0fdfa", boxSizing: "border-box" }} />
+                  </div>
+                )}
+                <button onClick={addLeave} disabled={canCheckBalance && !f.balanceChecked} title={canCheckBalance && !f.balanceChecked ? "Confirm the leave balance has been checked first" : "Add to calendar"} style={{ background: (!canCheckBalance || f.balanceChecked) ? "#F472B6" : "#f0c8db", color: "#fff", border: "none", borderRadius: 7, padding: "8px 14px", cursor: (!canCheckBalance || f.balanceChecked) ? "pointer" : "not-allowed", fontFamily: "inherit", fontWeight: 700, fontSize: 12 }}>+ Add</button>
               </div>
+              {canCheckBalance ? (
+                <div style={{ background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 8, padding: "8px 12px", marginBottom: 10 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "#0f766e", cursor: "pointer", fontWeight: 700 }}>
+                    <input type="checkbox" checked={f.balanceChecked} onChange={e => setLeaveForm({ ...f, balanceChecked: e.target.checked })} style={{ width: 15, height: 15, accentColor: "#0f766e" }} />
+                    🧮 I've checked this person's leave balance on Sage{f.startDate && f.endDate ? (() => { const _b = leaveDayBreakdown(f.startDate, f.endDate, !isTechMode, { schedCache, ymdToSchedYm, ec: f.ec, branch: ((isTechMode ? enriched : managers).find(p => p.ec === f.ec) || {}).branch }); return " (" + _b.cal + " calendar days " + (_b.fromSchedule ? "= " : "≈ ") + _b.real + " actual leave day" + (_b.real === 1 ? "" : "s") + ")"; })() : ""}
+                  </label>
+                </div>
+              ) : (
+                <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "8px 12px", marginBottom: 10, fontSize: 12.5, color: "#92400e" }}>
+                  ⏳ You don't have access to leave balances — this leave will be added and flagged <strong>balance pending</strong> for the payroll officer to verify how many days {isTechMode ? "this tech" : "this manager"} has{f.startDate && f.endDate ? (() => { const _b = leaveDayBreakdown(f.startDate, f.endDate, !isTechMode, { schedCache, ymdToSchedYm, ec: f.ec, branch: ((isTechMode ? enriched : managers).find(p => p.ec === f.ec) || {}).branch }); return " (" + _b.cal + " calendar days " + (_b.fromSchedule ? "= " : "≈ ") + _b.real + " actual leave day" + (_b.real === 1 ? "" : "s") + ")"; })() : ""}.
+                </div>
+              )}
               <div style={{ display: "flex", gap: 14, alignItems: "flex-start", flexWrap: "wrap" }}>
                 <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#831843", cursor: "pointer", whiteSpace: "nowrap" }}>
                   <input type="checkbox" checked={f.emergency} onChange={e => setLeaveForm({ ...f, emergency: e.target.checked })} />
@@ -22695,6 +23896,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <div>
                           <strong style={{ color: isLeft ? "#6b7280" : undefined }}>{s2 ? s2.name : "?"}</strong> · <span style={{ color: "#9ca3af", fontSize: 11 }}>{lv.ec}</span>
                           {isLeft && <span style={{ marginLeft: 6, background: "#fee2e2", color: "#991b1b", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>👋 LEFT {leftDate}</span>}
+                          {lv.balancePending
+                            ? <div style={{ fontSize: 9.5, color: "#b45309", marginTop: 1, fontWeight: 700 }} title={"Added by " + (lv.balanceRequestedBy || "?") + " — awaiting the payroll officer to verify the balance on Sage."}>⏳ balance pending payroll check{lv.balanceRequestedBy ? " · added by " + lv.balanceRequestedBy : ""}</div>
+                            : lv.balanceCheckedBy
+                              ? <div style={{ fontSize: 9.5, color: "#0f766e", marginTop: 1 }} title={"Leave balance checked by " + lv.balanceCheckedBy + (lv.balanceCheckedAt ? " on " + fmtIncidentDate(lv.balanceCheckedAt) : "")}>🧮 balance {lv.balanceDays != null ? lv.balanceDays + "d" : "checked"} · {lv.balanceCheckedBy}</div>
+                              : <div style={{ fontSize: 9.5, color: "#cbb1bd", marginTop: 1 }} title="Added before the balance check was required.">balance not recorded</div>}
                         </div>
                         <div>{lv.startDate}</div>
                         <div>{lv.endDate}</div>
@@ -23132,13 +24338,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const _onMatRecs = (matRecs || []).filter(r => r && (r.matStatus === "on_mat" || r.matStatus === "dates_tbc"));
         const _onMatEcs = new Set(_onMatRecs.filter(r => r.ec).map(r => r.ec.trim()));
         const _onMatNames = new Set(_onMatRecs.filter(r => r.name).map(r => r.name.trim().toLowerCase()));
+        // matStart lookup (EC first, name fallback) so a mid-cycle maternity
+        // start is honoured instead of blanking the manager's whole row.
+        const _matStartByEc = {}; const _matStartByName = {};
+        _onMatRecs.forEach(r => {
+          if (r.ec) _matStartByEc[r.ec.trim()] = r.matStart || null;
+          if (r.name) _matStartByName[r.name.trim().toLowerCase()] = r.matStart || null;
+        });
+        const _matCycEnd = (() => {
+          const cs = new Date(cycleStart + "T00:00:00");
+          const ed = new Date(cs.getFullYear(), cs.getMonth() + 1, 24);
+          return ed.getFullYear() + "-" + String(ed.getMonth() + 1).padStart(2, "0") + "-" + String(ed.getDate()).padStart(2, "0");
+        })();
         const mgrsWithOff = managers.map(m => {
           const mEc = (m && m.ec || "").trim();
           const mName = (m && m.name || "").trim().toLowerCase();
           const off = (offList || []).find(o => o && o.ec && o.ec.trim() === mEc);
-          const flag = (mEc && _onMatEcs.has(mEc)) || (mName && _onMatNames.has(mName));
+          const isMat = (mEc && _onMatEcs.has(mEc)) || (mName && _onMatNames.has(mName));
           const base = off ? { ...m, leftDate: off.leftDate, offRec: off } : { ...m };
-          return flag ? { ...base, _onMat: true } : base;
+          if (!isMat) return base;
+          // Honour the maternity start date. Full cycle (no date / already
+          // started) → legacy _onMat path = whole-row ML. Mid-cycle start →
+          // keep the manager in the scheduling pool and tag _matFromYmd so a
+          // synthetic leave below marks only the on/after-start days ML.
+          const ms = (mEc && _matStartByEc[mEc] != null ? _matStartByEc[mEc] : _matStartByName[mName]) || null;
+          const win = matCycleWindow({ onMat: true, matStart: ms }, cycleStart, _matCycEnd);
+          if (win.full) return { ...base, _onMat: true };
+          if (win.fromYmd) return { ...base, _matFromYmd: win.fromYmd };
+          return base;   // maternity starts a later cycle → schedule normally now
         });
         // Arriving managers — derive a shadow row at the destination
         // branch from any real manager record whose transferring flag
@@ -23210,8 +24437,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const ed = new Date(cs.getFullYear(), cs.getMonth() + 1, 24);
           return ed.getFullYear() + "-" + String(ed.getMonth() + 1).padStart(2, "0") + "-" + String(ed.getDate()).padStart(2, "0");
         })();
-        const _matLeaves = allMgrs.filter(m => m._onMat).map(m => ({
-          ec: m.ec, startDate: cycleStart, endDate: cycleEndForMat, _synthetic: "mat"
+        // Full-cycle mat (_onMat) → leave spans the whole cycle. Mid-cycle mat
+        // (_matFromYmd) → leave starts on the maternity date, so the manager
+        // still gets real working days before it.
+        const _matLeaves = allMgrs.filter(m => m._onMat || m._matFromYmd).map(m => ({
+          ec: m.ec, startDate: m._onMat ? cycleStart : m._matFromYmd, endDate: cycleEndForMat, _synthetic: "mat"
         }));
         const mgrLeavesPlusMat = [..._matLeaves, ...mgrLeaves];
 
@@ -23235,345 +24465,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const _otherCycleMgr = _branchReqsMgr.length - currentRequests.length;
         const _otherBranchMgr = (mgrRequests || []).filter(r => r && _normMgrBranch(r.branch) !== _branchKeyMgr).length;
         let result = mgrSched(branch, cycleStart, allMgrs, mgrLeavesPlusMat, currentRequests, mgrPriorCtx);
-        // Rewrite the synthetic leave cells for on-mat managers from 'L'
-        // to 'ML' so the grid renders the maternity marker (and not a
-        // generic annual-leave 'L').
+        // Rewrite the synthetic-maternity leave cells from 'L' to 'ML' so the
+        // grid renders the maternity marker (and not a generic annual-leave
+        // 'L'). Full-cycle mat → every cell; mid-cycle mat → only on/after the
+        // start date, so a real annual-leave 'L' taken BEFORE maternity stays
+        // an 'L'.
         if (result && result.grid) {
-          allMgrs.filter(m => m._onMat).forEach(m => {
+          allMgrs.filter(m => m._onMat || m._matFromYmd).forEach(m => {
             if (!result.grid[m.ec]) return;
+            const from = m._onMat ? cycleStart : m._matFromYmd;
             Object.keys(result.grid[m.ec]).forEach(k => {
-              if (result.grid[m.ec][k] === "L") result.grid[m.ec][k] = "ML";
+              if (k >= from && result.grid[m.ec][k] === "L") result.grid[m.ec][k] = "ML";
             });
           });
         }
-        // Sandown WE / WL stamper. Applied to the FINAL merged grid
-        // (after the haveDraft branch runs) so it can't be overwritten
-        // by a re-load of the saved draft. Re-run-safe: works whether
-        // the input cells are W, WE or WL.
-        // SM is always WE 08:00–17:00 every working day (incl. Sunday).
-        // When SM is on, every working AM that day is WL.
-        // When no SM is on, exactly one AM (the one with the fewest WE
-        // shifts so far) is WE, the rest are WL.
-        // Manager shift-split helper. Walks each day, identifies who's
-        // working that day on the grid, and re-stamps WE / WM / WL based
-        // on store-specific rules:
-        //   - SM / SSM always gets WE (the early shift). The role they
-        //     occupy never changes regardless of how many people are on.
-        //   - AMs split: when SM is on, AMs default to WL; when no SM is
-        //     on, one AM gets WE (opener) and the rest go WL.
-        //   - WM (middle shift) is a tie-breaker for when 3+ managers
-        //     are working a WM-eligible day-of-week. The wmDows set
-        //     decides which DOWs that applies to:
-        //       Sandown:   Mon-Fri only      → {1,2,3,4,5}
-        //       Table Bay: Mon-Sat           → {1,2,3,4,5,6}
-        //     If we'd be assigning a WM, we always keep at least one WL,
-        //     because both stores require an opener AND a closer on the
-        //     floor.
-        // Per-AM earlyCount / middleCount keep both rotations even
-        // across the cycle so the same AM doesn't always open or always
-        // get the middle shift.
-        const _applyMgrShiftSplit = (grid, dates, managers, wmDows) => {
-          if (!grid) return;
-          const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
-          const _earlyCount = {};
-          const _middleCount = {};
-          (managers || []).forEach(m => { _earlyCount[m.ec] = 0; _middleCount[m.ec] = 0; });
-          const _pickLowest = (list, counter) => {
-            const sorted = list.slice().sort((a, b) =>
-              ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
-              (a.ec || "").localeCompare(b.ec || "")
-            );
-            const winner = sorted[0];
-            counter[winner.ec] = (counter[winner.ec] || 0) + 1;
-            return winner;
-          };
-          (dates || []).forEach(dy => {
-            const workers = (managers || []).filter(m =>
-              m && m.ec && grid[m.ec] && (
-                grid[m.ec][dy.d] === "W" ||
-                grid[m.ec][dy.d] === "WE" ||
-                grid[m.ec][dy.d] === "WM" ||
-                grid[m.ec][dy.d] === "WL"
-              )
-            );
-            if (workers.length === 0) return;
-            // Reset to W so a re-run lands on the right labels (re-run-safe).
-            workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
-            const wmAllowedToday = wmDows && wmDows.has(dy.dow);
-            const sm = workers.find(_isSM);
-            const ams = workers.filter(m => !_isSM(m));
-            if (sm) {
-              grid[sm.ec][dy.d] = "WE";
-              // SM + 2+ AMs on a WM-eligible day → 1 middle shift, rest late.
-              if (wmAllowedToday && ams.length >= 2) {
-                const mid = _pickLowest(ams, _middleCount);
-                grid[mid.ec][dy.d] = "WM";
-                ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              } else {
-                ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              }
-            } else if (ams.length > 0) {
-              const opener = _pickLowest(ams, _earlyCount);
-              grid[opener.ec][dy.d] = "WE";
-              const rest = ams.filter(m => m.ec !== opener.ec);
-              // No-SM + 3+ AMs on a WM-eligible day → 1 early + 1 middle + rest late.
-              // (Need at least 2 non-opener AMs to spawn a WM so a WL still exists.)
-              if (wmAllowedToday && rest.length >= 2) {
-                const mid = _pickLowest(rest, _middleCount);
-                grid[mid.ec][dy.d] = "WM";
-                rest.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              } else {
-                rest.forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              }
-            }
-          });
-        };
-        // Riverlands has its own shape — different store-hours, no
-        // WM tier, but a 4-managers-or-more boost where one extra AM
-        // takes a second early shift Mon-Fri. Saturday is a single
-        // 9-18 shift; Sunday a single 8-17 shift.
-        //
-        //   Mon-Fri (store closes 19:00):
-        //     SM working → WE (08:00-17:00)
-        //     No SM      → 1 AM = WE (09:00-18:00, the AM-opener time)
-        //     Remaining AMs → WL (10:00-19:00)
-        //     4+ working → one additional AM also gets WE (08:00-17:00
-        //       extra opener). Labelled WE; banner explains the times.
-        //   Saturday: every working manager → WE (09:00-18:00 single shift).
-        //   Sunday:   every working manager → WE (08:00-17:00 single shift).
-        const _applyRiverlandsShifts = (grid, dates, managers) => {
-          if (!grid) return;
-          const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
-          const _earlyCount = {};        // rotation for AM-opener (no-SM Mon-Fri)
-          const _extraEarlyCount = {};   // rotation for the 4+ bonus early-AM
-          (managers || []).forEach(m => { _earlyCount[m.ec] = 0; _extraEarlyCount[m.ec] = 0; });
-          const _pickLowest = (list, counter) => {
-            const sorted = list.slice().sort((a, b) =>
-              ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
-              (a.ec || "").localeCompare(b.ec || "")
-            );
-            const winner = sorted[0];
-            counter[winner.ec] = (counter[winner.ec] || 0) + 1;
-            return winner;
-          };
-          (dates || []).forEach(dy => {
-            const workers = (managers || []).filter(m =>
-              m && m.ec && grid[m.ec] && (
-                grid[m.ec][dy.d] === "W" ||
-                grid[m.ec][dy.d] === "WE" ||
-                grid[m.ec][dy.d] === "WB" ||
-                grid[m.ec][dy.d] === "WM" ||
-                grid[m.ec][dy.d] === "WL"
-              )
-            );
-            if (workers.length === 0) return;
-            workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
-            const isMonFri = dy.dow >= 1 && dy.dow <= 5;
-            const isSat = dy.dow === 6;
-            const isSun = dy.dow === 0;
-            // Sat / Sun: single-shift days — everyone goes WE.
-            if (isSat || isSun) {
-              workers.forEach(m => { grid[m.ec][dy.d] = "WE"; });
-              return;
-            }
-            if (!isMonFri) {
-              workers.forEach(m => { grid[m.ec][dy.d] = "WE"; });
-              return;
-            }
-            // Mon-Fri: WE/WL split with optional extra-early on 4+.
-            const sm = workers.find(_isSM);
-            const ams = workers.filter(m => !_isSM(m));
-            if (sm) {
-              grid[sm.ec][dy.d] = "WE";
-              // 4+ on duty → one extra AM also gets an early shift, but
-              // labelled WB (Work Boost) so HR can pick out at a glance
-              // who's doing the extra 08:00–17:00 alongside the SM.
-              if (workers.length >= 4 && ams.length >= 1) {
-                const extra = _pickLowest(ams, _extraEarlyCount);
-                grid[extra.ec][dy.d] = "WB";
-                ams.filter(m => m.ec !== extra.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              } else {
-                ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              }
-            } else if (ams.length > 0) {
-              const opener = _pickLowest(ams, _earlyCount);
-              grid[opener.ec][dy.d] = "WE";
-              const rest = ams.filter(m => m.ec !== opener.ec);
-              if (workers.length >= 4 && rest.length >= 1) {
-                // Bonus AM-only path: regular opener is WE 09:00–18:00;
-                // bonus AM is WB 08:00–17:00. Two visually different
-                // 'early' people on the floor, which is the point.
-                const extra = _pickLowest(rest, _extraEarlyCount);
-                grid[extra.ec][dy.d] = "WB";
-                rest.filter(m => m.ec !== extra.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              } else {
-                rest.forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              }
-            }
-          });
-        };
-        // Ballito has its own shape too — store closes 19:00 Mon-Sat, but
-        // AMs ONLY work 09:00-18:00 (WM) or 10:00-19:00 (WL); the 08:00-
-        // 17:00 WE slot is SM-only. So when there's no SM on a Mon-Sat
-        // day the AMs split into WM/WL instead of WE/WL like Sandown.
-        //
-        //   Mon-Sat:
-        //     SM working → WE (08:00-17:00)
-        //     2+ AMs     → 1 AM = WM (09:00-18:00, the opener), rest WL
-        //                  (10:00-19:00, the closer). Rotated fairly.
-        //     1 AM only  → WL (closer). 9-10am window not covered; HR
-        //                  schedules a 2nd manager to fix.
-        //   Sunday: every working manager → WE (08:00-17:00 single shift).
-        const _applyBallitoShifts = (grid, dates, managers) => {
-          if (!grid) return;
-          const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
-          const _middleCount = {};
-          (managers || []).forEach(m => { _middleCount[m.ec] = 0; });
-          const _pickLowest = (list, counter) => {
-            const sorted = list.slice().sort((a, b) =>
-              ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
-              (a.ec || "").localeCompare(b.ec || "")
-            );
-            const winner = sorted[0];
-            counter[winner.ec] = (counter[winner.ec] || 0) + 1;
-            return winner;
-          };
-          (dates || []).forEach(dy => {
-            const workers = (managers || []).filter(m =>
-              m && m.ec && grid[m.ec] && (
-                grid[m.ec][dy.d] === "W" ||
-                grid[m.ec][dy.d] === "WE" ||
-                grid[m.ec][dy.d] === "WB" ||
-                grid[m.ec][dy.d] === "WM" ||
-                grid[m.ec][dy.d] === "WL"
-              )
-            );
-            if (workers.length === 0) return;
-            workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
-            const isMonSat = dy.dow >= 1 && dy.dow <= 6;
-            if (!isMonSat) {
-              // Sunday (and any other day): single-shift 08:00-17:00.
-              workers.forEach(m => { grid[m.ec][dy.d] = "WE"; });
-              return;
-            }
-            const sm = workers.find(_isSM);
-            const ams = workers.filter(m => !_isSM(m));
-            if (sm) {
-              grid[sm.ec][dy.d] = "WE";
-              if (ams.length >= 2) {
-                const mid = _pickLowest(ams, _middleCount);
-                grid[mid.ec][dy.d] = "WM";
-                ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              } else {
-                ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              }
-            } else if (ams.length === 1) {
-              grid[ams[0].ec][dy.d] = "WL";
-            } else if (ams.length > 0) {
-              const mid = _pickLowest(ams, _middleCount);
-              grid[mid.ec][dy.d] = "WM";
-              ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
-            }
-          });
-        };
-        // Fourways — store hours 09:00–20:00 Mon-Sat, 09:00–19:00 Sun.
-        //
-        //   Mon-Sat (closer 11:00–20:00, optional opener 10:00–19:00):
-        //     SM/SSM always work 08:00-17:00 (WE) — they never close;
-        //     the 11:00-20:00 close is carried by the AMs/techs.
-        //     AMs (regardless of SM count):
-        //       1   → WL (11:00-20:00)
-        //       2+  → 1 WM (10:00-19:00, rotated) + rest WL (11:00-20:00)
-        //   Sunday (one early 08:00-17:00 + one late 10:00-19:00):
-        //     SM/SSM → WE (08:00-17:00); AMs → WL (10:00-19:00)
-        //     No SM, 1 AM → WE (08:00-17:00, opener priority — covers
-        //                   store-open; 17-19 needs a tech)
-        //     No SM, 2+ AMs → 1 WE (rotated) + rest WL (10:00-19:00)
-        const _applyFourwaysShifts = (grid, dates, managers) => {
-          if (!grid) return;
-          const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
-          const _middleCount   = {};   // rotation for Mon-Sat WM (AMs, 10-19 opener)
-          const _earlyCount    = {};   // rotation for Sunday WE when no SM (AMs)
-          (managers || []).forEach(m => {
-            _middleCount[m.ec]   = 0;
-            _earlyCount[m.ec]    = 0;
-          });
-          const _pickLowest = (list, counter) => {
-            const sorted = list.slice().sort((a, b) =>
-              ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
-              (a.ec || "").localeCompare(b.ec || "")
-            );
-            const winner = sorted[0];
-            counter[winner.ec] = (counter[winner.ec] || 0) + 1;
-            return winner;
-          };
-          (dates || []).forEach(dy => {
-            const workers = (managers || []).filter(m =>
-              m && m.ec && grid[m.ec] && (
-                grid[m.ec][dy.d] === "W" ||
-                grid[m.ec][dy.d] === "WE" ||
-                grid[m.ec][dy.d] === "WB" ||
-                grid[m.ec][dy.d] === "WM" ||
-                grid[m.ec][dy.d] === "WL"
-              )
-            );
-            if (workers.length === 0) return;
-            // Reset to W so a re-run lands on the right labels.
-            workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
-            const sms = workers.filter(_isSM);
-            const ams = workers.filter(m => !_isSM(m));
-            // SM placement (shared for Sun + Mon-Sat): SM/SSM always work
-            // the 08:00-17:00 opener (WE) and never close — the late
-            // 11:00-20:00 shift is carried by the AMs/techs.
-            sms.forEach(m => { grid[m.ec][dy.d] = "WE"; });
-            const isSun = dy.dow === 0;
-            if (isSun) {
-              if (sms.length >= 1) {
-                // SM(s) already placed above; remaining AMs all close.
-                ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              } else if (ams.length === 1) {
-                // Opener priority — store opens 09:00 so the lone AM
-                // takes the 08:00-17:00 shift even though it leaves
-                // 17-19 uncovered (HR can patch with a tech).
-                grid[ams[0].ec][dy.d] = "WE";
-              } else if (ams.length > 0) {
-                const opener = _pickLowest(ams, _earlyCount);
-                grid[opener.ec][dy.d] = "WE";
-                ams.filter(m => m.ec !== opener.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              }
-              return;
-            }
-            // Mon-Sat — SM(s) already placed; AMs follow standard rule.
-            if (ams.length === 0) {
-              // pure SM day — already handled above
-            } else if (sms.length >= 1) {
-              // With an SM opener already locked in, AMs use the
-              // normal 1=WL / 2+=WM+WL split.
-              if (ams.length >= 2) {
-                const mid = _pickLowest(ams, _middleCount);
-                grid[mid.ec][dy.d] = "WM";
-                ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              } else {
-                ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              }
-            } else if (ams.length === 1) {
-              grid[ams[0].ec][dy.d] = "WL";
-            } else {
-              const mid = _pickLowest(ams, _middleCount);
-              grid[mid.ec][dy.d] = "WM";
-              ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
-            }
-          });
-        };
-        const _applyBranchShiftRules = (grid, dates, managers) => {
-          if (!grid) return;
-          if (branch === "Sandown") return _applyMgrShiftSplit(grid, dates, managers, new Set([1, 2, 3, 4, 5]));
-          if (branch === "Table Bay") return _applyMgrShiftSplit(grid, dates, managers, new Set([1, 2, 3, 4, 5, 6]));
-          if (branch === "Riverlands") return _applyRiverlandsShifts(grid, dates, managers);
-          if (branch === "Ballito") return _applyBallitoShifts(grid, dates, managers);
-          if (branch === "Mall of the South") return _applyBallitoShifts(grid, dates, managers);
-          if (branch === "Fourways") return _applyFourwaysShifts(grid, dates, managers);
-        };
+        // Per-store WE/WM/WL labelling lives at module scope now (shared with
+        // Manager Coverage so both surfaces derive identical shift labels from
+        // who's working each day). Thin wrapper binds the current branch.
+        const _applyBranchShiftRules = (grid, dates, managers) => applyBranchShiftRules(grid, dates, managers, branch);
         // Apply to the freshly-generated grid (covers the no-draft path).
         _applyBranchShiftRules(result.grid, result.dates, result.managers);
         const haveDraft = !!mgrSchedDraft;
@@ -23887,10 +24796,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 base[ec] = JSON.parse(JSON.stringify(fresh.grid[ec]));
               }
             });
-            // ML rewrite for any added on-mat mgr (defence in depth)
-            allMgrs.filter(m => m._onMat && rosterAdded.includes(m.ec)).forEach(m => {
+            // ML rewrite for any added mat mgr (defence in depth). Full cycle
+            // → every L; mid-cycle → only on/after the start date.
+            allMgrs.filter(m => (m._onMat || m._matFromYmd) && rosterAdded.includes(m.ec)).forEach(m => {
+              const from = m._onMat ? cycleStart : m._matFromYmd;
               if (base[m.ec]) Object.keys(base[m.ec]).forEach(k => {
-                if (base[m.ec][k] === "L") base[m.ec][k] = "ML";
+                if (k >= from && base[m.ec][k] === "L") base[m.ec][k] = "ML";
               });
             });
           }
@@ -23927,12 +24838,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
           const fresh = mgrSched(branch, cycleStart, allMgrs, mgrLeavesPlusMat, currentRequests, mgrPriorCtx);
           // Same ML rewrite as the load path - keeps the regenerated grid
-          // consistent with maternity status.
+          // consistent with maternity status (full cycle → every L; mid-cycle
+          // → only on/after the start date).
           if (fresh && fresh.grid) {
-            allMgrs.filter(m => m._onMat).forEach(m => {
+            allMgrs.filter(m => m._onMat || m._matFromYmd).forEach(m => {
               if (!fresh.grid[m.ec]) return;
+              const from = m._onMat ? cycleStart : m._matFromYmd;
               Object.keys(fresh.grid[m.ec]).forEach(k => {
-                if (fresh.grid[m.ec][k] === "L") fresh.grid[m.ec][k] = "ML";
+                if (k >= from && fresh.grid[m.ec][k] === "L") fresh.grid[m.ec][k] = "ML";
               });
             });
           }
@@ -24093,7 +25006,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (!mgrSchedDraft) { alert("Nothing to save — click Generate first."); return; }
           setMgrSchedSaving(true);
           try {
-            const v = await window.BOA_DB.saveSchedule(branch, ymKey, mgrSchedDraft, true);
+            // Persist WITH the per-store shift labels (WE/WL/WM) baked in, so
+            // everything that reads the saved grid — Manager Coverage,
+            // Attendance, exports — shows the exact same shift times as this
+            // schedule tab (e.g. Sandown Sunday WE 08:00–17:00, not the generic
+            // 'W' default). The grid is re-labelled on render too, so saving
+            // labels is idempotent and survives a reload.
+            const _toSave = JSON.parse(JSON.stringify(mgrSchedDraft));
+            _applyBranchShiftRules(_toSave, result.dates, result.managers);
+            const v = await window.BOA_DB.saveSchedule(branch, ymKey, _toSave, true);
             setMgrSchedSaved(mgrSchedDraft);
             setMgrSchedSavedAt((v && v.savedAt) || new Date().toISOString());
             setMgrSchedDirty(false);
@@ -24136,9 +25057,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           console.log("[saveFinal] manager — saving", { branch, ymKey, ecCount: Object.keys(draft).length, name: name.trim(), madeBy: madeBy.trim(), approvedBy: approvedBy.trim() });
           try {
             const u = window.BOA_CURRENT_USER || currentUser || {};
+            // Bake the per-store shift labels (WE/WL/WM) into the approved
+            // snapshot so Manager Coverage reads the same shift times this tab
+            // shows (idempotent — the grid is re-labelled on render anyway).
+            const _approvedGrid = JSON.parse(JSON.stringify(draft));
+            _applyBranchShiftRules(_approvedGrid, result.dates, result.managers);
             const saved = await window.BOA_DB.saveApprovedSchedule(branch, ymKey, true, {
               name: name.trim(),
-              grid: JSON.parse(JSON.stringify(draft)),
+              grid: _approvedGrid,
               madeBy: madeBy.trim(),
               approvedBy: approvedBy.trim(),
               note: note.trim(),
@@ -24598,7 +25524,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 14px", marginBottom: 10, fontSize: 12, color: "#065f46", display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center" }}>
                 <span style={{ fontSize: 11, fontWeight: 800, color: "#065f46", letterSpacing: "0.08em", textTransform: "uppercase" }}>🕐 Fourways manager shifts</span>
                 <span><strong>SM / SSM (every day)</strong> · 08:00–17:00 (always open, never close)</span>
-                <span><strong>Mon–Sat</strong> (store 09:00–20:00) · <span style={{ color: "#0f766e" }}>WM 10:00–19:00 (only with 2+ AMs on duty, rotated)</span> · WL 11:00–20:00</span>
+                <span><strong>Mon–Sat</strong> (store 09:00–20:00) · with SM: <span style={{ color: "#0f766e" }}>WM 10:00–19:00 (2+ AMs, rotated)</span> · WL 11:00–20:00 · <strong>no SM: WE 08:00–17:00 opener</strong> + WL 11:00–20:00</span>
                 <span><strong>Sunday</strong> (store 09:00–19:00) · WE 08:00–17:00 · WL 10:00–19:00</span>
               </div>
             )}
@@ -24653,6 +25579,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         )}
                         {!mg.isShadow && mg.transferring && mg.transferTo && (
                           <div style={{ fontSize: 9, color: "#92400e", fontWeight: 700, marginTop: 1 }}>🔄 → {mg.transferTo}{mg.transferDate ? " · " + new Date(mg.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</div>
+                        )}
+                        {mg._matFromYmd && !mg._onMat && (
+                          <div style={{ fontSize: 9, color: "#6b21a8", fontWeight: 700, marginTop: 1 }}>🤱 ML FROM {new Date(mg._matFromYmd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}</div>
                         )}
                         {mg._offGhost
                           ? <div style={{ fontSize: 9, color: "#9ca3af", fontStyle: "italic", marginTop: 1 }}>Left {mg._offLeftDate}{mg._offReason ? " · " + mg._offReason : ""}</div>
@@ -26754,6 +27683,49 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             || (a.name || "").localeCompare(b.name || "");
         }));
 
+        // ── Coverage shift labels: derive WE/WM/WL exactly like the schedule tab ──
+        // The saved manager grid stores plain "W" (or a possibly-stale label);
+        // the schedule tab turns it into WE/WM/WL at render time via
+        // applyBranchShiftRules. Coverage used to display whatever raw label
+        // happened to be in the grid, so it disagreed with the schedule (e.g.
+        // showing a WL where the schedule said WM). We re-derive the labels here
+        // from the same who's-working pattern, over the FULL 25th→24th cycle so
+        // the WM/WE rotation matches, then read each cell's label back. Cached
+        // per branch+cycle. Non-split stores are read straight through.
+        const _covLabelCache = {};
+        const _buildCovLabels = (branchName, mgrYm) => {
+          const key = branchName + "|" + mgrYm;
+          if (_covLabelCache[key]) return _covLabelCache[key];
+          const mgrs = (mgrByBranch[branchName] || []).map(m => ({ ec: m.ec, role: _effectiveRole(m) }));
+          const [cy, cm] = String(mgrYm).split("-").map(Number);
+          const cStart = new Date(cy, cm - 1, 25);     // cycle opens 25th of mgrYm's month
+          const cEnd = new Date(cy, cm, 24);           // …closes 24th of the next month
+          const dates = [];
+          const grid = {};
+          for (let c = new Date(cStart); c <= cEnd; c.setDate(c.getDate() + 1)) {
+            const ymd = c.getFullYear() + "-" + _p2(c.getMonth() + 1) + "-" + _p2(c.getDate());
+            const _d = { ymd, dom: c.getDate(), dow: c.getDay(), mgrYm };
+            dates.push({ d: ymd, dow: c.getDay() });
+            mgrs.forEach(m => { (grid[m.ec] = grid[m.ec] || {})[ymd] = readWithFallback(branchName, m.ec, _d) || ""; });
+          }
+          applyBranchShiftRules(grid, dates, mgrs, branchName);
+          _covLabelCache[key] = grid;
+          return grid;
+        };
+        // Cell value for display. Split-shift stores get the re-derived label so
+        // Coverage matches the schedule tab exactly; other stores read straight.
+        const _covCell = (branchName, ec, d) => {
+          if (!SPLIT_SHIFT_STORES[branchName]) return readWithFallback(branchName, ec, d);
+          // A manual custom-hours override for this exact day is the ROM's
+          // explicit choice — the schedule derivation must NOT relabel it. Leave
+          // the cell exactly as saved (the displayed time already uses the
+          // custom hours via _customTime), so custom times are never overwritten.
+          if (_effCustomTime(ec, d.ymd)) return readWithFallback(branchName, ec, d);
+          const row = _buildCovLabels(branchName, d.mgrYm)[ec];
+          if (row && Object.prototype.hasOwnProperty.call(row, d.ymd)) return row[d.ymd];
+          return readWithFallback(branchName, ec, d);
+        };
+
         // Manager clock-in lookup keyed by ec → ymd → true. Powers the
         // small green dot we render on cells where the manager actually
         // showed up. Today's clock-ins come straight from mgrClockinRows
@@ -27205,10 +28177,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       {_absStyle.lbl}{_abs.proof ? " 📎" : ""}
                     </div>
                   )}
+                  {cellVal === "E" && !_abs && (
+                    <div title="Approved extra day" style={{ position: "absolute", top: 3, left: 3, right: 3, background: "#6ee7b7", color: "#064e3b", borderRadius: 4, padding: "1px 5px", fontSize: 9, fontWeight: 800, letterSpacing: "0.05em", textAlign: "center", boxShadow: "0 1px 2px rgba(0,0,0,0.18)" }}>
+                      ✨ EXTRA
+                    </div>
+                  )}
                   {dotColor && (
                     <span title={dotTitle} style={{ position: "absolute", top: 4, right: 4, width: 9, height: 9, borderRadius: 9, background: dotColor, border: "2px solid #fff", boxShadow: "0 0 0 1px rgba(0,0,0,0.12)" }} />
                   )}
-                  <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.01em", whiteSpace: "nowrap", marginTop: _abs ? 16 : 0 }}>{time}</div>
+                  <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.01em", whiteSpace: "nowrap", marginTop: (_abs || cellVal === "E") ? 16 : 0 }}>{time}</div>
                   <div style={{ fontSize: 10, fontWeight: 600, opacity: 0.95, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{branchName}{isGuest ? " ↪" : ""}</div>
                   <div style={{ fontSize: 9, fontWeight: 800, opacity: 0.92, letterSpacing: "0.06em", marginTop: 1 }}>
                     {(role || "").toUpperCase()}{cellVal !== "W" ? " · " + cellVal : ""}
@@ -27409,7 +28386,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                         )}
                                       </td>
                                       {weekDays.map(d => {
-                                        const v = readWithFallback(b, m.ec, d);
+                                        const v = _covCell(b, m.ec, d);
                                         return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow, m);
                                       })}
                                     </tr>
@@ -27474,7 +28451,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             )}
                           </td>
                           {weekDays.map(d => {
-                            const v = readWithFallback(b, m.ec, d);
+                            const v = _covCell(b, m.ec, d);
                             return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow, m);
                           })}
                         </tr>
@@ -27500,6 +28477,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         const _fmtMoney = (n) => "R " + (Number(n) || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
         const _fmtDate = (ymd) => { try { return new Date(ymd + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" }); } catch (_) { return ymd; } };
+        const _fmtStamp = (iso) => { try { return new Date(iso).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; } };
+
+        // Only owners + people granted in Settings → Cash-up review may tick a
+        // cash-up off as reviewed. Everyone else sees the review status read-only.
+        const canReviewCashups = (() => {
+          if (!currentUser) return false;
+          if (currentUser.isOwner) return true;
+          const role = (currentUser.role || "").toLowerCase();
+          const roleMatch = (cashupReviewCfg.roles || []).some(k =>
+            k === "national" ? (role.includes("national ops") || role.includes("national operations") || role.includes("national"))
+              : k === "regional" ? (role.includes("regional") || /\brom\b/.test(role) || role.includes("regional ops"))
+                : false
+          );
+          if (roleMatch) return true;
+          return (cashupReviewCfg.pins || []).includes(currentUser.pin);
+        })();
 
         const filtered = cashupRows.filter(r => {
           if (_hasStoreScope && !scopedSalonNames.has(r.branch)) return false;
@@ -27526,6 +28519,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           Number(r.cash) > 0 && r.cash_banked !== true && r.cash_banked !== false
         );
         const notBanked = activeRows.filter(r => r.cash_banked === false);
+
+        // Review ("tick off") progress across the visible day.
+        const reviewedCount = activeRows.filter(r => r.reviewed_at).length;
+        const toReviewCount = activeRows.length - reviewedCount;
 
         const branchesInScope = SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name));
         const visibleBranches = cashupRegion === "all"
@@ -27649,6 +28646,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               {statCard("Card Tips", _fmtMoney(totals.tips))}
               {statCard("Manual Discounts", _fmtMoney(totals.manualD))}
               {statCard("Banking Gaps", String(bankingGaps.length), notBanked.length + " explicitly not banked")}
+              {statCard("Reviewed", reviewedCount + " / " + activeRows.length, toReviewCount > 0 ? toReviewCount + " still to tick off" : (activeRows.length ? "all ticked off ✓" : null))}
               {statCard("Not Submitted", String(missingCount), "store" + (missingCount === 1 ? "" : "s") + (selIsToday ? " not in yet" : " to follow up"))}
             </div>
 
@@ -27707,6 +28705,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         { l: "Total" },
                         { l: "Banking", help: "Cash banking status. Yes = banked with slip attached. Not banked = cash was taken but not deposited (follow up). Missing = cash taken but no banking answer captured." },
                         { l: "Signed by" },
+                        { l: "Reviewed", help: "Sign-off that a reviewer (e.g. the portfolio / regional ops manager) has checked this cash-up and it matches. Tick it off with the ✓ button; their name, the time and any comment are shown here. Who can review is set under Settings → Cash-up review." },
                         { l: "Action" },
                       ].map(h => (
                         <th key={h.l} style={{ padding: "8px 10px", fontSize: 11, fontWeight: 800, letterSpacing: "0.04em", borderBottom: "1px solid #FBCFE8", whiteSpace: "nowrap" }}>
@@ -27786,6 +28785,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <td style={cell}>{banking}</td>
                           <td style={cell}>{r.signed_by}{r.notes ? <span title={r.notes} style={{ marginLeft: 6, color: "#9ca3af" }}>📝</span> : null}{isArchived && r.reopened_by ? <div style={{ fontSize: 10, color: "#9ca3af" }}>reopened by {r.reopened_by}</div> : null}</td>
                           <td style={cell}>
+                            {isArchived ? (
+                              <span style={{ color: "#9ca3af" }}>—</span>
+                            ) : r.reviewed_at ? (
+                              <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                                <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                                  <span style={{ background: "#dcfce7", color: "#14532d", padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>✓ Reviewed</span>
+                                  {r.review_comment && <span title={r.review_comment} style={{ color: "#9ca3af", cursor: "help" }}>💬</span>}
+                                </span>
+                                <span style={{ fontSize: 10, color: "#9ca3af" }}>{r.reviewed_by || "—"}{r.reviewed_at ? " · " + _fmtStamp(r.reviewed_at) : ""}</span>
+                                {canReviewCashups && (
+                                  <a href="#" onClick={e => { e.preventDefault(); setCashupReviewModal({ row: r, comment: r.review_comment || "" }); }} style={{ fontSize: 10, color: "#BE185D", fontWeight: 700 }}>edit / undo</a>
+                                )}
+                              </div>
+                            ) : canReviewCashups ? (
+                              <button
+                                onClick={() => setCashupReviewModal({ row: r, comment: "" })}
+                                title="Tick off — confirm you've reviewed this cash-up and it matches"
+                                style={{ background: "#fff", color: "#14532d", border: "1px solid #bbf7d0", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+                              >✓ Tick off</button>
+                            ) : (
+                              <span style={{ color: "#9ca3af", fontSize: 11 }}>Not yet</span>
+                            )}
+                          </td>
+                          <td style={cell}>
                             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                               {!isArchived && (
                                 <button
@@ -27856,6 +28879,73 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               </div>
             )}
+
+            {cashupReviewModal && (() => {
+              const r = cashupReviewModal.row;
+              const already = !!r.reviewed_at;
+              const reviewerName = (currentUser && (currentUser.name || currentUser.email)) || "reviewer";
+              const doReview = async () => {
+                setCashupReviewBusy(true);
+                try {
+                  await window.BOA_DB.reviewCashup(r.id, reviewerName, cashupReviewModal.comment || "");
+                  const fresh = await window.BOA_DB.listCashupsForDate(cashupDate);
+                  setCashupRows(fresh || []);
+                  setCashupReviewModal(null);
+                } catch (e) {
+                  window.alert("Couldn't save the review: " + ((e && e.message) || e));
+                } finally {
+                  setCashupReviewBusy(false);
+                }
+              };
+              const doUndo = async () => {
+                if (!window.confirm("Undo the review tick-off for " + r.branch + " · " + r.date + "?")) return;
+                setCashupReviewBusy(true);
+                try {
+                  await window.BOA_DB.unreviewCashup(r.id);
+                  const fresh = await window.BOA_DB.listCashupsForDate(cashupDate);
+                  setCashupRows(fresh || []);
+                  setCashupReviewModal(null);
+                } catch (e) {
+                  window.alert("Couldn't undo the review: " + ((e && e.message) || e));
+                } finally {
+                  setCashupReviewBusy(false);
+                }
+              };
+              return (
+                <div onClick={() => !cashupReviewBusy && setCashupReviewModal(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, padding: 16 }}>
+                  <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 14, padding: "20px 22px", maxWidth: 460, width: "100%", boxShadow: "0 12px 40px rgba(0,0,0,0.25)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                      <div style={{ fontWeight: 800, color: "#831843", fontSize: 16 }}>✓ Review cash-up</div>
+                      <button onClick={() => !cashupReviewBusy && setCashupReviewModal(null)} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
+                    </div>
+                    <div style={{ fontSize: 13, color: "#831843", fontWeight: 700, marginBottom: 2 }}>{r.branch} · {_fmtDate(r.date)}</div>
+                    <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 14 }}>Total {_fmtMoney(r.total)} · Cash {_fmtMoney(r.cash)} · Banked {_fmtMoney(r.amount_banked)}. Confirm the takings have been checked and match.</div>
+                    {already && (
+                      <div style={{ background: "#dcfce7", border: "1px solid #bbf7d0", borderRadius: 9, padding: "8px 12px", fontSize: 12, color: "#14532d", marginBottom: 12 }}>
+                        Already reviewed by <strong>{r.reviewed_by || "—"}</strong>{r.reviewed_at ? " · " + _fmtStamp(r.reviewed_at) : ""}. Saving again updates the comment and re-stamps it under your name.
+                      </div>
+                    )}
+                    <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.05em", display: "block", marginBottom: 4 }}>COMMENT (OPTIONAL)</label>
+                    <textarea
+                      value={cashupReviewModal.comment}
+                      onChange={e => setCashupReviewModal(prev => ({ ...prev, comment: e.target.value }))}
+                      placeholder="e.g. Matches Yoco totals and banking slip. Cash deposited."
+                      rows={3}
+                      style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, fontFamily: "inherit", resize: "vertical" }}
+                    />
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginTop: 16 }}>
+                      {already ? (
+                        <button onClick={doUndo} disabled={cashupReviewBusy} style={{ padding: "9px 14px", background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 9, cursor: "pointer", fontSize: 13, fontWeight: 700 }}>Undo review</button>
+                      ) : <span />}
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button onClick={() => setCashupReviewModal(null)} disabled={cashupReviewBusy} style={{ padding: "9px 16px", background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 9, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>Cancel</button>
+                        <button onClick={doReview} disabled={cashupReviewBusy} style={{ padding: "9px 18px", background: "#16a34a", color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontSize: 13, fontWeight: 700 }}>{cashupReviewBusy ? "Saving…" : (already ? "Update review" : "✓ Mark reviewed")}</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
 
             {cashupAdd && (() => {
               const upd = (k, v) => setCashupAdd(prev => ({ ...prev, [k]: v }));
@@ -27997,6 +29087,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           onFreshaCfgSave={saveFreshaCfg}
           overtimeCfg={overtimeCfg}
           onOvertimeCfgSave={saveOvertimeCfg}
+          cashupReviewCfg={cashupReviewCfg}
+          onCashupReviewCfgSave={saveCashupReviewCfg}
+          leaveOpsCfg={leaveOpsCfg}
+          onLeaveOpsCfgSave={saveLeaveOpsCfg}
+          leavePayrollCfg={leavePayrollCfg}
+          onLeavePayrollCfgSave={saveLeavePayrollCfg}
         /></div>
       )}
 

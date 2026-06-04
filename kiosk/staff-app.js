@@ -2698,6 +2698,7 @@
         if (code === "WE") return "08:00 - 17:00";
         return "10:00 - 19:00";
       }
+      if (code === "WE") return "08:00 - 17:00";   // AM opener when no SM is in
       if (code === "WM") return "10:00 - 19:00";
       return "11:00 - 20:00";
     }
@@ -2754,7 +2755,8 @@
       lines.push("Sunday — single 08:00–17:00 shift");
     } else if (b === "Fourways") {
       lines.push("SM / SSM — 08:00–17:00 every day");
-      lines.push("AM Mon–Sat · WM 10:00–19:00 · WL 11:00–20:00");
+      lines.push("AM Mon–Sat (SM in) · WM 10:00–19:00 · WL 11:00–20:00");
+      lines.push("AM Mon–Sat (no SM) · WE 08:00–17:00 opener + WL 11:00–20:00");
       lines.push("AM Sunday · WE 08:00–17:00 · WL 10:00–19:00");
     } else {
       lines.push("SM / SSM — 08:00–17:00 every day");
@@ -2779,8 +2781,8 @@
       lines.push("Saturday · W 09:00–18:00 · WL 11:00–20:00 (4 techs)");
       lines.push("Sunday · W 09:00–18:00 · WL 10:00–19:00 (2–3 techs, alternates by parity)");
     } else if (b === "Sandown") {
-      lines.push("Mon–Fri · WE 08:00–17:15 · WL 11:00–20:00");
-      lines.push("Saturday · WE 08:15–17:15 · WL 10:00–19:00");
+      lines.push("Mon–Fri · WE 08:00–17:30 · WL 11:00–20:00");
+      lines.push("Saturday · WE 08:00–17:30 · WL 10:00–19:00");
       lines.push("Sunday · all shifts 09:00–18:00 (no early/late split)");
     } else if (b === "Table Bay") {
       lines.push("Up to 3 nail techs per day on the late shift (WL).");
