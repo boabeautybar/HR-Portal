@@ -7589,7 +7589,7 @@ function AccessPanel({ title, blurb, cfg, onSave, users, roleOpts, accent, accen
   );
 }
 
-function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFreshaCfgSave, overtimeCfg, onOvertimeCfgSave, cashupReviewCfg, onCashupReviewCfgSave, leaveOpsCfg, onLeaveOpsCfgSave, leavePayrollCfg, onLeavePayrollCfgSave }) {
+function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFreshaCfgSave, overtimeCfg, onOvertimeCfgSave, cashupReviewCfg, onCashupReviewCfgSave, leaveOpsCfg, onLeaveOpsCfgSave, leavePayrollCfg, onLeavePayrollCfgSave, leaveBalancesCfg, onLeaveBalancesCfgSave }) {
   const users = appUsers || {};
   const [editing, setEditing] = useState(null);   // {pin, isNew, name, role, demo, isOwner, perms, originalPin}
   const [busy, setBusy] = useState(false);
@@ -7961,6 +7961,15 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
           cfg={leavePayrollCfg} onSave={onLeavePayrollCfgSave} users={users}
           roleOpts={[{ key: "payroll", label: "Payroll / wages / finance roles" }, { key: "hr", label: "HR roles" }]}
           accent="#0f766e" accentBg="#f0fdfa" border="#99f6e4"
+        />
+      )}
+      {onLeaveBalancesCfgSave && (
+        <AccessPanel
+          title="🧾 Leave Balances tab"
+          blurb="Who can see and edit the Payroll → Leave Balances tab (upload the payroll balance file + add/remove adjustment days). Starts private to owners only — tick people below to give them access."
+          cfg={leaveBalancesCfg} onSave={onLeaveBalancesCfgSave} users={users}
+          roleOpts={[{ key: "payroll", label: "Payroll / wages / finance roles" }, { key: "hr", label: "HR roles" }]}
+          accent="#9333ea" accentBg="#faf5ff" border="#e9d5ff"
         />
       )}
 
@@ -9434,6 +9443,372 @@ function dedupeBlockTodos(list, isBlocked) {
     else if (isBlocked && isBlocked(r.key) && !isBlocked(out[idx[sig]].key)) { out[idx[sig]] = r; }
   });
   return out;
+}
+
+// ── Leave-balance parsing helpers (shared by paste + file upload) ──────────────
+// Employee codes are normalised (uppercase, strip non-alphanumerics) so the
+// payroll file's "B013-M" lines up with the portal's "B013M" / "B013".
+function lbNormEc(ec) { return String(ec == null ? "" : ec).toUpperCase().replace(/[^A-Z0-9]/g, ""); }
+function lbCoreEc(normed) { return String(normed || "").replace(/[A-Z]+$/, ""); }   // B013M → B013
+function lbIsNum(s) { return /^-?\d+(\.\d+)?$/.test(String(s == null ? "" : s).trim()); }
+// From a row of cells, pull { rawEc, days } — the first employee-code-looking
+// token and the last plain number after it. Header / junk rows return null.
+function lbParseRow(cells) {
+  if (!cells || !cells.length) return null;
+  let ec = null, ecIdx = -1;
+  for (let i = 0; i < cells.length; i++) {
+    const c = String(cells[i] == null ? "" : cells[i]).trim();
+    if (/^[A-Za-z]{1,3}\d{2,}/.test(c)) { ec = c; ecIdx = i; break; }
+  }
+  if (!ec) return null;
+  let days = null;
+  for (let i = cells.length - 1; i > ecIdx; i--) { if (lbIsNum(cells[i])) { days = parseFloat(String(cells[i]).trim()); break; } }
+  if (days == null) { for (let i = cells.length - 1; i >= 0; i--) { if (i !== ecIdx && lbIsNum(cells[i])) { days = parseFloat(String(cells[i]).trim()); break; } } }
+  if (days == null || isNaN(days)) return null;
+  return { rawEc: ec, days: days };
+}
+function lbParsePaste(text) {
+  const out = [];
+  String(text || "").split(/\r?\n/).forEach(line => {
+    if (!line.trim()) return;
+    const cells = line.split(/\t|,|;|\s{2,}/).map(s => s.trim()).filter(s => s.length);
+    const r = lbParseRow(cells);
+    if (r) out.push(r);
+  });
+  return out;
+}
+
+// Payroll → Leave Balances. Upload the payroll-supplied annual-leave balance
+// (per employee, as of a date) and layer manual add/remove-day adjustments on
+// top. Everything is stored in Supabase (app_state boa_leave_balances_v1) — no
+// balances are hard-coded.
+function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [loadErr, setLoadErr] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [q, setQ] = useState("");
+  const [showImport, setShowImport] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [preview, setPreview] = useState(null);
+  const [fileName, setFileName] = useState("");
+  const [importBusy, setImportBusy] = useState(false);
+  const [expanded, setExpanded] = useState(null);
+  const [adjDays, setAdjDays] = useState("");
+  const [adjSign, setAdjSign] = useState(-1);
+  const [adjReason, setAdjReason] = useState("");
+  const [addEc, setAddEc] = useState("");
+  const fileRef = useRef(null);
+
+  const lookups = useMemo(() => {
+    const byNorm = {}, byCore = {};
+    const add = (p, role) => {
+      if (!p || !p.ec) return;
+      const n = lbNormEc(p.ec); if (!n) return;
+      const rec = { name: p.name || "", branch: p.branch || "", role: role };
+      if (!byNorm[n]) byNorm[n] = rec;
+      const c = lbCoreEc(n); if (c && !byCore[c]) byCore[c] = rec;
+    };
+    (enriched || []).forEach(p => add(p, "Nail tech"));
+    (managers || []).forEach(m => add(m, m.role || "Manager"));
+    return { byNorm, byCore };
+  }, [enriched, managers]);
+  const resolve = (rawEc) => { const n = lbNormEc(rawEc); return lookups.byNorm[n] || lookups.byCore[lbCoreEc(n)] || null; };
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const d = window.BOA_DB.loadLeaveBalances ? await window.BOA_DB.loadLeaveBalances() : null;
+        if (cancelled) return;
+        setData(d && typeof d === "object"
+          ? { asOf: d.asOf || "2026-05-31", entries: (d.entries && typeof d.entries === "object") ? d.entries : {}, updatedBy: d.updatedBy, updatedAt: d.updatedAt }
+          : { asOf: "2026-05-31", entries: {} });
+      } catch (e) { if (!cancelled) setLoadErr(e.message || String(e)); }
+      finally { if (!cancelled) setLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const persist = async (next) => {
+    const stamped = { ...next, updatedBy: (currentUser && (currentUser.name || currentUser.email)) || "", updatedAt: new Date().toISOString() };
+    setData(stamped);
+    setSaving(true);
+    try { if (window.BOA_DB.saveLeaveBalances) await window.BOA_DB.saveLeaveBalances(stamped); }
+    catch (e) { window.alert("Could not save to Supabase: " + (e.message || e)); }
+    finally { setSaving(false); }
+  };
+
+  const buildPreview = (rows) => {
+    if (!rows.length) { window.alert("No employee/balance rows found.\n\nExpecting rows that contain an employee code and a number, e.g.:\n  B024\t1.5\nor the payroll export columns (Company, Employee Number, …, Balance)."); return; }
+    const byNorm = {};
+    rows.forEach(r => { byNorm[lbNormEc(r.rawEc)] = r; });
+    const list = Object.keys(byNorm).map(norm => {
+      const r = byNorm[norm]; const nm = resolve(r.rawEc);
+      return { norm, rawEc: r.rawEc, days: r.days, name: nm ? nm.name : "", branch: nm ? nm.branch : "", matched: !!nm };
+    }).sort((a, b) => (a.name || a.rawEc).localeCompare(b.name || b.rawEc));
+    setPreview({ list: list, total: list.length, matched: list.filter(x => x.matched).length });
+  };
+
+  const onFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setFileName(file.name);
+    try {
+      const lower = file.name.toLowerCase();
+      let rows = [];
+      if (lower.endsWith(".csv") || file.type === "text/csv") {
+        rows = lbParsePaste(await file.text());
+      } else {
+        if (!window.XLSX) { window.alert("The spreadsheet reader hasn't loaded — please reload the page, or paste the rows into the box instead."); return; }
+        const wb = window.XLSX.read(await file.arrayBuffer(), { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const aoa = window.XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false });
+        aoa.forEach(cells => { const r = lbParseRow(cells); if (r) rows.push(r); });
+      }
+      buildPreview(rows);
+    } catch (err) { window.alert("Could not read the file: " + (err.message || err)); }
+    finally { if (fileRef.current) fileRef.current.value = ""; }
+  };
+
+  const applyImport = async () => {
+    if (!preview || !data) return;
+    const existing = preview.list.filter(x => data.entries[x.norm] && data.entries[x.norm].opening != null).length;
+    if (existing > 0 && !window.confirm("This updates the opening balance for " + existing + " employee(s) who already have one. Any adjustment days you've added are kept. Continue?")) return;
+    setImportBusy(true);
+    const entries = { ...data.entries };
+    preview.list.forEach(x => {
+      const prev = entries[x.norm] || {};
+      entries[x.norm] = { ec: x.norm, rawEc: x.rawEc, name: x.name || prev.name || "", opening: x.days, adjustments: prev.adjustments || [] };
+    });
+    await persist({ ...data, entries: entries });
+    setImportBusy(false); setPreview(null); setPasteText(""); setFileName(""); setShowImport(false);
+    if (logActivity) logActivity("Imported leave balances", preview.list.length + " employees · as of " + (data.asOf || ""), "", "Payroll");
+  };
+
+  const addAdjustment = async (norm) => {
+    const n = parseFloat(adjDays);
+    if (isNaN(n) || n <= 0) { window.alert("Enter a number of days greater than 0."); return; }
+    const entry = data.entries[norm]; if (!entry) return;
+    const signed = (adjSign < 0 ? -1 : 1) * n;
+    const adj = { id: "a" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), days: signed, reason: (adjReason || "").trim(), by: (currentUser && (currentUser.name || currentUser.email)) || "", ts: new Date().toISOString() };
+    const entries = { ...data.entries, [norm]: { ...entry, adjustments: [...(entry.adjustments || []), adj] } };
+    await persist({ ...data, entries: entries });
+    setAdjDays(""); setAdjReason(""); setAdjSign(-1);
+    if (logActivity) logActivity((signed >= 0 ? "Added " : "Removed ") + Math.abs(signed) + " leave day(s)", (entry.name || entry.rawEc) + (adj.reason ? " · " + adj.reason : ""), "as of " + (data.asOf || ""), "Payroll");
+  };
+  const removeAdjustment = async (norm, id) => {
+    const entry = data.entries[norm]; if (!entry) return;
+    const entries = { ...data.entries, [norm]: { ...entry, adjustments: (entry.adjustments || []).filter(a => a.id !== id) } };
+    await persist({ ...data, entries: entries });
+  };
+  const addEmployee = async () => {
+    const raw = (addEc || "").trim(); if (!raw) return;
+    const norm = lbNormEc(raw); if (!norm) return;
+    if (data.entries[norm]) { setExpanded(norm); setAddEc(""); return; }
+    const nm = resolve(raw);
+    const entries = { ...data.entries, [norm]: { ec: norm, rawEc: raw, name: nm ? nm.name : "", opening: 0, adjustments: [] } };
+    await persist({ ...data, entries: entries });
+    setAddEc(""); setExpanded(norm);
+  };
+
+  const rows = useMemo(() => {
+    if (!data) return [];
+    const arr = Object.keys(data.entries).map(norm => {
+      const e = data.entries[norm]; const adjs = e.adjustments || [];
+      const net = adjs.reduce((s, a) => s + (Number(a.days) || 0), 0);
+      const opening = Number(e.opening) || 0; const r = resolve(e.rawEc || norm);
+      return { norm, rawEc: e.rawEc || norm, name: e.name || (r ? r.name : ""), branch: r ? r.branch : "", role: r ? r.role : "", opening, openingSet: e.opening != null, net, current: opening + net, adjustments: adjs };
+    });
+    const qq = q.trim().toLowerCase();
+    const f = qq ? arr.filter(r => (r.name || "").toLowerCase().includes(qq) || (r.rawEc || "").toLowerCase().includes(qq) || (r.branch || "").toLowerCase().includes(qq)) : arr;
+    return f.sort((a, b) => (a.name || a.rawEc).localeCompare(b.name || b.rawEc));
+  }, [data, q, lookups]);
+
+  const stats = useMemo(() => {
+    if (!data) return { n: 0, current: 0, adjusted: 0 };
+    let current = 0, adjusted = 0;
+    Object.keys(data.entries).forEach(k => {
+      const e = data.entries[k]; const net = (e.adjustments || []).reduce((s, a) => s + (Number(a.days) || 0), 0);
+      current += (Number(e.opening) || 0) + net; if ((e.adjustments || []).length) adjusted++;
+    });
+    return { n: Object.keys(data.entries).length, current: current, adjusted: adjusted };
+  }, [data]);
+
+  const fmtDays = (x) => { const v = Math.round((Number(x) || 0) * 100) / 100; return (v === Math.floor(v)) ? String(v) : v.toFixed(2).replace(/0$/, ""); };
+  const card = { background: "#fff", border: "1px solid #FBCFE8", borderRadius: 14, padding: "16px 18px" };
+  const inp = { padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, color: "#831843" };
+  const th = { textAlign: "left", padding: "8px 10px", fontSize: 10, fontWeight: 800, color: "#9d174d", textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "2px solid #FBCFE8", whiteSpace: "nowrap" };
+  const td = { padding: "8px 10px", fontSize: 13, color: "#831843", borderBottom: "1px solid #FCE7F3", verticalAlign: "top" };
+
+  if (loading) return <div style={{ padding: 24, color: "#9ca3af", fontStyle: "italic" }}>Loading leave balances…</div>;
+  if (loadErr) return <div style={{ padding: 24, color: "#b91c1c" }}>Could not load: {loadErr}</div>;
+
+  return (
+    <div style={{ padding: "8px 24px 40px" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 14 }}>
+        <div>
+          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700 }}>🧾 Leave Balances</div>
+          <div style={{ fontSize: 12.5, color: "#9d6a82", marginTop: 2 }}>Annual-leave balance per employee, with manual add/remove-day adjustments. Stored in Supabase — nothing hard-coded.</div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11.5, color: saving ? "#b45309" : "#15803d", fontWeight: 700 }}>{saving ? "Saving…" : "✓ Saved"}</span>
+          <button onClick={() => { setShowImport(v => !v); setPreview(null); }} style={{ background: "#9333ea", color: "#fff", border: "none", borderRadius: 9, padding: "9px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{showImport ? "Close importer" : "⬆ Upload / import"}</button>
+        </div>
+      </div>
+
+      {/* Stats + as-of date */}
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+        <div style={{ ...card, flex: "1 1 160px", minWidth: 150 }}>
+          <div style={{ fontSize: 10, fontWeight: 800, color: "#9d174d", letterSpacing: "0.06em", textTransform: "uppercase" }}>Balance as of</div>
+          <input type="date" value={(data && data.asOf) || ""} onChange={e => persist({ ...data, asOf: e.target.value })} style={{ ...inp, marginTop: 6, width: "100%" }} />
+        </div>
+        <div style={{ ...card, flex: "1 1 120px", minWidth: 120 }}>
+          <div style={{ fontSize: 10, fontWeight: 800, color: "#9d174d", letterSpacing: "0.06em", textTransform: "uppercase" }}>Employees</div>
+          <div style={{ fontSize: 26, fontWeight: 800, color: "#831843", marginTop: 4 }}>{stats.n}</div>
+        </div>
+        <div style={{ ...card, flex: "1 1 140px", minWidth: 130 }}>
+          <div style={{ fontSize: 10, fontWeight: 800, color: "#9d174d", letterSpacing: "0.06em", textTransform: "uppercase" }}>Total days (current)</div>
+          <div style={{ fontSize: 26, fontWeight: 800, color: "#831843", marginTop: 4 }}>{fmtDays(stats.current)}</div>
+        </div>
+        <div style={{ ...card, flex: "1 1 140px", minWidth: 130 }}>
+          <div style={{ fontSize: 10, fontWeight: 800, color: "#9d174d", letterSpacing: "0.06em", textTransform: "uppercase" }}>With adjustments</div>
+          <div style={{ fontSize: 26, fontWeight: 800, color: "#831843", marginTop: 4 }}>{stats.adjusted}</div>
+        </div>
+      </div>
+
+      {/* Importer */}
+      {showImport && (
+        <div style={{ ...card, marginBottom: 16, background: "#faf5ff", border: "2px solid #e9d5ff" }}>
+          <div style={{ fontSize: 14, fontWeight: 800, color: "#7e22ce", marginBottom: 6 }}>Upload the payroll balance file</div>
+          <div style={{ fontSize: 12, color: "#7c3aed", marginBottom: 12 }}>Pick the <strong>.xlsx</strong> / <strong>.csv</strong> file from payroll, or paste the rows (copy straight from Excel). It auto-detects the employee code + balance columns; the <em>Annual Leave</em> column and headers are ignored. Import updates opening balances and keeps your adjustments.</div>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
+            <div style={{ flex: "1 1 240px" }}>
+              <label style={{ display: "inline-block", background: "#fff", border: "1.5px solid #c084fc", color: "#7e22ce", borderRadius: 9, padding: "9px 14px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+                Choose file…
+                <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" onChange={onFile} style={{ display: "none" }} />
+              </label>
+              {fileName ? <span style={{ marginLeft: 10, fontSize: 12, color: "#7c3aed" }}>{fileName}</span> : null}
+            </div>
+            <div style={{ flex: "2 1 320px" }}>
+              <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} placeholder={"…or paste rows here, e.g.\nB024\t1.5\nB028\t10"} rows={4} style={{ ...inp, width: "100%", fontFamily: "monospace", resize: "vertical" }} />
+              <div style={{ marginTop: 6 }}>
+                <button onClick={() => buildPreview(lbParsePaste(pasteText))} disabled={!pasteText.trim()} style={{ background: pasteText.trim() ? "#9333ea" : "#e9d5ff", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", fontWeight: 700, fontSize: 12.5, cursor: pasteText.trim() ? "pointer" : "not-allowed" }}>Preview pasted rows</button>
+              </div>
+            </div>
+          </div>
+          {preview && (
+            <div style={{ marginTop: 14, background: "#fff", border: "1px solid #e9d5ff", borderRadius: 10, padding: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#7e22ce" }}>{preview.total} employees found · {preview.matched} matched to a name · {preview.total - preview.matched} not matched</div>
+              <div style={{ maxHeight: 200, overflow: "auto", marginTop: 8, border: "1px solid #f3e8ff", borderRadius: 8 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead><tr><th style={th}>Code</th><th style={th}>Name</th><th style={th}>Balance</th></tr></thead>
+                  <tbody>
+                    {preview.list.map(x => (
+                      <tr key={x.norm}>
+                        <td style={td}>{x.rawEc}</td>
+                        <td style={td}>{x.matched ? x.name : <span style={{ color: "#b45309" }}>⚠ not matched</span>}{x.branch ? <span style={{ color: "#9d6a82", fontSize: 11 }}> · {x.branch}</span> : null}</td>
+                        <td style={{ ...td, fontWeight: 700 }}>{fmtDays(x.days)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+                <button onClick={applyImport} disabled={importBusy} style={{ background: "#15803d", color: "#fff", border: "none", borderRadius: 9, padding: "9px 18px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{importBusy ? "Importing…" : "Import " + preview.total + " balances"}</button>
+                <button onClick={() => setPreview(null)} style={{ background: "#fff", color: "#7e22ce", border: "1px solid #e9d5ff", borderRadius: 9, padding: "9px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Discard</button>
+              </div>
+              {preview.matched < preview.total && <div style={{ fontSize: 11.5, color: "#b45309", marginTop: 8 }}>Unmatched codes are still imported — they just won't show a name until they match a staff/manager record.</div>}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Toolbar */}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search name, code or store…" style={{ ...inp, flex: "1 1 240px", minWidth: 200 }} />
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <input value={addEc} onChange={e => setAddEc(e.target.value)} onKeyDown={e => { if (e.key === "Enter") addEmployee(); }} placeholder="Add code (e.g. B024)" style={{ ...inp, width: 160 }} />
+          <button onClick={addEmployee} disabled={!addEc.trim()} style={{ background: addEc.trim() ? "#BE185D" : "#f3c6db", color: "#fff", border: "none", borderRadius: 8, padding: "8px 12px", fontWeight: 700, fontSize: 12.5, cursor: addEc.trim() ? "pointer" : "not-allowed" }}>+ Add</button>
+        </div>
+      </div>
+
+      {/* Table */}
+      {stats.n === 0 ? (
+        <div style={{ ...card, textAlign: "center", color: "#9d6a82", padding: "40px 20px" }}>
+          No balances yet. Click <strong>⬆ Upload / import</strong> to load the payroll file (as of 31 May 2026).
+        </div>
+      ) : (
+        <div style={{ ...card, padding: 0, overflow: "hidden" }}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
+              <thead>
+                <tr>
+                  <th style={th}>Employee</th>
+                  <th style={{ ...th, textAlign: "right" }}>Opening</th>
+                  <th style={{ ...th, textAlign: "right" }}>Adjustments</th>
+                  <th style={{ ...th, textAlign: "right" }}>Current balance</th>
+                  <th style={{ ...th, textAlign: "right" }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(r => {
+                  const open = expanded === r.norm;
+                  return (
+                    <React.Fragment key={r.norm}>
+                      <tr style={{ background: open ? "#FDF2F8" : "#fff" }}>
+                        <td style={td}>
+                          <div style={{ fontWeight: 700 }}>{r.name || <span style={{ color: "#b45309" }}>{r.rawEc}</span>}</div>
+                          <div style={{ fontSize: 10.5, color: "#9d6a82" }}>{r.rawEc}{r.branch ? " · " + r.branch : ""}{r.role ? " · " + r.role : ""}</div>
+                        </td>
+                        <td style={{ ...td, textAlign: "right", color: r.openingSet ? "#831843" : "#cbb1bd" }}>{r.openingSet ? fmtDays(r.opening) : "—"}</td>
+                        <td style={{ ...td, textAlign: "right", color: r.net === 0 ? "#9d6a82" : (r.net > 0 ? "#15803d" : "#b91c1c"), fontWeight: r.net ? 700 : 400 }}>
+                          {r.net === 0 ? "0" : (r.net > 0 ? "+" + fmtDays(r.net) : fmtDays(r.net))}{r.adjustments.length ? <span style={{ color: "#9d6a82", fontWeight: 400, fontSize: 11 }}> ({r.adjustments.length})</span> : null}
+                        </td>
+                        <td style={{ ...td, textAlign: "right", fontWeight: 800, fontSize: 14 }}>{fmtDays(r.current)}</td>
+                        <td style={{ ...td, textAlign: "right" }}>
+                          <button onClick={() => { setExpanded(open ? null : r.norm); setAdjDays(""); setAdjReason(""); setAdjSign(-1); }} style={{ background: open ? "#831843" : "#fce7f3", color: open ? "#fff" : "#9d174d", border: "none", borderRadius: 7, padding: "5px 10px", fontWeight: 700, fontSize: 11.5, cursor: "pointer", whiteSpace: "nowrap" }}>{open ? "Close" : "Adjust ±"}</button>
+                        </td>
+                      </tr>
+                      {open && (
+                        <tr style={{ background: "#FDF2F8" }}>
+                          <td style={{ ...td, borderBottom: "2px solid #FBCFE8" }} colSpan={5}>
+                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: (r.adjustments.length ? 10 : 0) }}>
+                              <div style={{ display: "inline-flex", borderRadius: 8, overflow: "hidden", border: "1px solid #FBCFE8" }}>
+                                <button onClick={() => setAdjSign(-1)} style={{ background: adjSign < 0 ? "#b91c1c" : "#fff", color: adjSign < 0 ? "#fff" : "#b91c1c", border: "none", padding: "7px 12px", fontWeight: 800, fontSize: 13, cursor: "pointer" }}>− Remove</button>
+                                <button onClick={() => setAdjSign(1)} style={{ background: adjSign > 0 ? "#15803d" : "#fff", color: adjSign > 0 ? "#fff" : "#15803d", border: "none", padding: "7px 12px", fontWeight: 800, fontSize: 13, cursor: "pointer" }}>+ Add</button>
+                              </div>
+                              <input value={adjDays} onChange={e => setAdjDays(e.target.value)} inputMode="decimal" placeholder="days (e.g. 1.5)" style={{ ...inp, width: 130 }} />
+                              <input value={adjReason} onChange={e => setAdjReason(e.target.value)} placeholder="reason (optional, e.g. June leave already taken)" style={{ ...inp, flex: "1 1 240px", minWidth: 180 }} />
+                              <button onClick={() => addAdjustment(r.norm)} style={{ background: "#9333ea", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Apply</button>
+                            </div>
+                            {r.adjustments.length > 0 && (
+                              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                {r.adjustments.slice().reverse().map(a => (
+                                  <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#831843", background: "#fff", border: "1px solid #FCE7F3", borderRadius: 7, padding: "5px 8px" }}>
+                                    <span style={{ fontWeight: 800, color: a.days >= 0 ? "#15803d" : "#b91c1c", minWidth: 44 }}>{a.days >= 0 ? "+" + fmtDays(a.days) : fmtDays(a.days)}d</span>
+                                    <span style={{ flex: 1 }}>{a.reason || <span style={{ color: "#9d6a82", fontStyle: "italic" }}>no reason</span>}</span>
+                                    <span style={{ color: "#9d6a82", fontSize: 10.5 }}>{a.by || ""}{a.ts ? " · " + new Date(a.ts).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>
+                                    <button onClick={() => removeAdjustment(r.norm, a.id)} title="Remove this adjustment" style={{ background: "transparent", border: "none", color: "#b91c1c", fontWeight: 800, cursor: "pointer", fontSize: 14, lineHeight: 1 }}>×</button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+                {rows.length === 0 && <tr><td style={{ ...td, textAlign: "center", color: "#9d6a82" }} colSpan={5}>No matches for “{q}”.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      {data && data.updatedAt && <div style={{ fontSize: 11, color: "#9d6a82", marginTop: 10, fontStyle: "italic" }}>Last saved {new Date(data.updatedAt).toLocaleString("en-ZA")}{data.updatedBy ? " by " + data.updatedBy : ""}.</div>}
+    </div>
+  );
 }
 
 // Operations board: who's called in sick / absent for today & tomorrow.
@@ -11453,7 +11828,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const NAV_TAB_TO_CATEGORY = {
     onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
     scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", freshaTodo: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
-    attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll", payrollInbox: "Payroll",
+    attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll", payrollInbox: "Payroll", leaveBalances: "Payroll",
     leaveRequests: "Operations", calledInSick: "Operations", extraDayRequests: "Operations",
     alerts: "Insights", activity: "Insights",
     settings: "Admin", voucherAdmin: "Admin"
@@ -11665,6 +12040,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     setLeavePayrollAccess(next);
     try { if (window.BOA_DB.saveLeavePayrollAccess) await window.BOA_DB.saveLeavePayrollAccess(next); }
     catch (e) { window.alert("Could not save leave payroll access: " + (e.message || e)); }
+  };
+  // Leave Balances tab visibility (boa_leave_balances_access_v1). Default empty
+  // → owners only (so it starts private to the owner and is opened up per-person
+  // from Settings → access list).
+  const [leaveBalancesAccess, setLeaveBalancesAccess] = useState({});
+  const leaveBalancesCfg = useMemo(() => {
+    const c = leaveBalancesAccess || {};
+    return { roles: Array.isArray(c.roles) ? c.roles : [], pins: Array.isArray(c.pins) ? c.pins : [] };
+  }, [leaveBalancesAccess]);
+  const saveLeaveBalancesCfg = async (next) => {
+    setLeaveBalancesAccess(next);
+    try { if (window.BOA_DB.saveLeaveBalancesAccess) await window.BOA_DB.saveLeaveBalancesAccess(next); }
+    catch (e) { window.alert("Could not save leave balances access: " + (e.message || e)); }
   };
   // App-scope trial persistence (the trial tab has its own copy inside an
   // IIFE; the dashboard Fresha card needs one too).
@@ -12755,12 +13143,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadCashupReviewAccess ? window.BOA_DB.loadCashupReviewAccess() : Promise.resolve({}),
       window.BOA_DB.loadLeaveOpsAccess ? window.BOA_DB.loadLeaveOpsAccess() : Promise.resolve({}),
       window.BOA_DB.loadLeavePayrollAccess ? window.BOA_DB.loadLeavePayrollAccess() : Promise.resolve({}),
+      window.BOA_DB.loadLeaveBalancesAccess ? window.BOA_DB.loadLeaveBalancesAccess() : Promise.resolve({}),
       (window.BOA_DB.loadIncidentReports && canSeeIncidents(currentUser)) ? window.BOA_DB.loadIncidentReports() : Promise.resolve([]),
       (window.BOA_DB.loadLeaveRequests && _needRequests) ? window.BOA_DB.loadLeaveRequests() : Promise.resolve([]),
       (window.BOA_DB.loadExtraDayRequests && _needRequests) ? window.BOA_DB.loadExtraDayRequests() : Promise.resolve([]),
       window.BOA_DB.loadFreshaExtraOpenings ? window.BOA_DB.loadFreshaExtraOpenings() : Promise.resolve({}),
       window.BOA_DB.loadFreshaBlocks ? window.BOA_DB.loadFreshaBlocks() : Promise.resolve({})
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, cuReviewAccess, lvOpsAccess, lvPayrollAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap]) => {
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, cuReviewAccess, lvOpsAccess, lvPayrollAccess, lvBalancesAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap]) => {
       setStaff(d.staff);
       setManagers(d.managers);
       setMatRecs(d.matRecs);
@@ -12777,6 +13166,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setCashupReviewAccess(cuReviewAccess && typeof cuReviewAccess === "object" ? cuReviewAccess : {});
       setLeaveOpsAccess(lvOpsAccess && typeof lvOpsAccess === "object" ? lvOpsAccess : {});
       setLeavePayrollAccess(lvPayrollAccess && typeof lvPayrollAccess === "object" ? lvPayrollAccess : {});
+      setLeaveBalancesAccess(lvBalancesAccess && typeof lvBalancesAccess === "object" ? lvBalancesAccess : {});
       setIncidentReports(Array.isArray(incidents) ? incidents : []);
       setLeaveRequests(Array.isArray(leaveReqs) ? leaveReqs : []);
       setExtraDayRequests(Array.isArray(extraReqs) ? extraReqs : []);
@@ -14359,7 +14749,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const nCal = (leaveRecs || []).filter(lv => lv && lv.balancePending).length;
                     const n = nReq + nCal;
                     return { t: "payrollInbox", l: "📥 Payroll Inbox" + (n ? "  (" + n + ")" : ""), forceShow: true };
-                  })()] : [])
+                  })()] : []),
+                  ...(accessAllows(currentUser, leaveBalancesCfg) ? [{ t: "leaveBalances", l: "🧾 Leave Balances", forceShow: true }] : [])
                 ]
               },
               {
@@ -18192,6 +18583,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         {/* ── PAYROLL INBOX TAB ── */}
         {tab === "payrollInbox" && accessAllows(currentUser, leavePayrollCfg) && (
           <PayrollInboxTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} leaveRecs={leaveRecs} setLeaveRecs={setLeaveRecs} enriched={enriched} managers={managers} logActivity={logActivity} goTo={tryChangeTab} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} />
+        )}
+
+        {/* ── LEAVE BALANCES TAB ── */}
+        {tab === "leaveBalances" && accessAllows(currentUser, leaveBalancesCfg) && (
+          <LeaveBalancesTab enriched={enriched} managers={managers} currentUser={currentUser} logActivity={logActivity} />
         )}
 
         {/* ── CALLED IN SICK TAB ── */}
@@ -29155,6 +29551,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           onLeaveOpsCfgSave={saveLeaveOpsCfg}
           leavePayrollCfg={leavePayrollCfg}
           onLeavePayrollCfgSave={saveLeavePayrollCfg}
+          leaveBalancesCfg={leaveBalancesCfg}
+          onLeaveBalancesCfgSave={saveLeaveBalancesCfg}
         /></div>
       )}
 
