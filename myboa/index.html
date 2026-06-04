@@ -60,6 +60,18 @@
   .tile.soon .arr { font-size: 10.5px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase;
     color: #6b21a8; background: #ede9fe; padding: 4px 10px; border-radius: 999px; white-space: nowrap; }
   .foot { text-align: center; font-size: 11.5px; color: #bf94a5; margin-top: 24px; }
+  /* Leave-reply notification banner */
+  .notif { display:flex; align-items:center; gap:12px; border-radius:14px; padding:12px 14px; margin:0 0 16px; text-decoration:none; color:inherit;
+    box-shadow:0 6px 16px rgba(0,0,0,0.05); }
+  .notif.ok { background:#f0fdf4; border:1px solid #bbf7d0; }
+  .notif.no { background:#fef2f2; border:1px solid #fecaca; }
+  .notif.wait { background:#fffbeb; border:1px solid #fde68a; }
+  .notif .ni { font-size:24px; flex:0 0 auto; }
+  .notif .nt { flex:1; min-width:0; }
+  .notif .nh { font-weight:800; font-size:14.5px; color:#1f2937; }
+  .notif.ok .nh { color:#15803d; } .notif.no .nh { color:#b91c1c; } .notif.wait .nh { color:#92400e; }
+  .notif .nd { font-size:12.5px; color:#6b7280; margin-top:1px; }
+  .notif .nx { background:transparent; border:none; font-size:21px; color:#9ca3af; cursor:pointer; line-height:1; padding:0 2px; flex:0 0 auto; }
 </style>
 </head>
 <body>
@@ -112,5 +124,58 @@
 
     <p class="foot">My BOA · for BOA team members</p>
   </div>
+
+  <!-- Leave-reply notification: if this person has used Request Leave before
+       (their code + branch are remembered on this phone), show the reply to
+       their most recent request right here on the hub. -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <script>
+  (function () {
+    var cfg = {
+      url:     "https://kcinqpwkwpzbosxtkwyl.supabase.co",
+      anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtjaW5xcHdrd3B6Ym9zeHRrd3lsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc3MjIwMTYsImV4cCI6MjA5MzI5ODAxNn0.AGL2hXQ5N3uQikqSbWFsZ1uxBlWZUm9o1ipMFlAFjBg"
+    };
+    if (!window.supabase) return;
+    var saved = {}; try { saved = JSON.parse(localStorage.getItem("myboa_sched_v1") || "{}"); } catch (_e) {}
+    if (!saved.ec || !saved.store) return; // not identified on this phone yet
+    var sb = window.supabase.createClient(cfg.url, cfg.anonKey, { auth: { persistSession: false } });
+    sb.rpc("lookup_my_leave", { p_ec: saved.ec, p_branch: saved.store }).then(function (res) {
+      if (res.error || !res.data || !res.data.matched) return;
+      var reqs = res.data.requests || [];
+      if (!reqs.length) return;
+      var r = reqs[0];
+      var st = String(r.status || "pending").toLowerCase();
+      var key = (r.ref_code || "") + "|" + (r.decided_at || r.created_at || st) + "|" + st;
+      var seen = ""; try { seen = localStorage.getItem("myboa_leave_seen") || ""; } catch (_e) {}
+      if (seen === key) return; // already dismissed this update
+      showBanner(r, st, key);
+    }).catch(function () {});
+
+    function fmt(d) { try { return new Date(d + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }); } catch (_e) { return d; } }
+    function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+    function showBanner(r, st, key) {
+      var wrap = document.querySelector(".wrap"); if (!wrap) return;
+      var cls, icon, head, tail;
+      if (st === "approved") { cls = "ok"; icon = "✅"; head = "Your leave was approved"; tail = "tap for details"; }
+      else if (st === "declined") { cls = "no"; icon = "📨"; head = "Your leave request was declined"; tail = r.decision_note ? "tap to see why" : "tap for details"; }
+      else { cls = "wait"; icon = "⏳"; head = "Your leave request is being reviewed"; tail = "tap for details"; }
+      var a = document.createElement("a");
+      a.href = "leave.html";
+      a.className = "notif " + cls;
+      a.innerHTML =
+        '<div class="ni">' + icon + '</div>' +
+        '<div class="nt"><div class="nh">' + head + '</div>' +
+        '<div class="nd">' + esc(fmt(r.start_date)) + ' → ' + esc(fmt(r.end_date)) + ' · ' + tail + '</div></div>' +
+        '<button class="nx" aria-label="Dismiss">×</button>';
+      a.querySelector(".nx").onclick = function (e) {
+        e.preventDefault(); e.stopPropagation();
+        try { localStorage.setItem("myboa_leave_seen", key); } catch (_e) {}
+        a.parentNode && a.parentNode.removeChild(a);
+      };
+      var sub = wrap.querySelector(".sub");
+      if (sub && sub.nextSibling) wrap.insertBefore(a, sub.nextSibling); else wrap.appendChild(a);
+    }
+  })();
+  </script>
 </body>
 </html>
