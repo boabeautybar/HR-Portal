@@ -2845,8 +2845,8 @@
       lines.push("Saturday · W 09:00–18:00 · WL 11:00–20:00 (4 techs)");
       lines.push("Sunday · W 09:00–18:00 · WL 10:00–19:00 (2–3 techs, alternates by parity)");
     } else if (b === "Sandown") {
-      lines.push("Mon–Fri · WE 08:00–17:15 · WL 11:00–20:00");
-      lines.push("Saturday · WE 08:15–17:15 · WL 10:00–19:00");
+      lines.push("Mon–Fri · WE 08:00–17:30 · WL 11:00–20:00");
+      lines.push("Saturday · WE 08:15–17:30 · WL 10:00–19:00");
       lines.push("Sunday · all shifts 09:00–18:00 (no early/late split)");
     } else if (b === "Table Bay") {
       lines.push("Up to 3 nail techs per day on the late shift (WL).");

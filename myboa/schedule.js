@@ -191,13 +191,13 @@
 
   // NAIL-TECH shift times, taken straight from the schedule tab's per-store
   // banners (these differ from the manager shiftTimes rules — e.g. Sandown WE
-  // ends 17:15, Saturday WE starts 08:15). Keyed by store → day-bucket
+  // ends 17:30, Saturday WE starts 08:15). Keyed by store → day-bucket
   // (0=Sun, 6=Sat, 1=Mon–Fri) → code. Stores not listed fall back to the
   // generic rules (weekend single shift only) — see workSub.
   var TECH_TIMES = {
     "Sandown": {
-      1: { WE: "08:00 - 17:15", WL: "11:00 - 20:00" },
-      6: { WE: "08:15 - 17:15", WL: "10:00 - 19:00" },
+      1: { WE: "08:00 - 17:30", WL: "11:00 - 20:00" },
+      6: { WE: "08:15 - 17:30", WL: "10:00 - 19:00" },
       0: { W: "09:00 - 18:00" }
     },
     "Fourways": {
