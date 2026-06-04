@@ -2764,6 +2764,7 @@
         if (code === "WE") return "08:00 - 17:00";
         return "10:00 - 19:00";
       }
+      if (code === "WE") return "08:00 - 17:00";   // AM opener when no SM is in
       if (code === "WM") return "10:00 - 19:00";
       return "11:00 - 20:00";
     }
@@ -2820,7 +2821,8 @@
       lines.push("Sunday — single 08:00–17:00 shift");
     } else if (b === "Fourways") {
       lines.push("SM / SSM — 08:00–17:00 every day");
-      lines.push("AM Mon–Sat · WM 10:00–19:00 · WL 11:00–20:00");
+      lines.push("AM Mon–Sat (SM in) · WM 10:00–19:00 · WL 11:00–20:00");
+      lines.push("AM Mon–Sat (no SM) · WE 08:00–17:00 opener + WL 11:00–20:00");
       lines.push("AM Sunday · WE 08:00–17:00 · WL 10:00–19:00");
     } else {
       lines.push("SM / SSM — 08:00–17:00 every day");
