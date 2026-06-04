@@ -9119,6 +9119,18 @@ function CalledInSickTab({ requests, setRequests, currentUser }) {
     } catch (e) { alert("Could not delete: " + ((e && e.message) || e)); }
     setBusy(false);
   };
+  // Mark an absence as actioned — once the reason is recorded on Manager
+  // Check-ins / Coverage. Flips the request to reviewed so it shows "Done"
+  // here and drops off the dashboard reminder.
+  const markDone = async (r) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await window.BOA_DB.markLeaveReviewed(r.id);
+      if (setRequests) setRequests(prev => (prev || []).map(x => x.id === r.id ? { ...x, reviewed: true } : x));
+    } catch (e) { alert("Could not mark done: " + ((e && e.message) || e)); }
+    setBusy(false);
+  };
 
   const sect = (label, ymd) => {
     const rows = list.filter(r => r.start_date <= ymd && r.end_date >= ymd)
@@ -9146,7 +9158,7 @@ function CalledInSickTab({ requests, setRequests, currentUser }) {
                 {r.store && <span style={chip({ color: "#075985", bg: "#e0f2fe" })}>{r.store}</span>}
                 {r.ec && <span style={{ color: "#9ca3af", fontSize: 12 }}>{r.ec}</span>}
                 <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(r.start_date)}{r.end_date !== r.start_date ? " → " + fmtIncidentDate(r.end_date) : ""}</span>
-                <span style={{ marginLeft: "auto", ...chip(st) }}>{st.label}</span>
+                <span style={{ marginLeft: "auto", ...chip(r.reviewed ? { color: "#15803d", bg: "#dcfce7" } : st) }}>{r.reviewed ? "✓ Done" : st.label}</span>
               </div>
               {r.reason && <div style={{ marginTop: 8, fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{linkifyText(r.reason)}</div>}
               <div style={{ marginTop: 6, fontSize: 11, color: "#9d6a82" }}>Ref {r.ref_code} · {fmtIncidentTime(r.created_at)}{r.contact ? " · " + r.contact : ""}</div>
@@ -9158,14 +9170,28 @@ function CalledInSickTab({ requests, setRequests, currentUser }) {
                   </div>
                 </div>
               )}
-              {isOwner && (
-                <div style={{ marginTop: 10, textAlign: "right" }}>
-                  <button disabled={busy} onClick={() => removeReq(r)} title="Owner: permanently delete this absence mark"
-                    style={{ border: "1px solid #fecaca", background: "#fff", color: "#b91c1c", borderRadius: 8, padding: "5px 12px", fontWeight: 700, fontSize: 12, fontFamily: "inherit", cursor: busy ? "default" : "pointer" }}>
-                    🗑 Delete mark
-                  </button>
+              {!isTech && (
+                <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "flex-start", background: "#faf5ff", border: "1px solid #e9d5ff", borderRadius: 10, padding: "9px 12px" }}>
+                  <span style={{ fontSize: 15, lineHeight: 1.2 }}>👑</span>
+                  <div style={{ fontSize: 12.5, color: "#6b21a8", lineHeight: 1.45 }}>
+                    <strong>What to do:</strong> mark {firstName} as <strong>absent</strong> on the <strong>Manager Check-ins</strong> tab (or the <strong>Manager Coverage</strong> overview) and attach their <strong>sick note</strong> if they have one{(/Proof:\s*https?:\/\//i.test(r.reason || "")) ? " (their note is linked above)" : ""}. Then tap <strong>Mark done</strong> to clear it.
+                  </div>
                 </div>
               )}
+              <div style={{ marginTop: 10, display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                {!r.reviewed
+                  ? <button disabled={busy} onClick={() => markDone(r)} title="Mark this absence as actioned — clears it off the dashboard"
+                      style={{ border: "none", background: "#16a34a", color: "#fff", borderRadius: 8, padding: "6px 14px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: busy ? "default" : "pointer" }}>
+                      ✓ Mark done
+                    </button>
+                  : <span style={{ alignSelf: "center", fontSize: 12, color: "#15803d", fontWeight: 700 }}>✓ Done — actioned</span>}
+                {isOwner && (
+                  <button disabled={busy} onClick={() => removeReq(r)} title="Owner: permanently delete this absence mark"
+                    style={{ border: "1px solid #fecaca", background: "#fff", color: "#b91c1c", borderRadius: 8, padding: "6px 12px", fontWeight: 700, fontSize: 12, fontFamily: "inherit", cursor: busy ? "default" : "pointer" }}>
+                    🗑 Delete mark
+                  </button>
+                )}
+              </div>
             </div>
           );
         })}
@@ -9176,8 +9202,8 @@ function CalledInSickTab({ requests, setRequests, currentUser }) {
   return (
     <div>
       <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#831843", margin: 0 }}>🤒 Called in Sick</h2>
-      <p style={{ color: "#9d6a82", fontSize: 13.5, margin: "6px 0 18px", maxWidth: 640 }}>
-        Team members who called in sick or marked themselves absent from My BOA for today or tomorrow. Record the reason for their absence in the Manager Check-ins tab or on the Manager Coverage overview.
+      <p style={{ color: "#9d6a82", fontSize: 13.5, margin: "6px 0 18px", maxWidth: 680 }}>
+        Team members who called in sick or marked themselves absent from My BOA for today or tomorrow. <strong>Managers:</strong> mark them absent (and attach their sick note) on the <strong>Manager Check-ins</strong> tab or the <strong>Manager Coverage</strong> overview. <strong>Nail techs:</strong> block them on Fresha for the days they're off. Once you've actioned someone, tap <strong>✓ Mark done</strong> to clear them from here and the dashboard.
       </p>
       {sect("Today", today)}
       {sect("Tomorrow", tomorrow)}
