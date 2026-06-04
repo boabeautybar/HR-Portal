@@ -823,6 +823,39 @@
     return true;
   }
 
+  // Mark a cash-up as reviewed ("ticked off") by a reviewer — e.g. the
+  // portfolio / regional ops manager confirming the day's takings match.
+  // Stamps who reviewed it, when, and an optional comment. Re-calling
+  // updates the comment / reviewer (re-stamps the time). Requires the
+  // reviewed_at / reviewed_by / review_comment columns (sql/cashup_review.sql).
+  async function reviewCashup(id, reviewer, comment) {
+    if (!id) throw new Error("Missing cashup id");
+    var res = await sb.from("cashups")
+      .update({
+        reviewed_at:    new Date().toISOString(),
+        reviewed_by:    (reviewer || "").trim() || null,
+        review_comment: (comment || "").trim() || null
+      })
+      .eq("id", id)
+      .select()
+      .maybeSingle();
+    if (res.error) { console.error("reviewCashup:", res.error); throw res.error; }
+    return res.data;
+  }
+
+  // Undo a review (clear the tick-off) — for when a cash-up was ticked off
+  // by mistake. Wipes reviewer, timestamp and comment.
+  async function unreviewCashup(id) {
+    if (!id) throw new Error("Missing cashup id");
+    var res = await sb.from("cashups")
+      .update({ reviewed_at: null, reviewed_by: null, review_comment: null })
+      .eq("id", id)
+      .select()
+      .maybeSingle();
+    if (res.error) { console.error("unreviewCashup:", res.error); throw res.error; }
+    return res.data;
+  }
+
   // portal's spot-check viewer. Photo + GPS lives in app_state under
   // boa_mgrclockin_meta_<id> — fetch lazily per row.
   async function listRecentManagerClockins(daysBack) {
@@ -1504,6 +1537,21 @@
     return config || {};
   }
 
+  // ---------- Cash-up review access (boa_cashup_review_access_v1) ----------
+  // Who is allowed to review ("tick off") a store's daily cash-up. Shape:
+  //   { roles: ["regional"], pins: ["1234"] }
+  // Owners always have access regardless. Empty/missing → app default.
+  async function loadCashupReviewAccess() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_cashup_review_access_v1").maybeSingle();
+    if (res.error) { console.error("loadCashupReviewAccess:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveCashupReviewAccess(config) {
+    var res = await sb.from("app_state").upsert({ key: "boa_cashup_review_access_v1", value: config || {} });
+    if (res.error) { console.error("saveCashupReviewAccess:", res.error); throw res.error; }
+    return config || {};
+  }
+
   // ---------- Attendance grid (boa_att_<branch>_<ym>) ----------
   // Same key the check-in kiosk app writes to. Status codes include:
   //   on, late, off, ext, sick_n, sick, frl, al, ph, mat, no, unpaid,
@@ -1785,6 +1833,8 @@
     addCashupManual: addCashupManual,
     reopenCashup: reopenCashup,
     deleteCashup: deleteCashup,
+    reviewCashup: reviewCashup,
+    unreviewCashup: unreviewCashup,
     loadManagerDayStatuses: loadManagerDayStatuses,
     saveManagerDayStatus: saveManagerDayStatus,
     deleteManagerDayStatus: deleteManagerDayStatus,
@@ -1840,6 +1890,8 @@
     saveFreshaAccess: saveFreshaAccess,
     loadOvertimeAccess: loadOvertimeAccess,
     saveOvertimeAccess: saveOvertimeAccess,
+    loadCashupReviewAccess: loadCashupReviewAccess,
+    saveCashupReviewAccess: saveCashupReviewAccess,
     loadComplianceActions: loadComplianceActions,
     saveComplianceActions: saveComplianceActions,
     loadUnpaidLegalRecords: loadUnpaidLegalRecords,
