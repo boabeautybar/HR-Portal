@@ -700,6 +700,30 @@ function saHolidays(year) {
   return out;
 }
 
+// ─── MATERNITY-LEAVE WINDOW for a single 25th→24th schedule cycle ──────────────────
+// Maternity used to blank a person's ENTIRE row the instant their status
+// flipped to "on maternity". Instead we honour the Maternity tab's start
+// date: schedule them normally up to that date and only show 'ML' from it
+// onward. Returns { full, fromYmd }:
+//   • full=true               → on mat for the whole cycle (no start date on
+//                               file, or it began on/before the cycle began)
+//                               → the entire row is ML, exactly as before.
+//   • full=false, fromYmd set → maternity STARTS mid-cycle on fromYmd: real
+//                               working days before it, ML on/after it.
+//   • full=false, fromYmd=null→ not on maternity during this cycle (a known
+//                               start date that lands after the cycle ends).
+// matStart is read from the joined maternity record (person.matRec.matStart)
+// with a flat person.matStart fallback for callers that pass it directly.
+function matCycleWindow(person, cycleStartYmd, cycleEndYmd) {
+  const onMat = !!(person && (person.onMat || person._onMat));
+  if (!onMat) return { full: false, fromYmd: null };
+  const ms = (person && person.matRec && person.matRec.matStart) || (person && person.matStart) || null;
+  if (!ms) return { full: true, fromYmd: cycleStartYmd };          // date unknown → whole cycle
+  if (ms <= cycleStartYmd) return { full: true, fromYmd: cycleStartYmd };  // already underway
+  if (cycleEndYmd && ms > cycleEndYmd) return { full: false, fromYmd: null }; // starts a later cycle
+  return { full: false, fromYmd: ms };                             // mid-cycle start
+}
+
 // ─── MANAGER SCHEDULE GENERATOR (mgrSched) ────────────────────────────────────────
 // Ported 1:1 from the old HR portal HTML (function originally on line 842).
 // Generates a per-manager × per-day grid for one branch over a single 25th→24th
@@ -3150,13 +3174,21 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     });
     if (cur.length) weeks.push(cur);
 
-    // Active techs only (exclude staff currently on maternity leave) — they
-    // don't count toward coverage targets and shouldn't get scheduled days.
-    // We'll mark their grid rows as Leave separately at the end.
-    const allActive = [...techs].filter(t => !t.onMat);
+    // Maternity windows for this cycle. Someone on mat for the WHOLE cycle is
+    // excluded from scheduling (as before). Someone whose maternity STARTS
+    // mid-cycle is scheduled normally — we overlay 'ML' on their on/after-start
+    // days at the very end, so their real working days up to the start date
+    // are preserved instead of the whole row being blanked.
+    const _cycStartYmd = days.length ? days[0].year + "-" + String(days[0].monthIdx + 1).padStart(2, "0") + "-" + String(days[0].d).padStart(2, "0") : "";
+    const _cycEndYmd = days.length ? days[days.length - 1].year + "-" + String(days[days.length - 1].monthIdx + 1).padStart(2, "0") + "-" + String(days[days.length - 1].d).padStart(2, "0") : "";
+    const matWin = {};
+    techs.forEach(t => { matWin[t.ec] = matCycleWindow(t, _cycStartYmd, _cycEndYmd); });
+    // Active techs = everyone not on maternity for the full cycle (a mid-cycle
+    // mat tech is active here so they get real days before their start date).
+    const allActive = [...techs].filter(t => !matWin[t.ec].full);
     const sortedTechs = allActive
       .sort((a, b) => (a.ec || "").localeCompare(b.ec || ""));
-    const onMatTechs = techs.filter(t => t.onMat);
+    const onMatTechs = techs.filter(t => matWin[t.ec].full);
     const totalStaff = sortedTechs.length;
     const sundayGroup = {};
     sortedTechs.forEach((s, i) => { sundayGroup[s.ec] = (i % 2 === 0) ? "A" : "B"; });
@@ -4330,8 +4362,10 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
       }
     });
 
-    // On-maternity-leave staff: mark every day as L (Leave) so the cell shows
-    // a clear leave indicator. They were excluded from the algorithm above.
+    // Full-cycle maternity staff: mark every day as L (Leave). They were
+    // excluded from the algorithm above. (Mid-cycle mat techs are handled by
+    // the ML overlay at the very end of this function — they keep real working
+    // days up to their start date.)
     onMatTechs.forEach(t => {
       newGrid[t.ec] = newGrid[t.ec] || {};
       days.forEach(d => { newGrid[t.ec][d.d] = "L"; });
@@ -4453,6 +4487,21 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
         }
       }
     }
+
+    // Mid-cycle maternity overlay — runs LAST so nothing overwrites it. For
+    // any tech whose maternity starts partway through this cycle, stamp 'ML'
+    // on every day on/after the start date; days before it keep the real
+    // shift the generator just assigned. (Full-cycle mat techs were already
+    // filled above.)
+    techs.forEach(t => {
+      const w = matWin[t.ec];
+      if (!w || w.full || !w.fromYmd) return;
+      newGrid[t.ec] = newGrid[t.ec] || {};
+      days.forEach(d => {
+        const dy = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
+        if (dy >= w.fromYmd) newGrid[t.ec][d.d] = "ML";
+      });
+    });
 
     setGrid(newGrid);
     setDirty(true);
@@ -5127,7 +5176,13 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     const row = {};
     const unhonored = [];
     const _ymd = (d) => d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
-    if (tech.onMat) {
+    // Maternity: a full-cycle mat blanks the whole row (Leave). A mid-cycle
+    // start is scheduled normally below and gets an 'ML' overlay on/after the
+    // start date just before we return — so real working days are kept.
+    const _matCycStart = days.length ? _ymd(days[0]) : "";
+    const _matCycEndF = days.length ? _ymd(days[days.length - 1]) : "";
+    const _techMatWin = matCycleWindow(tech, _matCycStart, _matCycEndF);
+    if (_techMatWin.full) {
       days.forEach(d => { row[d.d] = "L"; });
       return { row, unhonored };
     }
@@ -5330,6 +5385,12 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
         break;
       }
       if (!inserted) break;
+    }
+
+    // Mid-cycle maternity overlay — stamp ML on/after the start date, keeping
+    // the real shifts the fill just assigned for the days before it.
+    if (_techMatWin.fromYmd) {
+      days.forEach(d => { if (_ymd(d) >= _techMatWin.fromYmd) row[d.d] = "ML"; });
     }
 
     return { row, unhonored };
@@ -6002,25 +6063,33 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
               <tbody>
                 {techs.map(s => {
                   const counts = rowCounts(s.ec);
-                  const onMat = !!s.onMat;
+                  // Maternity window for this cycle. fullMat = on mat the whole
+                  // cycle (whole row ML, greyed, as before). matFromYmd = a
+                  // mid-cycle start date — the row stays a normal working row
+                  // and only the days on/after that date read 'ML'.
+                  const _cycStartYmd = days.length ? days[0].year + "-" + String(days[0].monthIdx + 1).padStart(2, "0") + "-" + String(days[0].d).padStart(2, "0") : "";
+                  const _cycEndYmd = days.length ? days[days.length - 1].year + "-" + String(days[days.length - 1].monthIdx + 1).padStart(2, "0") + "-" + String(days[days.length - 1].d).padStart(2, "0") : "";
+                  const _matWin = matCycleWindow(s, _cycStartYmd, _cycEndYmd);
+                  const fullMat = _matWin.full;
+                  const matFromYmd = _matWin.fromYmd;
                   // Off-boarding visibility: row is greyed-out for the
                   // entire cycle they leave in. Cells on/before leftDate
                   // remain editable (real schedule for the days worked);
                   // cells after leftDate are stamped X by PHASE 18 / sync.
                   const isLeaving = !!s.leftDate;
-                  // On-mat takes precedence for styling (full lock-out);
-                  // leaving rows get a softer grey so the pre-leftDate
-                  // cells stay readable.
-                  const rowOpacity = onMat ? 0.55 : (isLeaving ? 0.7 : 1);
-                  const nameBg = onMat ? "#f3f4f6" : (isLeaving ? "#f9fafb" : "#fff");
-                  const nameColor = onMat ? "#6b7280" : (isLeaving ? "#6b7280" : "#831843");
+                  // Only a FULL-cycle maternity greys the whole row; a mid-cycle
+                  // start keeps the row readable so the worked days show.
+                  const rowOpacity = fullMat ? 0.55 : (isLeaving ? 0.7 : 1);
+                  const nameBg = fullMat ? "#f3f4f6" : (isLeaving ? "#f9fafb" : "#fff");
+                  const nameColor = fullMat ? "#6b7280" : (isLeaving ? "#6b7280" : "#831843");
                   return (
                     <tr key={s.ec} style={{ opacity: rowOpacity }}>
                       <td style={{ position: "sticky", left: 0, background: nameBg, padding: "6px 10px", borderBottom: "1px solid #FCE7F3", color: nameColor, fontWeight: 600, fontSize: 12, zIndex: 1 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                           <span>{s.name}</span>
-                          {onMat && <span style={{ background: "#e5e7eb", color: "#374151", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>🤱 ON MAT</span>}
-                          {!onMat && isLeaving && <span style={{ background: "#fee2e2", color: "#991b1b", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>👋 LEFT {s.leftDate}</span>}
+                          {fullMat && <span style={{ background: "#e5e7eb", color: "#374151", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>🤱 ON MAT</span>}
+                          {!fullMat && matFromYmd && <span style={{ background: "#ede9fe", color: "#6b21a8", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>🤱 ML FROM {new Date(matFromYmd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}</span>}
+                          {!fullMat && isLeaving && <span style={{ background: "#fee2e2", color: "#991b1b", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>👋 LEFT {s.leftDate}</span>}
                           {/* Transfer chips — surface mid-month moves so the
                             manager sees the cross-over at a glance. */}
                           {s.isShadow && s.transferFrom && <span style={{ background: "#dbeafe", color: "#1e40af", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>🔄 FROM {s.transferFrom}{s.transferDate ? " · " + new Date(s.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
@@ -6041,6 +6110,11 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         // sync pass to stamp X.
                         const dYmd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
                         const isPastLeft = isLeaving && dYmd > s.leftDate;
+                        // Maternity cell: lavender 'ML' from the start date on.
+                        // A full-cycle mat means every cell; a mid-cycle start
+                        // means only days on/after it — days before stay the
+                        // real worked shift.
+                        const cellMat = fullMat || (!!matFromYmd && dYmd >= matFromYmd);
                         // Transfer-edge: for a mid-month branch move, cells
                         // on the wrong side of transferDate render as locked,
                         // greyed placeholders showing where they're moving
@@ -6057,13 +6131,13 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         const transferOtherBranch = transferEdge === "in" ? (s.transferFrom || "")
                           : transferEdge === "out" ? (s.transferTo || "")
                             : null;
-                        const cellLocked = onMat || isPastLeft || !!transferEdge;
+                        const cellLocked = cellMat || isPastLeft || !!transferEdge;
                         // Cross-store loan: if this tech has a same-day loan FROM
                         // this branch, the cell is tinted teal and shows the
                         // destination store (e.g. Betty's first-Sunday Bree/GP
                         // split, or any manually-logged movement).
                         const _outgoingLoan = (techLoans || []).find(l => l && l.ec === s.ec && l.date === dYmd && l.fromBranch === branch);
-                        const _loanCell = _outgoingLoan && !onMat && !isPastLeft
+                        const _loanCell = _outgoingLoan && !cellMat && !isPastLeft
                           ? (_outgoingLoan.toBranch === "Bree" ? { background: "#cffafe", color: "#155e75" }
                             : _outgoingLoan.toBranch === "Green Point" ? { background: "#fce7f3", color: "#9d174d" }
                               : { background: "#e0e7ff", color: "#3730a3" })
@@ -6071,7 +6145,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         // Maternity leave cells: distinct lavender tint so
                         // ML reads differently from a regular L (annual
                         // leave) and from a post-departure ghost cell.
-                        const matCell = onMat
+                        const matCell = cellMat
                           ? { background: "#ede9fe", color: "#6b21a8" }
                           : isPastLeft
                             ? { background: "#e5e7eb", color: "#9ca3af" }
@@ -6088,8 +6162,8 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                             : d.isToday ? "1px dashed rgba(190,24,93,0.45)"
                               : "none";
                         const dragCursor = cellLocked ? "default" : (v ? "grab" : "pointer");
-                        const cellTitle = onMat
-                          ? `${s.name} · on maternity leave`
+                        const cellTitle = cellMat
+                          ? `${s.name} · on maternity leave${matFromYmd && !fullMat ? " (from " + matFromYmd + ")" : ""}`
                           : isPastLeft
                             ? `${s.name} · left ${s.leftDate} — no longer scheduled`
                             : transferEdge === "out"
@@ -6109,7 +6183,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                             onClick={cellLocked ? undefined : () => cycleCell(s.ec, d.d)}
                             title={cellTitle}
                             style={{ ...matCell, padding: 0, height: 30, textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", borderRight: weekEnd ? "3px solid #BE185D" : "none", cursor: dragCursor, fontSize: 11, fontWeight: 700, userSelect: "none", outline: dropOutline, outlineOffset: -1, opacity: isSrc ? 0.4 : undefined, position: "relative" }}>
-                            {onMat ? "ML"
+                            {cellMat ? "ML"
                               : isPastLeft ? "—"
                                 : transferEdge === "out" ? (
                                   <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: "0.04em" }}>
@@ -6133,8 +6207,8 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                           </td>
                         );
                       })}
-                      <td style={{ padding: "6px 8px", borderLeft: "2px solid #FBCFE8", borderBottom: "1px solid #FCE7F3", textAlign: "center", color: onMat ? "#9ca3af" : "#15803d", fontSize: 11, fontWeight: 700 }}>{onMat ? "—" : counts.w}</td>
-                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #FCE7F3", textAlign: "center", color: onMat ? "#9ca3af" : "#991b1b", fontSize: 11, fontWeight: 700 }}>{onMat ? "—" : counts.off}</td>
+                      <td style={{ padding: "6px 8px", borderLeft: "2px solid #FBCFE8", borderBottom: "1px solid #FCE7F3", textAlign: "center", color: fullMat ? "#9ca3af" : "#15803d", fontSize: 11, fontWeight: 700 }}>{fullMat ? "—" : counts.w}</td>
+                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #FCE7F3", textAlign: "center", color: fullMat ? "#9ca3af" : "#991b1b", fontSize: 11, fontWeight: 700 }}>{fullMat ? "—" : counts.off}</td>
                     </tr>
                   );
                 })}
@@ -23216,13 +23290,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const _onMatRecs = (matRecs || []).filter(r => r && (r.matStatus === "on_mat" || r.matStatus === "dates_tbc"));
         const _onMatEcs = new Set(_onMatRecs.filter(r => r.ec).map(r => r.ec.trim()));
         const _onMatNames = new Set(_onMatRecs.filter(r => r.name).map(r => r.name.trim().toLowerCase()));
+        // matStart lookup (EC first, name fallback) so a mid-cycle maternity
+        // start is honoured instead of blanking the manager's whole row.
+        const _matStartByEc = {}; const _matStartByName = {};
+        _onMatRecs.forEach(r => {
+          if (r.ec) _matStartByEc[r.ec.trim()] = r.matStart || null;
+          if (r.name) _matStartByName[r.name.trim().toLowerCase()] = r.matStart || null;
+        });
+        const _matCycEnd = (() => {
+          const cs = new Date(cycleStart + "T00:00:00");
+          const ed = new Date(cs.getFullYear(), cs.getMonth() + 1, 24);
+          return ed.getFullYear() + "-" + String(ed.getMonth() + 1).padStart(2, "0") + "-" + String(ed.getDate()).padStart(2, "0");
+        })();
         const mgrsWithOff = managers.map(m => {
           const mEc = (m && m.ec || "").trim();
           const mName = (m && m.name || "").trim().toLowerCase();
           const off = (offList || []).find(o => o && o.ec && o.ec.trim() === mEc);
-          const flag = (mEc && _onMatEcs.has(mEc)) || (mName && _onMatNames.has(mName));
+          const isMat = (mEc && _onMatEcs.has(mEc)) || (mName && _onMatNames.has(mName));
           const base = off ? { ...m, leftDate: off.leftDate, offRec: off } : { ...m };
-          return flag ? { ...base, _onMat: true } : base;
+          if (!isMat) return base;
+          // Honour the maternity start date. Full cycle (no date / already
+          // started) → legacy _onMat path = whole-row ML. Mid-cycle start →
+          // keep the manager in the scheduling pool and tag _matFromYmd so a
+          // synthetic leave below marks only the on/after-start days ML.
+          const ms = (mEc && _matStartByEc[mEc] != null ? _matStartByEc[mEc] : _matStartByName[mName]) || null;
+          const win = matCycleWindow({ onMat: true, matStart: ms }, cycleStart, _matCycEnd);
+          if (win.full) return { ...base, _onMat: true };
+          if (win.fromYmd) return { ...base, _matFromYmd: win.fromYmd };
+          return base;   // maternity starts a later cycle → schedule normally now
         });
         // Arriving managers — derive a shadow row at the destination
         // branch from any real manager record whose transferring flag
@@ -23294,8 +23389,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const ed = new Date(cs.getFullYear(), cs.getMonth() + 1, 24);
           return ed.getFullYear() + "-" + String(ed.getMonth() + 1).padStart(2, "0") + "-" + String(ed.getDate()).padStart(2, "0");
         })();
-        const _matLeaves = allMgrs.filter(m => m._onMat).map(m => ({
-          ec: m.ec, startDate: cycleStart, endDate: cycleEndForMat, _synthetic: "mat"
+        // Full-cycle mat (_onMat) → leave spans the whole cycle. Mid-cycle mat
+        // (_matFromYmd) → leave starts on the maternity date, so the manager
+        // still gets real working days before it.
+        const _matLeaves = allMgrs.filter(m => m._onMat || m._matFromYmd).map(m => ({
+          ec: m.ec, startDate: m._onMat ? cycleStart : m._matFromYmd, endDate: cycleEndForMat, _synthetic: "mat"
         }));
         const mgrLeavesPlusMat = [..._matLeaves, ...mgrLeaves];
 
@@ -23319,14 +23417,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const _otherCycleMgr = _branchReqsMgr.length - currentRequests.length;
         const _otherBranchMgr = (mgrRequests || []).filter(r => r && _normMgrBranch(r.branch) !== _branchKeyMgr).length;
         let result = mgrSched(branch, cycleStart, allMgrs, mgrLeavesPlusMat, currentRequests, mgrPriorCtx);
-        // Rewrite the synthetic leave cells for on-mat managers from 'L'
-        // to 'ML' so the grid renders the maternity marker (and not a
-        // generic annual-leave 'L').
+        // Rewrite the synthetic-maternity leave cells from 'L' to 'ML' so the
+        // grid renders the maternity marker (and not a generic annual-leave
+        // 'L'). Full-cycle mat → every cell; mid-cycle mat → only on/after the
+        // start date, so a real annual-leave 'L' taken BEFORE maternity stays
+        // an 'L'.
         if (result && result.grid) {
-          allMgrs.filter(m => m._onMat).forEach(m => {
+          allMgrs.filter(m => m._onMat || m._matFromYmd).forEach(m => {
             if (!result.grid[m.ec]) return;
+            const from = m._onMat ? cycleStart : m._matFromYmd;
             Object.keys(result.grid[m.ec]).forEach(k => {
-              if (result.grid[m.ec][k] === "L") result.grid[m.ec][k] = "ML";
+              if (k >= from && result.grid[m.ec][k] === "L") result.grid[m.ec][k] = "ML";
             });
           });
         }
@@ -23971,10 +24072,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 base[ec] = JSON.parse(JSON.stringify(fresh.grid[ec]));
               }
             });
-            // ML rewrite for any added on-mat mgr (defence in depth)
-            allMgrs.filter(m => m._onMat && rosterAdded.includes(m.ec)).forEach(m => {
+            // ML rewrite for any added mat mgr (defence in depth). Full cycle
+            // → every L; mid-cycle → only on/after the start date.
+            allMgrs.filter(m => (m._onMat || m._matFromYmd) && rosterAdded.includes(m.ec)).forEach(m => {
+              const from = m._onMat ? cycleStart : m._matFromYmd;
               if (base[m.ec]) Object.keys(base[m.ec]).forEach(k => {
-                if (base[m.ec][k] === "L") base[m.ec][k] = "ML";
+                if (k >= from && base[m.ec][k] === "L") base[m.ec][k] = "ML";
               });
             });
           }
@@ -24011,12 +24114,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
           const fresh = mgrSched(branch, cycleStart, allMgrs, mgrLeavesPlusMat, currentRequests, mgrPriorCtx);
           // Same ML rewrite as the load path - keeps the regenerated grid
-          // consistent with maternity status.
+          // consistent with maternity status (full cycle → every L; mid-cycle
+          // → only on/after the start date).
           if (fresh && fresh.grid) {
-            allMgrs.filter(m => m._onMat).forEach(m => {
+            allMgrs.filter(m => m._onMat || m._matFromYmd).forEach(m => {
               if (!fresh.grid[m.ec]) return;
+              const from = m._onMat ? cycleStart : m._matFromYmd;
               Object.keys(fresh.grid[m.ec]).forEach(k => {
-                if (fresh.grid[m.ec][k] === "L") fresh.grid[m.ec][k] = "ML";
+                if (k >= from && fresh.grid[m.ec][k] === "L") fresh.grid[m.ec][k] = "ML";
               });
             });
           }
@@ -24737,6 +24842,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         )}
                         {!mg.isShadow && mg.transferring && mg.transferTo && (
                           <div style={{ fontSize: 9, color: "#92400e", fontWeight: 700, marginTop: 1 }}>🔄 → {mg.transferTo}{mg.transferDate ? " · " + new Date(mg.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</div>
+                        )}
+                        {mg._matFromYmd && !mg._onMat && (
+                          <div style={{ fontSize: 9, color: "#6b21a8", fontWeight: 700, marginTop: 1 }}>🤱 ML FROM {new Date(mg._matFromYmd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}</div>
                         )}
                         {mg._offGhost
                           ? <div style={{ fontSize: 9, color: "#9ca3af", fontStyle: "italic", marginTop: 1 }}>Left {mg._offLeftDate}{mg._offReason ? " · " + mg._offReason : ""}</div>
