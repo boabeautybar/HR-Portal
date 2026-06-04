@@ -27,6 +27,9 @@
   --gray-500: #6B7280;
   --gray-700: #374151;
   --gray-900: #111827;
+  /* Display font for the greeting and hero brand title — Outfit, the same
+     modern sans the HR portal uses for its brand headings. */
+  --font-display: 'Outfit', system-ui, -apple-system, sans-serif;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
@@ -101,18 +104,42 @@ body {
 }
 .link-btn-dark:hover { background: var(--pink-100); }
 
-/* ===== GP-style header (greeting + sublabel + action pills) ===== */
+/* ===== GP-style header (greeting + sublabel + action pills) =====
+   Light pink ombre, matching the HR portal header, so the black BOA Beauty
+   Bar logo reads directly on it. Text + pills use dark ink for contrast. */
 .gp-header {
-  padding: 12px 26px;
-  background: linear-gradient(135deg, var(--pink-700), var(--pink-500));
+  display: block;
+  padding: 20px 26px;
+  background: linear-gradient(135deg, #FBCFE8 0%, #F9A8D4 50%, #F472B6 100%);
+  color: var(--pink-900);
+}
+/* Capped, centred content row — same as the HR portal — so the greeting and
+   nav don't spread edge-to-edge (and gap out) on wide screens. */
+.gp-header-inner {
+  max-width: 1380px; margin: 0 auto;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 28px; flex-wrap: wrap;
 }
 .gp-greeting { line-height: 1.2; min-width: 0; }
 .gp-greeting-line {
-  font-family: 'Playfair Display', serif; font-weight: 600; font-size: 22px;
-  color: #fff; letter-spacing: 0.01em;
+  font-family: var(--font-display); font-weight: 700; font-size: 21px;
+  color: var(--pink-900); letter-spacing: 0.005em;
+}
+
+/* Left cluster: brand logo + greeting, kept together on the header's left. */
+.gp-left { display: flex; align-items: center; gap: 28px; min-width: 0; }
+
+/* BOA Beauty Bar logo — the actual transparent-PNG artwork (black ink), the
+   same file the HR portal uses, sitting black directly on the light pink
+   header. */
+.boa-logo { display: inline-flex; align-items: center; flex: 0 0 auto; }
+.boa-logo-img { height: 34px; width: auto; object-fit: contain; display: block; }
+@media (max-width: 1100px) {
+  .boa-logo-img { height: 28px; }
+  .gp-left { gap: 20px; }
 }
 .gp-sublabel {
-  font-size: 11px; color: rgba(255,255,255,0.85); font-weight: 700;
+  font-size: 11px; color: var(--pink-700); font-weight: 700;
   letter-spacing: 0.18em; margin-top: 2px;
 }
 .gp-actions { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -123,15 +150,16 @@ body {
 .gp-home-quick, .gp-menu-toggle {
   display: inline-flex; align-items: center; justify-content: center;
   width: 46px; height: 46px; border-radius: 13px;
-  background: rgba(255,255,255,0.18); color: #fff; border: 1px solid rgba(255,255,255,0.32);
+  background: rgba(255,255,255,0.55); color: var(--pink-800); border: 1px solid rgba(255,255,255,0.75);
   font-size: 22px; line-height: 1; cursor: pointer;
   transition: background 0.15s var(--ease), transform 0.05s;
 }
-.gp-home-quick:hover, .gp-menu-toggle:hover { background: rgba(255,255,255,0.30); }
+.gp-home-quick:hover, .gp-menu-toggle:hover { background: rgba(255,255,255,0.8); }
 .gp-home-quick:active, .gp-menu-toggle:active { transform: scale(0.95); }
 
 @media (max-width: 860px) {
-  .gp-header { position: relative; flex-wrap: nowrap; gap: 12px; }
+  .gp-header { position: relative; }
+  .gp-header-inner { flex-wrap: nowrap; gap: 12px; }
   .gp-greeting-line { font-size: 18px; }
   .gp-header-right { display: flex; }
   .gp-actions {
@@ -146,21 +174,21 @@ body {
   .gp-actions [data-action="home"] { display: none; } /* Home is the quick button now */
 }
 .gp-btn {
-  background: rgba(255,255,255,0.16); color: #fff; border: 1px solid rgba(255,255,255,0.28);
-  padding: 8px 14px; border-radius: 999px; font-family: inherit; font-weight: 600;
+  background: rgba(255,255,255,0.62); color: var(--pink-900); border: 1px solid rgba(255,255,255,0.8);
+  padding: 8px 14px; border-radius: 999px; font-family: inherit; font-weight: 700;
   font-size: 13px; cursor: pointer; transition: background 0.15s, transform 0.05s;
   display: inline-flex; align-items: center; gap: 6px;
 }
-.gp-btn:hover  { background: rgba(255,255,255,0.28); }
+.gp-btn:hover  { background: rgba(255,255,255,0.9); }
 .gp-btn:active { transform: translateY(1px); }
 .gp-btn.gp-logout {
-  background: rgba(0,0,0,0.18); border-color: rgba(0,0,0,0.22);
+  background: var(--pink-700); color: #fff; border-color: transparent;
   letter-spacing: 0.12em; font-size: 12px;
 }
-.gp-btn.gp-logout:hover { background: rgba(0,0,0,0.32); }
+.gp-btn.gp-logout:hover { background: var(--pink-800); }
 .gp-badge {
   display: inline-block; min-width: 18px; padding: 1px 5px;
-  background: #fff; color: var(--pink-700); border-radius: 999px;
+  background: var(--pink-600); color: #fff; border-radius: 999px;
   font-size: 11px; font-weight: 800; line-height: 1.4; text-align: center; margin-left: 4px;
 }
 
@@ -184,9 +212,10 @@ main { padding: 22px; max-width: 1024px; margin: 0 auto; }
 .hero { text-align: center; margin: 14px 0 24px; }
 .hero-title { font-family: 'Playfair Display', serif; font-size: 26px; font-weight: 700; color: var(--pink-700); }
 .hero-big { margin: 30px 0 34px; }
+.hero-brand { font-family: var(--font-display); }
 .hero-big .hero-brand {
-  font-family: 'Playfair Display', serif; font-size: 40px; font-weight: 700;
-  color: var(--pink-800); letter-spacing: 0.005em; margin-bottom: 14px;
+  font-family: var(--font-display); font-size: 40px; font-weight: 800;
+  color: var(--pink-800); letter-spacing: -0.01em; margin-bottom: 14px;
   line-height: 1.1;
 }
 .hero-big .hero-brand::after {
@@ -918,4 +947,14 @@ textarea.input { resize: vertical; min-height: 64px; }
 .mgr-home-nag-sub   { font-size: 13px; font-weight: 600; line-height: 1.45; margin-top: 3px; opacity: 0.96; }
 @media (prefers-reduced-motion: reduce) {
   .mgr-home-nag { animation: none; box-shadow: 0 0 18px 4px rgba(220, 38, 38, 0.55); }
+}
+
+/* Calm, informational variant of the home banner (no blink) — e.g. "on
+   emergency leave today · no action required". Reuses the -icon/-body/-title
+   /-sub children. */
+.mgr-home-info {
+  display: flex; align-items: center; gap: 14px;
+  background: #ecfdf5; color: #065f46;
+  border: 1px solid #6ee7b7; border-radius: 16px;
+  padding: 14px 18px; margin: 0 0 16px;
 }

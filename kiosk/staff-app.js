@@ -40,9 +40,13 @@
     var nextMonth = window.APP_DATA ? window.APP_DATA.nextMonthLabel().split(" ")[0] : "Off";
     root.innerHTML =
       '<header class="app-header gp-header">' +
-        '<div class="gp-greeting">' +
-          '<div class="gp-greeting-line">' + esc(getGreeting()) + ' · ' + esc(cfg.branchDisplayName || cfg.branchName || "BOA Check-in") + '</div>' +
-          '<div class="gp-sublabel" id="gp-sublabel">HOME</div>' +
+        '<div class="gp-header-inner">' +
+        '<div class="gp-left">' +
+          '<div class="boa-logo"><img class="boa-logo-img" src="boa-logo.png" alt="BOA Beauty Bar"></div>' +
+          '<div class="gp-greeting">' +
+            '<div class="gp-greeting-line">' + esc(getGreeting()) + ' · ' + esc(cfg.branchDisplayName || cfg.branchName || "BOA Check-in") + '</div>' +
+            '<div class="gp-sublabel" id="gp-sublabel">HOME</div>' +
+          '</div>' +
         '</div>' +
         '<div class="gp-actions">' +
           '<button class="gp-btn"  data-action="home"     type="button"><span>🏠</span> Home</button>' +
@@ -54,6 +58,7 @@
         '<div class="gp-header-right">' +
           '<button class="gp-home-quick" id="gp-home-quick" type="button" aria-label="Home" title="Home">🏠</button>' +
           '<button class="gp-menu-toggle" id="gp-menu-toggle" type="button" aria-label="Menu">☰</button>' +
+        '</div>' +
         '</div>' +
       '</header>' +
       '<main id="staff-main"></main>';
@@ -113,7 +118,9 @@
         '<div class="hero-brand">' + esc(cfg.branchDisplayName || cfg.branchName || "BOA Check-in") + '</div>' +
         '<div class="hero-title">What would you like to do?</div>' +
       '</div>' +
+      '<div id="sick-today-slot"></div>' +
       '<div id="checkin-nag-slot"></div>' +
+      '<div id="cashup-nag-slot"></div>' +
       '<div class="tile-grid tile-grid-4">' +
         '<button class="tile tile-big" id="tile-checkin" type="button">' +
           '<div class="tile-icon">✍️</div>' +
@@ -140,8 +147,10 @@
     document.getElementById("tile-checkin").onclick  = renderCheckin;
     document.getElementById("tile-schedule").onclick = renderSchedule;
     document.getElementById("tile-offreq").onclick   = renderOffRequests;
-    document.getElementById("tile-cashup").onclick   = renderCashup;
+    document.getElementById("tile-cashup").onclick   = function () { renderCashup(); };
     refreshCheckinNag();
+    refreshCashupNag();
+    refreshSickToday();
   }
 
   // ---------------- News (read-only viewer) ----------------
@@ -761,6 +770,17 @@
     var todayLbl  = today.toLocaleDateString("en-ZA", { weekday: "long", day: "2-digit", month: "long" });
     var thisBranch = (window.APP_CONFIG && window.APP_CONFIG.branchName) || "";
 
+    // A completed branch transfer (transfer_date on/before today) moves a tech
+    // to their new store, but the HR portal leaves the staff row's `branch`
+    // pointing at the OLD branch until someone re-saves it — every portal view
+    // derives the move live instead. Mirror that here so the borrow picker
+    // shows the right home, checks the right branch's schedule for eligibility,
+    // and attributes the loan to the new branch rather than the stale one.
+    function effBranch(s) {
+      if (s && s.transferring && s.transfer_to && s.transfer_date && todayIso >= s.transfer_date) return s.transfer_to;
+      return (s && s.branch) || "";
+    }
+
     setMain(
       '<div class="panel">' +
         '<div class="panel-head">' +
@@ -801,7 +821,7 @@
       allStaff = loaded[0] || [];
       loansToday = loaded[1] || [];
       var branchesToCheck = {};
-      allStaff.forEach(function (s) { if (s && s.branch && s.branch !== thisBranch) branchesToCheck[s.branch] = true; });
+      allStaff.forEach(function (s) { var hb = effBranch(s); if (hb && hb !== thisBranch) branchesToCheck[hb] = true; });
       schedByBranch = await window.APP_DATA.getSchedulesForBranches(Object.keys(branchesToCheck), schedYm);
     } catch (e) {
       document.getElementById("bt-results").innerHTML =
@@ -828,9 +848,10 @@
     incomingToday.forEach(function (l) { alreadyIncomingEcs[l.ec] = true; });
     var eligible = allStaff.filter(function (s) {
       if (!s || !s.employee_code || !s.branch) return false;
-      if (s.branch === thisBranch) return false;
+      var hb = effBranch(s);
+      if (hb === thisBranch) return false;
       if (alreadyIncomingEcs[s.employee_code]) return false;
-      var grid = schedByBranch[s.branch];
+      var grid = schedByBranch[hb];
       if (!grid) return false;
       var v = grid[s.employee_code] && grid[s.employee_code][dayKey];
       // Any working shift (W / WE / WL / WB / WM / E) makes the tech borrowable.
@@ -855,12 +876,12 @@
       }
       resultsEl.innerHTML = matches.map(function (s) {
         return (
-          '<div class="bt-row" data-ec="' + esc(s.employee_code) + '" data-name="' + esc(s.name || "") + '" data-branch="' + esc(s.branch || "") + '" ' +
+          '<div class="bt-row" data-ec="' + esc(s.employee_code) + '" data-name="' + esc(s.name || "") + '" data-branch="' + esc(effBranch(s) || "") + '" ' +
               'style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:#fff;border:1px solid var(--pink-100);border-radius:12px">' +
             '<div style="flex:1;min-width:0">' +
               '<div style="font-weight:700;color:var(--pink-900);font-size:14px">' + esc(s.name || "(no name)") + '</div>' +
               '<div style="font-size:11px;color:var(--gray-500);margin-top:2px">' +
-                '<span style="font-family:monospace">' + esc(s.employee_code || "—") + '</span> · 📍 ' + esc(s.branch || "—") +
+                '<span style="font-family:monospace">' + esc(s.employee_code || "—") + '</span> · 📍 ' + esc(effBranch(s) || "—") +
               '</div>' +
             '</div>' +
             '<button type="button" class="bt-btn" style="background:var(--pink-700);color:#fff;border:none;border-radius:8px;padding:9px 16px;font-weight:700;font-size:13px;cursor:pointer">Borrow</button>' +
@@ -2374,14 +2395,29 @@
   }
 
   // ---------------- Cash-up ----------------
-  async function renderCashup() {
+  async function renderCashup(targetDate) {
     setSublabel("Cash Up");
+    // targetDate (YYYY-MM-DD) lets a store complete a PREVIOUS day's cash-up
+    // they missed — reached from the home-screen reminder. Defaults to today.
+    var today   = window.APP_DATA && window.APP_DATA.todayStr ? window.APP_DATA.todayStr() : null;
+    var forDate = (typeof targetDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(targetDate)) ? targetDate : today;
+    var isBackfill = !!forDate && !!today && forDate !== today;
+    var prettyDate = forDate ? new Date(forDate + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "long", day: "2-digit", month: "long" }) : "";
     setMain(
       '<div class="panel">' +
         '<div class="panel-head">' +
-          '<h2>Cash Up</h2>' +
+          '<h2>Cash Up' + (isBackfill ? ' · ' + esc(prettyDate) : '') + '</h2>' +
           '<button class="link-btn link-btn-dark" id="back-home">← Back</button>' +
         '</div>' +
+        (isBackfill
+          ? '<div class="checkin-nag" role="alert" style="margin-bottom:12px">' +
+              '<div class="checkin-nag-icon">📅</div>' +
+              '<div class="checkin-nag-text">' +
+                '<div class="checkin-nag-title">MISSED CASH-UP — ' + esc(prettyDate.toUpperCase()) + '</div>' +
+                '<div class="checkin-nag-sub">You\'re completing the cash-up for a <strong>previous day</strong> that wasn\'t submitted. Enter that day\'s totals (not today\'s). Today\'s cash-up is still done separately.</div>' +
+              '</div>' +
+            '</div>'
+          : '') +
         '<div id="cashup-body">Loading…</div>' +
       '</div>'
     );
@@ -2392,12 +2428,12 @@
       return;
     }
 
-    var existing = await window.APP_DATA.todaysCashup();
+    var existing = await window.APP_DATA.cashupForDate(forDate);
     if (existing) {
       document.getElementById("cashup-body").innerHTML =
         '<div class="result-card result-ok">' +
           '<div class="result-icon">✓</div>' +
-          '<div class="result-title">Today\'s cash-up already submitted</div>' +
+          '<div class="result-title">' + (isBackfill ? esc(prettyDate) + '\'s' : 'Today\'s') + ' cash-up already submitted</div>' +
           '<div class="result-sub">Signed by ' + esc(existing.signed_by) + ' at ' + fmtTime(existing.created_at) + '</div>' +
         '</div>' +
         '<div class="cashup-summary">' +
@@ -2558,6 +2594,7 @@
       var cashBanked    = cashBankedYes ? true : (cashBankedNo ? false : null);
       try {
         await window.APP_DATA.addCashup({
+          date:       forDate,
           yoco:       val("yoco"),
           yoco_link:  val("yoco_link"),
           cash:       val("cash"),
@@ -2576,7 +2613,7 @@
           yoco_photo:    yocoPhotoDataUrl
         });
         resEl.innerHTML = '<div class="result-card result-ok"><div class="result-icon">✓</div><div class="result-title">Cash-up saved. Thank you!</div></div>';
-        setTimeout(renderCashup, 800);
+        setTimeout(function () { renderCashup(forDate); }, 800);
       } catch (err) {
         resEl.innerHTML = '<div class="result-card result-err">Could not save: ' + esc(err.message || err) + '</div>';
         btn.disabled = false;
@@ -2899,6 +2936,80 @@
     el.innerHTML = nag ? checkinNagHtml() : "";
   }
 
+  // Home-screen reminder for PREVIOUS days the store missed its cash-up.
+  // Each day gets a "Complete now" button that opens the cash-up form for
+  // that exact date. Today is never listed (still in progress). Non-blocking.
+  async function refreshCashupNag() {
+    var el = document.getElementById("cashup-nag-slot");
+    if (!el) return;
+    if (!window.APP_DATA || !window.APP_DATA.outstandingCashupDates) { el.innerHTML = ""; return; }
+    var dates;
+    try { dates = await window.APP_DATA.outstandingCashupDates(7); }
+    catch (e) { console.warn("cashup nag check failed (non-fatal):", e); el.innerHTML = ""; return; }
+    if (!dates || !dates.length) { el.innerHTML = ""; return; }
+    var rows = dates.map(function (d) {
+      var pretty = new Date(d + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" });
+      return '<div class="cashup-nag-row" style="display:flex;align-items:center;gap:10px;justify-content:space-between;padding:7px 0;border-top:1px solid rgba(255,255,255,0.25)">' +
+               '<span style="font-weight:700">' + esc(pretty) + '</span>' +
+               '<button class="btn btn-primary cashup-nag-do" data-date="' + d + '" style="padding:6px 14px">Complete now →</button>' +
+             '</div>';
+    }).join("");
+    el.innerHTML =
+      '<div class="checkin-nag" role="alert" style="flex-direction:column;align-items:stretch">' +
+        '<div style="display:flex;align-items:center;gap:12px">' +
+          '<div class="checkin-nag-icon">💵</div>' +
+          '<div class="checkin-nag-text">' +
+            '<div class="checkin-nag-title">CASH-UP STILL OWED — ' + dates.length + ' DAY' + (dates.length === 1 ? '' : 'S') + '</div>' +
+            '<div class="checkin-nag-sub">A previous day\'s cash-up wasn\'t submitted. Tap <strong>Complete now</strong> to enter that day\'s totals — today\'s cash-up is still done separately.</div>' +
+          '</div>' +
+        '</div>' +
+        '<div style="margin-top:8px">' + rows + '</div>' +
+      '</div>';
+    Array.prototype.forEach.call(el.querySelectorAll(".cashup-nag-do"), function (btn) {
+      btn.onclick = function () { renderCashup(btn.dataset.date); };
+    });
+  }
+
+  // Home-screen, READ-ONLY notice of who called in sick / absent for today via
+  // My BOA — scoped to this branch (home staff not loaned out, plus anyone
+  // loaned in). The kiosk only shows it; it can't review or change anything
+  // (absences are handled by regional managers in the HR portal).
+  async function refreshSickToday() {
+    var el = document.getElementById("sick-today-slot");
+    if (!el) return;
+    if (!window.APP_DATA || !window.APP_DATA.calledInTodayForBranch) { el.innerHTML = ""; return; }
+    var list;
+    try { list = await window.APP_DATA.calledInTodayForBranch(); }
+    catch (e) { console.warn("called-in-today check failed (non-fatal):", e); el.innerHTML = ""; return; }
+    if (!list || !list.length) { el.innerHTML = ""; return; }
+    var mgrs = list.filter(function (p) { return p.role === "manager"; });
+    var techs = list.filter(function (p) { return p.role !== "manager"; });
+    var parts = [];
+    if (techs.length) parts.push(techs.length + " nail tech" + (techs.length === 1 ? "" : "s"));
+    if (mgrs.length) parts.push(mgrs.length + " manager" + (mgrs.length === 1 ? "" : "s"));
+    var summary = parts.join(" and ");
+    var rows = list.map(function (p) {
+      var tag = p.type === "sick" ? "🤒 sick" : "🚫 absent";
+      var role = p.role === "manager" ? " · manager" : "";
+      var borrowed = p.borrowed ? " (borrowed in)" : "";
+      return '<div style="display:flex;align-items:center;gap:8px;justify-content:space-between;padding:6px 0;border-top:1px solid rgba(255,255,255,0.25)">' +
+               '<span style="font-weight:700">' + esc(p.name) + esc(borrowed) + '</span>' +
+               '<span style="opacity:.9;font-size:13px">' + tag + role + '</span>' +
+             '</div>';
+    }).join("");
+    el.innerHTML =
+      '<div class="checkin-nag" role="status" style="flex-direction:column;align-items:stretch">' +
+        '<div style="display:flex;align-items:center;gap:12px">' +
+          '<div class="checkin-nag-icon">🤒</div>' +
+          '<div class="checkin-nag-text">' +
+            '<div class="checkin-nag-title">OUT TODAY — ' + esc(summary) + '</div>' +
+            '<div class="checkin-nag-sub">Called in via My BOA. For your information only.</div>' +
+          '</div>' +
+        '</div>' +
+        '<div style="margin-top:8px">' + rows + '</div>' +
+      '</div>';
+  }
+
   // ---------- Shared flows (used by manager-app.js too) ----------
   // Manager dashboard reuses these so we don't duplicate ~600 lines of UI.
   // Call configure() once to redirect output to a different element and
@@ -2915,6 +3026,7 @@
     renderSchedule:     function () { return renderSchedule.apply(null, arguments); },
     renderNews:         function () { return renderNews.apply(null, arguments); },
     refreshNewsBadge:   function () { return refreshNewsBadge.apply(null, arguments); },
-    refreshCheckinNag:  function () { return refreshCheckinNag.apply(null, arguments); }
+    refreshCheckinNag:  function () { return refreshCheckinNag.apply(null, arguments); },
+    refreshCashupNag:   function () { return refreshCashupNag.apply(null, arguments); }
   };
 })();

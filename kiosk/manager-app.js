@@ -58,9 +58,13 @@
 
     root.innerHTML =
       '<header class="app-header gp-header">' +
+      '<div class="gp-header-inner">' +
+      '<div class="gp-left">' +
+      '<div class="boa-logo"><img class="boa-logo-img" src="boa-logo.png" alt="BOA Beauty Bar"></div>' +
       '<div class="gp-greeting">' +
       '<div class="gp-greeting-line">' + esc(getGreeting()) + ' · ' + esc(cfg.branchDisplayName || cfg.branchName || "BOA Check-in") + '</div>' +
       '<div class="gp-sublabel" id="gp-sublabel">MANAGER</div>' +
+      '</div>' +
       '</div>' +
       '<div class="gp-actions">' +
       '<button class="gp-btn" id="pwa-install-btn" style="display:none; margin-right:12px; font-weight:700;" type="button"><span>⬇️</span> Install to Device</button>' +
@@ -75,6 +79,7 @@
       '<div class="gp-header-right">' +
         '<button class="gp-home-quick" id="gp-home-quick" type="button" aria-label="Home" title="Home">🏠</button>' +
         '<button class="gp-menu-toggle" id="gp-menu-toggle" type="button" aria-label="Menu">☰</button>' +
+      '</div>' +
       '</div>' +
       '</header>' +
       '<main id="staff-main"></main>';
@@ -174,6 +179,8 @@
       setInterval(window.BOA_FLOWS.refreshNewsBadge, 60 * 1000);
       // Keep the "submit your check-in" warning live while the landing is open.
       setInterval(window.BOA_FLOWS.refreshCheckinNag, 60 * 1000);
+      // Keep the "previous day's cash-up still owed" reminder live too.
+      if (window.BOA_FLOWS.refreshCashupNag) setInterval(window.BOA_FLOWS.refreshCashupNag, 60 * 1000);
     }
 
     // ── Store-open gate ─────────────────────────────────────────
@@ -482,9 +489,16 @@
         }
       } catch (_) {}
 
+      // Don't nag anyone who's on approved leave today — annual OR emergency.
+      // A leave day is "no action required", not a missed clock-in. (The
+      // schedule grid often still shows a working code because leave lives in
+      // the Leave Calendar, so we must check leave records, not the grid.)
+      var onLeave = await _onLeaveEcsToday(false);
+
       var missing = hereMgrs.filter(function (m) {
         var ec = String(m.employee_code || "").trim();
         if (!isWorking(schedByEc[ec])) return false;     // not scheduled today
+        if (onLeave[ec]) return false;                   // on approved leave (annual or emergency)
         if (clockedInEcs[ec]) return false;              // already in
         if (taggedStaffIds[m.id]) return false;          // ROM explained
         return true;
@@ -506,6 +520,62 @@
       slot.style.display = "none";
     }
   }
+
+  // Employee codes (ec → "el"/"al") on approved leave that covers today, read
+  // from the Leave Calendar (boa_leave_v1). emergency:true → "el" (unpaid),
+  // otherwise "al". Best-effort; returns {} on any failure.
+  async function _onLeaveEcsToday(emergencyOnly) {
+    if (!window.APP_DATA || !window.APP_DATA.listLeaveRecords) return {};
+    try {
+      var todayK = _ymdToday(new Date());
+      var recs = await window.APP_DATA.listLeaveRecords();
+      var map = {};
+      (recs || []).forEach(function (r) {
+        if (!r || !r.ec || !r.startDate || !r.endDate) return;
+        if (emergencyOnly && r.emergency !== true) return;
+        if (r.startDate <= todayK && todayK <= r.endDate) {
+          var ec = String(r.ec).trim();
+          // An emergency record wins over a plain one for the same ec/day.
+          if (map[ec] !== "el") map[ec] = (r.emergency === true ? "el" : "al");
+        }
+      });
+      return map;
+    } catch (e) { console.warn("_onLeaveEcsToday failed:", e); return {}; }
+  }
+
+  // Calm "on emergency leave today · no action required" home-screen panel.
+  // Lists this store's staff who are on EMERGENCY (unpaid) leave covering
+  // today, so the manager knows not to chase them for a check-in / clock-in.
+  async function loadOnLeaveTodayIntoPanel() {
+    var slot = document.getElementById("mgr-on-leave-slot");
+    if (!slot) return;
+    if (!window.APP_DATA || !window.APP_DATA.listLeaveRecords || !window.APP_DATA.listStaff) { slot.style.display = "none"; return; }
+    try {
+      var leaveMap = await _onLeaveEcsToday(true);   // emergency only
+      var ecs = Object.keys(leaveMap);
+      if (ecs.length === 0) { slot.style.display = "none"; return; }
+      // Resolve names against this branch's staff (drops anyone not here).
+      var staff = await window.APP_DATA.listStaff();
+      var nameByEc = {};
+      (staff || []).forEach(function (s) { if (s && s.employee_code) nameByEc[String(s.employee_code).trim()] = s.name; });
+      var names = [];
+      ecs.forEach(function (ec) { if (nameByEc[ec]) names.push(esc(nameByEc[ec])); });
+      if (names.length === 0) { slot.style.display = "none"; return; }
+      slot.innerHTML =
+        '<div class="mgr-home-info">' +
+          '<div class="mgr-home-nag-icon">🏖️</div>' +
+          '<div class="mgr-home-nag-body">' +
+            '<div class="mgr-home-nag-title">On emergency leave today &middot; no action required</div>' +
+            '<div class="mgr-home-nag-sub">' + names.join(", ") + ' &mdash; approved <strong>emergency leave (unpaid)</strong>. No need to chase them for a check-in or clock-in today.</div>' +
+          '</div>' +
+        '</div>';
+      slot.style.display = "block";
+    } catch (e) {
+      console.warn("on-leave panel load failed:", e);
+      slot.style.display = "none";
+    }
+  }
+
   // Wire every '✓ Mark done' / 'tap to undo' button on the reminders
   // panel. Tapping disables the button while the Supabase write is in
   // flight, then re-renders the panel from a fresh listKioskReminders
@@ -545,6 +615,8 @@
       // Big blinking warning when today's nail-tech check-in hasn't been
       // submitted yet (and it's past 10:30) — populated async below.
       '<div id="checkin-nag-slot"></div>' +
+      // Previous-day cash-up reminder — populated async by refreshCashupNag.
+      '<div id="cashup-nag-slot"></div>' +
       // Reminders panel — populated async right after this innerHTML write.
       // Hidden by default; only flips visible when there's at least one
       // reminder firing today for this branch.
@@ -554,6 +626,9 @@
       // catches a manager who walks in, opens the tablet, and stops at
       // the landing. Populated async by loadMgrClockinNagIntoPanel.
       '<div id="mgr-clockin-nag-slot" style="display:none"></div>' +
+      // Calm "on emergency leave today · no action required" panel — populated
+      // async by loadOnLeaveTodayIntoPanel.
+      '<div id="mgr-on-leave-slot" style="display:none"></div>' +
       '<div class="tile-grid tile-grid-4">' +
       '<button class="tile tile-big" id="tile-nailtech" type="button">' +
       '<div class="tile-icon">✍️</div>' +
@@ -584,7 +659,8 @@
     );
     loadKioskRemindersIntoPanel();
     loadMgrClockinNagIntoPanel();
-    if (window.BOA_FLOWS) window.BOA_FLOWS.refreshCheckinNag();
+    loadOnLeaveTodayIntoPanel();
+    if (window.BOA_FLOWS) { window.BOA_FLOWS.refreshCheckinNag(); window.BOA_FLOWS.refreshCashupNag(); }
     document.getElementById("tile-nailtech").onclick = function () {
       if (window.BOA_FLOWS) window.BOA_FLOWS.renderCheckin();
     };
@@ -1114,7 +1190,7 @@
     document.getElementById("back-home").onclick = renderManagerLanding;
     document.getElementById("mc-refresh").onclick = renderMgrClockin;
 
-    var pins, mgrs, recent, smTrialEcs, trialCand, mgrTaggedStaffIds = {};
+    var pins, mgrs, recent, smTrialEcs, trialCand, mgrTaggedStaffIds = {}, mgrOnLeaveToday = {};
     var schedByEcYmd = {};
     // Resolve current + previous cycle ym (25th-of-month convention) up
     // front so we can fire the schedule loads in parallel below.
@@ -1183,12 +1259,14 @@
         window.APP_DATA.listRecentManagerClockins(2, _mgrIds),
         window.APP_DATA.getSchedule ? window.APP_DATA.getSchedule(_curEndYm, "mgr").catch(function () { return null; }) : Promise.resolve(null),
         window.APP_DATA.getSchedule ? window.APP_DATA.getSchedule(_prevEndYm, "mgr").catch(function () { return null; }) : Promise.resolve(null),
-        window.APP_DATA.listManagerDayStatusesToday ? window.APP_DATA.listManagerDayStatusesToday().catch(function () { return []; }) : Promise.resolve([])
+        window.APP_DATA.listManagerDayStatusesToday ? window.APP_DATA.listManagerDayStatusesToday().catch(function () { return []; }) : Promise.resolve([]),
+        _onLeaveEcsToday(false).catch(function () { return {}; })   // ec → al/el on approved leave today
       ]);
       recent = _stage2[0];
       _ingestSched(_curCycleYm, _stage2[1]);
       _ingestSched(_prevCycleYm, _stage2[2]);
       (_stage2[3] || []).forEach(function (r) { if (r && r.staff_id) mgrTaggedStaffIds[r.staff_id] = true; });
+      mgrOnLeaveToday = _stage2[4] || {};
     } catch (e) {
       document.getElementById("mc-body").innerHTML =
         '<div class="warn">Could not load: ' + esc(e.message || e) + '</div>';
@@ -1312,13 +1390,22 @@
         lastLabel += ' <span class="pill pill-mute">clocked in ' + fmtTime(inTodayByEc[ec].ts) + '</span>';
       }
       var autoBadge = autoYesterday[ec] ? ' <span class="pill" style="background:#fee2e2;color:#7f1d1d">⚠ auto-out yesterday</span>' : "";
-      // Blinking nag: scheduled, no clock-in today, not ROM-tagged, past
-      // the warning cutoff time. Only nag for THIS branch's managers.
+      // On approved leave today (annual or emergency) → no clock-in expected,
+      // so show a calm pill and never nag. The schedule grid often still
+      // carries a working code (W) because leave is recorded in the Leave
+      // Calendar rather than re-written onto the grid.
+      var _onLeaveCode = mgrOnLeaveToday[ec];
+      var _leaveBadge = _onLeaveCode
+        ? ' <span class="pill" style="background:#dbeafe;color:#1e3a8a">🌴 on leave today' + (_onLeaveCode === "el" ? " (emergency)" : "") + '</span>'
+        : "";
+      // Blinking nag: scheduled, no clock-in today, not ROM-tagged, not on
+      // leave, past the warning cutoff time. Only nag for THIS branch's managers.
       var _nagBadge = "";
       if (m.branch === thisBranch
           && _pastWarnCutoff
           && !inTodayByEc[ec]
           && _isWorkingCode(mgrTodaySched[ec])
+          && !_onLeaveCode
           && !mgrTaggedStaffIds[m.id]) {
         _nagBadge = ' <span class="mgr-clockin-nag" title="No clock-in recorded yet today. No clock-in = unpaid day. Clock in now, or ask the ROM to tag the absence reason.">⚠ HAVEN\'T CLOCKED IN</span>';
       }
@@ -1330,7 +1417,7 @@
       var _schedCodeToday = mgrTodaySched[ec];
       var _isWorkingToday = _schedCodeToday === "W" || _schedCodeToday === "WL" || _schedCodeToday === "WE" || _schedCodeToday === "WM" || _schedCodeToday === "WB" || _schedCodeToday === "E";
       var shiftLine = "";
-      if (m.branch === thisBranch && _isWorkingToday) {
+      if (m.branch === thisBranch && _isWorkingToday && !_onLeaveCode) {
         var _effRole = onSmTrial ? "SM" : (m.role || "");
         var _hrs = shiftTimes(_effRole, _schedCodeToday, thisBranch, _todayDow);
         shiftLine = '<div class="staff-shift-hours" style="font-size:11px;color:var(--pink-700);font-weight:700;letter-spacing:0.02em;margin-top:2px">🕐 Today · ' + esc(_hrs) + '</div>';
@@ -1340,7 +1427,7 @@
         '<div class="staff-name">' + esc(m.name) +
         rolePill +
         (m.branch !== thisBranch ? ' <span class="pill pill-mute">' + esc(m.branch || "—") + "</span>" : "") +
-        (has ? "" : ' <span class="pill pill-warn">NO PIN</span>') + autoBadge + _nagBadge +
+        (has ? "" : ' <span class="pill pill-warn">NO PIN</span>') + autoBadge + _leaveBadge + _nagBadge +
         '</div>' +
         shiftLine +
         '<div class="staff-code" style="margin-top:3px">' + lastLabel + '</div>' +
@@ -1490,42 +1577,13 @@
             console.warn("store-open check failed; allowing clock-in:", e);
           }
         }
-        // 1b. Early-clock-out picker. Resolve THIS manager's scheduled
-        // shift end for today (role + code + branch + dow). If they're
-        // clocking out more than `earlyClockOutGraceMinutes` (default 20)
-        // before that end time → prompt for a reason. The short hours
-        // saved to the early-leave sidecar = scheduledEnd − now.
-        // Fallback when we can't resolve the schedule (no published cell,
-        // unknown role, etc.) is the legacy fixed-hour cutoff so we
-        // never let a too-early clock-out slip through silently.
-        var earlyOpts = null;
-        if (type === "out") {
-          var nowD = new Date();
-          var graceMin = (cfg.earlyClockOutGraceMinutes != null ? cfg.earlyClockOutGraceMinutes : 20);
-          var schedCodeToday = mgrTodaySched[ec];
-          var _mForOut = mgrByEc[String(ec).trim()];
-          var schedEndToday = (_mForOut && schedCodeToday) ? _scheduledEndDate(todayK, _mForOut._effRole || _mForOut.role, schedCodeToday, _mForOut.branch || thisBranch) : null;
-          var promptForReason = false;
-          var hoursShort = 0;
-          if (schedEndToday) {
-            var minsToEnd = Math.round((schedEndToday.getTime() - nowD.getTime()) / 60000);
-            if (minsToEnd > graceMin) {
-              promptForReason = true;
-              hoursShort = Math.min(12, Math.max(0.5, Math.round((minsToEnd / 60) * 2) / 2));
-            }
-          } else {
-            var earlyCutH = (cfg.earlyClockOutCutoffHour != null ? cfg.earlyClockOutCutoffHour : 17);
-            if (nowD.getHours() < earlyCutH) {
-              promptForReason = true;
-              var minsShort = (earlyCutH * 60) - (nowD.getHours() * 60 + nowD.getMinutes());
-              hoursShort = Math.min(12, Math.max(0.5, Math.round((minsShort / 60) * 2) / 2));
-            }
-          }
-          if (promptForReason) {
-            earlyOpts = await openMgrEarlyClockoutModal({ name: name, defaultHours: hoursShort });
-            if (!earlyOpts) return;          // user cancelled
-          }
-        }
+        // 1b. (Removed) Early-clock-out self-prompt. We no longer ask a manager
+        // "how many hours early" on clock-out — that guessed a scheduled end and
+        // could record a deduction even when they left on time. Instead the HR
+        // portal's attendance sheet DERIVES the deduction automatically from the
+        // actual clock-out time recorded below vs the manager's scheduled end
+        // for that day (custom hours aware). The colleague "did anyone leave
+        // early?" witness prompt still runs after a successful clock-out.
         // 2. PIN
         var entered = prompt("Enter " + name + "'s 6-digit personal PIN:");
         if (entered == null) return;
@@ -1560,29 +1618,17 @@
           alert("Could not record: " + (e.message || e));
           return;
         }
-        if (earlyOpts) {
-          try {
-            // dayKey + ym match the sidecar's convention: cycle uses START-
-            // month, dayKey is the day-of-month (1–31).
-            var _now2  = new Date();
-            var _y = _now2.getFullYear(), _m = _now2.getMonth() + 1, _d = _now2.getDate();
-            var _ym2; if (_d > 24) { var nm = _m + 1, ny = _y; if (nm > 12) { nm = 1; ny += 1; } _ym2 = ny + "-" + String(nm).padStart(2, "0"); } else { _ym2 = _y + "-" + String(_m).padStart(2, "0"); }
-            await window.APP_DATA.recordEarlyLeave(_ym2, String(_d), ec, earlyOpts.hours, name, {
-              reasonCode: earlyOpts.reasonCode,
-              reasonNote: earlyOpts.reasonNote,
-              approver:   earlyOpts.approver
-            });
-          } catch (e) {
-            alert("Clock-out saved, but the early-leave reason couldn't be recorded: " + (e.message || e) + "\n\nAsk the ROM to record it manually from the HR portal.");
-          }
-        }
-        // Post-clock-out witness prompt: catch colleagues who walked out
+        // (Manager early-leave is no longer self-recorded here — the HR portal
+        // derives it from this clock-out time. See note at "1b" above.)
+        // Post-clock-out witness prompt: catch MANAGERS who walked out
         // without clocking out (so no early-leave reason was logged). The
-        // clocking-out manager names them; the report goes to boa_mgr_early_reports_v1
-        // for ROM review. Skipped on clock-in.
+        // clocking-out manager ticks them from a manager-only checklist —
+        // nail techs are deliberately not selectable here (those go through
+        // Nail Tech Check-ins → Mark left early). The report goes to
+        // boa_mgr_early_reports_v1 for ROM review. Skipped on clock-in.
         if (type === "out") {
           try {
-            var report = await openMgrEarlyLeaveReportModal({ name: name });
+            var report = await openMgrEarlyLeaveReportModal({ name: name, selfEc: ec, managers: hereMgrs });
             if (report && report.names) {
               await window.APP_DATA.submitEarlyLeaveReport({
                 reportedByEc:   ec,
@@ -1592,6 +1638,23 @@
               });
             }
           } catch (e) { console.warn("early-leave report save failed:", e); }
+
+          // Non-blocking cash-up reminder on clock-out. We can't force it
+          // (early shifts clock out before close), so just nudge: if today's
+          // cash-up isn't in yet, remind them on the way out. They tap OK and
+          // carry on — clock-out has already been recorded above.
+          try {
+            if (window.APP_DATA.todaysCashup) {
+              var cuToday = await window.APP_DATA.todaysCashup();
+              var owed = window.APP_DATA.outstandingCashupDates ? await window.APP_DATA.outstandingCashupDates(7) : [];
+              if (!cuToday || (owed && owed.length)) {
+                var msg = "✅ Clocked out.\n\n";
+                if (!cuToday) msg += "Reminder: today's CASH-UP hasn't been submitted yet. Please make sure it's done before the store closes.\n";
+                if (owed && owed.length) msg += "\nAlso still owed: " + owed.length + " previous day" + (owed.length === 1 ? "" : "s") + " — see the reminder on the home screen.\n";
+                alert(msg);
+              }
+            }
+          } catch (e) { console.warn("cash-up clock-out reminder failed (non-fatal):", e); }
         }
         renderMgrClockin();
       };
@@ -1682,60 +1745,103 @@
     return new Promise(function (resolve) {
       var prev = document.getElementById("boa-mgr-early-report-modal");
       if (prev) prev.remove();
+
+      // Candidates are MANAGERS at this store only, minus the person clocking
+      // out. Reporting is a tick-box pick from this list — there is no free
+      // text — so a nail tech can never be entered here by mistake. Nail-tech
+      // early-leaves have their own flow (Nail Tech Check-ins → Mark left
+      // early), called out prominently below.
+      var selfEc = String(opts.selfEc || "").trim();
+      var seen = {};
+      var candidates = (opts.managers || []).filter(function (m) {
+        if (!m || !m.name) return false;
+        var ec = String(m.employee_code || "").trim();
+        if (ec && ec === selfEc) return false;       // not yourself
+        if (ec && seen[ec]) return false;            // de-dupe
+        if (ec) seen[ec] = true;
+        return true;
+      });
+
+      var nailTechCallout =
+        '<div style="margin-top:12px;padding:11px 13px;background:#FFF7ED;border:1px solid #FED7AA;border-radius:10px;font-size:13px;line-height:1.45;color:#9A3412">' +
+          '💅 <strong>A nail tech left early?</strong> Don\'t report them here. ' +
+          'Go back and open <strong>Nail Tech Check-ins</strong>, then tap ' +
+          '<strong>🏃 Mark left early</strong> on her row. This list is for <strong>managers only</strong>.' +
+        '</div>';
+
       var modal = document.createElement("div");
       modal.id = "boa-mgr-early-report-modal";
       modal.className = "boa-modal-backdrop";
       modal.innerHTML =
         '<div class="boa-modal-card">' +
-          '<h2 class="boa-modal-title">👀 Did anyone leave early today?</h2>' +
+          '<h2 class="boa-modal-title">👀 Did another manager leave early today?</h2>' +
           '<p class="boa-modal-body">' +
             'Thanks for clocking out, ' + esc(opts.name) + '. Before you go — ' +
-            'did any manager leave their shift early today without clocking out? ' +
-            'A quick yes/no helps payroll catch missed deductions.' +
+            'did any <strong>manager</strong> leave their shift early today without ' +
+            'clocking out? A quick yes/no helps payroll catch missed deductions.' +
           '</p>' +
-          '<div class="btn-row" style="justify-content:center;gap:10px;margin-top:12px">' +
-            '<button type="button" class="link-btn link-btn-dark" id="boa-mgr-er-no">No, everyone stayed</button>' +
-            '<button type="button" class="btn btn-primary" id="boa-mgr-er-yes">Yes, name them</button>' +
-          '</div>' +
-          '<div id="boa-mgr-er-detail" style="display:none;margin-top:14px">' +
-            '<label class="lbl">Who left early?</label>' +
-            '<input id="boa-mgr-er-names" type="text" class="input" ' +
-              'placeholder="Comma-separated names" autocomplete="off">' +
-            '<label class="lbl" style="margin-top:10px">Note (optional — when they left, why if you know)</label>' +
-            '<textarea id="boa-mgr-er-note" class="input" rows="2" ' +
-              'placeholder="e.g. around 14:00, said she was sick"></textarea>' +
-            '<div id="boa-mgr-er-err" class="err-line"></div>' +
-            '<div class="btn-row" style="justify-content:space-between;gap:8px;margin-top:10px">' +
-              '<button type="button" class="link-btn link-btn-dark" id="boa-mgr-er-cancel">Skip</button>' +
-              '<button type="button" class="btn btn-primary" id="boa-mgr-er-save">Submit report</button>' +
-            '</div>' +
-          '</div>' +
+          nailTechCallout +
+          (candidates.length
+            ? '<div class="btn-row" style="justify-content:center;gap:10px;margin-top:14px">' +
+                '<button type="button" class="link-btn link-btn-dark" id="boa-mgr-er-no">No, every manager stayed</button>' +
+                '<button type="button" class="btn btn-primary" id="boa-mgr-er-yes">Yes, a manager did</button>' +
+              '</div>' +
+              '<div id="boa-mgr-er-detail" style="display:none;margin-top:14px">' +
+                '<label class="lbl">Which manager(s) left early?</label>' +
+                '<div id="boa-mgr-er-list" style="margin-top:6px">' +
+                  candidates.map(function (m) {
+                    return '<label style="display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px;cursor:pointer">' +
+                      '<input type="checkbox" class="boa-mgr-er-cb" value="' + esc(m.name) + '" style="width:18px;height:18px;flex:none">' +
+                      '<span style="font-weight:600;color:#374151">' + esc(m.name) +
+                        (m.role ? ' <span style="font-weight:400;color:#9ca3af">· ' + esc(m.role) + '</span>' : '') +
+                      '</span>' +
+                    '</label>';
+                  }).join("") +
+                '</div>' +
+                '<label class="lbl" style="margin-top:10px">Note (optional — when they left, why if you know)</label>' +
+                '<textarea id="boa-mgr-er-note" class="input" rows="2" ' +
+                  'placeholder="e.g. around 14:00, said she was sick"></textarea>' +
+                '<div id="boa-mgr-er-err" class="err-line"></div>' +
+                '<div class="btn-row" style="justify-content:space-between;gap:8px;margin-top:10px">' +
+                  '<button type="button" class="link-btn link-btn-dark" id="boa-mgr-er-cancel">Skip</button>' +
+                  '<button type="button" class="btn btn-primary" id="boa-mgr-er-save">Submit report</button>' +
+                '</div>' +
+              '</div>'
+            : '<p class="boa-modal-body" style="margin-top:12px;color:#9ca3af">' +
+                'No other managers are based at this store, so there\'s nobody to report here.' +
+              '</p>' +
+              '<div class="btn-row" style="justify-content:center;margin-top:12px">' +
+                '<button type="button" class="btn btn-primary" id="boa-mgr-er-done">Done</button>' +
+              '</div>') +
         '</div>';
       document.body.appendChild(modal);
 
-      var noBtn   = document.getElementById("boa-mgr-er-no");
-      var yesBtn  = document.getElementById("boa-mgr-er-yes");
-      var detail  = document.getElementById("boa-mgr-er-detail");
-      var namesEl = document.getElementById("boa-mgr-er-names");
-      var noteEl  = document.getElementById("boa-mgr-er-note");
-      var errEl   = document.getElementById("boa-mgr-er-err");
-      var saveBtn = document.getElementById("boa-mgr-er-save");
-      var cancelBtn = document.getElementById("boa-mgr-er-cancel");
       function close(result) { modal.remove(); resolve(result); }
+      modal.addEventListener("click", function (e) { if (e.target === modal) close(null); });
+
+      var doneBtn = document.getElementById("boa-mgr-er-done");
+      if (doneBtn) { doneBtn.onclick = function () { close(null); }; return; }
+
+      var noBtn     = document.getElementById("boa-mgr-er-no");
+      var yesBtn    = document.getElementById("boa-mgr-er-yes");
+      var detail    = document.getElementById("boa-mgr-er-detail");
+      var noteEl    = document.getElementById("boa-mgr-er-note");
+      var errEl     = document.getElementById("boa-mgr-er-err");
+      var saveBtn   = document.getElementById("boa-mgr-er-save");
+      var cancelBtn = document.getElementById("boa-mgr-er-cancel");
       noBtn.onclick     = function () { close(null); };
       cancelBtn.onclick = function () { close(null); };
-      modal.addEventListener("click", function (e) { if (e.target === modal) close(null); });
       yesBtn.onclick = function () {
         detail.style.display = "block";
         yesBtn.style.display = "none";
         noBtn.style.display  = "none";
-        setTimeout(function () { try { namesEl.focus(); } catch (_e) {} }, 50);
       };
       saveBtn.onclick = function () {
         errEl.textContent = "";
-        var names = (namesEl.value || "").trim();
-        if (names.length < 2) { errEl.textContent = "Add at least one name."; return; }
-        close({ names: names, note: (noteEl.value || "").trim() });
+        var picked = [].slice.call(modal.querySelectorAll(".boa-mgr-er-cb:checked"))
+          .map(function (cb) { return cb.value; });
+        if (!picked.length) { errEl.textContent = "Tick at least one manager."; return; }
+        close({ names: picked.join(", "), note: (noteEl.value || "").trim() });
       };
     });
   }

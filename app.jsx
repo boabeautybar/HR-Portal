@@ -128,7 +128,7 @@ function installDemoMode() {
 const READ_ONLY_GUARDED_METHODS = [
   "saveStaff", "saveMat", "saveManager", "saveSchedule", "saveAttendance", "saveEarlyLeaves",
   "saveOnboarding", "saveOffboarding", "saveLeaveRecords", "saveMgrRequests",
-  "saveTechRequests", "saveManagerPins", "deleteMat", "deleteManager", "deleteSchedule"
+  "saveTechRequests", "saveManagerPins", "saveTrialPeriod", "deleteMat", "deleteManager", "deleteSchedule"
 ];
 function installReadOnlyGuard() {
   const apply = () => {
@@ -155,6 +155,19 @@ function installReadOnlyGuard() {
 // ─── HELPERS ────────────────────────────────────────────────────────────────────
 const TODAY = new Date("2026-04-27");
 function daysDiff(d) { return d ? Math.ceil((new Date(d) - TODAY) / 86400000) : null; }
+// Effective home branch on a given date (YYYY-MM-DD). A branch transfer is
+// stored as flags (transferring/transferTo/transferDate) without rewriting the
+// record's `branch`, so once the transfer date has arrived the stored branch is
+// stale. Mirrors the "settle" rule used on Locations so a borrow/loan logged
+// after a completed transfer attributes hours to the new home, not the old one.
+function effHomeBranch(s, onDate) {
+  if (!s) return "";
+  if (s.transferring && s.transferTo && s.transferDate && onDate) {
+    const td = String(s.transferDate).replace(/\//g, "-");
+    if (td <= onDate) return s.transferTo;
+  }
+  return s.branch || "";
+}
 function fmt(d) { return d ? new Date(d).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : "—"; }
 
 // Compress an image File → JPEG data URL bounded by maxDim & quality.
@@ -1591,6 +1604,100 @@ const KIOSK_DEFAULT_PINS = {
   "Betty": "0017", "Fourways": "0018", "Eastgate": "0019", "Mall of the South": "0020",
   "Mushroom Farm": "0021", "Verdi": "0022", "Ballito": "0023"
 };
+
+// Manager scheduled shift times for a (role, schedule-code, branch, day-of-week).
+// Pure lookup of the store/role hour rules — module-scope so BOTH the Manager
+// Coverage grid and the Attendance sheet (which derives a manager's early-leave
+// deduction from their clock-out vs this end time) use the exact same rules.
+// Returns a "HH:MM - HH:MM" string. Per-day CUSTOM hours (boa_mgr_times_v1)
+// override this where set.
+function shiftTimes(role, code, branch, dow) {
+  const r = (role || "").toUpperCase();
+  const isSM = r === "SM" || r === "SSM";
+  const _b = branch || "";
+
+  // Sandown / Table Bay share the same Mon-Fri split (and
+  // Table Bay extends it to Saturday). SM is a flat 08:00-17:00
+  // every working day.
+  if (_b === "Sandown" || _b === "Table Bay") {
+    if (isSM) return "08:00 - 17:00";
+    if (dow === 0) {                                // Sunday
+      if (code === "WE") return "08:00 - 17:00";
+      if (code === "WL") return "09:00 - 18:00";
+      return "09:00 - 18:00";
+    }
+    if (dow === 6 && _b === "Sandown") {            // Sandown Saturday
+      if (code === "WE") return "08:00 - 17:00";
+      if (code === "WL") return "10:00 - 19:00";
+      return "10:00 - 19:00";
+    }
+    // Mon-Fri (and Mon-Sat for Table Bay)
+    if (code === "WE") return "08:00 - 17:00";
+    if (code === "WM") return "09:00 - 18:00";
+    if (code === "WL") return "11:00 - 20:00";
+    return "11:00 - 20:00";
+  }
+
+  // Riverlands — Mon-Fri split, Sat/Sun single shift.
+  if (_b === "Riverlands") {
+    if (isSM) return "08:00 - 17:00";               // SM/SSM always 08:00-17:00, every day
+    if (dow === 6) return "09:00 - 18:00";          // Sat single AM
+    if (dow === 0) return "08:30 - 17:00";          // Sun single AM (08:30 open)
+    if (code === "WE") return "09:00 - 18:00";      // AM opener
+    if (code === "WB") return "08:00 - 17:00";      // 4+ bonus opener
+    if (code === "WL") return "10:00 - 19:00";
+    return "10:00 - 19:00";
+  }
+
+  // Ballito / Mall of the South — SM-only WE opener, AM closers.
+  if (_b === "Ballito" || _b === "Mall of the South") {
+    if (isSM) return "08:00 - 17:00";
+    if (dow === 0) return "08:00 - 17:00";          // Sunday single WE
+    if (code === "WE") return "08:00 - 17:00";
+    if (code === "WM") return "09:00 - 18:00";
+    if (code === "WL") return "10:00 - 19:00";
+    return "10:00 - 19:00";
+  }
+
+  // Fourways — store hours differ; SM/SSM always open (08-17),
+  // AMs/techs carry the late close.
+  if (_b === "Fourways") {
+    if (isSM) return "08:00 - 17:00";   // SM/SSM always open, never close
+    if (dow === 0) {                                // Sunday (store 09-19)
+      if (code === "WE") return "08:00 - 17:00";
+      if (code === "WL") return "10:00 - 19:00";
+      return "10:00 - 19:00";
+    }
+    if (code === "WM") return "10:00 - 19:00";
+    if (code === "WL") return "11:00 - 20:00";
+    return "11:00 - 20:00";
+  }
+
+  // Generic stores — generic SM 08-17 / AM 09:00-18:30 hours.
+  if (isSM) {
+    if (dow === 0 || dow === 6) return "08:00 - 17:00";
+    if (code === "WL") return "08:30 - 17:30";
+    if (code === "WE") return "07:30 - 16:30";
+    if (code === "WM") return "08:00 - 13:00";
+    return "08:00 - 17:00";
+  }
+  if (dow === 6) return "09:00 - 18:00";        // Saturday AM
+  if (dow === 0) return "08:30 - 17:00";        // Sunday AM
+  if (code === "WL") return "10:00 - 19:00";
+  if (code === "WE") return "08:30 - 18:00";
+  if (code === "WM") return "09:00 - 13:00";
+  if (code === "WB") return "08:00 - 19:00";
+  if (code === "E")  return "09:00 - 18:30";
+  return "09:00 - 18:30";
+}
+
+// Parse a "HH:MM - HH:MM" range into {start,end} minutes-from-midnight, or null.
+function parseShiftRange(s) {
+  if (!s || typeof s !== "string") return null;
+  const m = s.match(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  return { start: (+m[1]) * 60 + (+m[2]), end: (+m[3]) * 60 + (+m[4]) };
+}
 
 // ── One-shot JHB + Durban starter-data import ────────────────────────────
 // Populated from the operations team's "BOA Current Staff- 2026" sheet.
@@ -6803,6 +6910,22 @@ function AppGate() {
             u.hideTabs = [...ht, "dashMgrAbsences"];
           }
         });
+        // V3b migration: introduces the Abscond / Absence Warnings widget.
+        // HR-sensitive (possible abscondment → disciplinary), so hidden by
+        // default for everyone except the owner; admins grant specific people
+        // in Settings → Users → Edit (Home/Dashboard › Abscond / Absence
+        // Warnings).
+        Object.keys(dynamic).forEach(pin => {
+          const u = dynamic[pin];
+          if (u._dashMigratedAbscond) return;
+          u._dashMigratedAbscond = true;
+          dashMigrated = true;
+          if (u.isOwner) return;
+          const ht = Array.isArray(u.hideTabs) ? u.hideTabs : [];
+          if (!ht.includes("dashAbscond")) {
+            u.hideTabs = [...ht, "dashAbscond"];
+          }
+        });
         // V3 migration: Rochelle (3030) & Farida (4040) help run the
         // nail-tech trials, so allow-list the Trial Period tab back in for
         // them (Rochelle keeps the rest of People hidden). Runs once each.
@@ -6932,19 +7055,27 @@ const SETTINGS_TABS = [
   { t: "dashSecurityAlerts", l: "Security Alerts", cat: "Home/Dashboard", icon: "🚨" },
   { t: "dashHrActions", l: "HR Actions & Tasks", cat: "Home/Dashboard", icon: "📝" },
   { t: "dashMgrAbsences", l: "Manager Absences (Action required)", cat: "Home/Dashboard", icon: "📌" },
+  { t: "dashCalledInSick", l: "Called in Sick / Absent (today & tomorrow)", cat: "Home/Dashboard", icon: "🤒" },
+  { t: "dashAbscond", l: "Abscond / Absence Warnings", cat: "Home/Dashboard", icon: "🚨" },
   { t: "staff", l: "Staff List", cat: "People", icon: "👥" },
   { t: "onboard", l: "Onboarding", cat: "People", icon: "🌱" },
   { t: "offboard", l: "Off-boarding", cat: "People", icon: "👋" },
   { t: "recruitment", l: "Recruitment", cat: "People", icon: "🎯" },
+  { t: "trialPeriod", l: "Trial Period & Induction", cat: "People", icon: "🧪" },
   { t: "maternity", l: "Maternity", cat: "People", icon: "🤱" },
   { t: "smTrial", l: "SM Trials", cat: "People", icon: "⭐" },
   { t: "unpaidLegal", l: "Unpaid Leave (Legal)", cat: "People", icon: "⏸️" },
   { t: "compliance", l: "Compliance", cat: "People", icon: "📋" },
+  { t: "incidents", l: "Incident Reports", cat: "People", icon: "🛡️" },
   { t: "scheduling", l: "Scheduling", cat: "Operations", icon: "📅" },
   { t: "locations", l: "Locations", cat: "Operations", icon: "📍" },
   { t: "checkins", l: "Nail Tech Check-ins", cat: "Operations", icon: "📲" },
   { t: "mgrclockins", l: "Manager Check-ins", cat: "Operations", icon: "🕐" },
   { t: "leave", l: "Leave Planner", cat: "Operations", icon: "🌴" },
+  { t: "leaveRequests", l: "Leave Requests", cat: "Operations", icon: "📨" },
+  { t: "calledInSick", l: "Called in Sick", cat: "Operations", icon: "🤒" },
+  { t: "extraDayRequests", l: "Extra-Day Requests", cat: "Operations", icon: "💰" },
+  { t: "freshaTodo", l: "Fresha To-Do", cat: "Operations", icon: "💇‍♀️" },
   { t: "storeOpenings", l: "Store Openings", cat: "Operations", icon: "🔓" },
   { t: "movements", l: "Today's Movements", cat: "Operations", icon: "🔀" },
   { t: "dailyTasks", l: "Daily Tasks", cat: "Operations", icon: "📋" },
@@ -7014,6 +7145,18 @@ function permsToUser(base, perms, stores) {
 function isRomRole(role) {
   const r = (role || "").toLowerCase().trim();
   return r === "regional ops manager" || r === "regional operations manager" || r === "rom";
+}
+
+// Who may see confidential staff incident reports: the Owner, HR, and senior
+// ops (National Ops + Regional Ops). Store managers use the kiosk, never the
+// portal, so they're already excluded — this is belt-and-braces for the portal.
+function canSeeIncidents(user) {
+  if (!user) return false;
+  if (user.isOwner) return true;
+  const r = (user.role || "").toLowerCase();
+  return r === "master admin" ||
+         r.includes("hr") || r.includes("human res") ||
+         r.includes("national") || isRomRole(user.role);
 }
 
 function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFreshaCfgSave, overtimeCfg, onOvertimeCfgSave }) {
@@ -8193,6 +8336,1107 @@ function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
   );
 }
 
+// ─── STAFF INCIDENT REPORTS ─────────────────────────────────────────────────
+// Confidential reports filed by staff from their own phone via /report.html
+// (reached by the printed QR in the staff room). Only the Owner / HR / senior
+// ops see this tab — store managers use the kiosk, never the portal.
+const INCIDENT_CAT = {
+  Safety:       { label: "Safety / injury",        emoji: "⚠️",  color: "#b45309", bg: "#fef3c7" },
+  Harassment:   { label: "Harassment / bullying",  emoji: "🚫",  color: "#9d174d", bg: "#fce7f3" },
+  Management:   { label: "Management conduct",      emoji: "👔",  color: "#6b21a8", bg: "#ede9fe" },
+  StaffConduct: { label: "Staff member's conduct", emoji: "🙍",  color: "#9a3412", bg: "#ffedd5" },
+  Customer:     { label: "Customer / client",      emoji: "🧍",  color: "#1d4ed8", bg: "#dbeafe" },
+  Theft:        { label: "Theft / money / till",   emoji: "💰",  color: "#92400e", bg: "#fef3c7" },
+  Stock:        { label: "Stock / equipment / damage", emoji: "📦", color: "#374151", bg: "#f3f4f6" },
+  Hygiene:      { label: "Hygiene",                emoji: "🧼",  color: "#0e7490", bg: "#cffafe" },
+  Other:        { label: "Other",                  emoji: "📋",  color: "#374151", bg: "#f3f4f6" }
+};
+const INCIDENT_STATUS = {
+  new:       { label: "New",       color: "#b91c1c", bg: "#fee2e2" },
+  reviewing: { label: "Reviewing", color: "#b45309", bg: "#fef3c7" },
+  resolved:  { label: "Resolved",  color: "#15803d", bg: "#dcfce7" }
+};
+function fmtIncidentTime(iso) {
+  if (!iso) return "";
+  try { return new Date(iso).toLocaleString("en-ZA", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); }
+  catch (_e) { return String(iso); }
+}
+function fmtIncidentDate(d) {
+  if (!d) return "—";
+  try { return new Date(d + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }); }
+  catch (_e) { return String(d); }
+}
+// Day-of-week for a YYYY-MM-DD date, plus whether it's a high-demand day
+// (Thu/Fri/Sat/Sun) when extra cover is almost always needed.
+function dowInfo(d) {
+  try {
+    const dt = new Date(d + "T00:00:00");
+    const idx = dt.getDay(); // 0=Sun … 6=Sat
+    const name = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][idx];
+    return { idx, name, busy: idx === 0 || idx >= 4 }; // Sun, Thu, Fri, Sat
+  } catch (_e) { return { idx: -1, name: "", busy: false }; }
+}
+
+// Renders the printable QR pointing at the live /report.html on this origin.
+function IncidentQR({ url, size }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.innerHTML = "";
+    if (window.QRCode) {
+      try { new window.QRCode(el, { text: url, width: size || 200, height: size || 200, correctLevel: window.QRCode.CorrectLevel.M }); }
+      catch (_e) { el.textContent = url; }
+    } else { el.textContent = url; }
+  }, [url, size]);
+  return <div ref={ref} />;
+}
+
+function IncidentReportsTab({ reports, setReports, currentUser }) {
+  const [statusFilter, setStatusFilter] = useState("open");   // open | all | new | reviewing | resolved
+  const [storeFilter, setStoreFilter] = useState("");
+  const [openId, setOpenId] = useState(null);
+  const [noteDraft, setNoteDraft] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [photoZoom, setPhotoZoom] = useState(null);
+  const [showQR, setShowQR] = useState(false);            // QR is tucked away by default
+  const [resolvingId, setResolvingId] = useState(null);   // report awaiting a resolution note
+  const [resolveText, setResolveText] = useState("");
+
+  // Where the QR points: the "My BOA" staff site. window.BOA_STAFF_URL is the
+  // address of the dedicated My BOA deploy (its root serves the hub). If unset,
+  // fall back to this origin's /myboa.html (legacy single-site layout).
+  const reportUrl = (() => {
+    const custom = (typeof window !== "undefined" && (window.BOA_STAFF_URL || window.BOA_REPORT_URL) || "").trim();
+    if (custom) return custom.replace(/\/+$/, "");
+    return (typeof window !== "undefined" ? window.location.origin : "") + "/myboa.html";
+  })();
+  const stores = Array.from(new Set(reports.map(r => r.store).filter(Boolean))).sort();
+
+  const patchLocal = (id, patch) => setReports(reports.map(r => r.id === id ? { ...r, ...patch } : r));
+
+  const onOpen = async (r) => {
+    const next = openId === r.id ? null : r.id;
+    setOpenId(next);
+    if (next && !r.reviewed) {
+      try { await window.BOA_DB.markIncidentReviewed(r.id); patchLocal(r.id, { reviewed: true }); } catch (_e) {}
+    }
+  };
+  const changeStatus = async (r, status) => {
+    // Closing a report requires a written resolution — open the note box first.
+    if (status === "resolved") {
+      setResolvingId(r.id);
+      setResolveText(r.resolution || "");
+      return;
+    }
+    setBusy(true);
+    try { await window.BOA_DB.setIncidentStatus(r.id, status); patchLocal(r.id, { status, reviewed: true }); }
+    catch (e) { alert("Could not update status: " + (e.message || e)); }
+    setBusy(false);
+  };
+  const doResolve = async (r) => {
+    const text = (resolveText || "").trim();
+    if (!text) return;
+    setBusy(true);
+    try {
+      await window.BOA_DB.setIncidentStatus(r.id, "resolved", text, currentUser.name || currentUser.pin || "");
+      const note = { at: new Date().toISOString(), by: currentUser.name || "", note: "Resolved: " + text };
+      patchLocal(r.id, {
+        status: "resolved", reviewed: true,
+        resolution: text, resolved_at: new Date().toISOString(), resolved_by: currentUser.name || "",
+        internal_notes: [...(Array.isArray(r.internal_notes) ? r.internal_notes : []), note]
+      });
+      setResolvingId(null); setResolveText("");
+    } catch (e) { alert("Could not resolve: " + (e.message || e)); }
+    setBusy(false);
+  };
+  const addNote = async (r) => {
+    const text = (noteDraft[r.id] || "").trim();
+    if (!text) return;
+    setBusy(true);
+    try {
+      await window.BOA_DB.addIncidentNote(r.id, text, currentUser.name || currentUser.pin || "");
+      const note = { at: new Date().toISOString(), by: currentUser.name || "", note: text };
+      patchLocal(r.id, { internal_notes: [...(Array.isArray(r.internal_notes) ? r.internal_notes : []), note] });
+      setNoteDraft({ ...noteDraft, [r.id]: "" });
+    } catch (e) { alert("Could not save note: " + (e.message || e)); }
+    setBusy(false);
+  };
+
+  const filtered = reports.filter(r => {
+    if (storeFilter && r.store !== storeFilter) return false;
+    if (statusFilter === "open") return r.status !== "resolved";
+    if (statusFilter === "all") return true;
+    return r.status === statusFilter;
+  });
+  const urgentOpen = reports.filter(r => r.urgent && r.status !== "resolved").length;
+
+  const card = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 18px", marginBottom: 16 };
+  const chip = (c) => ({ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: c.color, background: c.bg });
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 4 }}>
+        <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#831843", margin: 0 }}>🛡️ Incident Reports</h2>
+        {urgentOpen > 0 && <span style={chip(INCIDENT_STATUS.new)}>🚨 {urgentOpen} urgent open</span>}
+      </div>
+      <p style={{ color: "#9d6a82", fontSize: 13.5, marginTop: 4, maxWidth: 680 }}>
+        Confidential reports filed by staff from their own phones. Store managers cannot see these.
+        Reports are anonymous unless the person chose to add their name.
+      </p>
+
+      {/* QR — tucked away; HR clicks to reveal it only when they need to print. */}
+      <div style={{ marginBottom: 16 }}>
+        <button onClick={() => setShowQR(v => !v)}
+          style={{ background: "#fff", color: "#831843", border: "1.5px solid #f9a8d4", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>
+          {showQR ? "▾ Hide My BOA QR code" : "▸ My BOA QR code (print & hang in store)"}
+        </button>
+        {showQR && (
+          <div style={{ ...card, background: "#fdf2f8", borderColor: "#f9a8d4", marginTop: 10, marginBottom: 0 }}>
+            <div style={{ display: "flex", gap: 18, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ background: "#fff", padding: 12, borderRadius: 12, border: "1px solid #f3d4e0" }}>
+                <IncidentQR url={reportUrl} size={150} />
+              </div>
+              <div style={{ flex: "1 1 260px", minWidth: 240 }}>
+                <div style={{ fontWeight: 800, color: "#831843", fontSize: 15, marginBottom: 4 }}>My BOA QR code</div>
+                <div style={{ fontSize: 13, color: "#6b3a4e", marginBottom: 8 }}>
+                  Print this once and put it in each store (staff room). Staff scan it on their own phone to open
+                  <strong> My BOA</strong> — where they can view their schedule and report an incident.
+                </div>
+                <div style={{ fontSize: 12, color: "#9d6a82", wordBreak: "break-all", marginBottom: 10 }}>{reportUrl}</div>
+                <button onClick={() => window.print()}
+                  style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 9, padding: "9px 16px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>
+                  🖨️ Print QR
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Filters */}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+          style={{ fontFamily: "inherit", fontSize: 13, padding: "8px 10px", borderRadius: 9, border: "1.5px solid #e7c6d4" }}>
+          <option value="open">Open (not resolved)</option>
+          <option value="new">New only</option>
+          <option value="reviewing">Reviewing</option>
+          <option value="resolved">Resolved</option>
+          <option value="all">All</option>
+        </select>
+        <select value={storeFilter} onChange={e => setStoreFilter(e.target.value)}
+          style={{ fontFamily: "inherit", fontSize: 13, padding: "8px 10px", borderRadius: 9, border: "1.5px solid #e7c6d4" }}>
+          <option value="">All stores</option>
+          {stores.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <span style={{ alignSelf: "center", fontSize: 12.5, color: "#9d6a82" }}>{filtered.length} report{filtered.length === 1 ? "" : "s"}</span>
+      </div>
+
+      {filtered.length === 0 && (
+        <div style={{ ...card, textAlign: "center", color: "#9d6a82" }}>No reports here yet.</div>
+      )}
+
+      {filtered.map(r => {
+        const cat = INCIDENT_CAT[r.category] || INCIDENT_CAT.Other;
+        const st = INCIDENT_STATUS[r.status] || INCIDENT_STATUS.new;
+        const open = openId === r.id;
+        const notes = Array.isArray(r.internal_notes) ? r.internal_notes : [];
+        return (
+          <div key={r.id} style={{ ...card, marginBottom: 12, borderColor: r.urgent && r.status !== "resolved" ? "#fca5a5" : "#f3d4e0", borderWidth: r.urgent && r.status !== "resolved" ? 2 : 1 }}>
+            <div onClick={() => onOpen(r)} style={{ display: "flex", gap: 10, alignItems: "center", cursor: "pointer", flexWrap: "wrap" }}>
+              {r.urgent && <span style={chip(INCIDENT_STATUS.new)}>🚨 URGENT</span>}
+              {!r.reviewed && <span style={{ width: 9, height: 9, borderRadius: 999, background: "#BE185D", display: "inline-block" }} title="Not yet opened" />}
+              <span style={chip(cat)}>{cat.emoji} {cat.label}</span>
+              <strong style={{ color: "#111827", fontSize: 14 }}>{r.store || "Unknown store"}</strong>
+              <span style={{ color: "#9ca3af", fontSize: 12 }}>· incident {fmtIncidentDate(r.incident_date)}</span>
+              <span style={{ marginLeft: "auto", ...chip(st) }}>{st.label}</span>
+              <span style={{ color: "#cbb1bd", fontSize: 18, lineHeight: 1 }}>{open ? "▾" : "▸"}</span>
+            </div>
+
+            {open && (
+              <div style={{ marginTop: 14, borderTop: "1px dashed #f3d4e0", paddingTop: 14 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 16px", fontSize: 13.5, color: "#374151", marginBottom: 12 }}>
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>Ref</span><span>{r.ref_code}</span>
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>When</span><span>{fmtIncidentDate(r.incident_date)}{r.time_frame ? " · " + r.time_frame : ""}</span>
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>Filed</span><span>{fmtIncidentTime(r.created_at)}</span>
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>People involved</span><span style={{ whiteSpace: "pre-wrap" }}>{r.people_involved || "—"}</span>
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>What happened</span><span style={{ whiteSpace: "pre-wrap" }}>{r.description}</span>
+                  {r.witnesses && (<><span style={{ color: "#9d6a82", fontWeight: 700 }}>Witnesses</span><span style={{ whiteSpace: "pre-wrap" }}>{r.witnesses}</span></>)}
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>Reporter</span>
+                  <span>{r.reporter_name
+                    ? <>{r.reporter_name}{r.reporter_contact ? <span style={{ color: "#6b7280" }}> · {r.reporter_contact}</span> : null}</>
+                    : <em style={{ color: "#9ca3af" }}>Anonymous</em>}</span>
+                </div>
+
+                {r.photo_b64 && (
+                  <img src={r.photo_b64} alt="attachment" onClick={() => setPhotoZoom(r.photo_b64)}
+                    style={{ maxWidth: 180, maxHeight: 180, borderRadius: 10, border: "1px solid #f3d4e0", cursor: "zoom-in", marginBottom: 12 }} />
+                )}
+
+                {/* How it was resolved — shown for closed reports so you can track it. */}
+                {r.status === "resolved" && r.resolution && (
+                  <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 11, padding: "11px 13px", marginBottom: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: "#15803d", marginBottom: 4 }}>✅ How this was resolved</div>
+                    <div style={{ fontSize: 13.5, color: "#14532d", whiteSpace: "pre-wrap" }}>{r.resolution}</div>
+                    <div style={{ fontSize: 11, color: "#4d7c5a", marginTop: 5 }}>{r.resolved_by || "HR"}{r.resolved_at ? " · " + fmtIncidentTime(r.resolved_at) : ""}</div>
+                  </div>
+                )}
+
+                {/* Status controls */}
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+                  {["new", "reviewing", "resolved"].map(s => {
+                    const sc = INCIDENT_STATUS[s];
+                    const on = r.status === s;
+                    return (
+                      <button key={s} disabled={busy || on} onClick={() => changeStatus(r, s)}
+                        style={{ border: "1.5px solid " + sc.color, background: on ? sc.color : "#fff", color: on ? "#fff" : sc.color, borderRadius: 9, padding: "7px 14px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: on ? "default" : "pointer", opacity: busy && !on ? 0.6 : 1 }}>
+                        {on ? "● " : ""}{s === "resolved" && !on ? "Resolve / close" : sc.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Resolve box — a written outcome is required before closing. */}
+                {resolvingId === r.id && (
+                  <div style={{ background: "#f0fdf4", border: "1.5px solid #86efac", borderRadius: 11, padding: "12px 13px", marginBottom: 14 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 800, color: "#15803d", marginBottom: 6 }}>Before closing, write how this was resolved (required)</div>
+                    <textarea value={resolveText} onChange={e => setResolveText(e.target.value)} autoFocus
+                      placeholder="What was done, what was the outcome, any actions taken…"
+                      style={{ width: "100%", boxSizing: "border-box", minHeight: 80, fontFamily: "inherit", fontSize: 13.5, padding: "10px 12px", borderRadius: 9, border: "1.5px solid #86efac", resize: "vertical" }} />
+                    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                      <button disabled={busy || !resolveText.trim()} onClick={() => doResolve(r)}
+                        style={{ background: "#15803d", color: "#fff", border: "none", borderRadius: 9, padding: "8px 16px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: resolveText.trim() ? "pointer" : "default", opacity: resolveText.trim() ? 1 : 0.5 }}>Confirm & close</button>
+                      <button onClick={() => { setResolvingId(null); setResolveText(""); }}
+                        style={{ background: "#f3f4f6", color: "#6b7280", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Internal notes */}
+                <div style={{ fontWeight: 700, color: "#831843", fontSize: 12.5, marginBottom: 6 }}>HR notes (internal — staff never see these)</div>
+                {notes.map((n, i) => (
+                  <div key={i} style={{ background: "#faf5f7", borderRadius: 9, padding: "8px 11px", fontSize: 13, marginBottom: 6 }}>
+                    <span style={{ whiteSpace: "pre-wrap" }}>{n.note}</span>
+                    <div style={{ fontSize: 11, color: "#9d6a82", marginTop: 3 }}>{n.by || "HR"} · {fmtIncidentTime(n.at)}</div>
+                  </div>
+                ))}
+                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                  <input value={noteDraft[r.id] || ""} onChange={e => setNoteDraft({ ...noteDraft, [r.id]: e.target.value })}
+                    placeholder="Add an internal note…" onKeyDown={e => { if (e.key === "Enter") addNote(r); }}
+                    style={{ flex: 1, fontFamily: "inherit", fontSize: 13, padding: "8px 11px", borderRadius: 9, border: "1.5px solid #e7c6d4" }} />
+                  <button disabled={busy || !(noteDraft[r.id] || "").trim()} onClick={() => addNote(r)}
+                    style={{ background: "#831843", color: "#fff", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer", opacity: (noteDraft[r.id] || "").trim() ? 1 : 0.5 }}>Add</button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {photoZoom && (
+        <div onClick={() => setPhotoZoom(null)}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.8)", zIndex: 100000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, cursor: "zoom-out" }}>
+          <img src={photoZoom} alt="attachment" style={{ maxWidth: "95%", maxHeight: "95%", borderRadius: 10 }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Pop-up that greets HR when there are unopened reports. Louder (red) if any
+// unopened report is urgent. Alerts the people the owner named — HR, Regional
+// and National managers — via canSeeIncidents gating on the App side.
+function IncidentPopup({ reports, onView, onDismiss }) {
+  const unread = reports.filter(r => !r.reviewed);
+  if (unread.length === 0) return null;
+  const urgent = unread.filter(r => r.urgent);
+  const isUrgent = urgent.length > 0;
+  const accent = isUrgent ? "#dc2626" : "#BE185D";
+  return (
+    <div onClick={onDismiss} style={{ position: "fixed", inset: 0, background: "rgba(76,5,25,0.5)", backdropFilter: "blur(2px)", zIndex: 100001, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 18, maxWidth: 420, width: "100%", overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,.35)", border: "2px solid " + accent, ...(isUrgent ? { animation: "urgentPulse 1.6s infinite" } : {}) }}>
+        <div style={{ background: accent, color: "#fff", padding: "16px 20px", fontFamily: "'Outfit',sans-serif", fontWeight: 800, fontSize: 18 }}>
+          {isUrgent ? "🚨 Urgent incident report" + (urgent.length > 1 ? "s" : "") : "🛡️ New incident report" + (unread.length > 1 ? "s" : "")}
+        </div>
+        <div style={{ padding: "18px 20px" }}>
+          <p style={{ margin: "0 0 12px", color: "#374151", fontSize: 14 }}>
+            {isUrgent
+              ? <><strong>{urgent.length}</strong> urgent report{urgent.length > 1 ? "s" : ""} need{urgent.length === 1 ? "s" : ""} attention now.{unread.length > urgent.length ? " (" + unread.length + " unread in total.)" : ""}</>
+              : <><strong>{unread.length}</strong> new report{unread.length > 1 ? "s" : ""} from staff {unread.length > 1 ? "are" : "is"} waiting to be reviewed.</>}
+          </p>
+          {unread.slice(0, 3).map(r => {
+            const cat = INCIDENT_CAT[r.category] || INCIDENT_CAT.Other;
+            return (
+              <div key={r.id} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, padding: "6px 0", borderTop: "1px solid #f3f4f6" }}>
+                {r.urgent && <span style={{ color: "#dc2626", fontWeight: 800 }}>🚨</span>}
+                <span>{cat.emoji}</span>
+                <strong style={{ color: "#111827" }}>{r.store || "Unknown"}</strong>
+                <span style={{ color: "#9ca3af", marginLeft: "auto" }}>{fmtIncidentTime(r.created_at)}</span>
+              </div>
+            );
+          })}
+          {unread.length > 3 && <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 6 }}>+{unread.length - 3} more</div>}
+          <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+            <button onClick={onView} style={{ flex: 1, background: accent, color: "#fff", border: "none", borderRadius: 10, padding: "12px", fontWeight: 800, fontSize: 14, fontFamily: "inherit", cursor: "pointer" }}>View reports</button>
+            <button onClick={onDismiss} style={{ background: "#f3f4f6", color: "#6b7280", border: "none", borderRadius: 10, padding: "12px 16px", fontWeight: 700, fontSize: 14, fontFamily: "inherit", cursor: "pointer" }}>Later</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── STAFF LEAVE REQUESTS ───────────────────────────────────────────────────
+// Submitted from My BOA (leave.html); reviewed here. Same key-gated RPCs as
+// incidents (sql/leave_requests.sql). Visible to Owner / HR / senior ops.
+const LEAVE_TYPE = {
+  Annual: "Annual leave", Sick: "Sick", Family: "Family responsibility",
+  Unpaid: "Unpaid leave", Absent: "Absent (other reason)", Other: "Other"
+};
+// Render free-text (e.g. a request reason) with any http(s) links — sick notes
+// / absence proof uploaded from My BOA — turned into clickable anchors.
+function linkifyText(text) {
+  return String(text == null ? "" : text).split(/(https?:\/\/[^\s]+)/g).map((p, i) =>
+    /^https?:\/\//.test(p)
+      ? <a key={i} href={p} target="_blank" rel="noopener noreferrer" style={{ color: "#BE185D", fontWeight: 600, wordBreak: "break-all" }}>{p}</a>
+      : p
+  );
+}
+const LEAVE_STATUS = {
+  pending:  { label: "Pending",  color: "#b45309", bg: "#fef3c7" },
+  approved: { label: "Approved", color: "#15803d", bg: "#dcfce7" },
+  declined: { label: "Declined", color: "#b91c1c", bg: "#fee2e2" }
+};
+function leaveDays(s, e) {
+  if (!s || !e) return 0;
+  try { return Math.round((new Date(e + "T00:00:00") - new Date(s + "T00:00:00")) / 86400000) + 1; }
+  catch (_e) { return 0; }
+}
+
+// People who used the My BOA "Call in sick / Mark absent" tile — either sick
+// (leave_type "Sick") or absent for another reason ("Absent") — whose
+// away-period overlaps today or tomorrow.
+function calledInSickWindow(requests) {
+  const ymd = (x) => x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0");
+  const today = ymd(new Date());
+  const t2 = new Date(); t2.setDate(t2.getDate() + 1);
+  const tomorrow = ymd(t2);
+  const list = (requests || []).filter(r =>
+    r && (r.leave_type === "Sick" || r.leave_type === "Absent") && r.start_date && r.end_date &&
+    r.start_date <= tomorrow && r.end_date >= today);
+  return { today, tomorrow, list };
+}
+
+// Annual / emergency leave (Leave Planner records) for NAIL TECHS that overlaps
+// the current 25th→24th payroll cycle and hasn't ended yet — she needs blocking
+// on Fresha for those days so no client bookings land. Returned in the same
+// shape as the sick/absent block rows (key / name / store / dates / leave_type).
+function freshaLeaveBlocks(leaveRecs, enriched) {
+  const cycleYm = (window.BOA_DB && window.BOA_DB.currentSchedYm) ? window.BOA_DB.currentSchedYm() : null;
+  if (!cycleYm) return [];
+  const pad = (n) => String(n).padStart(2, "0");
+  const cp = cycleYm.split("-").map(Number), cy = cp[0], cm = cp[1];
+  let sy = cy, sm = cm - 1; if (sm < 1) { sm = 12; sy -= 1; }
+  const cycleStart = sy + "-" + pad(sm) + "-25";   // 25th of the previous month
+  const cycleEnd = cy + "-" + pad(cm) + "-24";     // 24th of the cycle's end month
+  const now = new Date();
+  const ymdNow = now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate());
+  const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
+  const byEc = {};
+  (enriched || []).forEach(s => { if (s && s.ec) byEc[String(s.ec).toUpperCase().trim()] = s; });
+  // Content-based key (tech + date range) so the planner holding duplicate
+  // entries collapses to a single block row, and the blocked tick stays put.
+  const out = [], seen = new Set();
+  (leaveRecs || []).filter(lv =>
+    lv && lv.ec && lv.startDate && lv.endDate && isTech(lv.ec)
+    && (lv.emergency || /annual/i.test(String(lv.type || "")))
+    && lv.startDate <= cycleEnd && lv.endDate >= cycleStart
+    && lv.endDate >= ymdNow
+  ).forEach(lv => {
+    const ecU = String(lv.ec).toUpperCase().trim();
+    const s = byEc[ecU];
+    if (!s) return;   // can't tie this code to a current nail tech — skip stale/unknown records
+    if (s.offboarded && s.leftDate && s.leftDate <= ymdNow) return;   // already left — handled by the removal notice, no bookings to block
+    const key = "lv-" + ecU + "-" + lv.startDate + "-" + lv.endDate;
+    if (seen.has(key)) { if (lv.emergency) { const e = out.find(o => o.key === key); if (e) e.emergency = true; } return; }
+    seen.add(key);
+    out.push({ key, ec: lv.ec, name: s.name, store: s.branch || "", start_date: lv.startDate, end_date: lv.endDate, leave_type: "Annual", emergency: !!lv.emergency });
+  });
+  return out;
+}
+
+// Off-boarded NAIL TECHS who need removing from Fresha (so no future bookings
+// land after they leave). Shown from when they're put on notice until ~31 days
+// after their last day (the same window leavers stay visible elsewhere). Keyed
+// "off-<ec>" so the "removed" tick rides on the shared freshaBlocks store.
+function freshaOffboardRemovals(enriched) {
+  const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
+  const out = [], seen = new Set();
+  (enriched || []).forEach(s => {
+    if (!s || !s.ec || !isTech(s.ec) || !s.offboarded || s.offHidden) return;
+    const ecU = String(s.ec).toUpperCase().trim();
+    if (seen.has(ecU)) return;
+    seen.add(ecU);
+    out.push({ key: "off-" + ecU, ec: s.ec, name: s.name || s.ec, store: s.branch || "", leftDate: s.leftDate || null });
+  });
+  return out;
+}
+
+// Collapse duplicate block rows (same tech + same dates + type) — the Leave
+// Planner can hold repeats and sick/leave sources can overlap. Keeps the first,
+// but prefers an already-blocked duplicate so its ✓ stays visible.
+function dedupeBlockTodos(list, isBlocked) {
+  const out = [], idx = {};
+  (list || []).forEach(r => {
+    const sig = String(r.ec || r.name).toUpperCase().trim() + "|" + r.start_date + "|" + r.end_date + "|" + r.leave_type;
+    if (idx[sig] === undefined) { idx[sig] = out.length; out.push(r); }
+    else if (isBlocked && isBlocked(r.key) && !isBlocked(out[idx[sig]].key)) { out[idx[sig]] = r; }
+  });
+  return out;
+}
+
+// Operations board: who's called in sick / absent for today & tomorrow.
+function CalledInSickTab({ requests, setRequests, currentUser }) {
+  const card = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 18px", marginBottom: 12 };
+  const chip = (c) => ({ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: c.color, background: c.bg });
+  const { today, tomorrow, list } = calledInSickWindow(requests);
+  const isOwner = !!(currentUser && currentUser.isOwner);
+  const [busy, setBusy] = useState(false);
+  // Owner-only delete — for clearing test entries or a mistaken self-report.
+  const removeReq = async (r) => {
+    if (busy) return;
+    if (!window.confirm("Delete " + (r.name || "this person") + "'s " + (r.leave_type === "Sick" ? "sick" : "absence") + " mark (Ref " + (r.ref_code || "—") + ")?\n\nThis permanently removes it.")) return;
+    setBusy(true);
+    try {
+      await window.BOA_DB.deleteLeaveRequest(r.id);
+      if (setRequests) setRequests(prev => (prev || []).filter(x => x.id !== r.id));
+    } catch (e) { alert("Could not delete: " + ((e && e.message) || e)); }
+    setBusy(false);
+  };
+
+  const sect = (label, ymd) => {
+    const rows = list.filter(r => r.start_date <= ymd && r.end_date >= ymd)
+      .sort((a, b) => (a.store || "").localeCompare(b.store || "") || (a.name || "").localeCompare(b.name || ""));
+    return (
+      <div style={{ marginBottom: 22 }}>
+        <h3 style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 16, color: "#831843", margin: "0 0 10px" }}>
+          {label} · {fmtIncidentDate(ymd)}
+          <span style={{ color: "#9d6a82", fontWeight: 600 }}> · {rows.length} {rows.length === 1 ? "person" : "people"}</span>
+        </h3>
+        {rows.length === 0 && <div style={{ ...card, textAlign: "center", color: "#9d6a82" }}>Nobody’s called in.</div>}
+        {rows.map(r => {
+          const st = LEAVE_STATUS[r.status] || LEAVE_STATUS.pending;
+          // Nail techs take Fresha bookings (manager ECs end in "M"); suggest
+          // blocking them so no clients book a tech who's off.
+          const isTech = !/M$/i.test((r.ec || "").trim());
+          const firstName = (r.name || "").trim().split(/\s+/)[0] || "this tech";
+          const awayLbl = fmtIncidentDate(r.start_date) + (r.end_date !== r.start_date ? "–" + fmtIncidentDate(r.end_date) : "");
+          return (
+            <div key={r.id} style={card}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                {!r.reviewed && <span style={{ width: 9, height: 9, borderRadius: 999, background: "#BE185D", display: "inline-block" }} title="Not yet opened in Leave Requests" />}
+                <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
+                <span style={chip(r.leave_type === "Sick" ? { color: "#b45309", bg: "#fef3c7" } : { color: "#6b21a8", bg: "#ede9fe" })}>{LEAVE_TYPE[r.leave_type] || r.leave_type}</span>
+                {r.store && <span style={chip({ color: "#075985", bg: "#e0f2fe" })}>{r.store}</span>}
+                {r.ec && <span style={{ color: "#9ca3af", fontSize: 12 }}>{r.ec}</span>}
+                <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(r.start_date)}{r.end_date !== r.start_date ? " → " + fmtIncidentDate(r.end_date) : ""}</span>
+                <span style={{ marginLeft: "auto", ...chip(st) }}>{st.label}</span>
+              </div>
+              {r.reason && <div style={{ marginTop: 8, fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{linkifyText(r.reason)}</div>}
+              <div style={{ marginTop: 6, fontSize: 11, color: "#9d6a82" }}>Ref {r.ref_code} · {fmtIncidentTime(r.created_at)}{r.contact ? " · " + r.contact : ""}</div>
+              {isTech && (
+                <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "flex-start", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "9px 12px" }}>
+                  <span style={{ fontSize: 15, lineHeight: 1.2 }}>💆‍♀️</span>
+                  <div style={{ fontSize: 12.5, color: "#1e3a8a", lineHeight: 1.45 }}>
+                    <strong>Block on Fresha:</strong> set {firstName} as unavailable on Fresha for <strong>{awayLbl}</strong> so no new client bookings land while she's off.
+                  </div>
+                </div>
+              )}
+              {isOwner && (
+                <div style={{ marginTop: 10, textAlign: "right" }}>
+                  <button disabled={busy} onClick={() => removeReq(r)} title="Owner: permanently delete this absence mark"
+                    style={{ border: "1px solid #fecaca", background: "#fff", color: "#b91c1c", borderRadius: 8, padding: "5px 12px", fontWeight: 700, fontSize: 12, fontFamily: "inherit", cursor: busy ? "default" : "pointer" }}>
+                    🗑 Delete mark
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#831843", margin: 0 }}>🤒 Called in Sick</h2>
+      <p style={{ color: "#9d6a82", fontSize: 13.5, margin: "6px 0 18px", maxWidth: 640 }}>
+        Team members who called in sick or marked themselves absent from My BOA for today or tomorrow. Record the reason for their absence in the Manager Check-ins tab or on the Manager Coverage overview.
+      </p>
+      {sect("Today", today)}
+      {sect("Tomorrow", tomorrow)}
+    </div>
+  );
+}
+
+// Regional-manager review of staff "Offer an extra day" requests (My BOA →
+// sql/extra_day_requests.sql). Approve / decline; declining needs a reason.
+function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
+  // Default to "all" so approved / declined requests stay visible after a
+  // decision (pending ones are sorted to the top and flagged below).
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [busy, setBusy] = useState(false);
+  const [declineId, setDeclineId] = useState(null);
+  const [declineText, setDeclineText] = useState("");
+  const card = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 18px", marginBottom: 12 };
+  const chip = (c) => ({ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: c.color, background: c.bg });
+
+  const actor = (currentUser && (currentUser.name || currentUser.email)) || "";
+  const refresh = async () => {
+    if (window.BOA_DB && window.BOA_DB.loadExtraDayRequests) {
+      const fresh = await window.BOA_DB.loadExtraDayRequests();
+      setRequests(Array.isArray(fresh) ? fresh : []);
+    }
+  };
+  // Publish (or un-publish) an approved nail-tech extra day so it shows up
+  // everywhere the day is read:
+  //   • schedule grid  boa_sched_<store>_<END-month ym>  (day-of-month → "E")
+  //     — the My BOA schedule viewer + portal schedule.
+  //   • extras sidecar boa_extras_<store>_<END-month ym> ({day:{ec:{…}}})
+  //     — what the STORE KIOSK reads to show "Extra Day" on check-in, and
+  //     what the attendance sheet reads to show Extra Day once she's checked
+  //     in by a manager that day.
+  const applyExtraDayToSchedule = async (r, publish) => {
+    try {
+      if (!r || !r.work_date || !r.store || !r.ec) return;
+      if (!window.BOA_DB || !window.BOA_DB.loadSchedule || !window.BOA_DB.saveSchedule) return;
+      if (/M$/i.test(String(r.ec).trim())) return;   // managers use a different (mgr) schedule — skip
+      const p = String(r.work_date).split("-"); let y = +p[0], m = +p[1]; const dom = +p[2];
+      if (!y || !m || !dom) return;
+      if (dom >= 25) { m += 1; if (m > 12) { m = 1; y += 1; } }   // 25th→24th cycle, END-month ym
+      const ym = y + "-" + String(m).padStart(2, "0");
+      const dayKey = String(dom);
+      const sched = await window.BOA_DB.loadSchedule(r.store, ym, false);
+      const grid = (sched && sched.grid) || {};
+      const want = String(r.ec).trim().toUpperCase();
+      const ecKey = Object.keys(grid).find(k => String(k).trim().toUpperCase() === want) || String(r.ec).trim();
+      const row = grid[ecKey] || {};
+      const cur = row[dom] != null ? row[dom] : row[String(dom)];
+      if (publish) {
+        row[String(dom)] = "E";
+        grid[ecKey] = row;
+        await window.BOA_DB.saveSchedule(r.store, ym, grid, false);
+        // Mirror into the kiosk/attendance extras sidecar.
+        if (window.BOA_DB.saveExtraDay) {
+          try { await window.BOA_DB.saveExtraDay(r.store, ym, dayKey, String(r.ec).trim(), actor); }
+          catch (e2) { console.error("saveExtraDay:", e2); }
+        }
+      } else {
+        // Only revert a schedule cell we set; always clear our sidecar entry.
+        if (cur === "E") { delete row[dom]; delete row[String(dom)]; grid[ecKey] = row; await window.BOA_DB.saveSchedule(r.store, ym, grid, false); }
+        if (window.BOA_DB.clearExtraDay) {
+          try { await window.BOA_DB.clearExtraDay(r.store, ym, dayKey, String(r.ec).trim()); }
+          catch (e2) { console.error("clearExtraDay:", e2); }
+        }
+      }
+    } catch (e) { console.error("applyExtraDayToSchedule:", e); }
+  };
+  const setStatus = async (r, status, note) => {
+    if (busy) return;
+    if (status === "approved") {
+      const isTech = !/M$/i.test(String(r.ec || "").trim());
+      if (!window.confirm(
+        "Are you sure we need extra cover on " + fmtIncidentDate(r.work_date) + "?\n\n" +
+        "Check the schedule / demand for that day first — only approve if cover is genuinely needed.\n\n" +
+        (isTech
+          ? "Approving will auto-add this extra day to the schedule, and the store kiosk + attendance sheet for that day will read it as an Extra Day."
+          : "Approving records this extra day for the manager.")
+      )) return;
+    }
+    setBusy(true);
+    try {
+      await window.BOA_DB.setExtraDayStatus(r.id, status, note || "", actor);
+      // Approving publishes the extra day onto the schedule (tech sees it
+      // immediately); declining clears it back off if it was published.
+      if (status === "approved") await applyExtraDayToSchedule(r, true);
+      if (status === "declined") await applyExtraDayToSchedule(r, false);
+      await refresh();
+      setDeclineId(null); setDeclineText("");
+    } catch (e) { alert("Could not update: " + (e.message || e)); }
+    setBusy(false);
+  };
+  const removeReq = async (r) => {
+    if (busy) return;
+    if (!window.confirm("Delete this extra-day request from " + (r.name || "this person") + "? This can't be undone.")) return;
+    setBusy(true);
+    try {
+      await window.BOA_DB.deleteExtraDayRequest(r.id);
+      await refresh();
+    } catch (e) { alert("Could not delete: " + (e.message || e)); }
+    setBusy(false);
+  };
+
+  const filtered = (requests || []).filter(r => statusFilter === "all" ? true : r.status === statusFilter)
+    .sort((a, b) => {
+      const ap = a.status === "pending" ? 0 : 1, bp = b.status === "pending" ? 0 : 1;
+      if (ap !== bp) return ap - bp;                 // pending first
+      return (a.work_date || "").localeCompare(b.work_date || "");
+    });
+  const pendingCount = (requests || []).filter(r => r.status === "pending").length;
+  // Split into managers (EC ends in "M") and nail techs, shown as two
+  // distinct colour-coded columns side by side.
+  const isMgrReq = (r) => /M$/i.test(String(r.ec || "").trim());
+  const mgrReqs = filtered.filter(isMgrReq);
+  const techReqs = filtered.filter(r => !isMgrReq(r));
+  const groups = [
+    { key: "mgr",  label: "👑 Managers",  items: mgrReqs,  bg: "#faf5ff", border: "#e9d5ff", headBg: "#7c3aed", headFg: "#fff" },
+    { key: "tech", label: "💅 Nail Techs", items: techReqs, bg: "#fdf2f8", border: "#fbcfe8", headBg: "#BE185D", headFg: "#fff" }
+  ];
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#831843", margin: 0 }}>💰 Extra-Day Requests</h2>
+        {pendingCount > 0 && <span style={chip({ color: "#b45309", bg: "#fef3c7" })}>{pendingCount} pending</span>}
+      </div>
+      <p style={{ color: "#9d6a82", fontSize: 13.5, margin: "6px 0 16px", maxWidth: 640 }}>
+        Team members offering to work an extra day from My BOA. Approve or decline — every extra day needs your approval before it counts.
+      </p>
+      <div style={{ marginBottom: 14 }}>
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+          style={{ fontFamily: "inherit", fontSize: 13, padding: "8px 10px", borderRadius: 9, border: "1.5px solid #e7c6d4" }}>
+          <option value="pending">Pending</option>
+          <option value="approved">Approved</option>
+          <option value="declined">Declined</option>
+          <option value="all">All</option>
+        </select>
+        <span style={{ marginLeft: 10, fontSize: 12.5, color: "#9d6a82" }}>{filtered.length} request{filtered.length === 1 ? "" : "s"}</span>
+      </div>
+
+      {filtered.length === 0 && <div style={{ ...card, textAlign: "center", color: "#9d6a82" }}>No requests here.</div>}
+
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
+      {filtered.length > 0 && groups.map(g => (
+        <div key={g.key} style={{ flex: "1 1 360px", minWidth: 300, background: g.bg, border: "1px solid " + g.border, borderRadius: 14, padding: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", color: g.headFg, background: g.headBg, borderRadius: 9, padding: "8px 12px", marginBottom: 12 }}>{g.label} · {g.items.length}</div>
+          {g.items.length === 0 && <div style={{ textAlign: "center", color: "#9d6a82", fontSize: 12.5, padding: "10px 0 14px" }}>None in this view.</div>}
+          {g.items.map(r => {
+        const st = LEAVE_STATUS[r.status] || LEAVE_STATUS.pending;
+        const isCatch = r.purpose === "catch_up";
+        const dw = dowInfo(r.work_date);
+        return (
+          <div key={r.id} style={card}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              {!r.reviewed && <span style={{ width: 9, height: 9, borderRadius: 999, background: "#BE185D", display: "inline-block" }} title="Not yet reviewed" />}
+              <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
+              <span style={chip(isCatch ? { color: "#9a3412", bg: "#ffedd5" } : { color: "#075985", bg: "#e0f2fe" })}>{isCatch ? "Catch-up" : "Extra"}</span>
+              <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(r.work_date)}</span>
+              {dw.name && <span title={dw.busy ? "High-demand day — extra cover almost always needed" : ""} style={{ fontSize: 11, fontWeight: 800, padding: "2px 8px", borderRadius: 6, color: dw.busy ? "#9a3412" : "#6b7280", background: dw.busy ? "#ffedd5" : "#f3f4f6" }}>{dw.busy ? "🔥 " : ""}{dw.name}</span>}
+              <span style={{ color: "#9ca3af", fontSize: 12 }}>{r.store ? "· " + r.store : ""}{r.ec ? " · " + r.ec : ""}</span>
+              <span style={{ marginLeft: "auto", ...chip(st) }}>{st.label}</span>
+            </div>
+            {r.note && <div style={{ marginTop: 8, fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{linkifyText(r.note)}</div>}
+            <div style={{ marginTop: 6, fontSize: 11, color: "#9d6a82" }}>Ref {r.ref_code} · {fmtIncidentTime(r.created_at)}</div>
+
+            {r.status !== "pending" && r.decided_by && (
+              <div style={{ marginTop: 10, background: r.status === "approved" ? "#f0fdf4" : "#fef2f2", border: "1px solid " + (r.status === "approved" ? "#bbf7d0" : "#fecaca"), borderRadius: 11, padding: "10px 13px" }}>
+                <div style={{ fontSize: 12, fontWeight: 800, color: r.status === "approved" ? "#15803d" : "#b91c1c" }}>{r.status === "approved" ? "✅ Approved" : "✕ Declined"}</div>
+                {r.status === "approved" && !/M$/i.test(String(r.ec || "").trim()) && <div style={{ fontSize: 11.5, color: "#15803d", marginTop: 2 }}>📅 Published to {(r.name || "the tech").split(" ")[0]}'s schedule as an extra day ({fmtIncidentDate(r.work_date)}).</div>}
+                {r.decision_note && <div style={{ fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{r.decision_note}</div>}
+                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>{r.decided_by}{r.decided_at ? " · " + fmtIncidentTime(r.decided_at) : ""}</div>
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+              <button disabled={busy || r.status === "approved"} onClick={() => setStatus(r, "approved")}
+                style={{ border: "1.5px solid #15803d", background: r.status === "approved" ? "#15803d" : "#fff", color: r.status === "approved" ? "#fff" : "#15803d", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: r.status === "approved" ? "default" : "pointer" }}>
+                {r.status === "approved" ? "● Approved" : "Approve"}
+              </button>
+              <button disabled={busy || r.status === "declined"} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }}
+                style={{ border: "1.5px solid #b91c1c", background: r.status === "declined" ? "#b91c1c" : "#fff", color: r.status === "declined" ? "#fff" : "#b91c1c", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: r.status === "declined" ? "default" : "pointer" }}>
+                {r.status === "declined" ? "● Declined" : "Decline"}
+              </button>
+              <button disabled={busy} onClick={() => removeReq(r)} title="Delete this request"
+                style={{ marginLeft: "auto", border: "1px solid #e5e7eb", background: "#fff", color: "#9ca3af", borderRadius: 9, padding: "7px 12px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>
+                🗑 Delete
+              </button>
+            </div>
+
+            {declineId === r.id && (
+              <div style={{ marginTop: 12, background: "#fef2f2", border: "1.5px solid #fecaca", borderRadius: 11, padding: "12px 13px" }}>
+                <div style={{ fontSize: 12.5, fontWeight: 800, color: "#b91c1c", marginBottom: 6 }}>Reason for declining (required)</div>
+                <textarea value={declineText} onChange={e => setDeclineText(e.target.value)} autoFocus
+                  placeholder="Why is this being declined…"
+                  style={{ width: "100%", boxSizing: "border-box", minHeight: 64, fontFamily: "inherit", fontSize: 13.5, padding: "10px 12px", borderRadius: 9, border: "1.5px solid #fecaca", resize: "vertical" }} />
+                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                  <button disabled={busy || !declineText.trim()} onClick={() => setStatus(r, "declined", declineText)}
+                    style={{ background: "#b91c1c", color: "#fff", border: "none", borderRadius: 9, padding: "8px 16px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: declineText.trim() ? "pointer" : "default", opacity: declineText.trim() ? 1 : 0.5 }}>Confirm decline</button>
+                  <button onClick={() => { setDeclineId(null); setDeclineText(""); }}
+                    style={{ background: "#f3f4f6", color: "#6b7280", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>Cancel</button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+          })}
+        </div>
+      ))}
+      </div>
+    </div>
+  );
+}
+
+// Operations: Fresha "to-do" — who needs opening on Fresha. Two sources:
+//   • approved nail-tech extra days (open the tech for that single day), and
+//   • trial techs awaiting their Fresha opening (trial window, then the month
+//     once they pass). Tick each one once it's opened on Fresha.
+function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen, trialList, setTrialFresha, leaveRequests, freshaBlocks, markFreshaBlocked, leaveRecs, enriched }) {
+  const card = { background: "#fff", border: "1px solid #e9d5ff", borderRadius: 12, padding: "12px 14px", marginBottom: 10 };
+  const chip = (bg, fg, txt) => <span style={{ background: bg, color: fg, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 800 }}>{txt}</span>;
+  const openBtn = (label, onClick) => <button onClick={onClick} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "6px 13px", fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>{label}</button>;
+  const undo = (onClick) => <button onClick={onClick} style={{ background: "transparent", color: "#15803d", border: "none", fontSize: 11, fontWeight: 700, cursor: "pointer", textDecoration: "underline" }}>undo</button>;
+
+  const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
+  const isOpen = (id) => !!(freshaExtraOpen && freshaExtraOpen[id] && freshaExtraOpen[id].opened);
+  const extraTodos = (extraDayRequests || []).filter(r => r.status === "approved" && isTech(r.ec))
+    .sort((a, b) => (Number(isOpen(a.id)) - Number(isOpen(b.id))) || (a.work_date || "").localeCompare(b.work_date || ""));
+
+  const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
+  const _recent = (c) => { const t = Date.parse(c.promotedAt || c.updatedAt || c.addedAt || ""); return !!t && (Date.now() - t) < 45 * 86400000; };
+  const trialOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened);
+  const monthOpen = (trialList || []).filter(c => _nt(c) && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c));
+
+  // Closing side: nail techs who need greying out on Fresha so no client
+  // bookings land while they're off — sick / absent (today & tomorrow), plus
+  // annual / emergency leave that falls in the current payroll cycle.
+  const isBlocked = (id) => !!(freshaBlocks && freshaBlocks[id] && freshaBlocks[id].blocked);
+  const sickBlockTodos = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec))
+    .map(r => ({ key: r.id, ec: r.ec, name: r.name, store: r.store, start_date: r.start_date, end_date: r.end_date, leave_type: r.leave_type, emergency: false, ref_code: r.ref_code }));
+  const blockTodos = dedupeBlockTodos([...sickBlockTodos, ...freshaLeaveBlocks(leaveRecs, enriched)], isBlocked)
+    .sort((a, b) => (Number(isBlocked(a.key)) - Number(isBlocked(b.key))) || (a.start_date || "").localeCompare(b.start_date || ""));
+
+  // Off-boarded nail techs to remove from Fresha entirely (all future dates).
+  const removeTodos = freshaOffboardRemovals(enriched)
+    .sort((a, b) => (Number(isBlocked(a.key)) - Number(isBlocked(b.key))) || (a.leftDate || "").localeCompare(b.leftDate || ""));
+
+  const pendingCount = extraTodos.filter(r => !isOpen(r.id)).length + trialOpen.length + monthOpen.length
+    + blockTodos.filter(r => !isBlocked(r.key)).length + removeTodos.filter(r => !isBlocked(r.key)).length;
+  const secHead = (txt) => <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase", color: "#6b21a8", margin: "0 0 2px" }}>{txt}</div>;
+
+  return (
+    <div>
+      <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#6b21a8", margin: 0 }}>💇‍♀️ Fresha To-Do</h2>
+      <p style={{ color: "#9333ea", fontSize: 13.5, margin: "6px 0 18px", maxWidth: 700 }}>
+        Fresha reminders — open approved extra-day cover and trial techs, block techs who are off (sick / absent, or on annual / emergency leave this cycle), and remove off-boarded techs from all future dates. Tick each one once it's done so the team knows.{pendingCount > 0 && <strong> · {pendingCount} to do</strong>}
+      </p>
+
+      <div style={{ marginBottom: 22 }}>
+        {secHead("💰 Extra-day cover · " + extraTodos.filter(r => !isOpen(r.id)).length + " to open")}
+        <div style={{ fontSize: 12, color: "#9333ea", marginBottom: 10 }}>Each approved extra day means opening that nail tech on Fresha for that single day so she can take bookings.</div>
+        {extraTodos.length === 0 && <div style={{ ...card, color: "#9d6a82" }}>No approved extra days right now.</div>}
+        {extraTodos.map(r => {
+          const dw = dowInfo(r.work_date);
+          const open = isOpen(r.id);
+          const meta = (freshaExtraOpen && freshaExtraOpen[r.id]) || {};
+          return (
+            <div key={r.id} style={{ ...card, opacity: open ? 0.7 : 1 }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
+                <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(r.work_date)}</span>
+                {dw.name && chip(dw.busy ? "#ffedd5" : "#f3f4f6", dw.busy ? "#9a3412" : "#6b7280", (dw.busy ? "🔥 " : "") + dw.name)}
+                {r.store && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {r.store}</span>}
+                {r.ec && <span style={{ color: "#9ca3af", fontSize: 12, fontFamily: "monospace" }}>{r.ec}</span>}
+                <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+                  {open
+                    ? <>{chip("#dcfce7", "#166534", "✓ Opened" + (meta.by ? " · " + meta.by : ""))}{undo(() => markFreshaExtraOpen(r.id, false))}</>
+                    : openBtn("Mark opened on Fresha", () => markFreshaExtraOpen(r.id, true))}
+                </span>
+              </div>
+              <div style={{ fontSize: 11, color: "#9d6a82", marginTop: 5 }}>Extra cover{r.decided_by ? " · approved by " + r.decided_by : ""}{r.decided_at ? " · " + fmtIncidentTime(r.decided_at) : ""}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div>
+        {secHead("🧪 Trial techs · " + (trialOpen.length + monthOpen.length) + " to open")}
+        <div style={{ fontSize: 12, color: "#9333ea", marginBottom: 10 }}>Open trial techs on Fresha for their trial window, and again for the month once they pass.</div>
+        {trialOpen.length === 0 && monthOpen.length === 0 && <div style={{ ...card, color: "#9d6a82" }}>No trial openings pending.</div>}
+        {trialOpen.map(c => (
+          <div key={"t-" + c._id} style={card}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <strong style={{ color: "#581c87", fontSize: 14 }}>{c.name}</strong>
+              {c.branch && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {c.branch}</span>}
+              {chip("#ede9fe", "#6b21a8", "Trial opening")}
+              <span style={{ marginLeft: "auto" }}>{openBtn("Mark opened on Fresha", () => setTrialFresha(c._id, "freshaTrialOpened", true))}</span>
+            </div>
+          </div>
+        ))}
+        {monthOpen.map(c => (
+          <div key={"m-" + c._id} style={card}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <strong style={{ color: "#581c87", fontSize: 14 }}>{c.name}</strong>
+              {c.branch && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {c.branch}</span>}
+              {chip("#dcfce7", "#166534", "✅ Passed — open for the month")}
+              <span style={{ marginLeft: "auto" }}>{openBtn("Mark month opened", () => setTrialFresha(c._id, "freshaMonthOpened", true))}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ marginTop: 22 }}>
+        {secHead("🚫 Block on Fresha · " + blockTodos.filter(r => !isBlocked(r.key)).length + " to block")}
+        <div style={{ fontSize: 12, color: "#9333ea", marginBottom: 10 }}>Nail techs who are off — called in sick / absent today or tomorrow, or on annual / emergency leave in this payroll cycle. Grey them out on Fresha so no new client bookings land while they're away.</div>
+        {blockTodos.length === 0 && <div style={{ ...card, color: "#9d6a82" }}>No nail techs to block right now.</div>}
+        {blockTodos.map(r => {
+          const blocked = isBlocked(r.key);
+          const meta = (freshaBlocks && freshaBlocks[r.key]) || {};
+          const awayLbl = fmtIncidentDate(r.start_date) + (r.end_date !== r.start_date ? " → " + fmtIncidentDate(r.end_date) : "");
+          return (
+            <div key={"b-" + r.key} style={{ ...card, opacity: blocked ? 0.7 : 1 }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
+                {chip(r.leave_type === "Sick" ? "#fef3c7" : "#ede9fe", r.leave_type === "Sick" ? "#b45309" : "#6b21a8", LEAVE_TYPE[r.leave_type] || r.leave_type)}
+                {r.emergency && chip("#fee2e2", "#b91c1c", "🚨 Emergency")}
+                <span style={{ color: "#374151", fontSize: 13 }}>{awayLbl}</span>
+                {r.store && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {r.store}</span>}
+                {r.ec && <span style={{ color: "#9ca3af", fontSize: 12, fontFamily: "monospace" }}>{r.ec}</span>}
+                <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+                  {blocked
+                    ? <>{chip("#dcfce7", "#166534", "✓ Blocked" + (meta.by ? " · " + meta.by : ""))}{undo(() => markFreshaBlocked(r.key, false))}</>
+                    : openBtn("Mark blocked on Fresha", () => markFreshaBlocked(r.key, true))}
+                </span>
+              </div>
+              {r.ref_code && <div style={{ fontSize: 11, color: "#9d6a82", marginTop: 5 }}>Ref {r.ref_code}</div>}
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ marginTop: 22 }}>
+        {secHead("👋 Remove from Fresha · " + removeTodos.filter(r => !isBlocked(r.key)).length + " to remove")}
+        <div style={{ fontSize: 12, color: "#9333ea", marginBottom: 10 }}>Nail techs who've been off-boarded — remove them from Fresha from their last day so no client bookings land on any future date.</div>
+        {removeTodos.length === 0 && <div style={{ ...card, color: "#9d6a82" }}>No off-boarded nail techs to remove right now.</div>}
+        {removeTodos.map(r => {
+          const removed = isBlocked(r.key);
+          const meta = (freshaBlocks && freshaBlocks[r.key]) || {};
+          const todayYmd = new Date().toISOString().slice(0, 10);
+          const lbl = r.leftDate ? ((r.leftDate <= todayYmd ? "Left " : "Leaving ") + fmtIncidentDate(r.leftDate)) : "Last day not set";
+          return (
+            <div key={"o-" + r.key} style={{ ...card, opacity: removed ? 0.7 : 1 }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
+                {chip("#fee2e2", "#b91c1c", "👋 Off-boarded")}
+                <span style={{ color: "#374151", fontSize: 13 }}>{lbl}</span>
+                {r.store && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {r.store}</span>}
+                {r.ec && <span style={{ color: "#9ca3af", fontSize: 12, fontFamily: "monospace" }}>{r.ec}</span>}
+                <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+                  {removed
+                    ? <>{chip("#dcfce7", "#166534", "✓ Removed" + (meta.by ? " · " + meta.by : ""))}{undo(() => markFreshaBlocked(r.key, false))}</>
+                    : openBtn("Mark removed from Fresha", () => markFreshaBlocked(r.key, true))}
+                </span>
+              </div>
+              <div style={{ fontSize: 11, color: "#9d6a82", marginTop: 5 }}>Remove from all future dates on the Fresha calendar.</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function LeaveRequestsTab({ requests, setRequests, currentUser }) {
+  const [statusFilter, setStatusFilter] = useState("pending");
+  const [storeFilter, setStoreFilter] = useState("");
+  const [openId, setOpenId] = useState(null);
+  const [noteDraft, setNoteDraft] = useState({});
+  const [declineId, setDeclineId] = useState(null);
+  const [declineText, setDeclineText] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const stores = Array.from(new Set(requests.map(r => r.store).filter(Boolean))).sort();
+  const patchLocal = (id, patch) => setRequests(requests.map(r => r.id === id ? { ...r, ...patch } : r));
+
+  const onOpen = async (r) => {
+    const next = openId === r.id ? null : r.id;
+    setOpenId(next);
+    if (next && !r.reviewed) { try { await window.BOA_DB.markLeaveReviewed(r.id); patchLocal(r.id, { reviewed: true }); } catch (_e) {} }
+  };
+  const approve = async (r) => {
+    setBusy(true);
+    try {
+      await window.BOA_DB.setLeaveStatus(r.id, "approved", "", currentUser.name || currentUser.pin || "");
+      patchLocal(r.id, { status: "approved", reviewed: true, decided_by: currentUser.name || "", decided_at: new Date().toISOString() });
+    } catch (e) { alert("Could not approve: " + (e.message || e)); }
+    setBusy(false);
+  };
+  const doDecline = async (r) => {
+    const text = (declineText || "").trim();
+    if (!text) return;
+    setBusy(true);
+    try {
+      await window.BOA_DB.setLeaveStatus(r.id, "declined", text, currentUser.name || currentUser.pin || "");
+      const note = { at: new Date().toISOString(), by: currentUser.name || "", note: "DECLINED: " + text };
+      patchLocal(r.id, { status: "declined", reviewed: true, decision_note: text, decided_by: currentUser.name || "", decided_at: new Date().toISOString(), internal_notes: [...(Array.isArray(r.internal_notes) ? r.internal_notes : []), note] });
+      setDeclineId(null); setDeclineText("");
+    } catch (e) { alert("Could not decline: " + (e.message || e)); }
+    setBusy(false);
+  };
+  const addNote = async (r) => {
+    const text = (noteDraft[r.id] || "").trim();
+    if (!text) return;
+    setBusy(true);
+    try {
+      await window.BOA_DB.addLeaveNote(r.id, text, currentUser.name || currentUser.pin || "");
+      const note = { at: new Date().toISOString(), by: currentUser.name || "", note: text };
+      patchLocal(r.id, { internal_notes: [...(Array.isArray(r.internal_notes) ? r.internal_notes : []), note] });
+      setNoteDraft({ ...noteDraft, [r.id]: "" });
+    } catch (e) { alert("Could not save note: " + (e.message || e)); }
+    setBusy(false);
+  };
+
+  const filtered = requests.filter(r => {
+    if (storeFilter && r.store !== storeFilter) return false;
+    if (statusFilter === "all") return true;
+    return r.status === statusFilter;
+  });
+  const pendingCount = requests.filter(r => r.status === "pending").length;
+
+  const card = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 18px", marginBottom: 16 };
+  const chip = (c) => ({ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: c.color, background: c.bg });
+
+  // Split into managers (EC ends in "M") and nail techs, shown as two distinct
+  // colour-coded columns side by side — same as the Extra-Day Requests tab.
+  const isMgrReq = (r) => /M$/i.test(String(r.ec || "").trim());
+  const mgrReqs = filtered.filter(isMgrReq);
+  const techReqs = filtered.filter(r => !isMgrReq(r));
+  const groups = [
+    { key: "mgr",  label: "👑 Managers",   items: mgrReqs,  bg: "#faf5ff", border: "#e9d5ff", headBg: "#7c3aed", headFg: "#fff" },
+    { key: "tech", label: "💅 Nail Techs", items: techReqs, bg: "#fdf2f8", border: "#fbcfe8", headBg: "#BE185D", headFg: "#fff" }
+  ];
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 4 }}>
+        <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#831843", margin: 0 }}>🌴 Leave Requests</h2>
+        {pendingCount > 0 && <span style={chip(LEAVE_STATUS.pending)}>{pendingCount} pending</span>}
+      </div>
+      <p style={{ color: "#9d6a82", fontSize: 13.5, marginTop: 4, maxWidth: 680 }}>
+        Leave requests staff send from My BOA. Approve or decline — declining asks for a reason that's recorded.
+      </p>
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+          style={{ fontFamily: "inherit", fontSize: 13, padding: "8px 10px", borderRadius: 9, border: "1.5px solid #e7c6d4" }}>
+          <option value="pending">Pending</option>
+          <option value="approved">Approved</option>
+          <option value="declined">Declined</option>
+          <option value="all">All</option>
+        </select>
+        <select value={storeFilter} onChange={e => setStoreFilter(e.target.value)}
+          style={{ fontFamily: "inherit", fontSize: 13, padding: "8px 10px", borderRadius: 9, border: "1.5px solid #e7c6d4" }}>
+          <option value="">All stores</option>
+          {stores.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <span style={{ alignSelf: "center", fontSize: 12.5, color: "#9d6a82" }}>{filtered.length} request{filtered.length === 1 ? "" : "s"}</span>
+      </div>
+
+      {filtered.length === 0 && <div style={{ ...card, textAlign: "center", color: "#9d6a82" }}>No requests here.</div>}
+
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
+      {filtered.length > 0 && groups.map(g => (
+        <div key={g.key} style={{ flex: "1 1 360px", minWidth: 300, background: g.bg, border: "1px solid " + g.border, borderRadius: 14, padding: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", color: g.headFg, background: g.headBg, borderRadius: 9, padding: "8px 12px", marginBottom: 12 }}>{g.label} · {g.items.length}</div>
+          {g.items.length === 0 && <div style={{ textAlign: "center", color: "#9d6a82", fontSize: 12.5, padding: "10px 0 14px" }}>None in this view.</div>}
+          {g.items.map(r => {
+        const st = LEAVE_STATUS[r.status] || LEAVE_STATUS.pending;
+        const open = openId === r.id;
+        const notes = Array.isArray(r.internal_notes) ? r.internal_notes : [];
+        const days = leaveDays(r.start_date, r.end_date);
+        return (
+          <div key={r.id} style={{ ...card, marginBottom: 12 }}>
+            <div onClick={() => onOpen(r)} style={{ display: "flex", gap: 10, alignItems: "center", cursor: "pointer", flexWrap: "wrap" }}>
+              {!r.reviewed && <span style={{ width: 9, height: 9, borderRadius: 999, background: "#BE185D", display: "inline-block" }} title="Not yet opened" />}
+              <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
+              <span style={chip({ color: "#6b21a8", bg: "#ede9fe" })}>{LEAVE_TYPE[r.leave_type] || r.leave_type}</span>
+              <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(r.start_date)} → {fmtIncidentDate(r.end_date)}</span>
+              <span style={{ color: "#9ca3af", fontSize: 12 }}>· {days} day{days === 1 ? "" : "s"}{r.store ? " · " + r.store : ""}</span>
+              <span style={{ marginLeft: "auto", ...chip(st) }}>{st.label}</span>
+              <span style={{ color: "#cbb1bd", fontSize: 18, lineHeight: 1 }}>{open ? "▾" : "▸"}</span>
+            </div>
+
+            {open && (
+              <div style={{ marginTop: 14, borderTop: "1px dashed #f3d4e0", paddingTop: 14 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 16px", fontSize: 13.5, color: "#374151", marginBottom: 12 }}>
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>Ref</span><span>{r.ref_code}</span>
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>Requested</span><span>{fmtIncidentTime(r.created_at)}</span>
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>Employee code</span><span>{r.ec || "—"}</span>
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>Contact</span><span>{r.contact || "—"}</span>
+                  {r.reason && (<><span style={{ color: "#9d6a82", fontWeight: 700 }}>Reason</span><span style={{ whiteSpace: "pre-wrap" }}>{linkifyText(r.reason)}</span></>)}
+                </div>
+
+                {r.status !== "pending" && r.decided_by && (
+                  <div style={{ background: r.status === "approved" ? "#f0fdf4" : "#fef2f2", border: "1px solid " + (r.status === "approved" ? "#bbf7d0" : "#fecaca"), borderRadius: 11, padding: "10px 13px", marginBottom: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: r.status === "approved" ? "#15803d" : "#b91c1c", marginBottom: 3 }}>
+                      {r.status === "approved" ? "✅ Approved" : "✕ Declined"}{r.decision_note ? "" : ""}
+                    </div>
+                    {r.decision_note && <div style={{ fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{r.decision_note}</div>}
+                    <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>{r.decided_by}{r.decided_at ? " · " + fmtIncidentTime(r.decided_at) : ""}</div>
+                  </div>
+                )}
+
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+                  <button disabled={busy || r.status === "approved"} onClick={() => approve(r)}
+                    style={{ border: "1.5px solid #15803d", background: r.status === "approved" ? "#15803d" : "#fff", color: r.status === "approved" ? "#fff" : "#15803d", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: r.status === "approved" ? "default" : "pointer" }}>
+                    {r.status === "approved" ? "● Approved" : "Approve"}
+                  </button>
+                  <button disabled={busy || r.status === "declined"} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }}
+                    style={{ border: "1.5px solid #b91c1c", background: r.status === "declined" ? "#b91c1c" : "#fff", color: r.status === "declined" ? "#fff" : "#b91c1c", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: r.status === "declined" ? "default" : "pointer" }}>
+                    {r.status === "declined" ? "● Declined" : "Decline"}
+                  </button>
+                </div>
+
+                {declineId === r.id && (
+                  <div style={{ background: "#fef2f2", border: "1.5px solid #fecaca", borderRadius: 11, padding: "12px 13px", marginBottom: 14 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 800, color: "#b91c1c", marginBottom: 6 }}>Reason for declining (required — the staff member can be told)</div>
+                    <textarea value={declineText} onChange={e => setDeclineText(e.target.value)} autoFocus
+                      placeholder="Why is this being declined…"
+                      style={{ width: "100%", boxSizing: "border-box", minHeight: 70, fontFamily: "inherit", fontSize: 13.5, padding: "10px 12px", borderRadius: 9, border: "1.5px solid #fecaca", resize: "vertical" }} />
+                    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                      <button disabled={busy || !declineText.trim()} onClick={() => doDecline(r)}
+                        style={{ background: "#b91c1c", color: "#fff", border: "none", borderRadius: 9, padding: "8px 16px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: declineText.trim() ? "pointer" : "default", opacity: declineText.trim() ? 1 : 0.5 }}>Confirm decline</button>
+                      <button onClick={() => { setDeclineId(null); setDeclineText(""); }}
+                        style={{ background: "#f3f4f6", color: "#6b7280", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+
+                <div style={{ fontWeight: 700, color: "#831843", fontSize: 12.5, marginBottom: 6 }}>HR notes (internal)</div>
+                {notes.map((n, i) => (
+                  <div key={i} style={{ background: "#faf5f7", borderRadius: 9, padding: "8px 11px", fontSize: 13, marginBottom: 6 }}>
+                    <span style={{ whiteSpace: "pre-wrap" }}>{n.note}</span>
+                    <div style={{ fontSize: 11, color: "#9d6a82", marginTop: 3 }}>{n.by || "HR"} · {fmtIncidentTime(n.at)}</div>
+                  </div>
+                ))}
+                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                  <input value={noteDraft[r.id] || ""} onChange={e => setNoteDraft({ ...noteDraft, [r.id]: e.target.value })}
+                    placeholder="Add an internal note…" onKeyDown={e => { if (e.key === "Enter") addNote(r); }}
+                    style={{ flex: 1, fontFamily: "inherit", fontSize: 13, padding: "8px 11px", borderRadius: 9, border: "1.5px solid #e7c6d4" }} />
+                  <button disabled={busy || !(noteDraft[r.id] || "").trim()} onClick={() => addNote(r)}
+                    style={{ background: "#831843", color: "#fff", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer", opacity: (noteDraft[r.id] || "").trim() ? 1 : 0.5 }}>Add</button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+          })}
+        </div>
+      ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────────
 let seed = 5000;
 // Tracks whether the viewport is phone-sized. Used to switch the chrome
@@ -8450,13 +9694,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     if (!record || !record.ec) return showErr("Pick a nail tech.");
     if (!record.date) return showErr("Pick a date.");
     if (!record.toBranch) return showErr("Pick the branch they're working at.");
-    // fromBranch fallback: when the staff record passed in didn't carry a
-    // branch field, look it up from the live staff list before bailing.
+    // Resolve the home branch as of the loan date. A completed transfer (date
+    // already passed) lives on the record as flags without rewriting `branch`,
+    // so look the tech up live and follow the transfer rather than trusting a
+    // possibly-stale fromBranch from the form.
     let fromBranch = record.fromBranch || "";
-    if (!fromBranch) {
-      const live = (staff || []).find(p => p && p.ec === record.ec);
-      fromBranch = (live && live.branch) || "";
-    }
+    const live = (staff || []).find(p => p && p.ec === record.ec);
+    if (live) fromBranch = effHomeBranch(live, record.date);
     if (!fromBranch) return showErr("This tech isn't assigned to a home branch yet — set their branch in Staff first.");
     if (fromBranch === record.toBranch) return showErr("Pick a branch different from the tech's home (" + fromBranch + ").");
     if (!window.BOA_DB || !window.BOA_DB.saveTechLoans) return showErr("Database not ready — refresh and try again.");
@@ -9175,7 +10419,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Map of tab → category name. Kept in sync with the groups list below.
   const NAV_TAB_TO_CATEGORY = {
     onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
-    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
+    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", freshaTodo: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
     attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll",
     alerts: "Insights", activity: "Insights",
     settings: "Admin", voucherAdmin: "Admin"
@@ -9284,19 +10528,31 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // stores via the existing scope bar; everyone else sees all branches
   // and can filter by region.
   const [cashupRows, setCashupRows] = useState([]);
-  const [cashupDays, setCashupDays] = useState(14);
+  // Cash Ups is a day-by-day view: land on today, step back/forward a day at a
+  // time. (Replaces the old fixed look-back ranges.)
+  const [cashupDate, setCashupDate] = useState(() => {
+    const d = new Date(); const p = n => String(n).padStart(2, "0");
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+  });
   const [cashupRegion, setCashupRegion] = useState("all");
   const [cashupBranchFilter, setCashupBranchFilter] = useState("All");
   const [cashupSlipModal, setCashupSlipModal] = useState(null);
+  // Collapsible "who hasn't submitted their cash-up yet" follow-up panel.
+  const [cashupShowMissing, setCashupShowMissing] = useState(false);
+  // Text shown in the tap-to-open "?" help popup on the Cash Ups table.
+  const [cashupHelp, setCashupHelp] = useState(null);
+  // Manual cash-up entry form (null = closed) for stores that forgot to submit.
+  const [cashupAdd, setCashupAdd] = useState(null);
+  const [cashupAddBusy, setCashupAddBusy] = useState(false);
   useEffect(() => {
     if (tab !== "cashups") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     let cancelled = false;
-    window.BOA_DB.listRecentCashups(cashupDays).then(rows => {
+    window.BOA_DB.listCashupsForDate(cashupDate).then(rows => {
       if (!cancelled) setCashupRows(rows || []);
     });
     return () => { cancelled = true; };
-  }, [tab, cashupDays]);
+  }, [tab, cashupDate]);
 
   // ── Onboarding / Off-boarding state ────────────────────────────────
   const [obList, setObList] = useState([]);           // joiner records (3-month contract signers)
@@ -9355,6 +10611,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // submitOff() now reads this state instead of an uncontrolled <select> DOM
   // node so the searchable picker can drive it cleanly.
   const [offEcInput, setOffEcInput] = useState("");
+  // Search box for the Off-boarding "Earlier departures" archive — lets the
+  // user find and restore staff who left more than 30 days ago (those fall
+  // outside the Recently Left card, so without this there's no UI path to
+  // undo a stale off-boarding).
+  const [offArchiveQuery, setOffArchiveQuery] = useState("");
   const [obForm, setObForm] = useState({              // onboarding registration form
     name: "", ec: "", branch: SALONS[0].name, position: "Nail Tech",
     positionOther: "", startDate: "", notes: "",
@@ -9377,6 +10638,36 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // ── Leave Planner state ────────────────────────────────────────────
   const [leaveRecs, setLeaveRecs] = useState([]);
   const [overtimeReqs, setOvertimeReqs] = useState([]);
+  // Staff incident reports (confidential channel — see sql/incident_reports.sql)
+  const [incidentReports, setIncidentReports] = useState([]);
+  const [incidentPopupSeen, setIncidentPopupSeen] = useState(false);  // dismissed for this session
+  // Staff leave requests (from My BOA — see sql/leave_requests.sql)
+  const [leaveRequests, setLeaveRequests] = useState([]);
+  // Extra-day availability requests (from My BOA — see sql/extra_day_requests.sql)
+  const [extraDayRequests, setExtraDayRequests] = useState([]);
+  // Fresha To-Do: open-status for approved extra-day requests, keyed by
+  // request id → { opened, by, at }. Persisted to boa_fresha_extra_open_v1.
+  const [freshaExtraOpen, setFreshaExtraOpen] = useState({});
+  const markFreshaExtraOpen = async (id, on) => {
+    const next = { ...freshaExtraOpen };
+    if (on) next[id] = { opened: true, by: (currentUser && currentUser.name) || "", at: new Date().toISOString() };
+    else delete next[id];
+    setFreshaExtraOpen(next);
+    try { if (window.BOA_DB.saveFreshaExtraOpenings) await window.BOA_DB.saveFreshaExtraOpenings(next); }
+    catch (e) { window.alert("Could not save Fresha to-do: " + (e.message || e)); }
+  };
+  // Fresha To-Do (closing side): block-status for sick/absent nail techs,
+  // keyed by leave-request id → { blocked, by, at }. Persisted to
+  // boa_fresha_blocks_v1.
+  const [freshaBlocks, setFreshaBlocks] = useState({});
+  const markFreshaBlocked = async (id, on) => {
+    const next = { ...freshaBlocks };
+    if (on) next[id] = { blocked: true, by: (currentUser && currentUser.name) || "", at: new Date().toISOString() };
+    else delete next[id];
+    setFreshaBlocks(next);
+    try { if (window.BOA_DB.saveFreshaBlocks) await window.BOA_DB.saveFreshaBlocks(next); }
+    catch (e) { window.alert("Could not save Fresha to-do: " + (e.message || e)); }
+  };
   const [overtimeShortCache, setOvertimeShortCache] = useState({});    // { ec|cycleYm: hours } from early-leave sidecar
   const [overtimeShortLoading, setOvertimeShortLoading] = useState(false);
   const [otForm, setOtForm] = useState({ ec: "", date: "", hours: "", reason: "" });
@@ -9884,7 +11175,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               //   (scheduled work + presence + Fresha) OR (scheduled off + no
               //   presence + no Fresha). Anything else flags a ⚠.
               const cellSaysPresent = isWorking || isLate || checkinHasIn;
-              const scheduleSaysOff = hint === "off" || hint === "al" || hint === "ph" || hint === "mat";
+              const scheduleSaysOff = hint === "off" || hint === "al" || hint === "el" || hint === "ph" || hint === "mat";
               const isExtraDayCell = bareV === "ext";
               const presentNoApptWarn = cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
               const workedOnOffDay = scheduleSaysOff && cellSaysPresent && !cellShowsAbsent && !isExtraDayCell;
@@ -10077,6 +11368,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Per-branch nail-tech breakdown for today: { branch: { scheduled, checkedIn, notCheckedIn, absent } }
   const [dashTechByBranch, setDashTechByBranch] = useState(null); // null = loading
   const [dashTodayMgrClockinEcs, setDashTodayMgrClockinEcs] = useState(null); // null = loading, Set<ec> once loaded
+  // Full current-cycle attendance grids per branch (ec → dayOfMonth → status),
+  // kept so the Abscond / Absence Warnings widget can scan for consecutive
+  // no-show/absent days. Reduced tiles use the same source.
+  const [dashAttByBranch, setDashAttByBranch] = useState({});
+  // HR follow-ups on abscond/absence warnings: { [ec]: { throughYmd, note, by, at } }.
+  // Marking a flagged person "done" + a note clears the warning until they miss
+  // again after the actioned date.
+  const [abscondActions, setAbscondActions] = useState({});
+  useEffect(() => {
+    if (tab !== "dashboard" && tab !== "payrollReports") return;
+    if (!window.BOA_DB || !window.BOA_DB.loadAbscondActions) return;
+    let cancelled = false;
+    window.BOA_DB.loadAbscondActions().then(m => { if (!cancelled) setAbscondActions(m || {}); });
+    return () => { cancelled = true; };
+  }, [tab]);
+  // Record an action taken on a flagged person (clears the warning through the
+  // given day) and persist it.
+  const markAbscondDone = async (ec, throughYmd, note) => {
+    const key = String(ec || "").trim(); if (!key) return;
+    const next = { ...abscondActions, [key]: { throughYmd: throughYmd || null, note: (note || "").trim(), by: (currentUser && currentUser.name) || "", at: new Date().toISOString() } };
+    setAbscondActions(next);
+    try { await window.BOA_DB.saveAbscondActions(next); } catch (e) { window.alert("Couldn't save the note: " + ((e && e.message) || e)); }
+  };
+  const clearAbscondDone = async (ec) => {
+    const key = String(ec || "").trim(); if (!key) return;
+    const next = { ...abscondActions }; delete next[key];
+    setAbscondActions(next);
+    try { await window.BOA_DB.saveAbscondActions(next); } catch (e) { window.alert("Couldn't update: " + ((e && e.message) || e)); }
+  };
   useEffect(() => {
     if (tab !== "dashboard") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
@@ -10153,15 +11473,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       // peek at a loaned-out tech's status at the destination branch.
       const attByBranch = {};
       for (const r of rows) attByBranch[r.name] = r.attGrid;
+      setDashAttByBranch(attByBranch);   // full grids for the abscond-warning scan
       const map = {};
       const mgrMap = {};
       const techMap = {};
       let total = 0;
+      // Anyone on annual / emergency leave today (Leave Planner) — exclude from
+      // "scheduled today" even if their saved grid cell still reads working.
+      const _onLeaveToday = new Set();
+      (leaveRecs || []).forEach(lv => {
+        if (lv && lv.ec && lv.startDate && lv.endDate && ymd >= lv.startDate && ymd <= lv.endDate) _onLeaveToday.add(String(lv.ec).toUpperCase().trim());
+      });
       for (const r of rows) {
         const { name, techGrid, mgrGrid, attGrid } = r;
         let count = 0;
         let tScheduled = 0, tCheckedIn = 0, tAbsent = 0;
         const techByEc = {};
+        // Active nail techs who actually belong to this branch — mirrors the
+        // manager guard below. Without this the raw grid also counts techs who
+        // have LEFT, guest/loan rows from other stores, and stale codes, which
+        // badly inflates the "scheduled today" numbers.
+        const _branchTechEcs = new Set(
+          (enriched || [])
+            .filter(s => s && s.branch === name && !s.onMat && !s.onUnpaidLegal && !s.offboarded && !(s.leftDate && ymd > s.leftDate))
+            .map(s => String(s.ec || "").toUpperCase().trim())
+            .filter(Boolean)
+        );
         // Gate on the kiosk Daily Check-in sign-off: until the manager
         // taps "Submit today's check-in" on the kiosk (writes
         // boa_dly_<branch>_<ymd> with signedBy), the att-grid taps are
@@ -10171,6 +11508,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // honours the same rule against the DESTINATION branch.
         const _branchSubmitted = signedOffSet.has(name);
         for (const ec in techGrid) {
+          const ecT = String(ec).toUpperCase().trim();
+          if (!_branchTechEcs.has(ecT)) continue;   // only active techs who belong to this branch
+          if (_onLeaveToday.has(ecT)) continue;       // on annual / emergency leave today
           const v = techGrid[ec][todayDay];
           if (!isWorking(v)) continue;
           count++; tScheduled++;
@@ -10312,8 +11652,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadSmTrial ? window.BOA_DB.loadSmTrial() : Promise.resolve([]),
       window.BOA_DB.loadOvertimeRequests ? window.BOA_DB.loadOvertimeRequests() : Promise.resolve([]),
       window.BOA_DB.loadFreshaAccess ? window.BOA_DB.loadFreshaAccess() : Promise.resolve({}),
-      window.BOA_DB.loadOvertimeAccess ? window.BOA_DB.loadOvertimeAccess() : Promise.resolve({})
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess]) => {
+      window.BOA_DB.loadOvertimeAccess ? window.BOA_DB.loadOvertimeAccess() : Promise.resolve({}),
+      (window.BOA_DB.loadIncidentReports && canSeeIncidents(currentUser)) ? window.BOA_DB.loadIncidentReports() : Promise.resolve([]),
+      (window.BOA_DB.loadLeaveRequests && canSeeIncidents(currentUser)) ? window.BOA_DB.loadLeaveRequests() : Promise.resolve([]),
+      (window.BOA_DB.loadExtraDayRequests && canSeeIncidents(currentUser)) ? window.BOA_DB.loadExtraDayRequests() : Promise.resolve([]),
+      window.BOA_DB.loadFreshaExtraOpenings ? window.BOA_DB.loadFreshaExtraOpenings() : Promise.resolve({}),
+      window.BOA_DB.loadFreshaBlocks ? window.BOA_DB.loadFreshaBlocks() : Promise.resolve({})
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap]) => {
       setStaff(d.staff);
       setManagers(d.managers);
       setMatRecs(d.matRecs);
@@ -10327,6 +11672,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setOvertimeReqs(Array.isArray(ot) ? ot : []);
       setFreshaAccess(freshaAcc && typeof freshaAcc === "object" ? freshaAcc : {});
       setOvertimeAccess(otAccess && typeof otAccess === "object" ? otAccess : {});
+      setIncidentReports(Array.isArray(incidents) ? incidents : []);
+      setLeaveRequests(Array.isArray(leaveReqs) ? leaveReqs : []);
+      setExtraDayRequests(Array.isArray(extraReqs) ? extraReqs : []);
+      setFreshaExtraOpen(freshaExtraOpenMap && typeof freshaExtraOpenMap === "object" ? freshaExtraOpenMap : {});
+      setFreshaBlocks(freshaBlocksMap && typeof freshaBlocksMap === "object" ? freshaBlocksMap : {});
       setLoading(false);
     }).catch((err) => {
       setLoadError("Could not load data: " + (err.message || err));
@@ -10545,7 +11895,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // Load recent manager clock-ins when the viewer tab opens.
   useEffect(() => {
-    if (tab !== "mgrclockins" && tab !== "mgrCoverage" && tab !== "attendance" && tab !== "overtime") return;
+    if (tab !== "mgrclockins" && tab !== "mgrCoverage" && tab !== "attendance" && tab !== "overtime" && tab !== "dashboard") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     let cancelled = false;
     (async () => {
@@ -10559,6 +11909,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         if ((tab === "attendance" || tab === "overtime") && attYM) {
           const ap = attYM.split("-").map(Number);
           const cyStart = new Date(ap[0], ap[1] - 1, 25);
+          const spanDays = Math.ceil((Date.now() - cyStart.getTime()) / 86400000) + 2;
+          if (spanDays > effDays) effDays = spanDays;
+        }
+        // The dashboard "Manager reasons to add" card scans the current payroll
+        // cycle, so make sure the loaded window always reaches its opening 25th.
+        if (tab === "dashboard") {
+          const _n = new Date();
+          const cyStart = _n.getDate() >= 25
+            ? new Date(_n.getFullYear(), _n.getMonth(), 25)
+            : new Date(_n.getFullYear(), _n.getMonth() - 1, 25);
           const spanDays = Math.ceil((Date.now() - cyStart.getTime()) / 86400000) + 2;
           if (spanDays > effDays) effDays = spanDays;
         }
@@ -11142,6 +12502,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const q = (search || "").toLowerCase();
     const list = (enrichedManagers || []).filter(m => {
       if (!m) return false;
+      if (m.offHidden) return false;          // hide off-boarded managers past the 31-day display window
 
       const isTerm = m.status === "terminated" || m.active === "false" || m.active === false;
       if (fShow === "terminated" && !isTerm) return false;
@@ -11172,6 +12533,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     });
     const rank = (r) => r === "SSM" ? 0 : r === "SM" ? 1 : r === "AM" ? 2 : 3;
     return list.sort((a, b) => {
+      const ad = (a.offboarded && a.offDaysSinceLeft != null && a.offDaysSinceLeft >= 0) ? 1 : 0;
+      const bd = (b.offboarded && b.offDaysSinceLeft != null && b.offDaysSinceLeft >= 0) ? 1 : 0;
+      if (ad !== bd) return ad - bd;                                 // departed managers sink to the bottom
       const am = a.onMat ? 1 : 0, bm = b.onMat ? 1 : 0;
       if (am !== bm) return am - bm;                                 // active mgrs first
       const rd = rank(a.role) - rank(b.role);
@@ -11733,6 +13097,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         }
       `}</style>
 
+      {/* Incident reports pop-up — greets HR/senior staff when reports are
+          waiting. Louder (red) when any unread report is marked urgent. */}
+      {!loading && !incidentPopupSeen && canSeeIncidents(currentUser) && (
+        <IncidentPopup
+          reports={incidentReports}
+          onView={() => { setIncidentPopupSeen(true); tryChangeTab("incidents"); }}
+          onDismiss={() => setIncidentPopupSeen(true)}
+        />
+      )}
+
       {currentUser?.demo && (
         <div style={{ background: "#fde047", color: "#78350f", borderBottom: "2px solid #ca8a04", padding: "10px 24px", textAlign: "center", fontSize: 13, fontWeight: 700, letterSpacing: "0.02em" }}>
           ⚠ TRAINING / DEMO LOGIN — You can explore the portal but any changes you make will <u>NOT</u> be saved.
@@ -11808,7 +13182,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   ] : []),
                   { t: "maternity", l: matLbl },
                   { t: "unpaidLegal", l: "⏸️ Unpaid Leave (Legal)" },
-                  { t: "compliance", l: "📋 Compliance" }
+                  { t: "compliance", l: "📋 Compliance" },
+                  ...(canSeeIncidents(currentUser) ? [(() => {
+                    const unread = incidentReports.filter(r => !r.reviewed).length;
+                    return { t: "incidents", l: "🛡️ Incident Reports" + (unread ? "  (" + unread + ")" : "") };
+                  })()] : [])
                 ]
               },
               {
@@ -11820,6 +13198,33 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "checkins", l: "📲 Nail Tech Check-ins" },
                   { t: "mgrclockins", l: "🕐 Manager Check-ins" },
                   { t: "leave", l: "🌴 Leave Planner" },
+                  ...(canSeeIncidents(currentUser) ? [(() => {
+                    const pend = leaveRequests.filter(r => r.status === "pending").length;
+                    return { t: "leaveRequests", l: "📨 Leave Requests" + (pend ? "  (" + pend + ")" : "") };
+                  })()] : []),
+                  ...(canSeeIncidents(currentUser) ? [(() => {
+                    const n = calledInSickWindow(leaveRequests).list.length;
+                    return { t: "calledInSick", l: "🤒 Called in Sick" + (n ? "  (" + n + ")" : "") };
+                  })()] : []),
+                  ...(canSeeIncidents(currentUser) ? [(() => {
+                    const n = extraDayRequests.filter(r => r.status === "pending").length;
+                    return { t: "extraDayRequests", l: "💰 Extra-Day Requests" + (n ? "  (" + n + ")" : "") };
+                  })()] : []),
+                  ...(canSeeIncidents(currentUser) ? [(() => {
+                    const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
+                    const isOpen = (id) => !!(freshaExtraOpen && freshaExtraOpen[id] && freshaExtraOpen[id].opened);
+                    const extraToOpen = (extraDayRequests || []).filter(r => r.status === "approved" && isTech(r.ec) && !isOpen(r.id)).length;
+                    const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
+                    const _recent = (c) => { const t = Date.parse(c.promotedAt || c.updatedAt || c.addedAt || ""); return !!t && (Date.now() - t) < 45 * 86400000; };
+                    const trialToOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened).length;
+                    const monthToOpen = (trialList || []).filter(c => _nt(c) && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c)).length;
+                    const isBlocked = (id) => !!(freshaBlocks && freshaBlocks[id] && freshaBlocks[id].blocked);
+                    const sickBlk = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec)).map(r => ({ key: r.id, ec: r.ec, name: r.name, start_date: r.start_date, end_date: r.end_date, leave_type: r.leave_type }));
+                    const toBlock = dedupeBlockTodos([...sickBlk, ...freshaLeaveBlocks(leaveRecs, enriched)], isBlocked).filter(r => !isBlocked(r.key)).length;
+                    const toRemove = freshaOffboardRemovals(enriched).filter(r => !isBlocked(r.key)).length;
+                    const n = extraToOpen + trialToOpen + monthToOpen + toBlock + toRemove;
+                    return { t: "freshaTodo", l: "💇‍♀️ Fresha To-Do" + (n ? "  (" + n + ")" : "") };
+                  })()] : []),
                   { t: "storeOpenings", l: "🔓 Store Openings" },
                   { t: "movements", l: "🔀 Today's Movements" },
                   { t: "dailyTasks", l: "📋 Daily Tasks" },
@@ -12264,10 +13669,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 if (!cur || rank[status] > rank[cur.status]) byEc[ec] = { status, branch: eff || b };
               }
             }
-            const a = { scheduled: 0, checkedIn: 0, notCheckedIn: 0, absent: 0, notCheckedInList: [] };
+            const a = { scheduled: 0, checkedIn: 0, notCheckedIn: 0, absent: 0, notCheckedInList: [], byBranch: {} };
             for (const ec in byEc) {
               const { status, branch } = byEc[ec];
               a.scheduled++;
+              if (branch) a.byBranch[branch] = (a.byBranch[branch] || 0) + 1;   // per-branch breakdown sums to a.scheduled
               if (status === "in") a.checkedIn++;
               else if (status === "absent") a.absent++;
               else {
@@ -12490,109 +13896,215 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 );
               })()}
 
-              {/* ── SECTION: TRIAL TECHS — FRESHA TO OPEN ──
-                  Reminder for the people responsible for opening trial nail
-                  techs on Fresha (the booking platform). Visible only to the
-                  configured openers (default Rochelle & Farida — they can tick
-                  items done) and viewers (National Ops + Regional managers,
-                  read-only). Who opens/sees is editable in Settings. */}
-              {(() => {
-                const _role = (currentUser?.role || "").toLowerCase();
-                // Robust role matching: "regional" catches every ROM variant
-                // (incl. "ROM"/"Regional Manager") via isRomRole; "national"
-                // catches National Ops/Operations. Any other stored keyword
-                // falls back to a plain substring test.
-                const roleMatch = (key) => {
-                  const k = String(key).toLowerCase();
-                  if (k === "regional") return isRomRole(currentUser?.role) || _role.includes("regional");
-                  if (k === "national") return _role.includes("national ops") || _role.includes("national operations") || _role.includes("national");
-                  return _role.includes(k);
-                };
-                const isOpener = (freshaCfg.openerPins || []).includes(currentUser?.pin);
-                const isViewer = !!currentUser?.isOwner
-                  || (freshaCfg.viewerPins || []).includes(currentUser?.pin)
-                  || (freshaCfg.viewerRoles || []).some(roleMatch);
-                if (!isOpener && !isViewer) return null;
+              {/* ── SECTION: FRESHA — DUE SOON (< 3 days) ──
+                  The full Fresha open/close checklist now lives on the Fresha
+                  To-Do tab. Here we only surface the URGENT ones as a warning:
+                  a tech who needs opening (approved extra day / trial start) or
+                  closing (called in sick / absent) where that day is less than
+                  3 days away and still not done. Links through to the tab. */}
+              {canSeeIncidents(currentUser) && (() => {
+                const _now0 = new Date(); _now0.setHours(0, 0, 0, 0);
+                const daysUntil = (ymd) => ymd ? Math.ceil((new Date(ymd + "T00:00:00") - _now0) / 86400000) : null;
+                const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
+                const URGENT = 3;   // less than 3 days away
+
+                // OPEN — approved extra-day cover not yet opened on Fresha
+                const isOpen = (id) => !!(freshaExtraOpen && freshaExtraOpen[id] && freshaExtraOpen[id].opened);
+                const urgentExtra = (extraDayRequests || []).filter(r => r.status === "approved" && isTech(r.ec) && !isOpen(r.id))
+                  .map(r => ({ ...r, _d: daysUntil(r.work_date) }))
+                  .filter(r => r._d !== null && r._d >= 0 && r._d < URGENT)
+                  .sort((a, b) => a._d - b._d);
+
+                // OPEN — trial techs whose trial start is imminent and not opened
                 const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
-                const canAct = isOpener || !!currentUser?.isOwner;   // owners can tick items done too
-                // Only surface "open for the month" for techs who passed / were
-                // promoted recently. Older ones have long since been handled and
-                // would otherwise linger on the dashboard forever.
-                const _recent = (c) => { const t = Date.parse(c.promotedAt || c.updatedAt || c.addedAt || ""); return !!t && (Date.now() - t) < 45 * 86400000; };
-                // Safety net for records orphaned before the owner-delete cascade
-                // existed: drop any already-hired tech whose person is no longer
-                // an active staff member (i.e. they were hard-deleted).
-                const _nm2 = (s) => (s || "").trim().toLowerCase();
-                const _liveStaff = new Set((staff || []).map(s => _nm2(s.name) + "|" + s.branch));
-                const _gone = (c) => c.status === "hired" && !_liveStaff.has(_nm2(c.name) + "|" + c.branch);
-                const activeTrials = (trialList || []).filter(c => _nt(c) && c.startDate
-                  && c.status !== "passed" && c.status !== "failed" && c.status !== "hired");
-                const monthPending = (trialList || []).filter(c => _nt(c)
-                  && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c) && !_gone(c));
-                if (activeTrials.length === 0 && monthPending.length === 0) return null;
-                const _pad = n => String(n).padStart(2, "0");
-                const trialWindow = (startDate) => {
-                  const start = new Date(startDate + "T12:00:00");
-                  if (isNaN(start)) return { first: null, last: null };
-                  const cur = new Date(start); let first = null, last = null, n = 0;
-                  for (let g = 0; g < 60 && n < 10; g++) {
-                    const y = cur.getFullYear(), m = cur.getMonth() + 1, d = cur.getDate();
-                    const ymd = y + "-" + _pad(m) + "-" + _pad(d), dow = cur.getDay();
-                    if (dow !== 0 && dow !== 6 && !(saHolidays(y) || {})[ymd]) { if (!first) first = ymd; last = ymd; n++; }
-                    cur.setDate(cur.getDate() + 1);
-                  }
-                  return { first, last };
-                };
-                const fmt = ymd => ymd ? new Date(ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : "—";
-                const stageLbl = { induction: "Induction", trial_w1: "Trial weeks 1 & 2", trial_w2: "Trial weeks 1 & 2", pending_mid_review: "⏰ Mid-review due", pending_final_review: "⏰ Final review due" };
-                const needTrial = activeTrials.filter(c => !c.freshaTrialOpened).length;
-                const openerNames = (freshaCfg.openerPins || []).map(p => (appUsers && appUsers[p] && appUsers[p].name) || p).join(" or ");
-                const pill = (bg, fg, txt) => <span style={{ background: bg, color: fg, padding: "2px 8px", borderRadius: 6, fontSize: 10, fontWeight: 800, letterSpacing: "0.03em" }}>{txt}</span>;
-                const actionBtn = (label, onClick) => <button onClick={onClick} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 6, padding: "4px 11px", fontSize: 11, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>{label}</button>;
-                const undoBtn = (onClick) => <button onClick={onClick} title="Mark as not opened" style={{ background: "transparent", color: "#15803d", border: "none", fontSize: 10, fontWeight: 700, cursor: "pointer", textDecoration: "underline", whiteSpace: "nowrap" }}>undo</button>;
-                const rowWrap = { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "1px dashed #e9d5ff", flexWrap: "wrap" };
+                const urgentTrial = (trialList || []).filter(c => _nt(c) && c.startDate
+                  && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened)
+                  .map(c => ({ ...c, _d: daysUntil(c.startDate) }))
+                  .filter(c => c._d !== null && c._d >= 0 && c._d < URGENT)
+                  .sort((a, b) => a._d - b._d);
+
+                // CLOSE — nail techs needing blocking (sick/absent today/tomorrow,
+                // or annual/emergency leave in the current cycle) whose first day
+                // off is less than 3 days away (or already underway) and not blocked.
+                const isBlocked = (id) => !!(freshaBlocks && freshaBlocks[id] && freshaBlocks[id].blocked);
+                const sickClose = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec))
+                  .map(r => ({ key: r.id, name: r.name, store: r.store, start_date: r.start_date, leave_type: r.leave_type, emergency: false }));
+                const urgentBlock = dedupeBlockTodos([...sickClose, ...freshaLeaveBlocks(leaveRecs, enriched)], isBlocked)
+                  .filter(r => !isBlocked(r.key))
+                  .map(r => ({ ...r, _d: daysUntil(r.start_date) }))
+                  .filter(r => r._d !== null && r._d < URGENT)
+                  .sort((a, b) => (a._d ?? 0) - (b._d ?? 0));
+                // REMOVE — off-boarded techs whose last day is within 3 days (or past) and not yet removed.
+                const urgentRemove = freshaOffboardRemovals(enriched)
+                  .filter(r => !isBlocked(r.key))
+                  .map(r => ({ ...r, _d: r.leftDate ? daysUntil(r.leftDate) : 0 }))
+                  .filter(r => r._d < URGENT)
+                  .sort((a, b) => (a._d ?? 0) - (b._d ?? 0));
+
+                const total = urgentExtra.length + urgentTrial.length + urgentBlock.length + urgentRemove.length;
+                if (total === 0) return null;
+
+                const dl = (d) => d <= 0 ? "today" : (d === 1 ? "tomorrow" : "in " + d + " days");
+                const badge = (txt) => <span style={{ background: "#fee2e2", color: "#7f1d1d", padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 800, whiteSpace: "nowrap" }}>{txt}</span>;
+                const row = (key, name, sub, tone) => (
+                  <div key={key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "1px dashed #fecaca", flexWrap: "wrap" }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#7f1d1d" }}>{name}</div>
+                      <div style={{ fontSize: 11, color: "#b91c1c", marginTop: 1 }}>{sub}</div>
+                    </div>
+                    {badge(tone)}
+                  </div>
+                );
+
                 return (
-                  <div style={{ background: "#faf5ff", border: "2px solid #d8b4fe", borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: "0 4px 16px rgba(124,58,237,0.10)" }}>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 4 }}>
-                      <div onClick={() => setDashCollapsed(p => ({ ...p, trialTechs: !p.trialTechs }))} style={{ fontSize: 15, fontWeight: 800, color: "#6b21a8", letterSpacing: "0.04em", textTransform: "uppercase", cursor: "pointer" }}>🧪 Trial techs · Fresha <span style={{ fontSize: 12, opacity: 0.6 }}>{dashCollapsed.trialTechs ? "▸" : "▾"}</span></div>
-                      <div style={{ fontSize: 12, color: "#7c3aed", fontWeight: 700 }}>
-                        {needTrial > 0 ? `${needTrial} to open for trial` : "all trials opened"}{monthPending.length ? ` · ${monthPending.length} to open for the month` : ""}
-                      </div>
+                  <div style={{ background: "#fef2f2", border: "2px solid #fecaca", borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: "0 4px 16px rgba(220,38,38,0.10)" }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: "#7f1d1d", letterSpacing: "0.04em", textTransform: "uppercase" }}>⚠️ Fresha · due soon</div>
+                      <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700 }}>{total} {total === 1 ? "tech" : "techs"} to action on Fresha within 3 days</div>
                       <div style={{ flex: 1 }} />
-                      <button onClick={() => tryChangeTab("trialPeriod")} style={{ background: "#fff", color: "#6b21a8", border: "1px solid #d8b4fe", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>Open Trial Period →</button>
+                      <button onClick={() => tryChangeTab("freshaTodo")} style={{ background: "#fff", color: "#7f1d1d", border: "1px solid #fecaca", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>Open Fresha To-Do →</button>
                     </div>
-                    <div style={{ display: dashCollapsed.trialTechs ? "none" : "block" }}>
-                    <div style={{ fontSize: 11, color: "#9333ea", marginBottom: 8, fontStyle: "italic" }}>
-                      {canAct ? `Tick each tech once they're opened on Fresha — it clears the reminder.` : `Opened by ${openerNames || "the assigned team"}.`}
-                    </div>
-                    {activeTrials.map(c => {
-                      const w = trialWindow(c.startDate);
-                      const opened = !!c.freshaTrialOpened;
-                      return (
-                        <div key={"ft-" + c._id} style={rowWrap}>
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ fontSize: 13, fontWeight: 700, color: "#581c87" }}>{c.name} <span style={{ color: "#a78bfa", fontWeight: 600 }}>· 📍 {c.branch}</span></div>
-                            <div style={{ fontSize: 11, color: "#9333ea", marginTop: 1 }}>Trial {fmt(w.first)} → {fmt(w.last)} · {stageLbl[c.status] || c.status}</div>
-                          </div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            {opened
-                              ? <>{pill("#dcfce7", "#166534", "✓ Fresha opened" + (c.freshaTrialOpenedBy ? " · " + c.freshaTrialOpenedBy : ""))}{canAct && undoBtn(() => setTrialFresha(c._id, "freshaTrialOpened", false))}</>
-                              : (canAct ? actionBtn("Mark opened on Fresha", () => setTrialFresha(c._id, "freshaTrialOpened", true)) : pill("#fef3c7", "#92400e", "⏳ awaiting Fresha"))}
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {monthPending.map(c => (
-                      <div key={"fm-" + c._id} style={{ ...rowWrap, borderTop: "1px dashed #c4b5fd" }}>
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontSize: 13, fontWeight: 700, color: "#581c87" }}>{c.name} <span style={{ color: "#a78bfa", fontWeight: 600 }}>· 📍 {c.branch}</span></div>
-                          <div style={{ fontSize: 11, color: "#15803d", fontWeight: 700, marginTop: 1 }}>✅ Passed trial — open on Fresha for the rest of the month (after the schedule is synced)</div>
-                        </div>
-                        <div>
-                          {canAct ? actionBtn("Mark month opened", () => setTrialFresha(c._id, "freshaMonthOpened", true)) : pill("#fef3c7", "#92400e", "⏳ awaiting Fresha")}
-                        </div>
+                    {urgentExtra.map(r => row("ue-" + r.id, r.name, "💰 Open for extra day · " + fmtIncidentDate(r.work_date) + (r.store ? " · 📍 " + r.store : ""), "open " + dl(r._d)))}
+                    {urgentTrial.map(c => row("ut-" + c._id, c.name, "🧪 Open for trial start · " + fmtIncidentDate(c.startDate) + (c.branch ? " · 📍 " + c.branch : ""), "open " + dl(c._d)))}
+                    {urgentBlock.map(r => row("ub-" + r.key, r.name, "🚫 Block — " + (r.emergency ? "Emergency leave" : (LEAVE_TYPE[r.leave_type] || r.leave_type)) + " · " + fmtIncidentDate(r.start_date) + (r.store ? " · 📍 " + r.store : ""), "close " + dl(Math.max(0, r._d ?? 0))))}
+                    {urgentRemove.map(r => row("ur-" + r.key, r.name, "👋 Remove from Fresha — off-boarded" + (r.leftDate ? " · " + fmtIncidentDate(r.leftDate) : "") + (r.store ? " · 📍 " + r.store : ""), "remove " + dl(Math.max(0, r._d ?? 0))))}
+                  </div>
+                );
+              })()}
+
+              {/* ── SECTION: ABSCOND / ABSENCE WARNINGS ──
+                  Flags any nail tech or manager with 2+ CONSECUTIVE no-show /
+                  absent days in the current pay cycle. Consecutive NO-SHOWS =
+                  likely absconding → red, for HR to investigate, set up a
+                  disciplinary, and plan a replacement. HR-sensitive: gated by
+                  the "Abscond / Absence Warnings" permission (owner-only by
+                  default; grant others in Settings). */}
+              {!(new Set(currentUser?.hideTabs || []).has("dashAbscond")) && (() => {
+                // What counts toward an abscond streak: NO SHOW and ABSENT.
+                const MISSED = { no: 1, absent: 1 };
+                // A day they actually WORKED — counts as a return to work and
+                // ENDS the streak (so anyone back at work after a no-show/absent
+                // run is excluded). OFF / blank / excused days (leave, PH, sick,
+                // FRL, maternity, owed-day) are neutral — they neither count nor
+                // reset, so a rest day between no-shows doesn't hide the streak.
+                const WORKED = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1 };
+                const _t = new Date(); _t.setHours(0, 0, 0, 0);
+                const _p2 = n => String(n).padStart(2, "0");
+                const _todayYmd = _t.getFullYear() + "-" + _p2(_t.getMonth() + 1) + "-" + _p2(_t.getDate());
+                // Current pay-cycle days (25th → 24th) up to today, oldest→newest.
+                const cyStart = new Date(_t);
+                if (_t.getDate() >= 25) cyStart.setDate(25);
+                else { cyStart.setMonth(cyStart.getMonth() - 1); cyStart.setDate(25); }
+                const cycleDays = [];
+                for (let dd = new Date(cyStart); dd <= _t; dd.setDate(dd.getDate() + 1)) {
+                  cycleDays.push({ dom: dd.getDate(), ymd: dd.getFullYear() + "-" + _p2(dd.getMonth() + 1) + "-" + _p2(dd.getDate()) });
+                }
+                // No-show/absent days since they LAST WORKED. Walking back from
+                // today: a worked day stops the count (they've returned); off /
+                // blank / excused days are skipped; no-show/absent are counted.
+                const missedSinceReturn = (statuses) => {
+                  let run = 0, noShows = 0, absents = 0, lastIdx = -1;
+                  for (let i = statuses.length - 1; i >= 0; i--) {
+                    const s = statuses[i];
+                    if (WORKED[s]) break;                 // returned to work → stop
+                    if (MISSED[s]) { if (lastIdx === -1) lastIdx = i; run++; if (s === "no") noShows++; else absents++; }
+                    // else: off / blank / excused → skip
+                  }
+                  return { run, noShows, absents, lastIdx };
+                };
+                const _missLabel = (w) => {
+                  const parts = [];
+                  if (w.noShows) parts.push(w.noShows + " no-show" + (w.noShows === 1 ? "" : "s"));
+                  if (w.absents) parts.push(w.absents + " absent");
+                  return w.run + " days missed in a row · " + parts.join(", ");
+                };
+                const warns = [];
+                // Nail techs — scan the per-branch attendance grids.
+                (enriched || []).forEach(s => {
+                  if (!s || !s.ec || !s.branch) return;
+                  if (s.onMat) return;
+                  if (s.leftDate && _todayYmd > s.leftDate) return;
+                  if (_hasStoreScope && !scopedSalonNames.has(s.branch)) return;
+                  const bg = dashAttByBranch[s.branch] || {};
+                  const grid = bg[String(s.ec)] || bg[String(s.ec).trim()];
+                  if (!grid) return;
+                  // Keep the raw status so a real worked day registers as a
+                  // return (and OFF days don't break the run).
+                  const statuses = cycleDays.map(d => { let v = grid[d.dom] || ""; if (v.indexOf("~") === 0) v = ""; return v; });
+                  const r = missedSinceReturn(statuses);
+                  if (r.run >= 2) warns.push({ ec: String(s.ec).trim(), name: s.name, branch: s.branch, role: "Nail tech", run: r.run, noShows: r.noShows, absents: r.absents, allNo: r.run === r.noShows, lastMissedYmd: (cycleDays[r.lastIdx] || {}).ymd || null });
+                });
+                // Managers — from ROM-tagged day statuses (keyed by staff_id).
+                const mgrById = {};
+                (enrichedManagers || []).forEach(m => { const id = m && (m._id || m.id); if (id != null) mgrById[String(id)] = m; });
+                const byMgr = {};
+                (mgrDayStatuses || []).forEach(r => {
+                  if (!r || r.staff_id == null || !r.date) return;
+                  (byMgr[String(r.staff_id)] = byMgr[String(r.staff_id)] || {})[r.date] = r.status;
+                });
+                Object.keys(byMgr).forEach(id => {
+                  const m = mgrById[id]; if (!m || !m.branch) return;
+                  if (m.onMat || m.offboarded) return;
+                  if (_hasStoreScope && !scopedSalonNames.has(m.branch)) return;
+                  const byDate = byMgr[id];
+                  const statuses = cycleDays.map(d => byDate[d.ymd] || "");
+                  const r = missedSinceReturn(statuses);
+                  // Clocked in today → they're back at work, don't flag.
+                  const backToday = dashTodayMgrClockinEcs && dashTodayMgrClockinEcs.has && dashTodayMgrClockinEcs.has(String(m.ec || "").trim());
+                  if (r.run >= 2 && !backToday) warns.push({ ec: String(m.ec || "").trim(), name: m.name, branch: m.branch, role: "Manager", run: r.run, noShows: r.noShows, absents: r.absents, allNo: r.run === r.noShows, lastMissedYmd: (cycleDays[r.lastIdx] || {}).ymd || null });
+                });
+                // Hide anyone HR has already actioned, unless they've missed
+                // again AFTER the actioned date (then it re-surfaces).
+                const active = warns.filter(w => {
+                  const a = abscondActions[w.ec];
+                  return !(a && a.throughYmd && w.lastMissedYmd && a.throughYmd >= w.lastMissedYmd);
+                });
+                if (active.length === 0) return null;
+                active.sort((a, b) => (Number(b.allNo) - Number(a.allNo)) || (b.run - a.run) || (b.noShows - a.noShows));
+                const abscondCount = active.filter(w => w.allNo).length;
+                const _fmtD = ymd => { try { return new Date(ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }); } catch (_) { return ymd; } };
+                return (
+                  <div style={{ background: "#fef2f2", border: "2px solid #fecaca", borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: "0 4px 16px rgba(220,38,38,0.10)" }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
+                      <div onClick={() => setDashCollapsed(p => ({ ...p, abscond: !p.abscond }))} style={{ fontSize: 15, fontWeight: 800, color: "#991b1b", letterSpacing: "0.04em", textTransform: "uppercase", cursor: "pointer" }}>🚨 Abscond / Absence Warnings <span style={{ fontSize: 12, opacity: 0.6 }}>{dashCollapsed.abscond ? "▸" : "▾"}</span></div>
+                      <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700 }}>
+                        {active.length} staff with 2+ days missed in a row{abscondCount > 0 ? ` · ${abscondCount} possible abscondment` : ""}
                       </div>
-                    ))}
+                    </div>
+                    <div style={{ display: dashCollapsed.abscond ? "none" : "block" }}>
+                      <div style={{ fontSize: 11, color: "#b91c1c", marginBottom: 8, fontStyle: "italic" }}>
+                        These people have been no-show or absent 2+ days in a row and <strong>haven't returned to work yet</strong>. Consecutive no-shows likely mean abscondment — investigate, set up a disciplinary, and plan a replacement for the store.
+                      </div>
+                      {active.map((w, i) => {
+                        const red = w.allNo;
+                        const label = w.allNo
+                          ? `${w.run} no-show${w.run === 1 ? "" : "s"} in a row`
+                          : _missLabel(w);
+                        const prior = abscondActions[w.ec];   // exists but superseded (missed again since)
+                        return (
+                          <div key={"ab-" + i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "1px dashed #fecaca", flexWrap: "wrap" }}>
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontSize: 13, fontWeight: 700, color: "#7f1d1d" }}>{w.name} <span style={{ color: "#ef4444", fontWeight: 600 }}>· 📍 {w.branch}</span> <span style={{ color: "#9ca3af", fontWeight: 600, fontSize: 11 }}>· {w.role}</span></div>
+                              <div style={{ fontSize: 11, color: red ? "#b91c1c" : "#b45309", fontWeight: 700, marginTop: 1 }}>{red ? "⛔ " : "⚠ "}{label}{red ? " — likely absconding" : ""}</div>
+                              {prior && prior.note && (
+                                <div style={{ fontSize: 10.5, color: "#9ca3af", marginTop: 2, fontStyle: "italic" }}>↩ Last action: “{prior.note}”{prior.by ? " — " + prior.by : ""}{prior.at ? " · " + _fmtD(prior.at.slice(0, 10)) : ""} · missed again since</div>
+                              )}
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              <span style={{ background: red ? "#fee2e2" : "#fef3c7", color: red ? "#7f1d1d" : "#92400e", padding: "2px 9px", borderRadius: 6, fontSize: 10, fontWeight: 800, letterSpacing: "0.03em", whiteSpace: "nowrap" }}>{red ? "INVESTIGATE" : "FOLLOW UP"}</span>
+                              <button
+                                onClick={() => {
+                                  const note = window.prompt("Mark " + w.name + " (" + w.branch + ") as actioned.\n\nWhat action was taken? (e.g. called her, no response — disciplinary set for 5 Jun / replacing her)", (prior && prior.note) || "");
+                                  if (note === null) return;   // cancelled
+                                  markAbscondDone(w.ec, w.lastMissedYmd, note);
+                                }}
+                                title="Mark done and record what action was taken — clears the warning unless they miss again"
+                                style={{ background: "#fff", color: "#7f1d1d", border: "1px solid #fecaca", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}
+                              >✓ Mark done</button>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 );
@@ -12692,6 +14204,53 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           ))}
                         </div>
                       ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* ── SECTION: CALLED IN SICK / ABSENT (today & tomorrow) ──
+                  Overview of team members who called in via My BOA. Read-only
+                  summary; click through to the Called in Sick tab for details. */}
+              {!(new Set(currentUser?.hideTabs || []).has("dashCalledInSick")) && canSeeIncidents(currentUser) && (() => {
+                const { today, tomorrow, list } = calledInSickWindow(leaveRequests);
+                if (!list.length) return null;
+                const todayList = list.filter(r => r.start_date <= today && r.end_date >= today);
+                const tomorrowList = list.filter(r => r.start_date <= tomorrow && r.end_date >= tomorrow);
+                const typeChip = (t) => ({ display: "inline-flex", padding: "1px 8px", borderRadius: 999, fontSize: 10.5, fontWeight: 700,
+                  color: t === "Sick" ? "#b45309" : "#6b21a8", background: t === "Sick" ? "#fef3c7" : "#ede9fe" });
+                const row = (r) => (
+                  <div key={r.id} onClick={() => tryChangeTab("calledInSick")}
+                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderTop: "1px dashed #FBCFE8", cursor: "pointer" }}>
+                    <span style={{ fontSize: 12.5, fontWeight: 700, color: "#831843" }}>{r.name}</span>
+                    <span style={typeChip(r.leave_type)}>{LEAVE_TYPE[r.leave_type] || r.leave_type}</span>
+                    {r.store && <span style={{ fontSize: 11, color: "#9d6a82" }}>· {r.store}</span>}
+                  </div>
+                );
+                const sentence = [
+                  todayList.length ? todayList.length + " for today" : null,
+                  tomorrowList.length ? tomorrowList.length + " for tomorrow" : null
+                ].filter(Boolean).join(" · ");
+                return (
+                  <div style={{ background: "linear-gradient(135deg,#fff7fb 0%,#FFFFFF 70%)", border: "2px solid #f6c9dd", borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: "0 4px 16px rgba(190,24,93,0.08)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: "#9d174d" }}>🤒 Called in sick / absent</div>
+                      <div style={{ fontSize: 12.5, color: "#83476a", fontWeight: 700 }}>{sentence}</div>
+                      <div style={{ flex: 1 }} />
+                      <button onClick={() => tryChangeTab("calledInSick")}
+                        style={{ background: "#fff", color: "#9d174d", border: "1px solid #f6c9dd", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
+                        Open Called in Sick →
+                      </button>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 8 }}>
+                      <div style={{ background: "#fff", border: "1px solid #f6c9dd", borderRadius: 10, padding: "8px 12px" }}>
+                        <div style={{ fontSize: 11, fontWeight: 800, color: "#9d174d", letterSpacing: "0.04em", marginBottom: 2 }}>TODAY · {todayList.length}</div>
+                        {todayList.length ? todayList.map(row) : <div style={{ fontSize: 12, color: "#9d6a82", paddingTop: 4 }}>Nobody called in.</div>}
+                      </div>
+                      <div style={{ background: "#fff", border: "1px solid #f6c9dd", borderRadius: 10, padding: "8px 12px" }}>
+                        <div style={{ fontSize: 11, fontWeight: 800, color: "#9d174d", letterSpacing: "0.04em", marginBottom: 2 }}>TOMORROW · {tomorrowList.length}</div>
+                        {tomorrowList.length ? tomorrowList.map(row) : <div style={{ fontSize: 12, color: "#9d6a82", paddingTop: 4 }}>Nobody called in.</div>}
+                      </div>
                     </div>
                   </div>
                 );
@@ -12909,18 +14468,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       subClick: mgrMissing.length > 0 ? () => setNotCheckedInModal({ title: "Managers absent today", role: "manager", list: mgrMissing.slice().sort((x, y) => (x.branch || "").localeCompare(y.branch || "") || (x.name || "").localeCompare(y.name || "")), tab: "mgrclockins", tabLabel: "Open Manager Clock-ins →" }) : null
                     },
                     mgrAbsentReason: (() => {
-                      // To-do tile for ROMs: count of recent manager no-shows
-                      // that DON'T yet have a reason recorded. We use the
-                      // mgrDayStatuses set loaded for the mgrclockins/attendance
-                      // tabs and the past 14 days of mgrClockinRows when the
-                      // viewer has already opened that tab. Otherwise the count
-                      // shows "…" and clicking still takes them to the page.
+                      // To-do tile for ROMs: count of manager no-shows in the
+                      // CURRENT payroll cycle (25th→24th) that DON'T yet have a
+                      // reason recorded. We use the mgrDayStatuses set and the
+                      // mgrClockinRows / manager-schedule caches, all of which
+                      // are now loaded on the dashboard too (and reach back to
+                      // the cycle's opening 25th).
                       const taggedKeys = new Set((mgrDayStatuses || []).map(s => (s.staff_id || "") + "|" + s.date));
                       const ecToStaffId = {};
                       managers.forEach(m => { if (m.ec && (m._id || m.id)) ecToStaffId[m.ec] = m._id || m.id; });
-                      // Build past-day no-shows from cached clockin rows (last
-                      // 14 days). If the cache is empty (mgrclockins tab not
-                      // opened yet) the tile defers — clicking still works.
+                      // Build no-shows from cached clockin rows. If the cache is
+                      // empty (data still loading) the tile defers — clicking
+                      // still works.
                       const tdY = new Date(); const _t0 = tdY.getFullYear() + "-" + String(tdY.getMonth() + 1).padStart(2, "0") + "-" + String(tdY.getDate()).padStart(2, "0");
                       const _ymdOf = (ts) => { const d = new Date(ts); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
                       const clockedInByEcDate = new Set();
@@ -12929,10 +14488,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         if (r.type !== "in") return;
                         clockedInByEcDate.add(String(r.staff.employee_code).trim() + "|" + _ymdOf(r.ts));
                       });
-                      // Look at last 14 days excluding today (today still
-                      // pending — they may still clock in).
+                      // Scan the CURRENT payroll cycle (the 25th → the 24th),
+                      // excluding today (they may still clock in). A rolling
+                      // 14-day window reached into the PREVIOUS cycle and
+                      // inflated the count with days from a cycle already
+                      // closed off — anchor to this cycle's opening 25th instead.
                       const pending = [];
-                      const since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - 14);
+                      const since = new Date(); since.setHours(0, 0, 0, 0);
+                      if (since.getDate() >= 25) { since.setDate(25); }
+                      else { since.setMonth(since.getMonth() - 1); since.setDate(25); }
                       for (let dt = new Date(since); dt < tdY && dt.toISOString().slice(0, 10) < _t0; dt.setDate(dt.getDate() + 1)) {
                         const ymd = dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
                         const dom = dt.getDate();
@@ -12945,6 +14509,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         });
                         managers.forEach(m => {
                           if (_onLeaveEcs.has(String(m.ec || "").trim())) return;   // annual leave
+                          if (offboardedMap[String(m.ec || "").trim()]) return;     // resigned / off-boarded — don't chase reasons
+                          if (m.active === false) return;                            // deactivated record
                           const grid = mgrClockinSchedCache[(m.branch || "") + "|" + ymOf];
                           if (!grid) return;
                           const cell = (grid[m.ec]) ? (grid[m.ec][ymd] || grid[m.ec][dom]) : undefined;
@@ -12956,14 +14522,38 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         });
                       }
                       const haveData = (mgrClockinRows || []).length > 0 || Object.keys(mgrClockinSchedCache || {}).length > 0;
+                      // Readable label for the cycle being scanned, e.g. "25 May → 24 Jun".
+                      const _mAbbr = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+                      const _fmtCyc = (d) => d.getDate() + " " + _mAbbr[d.getMonth()];
+                      const _cycEnd = new Date(since); _cycEnd.setMonth(_cycEnd.getMonth() + 1); _cycEnd.setDate(24);
+                      const cycleLabel = _fmtCyc(since) + " → " + _fmtCyc(_cycEnd);
+                      // Build the clickable list: one row per manager-day that
+                      // still needs a reason, with the weekday + date on the
+                      // right so the ROM can see exactly who and which days.
+                      const _dow = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+                      const reasonsList = pending.slice()
+                        .sort((a, b) => (a.branch || "").localeCompare(b.branch || "") || (a.name || "").localeCompare(b.name || "") || a.ymd.localeCompare(b.ymd))
+                        .map(p => {
+                          const a = p.ymd.split("-").map(Number);
+                          const d = new Date(a[0], a[1] - 1, a[2]);
+                          return { name: p.name, branch: p.branch, detail: _dow[d.getDay()] + " " + a[2] + " " + _mAbbr[a[1] - 1], key: (p.name || "") + "|" + p.ymd };
+                        });
+                      const openReasons = () => setNotCheckedInModal({
+                        title: "Manager reasons to add",
+                        role: "manager",
+                        subtitle: pending.length + " manager-day" + (pending.length !== 1 ? "s" : "") + " this cycle (" + cycleLabel + ") still need a reason tagged.",
+                        list: reasonsList,
+                        tab: "mgrclockins",
+                        tabLabel: "Open Manager Clock-ins →"
+                      });
                       return {
                         l: "Manager reasons to add",
                         v: haveData ? pending.length : "…",
-                        sub: haveData ? (pending.length === 0 ? "all manager absences explained 🎉" : "past 14d · click to tag reasons") : "open Manager Check-ins to scan",
+                        sub: haveData ? (pending.length === 0 ? ("all explained · " + cycleLabel + " 🎉") : ("this cycle · " + cycleLabel + " · tap to tag")) : "open Manager Check-ins to scan",
                         i: "📝",
                         c: pending.length > 0 ? "#7c2d12" : "#14532d",
                         bg: pending.length > 0 ? "#fef3c7" : "#dcfce7",
-                        click: () => tryChangeTab("mgrclockins")
+                        click: (haveData && pending.length > 0) ? openReasons : () => tryChangeTab("mgrclockins")
                       };
                     })(),
                     scheduledToday: { l: "Scheduled today", v: dashScheduledToday == null ? "…" : (_hasStoreScope ? Object.keys(dashByBranch).filter(b => scopedBranchSet.has(b)).reduce((a, b) => a + (dashByBranch[b] || 0), 0) : dashScheduledToday), sub: _hasStoreScope ? ("scope: " + (dashScope === "mine" ? "my stores" : dashScope === "other" ? "peer stores" : "all branches")) : "across all branches", i: "📅", c: "#1e3a8a", bg: "#dbeafe" },
@@ -13159,15 +14749,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 {/* Today by branch */}
                 <div style={card}>
                   <div style={cardTitle}>
-                    <span>📅 Scheduled today by branch</span>
+                    <span>💅 Techs working today by branch</span>
                     <button onClick={() => tryChangeTab("scheduling")} style={{ background: "transparent", border: "none", color: PINK.accent, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit" }}>View schedules →</button>
                   </div>
-                  {dashScheduledToday == null ? (
+                  {techToday == null ? (
                     <div style={{ fontSize: 12, color: "#9ca3af", fontStyle: "italic" }}>Loading schedules…</div>
                   ) : (
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(140px,1fr))", gap: 8 }}>
                       {scopedSalons.map(sl => {
-                        const c = dashByBranch[sl.name] || 0;
+                        const c = (techToday.byBranch && techToday.byBranch[sl.name]) || 0;
                         return (
                           <div key={sl.name} style={{ background: PINK.softest, border: `1px solid ${PINK.soft}`, borderRadius: 11, padding: "10px 12px" }}>
                             <div style={{ fontSize: 11, fontWeight: 700, color: PINK.ink }}>📍 {sl.name}</div>
@@ -13357,8 +14947,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       const _effRole = m.effectiveRole || m.role;
                       const icon = _effRole === "SSM" ? "💎" : _effRole === "SM" ? "👑" : "⭐";
                       const roleBg = _effRole === "SSM" ? "#92400e" : _effRole === "SM" ? "#7c3aed" : "#0369a1";
-                      const rowBg = m.onMat ? "#fdf4ff" : m.pregnant ? "#fffbeb" : "#fff";
-                      const rowOpacity = m.onMat ? 0.6 : 1;
+                      // Off-boarding parity with techs: a manager on the
+                      // off-boarding list is either already departed (leftDate
+                      // today or past) or on notice (future leftDate). Departed
+                      // rows grey out and show 'Left <date>' instead of 'Active'.
+                      const mgrDeparted = m.offboarded && m.offDaysSinceLeft != null && m.offDaysSinceLeft >= 0;
+                      const mgrOnNotice = m.offboarded && m.offDaysSinceLeft != null && m.offDaysSinceLeft < 0;
+                      const _fmtLeft = (ymd) => { try { return new Date(String(ymd).replace(/\//g, "-") + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }); } catch (_) { return ymd; } };
+                      const rowBg = mgrDeparted ? "#f3f4f6" : m.onMat ? "#fdf4ff" : m.pregnant ? "#fffbeb" : "#fff";
+                      const rowOpacity = mgrDeparted ? 0.5 : m.onMat ? 0.6 : 1;
                       return (
                         <tr key={"mgr-" + (m._id || m.ec)} style={{ background: rowBg, borderTop: `1px solid ${bdr}`, opacity: rowOpacity }}>
                           <td style={{ padding: "10px 12px", fontFamily: "monospace", fontSize: 11, color: "#8E5570", fontWeight: 700 }}>{m.ec}</td>
@@ -13381,7 +14978,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <td style={{ padding: "10px 12px" }}>{m.permit ? <Chip {...(COMPLIANCE[m.permit] || { icon: "❔", color: "#6b7280", bg: "#f3f4f6", border: "#d1d5db", label: m.permit })}>{(COMPLIANCE[m.permit] || {}).label || m.permit}</Chip> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
                           <td style={{ padding: "10px 12px", fontSize: 11, color: "#831843", fontWeight: 600, whiteSpace: "nowrap" }}>{m.startDate ? new Date(m.startDate.replace(/\//g, "-") + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : <span style={{ color: "#d1d5db" }}>—</span>}</td>
                           <td style={{ padding: "10px 12px" }}>
-                            <span style={{ fontSize: 10, fontWeight: 800, background: roleBg, color: "#fff", padding: "3px 8px", borderRadius: 6, letterSpacing: "0.04em" }}>{m.active ? "Active" : "Archived"}</span>
+                            {mgrDeparted
+                              ? <span style={{ fontSize: 10, fontWeight: 800, background: "#6b7280", color: "#fff", padding: "3px 8px", borderRadius: 6, letterSpacing: "0.04em" }}>👋 {m.leftDate ? "Left " + _fmtLeft(m.leftDate) : "Off-boarded"}</span>
+                              : mgrOnNotice
+                                ? <span style={{ fontSize: 10, fontWeight: 800, background: "#b45309", color: "#fff", padding: "3px 8px", borderRadius: 6, letterSpacing: "0.04em" }}>⏳ Notice{m.leftDate ? " · leaves " + _fmtLeft(m.leftDate) : ""}</span>
+                                : <span style={{ fontSize: 10, fontWeight: 800, background: roleBg, color: "#fff", padding: "3px 8px", borderRadius: 6, letterSpacing: "0.04em" }}>{m.active ? "Active" : "Archived"}</span>}
                             {m.onMat && <span style={{ marginLeft: 6, fontSize: 10, background: "#FBCFE8", color: "#8E5570", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>🤱 mat.</span>}
                           </td>
                           <td style={{ padding: "10px 12px", fontSize: 11, color: "#831843" }}>{m.matRec && m.matRec.returnDate ? new Date(m.matRec.returnDate.replace(/\//g, "-") + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : <span style={{ color: "#d1d5db" }}>—</span>}</td>
@@ -15394,6 +16995,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           );
         })()}
 
+        {/* ── INCIDENT REPORTS TAB ── */}
+        {tab === "incidents" && canSeeIncidents(currentUser) && (
+          <IncidentReportsTab reports={incidentReports} setReports={setIncidentReports} currentUser={currentUser} />
+        )}
+
+        {/* ── LEAVE REQUESTS TAB ── */}
+        {tab === "leaveRequests" && canSeeIncidents(currentUser) && (
+          <LeaveRequestsTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} />
+        )}
+
+        {/* ── CALLED IN SICK TAB ── */}
+        {tab === "calledInSick" && canSeeIncidents(currentUser) && (
+          <CalledInSickTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} />
+        )}
+
+        {/* ── EXTRA-DAY REQUESTS TAB ── */}
+        {tab === "extraDayRequests" && canSeeIncidents(currentUser) && (
+          <ExtraDayRequestsTab requests={extraDayRequests} setRequests={setExtraDayRequests} currentUser={currentUser} />
+        )}
+
+        {tab === "freshaTodo" && (
+          <FreshaTodoTab extraDayRequests={extraDayRequests} freshaExtraOpen={freshaExtraOpen} markFreshaExtraOpen={markFreshaExtraOpen} trialList={trialList} setTrialFresha={setTrialFresha} leaveRequests={leaveRequests} freshaBlocks={freshaBlocks} markFreshaBlocked={markFreshaBlocked} leaveRecs={leaveRecs} enriched={enriched} />
+        )}
+
         {/* ── ALERTS TAB ── */}
         {tab === "alerts" && (() => {
           // Exclude maternity, unpaid-legal leave AND off-boarded/departed staff
@@ -17292,6 +18917,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const t30Str = t30.getFullYear() + "-" + p2(t30.getMonth() + 1) + "-" + p2(t30.getDate());
         const notice = offList.filter(o => o.leftDate >= todayStr).slice().sort((a, b) => a.leftDate.localeCompare(b.leftDate));
         const recent = offList.filter(o => o.leftDate < todayStr && o.leftDate >= t30Str).slice().sort((a, b) => b.leftDate.localeCompare(a.leftDate));
+        // Everyone who left MORE than 30 days ago — they drop off the Recently
+        // Left card but their off-board record still lingers (and still hides
+        // them from the schedule / attendance). Surface them in a searchable
+        // archive so a mistaken off-boarding can always be undone, however old.
+        const archiveAll = offList.filter(o => o.leftDate < t30Str).slice().sort((a, b) => b.leftDate.localeCompare(a.leftDate));
+        const _aq = offArchiveQuery.trim().toLowerCase();
+        const archive = _aq
+          ? archiveAll.filter(o => ((o.name || "") + " " + (o.ec || "") + " " + (o.branch || "")).toLowerCase().includes(_aq))
+          : archiveAll;
         const persistOff = async (next) => {
           setOffList(next);
           try { await window.BOA_DB.saveOffboarding(next); }
@@ -17517,6 +19151,52 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               )}
             </div>
+
+            {/* Earlier departures archive — restore anyone who left >30 days ago */}
+            {archiveAll.length > 0 && (
+              <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "16px 18px", border: "1px solid #FBCFE8", marginTop: 14 }}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 16, fontWeight: 600, color: "#831843" }}>Earlier departures</div>
+                  <div style={{ fontSize: 11, color: "#BE185D", fontWeight: 600 }}>· left over 30 days ago · {archiveAll.length} {archiveAll.length === 1 ? "person" : "people"}</div>
+                </div>
+                <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 12 }}>Off-boarded by mistake? Search and Restore to bring them back as active staff — their schedule and attendance history return automatically.</div>
+                <input
+                  value={offArchiveQuery}
+                  onChange={(e) => setOffArchiveQuery(e.target.value)}
+                  placeholder="Search by name, EC or branch…"
+                  style={{ width: "100%", padding: "8px 10px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 13, fontFamily: "inherit", marginBottom: 12 }}
+                />
+                {archive.length === 0 ? (
+                  <div style={{ fontSize: 12, color: "#9ca3af", padding: "16px 4px", textAlign: "center" }}>No earlier departures match “{offArchiveQuery}”.</div>
+                ) : (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 10 }}>
+                    {archive.map(o => {
+                      const d = new Date(o.leftDate + "T00:00:00");
+                      const dStr = d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" });
+                      const daysAgo = Math.floor((now - d) / 86400000);
+                      const reasonBg = o.reason === "Terminated" ? "#fee2e2" : o.reason === "Resigned" ? "#dbeafe" : "#fef3c7";
+                      const reasonColor = o.reason === "Terminated" ? "#991b1b" : o.reason === "Resigned" ? "#1e3a8a" : "#92400e";
+                      return (
+                        <div key={o.ec} style={{ background: "#F9FAFB", borderRadius: 11, padding: "13px 14px", border: "1px solid #e5e7eb" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6, marginBottom: 6 }}>
+                            <div>
+                              <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{o.name}</div>
+                              <div style={{ fontSize: 10, fontFamily: "monospace", color: "#E84B9B", fontWeight: 700 }}>{o.ec} · {o.branch}</div>
+                            </div>
+                            {o.reason && <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 99, background: reasonBg, color: reasonColor, letterSpacing: "0.02em" }}>{o.reason}</span>}
+                          </div>
+                          <div style={{ fontSize: 11, color: "#BE185D", marginTop: 4 }}>
+                            Left {dStr}<span style={{ opacity: 0.7 }}> · {daysAgo} days ago</span>
+                          </div>
+                          {o.notes && <div style={{ fontSize: 11, color: "#831843", marginTop: 6, fontStyle: "italic", whiteSpace: "pre-wrap" }}>{o.notes}</div>}
+                          <button onClick={() => undoOff(o.ec)} style={{ marginTop: 8, background: "transparent", border: "1px solid #FBCFE8", color: "#831843", padding: "4px 10px", borderRadius: 5, fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Restore</button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         );
       })()}
@@ -17540,6 +19220,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           sick: { lbl: "Sick NO note", bg: "#fecaca", fg: "#7f1d1d", cat: "paid" },
           frl: { lbl: "FRL + proof", bg: "#fed7aa", fg: "#7c2d12", cat: "paid" },
           al: { lbl: "Annual", bg: "#bfdbfe", fg: "#1e40af", cat: "paid" },
+          el: { lbl: "Emergency", bg: "#fed7aa", fg: "#9a3412", cat: "unpaid" },
           ph: { lbl: "Public Holiday", bg: "#86efac", fg: "#14532d", cat: "paid" },
           mat: { lbl: "Maternity", bg: "#d6c2a8", fg: "#7c2d12", cat: "unpaid" },
           no: { lbl: "NO SHOW", bg: "#e9d5ff", fg: "#581c87", cat: "unpaid" },
@@ -17712,6 +19393,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const order = { SSM: 0, SM: 1, AM: 2, NT: 3 };
           return (order[a.role] ?? 9) - (order[b.role] ?? 9) || a.name.localeCompare(b.name);
         });
+        // ec → row lookup (carries role) so per-ec helpers like the totals can
+        // tell a manager from a nail tech.
+        const attStaffByEc = {};
+        attStaff.forEach(row => { attStaffByEc[String(row.ec).trim()] = row; });
         // Lookup for the schedule/status helpers below: every day for an
         // on-maternity staff member mirrors as 'mat' regardless of what's
         // in the saved schedule grid (which may still have legacy 'L'
@@ -17772,6 +19457,49 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const sid = _mgrEcToStaffId[ec] != null ? String(_mgrEcToStaffId[ec]) : null;
           return !!(sid && (_mgrCheckedInByIdYmd[sid] || {})[ymd]);
         };
+        // Latest clock-OUT timestamp (ms) per manager ec+ymd, from the same
+        // rows. Used to AUTO-DERIVE a manager's early-leave deduction from when
+        // they actually clocked out vs their scheduled shift end — so it always
+        // matches the clock-out shown on Manager Check-ins (no manual entry).
+        const _mgrOutTsByEcYmd = {};
+        (mgrClockinRows || []).forEach(r => {
+          if (!r || !r.staff || r.staff.role_type !== "manager") return;
+          if (r.type !== "out" && r.type !== "out_auto") return;
+          const ec = String(r.staff.employee_code || "").trim(); if (!ec) return;
+          const ymdK = _mLocalYmd(r.ts);
+          const t = new Date(r.ts).getTime();
+          const cur = (_mgrOutTsByEcYmd[ec] = _mgrOutTsByEcYmd[ec] || {});
+          if (!cur[ymdK] || t > cur[ymdK]) cur[ymdK] = t;
+        });
+        // Hours short = scheduled end − actual clock-out, honouring per-day
+        // CUSTOM hours (boa_mgr_times_v1) over the code-based default. Returns 0
+        // unless it's a genuine early departure (beyond a small grace). Managers
+        // only — techs keep the kiosk-recorded boa_early sidecar.
+        const _MGR_EARLY_GRACE_MIN = 20;
+        const _mgrEarlyHoursFor = (s, d, ymd) => {
+          if (!s || s.role === "NT" || !ymd) return 0;
+          const ec = String(s.ec || "").trim();
+          const outTs = (_mgrOutTsByEcYmd[ec] || {})[ymd];
+          if (!outTs) {
+            // No clock-out loaded for this day (e.g. an older cycle outside the
+            // clock-in window) — fall back to any historically recorded value
+            // so past manager early-leaves aren't lost.
+            const er = attEarly && attEarly[d] && attEarly[d][s.ec];
+            return er && typeof er.hours === "number" ? er.hours : 0;
+          }
+          const code = (attSched[s.ec] || {})[d] || (attSched[ec] || {})[d] || "";
+          const custom = (mgrCustomTimes[s.ec] || mgrCustomTimes[ec] || {})[ymd];
+          const isWork = code === "W" || code === "WE" || code === "WL" || code === "WM" || code === "WB" || code === "E";
+          if (!custom && !isWork) return 0;                       // not a scheduled working day
+          let dow = -1; try { dow = new Date(ymd + "T12:00:00").getDay(); } catch (_) {}
+          const range = parseShiftRange(custom || shiftTimes(s.role, code, s.branch || attBranch, dow));
+          if (!range) return 0;
+          const out = new Date(outTs);
+          const shortMin = range.end - (out.getHours() * 60 + out.getMinutes());
+          if (shortMin <= _MGR_EARLY_GRACE_MIN) return 0;         // on time / overran / within grace
+          let h = Math.round((shortMin / 60) * 2) / 2;            // round to 0.5h
+          return h > 12 ? 12 : h;
+        };
         const _todayYmdAtt = (() => { const d = new Date(); return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()); })();
         const _mgrCheckinFromYmd = (() => {
           const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - (mgrClockinDays || 31));
@@ -17806,13 +19534,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // those days. Overlay leave directly from leaveRecs so an approved
         // leave day shows as 'Annual' regardless of whether the schedule was
         // re-saved.
+        // Map each leave day to the attendance code it should mirror as:
+        // emergency leave → 'el' (Emergency, unpaid), otherwise → 'al' (Annual,
+        // paid). Storing the code (not just `true`) lets the overlay carry the
+        // emergency/unpaid distinction onto the attendance sheet. Existing
+        // truthiness checks ([ymd] present) still work since the value is a
+        // non-empty string.
         const _onLeaveByEcYmd = {};
         (leaveRecs || []).forEach(lv => {
           if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return;
           const ec = String(lv.ec).trim();
+          const _code = lv.emergency ? "el" : "al";
           for (let cur = new Date(lv.startDate + "T00:00:00"); cur <= new Date(lv.endDate + "T00:00:00"); cur.setDate(cur.getDate() + 1)) {
             const ymd = cur.getFullYear() + "-" + p2(cur.getMonth() + 1) + "-" + p2(cur.getDate());
-            (_onLeaveByEcYmd[ec] = _onLeaveByEcYmd[ec] || {})[ymd] = true;
+            const _bucket = (_onLeaveByEcYmd[ec] = _onLeaveByEcYmd[ec] || {});
+            // If the same day has both, an emergency record wins (unpaid is the
+            // stricter / safer classification to surface for follow-up).
+            if (_bucket[ymd] !== "el") _bucket[ymd] = _code;
           }
         });
 
@@ -17856,11 +19594,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // get mis-rendered as a working day.
           {
             const _do = days.find(x => x.d === d);
-            if (_do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd]) {
+            const _lc = _do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd];
+            if (_lc) {
               // Admin-edited cell still wins (e.g. "Sick + note" on top of a
               // pre-approved leave day shouldn't get reverted).
               const _gv = attGrid[ec] && attGrid[ec][d];
-              if (!_gv) return "al";
+              if (!_gv) return _lc;   // 'el' (emergency, unpaid) or 'al' (annual)
             }
           }
           // Tech-loan override: the home branch's loaned-out cell mirrors
@@ -17997,7 +19736,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // if the saved schedule grid still has W/WL/WE for that day.
           {
             const _do = days.find(x => x.d === d);
-            if (_do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd]) return "al";
+            const _lc = _do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd];
+            if (_lc) return _lc;   // 'el' (emergency, unpaid) or 'al' (annual)
           }
           const sv = attSched[ec] && attSched[ec][d];
           if (!sv) {
@@ -18113,7 +19853,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // green ✓ + reviewer + note stick for payroll's audit trail. If the
         // underlying value later changes, the review expires (handled at
         // render time by comparing to valueAtReview).
-        const VALID_STAT_CODES = ["on", "late", "off", "sick", "sick_n", "frl", "no", "absent", "al", "ph", "mat", "ext", "trial", "swap_o", "swap_i", "unpaid", "term"];
+        const VALID_STAT_CODES = ["on", "late", "off", "sick", "sick_n", "frl", "no", "absent", "al", "el", "ph", "mat", "ext", "trial", "swap_o", "swap_i", "unpaid", "term"];
         const markCellReviewed = async (ec, d, currentValue) => {
           pushUndo("warning resolution");
           const existing = ((attMeta && attMeta.reviewedWarnings) || {})[ec] || {};
@@ -18872,6 +20612,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const isHol = !!(holidayLookup && holidayLookup[dy.ymd]);
             const phOk = isHol && phEligible(dy, rawV, bareV);
             if (v === "al") t.al++;
+            else if (v === "el") t.unpaid++;   // emergency leave = unpaid
             else if (v === "sick") { t.sick++; t.unpaid++; }
             else if (v === "sick_n") t.sickNote++;
             else if (v === "frl") t.frl++;
@@ -18900,11 +20641,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // Tracked separately so the SHORT HRS column can show only
             // these hours; also rolled into the existing unpaidHours so
             // NET UNPAID picks them up too.
-            const earlyForDay = attEarly && attEarly[dy.d];
-            const earlyRec = earlyForDay && earlyForDay[ec];
-            if (earlyRec && typeof earlyRec.hours === "number" && earlyRec.hours > 0) {
-              t.earlyHours += earlyRec.hours;
-              t.unpaidHours += earlyRec.hours;
+            const _esRow = attStaffByEc[String(ec).trim()];
+            let _earlyH = 0;
+            if (_esRow && _esRow.role !== "NT") {
+              _earlyH = _mgrEarlyHoursFor(_esRow, dy.d, dy.ymd);   // derived from clock-out
+            } else {
+              const earlyRec = attEarly && attEarly[dy.d] && attEarly[dy.d][ec];
+              _earlyH = (earlyRec && typeof earlyRec.hours === "number") ? earlyRec.hours : 0;
+            }
+            if (_earlyH > 0) {
+              t.earlyHours += _earlyH;
+              t.unpaidHours += _earlyH;
             }
           }
           // Convert deductions to days. Short hours from the kiosk's
@@ -18988,7 +20735,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // above. Cell CORRESPONDS only when scheduled-work + presence
               // + Fresha agree, or scheduled-off + no presence + no Fresha.
               const cellSaysPresent = isWorking || isLate || checkinHasIn;
-              const scheduleSaysOff = hint === "off" || hint === "al" || hint === "ph" || hint === "mat";
+              const scheduleSaysOff = hint === "off" || hint === "al" || hint === "el" || hint === "ph" || hint === "mat";
               const isExtraDayCell = bareV === "ext";
               const presentNoApptWarn = cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
               const workedOnOffDay = scheduleSaysOff && cellSaysPresent && !cellShowsAbsent && !isExtraDayCell;
@@ -19298,7 +21045,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const bareV = v ? (v.charAt(0) === "~" ? v.slice(1) : v) : "";
                           const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i";
                           const isLate = bareV === "late";
-                          const isOff = bareV === "off" || bareV === "swap_o" || bareV === "al" || bareV === "ph" ||
+                          const isOff = bareV === "off" || bareV === "swap_o" || bareV === "al" || bareV === "el" || bareV === "ph" ||
                             bareV === "mat" || bareV === "term" || bareV === "sick" || bareV === "sick_n" || bareV === "frl";
                           // Kiosk audit log entry for this cell (only non-presence statuses
                           // — sick / no-show / off / swap_o / etc.). Future-dated kiosk
@@ -19360,8 +21107,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // orange overlay until the next Import Check-ins refresh
                           // (matches the rule the user spelled out: 'I only want to
                           // see left-early after I import the check-ins').
-                          const earlyForCell = !mirrorSuppressed && attEarly && attEarly[dy.d] && attEarly[dy.d][s.ec];
-                          const earlyHours = earlyForCell && typeof earlyForCell.hours === "number" ? earlyForCell.hours : 0;
+                          // Managers: derive the deduction from their actual clock-out vs
+                          // scheduled end (custom-hours aware). Techs: kiosk boa_early sidecar.
+                          let earlyHours = 0;
+                          if (!mirrorSuppressed) {
+                            if (s.role !== "NT") {
+                              earlyHours = _mgrEarlyHoursFor(s, dy.d, dy.ymd);
+                            } else {
+                              const earlyForCell = attEarly && attEarly[dy.d] && attEarly[dy.d][s.ec];
+                              earlyHours = earlyForCell && typeof earlyForCell.hours === "number" ? earlyForCell.hours : 0;
+                            }
+                          }
                           if (earlyHours > 0) {
                             const mins = Math.round(earlyHours * 60);
                             const lbl = mins < 60 ? "-" + mins + "m"
@@ -19426,7 +21182,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // matches only hint==='off') — also treats Annual
                           // and Public-Holiday as 'shouldn't be here today'
                           // for the mismatch rules.
-                          const scheduleOffish = hint === "off" || hint === "al" || hint === "ph" || hint === "mat";
+                          const scheduleOffish = hint === "off" || hint === "al" || hint === "el" || hint === "ph" || hint === "mat";
                           const isExtraDayCell = bareV === "ext";
                           // presentNoApptWarn — schedule wants work, the cell or
                           // kiosk says present, but Fresha has no appointment.
@@ -19536,8 +21292,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               : freshaCoversThisDay ? "No appointments this day"
                                 : "No data for this day yet";
                           }
-                          const earlyRec = attEarly && attEarly[dy.d] && attEarly[dy.d][s.ec];
-                          const earlyHrs = earlyRec && typeof earlyRec.hours === "number" ? earlyRec.hours : 0;
+                          const earlyHrs = s.role !== "NT"
+                            ? _mgrEarlyHoursFor(s, dy.d, dy.ymd)
+                            : ((attEarly && attEarly[dy.d] && attEarly[dy.d][s.ec] && typeof attEarly[dy.d][s.ec].hours === "number") ? attEarly[dy.d][s.ec].hours : 0);
 
                           const loanTo = outgoingLoanMap[s.ec] && outgoingLoanMap[s.ec][dy.d];
 
@@ -19601,7 +21358,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const allMatchEdge = "1px solid #FCE7F3";
                           const schedStripeColor = stripeMergeBg ? stripeMergeBg
                             : scheduleSaysWork ? C_WORK
-                              : (hint === "off" || hint === "al" || hint === "ph" || hint === "mat" || hint === "term") ? C_OFF
+                              : (hint === "off" || hint === "al" || hint === "el" || hint === "ph" || hint === "mat" || hint === "term") ? C_OFF
                                 : hint ? (STAT[hint] || {}).bg || "transparent"
                                   : "transparent";
                           const freshaStripeColor = stripeMergeBg ? stripeMergeBg
@@ -19694,9 +21451,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       which leave type the day is, without hovering.
                                       Plain on/off mirrored cells stay clean because the green
                                       /grey S strip already shows that. */}
-                                {v && (override || isFutureSwap || earlyHours > 0 || phAuto || bareV === "mat" || bareV === "al") && (
+                                {v && (override || isFutureSwap || earlyHours > 0 || phAuto || bareV === "mat" || bareV === "al" || bareV === "el") && (
                                   <div style={{ position: "absolute", top: 6, bottom: s.role === "NT" ? 6 : 0, left: 0, right: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1, fontSize: 9, fontStyle: (override && !isFutureSwap) ? "normal" : "italic", fontWeight: (override && !isFutureSwap) ? 700 : 400, color: isFutureSwap ? "#9ca3af" : (override ? st.fg : (hintFg + "70")), pointerEvents: "none", letterSpacing: "0.02em" }}>
-                                    <span>{!override && bareV === "mat" ? "ML" : !override && bareV === "al" ? "Annual" : (st.lbl || hintLbl || "")}</span>
+                                    <span>{!override && bareV === "mat" ? "ML" : !override && bareV === "al" ? "Annual" : !override && bareV === "el" ? "Emergency" : (st.lbl || hintLbl || "")}</span>
                                     {/* Loan-day badge — only renders when a real status was
                                           mirrored from the receiving branch (i.e. v !== loan_out,
                                           which already shows '→ Bree' as the main label). */}
@@ -19886,6 +21643,43 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700, marginBottom: 4 }}>📈 Attendance Reports</div>
               <div style={{ fontSize: 12, color: "#9d4d6e" }}>Who misses the most work, who attends best, and recurring patterns (Monday / weekend / month-end clusters) that flag possible sick-leave abuse. Annual leave &amp; maternity are never counted as missed days.</div>
             </div>
+
+            {/* Abscond / absence cases that were "marked done" on the dashboard
+                warning. They aren't deleted — they're surfaced here so payroll
+                can see the case is being handled (disciplinary, replacement…)
+                instead of silently disappearing. Re-appears on the dashboard if
+                the person misses again after the actioned date. */}
+            {(() => {
+              const acts = Object.entries(abscondActions || {}).filter(([, a]) => a && (a.note || a.throughYmd || a.by));
+              if (acts.length === 0) return null;
+              const mgrEcs = new Set((managers || []).map(m => String(m.ec || "").trim()).filter(Boolean));
+              const byEc = {};
+              (staff || []).concat(managers || []).forEach(p => { if (p && p.ec) byEc[String(p.ec).trim()] = p; });
+              const _fmt = ymd => { if (!ymd) return ""; try { return new Date(String(ymd).slice(0, 10) + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }); } catch (_) { return ymd; } };
+              const rows = acts.map(([ec, a]) => {
+                const p = byEc[String(ec).trim()] || {};
+                return { ec, name: p.name || ec, branch: p.branch || "—", role: mgrEcs.has(String(ec).trim()) ? "Manager" : "Nail tech", note: a.note || "", by: a.by || "", at: a.at || "", throughYmd: a.throughYmd || "" };
+              }).sort((x, y) => (y.at || "").localeCompare(x.at || ""));
+              return (
+                <div style={{ background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 12, padding: "14px 16px", marginBottom: 16 }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "#92400e", letterSpacing: "0.04em", marginBottom: 4 }}>🛠️ ABSCOND / ABSENCE CASES BEING DEALT WITH · {rows.length}</div>
+                  <div style={{ fontSize: 11, color: "#9d4d6e", marginBottom: 10 }}>Marked done on the dashboard warning — kept here so payroll can see the case is in hand. It re-appears on the dashboard if the person misses again.</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {rows.map((r, i) => (
+                      <div key={r.ec + i} style={{ background: "#fff", border: "1px solid #fde68a", borderRadius: 9, padding: "9px 12px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{r.name} <span style={{ color: "#9d4d6e", fontWeight: 600, fontSize: 11 }}>· 📍 {r.branch} · {r.role}</span></div>
+                          {r.note && <div style={{ fontSize: 12, color: "#7c2d12", marginTop: 3 }}>“{r.note}”</div>}
+                          <div style={{ fontSize: 10.5, color: "#9ca3af", marginTop: 3 }}>{r.by ? "by " + r.by : ""}{r.at ? (r.by ? " · " : "") + _fmt(r.at) : ""}{r.throughYmd ? " · covers up to " + _fmt(r.throughYmd) : ""}</div>
+                        </div>
+                        <button onClick={() => { if (window.confirm("Reopen " + r.name + "'s warning? It returns to the dashboard for action.")) clearAbscondDone(r.ec); }}
+                          style={{ background: "#fff", color: "#92400e", border: "1px solid #fcd34d", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>↩ Reopen</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* View toggle: snapshot vs multi-cycle trend */}
             <div style={{ display: "flex", gap: 6, marginBottom: 14, borderBottom: "1px solid #FBCFE8", paddingBottom: 12 }}>
@@ -20541,6 +22335,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           return ct;
         };
         const persistLeaves = async (next) => {
+          // Hard guard: never persist a NEW leave record whose employee code
+          // matches no current staff member or manager. This is the single
+          // write path for leave records, so an orphan can't be created from
+          // any entry point. Existing records (incl. already-orphaned ones)
+          // pass through untouched so removals still work.
+          const known = new Set();
+          [...(staff || []), ...(managers || [])].forEach(p => { if (p && p.ec) known.add(String(p.ec).toUpperCase().trim()); });
+          const existingIds = new Set((leaveRecs || []).map(r => r._id));
+          const badNew = (next || []).find(r => r && !existingIds.has(r._id) && r.ec && !known.has(String(r.ec).toUpperCase().trim()));
+          if (badNew) { alert("Cannot save leave: no staff member or manager matches employee code \"" + badNew.ec + "\". Pick an existing person."); return; }
           setLeaveRecs(next);
           try { await window.BOA_DB.saveLeaveRecords(next); }
           catch (e) { alert("Could not save: " + (e.message || e)); }
@@ -20548,6 +22352,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const addLeave = () => {
           if (!f.ec || !f.startDate || !f.endDate) { alert("Please fill in " + peopleType + ", from, and to dates."); return; }
           if (new Date(f.startDate) > new Date(f.endDate)) { alert("Start date must be on or before end date."); return; }
+          // Block double-logging: same person already has annual / emergency leave
+          // whose dates overlap these ones. Stops duplicate planner entries (which
+          // also doubled up the Fresha block reminder).
+          const dup = leaveRecs.find(lv => lv.ec === f.ec && lv.type === "Annual leave"
+            && lv.startDate <= f.endDate && lv.endDate >= f.startDate);
+          if (dup) {
+            alert("Cannot add: this person already has annual leave logged for " + fmtIncidentDate(dup.startDate) + " → " + fmtIncidentDate(dup.endDate) + ", which overlaps these dates. Edit or remove that entry instead of adding a duplicate.");
+            return;
+          }
           const stf = (isTechMode ? enriched : managers).find(p => p.ec === f.ec);
           if (!stf || stf.onMat || !ROLE_GUARD(stf)) { alert("This sub-tab manages annual leave for " + peopleTypePlural + " only."); return; }
           const stBr = stf.branch;
@@ -20869,6 +22682,33 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               )}
             </div>
+            {(() => {
+              // Orphaned leave records: logged against an employee code that no
+              // longer matches anyone (e.g. a tech who was deleted). They don't
+              // show in the list above (no person to attach to) and can't be
+              // removed there — surface them here so they can be cleaned up.
+              const known = new Set();
+              (staff || []).forEach(s => { if (s && s.ec) known.add(String(s.ec).toUpperCase().trim()); });
+              (managers || []).forEach(s => { if (s && s.ec) known.add(String(s.ec).toUpperCase().trim()); });
+              const orphans = (leaveRecs || []).filter(lv => lv && lv.ec && !known.has(String(lv.ec).toUpperCase().trim()))
+                .slice().sort((a, b) => (a.startDate || "").localeCompare(b.startDate || ""));
+              if (orphans.length === 0) return null;
+              return (
+                <div style={{ marginTop: 18, border: "1px solid #fecaca", background: "#fef2f2", borderRadius: 12, padding: "12px 14px" }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, color: "#b91c1c", marginBottom: 4 }}>⚠️ Orphaned leave records · {orphans.length}</div>
+                  <div style={{ fontSize: 11, color: "#9d6a82", marginBottom: 8 }}>Leave logged against an employee code that no longer matches anyone — likely someone who was deleted. They can't be tied to a person, so remove them here.</div>
+                  {orphans.map(lv => (
+                    <div key={lv._id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderTop: "1px solid #fee2e2", fontSize: 12, flexWrap: "wrap" }}>
+                      <span style={{ fontFamily: "monospace", fontWeight: 700, color: "#7f1d1d" }}>{lv.ec}</span>
+                      <span style={{ color: "#6b7280" }}>{lv.type}{lv.emergency ? " · emergency" : ""}</span>
+                      <span style={{ color: "#374151" }}>{lv.startDate} → {lv.endDate}</span>
+                      <button onClick={() => { if (confirm("Delete this orphaned leave record?\n\n" + lv.ec + " · " + lv.startDate + " → " + lv.endDate + "\n\nThis can't be undone.")) removeLeave(lv._id); }}
+                        style={{ marginLeft: "auto", background: "transparent", border: "none", color: "#dc2626", cursor: "pointer", fontSize: 14 }} title="Delete this orphaned record">✕</button>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
           </div>
         );
       })()}
@@ -21130,14 +22970,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const set = (k, v) => setLoanModal({ ...m, [k]: v });
         // Eligible pool: active, on-site staff. Exclude maternity,
         // unpaid-legal, and anyone already off-boarded with a past leftDate.
+        // `branch` is overridden with the effective home as of the loan date so
+        // the picker list, the "From (home)" field, and the saved record all
+        // follow a completed transfer instead of the stale stored branch.
         const todayPool = (enriched || []).filter(s =>
           s && s.ec && /^[BT]/.test(s.ec) &&
           !s.onMat && !s.onUnpaidLegal &&
           !(s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft > 0)
-        );
+        ).map(s => ({ ...s, branch: effHomeBranch(s, m.date) }));
         const selected = m.ec ? todayPool.find(p => p.ec === m.ec) : null;
-        // When a tech is picked, fromBranch is locked to their home.
-        const fromBranch = selected ? (selected.branch || "") : (m.fromBranch || "");
+        // When a tech is picked, fromBranch is locked to their home as of the
+        // loan date — following a completed transfer, not the stale stored branch.
+        const fromBranch = selected ? effHomeBranch(selected, m.date) : (m.fromBranch || "");
         // toBranch options: every other branch.
         const toOptions = SALONS.filter(s => s.name !== fromBranch);
         // Already-on-leave check for the chosen date.
@@ -21162,7 +23006,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   valueEc={m.ec}
                   onChange={(ec) => {
                     const p = todayPool.find(x => x.ec === ec);
-                    setLoanModal({ ...m, ec, name: (p && p.name) || "", fromBranch: (p && p.branch) || "" });
+                    setLoanModal({ ...m, ec, name: (p && p.name) || "", fromBranch: effHomeBranch(p, m.date) });
                   }}
                   placeholder="Search by name or EC…"
                 />
@@ -23527,6 +25371,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const staffByEc = {};
           for (const s of (staff || [])) staffByEc[s.ec] = s;
           for (const m of (managers || [])) staffByEc[m.ec] = m;
+          // Managers must NOT appear in Nail Tech Check-ins. Their kiosk
+          // entries here are early-clock-out mirrors (status "left_early")
+          // that leak in from boa_kiosk_log — those belong on the attendance
+          // sheet / Manager Check-ins, not in the nail-tech feed.
+          const mgrEcSet = new Set((managers || []).map(m => String(m.ec || "").trim()).filter(Boolean));
           // Synthesize "clockin-shaped" rows from the kiosk attendance grid so
           // the existing table renderer can display them next to clockins rows.
           // Only SUBMITTED check-ins are shown (manager tapped "Confirm and
@@ -23560,10 +25409,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               staff: { name: sRec ? sRec.name : "(unknown)", employee_code: r.ec, branch: r.branch }
             };
           });
-          // Merge clockins rows + attendance-grid rows, newest first.
-          const filtered = clockinFiltered.concat(attShaped).sort((a, b) =>
-            String(b.ts || "").localeCompare(String(a.ts || ""))
-          );
+          // Merge clockins rows + attendance-grid rows, newest first. Drop any
+          // row belonging to a manager (their early-clock-out leaks in as a
+          // "left_early" kiosk-log entry) — keep orphan rows for diagnostics.
+          const filtered = clockinFiltered.concat(attShaped)
+            .filter(r => !mgrEcSet.has(String((r.staff && r.staff.employee_code) || "").trim()))
+            .sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
           // Per-branch tally of every row fetched in the load window — independent
           // of the viewer's branch/range filters above. Lets us see at a glance
           // whether a branch's check-ins reached Supabase at all.
@@ -24586,89 +26437,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // (08:00 - 17:00, 09:00 - 18:00, etc.) so the coverage view
         // reads the same as the schedule.
         //   dow: 0=Sun, 1=Mon, …, 6=Sat (matches Date#getDay)
-        const shiftTimes = (role, code, branch, dow) => {
-          const r = (role || "").toUpperCase();
-          const isSM = r === "SM" || r === "SSM";
-          const _b = branch || "";
-
-          // Sandown / Table Bay share the same Mon-Fri split (and
-          // Table Bay extends it to Saturday). SM is a flat 08:00-17:00
-          // every working day.
-          if (_b === "Sandown" || _b === "Table Bay") {
-            if (isSM) return "08:00 - 17:00";
-            if (dow === 0) {                                // Sunday
-              if (code === "WE") return "08:00 - 17:00";
-              if (code === "WL") return "09:00 - 18:00";
-              return "09:00 - 18:00";
-            }
-            if (dow === 6 && _b === "Sandown") {            // Sandown Saturday
-              if (code === "WE") return "08:00 - 17:00";
-              if (code === "WL") return "10:00 - 19:00";
-              return "10:00 - 19:00";
-            }
-            // Mon-Fri (and Mon-Sat for Table Bay)
-            if (code === "WE") return "08:00 - 17:00";
-            if (code === "WM") return "09:00 - 18:00";
-            if (code === "WL") return "11:00 - 20:00";
-            return "11:00 - 20:00";
-          }
-
-          // Riverlands — Mon-Fri split, Sat/Sun single shift.
-          if (_b === "Riverlands") {
-            if (isSM) return "08:00 - 17:00";               // SM/SSM always 08:00-17:00, every day
-            if (dow === 6) return "09:00 - 18:00";          // Sat single AM
-            if (dow === 0) return "08:30 - 17:00";          // Sun single AM (08:30 open)
-            if (code === "WE") return "09:00 - 18:00";      // AM opener
-            if (code === "WB") return "08:00 - 17:00";      // 4+ bonus opener
-            if (code === "WL") return "10:00 - 19:00";
-            return "10:00 - 19:00";
-          }
-
-          // Ballito / Mall of the South — SM-only WE opener, AM closers.
-          if (_b === "Ballito" || _b === "Mall of the South") {
-            if (isSM) return "08:00 - 17:00";
-            if (dow === 0) return "08:00 - 17:00";          // Sunday single WE
-            if (code === "WE") return "08:00 - 17:00";
-            if (code === "WM") return "09:00 - 18:00";
-            if (code === "WL") return "10:00 - 19:00";
-            return "10:00 - 19:00";
-          }
-
-          // Fourways — store hours differ; SM/SSM always open (08-17),
-          // AMs/techs carry the late close.
-          if (_b === "Fourways") {
-            if (isSM) return "08:00 - 17:00";   // SM/SSM always open, never close
-            if (dow === 0) {                                // Sunday (store 09-19)
-              if (code === "WE") return "08:00 - 17:00";
-              if (code === "WL") return "10:00 - 19:00";
-              return "10:00 - 19:00";
-            }
-            if (code === "WM") return "10:00 - 19:00";
-            if (code === "WL") return "11:00 - 20:00";
-            return "11:00 - 20:00";
-          }
-
-          // Generic stores — generic SM 08-17 / AM 09:00-18:30 hours.
-          // Weekend override: SM/SSM stays on a flat 08:00-17:00 Sat & Sun
-          // (no early/late split applies at these stores on weekends).
-          // AMs switch to the shorter weekend day: Sat 09:00-18:00,
-          // Sun 08:30-17:00. Weekdays keep the existing per-code times.
-          if (isSM) {
-            if (dow === 0 || dow === 6) return "08:00 - 17:00";
-            if (code === "WL") return "08:30 - 17:30";
-            if (code === "WE") return "07:30 - 16:30";
-            if (code === "WM") return "08:00 - 13:00";
-            return "08:00 - 17:00";
-          }
-          if (dow === 6) return "09:00 - 18:00";        // Saturday AM
-          if (dow === 0) return "08:30 - 17:00";        // Sunday AM
-          if (code === "WL") return "10:00 - 19:00";
-          if (code === "WE") return "08:30 - 18:00";
-          if (code === "WM") return "09:00 - 13:00";
-          if (code === "WB") return "08:00 - 19:00";
-          if (code === "E")  return "09:00 - 18:30";
-          return "09:00 - 18:30";
-        };
+        // shiftTimes is now defined at module scope (shared with the Attendance
+        // sheet so manager early-leave deductions use the same hour rules).
         const isWorking = (v) => v === "W" || v === "WE" || v === "WL" || v === "WM" || v === "WB" || v === "E";
 
         // Read a cell from the working schedule grid. Tries the EC as-is
@@ -25732,7 +27502,61 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           ? branchesInScope
           : branchesInScope.filter(s => s.region === cashupRegion);
 
-        const rangeOpts = [{ v: 1, l: "Today" }, { v: 3, l: "Last 3 days" }, { v: 7, l: "Last 7 days" }, { v: 14, l: "Last 14 days" }, { v: 30, l: "Last 30 days" }, { v: 60, l: "Last 60 days" }];
+        // ── Who hasn't submitted? ───────────────────────────────────────
+        // For the day being viewed, flag the in-scope stores with no active
+        // cash-up so ops can chase them. We honour the same region / branch
+        // filters as the table and skip a store's known closed weekdays
+        // (SALONS[].closedDow) so days off aren't false flags.
+        const _pad2 = (n) => String(n).padStart(2, "0");
+        const _today0 = new Date(); _today0.setHours(0, 0, 0, 0);
+        const _todayYmd = _today0.getFullYear() + "-" + _pad2(_today0.getMonth() + 1) + "-" + _pad2(_today0.getDate());
+        const branchesToCheck = cashupBranchFilter !== "All"
+          ? visibleBranches.filter(s => s.name === cashupBranchFilter)
+          : visibleBranches;
+        // Cash Ups went live on this date — don't flag "not submitted" for any
+        // day before it, since stores weren't using the kiosk cash-up yet.
+        // Brand-new stores open later and are only expected from their opening
+        // date (keep CASHUP_STORE_OPENING in sync with kiosk/data.js).
+        const CASHUP_GO_LIVE = "2026-06-01";
+        const CASHUP_STORE_OPENING = { "Cobble Walk": "2026-07-01" };
+        const expectedFrom = (name) => {
+          const o = CASHUP_STORE_OPENING[name];
+          return (o && o > CASHUP_GO_LIVE) ? o : CASHUP_GO_LIVE;
+        };
+        // A branch counts as "submitted" if any non-reopened row exists for
+        // the viewed day.
+        const submittedSet = new Set(activeRows.map(r => r.branch));
+        const selDow = (() => { try { return new Date(cashupDate + "T12:00:00").getDay(); } catch (_) { return -1; } })();
+        const selIsToday = cashupDate === _todayYmd;
+        const selIsFuture = cashupDate > _todayYmd;
+        const missingBranches = (cashupDate >= CASHUP_GO_LIVE && !selIsFuture)
+          ? branchesToCheck.filter(s =>
+              cashupDate >= expectedFrom(s.name) &&
+              !(Array.isArray(s.closedDow) && s.closedDow.includes(selDow)) &&
+              !submittedSet.has(s.name)
+            ).map(s => s.name)
+          : [];
+        const missingCount = missingBranches.length;
+        // Day-navigator helpers.
+        const _shiftDay = (delta) => {
+          const d = new Date(cashupDate + "T12:00:00"); d.setDate(d.getDate() + delta);
+          return d.getFullYear() + "-" + _pad2(d.getMonth() + 1) + "-" + _pad2(d.getDate());
+        };
+        const _fmtDayLong = (ymd) => { try { return new Date(ymd + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "long", day: "2-digit", month: "long", year: "numeric" }); } catch (_) { return ymd; } };
+
+        // Small "?" help dot — tap/click opens an explainer popup. Used on
+        // confusing column headers and the banking-status badges. Native
+        // title kept as a hover fallback on desktop.
+        const HelpDot = ({ text }) => (
+          <span
+            role="button"
+            tabIndex={0}
+            title={text}
+            onClick={e => { e.preventDefault(); e.stopPropagation(); setCashupHelp(text); }}
+            onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); setCashupHelp(text); } }}
+            style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 15, height: 15, borderRadius: "50%", background: "#FBCFE8", color: "#831843", fontSize: 10, fontWeight: 800, marginLeft: 4, cursor: "pointer", verticalAlign: "middle", flex: "0 0 auto", userSelect: "none" }}
+          >?</span>
+        );
 
         const statCard = (label, value, sub) => (
           <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 12, padding: "10px 14px", minWidth: 140 }}>
@@ -25746,7 +27570,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           <div style={{ padding: "0 24px" }}>
             <div style={{ marginBottom: 14 }}>
               <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700, marginBottom: 4 }}>💰 Cash Ups</div>
-              <div style={{ fontSize: 12, color: "#F472B6" }}>Every store's daily cash-up, banking slip and manual-discount reasons in one place. Submitted from the BOA Check-in kiosk → Cash Up screen.</div>
+              <div style={{ fontSize: 12, color: "#F472B6" }}>Every store's daily cash-up — Yoco machine photo, banking slip and manual-discount reasons in one place. Hover any <strong>?</strong> for an explanation. Submitted from the BOA Check-in kiosk → Cash Up screen.</div>
             </div>
 
             {renderScopeBar({ marginBottom: 12 })}
@@ -25767,15 +27591,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </select>
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>RANGE</label>
-                <select value={cashupDays} onChange={e => setCashupDays(Number(e.target.value))} style={{ padding: "7px 11px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff", minWidth: 140 }}>
-                  {rangeOpts.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
-                </select>
+                <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>DAY</label>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <button onClick={() => setCashupDate(_shiftDay(-1))} title="Previous day" style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "7px 11px", cursor: "pointer", fontSize: 14, fontWeight: 800, lineHeight: 1 }}>‹</button>
+                  <input type="date" max={_todayYmd} value={cashupDate} onChange={e => { if (e.target.value) setCashupDate(e.target.value); }} style={{ padding: "7px 9px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff" }} />
+                  <button onClick={() => { if (cashupDate < _todayYmd) setCashupDate(_shiftDay(1)); }} disabled={cashupDate >= _todayYmd} title="Next day" style={{ background: "#fff", color: cashupDate >= _todayYmd ? "#e9c6d6" : "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "7px 11px", cursor: cashupDate >= _todayYmd ? "not-allowed" : "pointer", fontSize: 14, fontWeight: 800, lineHeight: 1 }}>›</button>
+                  {!selIsToday && <button onClick={() => setCashupDate(_todayYmd)} style={{ background: "#FCE7F3", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "7px 11px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Today</button>}
+                </div>
               </div>
               <div style={{ flex: 1 }} />
+              <button
+                onClick={() => {
+                  const defBranch = cashupBranchFilter !== "All" ? cashupBranchFilter : (visibleBranches[0] ? visibleBranches[0].name : "");
+                  setCashupAdd({ branch: defBranch, date: cashupDate, yoco: "", yoco_link: "", cash: "", card_tips: "", vouchers: "", gift_card: "", manual_discounts: "", manual_discount_reason: "", cash_banked: "", amount_banked: "", banking_ref: "", banked_by: "", notes: "", signed_by: "" });
+                }}
+                style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}
+              >➕ Add cash-up</button>
               <div style={{ fontSize: 12, color: "#831843", textAlign: "right" }}>
-                <div style={{ fontWeight: 700 }}>{filtered.length} cash-up{filtered.length !== 1 ? "s" : ""}</div>
-                <div style={{ fontSize: 11, color: "#9ca3af" }}>across {new Set(filtered.map(r => r.branch)).size} store{new Set(filtered.map(r => r.branch)).size !== 1 ? "s" : ""}</div>
+                <div style={{ fontWeight: 800 }}>{_fmtDayLong(cashupDate)}{selIsToday ? " · today" : ""}</div>
+                <div style={{ fontSize: 11, color: "#9ca3af" }}>{filtered.length} cash-up{filtered.length !== 1 ? "s" : ""} across {new Set(filtered.map(r => r.branch)).size} store{new Set(filtered.map(r => r.branch)).size !== 1 ? "s" : ""}</div>
               </div>
             </div>
 
@@ -25785,6 +27619,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               {statCard("Card Tips", _fmtMoney(totals.tips))}
               {statCard("Manual Discounts", _fmtMoney(totals.manualD))}
               {statCard("Banking Gaps", String(bankingGaps.length), notBanked.length + " explicitly not banked")}
+              {statCard("Not Submitted", String(missingCount), "store" + (missingCount === 1 ? "" : "s") + (selIsToday ? " not in yet" : " to follow up"))}
             </div>
 
             {(bankingGaps.length > 0 || notBanked.length > 0) && (
@@ -25797,15 +27632,60 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
             )}
 
+            {/* Who hasn't submitted their cash-up — collapsible follow-up list */}
+            {missingCount > 0 && (
+              <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 11, marginBottom: 14, overflow: "hidden" }}>
+                <button
+                  onClick={() => setCashupShowMissing(v => !v)}
+                  style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, background: "#FCE7F3", border: "none", padding: "11px 16px", cursor: "pointer", textAlign: "left" }}
+                >
+                  <span style={{ fontSize: 14 }}>🚫</span>
+                  <span style={{ fontSize: 13, fontWeight: 800, color: "#831843" }}>Not submitted — {missingCount} store{missingCount === 1 ? "" : "s"} {selIsToday ? "not in yet" : "to follow up"}</span>
+                  <HelpDot text={"Stores with no cash-up captured for the day you're viewing. Known closed days (e.g. weekends a store doesn't trade) and stores not yet open are excluded." + (selIsToday ? " You're on today — these stores may still submit before close." : "")} />
+                  <span style={{ flex: 1 }} />
+                  <span style={{ fontSize: 12, color: "#BE185D", fontWeight: 700 }}>{cashupShowMissing ? "Hide ▲" : "Show ▼"}</span>
+                </button>
+                {cashupShowMissing && (
+                  <div style={{ padding: "12px 16px 14px", display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                    {selIsToday && <span style={{ fontSize: 11, color: "#9ca3af", marginRight: 4 }}>Not in yet (may still submit):</span>}
+                    {missingBranches.map(b => (
+                      <span key={b} style={{ background: "#fee2e2", color: "#7f1d1d", padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>{b}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
             {filtered.length === 0 ? (
-              <div style={{ background: "#FFFFFF", borderRadius: 11, border: "1px dashed #FBCFE8", padding: "30px 20px", textAlign: "center", color: "#9ca3af" }}>No cash-ups submitted in this window.</div>
+              <div style={{ background: "#FFFFFF", borderRadius: 11, border: "1px dashed #FBCFE8", padding: "30px 20px", textAlign: "center", color: "#9ca3af" }}>No cash-ups submitted for {_fmtDayLong(cashupDate)}.</div>
             ) : (
               <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 13, overflow: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: "#1f2937" }}>
                   <thead>
                     <tr style={{ background: "#FCE7F3", color: "#831843", textAlign: "left" }}>
-                      {["Date","Branch","Region","Yoco","Yoco Link","Cash","Tips","Vouchers","Gift card","Manual Disc.","Total","Banking","Signed by","Action"].map(h => (
-                        <th key={h} style={{ padding: "8px 10px", fontSize: 11, fontWeight: 800, letterSpacing: "0.04em", borderBottom: "1px solid #FBCFE8", whiteSpace: "nowrap" }}>{h}</th>
+                      {[
+                        { l: "Date" },
+                        { l: "Branch" },
+                        { l: "Region" },
+                        { l: "Yoco", help: "Card payments taken on the Yoco card machine today. Tap the 📷 under the amount to see the manager's photo of the machine's totals screen." },
+                        { l: "Yoco Link", help: "Payments collected via a Yoco online payment link (not swiped on the machine)." },
+                        { l: "Cash" },
+                        { l: "Tips", help: "Card tips left for staff. Shown for the record — NOT added into the day's revenue total." },
+                        { l: "Vouchers", sub: "sold", help: "Value of gift VOUCHERS SOLD today. The client paid now (cash/card) for a voucher to be used on a future visit, so it's part of today's takings and is included in the total." },
+                        { l: "Gift cards", sub: "redeemed", help: "Value of gift cards REDEEMED as payment today. The client settled their bill with a gift card bought earlier — it counts toward today's revenue total, but no new cash or card came in for it." },
+                        { l: "Manual Disc.", help: "Discounts applied by hand at the till. Hover the ⓘ on a row to read the manager's reason." },
+                        { l: "Total" },
+                        { l: "Banking", help: "Cash banking status. Yes = banked with slip attached. Not banked = cash was taken but not deposited (follow up). Missing = cash taken but no banking answer captured." },
+                        { l: "Signed by" },
+                        { l: "Action" },
+                      ].map(h => (
+                        <th key={h.l} style={{ padding: "8px 10px", fontSize: 11, fontWeight: 800, letterSpacing: "0.04em", borderBottom: "1px solid #FBCFE8", whiteSpace: "nowrap" }}>
+                          <span style={{ display: "inline-flex", alignItems: "center" }}>
+                            {h.l}
+                            {h.sub && <span style={{ marginLeft: 4, fontSize: 9, fontWeight: 700, color: "#BE185D", textTransform: "lowercase", letterSpacing: "0.02em" }}>({h.sub})</span>}
+                            {h.help && <HelpDot text={h.help} />}
+                          </span>
+                        </th>
                       ))}
                     </tr>
                   </thead>
@@ -25825,9 +27705,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           </span>
                         );
                       } else if (r.cash_banked === false) {
-                        banking = <span style={{ background: "#fee2e2", color: "#7f1d1d", padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>Not banked</span>;
+                        banking = (
+                          <span style={{ display: "inline-flex", alignItems: "center" }}>
+                            <span style={{ background: "#fee2e2", color: "#7f1d1d", padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>Not banked</span>
+                            <HelpDot text={"The store took cash today but the manager confirmed it was NOT deposited at the bank (e.g. weekend, after bank hours, kept in the safe). The cash is still outstanding — follow up to make sure it gets banked. Their reason should be in the Notes 📝."} />
+                          </span>
+                        );
                       } else if (Number(r.cash) > 0) {
-                        banking = <span style={{ background: "#fef3c7", color: "#92400e", padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>Missing</span>;
+                        banking = (
+                          <span style={{ display: "inline-flex", alignItems: "center" }}>
+                            <span style={{ background: "#fef3c7", color: "#92400e", padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>Missing</span>
+                            <HelpDot text={"Cash was taken but no banking answer was captured (a legacy cash-up, or the step was skipped on submit). Check with the store whether the cash was banked."} />
+                          </span>
+                        );
                       } else {
                         banking = <span style={{ color: "#9ca3af" }}>—</span>;
                       }
@@ -25841,7 +27731,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <td style={cell}>{_fmtDate(r.date)}{isArchived && <span style={{ marginLeft: 6, background: "#e5e7eb", color: "#4b5563", padding: "1px 6px", borderRadius: 5, fontSize: 10, fontWeight: 700 }}>REOPENED</span>}</td>
                           <td style={{ ...cell, fontWeight: 700, color: "#831843" }}>{r.branch}</td>
                           <td style={cell}><span style={{ background: rm.bg, color: rm.color, padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>{rm.short}</span></td>
-                          <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.yoco)}</td>
+                          <td style={{ ...cellNum, ...strikeIfArchived }}>
+                            {_fmtMoney(r.yoco)}
+                            {r.yoco_photo ? (
+                              <div style={{ fontSize: 10, fontWeight: 700, marginTop: 1 }}>
+                                <a href="#" onClick={e => { e.preventDefault(); setCashupSlipModal({ url: r.yoco_photo, branch: r.branch, date: r.date, label: "📸 Yoco machine balances" }); }} style={{ color: "#BE185D", textDecoration: "none" }}>📷 photo</a>
+                              </div>
+                            ) : (
+                              <div style={{ fontSize: 10, fontWeight: 600, color: "#cbb3bd", marginTop: 1 }} title="No photo of the Yoco machine totals was attached for this day.">no photo</div>
+                            )}
+                          </td>
                           <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.yoco_link)}</td>
                           <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.cash)}</td>
                           <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.card_tips)}</td>
@@ -25857,24 +27756,41 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <td style={cell}>{banking}</td>
                           <td style={cell}>{r.signed_by}{r.notes ? <span title={r.notes} style={{ marginLeft: 6, color: "#9ca3af" }}>📝</span> : null}{isArchived && r.reopened_by ? <div style={{ fontSize: 10, color: "#9ca3af" }}>reopened by {r.reopened_by}</div> : null}</td>
                           <td style={cell}>
-                            {isArchived ? (
-                              <span style={{ color: "#9ca3af", fontSize: 11 }}>—</span>
-                            ) : (
-                              <button
-                                onClick={async () => {
-                                  if (!window.confirm("Reopen this cash-up?\n\nStore: " + r.branch + "\nDate: " + r.date + "\nTotal: " + _fmtMoney(r.total) + "\n\nThe store will be able to submit a new cash-up for this day. The current entry stays in the history as 'Reopened'.")) return;
-                                  try {
-                                    await window.BOA_DB.reopenCashup(r.id, currentUser?.name || "");
-                                    const fresh = await window.BOA_DB.listRecentCashups(cashupDays);
-                                    setCashupRows(fresh || []);
-                                  } catch (e) {
-                                    window.alert("Couldn't reopen: " + ((e && e.message) || e));
-                                  }
-                                }}
-                                title="Reopen — let the store submit again for this day"
-                                style={{ background: "#fff", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
-                              >↻ Reopen</button>
-                            )}
+                            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                              {!isArchived && (
+                                <button
+                                  onClick={async () => {
+                                    if (!window.confirm("Reopen this cash-up?\n\nStore: " + r.branch + "\nDate: " + r.date + "\nTotal: " + _fmtMoney(r.total) + "\n\nThe store will be able to submit a new cash-up for this day. The current entry stays in the history as 'Reopened'.")) return;
+                                    try {
+                                      await window.BOA_DB.reopenCashup(r.id, currentUser?.name || "");
+                                      const fresh = await window.BOA_DB.listCashupsForDate(cashupDate);
+                                      setCashupRows(fresh || []);
+                                    } catch (e) {
+                                      window.alert("Couldn't reopen: " + ((e && e.message) || e));
+                                    }
+                                  }}
+                                  title="Reopen — let the store submit again for this day"
+                                  style={{ background: "#fff", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+                                >↻ Reopen</button>
+                              )}
+                              {!_hasStoreScope && (
+                                <button
+                                  onClick={async () => {
+                                    if (!window.confirm("PERMANENTLY DELETE this cash-up?\n\nStore: " + r.branch + "\nDate: " + r.date + "\nTotal: " + _fmtMoney(r.total) + "\n\nThis removes it completely — from the HR portal AND the store's kiosk. Use only for test or duplicate entries. This cannot be undone.")) return;
+                                    try {
+                                      await window.BOA_DB.deleteCashup(r.id);
+                                      const fresh = await window.BOA_DB.listCashupsForDate(cashupDate);
+                                      setCashupRows(fresh || []);
+                                    } catch (e) {
+                                      window.alert("Couldn't delete: " + ((e && e.message) || e));
+                                    }
+                                  }}
+                                  title="Delete permanently — removes this cash-up everywhere (for test / duplicate entries)"
+                                  style={{ background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 7, padding: "4px 9px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+                                >🗑 Delete</button>
+                              )}
+                              {isArchived && _hasStoreScope && <span style={{ color: "#9ca3af", fontSize: 11 }}>—</span>}
+                            </div>
                           </td>
                         </tr>
                       );
@@ -25888,13 +27804,156 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div onClick={() => setCashupSlipModal(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, padding: 16 }}>
                 <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 14, padding: 16, maxWidth: 720, width: "100%" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                    <div style={{ fontWeight: 800, color: "#831843" }}>🏦 Banking slip — {cashupSlipModal.branch} · {_fmtDate(cashupSlipModal.date)}</div>
+                    <div style={{ fontWeight: 800, color: "#831843" }}>{cashupSlipModal.label || "🏦 Banking slip"} — {cashupSlipModal.branch} · {_fmtDate(cashupSlipModal.date)}</div>
                     <button onClick={() => setCashupSlipModal(null)} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
                   </div>
-                  <img src={cashupSlipModal.url} alt="banking slip" style={{ width: "100%", borderRadius: 8, display: "block" }} />
+                  <img src={cashupSlipModal.url} alt={cashupSlipModal.label || "banking slip"} style={{ width: "100%", borderRadius: 8, display: "block" }} />
                 </div>
               </div>
             )}
+
+            {cashupHelp && (
+              <div onClick={() => setCashupHelp(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, padding: 16 }}>
+                <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 14, padding: "18px 20px", maxWidth: 420, width: "100%", boxShadow: "0 12px 40px rgba(0,0,0,0.2)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <div style={{ display: "inline-flex", alignItems: "center", gap: 7, fontWeight: 800, color: "#831843" }}>
+                      <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 18, height: 18, borderRadius: "50%", background: "#FBCFE8", color: "#831843", fontSize: 11, fontWeight: 800 }}>?</span>
+                      What this means
+                    </div>
+                    <button onClick={() => setCashupHelp(null)} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
+                  </div>
+                  <div style={{ fontSize: 13.5, color: "#374151", lineHeight: 1.55 }}>{cashupHelp}</div>
+                </div>
+              </div>
+            )}
+
+            {cashupAdd && (() => {
+              const upd = (k, v) => setCashupAdd(prev => ({ ...prev, [k]: v }));
+              const num = (v) => Number(v) || 0;
+              const liveTotal = num(cashupAdd.yoco) + num(cashupAdd.yoco_link) + num(cashupAdd.cash) + num(cashupAdd.vouchers) + num(cashupAdd.gift_card) - num(cashupAdd.manual_discounts);
+              const moneyFields = [
+                { k: "yoco", l: "Yoco (Card)" }, { k: "yoco_link", l: "Yoco Link" },
+                { k: "cash", l: "Cash" }, { k: "card_tips", l: "Card Tips" },
+                { k: "vouchers", l: "Vouchers (sold)" }, { k: "gift_card", l: "Gift cards (redeemed)" },
+                { k: "manual_discounts", l: "Manual Discounts" },
+              ];
+              const inputStyle = { padding: "7px 9px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, width: "100%", boxSizing: "border-box" };
+              const lblStyle = { fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.05em", display: "block", marginBottom: 3 };
+              const canSave = !!cashupAdd.branch && !!cashupAdd.date && !cashupAddBusy &&
+                !(num(cashupAdd.manual_discounts) > 0 && !(cashupAdd.manual_discount_reason || "").trim()) &&
+                !(cashupAdd.cash_banked === "yes" && !((cashupAdd.banked_by || "").trim()));
+              const submit = async () => {
+                if (!canSave) return;
+                const dup = cashupRows.some(r => r.branch === cashupAdd.branch && r.date === cashupAdd.date && !r.archived_at);
+                if (dup && !window.confirm("A cash-up already exists for " + cashupAdd.branch + " on " + cashupAdd.date + ".\n\nAdd another anyway? This can double-count — if you meant to replace it, cancel and use ↻ Reopen on that row instead.")) return;
+                setCashupAddBusy(true);
+                try {
+                  await window.BOA_DB.addCashupManual({
+                    branch: cashupAdd.branch, date: cashupAdd.date,
+                    yoco: cashupAdd.yoco, yoco_link: cashupAdd.yoco_link, cash: cashupAdd.cash,
+                    card_tips: cashupAdd.card_tips, vouchers: cashupAdd.vouchers, gift_card: cashupAdd.gift_card,
+                    manual_discounts: cashupAdd.manual_discounts, manual_discount_reason: cashupAdd.manual_discount_reason,
+                    cash_banked: cashupAdd.cash_banked === "yes" ? true : (cashupAdd.cash_banked === "no" ? false : null),
+                    amount_banked: cashupAdd.cash_banked === "yes" ? cashupAdd.amount_banked : 0,
+                    banking_ref: cashupAdd.cash_banked === "yes" ? cashupAdd.banking_ref : "",
+                    banked_by: cashupAdd.cash_banked === "yes" ? cashupAdd.banked_by : "",
+                    notes: cashupAdd.notes, signed_by: cashupAdd.signed_by,
+                    entered_by: currentUser?.name || ""
+                  });
+                  const fresh = await window.BOA_DB.listCashupsForDate(cashupDate);
+                  setCashupRows(fresh || []);
+                  setCashupAdd(null);
+                } catch (e) {
+                  window.alert("Couldn't save the cash-up: " + ((e && e.message) || e));
+                } finally {
+                  setCashupAddBusy(false);
+                }
+              };
+              return (
+                <div onClick={() => !cashupAddBusy && setCashupAdd(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "flex-start", justifyContent: "center", zIndex: 9999, padding: 16, overflow: "auto" }}>
+                  <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 14, padding: "20px 22px", maxWidth: 560, width: "100%", margin: "24px 0", boxShadow: "0 12px 40px rgba(0,0,0,0.25)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                      <div style={{ fontWeight: 800, color: "#831843", fontSize: 16 }}>➕ Add cash-up manually</div>
+                      <button onClick={() => !cashupAddBusy && setCashupAdd(null)} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
+                    </div>
+                    <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 14 }}>For a store that forgot to submit. It's saved under their branch for the chosen day and tagged as keyed in via the HR portal.</div>
+
+                    <div style={{ display: "flex", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+                      <div style={{ flex: "1 1 220px" }}>
+                        <label style={lblStyle}>BRANCH</label>
+                        <select value={cashupAdd.branch} onChange={e => upd("branch", e.target.value)} style={inputStyle}>
+                          {branchesInScope.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                        </select>
+                      </div>
+                      <div style={{ flex: "1 1 160px" }}>
+                        <label style={lblStyle}>DATE</label>
+                        <input type="date" max={_todayYmd} value={cashupAdd.date} onChange={e => upd("date", e.target.value)} style={inputStyle} />
+                      </div>
+                    </div>
+
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+                      {moneyFields.map(f => (
+                        <div key={f.k}>
+                          <label style={lblStyle}>{f.l.toUpperCase()}</label>
+                          <input type="number" inputMode="decimal" step="0.01" min="0" placeholder="0.00" value={cashupAdd[f.k]} onChange={e => upd(f.k, e.target.value)} style={inputStyle} />
+                        </div>
+                      ))}
+                    </div>
+
+                    {num(cashupAdd.manual_discounts) > 0 && (
+                      <div style={{ marginBottom: 12 }}>
+                        <label style={lblStyle}>MANUAL DISCOUNT REASON <span style={{ color: "#b91c1c" }}>required</span></label>
+                        <input type="text" placeholder="e.g. service complaint, manager approval…" value={cashupAdd.manual_discount_reason} onChange={e => upd("manual_discount_reason", e.target.value)} style={inputStyle} />
+                      </div>
+                    )}
+
+                    <div style={{ background: "#FCE7F3", borderRadius: 9, padding: "9px 13px", display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                      <span style={{ fontSize: 11, fontWeight: 800, color: "#831843", letterSpacing: "0.04em" }}>TOTAL REVENUE</span>
+                      <span style={{ fontSize: 18, fontWeight: 800, color: "#831843" }}>{_fmtMoney(Math.max(0, liveTotal))}</span>
+                    </div>
+
+                    <div style={{ border: "1px solid #FBCFE8", borderRadius: 9, padding: "11px 13px", marginBottom: 12 }}>
+                      <label style={lblStyle}>CASH BANKED?</label>
+                      <select value={cashupAdd.cash_banked} onChange={e => upd("cash_banked", e.target.value)} style={{ ...inputStyle, marginBottom: cashupAdd.cash_banked === "yes" ? 10 : 0 }}>
+                        <option value="">— not specified —</option>
+                        <option value="yes">Yes — banked</option>
+                        <option value="no">No — not banked</option>
+                      </select>
+                      {cashupAdd.cash_banked === "yes" && (
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                          <div>
+                            <label style={lblStyle}>AMOUNT BANKED</label>
+                            <input type="number" inputMode="decimal" step="0.01" min="0" placeholder="0.00" value={cashupAdd.amount_banked} onChange={e => upd("amount_banked", e.target.value)} style={inputStyle} />
+                          </div>
+                          <div>
+                            <label style={lblStyle}>BANKING REF</label>
+                            <input type="text" placeholder="deposit / EFT ref" value={cashupAdd.banking_ref} onChange={e => upd("banking_ref", e.target.value)} style={inputStyle} />
+                          </div>
+                          <div style={{ gridColumn: "1 / span 2" }}>
+                            <label style={lblStyle}>BANKED BY <span style={{ color: "#b91c1c" }}>required</span></label>
+                            <input type="text" placeholder="who banked it" value={cashupAdd.banked_by} onChange={e => upd("banked_by", e.target.value)} style={inputStyle} />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div style={{ marginBottom: 12 }}>
+                      <label style={lblStyle}>NOTES (optional)</label>
+                      <input type="text" placeholder="anything unusual…" value={cashupAdd.notes} onChange={e => upd("notes", e.target.value)} style={inputStyle} />
+                    </div>
+                    <div style={{ marginBottom: 16 }}>
+                      <label style={lblStyle}>SIGNED BY AT STORE (optional)</label>
+                      <input type="text" placeholder="manager who confirmed the figures" value={cashupAdd.signed_by} onChange={e => upd("signed_by", e.target.value)} style={inputStyle} />
+                    </div>
+
+                    <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                      <button onClick={() => !cashupAddBusy && setCashupAdd(null)} style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>Cancel</button>
+                      <button onClick={submit} disabled={!canSave} style={{ background: canSave ? "#BE185D" : "#f3c6db", color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: canSave ? "pointer" : "not-allowed", fontSize: 13, fontWeight: 700 }}>{cashupAddBusy ? "Saving…" : "Save cash-up"}</button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         );
       })()}
@@ -26687,7 +28746,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
                 <div>
                   <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: "#831843" }}>⏳ {data.title || "Not checked in yet"}</div>
-                  <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>{list.length} {noun}{list.length !== 1 ? "s" : ""} scheduled today {list.length !== 1 ? "haven't" : "hasn't"} {data.role === "manager" ? "clocked in" : "checked in or been marked absent"}.</div>
+                  <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>{data.subtitle || (list.length + " " + noun + (list.length !== 1 ? "s" : "") + " scheduled today " + (list.length !== 1 ? "haven't" : "hasn't") + " " + (data.role === "manager" ? "clocked in" : "checked in or been marked absent") + ".")}</div>
                 </div>
                 <button onClick={() => setNotCheckedInModal(null)} style={{ background: "transparent", border: "none", fontSize: 18, cursor: "pointer", color: "#6b7280", lineHeight: 1 }}>✕</button>
               </div>
@@ -26700,9 +28759,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <div style={{ fontSize: 10, fontWeight: 800, color: "#BE185D", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 6 }}>📍 {b} · {byBranch[b].length}</div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                         {byBranch[b].map(t => (
-                          <div key={t.ec} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#FDEEF5", borderRadius: 8, padding: "8px 12px" }}>
+                          <div key={t.key || t.ec} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#FDEEF5", borderRadius: 8, padding: "8px 12px" }}>
                             <span style={{ fontSize: 13, fontWeight: 600, color: "#831843" }}>{t.name}</span>
-                            <span style={{ fontSize: 11, fontFamily: "monospace", color: "#9d174d", background: "#fff", padding: "2px 7px", borderRadius: 5 }}>{t.ec}</span>
+                            <span style={{ fontSize: 11, fontFamily: "monospace", color: "#9d174d", background: "#fff", padding: "2px 7px", borderRadius: 5 }}>{t.detail || t.ec}</span>
                           </div>
                         ))}
                       </div>

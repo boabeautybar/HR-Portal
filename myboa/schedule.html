@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="robots" content="noindex,nofollow" />
+<title>My BOA · My Schedule</title>
+<meta name="theme-color" content="#BE185D" />
+<link rel="icon" type="image/png" href="BOA.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Outfit:wght@400;500;600;700;800;900&family=Playfair+Display:wght@500;600;700&display=swap" rel="stylesheet" />
+
+<script>
+window.BOA_SUPABASE_CONFIG = {
+  url:     "https://kcinqpwkwpzbosxtkwyl.supabase.co",
+  anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtjaW5xcHdrd3B6Ym9zeHRrd3lsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc3MjIwMTYsImV4cCI6MjA5MzI5ODAxNn0.AGL2hXQ5N3uQikqSbWFsZ1uxBlWZUm9o1ipMFlAFjBg"
+};
+</script>
+
+<style>
+  :root { --pink:#BE185D; --deep:#831843; --bg:#FCF5F7; --ink:#1f2937; --line:#f3d4e0; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; }
+  body { font-family: "DM Sans", system-ui, sans-serif; color: var(--ink);
+    background: radial-gradient(130% 90% at 50% -10%, #FCE0EE 0%, #FDEFF5 42%, #FFF7FB 100%) fixed;
+    padding: 16px 14px calc(40px + env(safe-area-inset-bottom)); line-height: 1.45; }
+  .wrap, #root { max-width: 560px; margin: 0 auto; }
+  .back { display: inline-block; color: #9d6a82; font-size: 13px; font-weight: 600; text-decoration: none; margin-bottom: 6px; }
+  .brand { text-align: center; margin: 4px 0 10px; }
+  .brand img { width: min(200px, 60%); height: auto; display: inline-block; }
+  h1 { font-family: "Outfit", system-ui, sans-serif; font-weight: 600; font-size: 22px; color: var(--deep); margin: 6px 0 4px; text-align: center; letter-spacing: .005em; }
+  .sub { text-align: center; color: #9d6a82; font-size: 14px; margin: 0 0 16px; }
+  .card { background:linear-gradient(180deg,#fff,#fffafc); border:1px solid #FBCFE8; border-radius:16px; padding:18px 16px; margin-bottom:16px;
+    box-shadow:0 0 0 1px rgba(244,114,182,0.22), 0 0 14px rgba(244,114,182,0.14), 0 6px 18px rgba(190,24,93,0.07); }
+  .card.pad { padding: 8px 12px; }
+  label.field { display:block; margin-bottom:16px; }
+  label.field > span { display:block; font-weight:700; font-size:13px; color:var(--deep); margin-bottom:6px; }
+  input[type=text], select { width:100%; font-family:inherit; font-size:16px; color:var(--ink); background:#fff;
+    border:1.5px solid #e7c6d4; border-radius:11px; padding:12px 13px; outline:none; }
+  input:focus, select:focus { border-color:var(--pink); box-shadow:0 0 0 3px rgba(190,24,93,.12); }
+  .submit { width:100%; border:none; border-radius:14px; cursor:pointer; background:var(--pink); color:#fff;
+    font-family:"Outfit",sans-serif; font-weight:800; font-size:17px; padding:15px; box-shadow:0 6px 16px rgba(190,24,93,.28); }
+  .submit:disabled { opacity:.55; box-shadow:none; }
+  .err { color:#b91c1c; font-weight:600; font-size:13.5px; margin-top:10px; min-height:16px; }
+  .foot { text-align:center; font-size:11.5px; color:#bf94a5; margin-top:18px; }
+
+  .dashhead { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:14px; }
+  .hi { font-family:"Outfit",system-ui,sans-serif; font-weight:600; font-size:22px; color:var(--deep); }
+  .meta { font-size:13px; color:#9d6a82; margin-top:2px; }
+  .chg { background:#fff; border:1.5px solid #e7c6d4; color:var(--deep); border-radius:9px; padding:8px 13px; font-weight:700; font-size:13px; font-family:inherit; cursor:pointer; }
+
+  .tabs { display:flex; gap:7px; margin-bottom:14px; }
+  .tab { flex:1; border:1.5px solid #e7c6d4; background:#fff; color:var(--deep); border-radius:11px; padding:10px 6px;
+    font-family:inherit; font-weight:700; font-size:13px; cursor:pointer; }
+  .tab.on { background:var(--pink); color:#fff; border-color:var(--pink); box-shadow:0 0 0 1px #F472B6, 0 0 14px rgba(244,114,182,0.5); }
+
+  .dayrow { position:relative; display:flex; align-items:center; gap:12px; padding:13px 14px 13px 18px;
+    border-radius:13px; margin-bottom:8px; background:#fff; border:1px solid #f1e3ea; overflow:hidden; }
+  .dayrow::before { content:""; position:absolute; left:0; top:7px; bottom:7px; width:5px; border-radius:0 5px 5px 0; background:#e5e7eb; }
+  .dayrow.big { padding:18px 16px 18px 20px; }
+  .dayrow.is-today { box-shadow:0 0 0 2px #F472B6, 0 0 16px rgba(244,114,182,0.45); border-color:#F472B6; }
+  .dayrow.k-work  { background:#f3fcf7; border-color:#cdeedd; }
+  .dayrow.k-work::before  { background:#22c55e; }
+  .dayrow.k-off   { background:#fef6f6; border-color:#f7d7d7; }
+  .dayrow.k-off::before   { background:#ef4444; }
+  .dayrow.k-leave { background:#fffaf0; border-color:#fbe6c0; }
+  .dayrow.k-leave::before { background:#f59e0b; }
+  .dayrow.k-extra { background:#effdf9; border-color:#bdf0e2; }
+  .dayrow.k-extra::before { background:#0d9488; }
+  .dayrow.k-holiday { background:#faf5ff; border-color:#e9d5ff; }
+  .dayrow.k-holiday::before { background:#a855f7; }
+  .dayrow.k-none  { background:#fff; border-color:#f1e3ea; }
+  .dayrow.k-none::before  { background:#ecd7e1; }
+  .dleft { min-width:86px; }
+  .dname { font-weight:800; color:var(--deep); font-size:14px; }
+  .dayrow.big .dname { font-size:18px; }
+  .ddate { font-size:12px; color:#a07487; margin-top:1px; }
+  .st { margin-left:auto; text-align:right; display:flex; flex-direction:column; align-items:flex-end; gap:4px; }
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:4px 12px; border-radius:999px; font-weight:800; font-size:13px; }
+  .dayrow.big .pill { font-size:15px; padding:6px 15px; }
+  .pill::before { content:""; width:7px; height:7px; border-radius:50%; background:currentColor; opacity:.85; }
+  .pill.k-work  { background:#dcfce7; color:#15803d; }
+  .pill.k-off   { background:#fde2e2; color:#c0392b; }
+  .pill.k-leave { background:#fef3c7; color:#b45309; }
+  .pill.k-extra { background:#ccfbf1; color:#0f766e; }
+  .pill.k-extra::before { display:none; }
+  .pill.k-holiday { background:#f3e8ff; color:#7c3aed; }
+  .pill.k-holiday::before { display:none; }
+  .pill.k-none  { background:#fbeef4; color:#b07c92; font-weight:700; font-size:12px; }
+  .pill.k-none::before { display:none; }
+  .st-sub { font-size:12.5px; color:#5b6675; font-weight:600; }
+  .dayrow.big .st-sub { font-size:13.5px; }
+
+  .monthnav { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:12px; }
+  .navb { background:#fff; border:1.5px solid #e7c6d4; color:var(--deep); border-radius:10px; width:42px; height:42px; font-size:20px; cursor:pointer; }
+  .mlbl, .weeklbl { font-weight:800; color:var(--deep); font-size:14px; text-align:center; }
+  .weeklbl { margin-bottom:10px; }
+</style>
+</head>
+<body>
+  <div id="root">
+    <div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>
+    <h1>My schedule</h1>
+    <p class="sub">Loading…</p>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <script src="schedule.js"></script>
+</body>
+</html>

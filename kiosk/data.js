@@ -51,6 +51,32 @@
     return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
   }
 
+  // ---- Cash-up go-live / store-opening config ----
+  // Cash-up went live company-wide on this date — stores aren't chased for
+  // cash-ups before it. Brand-new branches open later and only start being
+  // expected from their opening date. Keep these in sync with the HR portal
+  // (app.jsx → CASHUP_GO_LIVE / CASHUP_STORE_OPENING).
+  var CASHUP_GLOBAL_GO_LIVE = "2026-06-01";
+  var CASHUP_STORE_OPENING = { "Cobble Walk": "2026-07-01" };
+  // Weekdays a store doesn't trade (0 = Sun) — skipped when chasing missing
+  // cash-ups so days off aren't flagged.
+  var CASHUP_CLOSED_DOW = { "Betty": [0, 1] };
+  function cashupExpectedFrom() {
+    var open = CASHUP_STORE_OPENING[branch()];
+    return (open && open > CASHUP_GLOBAL_GO_LIVE) ? open : CASHUP_GLOBAL_GO_LIVE;
+  }
+  function ymdDaysAgo(n) {
+    var d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - n);
+    var p = function (x) { return String(x).padStart(2, "0"); };
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+  }
+  function isClosedDow(dateStr) {
+    var closed = CASHUP_CLOSED_DOW[branch()];
+    if (!closed) return false;
+    var dow = new Date(dateStr + "T12:00:00").getDay();
+    return closed.indexOf(dow) !== -1;
+  }
+
   function startOfTodayIso() {
     var d = new Date(); d.setHours(0, 0, 0, 0);
     return d.toISOString();
@@ -263,6 +289,48 @@
     return (res.data || []).filter(function (s) { return s && s.branch !== toBranch; });
   }
 
+  // Read-only: who called in sick / absent for TODAY via My BOA, scoped to the
+  // people expected at THIS branch today — home-branch staff who weren't loaned
+  // out, plus anyone loaned IN to us today. Uses the public list_called_in_today()
+  // RPC (anon-safe; returns names only, no reason/proof). The kiosk only shows
+  // this; it cannot review or change anything (that's for regional managers).
+  async function calledInTodayForBranch() {
+    var c = client(); if (!c) return [];
+    var res;
+    try { res = await c.rpc("list_called_in_today"); }
+    catch (e) { console.error("calledInToday rpc:", e); return []; }
+    if (res.error) { console.error("calledInToday:", res.error); return []; }
+    var rows = (res.data || []).filter(function (r) { return r && r.name; });
+    if (!rows.length) return [];
+    var today = isoDate(new Date());
+    var ecs = rows.map(function (r) { return r.ec; }).filter(Boolean);
+    var staffRows = await _fetchStaffByEcs(ecs);
+    var byEc = {};
+    staffRows.forEach(function (s) { if (s && s.employee_code) byEc[String(s.employee_code).trim()] = s; });
+    var loans = await listTechLoans(today);
+    var loanByEc = {};
+    (loans || []).forEach(function (l) { if (l && l.ec) loanByEc[String(l.ec).trim()] = l; });
+    var thisBranch = branch();
+    var out = [];
+    rows.forEach(function (r) {
+      var ec = r.ec ? String(r.ec).trim() : "";
+      var s = ec ? byEc[ec] : null;
+      var home = (s && s.branch) || r.store || "";
+      var loan = ec ? loanByEc[ec] : null;
+      var workBranch = (loan && loan.toBranch) ? loan.toBranch : home;     // home, or borrowed-to
+      if (workBranch !== thisBranch) return;
+      out.push({
+        name: r.name,
+        ec: ec,
+        type: r.leave_type === "Sick" ? "sick" : "absent",
+        role: isManagerRow(s) ? "manager" : "tech",
+        borrowed: !!loan
+      });
+    });
+    out.sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
+    return out;
+  }
+
   async function categorizeStaff(refDate, opts) {
     var refIso = isoDate(refDate || new Date());
     var monthStart = _firstOfMonthIso(refDate || new Date());
@@ -455,20 +523,49 @@
   }
 
   // ---------- Cash-ups ----------
-  async function todaysCashup() {
+  // Active (non-reopened) cash-up for this branch on a given day. Defaults to
+  // today; pass a YYYY-MM-DD to fetch a previous day's (used when a store
+  // completes a cash-up they missed).
+  async function cashupForDate(dateStr) {
     var c = client(); if (!c) return null;
     var res = await c.from("cashups").select("*")
-      .eq("branch", branch()).eq("date", todayStr())
+      .eq("branch", branch()).eq("date", dateStr || todayStr())
       .is("archived_at", null)
       .order("created_at", { ascending: false }).limit(1);
-    if (res.error) { console.error("todaysCashup:", res.error); return null; }
+    if (res.error) { console.error("cashupForDate:", res.error); return null; }
     return (res.data || [])[0] || null;
+  }
+  async function todaysCashup() { return cashupForDate(todayStr()); }
+
+  // Previous days (most recent first) this branch still owes a cash-up for —
+  // from yesterday back to the store's go-live, within the lookback window,
+  // skipping the store's known closed weekdays. Today is never included
+  // (the store may still submit before close). Powers the home-screen
+  // reminder and the clock-out nudge.
+  async function outstandingCashupDates(maxLookbackDays) {
+    var c = client(); if (!c) return [];
+    var lookback = maxLookbackDays || 7;
+    var expectedFrom = cashupExpectedFrom();
+    var since = ymdDaysAgo(lookback);
+    var floor = since > expectedFrom ? since : expectedFrom;
+    var res = await c.from("cashups").select("date")
+      .eq("branch", branch()).gte("date", floor).is("archived_at", null);
+    if (res.error) { console.error("outstandingCashupDates:", res.error); return []; }
+    var have = {};
+    (res.data || []).forEach(function (r) { have[r.date] = true; });
+    var out = [];
+    for (var i = 1; i <= lookback; i++) {
+      var d = ymdDaysAgo(i);
+      if (d < floor) break;
+      if (!have[d] && !isClosedDow(d)) out.push(d);
+    }
+    return out;
   }
 
   async function addCashup(payload) {
     var c = client(); if (!c) throw new Error("Supabase not configured");
     var row = {
-      branch: branch(), date: todayStr(),
+      branch: branch(), date: (payload.date || todayStr()),
       yoco:      Number(payload.yoco)      || 0,
       yoco_link: Number(payload.yoco_link) || 0,
       cash:      Number(payload.cash)      || 0,
@@ -493,7 +590,11 @@
 
   async function listRecentCashups(limit) {
     var c = client(); if (!c) return [];
+    // Exclude reopened/deleted entries (archived_at set) so a cash-up that
+    // was reopened or removed from the HR portal stops showing in the store's
+    // Cash History.
     var res = await c.from("cashups").select("*").eq("branch", branch())
+      .is("archived_at", null)
       .order("date", { ascending: false }).order("created_at", { ascending: false })
       .limit(limit || 30);
     if (res.error) { console.error("listRecentCashups:", res.error); return []; }
@@ -1320,6 +1421,7 @@
     branch: branch, branchDisplay: branchDisplay, todayStr: todayStr,
     listStaff: listStaff, listMaternity: listMaternity, listLeaveRecords: listLeaveRecords, loadOffboarding: loadOffboarding,
     listTechLoans: listTechLoans, saveTechLoan: saveTechLoan, listStaffAllBranches: listStaffAllBranches,
+    calledInTodayForBranch: calledInTodayForBranch,
     listTransfersInto: listTransfersInto,
     listKioskReminders: listKioskReminders,
     listTrialCandidates: listTrialCandidates,
@@ -1329,7 +1431,7 @@
     categorizeStaff: categorizeStaff, addStaff: addStaff, updateStaff: updateStaff,
     deactivateStaff: deactivateStaff,
     lastClockinToday: lastClockinToday, addClockin: addClockin, listTodayClockins: listTodayClockins,
-    todaysCashup: todaysCashup, addCashup: addCashup, listRecentCashups: listRecentCashups,
+    todaysCashup: todaysCashup, cashupForDate: cashupForDate, outstandingCashupDates: outstandingCashupDates, addCashup: addCashup, listRecentCashups: listRecentCashups,
     currentSchedYm: currentSchedYm, periodLabel: periodLabel, periodDays: periodDays, getSchedule: getSchedule, getSchedulesForBranches: getSchedulesForBranches, getMgrTimes: getMgrTimes,
     ymForDate: ymForDate, endOfSchedulePeriod: endOfSchedulePeriod,
     getAttendance: getAttendance, setAttendanceStatus: setAttendanceStatus,

@@ -700,6 +700,18 @@
     return res.data || [];
   }
 
+  // Cash-ups for a single day across every branch — powers the HR portal's
+  // day-by-day Cash Ups navigator (region/branch filtering stays client-side).
+  async function listCashupsForDate(dateStr) {
+    if (!dateStr) return [];
+    var res = await sb.from("cashups").select("*")
+      .eq("date", dateStr)
+      .order("created_at", { ascending: false })
+      .limit(5000);
+    if (res.error) { console.error("listCashupsForDate:", res.error); return []; }
+    return res.data || [];
+  }
+
   // Manager day-status — reason captured by a ROM when a scheduled manager
   // didn't clock in. Powers the "Mark reason" flow on Manager Check-ins,
   // overlays the absence on the attendance grid, and feeds the ROM dashboard
@@ -749,6 +761,40 @@
     return true;
   }
 
+  // Manually enter a cash-up from the HR portal for a store that forgot to
+  // submit (typically a previous day). Mirrors the kiosk's addCashup shape but
+  // for an arbitrary branch + date, and stamps the notes so it's clear in the
+  // table that finance/ops keyed it in rather than the store. `total` is a
+  // generated column in Supabase, so we never set it. Banking-slip and
+  // Yoco-photo aren't capturable here (no kiosk camera) and stay null.
+  async function addCashupManual(p) {
+    if (!p || !p.branch || !p.date) throw new Error("Branch and date are required");
+    var stamp = "[Entered manually via HR portal" + (p.entered_by ? " by " + String(p.entered_by).trim() : "") + "]";
+    var notes = (p.notes || "").trim();
+    notes = notes ? (notes + " " + stamp) : stamp;
+    var row = {
+      branch: p.branch,
+      date:   p.date,
+      yoco:      Number(p.yoco)      || 0,
+      yoco_link: Number(p.yoco_link) || 0,
+      cash:      Number(p.cash)      || 0,
+      card_tips: Number(p.card_tips) || 0,
+      vouchers:  Number(p.vouchers)  || 0,
+      gift_card: Number(p.gift_card) || 0,
+      manual_discounts:       Number(p.manual_discounts) || 0,
+      manual_discount_reason: (p.manual_discount_reason || "").trim() || null,
+      notes:     notes,
+      signed_by: (p.signed_by || "").trim() || (p.entered_by || "").trim() || "HR portal",
+      cash_banked:   (p.cash_banked === true || p.cash_banked === false) ? p.cash_banked : null,
+      amount_banked: Number(p.amount_banked) || 0,
+      banking_ref:   (p.banking_ref || "").trim() || null,
+      banked_by:     (p.banked_by   || "").trim() || null
+    };
+    var res = await sb.from("cashups").insert(row).select().single();
+    if (res.error) { console.error("addCashupManual:", res.error); throw res.error; }
+    return res.data;
+  }
+
   // Soft-delete a cash-up so the store can submit a fresh one for the
   // same date from the kiosk. The kiosk's todaysCashup() filters
   // archived rows out, so a reopened row falls off the "already
@@ -764,6 +810,17 @@
       .maybeSingle();
     if (res.error) { console.error("reopenCashup:", res.error); throw res.error; }
     return res.data;
+  }
+
+  // Permanently remove a cash-up row (hard delete). Unlike reopenCashup, which
+  // keeps the entry for audit, this fully removes it from Supabase — so it
+  // disappears from the HR portal AND the store's kiosk. Intended for clearing
+  // test or duplicate entries.
+  async function deleteCashup(id) {
+    if (!id) throw new Error("Missing cashup id");
+    var res = await sb.from("cashups").delete().eq("id", id);
+    if (res.error) { console.error("deleteCashup:", res.error); throw res.error; }
+    return true;
   }
 
   // portal's spot-check viewer. Photo + GPS lives in app_state under
@@ -973,6 +1030,60 @@
     var res = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
     if (res.error) { console.error("loadExtras:", res.error); return {}; }
     return (res.data && res.data.value) || {};
+  }
+  // Write / clear a single Extra-Day approval in the kiosk extras sidecar so
+  // the store kiosk reads "Extra Day" for that tech on that day, and the
+  // attendance sheet shows Extra Day once she's checked in. Unlike loadExtras
+  // (which takes the START-month and shifts), these take the END-month `ym`
+  // directly — the exact value ymForDate() produces and the key the kiosk
+  // itself writes (boa_extras_<branch>_<END-month>). dayKey is day-of-month.
+  async function saveExtraDay(branch, ym, dayKey, ec, approvedBy) {
+    var key = "boa_extras_" + branch + "_" + ym;
+    var res = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
+    if (res.error) { console.error("saveExtraDay load:", res.error); throw res.error; }
+    var data = (res.data && res.data.value) || {};
+    if (!data[dayKey]) data[dayKey] = {};
+    data[dayKey][String(ec).trim()] = { approvedBy: (approvedBy || "").toString().slice(0, 80), approvedAt: new Date().toISOString() };
+    var up = await sb.from("app_state").upsert({ key: key, value: data });
+    if (up.error) { console.error("saveExtraDay:", up.error); throw up.error; }
+    return data;
+  }
+  async function clearExtraDay(branch, ym, dayKey, ec) {
+    var key = "boa_extras_" + branch + "_" + ym;
+    var res = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
+    if (res.error) { console.error("clearExtraDay load:", res.error); throw res.error; }
+    var data = (res.data && res.data.value) || {};
+    if (data[dayKey]) { delete data[dayKey][String(ec).trim()]; if (Object.keys(data[dayKey]).length === 0) delete data[dayKey]; }
+    var up = await sb.from("app_state").upsert({ key: key, value: data });
+    if (up.error) { console.error("clearExtraDay:", up.error); throw up.error; }
+    return data;
+  }
+  // Fresha "to-do" open-status for approved extra days — a single app_state
+  // row { [requestId]: { opened, by, at } }. Lets the Fresha To-Do ops tab
+  // tick an approved extra day as "opened on Fresha" without touching the
+  // extra_day_requests table.
+  async function loadFreshaExtraOpenings() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_fresha_extra_open_v1").maybeSingle();
+    if (res.error) { console.error("loadFreshaExtraOpenings:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveFreshaExtraOpenings(map) {
+    var res = await sb.from("app_state").upsert({ key: "boa_fresha_extra_open_v1", value: map || {} });
+    if (res.error) { console.error("saveFreshaExtraOpenings:", res.error); throw res.error; }
+    return map || {};
+  }
+  // Fresha To-Do (closing side): tick a sick/absent nail tech as "blocked on
+  // Fresha" — i.e. greyed out so no client bookings land while she's off —
+  // keyed by leave-request id, without touching the leave_requests table.
+  async function loadFreshaBlocks() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_fresha_blocks_v1").maybeSingle();
+    if (res.error) { console.error("loadFreshaBlocks:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveFreshaBlocks(map) {
+    var res = await sb.from("app_state").upsert({ key: "boa_fresha_blocks_v1", value: map || {} });
+    if (res.error) { console.error("saveFreshaBlocks:", res.error); throw res.error; }
+    return map || {};
   }
   // Persist the boa_early_<branch>_<ym> sidecar (the whole nested map). Used
   // by the attendance sheet to clear a single day's 'left early' short-hours
@@ -1329,6 +1440,21 @@
     return map || {};
   }
 
+  // Abscond / absence-warning follow-ups. When HR actions a flagged person on
+  // the dashboard ("marked done" + a note of what was done) we store it here so
+  // the warning clears — until the person misses again AFTER the actioned date.
+  // Shape: { [ec]: { throughYmd, note, by, at } }.
+  async function loadAbscondActions() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_abscond_actions_v1").maybeSingle();
+    if (res.error) { console.error("loadAbscondActions:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveAbscondActions(map) {
+    var res = await sb.from("app_state").upsert({ key: "boa_abscond_actions_v1", value: map || {} });
+    if (res.error) { console.error("saveAbscondActions:", res.error); throw res.error; }
+    return map || {};
+  }
+
   // ---------- Daily tasks (boa_daily_tasks_v1) ----------
   // Per-user to-do items assigned by an admin. Records:
   //   { _id, title, description, assigneePin, date (YYYY-MM-DD),
@@ -1655,7 +1781,10 @@
 
     // Cash-ups (from the kiosk)
     listRecentCashups: listRecentCashups,
+    listCashupsForDate: listCashupsForDate,
+    addCashupManual: addCashupManual,
     reopenCashup: reopenCashup,
+    deleteCashup: deleteCashup,
     loadManagerDayStatuses: loadManagerDayStatuses,
     saveManagerDayStatus: saveManagerDayStatus,
     deleteManagerDayStatus: deleteManagerDayStatus,
@@ -1672,6 +1801,12 @@
     loadEarlyLeaves: loadEarlyLeaves,
     saveEarlyLeaves: saveEarlyLeaves,
     loadExtras: loadExtras,
+    saveExtraDay: saveExtraDay,
+    clearExtraDay: clearExtraDay,
+    loadFreshaExtraOpenings: loadFreshaExtraOpenings,
+    saveFreshaExtraOpenings: saveFreshaExtraOpenings,
+    loadFreshaBlocks: loadFreshaBlocks,
+    saveFreshaBlocks: saveFreshaBlocks,
     deleteEarlyLeaves: deleteEarlyLeaves,
     loadKioskProof: loadKioskProof,
     probeRecentClockinsRaw: probeRecentClockinsRaw,
@@ -1695,6 +1830,8 @@
     saveTechLoans: saveTechLoans,
     loadMgrTimes: loadMgrTimes,
     saveMgrTimes: saveMgrTimes,
+    loadAbscondActions: loadAbscondActions,
+    saveAbscondActions: saveAbscondActions,
     loadMgrLoans: loadMgrLoans,
     saveMgrLoans: saveMgrLoans,
     loadDailyTasks: loadDailyTasks,
@@ -1720,6 +1857,23 @@
     // (kiosk/data.js submitEarlyLeaveReport); the HR portal reads them
     // here to surface on the Manager Check-ins tab.
     loadEarlyLeaveReports: loadEarlyLeaveReports,
+
+    // Staff incident reports (confidential; from /report.html). Read/updated
+    // only via key-gated RPCs — see sql/incident_reports.sql.
+    loadIncidentReports: loadIncidentReports,
+    setIncidentStatus: setIncidentStatus,
+    markIncidentReviewed: markIncidentReviewed,
+    addIncidentNote: addIncidentNote,
+
+    // Staff leave requests (from /leave.html) — same key-gated RPC pattern.
+    loadLeaveRequests: loadLeaveRequests,
+    setLeaveStatus: setLeaveStatus,
+    markLeaveReviewed: markLeaveReviewed,
+    addLeaveNote: addLeaveNote,
+    deleteLeaveRequest: deleteLeaveRequest,
+    loadExtraDayRequests: loadExtraDayRequests,
+    setExtraDayStatus: setExtraDayStatus,
+    deleteExtraDayRequest: deleteExtraDayRequest,
 
     // Kiosk device lock (Tier 3A) — server-validated enrolment RPCs
     createKioskEnrollment: createKioskEnrollment,
@@ -1752,6 +1906,87 @@
     if (res.error) { console.error("loadEarlyLeaveReports:", res.error); return []; }
     var v = res.data && res.data.value;
     return Array.isArray(v) ? v : [];
+  }
+
+  // ── Staff incident reports ───────────────────────────────────────────
+  // Confidential reports filed from /report.html. The table is unreadable
+  // through the normal anon API; everything goes through SECURITY DEFINER
+  // RPCs that require the HR access key. That key lives only in the HR
+  // portal (window.BOA_INCIDENT_HR_KEY) — NOT in the kiosk — so a manager
+  // holding the kiosk's anon key still can't read or alter these reports.
+  function incidentKey() { return window.BOA_INCIDENT_HR_KEY || ""; }
+
+  async function loadIncidentReports() {
+    var res = await sb.rpc("list_incident_reports", { p_key: incidentKey() });
+    if (res.error) { console.error("loadIncidentReports:", res.error); return []; }
+    return Array.isArray(res.data) ? res.data : [];
+  }
+  async function setIncidentStatus(id, status, note, actor) {
+    var res = await sb.rpc("set_incident_status", {
+      p_key: incidentKey(), p_id: id, p_status: status,
+      p_note: note || "", p_actor: actor || ""
+    });
+    if (res.error) { console.error("setIncidentStatus:", res.error); throw res.error; }
+    return true;
+  }
+  async function markIncidentReviewed(id) {
+    var res = await sb.rpc("mark_incident_reviewed", { p_key: incidentKey(), p_id: id });
+    if (res.error) { console.error("markIncidentReviewed:", res.error); throw res.error; }
+    return true;
+  }
+  async function addIncidentNote(id, note, author) {
+    var res = await sb.rpc("add_incident_note", { p_key: incidentKey(), p_id: id, p_note: note, p_author: author || "" });
+    if (res.error) { console.error("addIncidentNote:", res.error); throw res.error; }
+    return true;
+  }
+
+  // ── Staff leave requests ─────────────────────────────────────────────
+  // Same HR key as incidents (sql/leave_requests.sql reuses incident_hr_key).
+  async function loadLeaveRequests() {
+    var res = await sb.rpc("list_leave_requests", { p_key: incidentKey() });
+    if (res.error) { console.error("loadLeaveRequests:", res.error); return []; }
+    return Array.isArray(res.data) ? res.data : [];
+  }
+  async function setLeaveStatus(id, status, note, actor) {
+    var res = await sb.rpc("set_leave_status", {
+      p_key: incidentKey(), p_id: id, p_status: status, p_note: note || "", p_actor: actor || ""
+    });
+    if (res.error) { console.error("setLeaveStatus:", res.error); throw res.error; }
+    return true;
+  }
+  async function markLeaveReviewed(id) {
+    var res = await sb.rpc("mark_leave_reviewed", { p_key: incidentKey(), p_id: id });
+    if (res.error) { console.error("markLeaveReviewed:", res.error); throw res.error; }
+    return true;
+  }
+  async function addLeaveNote(id, note, author) {
+    var res = await sb.rpc("add_leave_note", { p_key: incidentKey(), p_id: id, p_note: note, p_author: author || "" });
+    if (res.error) { console.error("addLeaveNote:", res.error); throw res.error; }
+    return true;
+  }
+  async function deleteLeaveRequest(id) {
+    var res = await sb.rpc("delete_leave_request", { p_key: incidentKey(), p_id: id });
+    if (res.error) { console.error("deleteLeaveRequest:", res.error); throw res.error; }
+    return true;
+  }
+
+  // ── Extra-day availability requests (sql/extra_day_requests.sql) ─────────
+  async function loadExtraDayRequests() {
+    var res = await sb.rpc("list_extra_day_requests", { p_key: incidentKey() });
+    if (res.error) { console.error("loadExtraDayRequests:", res.error); return []; }
+    return Array.isArray(res.data) ? res.data : [];
+  }
+  async function setExtraDayStatus(id, status, note, actor) {
+    var res = await sb.rpc("set_extra_day_status", {
+      p_key: incidentKey(), p_id: id, p_status: status, p_note: note || "", p_actor: actor || ""
+    });
+    if (res.error) { console.error("setExtraDayStatus:", res.error); throw res.error; }
+    return true;
+  }
+  async function deleteExtraDayRequest(id) {
+    var res = await sb.rpc("delete_extra_day_request", { p_key: incidentKey(), p_id: id });
+    if (res.error) { console.error("deleteExtraDayRequest:", res.error); throw res.error; }
+    return true;
   }
 
   // ── Custom locations ─────────────────────────────────────────────────
