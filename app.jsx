@@ -27842,7 +27842,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{r.staff && r.staff.name}</div>
                           <div style={{ fontSize: 10, fontFamily: "monospace", color: "#9ca3af" }}>{r.staff && r.staff.employee_code} · {r.branch || (r.staff && r.staff.branch) || "—"}</div>
                         </div>
-                        <span style={{ fontSize: 9, fontWeight: 800, padding: "3px 8px", borderRadius: 99, background: t.bg, color: t.fg, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>{t.lbl}</span>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+                          <span style={{ fontSize: 9, fontWeight: 800, padding: "3px 8px", borderRadius: 99, background: t.bg, color: t.fg, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>{t.lbl}</span>
+                          {currentUser && currentUser.isOwner && (
+                            <button
+                              onClick={async () => {
+                                const who = (r.staff && r.staff.name) || (r.staff && r.staff.employee_code) || "this manager";
+                                if (!window.confirm("Delete this clock-in for " + who + "?\n\n" + t.lbl + " · " + fmtDate(r.ts) + "\n\nUse this only for a test or mistaken clock-in. It removes the clock-in record (and its selfie/GPS) so the manager no longer shows as clocked in — letting you set their absence on the attendance sheet. Owner-only and cannot be undone.")) return;
+                                try {
+                                  await window.BOA_DB.deleteClockin(r.id);
+                                  setMgrClockinRows(prev => (prev || []).filter(x => x.id !== r.id));
+                                  if (logActivity) logActivity("Deleted clock-in", who + " · " + t.lbl, fmtDate(r.ts) + " · " + (r.branch || (r.staff && r.staff.branch) || "—"), "Manager Check-ins");
+                                } catch (e) { window.alert("Could not delete clock-in: " + ((e && e.message) || e)); }
+                              }}
+                              title="Owner only: delete this clock-in (e.g. a test entry) so you can set the manager's absence"
+                              style={{ background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 7, padding: "3px 8px", fontWeight: 700, fontSize: 10, cursor: "pointer", whiteSpace: "nowrap" }}>🗑 Delete</button>
+                          )}
+                        </div>
                       </div>
                       <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
                         {photo ? (
