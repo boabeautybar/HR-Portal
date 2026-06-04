@@ -9811,6 +9811,11 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
     return r.status === statusFilter;
   });
   const pendingCount = requests.filter(r => r.status === "pending").length;
+  // Live counts for the workflow overview (open = not declined / not approved).
+  const openReqs = requests.filter(r => r.status !== "approved" && r.status !== "declined");
+  const awaitingOps = openReqs.filter(r => !r.ops_cleared_at).length;
+  const awaitingBalance = openReqs.filter(r => !r.balance_checked_at).length;
+  const approvedCount = requests.filter(r => r.status === "approved").length;
 
   const card = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 18px", marginBottom: 16 };
   const chip = (c) => ({ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: c.color, background: c.bg });
@@ -9831,9 +9836,48 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
         <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#831843", margin: 0 }}>🌴 Leave Requests</h2>
         {pendingCount > 0 && <span style={chip(LEAVE_STATUS.pending)}>{pendingCount} pending</span>}
       </div>
-      <p style={{ color: "#9d6a82", fontSize: 13.5, marginTop: 4, maxWidth: 720 }}>
-        Leave requests staff send from My BOA. Each goes through two checks — an <strong>operational check</strong> (the store can spare them; the portal flags clashes automatically) and a <strong>leave-balance check</strong> (payroll confirms days on Sage). Once both are ticked, it's auto-approved and added to the Leave Planner. Decline at any point with a reason. Who can do each check is set under <strong>Settings</strong>.
+      <p style={{ color: "#9d6a82", fontSize: 13.5, marginTop: 4, maxWidth: 760 }}>
+        How a leave request flows from request to the calendar — and who does each step. A request is <strong>auto-approved and added to the Leave Planner</strong> only once both checks below are ticked. Anyone can <strong>decline</strong> at any point with a reason. Who can do each check is set under <strong>Settings</strong>.
       </p>
+
+      {(() => {
+        const stepWrap = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 16px 14px", marginBottom: 16 };
+        const Step = ({ n, color, bg, icon, title, who, desc, badge }) => (
+          <div style={{ flex: "1 1 200px", minWidth: 190, background: bg, border: "1px solid " + color + "33", borderRadius: 12, padding: "12px 13px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+              <span style={{ flex: "0 0 22px", width: 22, height: 22, borderRadius: "50%", background: color, color: "#fff", fontSize: 12, fontWeight: 800, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>{n}</span>
+              <span style={{ fontSize: 13.5, fontWeight: 800, color: "#1f2937" }}>{icon} {title}</span>
+            </div>
+            <div style={{ fontSize: 11, fontWeight: 800, color: color, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 4 }}>{who}</div>
+            <div style={{ fontSize: 12, color: "#4b5563", lineHeight: 1.4 }}>{desc}</div>
+            {badge != null && <div style={{ marginTop: 8, display: "inline-block", fontSize: 11, fontWeight: 700, color: color, background: "#fff", border: "1px solid " + color + "55", borderRadius: 999, padding: "2px 9px" }}>{badge}</div>}
+          </div>
+        );
+        const Arrow = () => <div style={{ alignSelf: "center", color: "#d9a7bd", fontSize: 20, fontWeight: 800, flex: "0 0 auto" }}>→</div>;
+        return (
+          <div style={stepWrap}>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "stretch" }}>
+              <Step n={1} color="#BE185D" bg="#fdf2f8" icon="🌴" title="Requested"
+                who="Staff (My BOA) or a manager"
+                desc="Sent by the staff member from My BOA, or added to the Leave Planner by a manager. It lands here for review."
+                badge={(awaitingOps + awaitingBalance) > 0 ? pendingCount + " in review" : "all clear"} />
+              <Arrow />
+              <Step n={2} color="#7c3aed" bg="#faf5ff" icon="✅" title="Operational check"
+                who="Operational reviewer (Ops/ROM)"
+                desc="Confirms the store can spare them — max 1 manager / 20% of techs off at once. The portal flags any clash automatically."
+                badge={awaitingOps + " awaiting"} />
+              <Arrow />
+              <Step n={3} color="#0f766e" bg="#f0fdfa" icon="🧮" title="Balance checked → approved"
+                who="Payroll officer"
+                desc="Confirms the leave balance on Sage. Once this and the operational check are done, it's approved and on the calendar."
+                badge={awaitingBalance + " awaiting · " + approvedCount + " approved"} />
+            </div>
+            <div style={{ fontSize: 11.5, color: "#9d6a82", marginTop: 10 }}>
+              💡 Open a request below to action your step. The coloured <strong>progress dots</strong> on each one show how far it's got. The two checks can be done in any order; a request only turns <strong>green/approved</strong> when both are ticked.
+            </div>
+          </div>
+        );
+      })()}
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
         <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
@@ -9933,10 +9977,12 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                   const verdict = (bg, bd, col) => ({ background: bg, border: "1px solid " + bd, color: col, borderRadius: 8, padding: "7px 10px", fontSize: 12.5, marginBottom: 8, lineHeight: 1.45 });
                   return (
                     <div style={{ marginBottom: 14 }}>
-                      <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 11 }}>
-                        {pill(opsDone, 1, "Operational")}
-                        {pill(balDone, 2, "Leave balance")}
-                        {pill(approved, 3, "Approved → calendar")}
+                      {/* Progress dots — mirror the 3-step overview at the top of the tab */}
+                      <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 11, alignItems: "center" }}>
+                        {pill(true, 1, "Requested")}
+                        {pill(opsDone, 2, "Operational")}
+                        {pill(approved, 3, "Balance & approved")}
+                        {balDone && !approved && <span style={{ fontSize: 11, color: "#0f766e", fontWeight: 600 }}>· balance ✓, awaiting operational</span>}
                       </div>
 
                       {/* Gate 1 — operational */}
