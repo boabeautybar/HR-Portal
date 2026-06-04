@@ -26,6 +26,12 @@
   var DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   var MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+  // Employee-code format: a letter + number, no spaces/dashes; managers end in M
+  // (e.g. B379 / B379M). Strip non-alphanumerics + upper-case, then check shape.
+  var EC_HINT = "Your employee code should look like B379 (nail techs) or B379M (managers) — a letter, then your number, no spaces or dashes. Managers add an M at the end.";
+  function cleanEc(raw) { return String(raw == null ? "" : raw).replace(/[^A-Za-z0-9]/g, "").toUpperCase(); }
+  var EC_RE = /^[A-Z]\d+M?$/;
+
   var state = { busy: false, name: "", store: "", ec: "", isManager: false, offDays: [] };
 
   // ── Cycle helpers (mirror the schedule viewer / portal 25th→24th logic) ──
@@ -92,7 +98,8 @@
         '<label class="field"><span>Full name</span>',
           '<input type="text" id="name" placeholder="First and last name" /></label>',
         '<label class="field"><span>Employee code</span>',
-          '<input type="text" id="ec" autocapitalize="characters" autocomplete="off" placeholder="e.g. B379" value="' + esc(saved.ec || "") + '" /></label>',
+          '<input type="text" id="ec" autocapitalize="characters" autocomplete="off" placeholder="e.g. B379 — managers B379M" value="' + esc(saved.ec || "") + '" />',
+          '<span class="hint">A letter then your number, no spaces or dashes. Managers end with M.</span></label>',
         '<label class="field"><span>Branch</span>',
           '<select id="store"><option value="">— choose —</option>',
             STORES.map(function (s) { return '<option' + (saved.store === s ? ' selected' : '') + '>' + esc(s) + '</option>'; }).join(""),
@@ -108,12 +115,13 @@
   function findOffDays() {
     if (state.busy) return;
     var name = (val("name") || "").trim();
-    var ec = (val("ec") || "").trim();
+    var ec = cleanEc(val("ec"));
     var store = val("store");
     setErr("");
     if (!name) { setErr("Please enter your full name."); focus("name"); return; }
     if (name.split(/\s+/).filter(Boolean).length < 2) { setErr("Please enter both your first name and surname."); focus("name"); return; }
     if (!ec) { setErr("Please enter your employee code."); focus("ec"); return; }
+    if (!EC_RE.test(ec)) { setErr("Please check your employee code. " + EC_HINT); focus("ec"); return; }
     if (!store) { setErr("Please choose your branch."); return; }
 
     setBusy(true, "find", "Looking up…");
@@ -136,7 +144,7 @@
     })(0).then(function () {
       if (!found.ecKey) {
         setBusy(false, "find", "Find my off days");
-        setErr("We couldn't find a published schedule for " + ec + " at " + store + ". Check your code and branch — your manager may not have published it yet.");
+        setErr("We couldn't find a published schedule for " + ec + " at " + store + ". " + EC_HINT + " Your manager may also not have published the schedule yet.");
         return;
       }
       state.name = name; state.store = store; state.ec = found.ecKey; state.isManager = found.isManager;

@@ -24,6 +24,12 @@
     "Fourways", "Eastgate", "Mall of the South", "Mushroom Farm", "Verdi", "Ballito"
   ];
 
+  // Employee-code format: a letter + number, no spaces/dashes; managers end in M
+  // (e.g. B379 / B379M). Strip non-alphanumerics + upper-case, then check shape.
+  var EC_HINT = "Your employee code should look like B379 (nail techs) or B379M (managers) — a letter, then your number, no spaces or dashes. Managers add an M at the end.";
+  function cleanEc(raw) { return String(raw == null ? "" : raw).replace(/[^A-Za-z0-9]/g, "").toUpperCase(); }
+  var EC_RE = /^[A-Z]\d+M?$/;
+
   var state = { busy: false };
 
   function render() {
@@ -54,7 +60,8 @@
               STORES.map(function (s) { return '<option' + (saved.store === s ? ' selected' : '') + '>' + esc(s) + '</option>'; }).join(""),
             '</select></label>',
           '<label class="field"><span>Employee code</span>',
-            '<input type="text" id="ec" autocapitalize="characters" autocomplete="off" placeholder="e.g. B379" value="' + esc(saved.ec || "") + '" /></label>',
+            '<input type="text" id="ec" autocapitalize="characters" autocomplete="off" placeholder="e.g. B379 — managers B379M" value="' + esc(saved.ec || "") + '" />',
+            '<span class="hint">A letter then your number, no spaces or dashes. Managers end with M.</span></label>',
         '</div>',
         '<div class="row2">',
           '<label class="field"><span>First day away</span><input type="date" id="start" min="' + today + '" max="' + tomorrow + '" /></label>',
@@ -118,7 +125,7 @@
     setErr("");
     var name = ($("name").value || "").trim();
     var store = $("store").value;
-    var ec = ($("ec").value || "").trim();
+    var ec = cleanEc($("ec").value);
     var start = $("start").value, end = $("end").value;
     var kind = $("kind").value || "Sick"; // "Sick" or "Absent" (other reason)
     var desc = ($("desc").value || "").trim();
@@ -128,6 +135,7 @@
     if (name.split(/\s+/).filter(Boolean).length < 2) { setErr("Please enter both your first and last name."); $("name").focus(); return; }
     if (!store) { setErr("Please choose your branch."); return; }
     if (!ec) { setErr("Please enter your employee code."); $("ec").focus(); return; }
+    if (!EC_RE.test(ec)) { setErr("Please check your employee code. " + EC_HINT); $("ec").focus(); return; }
     if (!start || !end) { setErr("Please choose the dates you'll be away."); return; }
     if (start < today || end < today) { setErr("This can only be for today or tomorrow — not the past."); return; }
     if (start > tomorrow || end > tomorrow) { setErr("Calling in / marking absent is only for today or tomorrow."); return; }
@@ -215,7 +223,7 @@
           return String(r.employee_code || "").trim().toUpperCase() === want;
         });
         if (rows.length === 0) {
-          return { ok: false, msg: "We couldn't find employee code " + want + ". Please check it — enter the exact code on your contract." };
+          return { ok: false, msg: "We couldn't find employee code " + want + ". " + EC_HINT };
         }
         var atStore = rows.some(function (r) { return String(r.branch || "").trim() === wantStore; });
         if (!atStore) {
