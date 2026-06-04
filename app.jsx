@@ -9149,6 +9149,13 @@ function CalledInSickTab({ requests, setRequests, currentUser }) {
           const isTech = !/M$/i.test((r.ec || "").trim());
           const firstName = (r.name || "").trim().split(/\s+/)[0] || "this tech";
           const awayLbl = fmtIncidentDate(r.start_date) + (r.end_date !== r.start_date ? "–" + fmtIncidentDate(r.end_date) : "");
+          // Pull the proof URL out of the reason so we can show a compact "view"
+          // button instead of a long raw link.
+          const _proofM = /Proof:\s*(https?:\/\/\S+)/i.exec(r.reason || "");
+          const proofUrl = _proofM ? _proofM[1] : null;
+          const reasonText = proofUrl
+            ? String(r.reason).replace(/\s*Proof:\s*https?:\/\/\S+\s*/i, " ").replace(/[ \t]+\n/g, "\n").replace(/\n{2,}/g, "\n").trim()
+            : (r.reason || "");
           return (
             <div key={r.id} style={card}>
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -9160,7 +9167,13 @@ function CalledInSickTab({ requests, setRequests, currentUser }) {
                 <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(r.start_date)}{r.end_date !== r.start_date ? " → " + fmtIncidentDate(r.end_date) : ""}</span>
                 <span style={{ marginLeft: "auto", ...chip(r.reviewed ? { color: "#15803d", bg: "#dcfce7" } : st) }}>{r.reviewed ? "✓ Done" : st.label}</span>
               </div>
-              {r.reason && <div style={{ marginTop: 8, fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{linkifyText(r.reason)}</div>}
+              {reasonText && <div style={{ marginTop: 8, fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{linkifyText(reasonText)}</div>}
+              {proofUrl && (
+                <a href={proofUrl} target="_blank" rel="noreferrer"
+                  style={{ marginTop: 8, display: "inline-flex", alignItems: "center", gap: 6, background: "#fff", border: "1px solid #e7c6d4", borderRadius: 8, padding: "5px 11px", fontSize: 12, fontWeight: 700, color: "#9d174d", textDecoration: "none" }}>
+                  📎 View sick note
+                </a>
+              )}
               <div style={{ marginTop: 6, fontSize: 11, color: "#9d6a82" }}>Ref {r.ref_code} · {fmtIncidentTime(r.created_at)}{r.contact ? " · " + r.contact : ""}</div>
               {isTech && (
                 <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "flex-start", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "9px 12px" }}>
@@ -9174,7 +9187,7 @@ function CalledInSickTab({ requests, setRequests, currentUser }) {
                 <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "flex-start", background: "#faf5ff", border: "1px solid #e9d5ff", borderRadius: 10, padding: "9px 12px" }}>
                   <span style={{ fontSize: 15, lineHeight: 1.2 }}>👑</span>
                   <div style={{ fontSize: 12.5, color: "#6b21a8", lineHeight: 1.45 }}>
-                    <strong>What to do:</strong> mark {firstName} as <strong>absent</strong> on the <strong>Manager Check-ins</strong> tab (or the <strong>Manager Coverage</strong> overview) and attach their <strong>sick note</strong> if they have one{(/Proof:\s*https?:\/\//i.test(r.reason || "")) ? " (their note is linked above)" : ""}. Then tap <strong>Mark done</strong> to clear it.
+                    <strong>What to do:</strong> mark {firstName} as <strong>absent</strong> on the <strong>Manager Check-ins</strong> tab (or the <strong>Manager Coverage</strong> overview) and attach their <strong>sick note</strong> if they have one{proofUrl ? " (tap 📎 View sick note above)" : ""}. Then tap <strong>Mark done</strong> to clear it.
                   </div>
                 </div>
               )}
