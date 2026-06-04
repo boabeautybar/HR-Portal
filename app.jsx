@@ -9497,7 +9497,6 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
   const [adjDays, setAdjDays] = useState("");
   const [adjSign, setAdjSign] = useState(-1);
   const [adjReason, setAdjReason] = useState("");
-  const [addEc, setAddEc] = useState("");
   const fileRef = useRef(null);
 
   const lookups = useMemo(() => {
@@ -9505,7 +9504,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
     const add = (p, role) => {
       if (!p || !p.ec) return;
       const n = lbNormEc(p.ec); if (!n) return;
-      const rec = { name: p.name || "", branch: p.branch || "", role: role };
+      const rec = { ec: p.ec, name: p.name || "", branch: p.branch || "", role: role };
       if (!byNorm[n]) byNorm[n] = rec;
       const c = lbCoreEc(n); if (c && !byCore[c]) byCore[c] = rec;
     };
@@ -9514,6 +9513,15 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
     return { byNorm, byCore };
   }, [enriched, managers]);
   const resolve = (rawEc) => { const n = lbNormEc(rawEc); return lookups.byNorm[n] || lookups.byCore[lbCoreEc(n)] || null; };
+  // Everyone on the HR portal (techs + managers), deduped — the source for the
+  // "add by name" lookup. Only these people can be added; nobody off-system.
+  const allPeople = useMemo(() => {
+    const seen = new Set(); const out = [];
+    const add = (p, role) => { if (!p || !p.ec) return; const n = lbNormEc(p.ec); if (!n || seen.has(n)) return; seen.add(n); out.push({ ec: p.ec, norm: n, name: p.name || "", branch: p.branch || "", role }); };
+    (enriched || []).forEach(p => add(p, "Nail tech"));
+    (managers || []).forEach(m => add(m, m.role || "Manager"));
+    return out.sort((a, b) => (a.name || a.ec).localeCompare(b.name || b.ec));
+  }, [enriched, managers]);
 
   useEffect(() => {
     let cancelled = false;
@@ -9545,8 +9553,8 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
     rows.forEach(r => { byNorm[lbNormEc(r.rawEc)] = r; });
     const list = Object.keys(byNorm).map(norm => {
       const r = byNorm[norm]; const nm = resolve(r.rawEc);
-      return { norm, rawEc: r.rawEc, days: r.days, name: nm ? nm.name : "", branch: nm ? nm.branch : "", matched: !!nm };
-    }).sort((a, b) => (a.name || a.rawEc).localeCompare(b.name || b.rawEc));
+      return { norm, rawEc: r.rawEc, days: r.days, portalEc: nm ? nm.ec : null, name: nm ? nm.name : "", branch: nm ? nm.branch : "", matched: !!nm };
+    }).sort((a, b) => (b.matched - a.matched) || (a.name || a.rawEc).localeCompare(b.name || b.rawEc));
     setPreview({ list: list, total: list.length, matched: list.filter(x => x.matched).length });
   };
 
@@ -9573,17 +9581,28 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
 
   const applyImport = async () => {
     if (!preview || !data) return;
-    const existing = preview.list.filter(x => data.entries[x.norm] && data.entries[x.norm].opening != null).length;
-    if (existing > 0 && !window.confirm("This updates the opening balance for " + existing + " employee(s) who already have one. Any adjustment days you've added are kept. Continue?")) return;
+    // Only import codes that match an employee on the HR portal — ignore the
+    // rest. Each entry is keyed by the PORTAL employee code (so a payroll
+    // "B123-M" lands on the same record as the manager B123M, and lines up with
+    // anything added by name).
+    const matched = preview.list.filter(x => x.matched && x.portalEc);
+    const ignored = preview.list.length - matched.length;
+    if (matched.length === 0) { window.alert("None of these codes match an employee on the HR portal, so there's nothing to import."); return; }
+    const existing = matched.filter(x => { const k = lbNormEc(x.portalEc); return data.entries[k] && data.entries[k].opening != null; }).length;
+    const msg = "Import " + matched.length + " matched employee" + (matched.length === 1 ? "" : "s") + "?"
+      + (ignored ? "\n\n" + ignored + " row" + (ignored === 1 ? "" : "s") + " are NOT on the HR portal and will be ignored." : "")
+      + (existing ? "\n\n" + existing + " already have an opening balance — it will be updated (your adjustments are kept)." : "");
+    if (!window.confirm(msg)) return;
     setImportBusy(true);
     const entries = { ...data.entries };
-    preview.list.forEach(x => {
-      const prev = entries[x.norm] || {};
-      entries[x.norm] = { ec: x.norm, rawEc: x.rawEc, name: x.name || prev.name || "", opening: x.days, adjustments: prev.adjustments || [] };
+    matched.forEach(x => {
+      const k = lbNormEc(x.portalEc);
+      const prev = entries[k] || {};
+      entries[k] = { ec: k, rawEc: x.portalEc, name: x.name || prev.name || "", opening: x.days, adjustments: prev.adjustments || [] };
     });
     await persist({ ...data, entries: entries });
     setImportBusy(false); setPreview(null); setPasteText(""); setFileName(""); setShowImport(false);
-    if (logActivity) logActivity("Imported leave balances", preview.list.length + " employees · as of " + (data.asOf || ""), "", "Payroll");
+    if (logActivity) logActivity("Imported leave balances", matched.length + " employees" + (ignored ? " (" + ignored + " ignored — not on system)" : "") + " · as of " + (data.asOf || ""), "", "Payroll");
   };
 
   const addAdjustment = async (norm) => {
@@ -9602,14 +9621,17 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
     const entries = { ...data.entries, [norm]: { ...entry, adjustments: (entry.adjustments || []).filter(a => a.id !== id) } };
     await persist({ ...data, entries: entries });
   };
-  const addEmployee = async () => {
-    const raw = (addEc || "").trim(); if (!raw) return;
-    const norm = lbNormEc(raw); if (!norm) return;
-    if (data.entries[norm]) { setExpanded(norm); setAddEc(""); return; }
-    const nm = resolve(raw);
-    const entries = { ...data.entries, [norm]: { ec: norm, rawEc: raw, name: nm ? nm.name : "", opening: 0, adjustments: [] } };
+  // Add a person who's already on the HR portal (picked by name from the
+  // lookup). We never create a record for someone who isn't on the system.
+  const addByEc = async (ec) => {
+    if (!ec) return;
+    const person = (allPeople || []).find(p => p.ec === ec);
+    if (!person) return;                       // only on-system people
+    const key = lbNormEc(person.ec); if (!key) return;
+    if (data.entries[key]) { setExpanded(key); return; }   // already there
+    const entries = { ...data.entries, [key]: { ec: key, rawEc: person.ec, name: person.name || "", opening: 0, adjustments: [] } };
     await persist({ ...data, entries: entries });
-    setAddEc(""); setExpanded(norm);
+    setExpanded(key);
   };
 
   const rows = useMemo(() => {
@@ -9699,26 +9721,26 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
           </div>
           {preview && (
             <div style={{ marginTop: 14, background: "#fff", border: "1px solid #e9d5ff", borderRadius: 10, padding: 12 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#7e22ce" }}>{preview.total} employees found · {preview.matched} matched to a name · {preview.total - preview.matched} not matched</div>
-              <div style={{ maxHeight: 200, overflow: "auto", marginTop: 8, border: "1px solid #f3e8ff", borderRadius: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#7e22ce" }}>{preview.total} rows found · <span style={{ color: "#15803d" }}>{preview.matched} on the portal (will import)</span>{preview.total - preview.matched > 0 ? <span style={{ color: "#b45309" }}> · {preview.total - preview.matched} not on the portal (ignored)</span> : null}</div>
+              <div style={{ maxHeight: 220, overflow: "auto", marginTop: 8, border: "1px solid #f3e8ff", borderRadius: 8 }}>
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead><tr><th style={th}>Code</th><th style={th}>Name</th><th style={th}>Balance</th></tr></thead>
+                  <thead><tr><th style={th}>Code</th><th style={th}>Name</th><th style={{ ...th, textAlign: "right" }}>Balance</th></tr></thead>
                   <tbody>
                     {preview.list.map(x => (
-                      <tr key={x.norm}>
+                      <tr key={x.norm} style={{ opacity: x.matched ? 1 : 0.5 }}>
                         <td style={td}>{x.rawEc}</td>
-                        <td style={td}>{x.matched ? x.name : <span style={{ color: "#b45309" }}>⚠ not matched</span>}{x.branch ? <span style={{ color: "#9d6a82", fontSize: 11 }}> · {x.branch}</span> : null}</td>
-                        <td style={{ ...td, fontWeight: 700 }}>{fmtDays(x.days)}</td>
+                        <td style={td}>{x.matched ? <span style={{ fontWeight: 600 }}>{x.name}</span> : <span style={{ color: "#b45309" }}>⚠ not on portal — ignored</span>}{x.matched && x.branch ? <span style={{ color: "#9d6a82", fontSize: 11 }}> · {x.branch}</span> : null}</td>
+                        <td style={{ ...td, fontWeight: 700, textAlign: "right" }}>{fmtDays(x.days)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
               <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-                <button onClick={applyImport} disabled={importBusy} style={{ background: "#15803d", color: "#fff", border: "none", borderRadius: 9, padding: "9px 18px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{importBusy ? "Importing…" : "Import " + preview.total + " balances"}</button>
+                <button onClick={applyImport} disabled={importBusy || preview.matched === 0} style={{ background: (importBusy || preview.matched === 0) ? "#a7f3cf" : "#15803d", color: "#fff", border: "none", borderRadius: 9, padding: "9px 18px", fontWeight: 700, fontSize: 13, cursor: (importBusy || preview.matched === 0) ? "not-allowed" : "pointer" }}>{importBusy ? "Importing…" : "Import " + preview.matched + " matched"}</button>
                 <button onClick={() => setPreview(null)} style={{ background: "#fff", color: "#7e22ce", border: "1px solid #e9d5ff", borderRadius: 9, padding: "9px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Discard</button>
               </div>
-              {preview.matched < preview.total && <div style={{ fontSize: 11.5, color: "#b45309", marginTop: 8 }}>Unmatched codes are still imported — they just won't show a name until they match a staff/manager record.</div>}
+              {preview.total - preview.matched > 0 && <div style={{ fontSize: 11.5, color: "#b45309", marginTop: 8 }}>Rows not on the HR portal are ignored — only matched employees are imported.</div>}
             </div>
           )}
         </div>
@@ -9727,9 +9749,16 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
       {/* Toolbar */}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
         <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search name, code or store…" style={{ ...inp, flex: "1 1 240px", minWidth: 200 }} />
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <input value={addEc} onChange={e => setAddEc(e.target.value)} onKeyDown={e => { if (e.key === "Enter") addEmployee(); }} placeholder="Add code (e.g. B024)" style={{ ...inp, width: 160 }} />
-          <button onClick={addEmployee} disabled={!addEc.trim()} style={{ background: addEc.trim() ? "#BE185D" : "#f3c6db", color: "#fff", border: "none", borderRadius: 8, padding: "8px 12px", fontWeight: 700, fontSize: 12.5, cursor: addEc.trim() ? "pointer" : "not-allowed" }}>+ Add</button>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flex: "1 1 260px", minWidth: 220 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "#9d174d", whiteSpace: "nowrap" }}>＋ Add person</span>
+          <div style={{ flex: 1 }}>
+            <StaffPicker
+              people={allPeople.filter(p => !data.entries[p.norm])}
+              valueEc=""
+              onChange={ec => addByEc(ec)}
+              placeholder="Type a name to add from the portal…"
+            />
+          </div>
         </div>
       </div>
 
