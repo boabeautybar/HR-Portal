@@ -7115,7 +7115,10 @@ const SETTINGS_TABS = [
   { t: "payrollProgress", l: "Payroll Progress", cat: "Payroll", icon: "📊" },
   { t: "payrollReports", l: "Reports", cat: "Payroll", icon: "📈" },
   { t: "overtime", l: "Overtime", cat: "Payroll", icon: "⏱️" },
-  { t: "payrollInbox", l: "Payroll Inbox", cat: "Payroll", icon: "📥" },
+  // NOTE: Payroll Inbox is intentionally NOT in this per-user permission grid.
+  // Access to it is governed solely by the "Leave — payroll / balance check"
+  // access list (Settings), so it shows for anyone granted there regardless of
+  // their tab-visibility settings.
   { t: "alerts", l: "Alerts", cat: "Insights", icon: "🔔" },
   { t: "activity", l: "Activity Log", cat: "Insights", icon: "📜" },
   { t: "kioskPins", l: "Kiosk PINs", cat: "Admin", icon: "🔑" },
@@ -13818,7 +13821,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "overtime", l: "⏱️ Overtime" },
                   ...(accessAllows(currentUser, leavePayrollCfg) ? [(() => {
                     const n = (leaveRequests || []).filter(r => r.status !== "declined" && r.leave_type !== "Sick" && r.leave_type !== "Absent" && !r.balance_checked_at).length;
-                    return { t: "payrollInbox", l: "📥 Payroll Inbox" + (n ? "  (" + n + ")" : "") };
+                    return { t: "payrollInbox", l: "📥 Payroll Inbox" + (n ? "  (" + n + ")" : ""), forceShow: true };
                   })()] : [])
                 ]
               },
@@ -13870,7 +13873,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // gets the Trial Period tab).
             const showTabs = new Set(currentUser.showTabs || []);
             const visibleGroups = groups
-              .map(g => ({ ...g, items: g.items.filter(it => !hideTabs.has(it.t) && (!hideCats.has(g.key) || showTabs.has(it.t))) }))
+              // forceShow items (access-gated tabs like the Payroll Inbox) bypass
+              // the category/tab hide filter — access is governed by their own
+              // admin access list, so a locked-down account still sees them.
+              .map(g => ({ ...g, items: g.items.filter(it => it.forceShow || (!hideTabs.has(it.t) && (!hideCats.has(g.key) || showTabs.has(it.t)))) }))
               .filter(g => g.items.length > 0);
             const tabToCategory = {};
             for (const g of visibleGroups) for (const it of g.items) tabToCategory[it.t] = g.key;
