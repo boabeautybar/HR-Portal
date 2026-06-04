@@ -24482,17 +24482,53 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const orphans = (leaveRecs || []).filter(lv => lv && lv.ec && !known.has(String(lv.ec).toUpperCase().trim()))
                 .slice().sort((a, b) => (a.startDate || "").localeCompare(b.startDate || ""));
               if (orphans.length === 0) return null;
+              // Current people to re-home an orphan onto (deduped by code).
+              const pickPeople = (() => {
+                const seen = new Set(), out = [];
+                [...(enriched || []), ...(managers || [])].forEach(p => {
+                  if (!p || !p.ec) return; const k = String(p.ec).toUpperCase().trim(); if (seen.has(k)) return; seen.add(k);
+                  out.push({ ec: p.ec, name: p.name || "", branch: p.branch || "" });
+                });
+                return out.sort((a, b) => (a.name || a.ec).localeCompare(b.name || b.ec));
+              })();
+              // Re-home everything logged under the old code onto the chosen
+              // person's current code. Uses the same all-stores migration that
+              // runs automatically on a code edit, then reloads leave records.
+              const reassignOrphan = async (orphanEc, newEc) => {
+                if (!orphanEc || !newEc) return;
+                const target = pickPeople.find(p => p.ec === newEc);
+                const label = target ? (target.name + " (" + newEc + ")") : newEc;
+                if (!confirm("Re-assign everything logged under " + orphanEc + " to " + label + "?\n\nThis moves the leave record(s) — and any schedule / attendance still under the old code — across to the new code. It can't be auto-undone.")) return;
+                try {
+                  if (window.BOA_DB.migrateEmployeeCode) {
+                    await window.BOA_DB.migrateEmployeeCode(orphanEc, newEc);
+                    const lv = await window.BOA_DB.loadLeaveRecords();
+                    setLeaveRecs(Array.isArray(lv) ? lv : []);
+                  } else {
+                    const nrm = s => String(s || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+                    const oN = nrm(orphanEc);
+                    await persistLeaves(leaveRecs.map(x => nrm(x.ec) === oN ? { ...x, ec: newEc } : x));
+                  }
+                  logActivity("Re-assigned orphaned leave", orphanEc + " → " + newEc, target ? target.name : "", "Leave");
+                } catch (e) { alert("Could not re-assign: " + (e.message || e)); }
+              };
               return (
                 <div style={{ marginTop: 18, border: "1px solid #fecaca", background: "#fef2f2", borderRadius: 12, padding: "12px 14px" }}>
                   <div style={{ fontSize: 12, fontWeight: 800, color: "#b91c1c", marginBottom: 4 }}>⚠️ Orphaned leave records · {orphans.length}</div>
-                  <div style={{ fontSize: 11, color: "#9d6a82", marginBottom: 8 }}>Leave logged against an employee code that no longer matches anyone — likely someone who was deleted. They can't be tied to a person, so remove them here.</div>
+                  <div style={{ fontSize: 11, color: "#9d6a82", marginBottom: 8 }}>Leave logged against an employee code that no longer matches anyone — usually because the code was changed after the leave was logged. <strong>Re-assign</strong> each one to the right person to move it (and any schedule / attendance still under the old code) onto their current code, or delete it if it's no longer needed.</div>
                   {orphans.map(lv => (
                     <div key={lv._id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderTop: "1px solid #fee2e2", fontSize: 12, flexWrap: "wrap" }}>
                       <span style={{ fontFamily: "monospace", fontWeight: 700, color: "#7f1d1d" }}>{lv.ec}</span>
                       <span style={{ color: "#6b7280" }}>{lv.type}{lv.emergency ? " · emergency" : ""}</span>
                       <span style={{ color: "#374151" }}>{lv.startDate} → {lv.endDate}</span>
-                      <button onClick={() => { if (confirm("Delete this orphaned leave record?\n\n" + lv.ec + " · " + lv.startDate + " → " + lv.endDate + "\n\nThis can't be undone.")) removeLeave(lv._id); }}
-                        style={{ marginLeft: "auto", background: "transparent", border: "none", color: "#dc2626", cursor: "pointer", fontSize: 14 }} title="Delete this orphaned record">✕</button>
+                      <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ fontSize: 11, color: "#9d6a82", whiteSpace: "nowrap" }}>↪ reassign to</span>
+                        <div style={{ width: 210 }}>
+                          <StaffPicker people={pickPeople} valueEc="" onChange={ec => reassignOrphan(lv.ec, ec)} placeholder="pick the current person…" />
+                        </div>
+                        <button onClick={() => { if (confirm("Delete this orphaned leave record?\n\n" + lv.ec + " · " + lv.startDate + " → " + lv.endDate + "\n\nThis can't be undone.")) removeLeave(lv._id); }}
+                          style={{ background: "transparent", border: "none", color: "#dc2626", cursor: "pointer", fontSize: 14 }} title="Delete this orphaned record">✕</button>
+                      </div>
                     </div>
                   ))}
                 </div>
