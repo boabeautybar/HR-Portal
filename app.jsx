@@ -13240,7 +13240,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const n = extraDayRequests.filter(r => r.status === "pending").length;
                     return { t: "extraDayRequests", l: "💰 Extra-Day Requests" + (n ? "  (" + n + ")" : "") };
                   })()] : []),
-                  ...(canSeeIncidents(currentUser) ? [(() => {
+                  // Fresha To-Do is granted via the normal Settings show/hide
+                  // permissions (not canSeeIncidents) so the owner can give it
+                  // to the Fresha openers (e.g. Farida) who don't pass the HR
+                  // gate that hides the other request tabs.
+                  (() => {
                     const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
                     const isOpen = (id) => !!(freshaExtraOpen && freshaExtraOpen[id] && freshaExtraOpen[id].opened);
                     const extraToOpen = (extraDayRequests || []).filter(r => r.status === "approved" && isTech(r.ec) && !isOpen(r.id)).length;
@@ -13254,7 +13258,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const toRemove = freshaOffboardRemovals(enriched).filter(r => !isBlocked(r.key)).length;
                     const n = extraToOpen + trialToOpen + monthToOpen + toBlock + toRemove;
                     return { t: "freshaTodo", l: "💇‍♀️ Fresha To-Do" + (n ? "  (" + n + ")" : "") };
-                  })()] : []),
+                  })(),
                   { t: "storeOpenings", l: "🔓 Store Openings" },
                   { t: "movements", l: "🔀 Today's Movements" },
                   { t: "dailyTasks", l: "📋 Daily Tasks" },
