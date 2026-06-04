@@ -2316,81 +2316,15 @@
   }
 
   // ---- Yoco balance photo capture (rear camera) ----
-  // Opens a full-screen camera overlay (rear-facing) so the staff member can
-  // photograph the Yoco machine screen showing the day's transaction totals.
-  // Returns Promise<dataUrl|null>. Cancel / camera-denied returns null.
+  // Photograph the Yoco machine screen showing the day's transaction totals.
+  // Returns Promise<dataUrl|null>. Uses the shared camera helper (live preview
+  // where it works on this device, system camera otherwise).
   function captureYocoPhoto() {
-    return new Promise(function (resolve) {
-      var overlay = document.createElement("div");
-      overlay.id = "yoco-cam-overlay";
-      overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;font-family:inherit";
-      overlay.innerHTML =
-        '<div style="color:#fff;font-size:15px;font-weight:700;margin-bottom:6px;text-align:center">📸 Photograph the Yoco Balances</div>' +
-        '<div style="color:#9ca3af;font-size:12px;margin-bottom:14px;text-align:center;max-width:420px;line-height:1.5">' +
-          'Point the camera at the Yoco machine screen showing today\'s transaction totals, then tap <strong style="color:#fff">Capture</strong>.' +
-        '</div>' +
-        '<div style="position:relative;background:#000;border-radius:12px;overflow:hidden;max-width:520px;width:100%">' +
-          '<video id="yoco-cam-video" autoplay playsinline muted style="display:block;width:100%;max-height:60vh;background:#000"></video>' +
-          '<canvas id="yoco-cam-still" style="display:none;width:100%;max-height:60vh"></canvas>' +
-        '</div>' +
-        '<div id="yoco-cam-controls" style="margin-top:14px;display:flex;gap:10px"></div>';
-      document.body.appendChild(overlay);
-
-      var stream = null;
-      var videoEl = document.getElementById("yoco-cam-video");
-      var stillEl = document.getElementById("yoco-cam-still");
-      var controls = document.getElementById("yoco-cam-controls");
-      var lastDataUrl = null;
-
-      function cleanup(result) {
-        try { if (stream) stream.getTracks().forEach(function (t) { t.stop(); }); } catch (_e) { }
-        if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
-        resolve(result);
-      }
-      function showLive() {
-        videoEl.style.display = "block";
-        stillEl.style.display = "none";
-        controls.innerHTML =
-          '<button id="yoco-cam-cancel" style="padding:10px 18px;border-radius:9px;border:1px solid rgba(255,255,255,0.3);background:transparent;color:#fff;font-family:inherit;font-size:13px;cursor:pointer">Cancel</button>' +
-          '<button id="yoco-cam-capture" style="padding:10px 22px;border-radius:9px;border:none;background:#BE185D;color:#fff;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer">📸 Capture</button>';
-        document.getElementById("yoco-cam-cancel").onclick = function () { cleanup(null); };
-        document.getElementById("yoco-cam-capture").onclick = doCapture;
-      }
-      function showStill() {
-        videoEl.style.display = "none";
-        stillEl.style.display = "block";
-        controls.innerHTML =
-          '<button id="yoco-cam-retake" style="padding:10px 18px;border-radius:9px;border:1px solid rgba(255,255,255,0.3);background:transparent;color:#fff;font-family:inherit;font-size:13px;cursor:pointer">↺ Retake</button>' +
-          '<button id="yoco-cam-confirm" style="padding:10px 22px;border-radius:9px;border:none;background:#16a34a;color:#fff;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer">✓ Confirm</button>';
-        document.getElementById("yoco-cam-retake").onclick = showLive;
-        document.getElementById("yoco-cam-confirm").onclick = function () { cleanup(lastDataUrl); };
-      }
-      function doCapture() {
-        var vw = videoEl.videoWidth || 640, vh = videoEl.videoHeight || 480;
-        var maxDim = 1200;
-        var ratio = Math.min(maxDim / vw, maxDim / vh, 1);
-        var w = Math.round(vw * ratio), h = Math.round(vh * ratio);
-        stillEl.width = w; stillEl.height = h;
-        stillEl.getContext("2d").drawImage(videoEl, 0, 0, w, h);
-        lastDataUrl = stillEl.toDataURL("image/jpeg", 0.8);
-        showStill();
-      }
-
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        alert("Camera not available on this device/browser.\n\nA photo of the Yoco balances is required. Open the kiosk over HTTPS in a supported browser, then try again.");
-        cleanup(null);
-        return;
-      }
-
-      navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 960 } },
-        audio: false
-      })
-        .then(function (s) { stream = s; videoEl.srcObject = s; showLive(); })
-        .catch(function (err) {
-          alert("Camera access denied: " + (err.message || err) + "\n\nA photo of the Yoco balances is required. Allow camera in browser settings, then try again.");
-          cleanup(null);
-        });
+    return window.BOA_CAMERA.capture({
+      facingMode: "environment",
+      title: "📸 Photograph the Yoco Balances",
+      hint: "Point the camera at the Yoco machine screen showing today's transaction totals, then tap Capture.",
+      crop: { mode: "fit", maxDim: 1200, quality: 0.8 }
     });
   }
 
@@ -3031,4 +2965,193 @@
     refreshCheckinNag:  function () { return refreshCheckinNag.apply(null, arguments); },
     refreshCashupNag:   function () { return refreshCashupNag.apply(null, arguments); }
   };
+})();
+
+/* ============================================================
+   Shared camera capture — window.BOA_CAMERA.capture(opts)
+   ------------------------------------------------------------
+   iOS standalone PWAs often render the live <video> black (a WebKit
+   autoplay/compositing bug, version-dependent). We harden the live path
+   (explicit play() + a short watchdog) and fall back to the system camera
+   (<input type=file capture>), which always works and needs no web camera
+   permission. Returns Promise<dataUrl|null>. Used by the Yoco photo (staff)
+   and the clock-in selfie (manager).
+   opts = { facingMode:"environment"|"user", title, hint,
+            crop:{mode:"fit",maxDim,quality} | {mode:"cover",w,h,quality} }
+   ============================================================ */
+(function () {
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  // Draw a source (live video frame or loaded <img>) to a canvas per the crop
+  // spec → JPEG dataURL. "fit" scales down within maxDim; "cover" centre-crops
+  // to exact w×h.
+  function cropToDataUrl(src, sw, sh, crop) {
+    crop = crop || { mode: "fit", maxDim: 1200 };
+    var canvas = document.createElement("canvas");
+    var ctx = canvas.getContext("2d");
+    if (crop.mode === "cover") {
+      var dw = crop.w || 400, dh = crop.h || 500;
+      canvas.width = dw; canvas.height = dh;
+      var srcAspect = sw / sh, dstAspect = dw / dh, cx, cy, cw, ch;
+      if (srcAspect > dstAspect) { ch = sh; cw = sh * dstAspect; cx = (sw - cw) / 2; cy = 0; }
+      else { cw = sw; ch = sw / dstAspect; cx = 0; cy = (sh - ch) / 2; }
+      ctx.drawImage(src, cx, cy, cw, ch, 0, 0, dw, dh);
+      return canvas.toDataURL("image/jpeg", crop.quality || 0.7);
+    }
+    var maxDim = crop.maxDim || 1200;
+    var ratio = Math.min(maxDim / sw, maxDim / sh, 1);
+    var w = Math.round(sw * ratio), h = Math.round(sh * ratio);
+    canvas.width = w; canvas.height = h;
+    ctx.drawImage(src, 0, 0, w, h);
+    return canvas.toDataURL("image/jpeg", crop.quality || 0.8);
+  }
+
+  function capture(opts) {
+    opts = opts || {};
+    var facing = opts.facingMode === "user" ? "user" : "environment";
+    var crop = opts.crop || { mode: "fit", maxDim: 1200 };
+    return new Promise(function (resolve) {
+      var settled = false, stream = null, watchdog = null, nativeInput = null, lastDataUrl = null;
+
+      var overlay = document.createElement("div");
+      overlay.id = "boa-cam-overlay";
+      overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;font-family:inherit";
+      overlay.innerHTML =
+        '<div style="color:#fff;font-size:15px;font-weight:700;margin-bottom:6px;text-align:center">' + esc(opts.title || "Take a photo") + '</div>' +
+        (opts.hint ? '<div style="color:#9ca3af;font-size:12px;margin-bottom:14px;text-align:center;max-width:420px;line-height:1.5">' + esc(opts.hint) + '</div>' : '<div style="margin-bottom:6px"></div>') +
+        '<div style="position:relative;background:#000;border-radius:12px;overflow:hidden;max-width:520px;width:100%">' +
+          '<video id="boa-cam-video" autoplay playsinline muted style="display:block;width:100%;max-height:60vh;background:#000"></video>' +
+          '<canvas id="boa-cam-still" style="display:none;width:100%;max-height:60vh"></canvas>' +
+        '</div>' +
+        '<div id="boa-cam-status" style="color:#9ca3af;font-size:11px;margin-top:8px;min-height:14px;text-align:center"></div>' +
+        '<div id="boa-cam-controls" style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;justify-content:center"></div>';
+      document.body.appendChild(overlay);
+
+      var videoEl  = overlay.querySelector("#boa-cam-video");
+      var stillEl  = overlay.querySelector("#boa-cam-still");
+      var statusEl = overlay.querySelector("#boa-cam-status");
+      var controls = overlay.querySelector("#boa-cam-controls");
+      videoEl.muted = true; videoEl.playsInline = true; videoEl.setAttribute("playsinline", "");
+
+      function stopStream() {
+        if (watchdog) { clearTimeout(watchdog); watchdog = null; }
+        try { if (stream) stream.getTracks().forEach(function (t) { t.stop(); }); } catch (_e) {}
+        stream = null;
+      }
+      function done(v) {
+        if (settled) return; settled = true;
+        stopStream();
+        if (nativeInput && nativeInput.parentNode) nativeInput.parentNode.removeChild(nativeInput);
+        if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+        resolve(v);
+      }
+      function setControls(html) { controls.innerHTML = html; }
+      function previewStill(dataUrl) {
+        var img = new Image();
+        img.onload = function () { stillEl.width = img.naturalWidth; stillEl.height = img.naturalHeight; stillEl.getContext("2d").drawImage(img, 0, 0); };
+        img.src = dataUrl;
+      }
+
+      function showLive() {
+        videoEl.style.display = "block"; stillEl.style.display = "none";
+        setControls(
+          '<button id="boa-cam-cancel" style="padding:10px 18px;border-radius:9px;border:1px solid rgba(255,255,255,0.3);background:transparent;color:#fff;font-family:inherit;font-size:13px;cursor:pointer">Cancel</button>' +
+          '<button id="boa-cam-native" style="padding:10px 18px;border-radius:9px;border:1px solid rgba(255,255,255,0.3);background:transparent;color:#fff;font-family:inherit;font-size:13px;cursor:pointer">Use device camera</button>' +
+          '<button id="boa-cam-capture" style="padding:10px 22px;border-radius:9px;border:none;background:#BE185D;color:#fff;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer">📸 Capture</button>');
+        overlay.querySelector("#boa-cam-cancel").onclick = function () { done(null); };
+        overlay.querySelector("#boa-cam-native").onclick = function () { openNative(); };
+        overlay.querySelector("#boa-cam-capture").onclick = doCapture;
+      }
+      function showStill() {
+        videoEl.style.display = "none"; stillEl.style.display = "block";
+        setControls(
+          '<button id="boa-cam-retake" style="padding:10px 18px;border-radius:9px;border:1px solid rgba(255,255,255,0.3);background:transparent;color:#fff;font-family:inherit;font-size:13px;cursor:pointer">↺ Retake</button>' +
+          '<button id="boa-cam-confirm" style="padding:10px 22px;border-radius:9px;border:none;background:#16a34a;color:#fff;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer">✓ Confirm</button>');
+        overlay.querySelector("#boa-cam-retake").onclick = function () { startLive(); };
+        overlay.querySelector("#boa-cam-confirm").onclick = function () { done(lastDataUrl); };
+      }
+      function showNativePrompt(msg) {
+        videoEl.style.display = "none"; stillEl.style.display = "none";
+        statusEl.textContent = msg || "";
+        setControls(
+          '<button id="boa-cam-cancel2" style="padding:10px 18px;border-radius:9px;border:1px solid rgba(255,255,255,0.3);background:transparent;color:#fff;font-family:inherit;font-size:13px;cursor:pointer">Cancel</button>' +
+          '<button id="boa-cam-open" style="padding:10px 22px;border-radius:9px;border:none;background:#BE185D;color:#fff;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer">📷 Open camera</button>');
+        overlay.querySelector("#boa-cam-cancel2").onclick = function () { done(null); };
+        overlay.querySelector("#boa-cam-open").onclick = triggerNative;
+      }
+      function doCapture() {
+        var vw = videoEl.videoWidth || 640, vh = videoEl.videoHeight || 480;
+        lastDataUrl = cropToDataUrl(videoEl, vw, vh, crop);
+        previewStill(lastDataUrl);
+        showStill();
+      }
+
+      // ---- System camera fallback (always works; no web permission needed) ----
+      function triggerNative() {
+        if (!nativeInput) {
+          nativeInput = document.createElement("input");
+          nativeInput.type = "file";
+          nativeInput.accept = "image/*";
+          nativeInput.setAttribute("capture", facing);
+          nativeInput.style.display = "none";
+          nativeInput.addEventListener("change", function () {
+            var file = nativeInput.files && nativeInput.files[0];
+            if (!file) return; // cancel → stay on the native prompt
+            var url = URL.createObjectURL(file);
+            var img = new Image();
+            img.onload = function () {
+              lastDataUrl = cropToDataUrl(img, img.naturalWidth || img.width, img.naturalHeight || img.height, crop);
+              URL.revokeObjectURL(url);
+              previewStill(lastDataUrl);
+              showStill();
+            };
+            img.onerror = function () { URL.revokeObjectURL(url); showNativePrompt("Could not read that photo — try again."); };
+            img.src = url;
+          });
+          overlay.appendChild(nativeInput);
+        }
+        nativeInput.value = "";
+        nativeInput.click();
+      }
+      function openNative(msg) {
+        stopStream();
+        showNativePrompt(msg || "");
+        triggerNative();
+      }
+
+      // ---- Live preview path ----
+      function startLive() {
+        stopStream();
+        showLive();
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { openNative("This device has no in-app camera — using the system camera."); return; }
+        statusEl.textContent = "Starting camera…";
+        navigator.mediaDevices.getUserMedia({ video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 960 } }, audio: false })
+          .then(function (s) {
+            if (settled) { try { s.getTracks().forEach(function (t) { t.stop(); }); } catch (_e) {} return; }
+            stream = s; videoEl.srcObject = s;
+            var tryPlay = function () { var p = videoEl.play(); if (p && p.catch) p.catch(function () {}); };
+            videoEl.onloadedmetadata = tryPlay; tryPlay();
+            // If no frames shortly (standalone-PWA black-video bug), use the system camera.
+            watchdog = setTimeout(function () {
+              if (settled) return;
+              if (!videoEl.videoWidth || videoEl.readyState < 2 || videoEl.paused) {
+                openNative("Live preview isn't supported here — using the system camera.");
+              } else { statusEl.textContent = ""; }
+            }, 2500);
+          })
+          .catch(function () {
+            // Permission/hardware error → the system camera still works without it.
+            openNative("Using the system camera.");
+          });
+      }
+
+      startLive();
+    });
+  }
+
+  window.BOA_CAMERA = { capture: capture };
 })();

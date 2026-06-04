@@ -1002,74 +1002,14 @@
   // proof — the geolocation prompt added seconds of latency on flaky
   // tablet links and the photo timestamp already covers the audit.
 
-  // Camera modal — returns Promise<dataUrl|null>. Manager taps Capture
-  // (freezes a still frame) then either Retake or Confirm. Cancel returns null.
+  // Manager selfie — returns Promise<dataUrl|null>. Uses the shared camera helper
+  // (live preview where supported on the device, system camera otherwise), then
+  // crops the result to 4:5 (400×500).
   function capturePhoto(name) {
-    return new Promise(function (resolve) {
-      var overlay = document.createElement("div");
-      overlay.id = "cam-overlay";
-      overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;font-family:inherit";
-      overlay.innerHTML =
-        '<div style="color:#fff;font-size:14px;font-weight:600;margin-bottom:10px">Selfie required for ' + esc(name || "manager") + '</div>' +
-        '<div style="position:relative;background:#000;border-radius:12px;overflow:hidden;max-width:480px;width:100%">' +
-        '<video id="cam-video" autoplay playsinline muted style="display:block;width:100%;max-height:60vh;background:#000"></video>' +
-        '<canvas id="cam-still" style="display:none;width:100%;max-height:60vh"></canvas>' +
-        '</div>' +
-        '<div id="cam-controls" style="margin-top:14px;display:flex;gap:10px"></div>';
-      document.body.appendChild(overlay);
-
-      var stream = null;
-      var videoEl = document.getElementById("cam-video");
-      var stillEl = document.getElementById("cam-still");
-      var controls = document.getElementById("cam-controls");
-      var lastDataUrl = null;
-
-      function cleanup(result) {
-        try { if (stream) stream.getTracks().forEach(function (t) { t.stop(); }); } catch (_e) { }
-        if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
-        resolve(result);
-      }
-      function showLive() {
-        videoEl.style.display = "block";
-        stillEl.style.display = "none";
-        controls.innerHTML =
-          '<button id="cam-cancel"  style="padding:10px 18px;border-radius:9px;border:1px solid rgba(255,255,255,0.3);background:transparent;color:#fff;font-family:inherit;font-size:13px;cursor:pointer">Cancel</button>' +
-          '<button id="cam-capture" style="padding:10px 22px;border-radius:9px;border:none;background:#BE185D;color:#fff;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer">📸 Capture</button>';
-        document.getElementById("cam-cancel").onclick = function () { cleanup(null); };
-        document.getElementById("cam-capture").onclick = doCapture;
-      }
-      function showStill() {
-        videoEl.style.display = "none";
-        stillEl.style.display = "block";
-        controls.innerHTML =
-          '<button id="cam-retake"  style="padding:10px 18px;border-radius:9px;border:1px solid rgba(255,255,255,0.3);background:transparent;color:#fff;font-family:inherit;font-size:13px;cursor:pointer">↺ Retake</button>' +
-          '<button id="cam-confirm" style="padding:10px 22px;border-radius:9px;border:none;background:#16a34a;color:#fff;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer">✓ Confirm</button>';
-        document.getElementById("cam-retake").onclick = showLive;
-        document.getElementById("cam-confirm").onclick = function () { cleanup(lastDataUrl); };
-      }
-      function doCapture() {
-        stillEl.width = 400; stillEl.height = 500;
-        var ctx = stillEl.getContext("2d");
-        var vw = videoEl.videoWidth || 400, vh = videoEl.videoHeight || 500;
-        // Cover crop to 4:5
-        var srcAspect = vw / vh, dstAspect = 400 / 500;
-        var sx, sy, sw, sh;
-        if (srcAspect > dstAspect) {
-          sh = vh; sw = vh * dstAspect; sx = (vw - sw) / 2; sy = 0;
-        } else {
-          sw = vw; sh = vw / dstAspect; sx = 0; sy = (vh - sh) / 2;
-        }
-        ctx.drawImage(videoEl, sx, sy, sw, sh, 0, 0, 400, 500);
-        lastDataUrl = stillEl.toDataURL("image/jpeg", 0.7);
-        showStill();
-      }
-
-      navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 800 }, height: { ideal: 1000 } }, audio: false })
-        .then(function (s) { stream = s; videoEl.srcObject = s; showLive(); })
-        .catch(function (err) {
-          alert("Camera access denied: " + (err.message || err) + "\n\nClock-in needs a selfie. Allow camera in browser settings, then try again.");
-          cleanup(null);
-        });
+    return window.BOA_CAMERA.capture({
+      facingMode: "user",
+      title: "Selfie required for " + (name || "manager"),
+      crop: { mode: "cover", w: 400, h: 500, quality: 0.7 }
     });
   }
 
