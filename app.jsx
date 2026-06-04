@@ -1692,6 +1692,7 @@ function shiftTimes(role, code, branch, dow) {
       if (code === "WL") return "10:00 - 19:00";
       return "10:00 - 19:00";
     }
+    if (code === "WE") return "08:00 - 17:00";   // AM opener when no SM is in
     if (code === "WM") return "10:00 - 19:00";
     if (code === "WL") return "11:00 - 20:00";
     return "11:00 - 20:00";
@@ -24344,9 +24345,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         //   Mon-Sat (closer 11:00–20:00, optional opener 10:00–19:00):
         //     SM/SSM always work 08:00-17:00 (WE) — they never close;
         //     the 11:00-20:00 close is carried by the AMs/techs.
-        //     AMs (regardless of SM count):
-        //       1   → WL (11:00-20:00)
-        //       2+  → 1 WM (10:00-19:00, rotated) + rest WL (11:00-20:00)
+        //     WITH an SM/SSM on duty (the SM is the opener):
+        //       1 AM  → WL (11:00-20:00)
+        //       2+ AMs→ 1 WM (10:00-19:00, rotated) + rest WL (11:00-20:00)
+        //     NO SM/SSM on duty (an AM must open — store opens 09:00):
+        //       1 AM  → WE (08:00-17:00, opener priority; 17-20 needs a tech)
+        //       2+ AMs→ 1 WE (08:00-17:00, rotated) + rest WL (11:00-20:00)
+        //       …so there is always a WE opener AND a WL closer.
         //   Sunday (one early 08:00-17:00 + one late 10:00-19:00):
         //     SM/SSM → WE (08:00-17:00); AMs → WL (10:00-19:00)
         //     No SM, 1 AM → WE (08:00-17:00, opener priority — covers
@@ -24420,11 +24425,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
               }
             } else if (ams.length === 1) {
-              grid[ams[0].ec][dy.d] = "WL";
+              // No SM working — the lone AM opens (WE 08:00-17:00) so the
+              // store can open at 09:00; HR patches the 17:00-20:00 close
+              // with a tech. (Opener priority, same as the Sunday rule.)
+              grid[ams[0].ec][dy.d] = "WE";
             } else {
-              const mid = _pickLowest(ams, _middleCount);
-              grid[mid.ec][dy.d] = "WM";
-              ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+              // No SM working — guarantee an opener AND a closer: one AM
+              // takes the WE 08:00-17:00 opener (rotated), the rest close on
+              // WL 11:00-20:00. Without this the day fell to WM+WL and nobody
+              // opened the store.
+              const opener = _pickLowest(ams, _earlyCount);
+              grid[opener.ec][dy.d] = "WE";
+              ams.filter(m => m.ec !== opener.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
             }
           });
         };
@@ -25465,7 +25477,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 14px", marginBottom: 10, fontSize: 12, color: "#065f46", display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center" }}>
                 <span style={{ fontSize: 11, fontWeight: 800, color: "#065f46", letterSpacing: "0.08em", textTransform: "uppercase" }}>🕐 Fourways manager shifts</span>
                 <span><strong>SM / SSM (every day)</strong> · 08:00–17:00 (always open, never close)</span>
-                <span><strong>Mon–Sat</strong> (store 09:00–20:00) · <span style={{ color: "#0f766e" }}>WM 10:00–19:00 (only with 2+ AMs on duty, rotated)</span> · WL 11:00–20:00</span>
+                <span><strong>Mon–Sat</strong> (store 09:00–20:00) · with SM: <span style={{ color: "#0f766e" }}>WM 10:00–19:00 (2+ AMs, rotated)</span> · WL 11:00–20:00 · <strong>no SM: WE 08:00–17:00 opener</strong> + WL 11:00–20:00</span>
                 <span><strong>Sunday</strong> (store 09:00–19:00) · WE 08:00–17:00 · WL 10:00–19:00</span>
               </div>
             )}

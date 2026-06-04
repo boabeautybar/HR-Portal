@@ -109,6 +109,7 @@
     if (_b === "Fourways") {
       if (isSM) return "08:00 - 17:00";
       if (dow === 0) { if (code === "WE") return "08:00 - 17:00"; return "10:00 - 19:00"; }
+      if (code === "WE") return "08:00 - 17:00";   // AM opener when no SM is in
       if (code === "WM") return "10:00 - 19:00";
       if (code === "WL") return "11:00 - 20:00";
       return "11:00 - 20:00";
