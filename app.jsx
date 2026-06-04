@@ -9482,7 +9482,7 @@ function lbParsePaste(text) {
 // (per employee, as of a date) and layer manual add/remove-day adjustments on
 // top. Everything is stored in Supabase (app_state boa_leave_balances_v1) — no
 // balances are hard-coded.
-function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
+function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveRecs, schedCache, ymdToSchedYm }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadErr, setLoadErr] = useState("");
@@ -9542,8 +9542,8 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
         const d = window.BOA_DB.loadLeaveBalances ? await window.BOA_DB.loadLeaveBalances() : null;
         if (cancelled) return;
         setData(d && typeof d === "object"
-          ? { asOf: d.asOf || "2026-05-31", entries: (d.entries && typeof d.entries === "object") ? d.entries : {}, updatedBy: d.updatedBy, updatedAt: d.updatedAt }
-          : { asOf: "2026-05-31", entries: {} });
+          ? { asOf: d.asOf || "2026-05-24", entries: (d.entries && typeof d.entries === "object") ? d.entries : {}, updatedBy: d.updatedBy, updatedAt: d.updatedAt }
+          : { asOf: "2026-05-24", entries: {} });
       } catch (e) { if (!cancelled) setLoadErr(e.message || String(e)); }
       finally { if (!cancelled) setLoading(false); }
     })();
@@ -9665,30 +9665,189 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
     if (logActivity) logActivity("Cleared all leave balances", n + " records", "", "Payroll");
   };
 
-  const rows = useMemo(() => {
+  // ── Leave-deduction engine ───────────────────────────────────────────
+  // Opening balances are AS OF data.asOf (end of the previous cycle), so they
+  // already bake in everything taken up to that date. We only deduct Annual
+  // leave dated AFTER the cutoff, split into "taken" (past, up to today) and
+  // "booked" (future) — giving a current balance and a projected balance.
+  const pad2 = (n) => String(n).padStart(2, "0");
+  const todayYmd = new Date().toISOString().slice(0, 10);
+  const addDaysYmd = (ymd, n) => { const d = new Date(ymd + "T00:00:00"); d.setDate(d.getDate() + n); return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()); };
+  const minYmd = (a, b) => (a < b ? a : b);
+  const maxYmd = (a, b) => (a > b ? a : b);
+
+  // Current pay cycle (25th→24th). Attendance grids key by the START-month
+  // (currentAttYm); the schedule keys by END-month (ymdToSchedYm) — different
+  // conventions for the same cycle, so keep them straight.
+  const attYm = useMemo(() => (window.BOA_DB && window.BOA_DB.currentAttYm) ? window.BOA_DB.currentAttYm() : "", []);
+  const cycle = useMemo(() => {
+    if (!attYm) return null;
+    const [cy, cm] = attYm.split("-").map(Number);
+    let ey = cy, em = cm + 1; if (em > 12) { em = 1; ey++; }
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return { start: cy + "-" + pad2(cm) + "-25", end: ey + "-" + pad2(em) + "-24", label: months[cm - 1] + " 25 – " + months[em - 1] + " 24, " + ey };
+  }, [attYm]);
+
+  const [attGrids, setAttGrids] = useState({});
+  const [clockSet, setClockSet] = useState(() => new Set());
+  const [reconLoading, setReconLoading] = useState(true);
+
+  // Branches we hold balance records for — drives which attendance grids to load.
+  const reconBranches = useMemo(() => {
     if (!data) return [];
-    const arr = Object.keys(data.entries).map(norm => {
-      const e = data.entries[norm]; const adjs = e.adjustments || [];
-      const net = adjs.reduce((s, a) => s + (Number(a.days) || 0), 0);
-      const opening = Number(e.opening) || 0; const r = resolve(e.rawEc || norm);
-      return { norm, rawEc: e.rawEc || norm, name: e.name || (r ? r.name : ""), branch: r ? r.branch : "", role: r ? r.role : "", opening, openingSet: e.opening != null, net, current: opening + net, adjustments: adjs };
+    const set = new Set();
+    Object.keys(data.entries).forEach(norm => { const r = resolve(data.entries[norm].rawEc || norm); if (r && r.branch) set.add(r.branch); });
+    return [...set];
+  }, [data, lookups]);
+
+  // Load the current cycle's attendance grids (techs) + recent clock-ins
+  // (managers, and as a tech fallback) so we can show whether planned leave was
+  // actually taken. Read-only — nothing is written back here.
+  useEffect(() => {
+    if (!attYm || reconBranches.length === 0) { setReconLoading(false); return; }
+    let cancelled = false;
+    (async () => {
+      setReconLoading(true);
+      try {
+        const pairs = await Promise.all(reconBranches.map(async b => {
+          try { const a = await window.BOA_DB.loadAttendance(b, attYm); return [b, (a && a.grid) || {}]; }
+          catch (_) { return [b, {}]; }
+        }));
+        if (cancelled) return;
+        const grids = {}; pairs.forEach(([b, g]) => { grids[b] = g; });
+        setAttGrids(grids);
+        const set = new Set();
+        const ingest = (list) => (list || []).forEach(ci => {
+          if (!ci || ci.type === "out" || ci.type === "out_auto") return;
+          const ec = ci.staff && ci.staff.employee_code; if (!ec || !ci.ts) return;
+          set.add(lbNormEc(ec) + "|" + new Date(ci.ts).toISOString().slice(0, 10));
+        });
+        try { ingest(await window.BOA_DB.listRecentTechClockins(50)); } catch (_) { }
+        try { ingest(await window.BOA_DB.listRecentManagerClockins(50)); } catch (_) { }
+        if (!cancelled) setClockSet(set);
+      } finally { if (!cancelled) setReconLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [attYm, reconBranches.join("|")]);
+
+  // Is a given day a scheduled day off (roster O/R cell)? Used to exclude
+  // off-days from the reconciliation list.
+  const isSchedOff = (ec, branch, ymd) => {
+    if (!schedCache || !ymdToSchedYm || !branch) return false;
+    const grid = schedCache[branch + "|" + ymdToSchedYm(ymd)];
+    if (!grid) return false;
+    const row = grid[ec] || grid[String(ec).toUpperCase()];
+    if (!row) return false;
+    const dn = Number(ymd.slice(8, 10));
+    const cell = row[dn] != null ? row[dn] : row[String(dn)];
+    return cell === "O" || cell === "R";
+  };
+  // What actually happened on a planned leave day, per attendance / clock-ins.
+  //   took      attendance confirms annual/maternity leave (or, for a manager, no clock-in)
+  //   worked    they clocked in / attendance shows on-time — discrepancy ⚠
+  //   expected  planned leave, not yet confirmed either way
+  //   off/absent/sick/unpaid/ph  attendance shows something else
+  const dayStatus = (ec, branch, ymd) => {
+    const norm = lbNormEc(ec);
+    const clockedIn = clockSet.has(norm + "|" + ymd);
+    if (!isManagerEc(ec)) {
+      const g = attGrids[branch];
+      const row = g && (g[ec] || g[String(ec).toUpperCase()]);
+      const dn = Number(ymd.slice(8, 10));
+      const raw = row && (row[dn] != null ? row[dn] : row[String(dn)]);
+      if (raw != null && raw !== "") {
+        const conf = String(raw).replace(/^~/, "");
+        const prov = String(raw).charAt(0) === "~";   // mirrored from schedule, not confirmed
+        if (conf === "al") return prov ? "expected" : "took";
+        if (conf === "mat") return "took";
+        if (conf === "on" || conf === "late" || conf === "ext") return "worked";
+        if (conf === "off") return "off";
+        if (conf === "no") return "absent";
+        if (conf === "sick" || conf === "sick_n") return "sick";
+        if (conf === "unpaid") return "unpaid";
+        if (conf === "ph") return "ph";
+        return "expected";
+      }
+    }
+    return clockedIn ? "worked" : "expected";
+  };
+
+  const computeRow = (norm, e) => {
+    const adjs = e.adjustments || [];
+    const net = adjs.reduce((s, a) => s + (Number(a.days) || 0), 0);
+    const opening = Number(e.opening) || 0;
+    const r = resolve(e.rawEc || norm);
+    const ec = (r && r.ec) || e.rawEc || norm;
+    const branch = r ? r.branch : "";
+    const isMgr = isManagerEc(ec);
+    const asOf = (data && data.asOf) || "2026-05-24";
+    const opts = { schedCache, ymdToSchedYm, ec, branch };
+    const annual = (leaveRecs || []).filter(lv => lv && lv.type === "Annual leave" && lv.startDate && lv.endDate && lbNormEc(lv.ec) === norm);
+    let taken = 0, booked = 0;
+    const future = [];
+    annual.forEach(lv => {
+      // Taken: after the as-of cutoff (already in opening), up to & incl. today.
+      const ps = maxYmd(lv.startDate, addDaysYmd(asOf, 1)), pe = minYmd(lv.endDate, todayYmd);
+      if (ps <= pe) taken += leaveDayBreakdown(ps, pe, isMgr, opts).real;
+      // Booked: strictly after today.
+      const fs = maxYmd(lv.startDate, addDaysYmd(todayYmd, 1));
+      if (fs <= lv.endDate) {
+        const fb = leaveDayBreakdown(fs, lv.endDate, isMgr, opts).real;
+        booked += fb;
+        if (fb > 0) future.push({ start: fs, end: lv.endDate, days: fb, emergency: !!lv.emergency });
+      }
     });
+    // Reconciliation: planned annual-leave days this cycle that are in the past.
+    const recon = [];
+    if (cycle) {
+      const pStart = maxYmd(cycle.start, addDaysYmd(asOf, 1));
+      const pEnd = minYmd(todayYmd, cycle.end);
+      annual.forEach(lv => {
+        let d = maxYmd(lv.startDate, pStart); const end = minYmd(lv.endDate, pEnd);
+        for (; d <= end; d = addDaysYmd(d, 1)) {
+          if (isSchedOff(ec, branch, d)) continue;          // scheduled off — not a leave day
+          recon.push({ ymd: d, status: dayStatus(ec, branch, d) });
+        }
+      });
+    }
+    const current = opening + net - taken;
+    const projected = current - booked;
+    return {
+      norm, rawEc: e.rawEc || norm, name: e.name || (r ? r.name : ""), branch, role: r ? r.role : "", isMgr,
+      opening, openingSet: e.opening != null, net, taken, booked, current, projected, adjustments: adjs,
+      recon, future, workedCount: recon.filter(x => x.status === "worked").length, overbooked: projected < -0.001
+    };
+  };
+
+  const allRows = useMemo(() => {
+    if (!data) return [];
+    return Object.keys(data.entries).map(norm => computeRow(norm, data.entries[norm]))
+      .sort((a, b) => (a.name || a.rawEc).localeCompare(b.name || b.rawEc));
+  }, [data, lookups, leaveRecs, schedCache, attGrids, clockSet, cycle]);
+
+  const rows = useMemo(() => {
     const qq = q.trim().toLowerCase();
-    const f = qq ? arr.filter(r => (r.name || "").toLowerCase().includes(qq) || (r.rawEc || "").toLowerCase().includes(qq) || (r.branch || "").toLowerCase().includes(qq)) : arr;
-    return f.sort((a, b) => (a.name || a.rawEc).localeCompare(b.name || b.rawEc));
-  }, [data, q, lookups]);
+    return qq ? allRows.filter(r => (r.name || "").toLowerCase().includes(qq) || (r.rawEc || "").toLowerCase().includes(qq) || (r.branch || "").toLowerCase().includes(qq)) : allRows;
+  }, [allRows, q]);
 
   const stats = useMemo(() => {
-    if (!data) return { n: 0, current: 0, adjusted: 0 };
-    let current = 0, adjusted = 0;
-    Object.keys(data.entries).forEach(k => {
-      const e = data.entries[k]; const net = (e.adjustments || []).reduce((s, a) => s + (Number(a.days) || 0), 0);
-      current += (Number(e.opening) || 0) + net; if ((e.adjustments || []).length) adjusted++;
-    });
-    return { n: Object.keys(data.entries).length, current: current, adjusted: adjusted };
-  }, [data]);
+    let current = 0, projected = 0, taken = 0, booked = 0, adjusted = 0, overbooked = 0;
+    allRows.forEach(r => { current += r.current; projected += r.projected; taken += r.taken; booked += r.booked; if (r.adjustments.length) adjusted++; if (r.overbooked) overbooked++; });
+    return { n: allRows.length, current, projected, taken, booked, adjusted, overbooked };
+  }, [allRows]);
 
   const fmtDays = (x) => { const v = Math.round((Number(x) || 0) * 100) / 100; return (v === Math.floor(v)) ? String(v) : v.toFixed(2).replace(/0$/, ""); };
+  const fmtDayShort = (ymd) => { const d = new Date(ymd + "T00:00:00"); return d.toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" }); };
+  const reconMeta = (status) => ({
+    took: { icon: "✓", label: "took leave", color: "#15803d", bg: "#dcfce7" },
+    worked: { icon: "⚠", label: "clocked in — worked, not on leave", color: "#b45309", bg: "#fef3c7" },
+    expected: { icon: "◷", label: "expected — not yet confirmed", color: "#6b7280", bg: "#f3f4f6" },
+    absent: { icon: "✗", label: "marked absent / no-show", color: "#b91c1c", bg: "#fee2e2" },
+    sick: { icon: "+", label: "marked sick", color: "#7e22ce", bg: "#f3e8ff" },
+    unpaid: { icon: "−", label: "marked unpaid", color: "#9d174d", bg: "#fce7f3" },
+    ph: { icon: "★", label: "public holiday", color: "#1d4ed8", bg: "#dbeafe" },
+    off: { icon: "·", label: "off", color: "#9ca3af", bg: "#f3f4f6" }
+  }[status] || { icon: "◷", label: status, color: "#6b7280", bg: "#f3f4f6" });
   const card = { background: "#fff", border: "1px solid #FBCFE8", borderRadius: 14, padding: "16px 18px" };
   const inp = { padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, color: "#831843" };
   const th = { textAlign: "left", padding: "8px 10px", fontSize: 10, fontWeight: 800, color: "#9d174d", textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "2px solid #FBCFE8", whiteSpace: "nowrap" };
@@ -9702,7 +9861,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 14 }}>
         <div>
           <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700 }}>🧾 Leave Balances</div>
-          <div style={{ fontSize: 12.5, color: "#9d6a82", marginTop: 2 }}>Annual-leave balance per employee, with manual add/remove-day adjustments. Stored in Supabase — nothing hard-coded.</div>
+          <div style={{ fontSize: 12.5, color: "#9d6a82", marginTop: 2 }}>Opening balance (as of the date below) minus Annual leave from the calendar — <strong>Taken</strong> (past) and <strong>Booked</strong> (future) — gives the current and projected balance. Stored in Supabase, nothing hard-coded.</div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <span style={{ fontSize: 11.5, color: saving ? "#b45309" : "#15803d", fontWeight: 700 }}>{saving ? "Saving…" : "✓ Saved"}</span>
@@ -9722,12 +9881,19 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
           <div style={{ fontSize: 26, fontWeight: 800, color: "#831843", marginTop: 4 }}>{stats.n}</div>
         </div>
         <div style={{ ...card, flex: "1 1 140px", minWidth: 130 }}>
-          <div style={{ fontSize: 10, fontWeight: 800, color: "#9d174d", letterSpacing: "0.06em", textTransform: "uppercase" }}>Total days (current)</div>
+          <div style={{ fontSize: 10, fontWeight: 800, color: "#9d174d", letterSpacing: "0.06em", textTransform: "uppercase" }}>Current total</div>
           <div style={{ fontSize: 26, fontWeight: 800, color: "#831843", marginTop: 4 }}>{fmtDays(stats.current)}</div>
+          <div style={{ fontSize: 10.5, color: "#9d6a82" }}>after {fmtDays(stats.taken)}d taken</div>
         </div>
         <div style={{ ...card, flex: "1 1 140px", minWidth: 130 }}>
-          <div style={{ fontSize: 10, fontWeight: 800, color: "#9d174d", letterSpacing: "0.06em", textTransform: "uppercase" }}>With adjustments</div>
-          <div style={{ fontSize: 26, fontWeight: 800, color: "#831843", marginTop: 4 }}>{stats.adjusted}</div>
+          <div style={{ fontSize: 10, fontWeight: 800, color: "#9d174d", letterSpacing: "0.06em", textTransform: "uppercase" }}>Booked ahead</div>
+          <div style={{ fontSize: 26, fontWeight: 800, color: "#b45309", marginTop: 4 }}>{fmtDays(stats.booked)}</div>
+          <div style={{ fontSize: 10.5, color: "#9d6a82" }}>future annual leave</div>
+        </div>
+        <div style={{ ...card, flex: "1 1 140px", minWidth: 130 }}>
+          <div style={{ fontSize: 10, fontWeight: 800, color: "#9d174d", letterSpacing: "0.06em", textTransform: "uppercase" }}>Projected total</div>
+          <div style={{ fontSize: 26, fontWeight: 800, color: stats.projected < 0 ? "#b91c1c" : "#15803d", marginTop: 4 }}>{fmtDays(stats.projected)}</div>
+          <div style={{ fontSize: 10.5, color: "#9d6a82" }}>{stats.overbooked > 0 ? <span style={{ color: "#b91c1c", fontWeight: 700 }}>⚠ {stats.overbooked} over-booked</span> : "after booked leave"}</div>
         </div>
       </div>
 
@@ -9824,18 +9990,21 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
       {/* Table */}
       {stats.n === 0 ? (
         <div style={{ ...card, textAlign: "center", color: "#9d6a82", padding: "40px 20px" }}>
-          No balances yet. Click <strong>⬆ Upload / import</strong> to load the payroll file (as of 31 May 2026).
+          No balances yet. Click <strong>⬆ Upload / import</strong> to load the payroll file (as of 24 May 2026).
         </div>
       ) : (
         <div style={{ ...card, padding: 0, overflow: "hidden" }}>
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
               <thead>
                 <tr>
                   <th style={th}>Employee</th>
-                  <th style={{ ...th, textAlign: "right" }}>Opening</th>
-                  <th style={{ ...th, textAlign: "right" }}>Adjustments</th>
-                  <th style={{ ...th, textAlign: "right" }}>Current balance</th>
+                  <th style={{ ...th, textAlign: "right" }} title="Opening balance as of the as-of date">Opening</th>
+                  <th style={{ ...th, textAlign: "right" }} title="Manual add/remove-day adjustments">Adj</th>
+                  <th style={{ ...th, textAlign: "right" }} title="Annual leave taken since the as-of date (past, up to today)">Taken</th>
+                  <th style={{ ...th, textAlign: "right" }} title="Opening + adjustments − taken">Current</th>
+                  <th style={{ ...th, textAlign: "right" }} title="Future annual leave still booked on the calendar">Booked</th>
+                  <th style={{ ...th, textAlign: "right" }} title="Current − booked: balance once all booked leave is taken">Projected</th>
                   <th style={{ ...th, textAlign: "right" }}>Actions</th>
                 </tr>
               </thead>
@@ -9853,14 +10022,58 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
                         <td style={{ ...td, textAlign: "right", color: r.net === 0 ? "#9d6a82" : (r.net > 0 ? "#15803d" : "#b91c1c"), fontWeight: r.net ? 700 : 400 }}>
                           {r.net === 0 ? "0" : (r.net > 0 ? "+" + fmtDays(r.net) : fmtDays(r.net))}{r.adjustments.length ? <span style={{ color: "#9d6a82", fontWeight: 400, fontSize: 11 }}> ({r.adjustments.length})</span> : null}
                         </td>
+                        <td style={{ ...td, textAlign: "right", color: r.taken > 0 ? "#b91c1c" : "#cbb1bd", fontWeight: r.taken > 0 ? 700 : 400 }}>
+                          {r.taken > 0 ? "−" + fmtDays(r.taken) : "—"}
+                          {r.workedCount > 0 ? <span title={r.workedCount + " planned leave day(s) this cycle were actually worked — open the row to reconcile"} style={{ color: "#b45309", fontWeight: 800 }}> ⚠</span> : null}
+                        </td>
                         <td style={{ ...td, textAlign: "right", fontWeight: 800, fontSize: 14 }}>{fmtDays(r.current)}</td>
+                        <td style={{ ...td, textAlign: "right", color: r.booked > 0 ? "#b45309" : "#cbb1bd", fontWeight: r.booked > 0 ? 700 : 400 }}>{r.booked > 0 ? "−" + fmtDays(r.booked) : "—"}</td>
+                        <td style={{ ...td, textAlign: "right", fontWeight: 800, fontSize: 14, color: r.overbooked ? "#b91c1c" : "#15803d" }}>{fmtDays(r.projected)}{r.overbooked ? <span title="Projected to go negative — more booked leave than balance" style={{ marginLeft: 3 }}>⚠</span> : null}</td>
                         <td style={{ ...td, textAlign: "right" }}>
-                          <button onClick={() => { setExpanded(open ? null : r.norm); setAdjDays(""); setAdjReason(""); setAdjSign(-1); }} style={{ background: open ? "#831843" : "#fce7f3", color: open ? "#fff" : "#9d174d", border: "none", borderRadius: 7, padding: "5px 10px", fontWeight: 700, fontSize: 11.5, cursor: "pointer", whiteSpace: "nowrap" }}>{open ? "Close" : "Adjust ±"}</button>
+                          <button onClick={() => { setExpanded(open ? null : r.norm); setAdjDays(""); setAdjReason(""); setAdjSign(-1); }} style={{ background: open ? "#831843" : "#fce7f3", color: open ? "#fff" : "#9d174d", border: "none", borderRadius: 7, padding: "5px 10px", fontWeight: 700, fontSize: 11.5, cursor: "pointer", whiteSpace: "nowrap" }}>{open ? "Close" : "Details"}</button>
                         </td>
                       </tr>
                       {open && (
                         <tr style={{ background: "#FDF2F8" }}>
-                          <td style={{ ...td, borderBottom: "2px solid #FBCFE8" }} colSpan={5}>
+                          <td style={{ ...td, borderBottom: "2px solid #FBCFE8" }} colSpan={8}>
+                            {/* Reconciliation — this cycle's past leave days vs what actually happened */}
+                            {cycle && (
+                              <div style={{ marginBottom: 12, background: "#fff", border: "1px solid #FCE7F3", borderRadius: 9, padding: "10px 12px" }}>
+                                <div style={{ fontSize: 11.5, fontWeight: 800, color: "#9d174d", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>
+                                  This cycle ({cycle.label}) — planned leave so far
+                                  {reconLoading ? <span style={{ color: "#9d6a82", fontWeight: 600, textTransform: "none", letterSpacing: 0 }}> · checking attendance…</span> : null}
+                                </div>
+                                {r.recon.length === 0 ? (
+                                  <div style={{ fontSize: 12, color: "#9d6a82", fontStyle: "italic" }}>No annual-leave days planned for the past part of this cycle.</div>
+                                ) : (
+                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                                    {r.recon.map(x => { const m = reconMeta(x.status); return (
+                                      <span key={x.ymd} title={m.label} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 9px", borderRadius: 999, fontSize: 11.5, fontWeight: 600, color: m.color, background: m.bg }}>
+                                        <span style={{ fontWeight: 800 }}>{m.icon}</span>{fmtDayShort(x.ymd)}
+                                      </span>
+                                    ); })}
+                                  </div>
+                                )}
+                                {r.workedCount > 0 && (
+                                  <div style={{ fontSize: 11.5, color: "#b45309", marginTop: 8 }}>⚠ {r.workedCount} planned leave day{r.workedCount === 1 ? " was" : "s were"} actually worked (clocked in / marked on). If this leave didn't happen, add a <strong>+{fmtDays(r.workedCount)}</strong> adjustment below to give the day{r.workedCount === 1 ? "" : "s"} back.</div>
+                                )}
+                              </div>
+                            )}
+                            {/* Booked ahead — future annual leave still to be taken */}
+                            {r.future.length > 0 && (
+                              <div style={{ marginBottom: 12, background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 9, padding: "10px 12px" }}>
+                                <div style={{ fontSize: 11.5, fontWeight: 800, color: "#92400e", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Booked ahead — {fmtDays(r.booked)} day{r.booked === 1 ? "" : "s"} → projected {fmtDays(r.projected)}{r.overbooked ? " ⚠ negative" : ""}</div>
+                                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                  {r.future.map((f, i) => (
+                                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#92400e" }}>
+                                      <span style={{ fontWeight: 800, minWidth: 44 }}>−{fmtDays(f.days)}d</span>
+                                      <span>{fmtDayShort(f.start)}{f.end !== f.start ? " – " + fmtDayShort(f.end) : ""}</span>
+                                      {f.emergency ? <span style={{ fontSize: 10.5, color: "#9d6a82" }}>· with proof</span> : null}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
                             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: (r.adjustments.length ? 10 : 0) }}>
                               <div style={{ display: "inline-flex", borderRadius: 8, overflow: "hidden", border: "1px solid #FBCFE8" }}>
                                 <button onClick={() => setAdjSign(-1)} style={{ background: adjSign < 0 ? "#b91c1c" : "#fff", color: adjSign < 0 ? "#fff" : "#b91c1c", border: "none", padding: "7px 12px", fontWeight: 800, fontSize: 13, cursor: "pointer" }}>− Remove</button>
@@ -9889,7 +10102,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity }) {
                     </React.Fragment>
                   );
                 })}
-                {rows.length === 0 && <tr><td style={{ ...td, textAlign: "center", color: "#9d6a82" }} colSpan={5}>No matches for “{q}”.</td></tr>}
+                {rows.length === 0 && <tr><td style={{ ...td, textAlign: "center", color: "#9d6a82" }} colSpan={8}>No matches for “{q}”.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -12248,7 +12461,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   useEffect(() => {
     // Also prefetch for the leave-request flow (Leave Requests tab + Payroll
     // Inbox) so the calendar-vs-actual leave-day breakdown can read the roster.
-    if (tab !== "leave" && tab !== "leaveRequests" && tab !== "payrollInbox") return;
+    if (tab !== "leave" && tab !== "leaveRequests" && tab !== "payrollInbox" && tab !== "leaveBalances") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     const needed = new Set();
     const addRange = (branch, startYmd, endYmd) => {
@@ -18712,7 +18925,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* ── LEAVE BALANCES TAB ── */}
         {tab === "leaveBalances" && accessAllows(currentUser, leaveBalancesCfg) && (
-          <LeaveBalancesTab enriched={enriched} managers={enrichedManagers} currentUser={currentUser} logActivity={logActivity} />
+          <LeaveBalancesTab enriched={enriched} managers={enrichedManagers} currentUser={currentUser} logActivity={logActivity} leaveRecs={leaveRecs} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} />
         )}
 
         {/* ── CALLED IN SICK TAB ── */}
