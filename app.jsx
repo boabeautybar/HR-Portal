@@ -21608,6 +21608,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             : !v ? "Cleared " + statLabel(prev)
               : "Changed " + statLabel(prev) + " → " + statLabel(v);
           logActivity(action, staffName + " · " + dayDesc + " · " + attBranch, cycLabel, "Attendance");
+          return next;   // the just-saved grid, so callers (setCellAndReview) don't re-save a stale one
         };
 
         // Auto-record a review when the admin changes a warning cell via the
@@ -22628,8 +22629,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             catch (e) { console.error("clear early-leave:", e); }
           };
           const setCellAndReview = async (ec, d, finalValue) => {
-            await setCell(ec, d, finalValue);
-            await autoRecordReview(ec, d, finalValue);
+            // Pass the grid setCell just saved into autoRecordReview so its
+            // review-save doesn't clobber the edit with a stale attGrid closure
+            // (this is what made manual cell edits silently revert on reload).
+            const savedGrid = await setCell(ec, d, finalValue);
+            await autoRecordReview(ec, d, finalValue, savedGrid);
             await clearEarlyLeaveForCell(ec, d);
           };
           if (val === "deduct") {
