@@ -7189,7 +7189,7 @@ function canSeeIncidents(user) {
          r.includes("national") || isRomRole(user.role);
 }
 
-function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFreshaCfgSave, overtimeCfg, onOvertimeCfgSave }) {
+function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFreshaCfgSave, overtimeCfg, onOvertimeCfgSave, cashupReviewCfg, onCashupReviewCfgSave }) {
   const users = appUsers || {};
   const [editing, setEditing] = useState(null);   // {pin, isNew, name, role, demo, isOwner, perms, originalPin}
   const [busy, setBusy] = useState(false);
@@ -7496,6 +7496,49 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
               </div>
             </div>
             <div style={{ fontSize: 11, color: "#0d9488", marginTop: 14, fontStyle: "italic" }}>Owners always have access. Changes save automatically.</div>
+          </div>
+        );
+      })()}
+
+      {/* ── Cash-up review access ── who may tick off a store's daily cash-up
+          as reviewed. Owners always can; everyone else must be granted here. */}
+      {onCashupReviewCfgSave && (() => {
+        const cfg = cashupReviewCfg || { roles: ["regional"], pins: [] };
+        const userList = Object.keys(users || {})
+          .filter(pin => !(users[pin] && (users[pin].voucherEntryOnly || users[pin].demo)))
+          .map(pin => ({ pin, name: (users[pin] && users[pin].name) || pin, role: (users[pin] && users[pin].role) || "", isOwner: !!(users[pin] && users[pin].isOwner) }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+        const toggleArr = (arr, val) => (arr || []).includes(val) ? (arr || []).filter(x => x !== val) : [...(arr || []), val];
+        const setCfg = (patch) => onCashupReviewCfgSave({ ...cfg, ...patch });
+        const roleOpts = [{ key: "national", label: "National Ops Managers" }, { key: "regional", label: "Regional managers (all ROM variants)" }];
+        const chk = { width: 15, height: 15, accentColor: "#BE185D" };
+        const colHead = { fontSize: 10, fontWeight: 800, color: "#BE185D", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 };
+        const rowL = { display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13, color: "#831843", cursor: "pointer" };
+        return (
+          <div style={{ marginTop: 26, background: "#FDF2F8", border: "2px solid #FBCFE8", borderRadius: 14, padding: "18px 20px" }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: "#831843", fontWeight: 700, marginBottom: 2 }}>💰 Cash-up review — who can review</div>
+            <div style={{ fontSize: 12, color: "#BE185D", marginBottom: 16 }}>The reviewer (e.g. your portfolio / regional ops manager) ticks off each store's daily cash-up on the Cash Ups tab once they've checked it matches, and can leave a comment. Owners can always review; grant other people below. Anyone not listed sees the review status read-only.</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 20 }}>
+              <div>
+                <div style={colHead}>Allowed by role</div>
+                {roleOpts.map(r => (
+                  <label key={r.key} style={rowL}>
+                    <input type="checkbox" style={chk} checked={(cfg.roles || []).includes(r.key)} onChange={() => setCfg({ roles: toggleArr(cfg.roles, r.key) })} />
+                    {r.label}
+                  </label>
+                ))}
+              </div>
+              <div>
+                <div style={colHead}>…or specific people</div>
+                {userList.map(u => (
+                  <label key={u.pin} style={{ ...rowL, opacity: u.isOwner ? 0.6 : 1 }}>
+                    <input type="checkbox" style={chk} checked={u.isOwner || (cfg.pins || []).includes(u.pin)} disabled={u.isOwner} onChange={() => setCfg({ pins: toggleArr(cfg.pins, u.pin) })} />
+                    {u.name} <span style={{ color: "#F472B6", fontSize: 11 }}>· {u.role}{u.isOwner ? " · always" : ""}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div style={{ fontSize: 11, color: "#BE185D", marginTop: 14, fontStyle: "italic" }}>Owners always have access. Changes save automatically.</div>
           </div>
         );
       })()}
@@ -10581,6 +10624,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Manual cash-up entry form (null = closed) for stores that forgot to submit.
   const [cashupAdd, setCashupAdd] = useState(null);
   const [cashupAddBusy, setCashupAddBusy] = useState(false);
+  // Cash-up review ("tick off") modal — holds the row being reviewed plus the
+  // reviewer's comment draft. null = closed.
+  const [cashupReviewModal, setCashupReviewModal] = useState(null);
+  const [cashupReviewBusy, setCashupReviewBusy] = useState(false);
   useEffect(() => {
     if (tab !== "cashups") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
@@ -10626,6 +10673,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     setOvertimeAccess(next);
     try { if (window.BOA_DB.saveOvertimeAccess) await window.BOA_DB.saveOvertimeAccess(next); }
     catch (e) { window.alert("Could not save overtime access: " + (e.message || e)); }
+  };
+  // Who may REVIEW ("tick off") a store's daily cash-up (boa_cashup_review_access_v1).
+  // Default: Regional Ops managers (owners always allowed). Editable in Settings.
+  const [cashupReviewAccess, setCashupReviewAccess] = useState({});
+  const cashupReviewCfg = useMemo(() => {
+    const c = cashupReviewAccess || {};
+    return {
+      roles: Array.isArray(c.roles) ? c.roles : ["regional"],
+      pins: Array.isArray(c.pins) ? c.pins : []
+    };
+  }, [cashupReviewAccess]);
+  const saveCashupReviewCfg = async (next) => {
+    setCashupReviewAccess(next);
+    try { if (window.BOA_DB.saveCashupReviewAccess) await window.BOA_DB.saveCashupReviewAccess(next); }
+    catch (e) { window.alert("Could not save cash-up review access: " + (e.message || e)); }
   };
   // App-scope trial persistence (the trial tab has its own copy inside an
   // IIFE; the dashboard Fresha card needs one too).
@@ -11699,12 +11761,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadOvertimeRequests ? window.BOA_DB.loadOvertimeRequests() : Promise.resolve([]),
       window.BOA_DB.loadFreshaAccess ? window.BOA_DB.loadFreshaAccess() : Promise.resolve({}),
       window.BOA_DB.loadOvertimeAccess ? window.BOA_DB.loadOvertimeAccess() : Promise.resolve({}),
+      window.BOA_DB.loadCashupReviewAccess ? window.BOA_DB.loadCashupReviewAccess() : Promise.resolve({}),
       (window.BOA_DB.loadIncidentReports && canSeeIncidents(currentUser)) ? window.BOA_DB.loadIncidentReports() : Promise.resolve([]),
       (window.BOA_DB.loadLeaveRequests && _needRequests) ? window.BOA_DB.loadLeaveRequests() : Promise.resolve([]),
       (window.BOA_DB.loadExtraDayRequests && _needRequests) ? window.BOA_DB.loadExtraDayRequests() : Promise.resolve([]),
       window.BOA_DB.loadFreshaExtraOpenings ? window.BOA_DB.loadFreshaExtraOpenings() : Promise.resolve({}),
       window.BOA_DB.loadFreshaBlocks ? window.BOA_DB.loadFreshaBlocks() : Promise.resolve({})
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap]) => {
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, cuReviewAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap]) => {
       setStaff(d.staff);
       setManagers(d.managers);
       setMatRecs(d.matRecs);
@@ -11718,6 +11781,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setOvertimeReqs(Array.isArray(ot) ? ot : []);
       setFreshaAccess(freshaAcc && typeof freshaAcc === "object" ? freshaAcc : {});
       setOvertimeAccess(otAccess && typeof otAccess === "object" ? otAccess : {});
+      setCashupReviewAccess(cuReviewAccess && typeof cuReviewAccess === "object" ? cuReviewAccess : {});
       setIncidentReports(Array.isArray(incidents) ? incidents : []);
       setLeaveRequests(Array.isArray(leaveReqs) ? leaveReqs : []);
       setExtraDayRequests(Array.isArray(extraReqs) ? extraReqs : []);
@@ -27525,6 +27589,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         const _fmtMoney = (n) => "R " + (Number(n) || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
         const _fmtDate = (ymd) => { try { return new Date(ymd + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" }); } catch (_) { return ymd; } };
+        const _fmtStamp = (iso) => { try { return new Date(iso).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; } };
+
+        // Only owners + people granted in Settings → Cash-up review may tick a
+        // cash-up off as reviewed. Everyone else sees the review status read-only.
+        const canReviewCashups = (() => {
+          if (!currentUser) return false;
+          if (currentUser.isOwner) return true;
+          const role = (currentUser.role || "").toLowerCase();
+          const roleMatch = (cashupReviewCfg.roles || []).some(k =>
+            k === "national" ? (role.includes("national ops") || role.includes("national operations") || role.includes("national"))
+              : k === "regional" ? (role.includes("regional") || /\brom\b/.test(role) || role.includes("regional ops"))
+                : false
+          );
+          if (roleMatch) return true;
+          return (cashupReviewCfg.pins || []).includes(currentUser.pin);
+        })();
 
         const filtered = cashupRows.filter(r => {
           if (_hasStoreScope && !scopedSalonNames.has(r.branch)) return false;
@@ -27551,6 +27631,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           Number(r.cash) > 0 && r.cash_banked !== true && r.cash_banked !== false
         );
         const notBanked = activeRows.filter(r => r.cash_banked === false);
+
+        // Review ("tick off") progress across the visible day.
+        const reviewedCount = activeRows.filter(r => r.reviewed_at).length;
+        const toReviewCount = activeRows.length - reviewedCount;
 
         const branchesInScope = SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name));
         const visibleBranches = cashupRegion === "all"
@@ -27674,6 +27758,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               {statCard("Card Tips", _fmtMoney(totals.tips))}
               {statCard("Manual Discounts", _fmtMoney(totals.manualD))}
               {statCard("Banking Gaps", String(bankingGaps.length), notBanked.length + " explicitly not banked")}
+              {statCard("Reviewed", reviewedCount + " / " + activeRows.length, toReviewCount > 0 ? toReviewCount + " still to tick off" : (activeRows.length ? "all ticked off ✓" : null))}
               {statCard("Not Submitted", String(missingCount), "store" + (missingCount === 1 ? "" : "s") + (selIsToday ? " not in yet" : " to follow up"))}
             </div>
 
@@ -27732,6 +27817,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         { l: "Total" },
                         { l: "Banking", help: "Cash banking status. Yes = banked with slip attached. Not banked = cash was taken but not deposited (follow up). Missing = cash taken but no banking answer captured." },
                         { l: "Signed by" },
+                        { l: "Reviewed", help: "Sign-off that a reviewer (e.g. the portfolio / regional ops manager) has checked this cash-up and it matches. Tick it off with the ✓ button; their name, the time and any comment are shown here. Who can review is set under Settings → Cash-up review." },
                         { l: "Action" },
                       ].map(h => (
                         <th key={h.l} style={{ padding: "8px 10px", fontSize: 11, fontWeight: 800, letterSpacing: "0.04em", borderBottom: "1px solid #FBCFE8", whiteSpace: "nowrap" }}>
@@ -27811,6 +27897,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <td style={cell}>{banking}</td>
                           <td style={cell}>{r.signed_by}{r.notes ? <span title={r.notes} style={{ marginLeft: 6, color: "#9ca3af" }}>📝</span> : null}{isArchived && r.reopened_by ? <div style={{ fontSize: 10, color: "#9ca3af" }}>reopened by {r.reopened_by}</div> : null}</td>
                           <td style={cell}>
+                            {isArchived ? (
+                              <span style={{ color: "#9ca3af" }}>—</span>
+                            ) : r.reviewed_at ? (
+                              <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                                <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                                  <span style={{ background: "#dcfce7", color: "#14532d", padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>✓ Reviewed</span>
+                                  {r.review_comment && <span title={r.review_comment} style={{ color: "#9ca3af", cursor: "help" }}>💬</span>}
+                                </span>
+                                <span style={{ fontSize: 10, color: "#9ca3af" }}>{r.reviewed_by || "—"}{r.reviewed_at ? " · " + _fmtStamp(r.reviewed_at) : ""}</span>
+                                {canReviewCashups && (
+                                  <a href="#" onClick={e => { e.preventDefault(); setCashupReviewModal({ row: r, comment: r.review_comment || "" }); }} style={{ fontSize: 10, color: "#BE185D", fontWeight: 700 }}>edit / undo</a>
+                                )}
+                              </div>
+                            ) : canReviewCashups ? (
+                              <button
+                                onClick={() => setCashupReviewModal({ row: r, comment: "" })}
+                                title="Tick off — confirm you've reviewed this cash-up and it matches"
+                                style={{ background: "#fff", color: "#14532d", border: "1px solid #bbf7d0", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+                              >✓ Tick off</button>
+                            ) : (
+                              <span style={{ color: "#9ca3af", fontSize: 11 }}>Not yet</span>
+                            )}
+                          </td>
+                          <td style={cell}>
                             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                               {!isArchived && (
                                 <button
@@ -27881,6 +27991,73 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               </div>
             )}
+
+            {cashupReviewModal && (() => {
+              const r = cashupReviewModal.row;
+              const already = !!r.reviewed_at;
+              const reviewerName = (currentUser && (currentUser.name || currentUser.email)) || "reviewer";
+              const doReview = async () => {
+                setCashupReviewBusy(true);
+                try {
+                  await window.BOA_DB.reviewCashup(r.id, reviewerName, cashupReviewModal.comment || "");
+                  const fresh = await window.BOA_DB.listCashupsForDate(cashupDate);
+                  setCashupRows(fresh || []);
+                  setCashupReviewModal(null);
+                } catch (e) {
+                  window.alert("Couldn't save the review: " + ((e && e.message) || e));
+                } finally {
+                  setCashupReviewBusy(false);
+                }
+              };
+              const doUndo = async () => {
+                if (!window.confirm("Undo the review tick-off for " + r.branch + " · " + r.date + "?")) return;
+                setCashupReviewBusy(true);
+                try {
+                  await window.BOA_DB.unreviewCashup(r.id);
+                  const fresh = await window.BOA_DB.listCashupsForDate(cashupDate);
+                  setCashupRows(fresh || []);
+                  setCashupReviewModal(null);
+                } catch (e) {
+                  window.alert("Couldn't undo the review: " + ((e && e.message) || e));
+                } finally {
+                  setCashupReviewBusy(false);
+                }
+              };
+              return (
+                <div onClick={() => !cashupReviewBusy && setCashupReviewModal(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, padding: 16 }}>
+                  <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 14, padding: "20px 22px", maxWidth: 460, width: "100%", boxShadow: "0 12px 40px rgba(0,0,0,0.25)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                      <div style={{ fontWeight: 800, color: "#831843", fontSize: 16 }}>✓ Review cash-up</div>
+                      <button onClick={() => !cashupReviewBusy && setCashupReviewModal(null)} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
+                    </div>
+                    <div style={{ fontSize: 13, color: "#831843", fontWeight: 700, marginBottom: 2 }}>{r.branch} · {_fmtDate(r.date)}</div>
+                    <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 14 }}>Total {_fmtMoney(r.total)} · Cash {_fmtMoney(r.cash)} · Banked {_fmtMoney(r.amount_banked)}. Confirm the takings have been checked and match.</div>
+                    {already && (
+                      <div style={{ background: "#dcfce7", border: "1px solid #bbf7d0", borderRadius: 9, padding: "8px 12px", fontSize: 12, color: "#14532d", marginBottom: 12 }}>
+                        Already reviewed by <strong>{r.reviewed_by || "—"}</strong>{r.reviewed_at ? " · " + _fmtStamp(r.reviewed_at) : ""}. Saving again updates the comment and re-stamps it under your name.
+                      </div>
+                    )}
+                    <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.05em", display: "block", marginBottom: 4 }}>COMMENT (OPTIONAL)</label>
+                    <textarea
+                      value={cashupReviewModal.comment}
+                      onChange={e => setCashupReviewModal(prev => ({ ...prev, comment: e.target.value }))}
+                      placeholder="e.g. Matches Yoco totals and banking slip. Cash deposited."
+                      rows={3}
+                      style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, fontFamily: "inherit", resize: "vertical" }}
+                    />
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginTop: 16 }}>
+                      {already ? (
+                        <button onClick={doUndo} disabled={cashupReviewBusy} style={{ padding: "9px 14px", background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 9, cursor: "pointer", fontSize: 13, fontWeight: 700 }}>Undo review</button>
+                      ) : <span />}
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button onClick={() => setCashupReviewModal(null)} disabled={cashupReviewBusy} style={{ padding: "9px 16px", background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 9, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>Cancel</button>
+                        <button onClick={doReview} disabled={cashupReviewBusy} style={{ padding: "9px 18px", background: "#16a34a", color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontSize: 13, fontWeight: 700 }}>{cashupReviewBusy ? "Saving…" : (already ? "Update review" : "✓ Mark reviewed")}</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
 
             {cashupAdd && (() => {
               const upd = (k, v) => setCashupAdd(prev => ({ ...prev, [k]: v }));
@@ -28022,6 +28199,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           onFreshaCfgSave={saveFreshaCfg}
           overtimeCfg={overtimeCfg}
           onOvertimeCfgSave={saveOvertimeCfg}
+          cashupReviewCfg={cashupReviewCfg}
+          onCashupReviewCfgSave={saveCashupReviewCfg}
         /></div>
       )}
 
