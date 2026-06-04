@@ -5949,7 +5949,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
             <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 14px", marginBottom: 10, fontSize: 12, color: "#065f46", display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center" }}>
               <span style={{ fontSize: 11, fontWeight: 800, color: "#065f46", letterSpacing: "0.08em", textTransform: "uppercase" }}>🕐 Sandown shift times</span>
               <span><strong>Mon–Fri</strong> · WE 08:00–17:30 · WL 11:00–20:00</span>
-              <span><strong>Saturday</strong> · WE 08:15–17:30 · WL 10:00–19:00</span>
+              <span><strong>Saturday</strong> · WE 08:00–17:30 · WL 10:00–19:00</span>
               <span><strong>Sunday</strong> · all shifts 09:00–18:00 (no early/late split)</span>
             </div>
           )}
