@@ -64,26 +64,32 @@
     bootGate();
   });
 
+  // Enter a role without the PIN: hide the overlay and notify the role apps.
+  // The dispatch is deferred to the next tick so the role apps (which load
+  // *after* this script) have time to register their listener.
+  function autoAuth(role) {
+    document.body.classList.add("role-" + role);
+    window.APP_ROLE = role;
+    var hideOverlay = function () {
+      var ov = document.getElementById("pin-overlay");
+      if (ov) ov.style.display = "none";
+    };
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", hideOverlay);
+    } else { hideOverlay(); }
+    setTimeout(function () {
+      document.dispatchEvent(new CustomEvent("app:authed", { detail: { role: role } }));
+    }, 0);
+  }
+
   function bootGate() {
-    // If already authed in this session, hide the overlay and tell the app.
-    // The dispatch is deferred to the next tick so the role apps (which load
-    // *after* this script) have time to register their listener.
+    // Admin device (security.js): recognised on every branch with NO 4-digit PIN —
+    // go straight into the Manager dashboard.
+    if (window.APP_DEVICE_ADMIN) { autoAuth("manager"); return; }
+
+    // If already authed in this session, skip the PIN.
     var prev = sessionStorage.getItem(STORAGE_KEY);
-    if (prev === "staff" || prev === "manager") {
-      document.body.classList.add("role-" + prev);
-      window.APP_ROLE = prev;
-      var hideOverlay = function () {
-        var ov = document.getElementById("pin-overlay");
-        if (ov) ov.style.display = "none";
-      };
-      if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", hideOverlay);
-      } else { hideOverlay(); }
-      setTimeout(function () {
-        document.dispatchEvent(new CustomEvent("app:authed", { detail: { role: prev } }));
-      }, 0);
-      return;
-    }
+    if (prev === "staff" || prev === "manager") { autoAuth(prev); return; }
 
     document.addEventListener("DOMContentLoaded", init);
     if (document.readyState !== "loading") init();
