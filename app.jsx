@@ -11957,6 +11957,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [mgrEarlyLeaveReports, setMgrEarlyLeaveReports] = useState([]);
   const [mgrClockinPhoto, setMgrClockinPhoto] = useState(null);   // {url, name, ts, ...}
   const [mgrClockinSchedCache, setMgrClockinSchedCache] = useState({});  // {branch|ym: grid}
+  // {branch|ym: {ec:name}} — ec→name map saved with each manager schedule, so
+  // Coverage can re-home a row to a renamed employee code by matching the name.
+  const [mgrSchedNamesCache, setMgrSchedNamesCache] = useState({});
   // Manual clock-in modal — opened from the Manager Check-ins no-show
   // cards or the "+ Log manual shift" button so a ROM can backfill a
   // forgotten clock-in. Shape:
@@ -13582,13 +13585,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       }
       if (need.length > 0) {
         const pairs = await Promise.all(need.map(async (n) => {
-          try { const s = await window.BOA_DB.loadSchedule(n.branch, n.ym, true); return [n.key, (s && s.grid) || null]; }
-          catch (_) { return [n.key, null]; }
+          try { const s = await window.BOA_DB.loadSchedule(n.branch, n.ym, true); return [n.key, (s && s.grid) || null, (s && s.names) || null]; }
+          catch (_) { return [n.key, null, null]; }
         }));
         if (cancelled) return;
         setMgrClockinSchedCache(prev => {
           const next = { ...prev };
           pairs.forEach(([k, g]) => { next[k] = g; });
+          return next;
+        });
+        setMgrSchedNamesCache(prev => {
+          const next = { ...prev };
+          pairs.forEach(([k, , nm]) => { next[k] = nm; });
           return next;
         });
       }
@@ -25531,7 +25539,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // labels is idempotent and survives a reload.
             const _toSave = JSON.parse(JSON.stringify(mgrSchedDraft));
             _applyBranchShiftRules(_toSave, result.dates, result.managers);
-            const v = await window.BOA_DB.saveSchedule(branch, ymKey, _toSave, true);
+            // Save an ec→name map alongside the grid so Coverage can re-home a
+            // row to a renamed employee code by matching the name.
+            const _names = {}; (result.managers || []).forEach(m => { if (m && m.ec) _names[String(m.ec).trim()] = m.name || ""; });
+            const v = await window.BOA_DB.saveSchedule(branch, ymKey, _toSave, true, _names);
             setMgrSchedSaved(mgrSchedDraft);
             setMgrSchedSavedAt((v && v.savedAt) || new Date().toISOString());
             setMgrSchedDirty(false);
@@ -25579,9 +25590,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // shows (idempotent — the grid is re-labelled on render anyway).
             const _approvedGrid = JSON.parse(JSON.stringify(draft));
             _applyBranchShiftRules(_approvedGrid, result.dates, result.managers);
+            const _apNames = {}; (result.managers || []).forEach(m => { if (m && m.ec) _apNames[String(m.ec).trim()] = m.name || ""; });
             const saved = await window.BOA_DB.saveApprovedSchedule(branch, ymKey, true, {
               name: name.trim(),
               grid: _approvedGrid,
+              names: _apNames,
               madeBy: madeBy.trim(),
               approvedBy: approvedBy.trim(),
               note: note.trim(),
@@ -27951,14 +27964,31 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // appear to shift to the wrong day. Canonicalising collapses both onto
         // the current manager code so reads, edits and the saved grid all agree.
         const _normGridKey = (s) => String(s == null ? "" : s).replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+        const _normName = (s) => String(s == null ? "" : s).toLowerCase().replace(/\s+/g, " ").trim();
         const _mgrCodeByNorm = {};
-        (managers || []).forEach(m => { const c = String(m.ec || "").trim(); if (c) { const n = _normGridKey(c); if (!(n in _mgrCodeByNorm)) _mgrCodeByNorm[n] = c; } });
-        const _canonicalizeGrid = (grid) => {
+        const _mgrCodeByName = {};   // normalised full name → current employee code
+        (managers || []).forEach(m => {
+          const c = String(m.ec || "").trim(); if (!c) return;
+          const n = _normGridKey(c); if (!(n in _mgrCodeByNorm)) _mgrCodeByNorm[n] = c;
+          const nm = _normName(m.name); if (nm && !(nm in _mgrCodeByName)) _mgrCodeByName[nm] = c;
+        });
+        // Re-home a saved grid onto current employee codes. First by normalised
+        // code (dash/case), then — for a row whose code matches no current
+        // manager — by the NAME saved alongside the schedule (namesMap[key]),
+        // so correcting an employee code (e.g. → B827M) doesn't make the
+        // person's coverage disappear. namesMap is the ec→name map persisted
+        // with the schedule.
+        const _canonicalizeGrid = (grid, namesMap) => {
           if (!grid) return grid;
           let changed = false;
           const out = {};
           Object.keys(grid).forEach(k => {
-            const canon = _mgrCodeByNorm[_normGridKey(k)] || k;   // map to current code only when one matches
+            let canon = _mgrCodeByNorm[_normGridKey(k)];
+            if (!canon && namesMap && namesMap[k]) {                 // code unknown → try the saved name
+              const byName = _mgrCodeByName[_normName(namesMap[k])];
+              if (byName) canon = byName;
+            }
+            canon = canon || k;
             if (canon !== k) changed = true;
             // The row already under the canonical key wins for overlapping days;
             // a legacy row only fills days the canonical row doesn't have.
@@ -27983,7 +28013,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         };
         const _gridForView = (branchName, ym) => {
           const k = _draftKey(branchName, ym);
-          return _mergeDraft(_canonicalizeGrid(mgrClockinSchedCache[k]), mgrCoverageDraft[k]);
+          return _mergeDraft(_canonicalizeGrid(mgrClockinSchedCache[k], mgrSchedNamesCache[k]), mgrCoverageDraft[k]);
         };
         // Leave Planner overlay (same idea as the attendance grid version).
         // A manager granted leave through the Leave Planner reads as 'L' on
@@ -28465,9 +28495,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const entries = Object.entries(mgrCoverageDraft);
             for (const [key, draftBranch] of entries) {
               const [branchName, ym] = key.split("|");
-              const base = _canonicalizeGrid(mgrClockinSchedCache[key] || {});
+              const base = _canonicalizeGrid(mgrClockinSchedCache[key] || {}, mgrSchedNamesCache[key]);
               const merged = _mergeDraft(base, draftBranch);
-              await window.BOA_DB.saveSchedule(branchName, ym, merged, true);
+              await window.BOA_DB.saveSchedule(branchName, ym, merged, true, mgrSchedNamesCache[key] || undefined);
               setMgrClockinSchedCache(prev => ({ ...prev, [key]: merged }));
             }
             // Commit loan record changes.

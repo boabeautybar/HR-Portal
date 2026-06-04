@@ -309,6 +309,7 @@
       id: "ap_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7),
       name: (entry.name || "Untitled").toString().slice(0, 80),
       grid: entry.grid,
+      names: (entry.names && typeof entry.names === "object") ? entry.names : null,
       madeBy: (entry.madeBy || "").toString().slice(0, 80),
       approvedBy: (entry.approvedBy || "").toString().slice(0, 80),
       note: (entry.note || "").toString().slice(0, 500),
@@ -327,7 +328,7 @@
     if (res.error) { console.error("deleteApprovedSchedule:", res.error); throw res.error; }
     return next;
   }
-  async function saveSchedule(branch, ym, grid, isManager) {
+  async function saveSchedule(branch, ym, grid, isManager, names) {
     // Snapshot existing schedule into history BEFORE overwriting. We only
     // record the previous saved state if one actually exists and has at
     // least one tech row (skips the very first save of an empty period).
@@ -354,6 +355,11 @@
       console.warn("saveSchedule: history snapshot failed (continuing):", snapErr);
     }
     var v = { grid: grid, branch: branch, ym: ym, savedAt: new Date().toISOString() };
+    // Optional ec→name map (managers). Lets readers re-home a row to a renamed
+    // employee code by matching the name, so correcting a code doesn't orphan
+    // the person's schedule.
+    if (names && typeof names === "object") v.names = names;
+    else if (priorVal && priorVal.names) v.names = priorVal.names;   // preserve across saves that don't pass names
     var res = await sb.from("app_state").upsert({ key: schedKey(branch, ym, isManager), value: v });
     if (res.error) throw res.error;
     return v;
