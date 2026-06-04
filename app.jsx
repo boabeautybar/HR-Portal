@@ -27427,6 +27427,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Apply draft patches on top of a base grid to get the effective
         // view. A draft cell value of "" (or null) means "clear this day".
         const _draftKey = (b, ym) => b + "|" + ym;
+        // Re-home a schedule grid onto current manager codes. A row saved under
+        // a renamed / legacy key (e.g. "B941-M" after the code became "B941M")
+        // is orphaned — reads found it via a tolerant match but edits were
+        // staged under the new code, creating a DUPLICATE row, which made cells
+        // appear to shift to the wrong day. Canonicalising collapses both onto
+        // the current manager code so reads, edits and the saved grid all agree.
+        const _normGridKey = (s) => String(s == null ? "" : s).replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+        const _mgrCodeByNorm = {};
+        (managers || []).forEach(m => { const c = String(m.ec || "").trim(); if (c) { const n = _normGridKey(c); if (!(n in _mgrCodeByNorm)) _mgrCodeByNorm[n] = c; } });
+        const _canonicalizeGrid = (grid) => {
+          if (!grid) return grid;
+          let changed = false;
+          const out = {};
+          Object.keys(grid).forEach(k => {
+            const canon = _mgrCodeByNorm[_normGridKey(k)] || k;   // map to current code only when one matches
+            if (canon !== k) changed = true;
+            // The row already under the canonical key wins for overlapping days;
+            // a legacy row only fills days the canonical row doesn't have.
+            if (k === canon) out[canon] = { ...(out[canon] || {}), ...grid[k] };
+            else out[canon] = { ...grid[k], ...(out[canon] || {}) };
+          });
+          return changed ? out : grid;
+        };
         const _mergeDraft = (base, draftBranch) => {
           if (!draftBranch || Object.keys(draftBranch).length === 0) return base || {};
           const out = { ...(base || {}) };
@@ -27443,7 +27466,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         };
         const _gridForView = (branchName, ym) => {
           const k = _draftKey(branchName, ym);
-          return _mergeDraft(mgrClockinSchedCache[k], mgrCoverageDraft[k]);
+          return _mergeDraft(_canonicalizeGrid(mgrClockinSchedCache[k]), mgrCoverageDraft[k]);
         };
         // Leave Planner overlay (same idea as the attendance grid version).
         // A manager granted leave through the Leave Planner reads as 'L' on
@@ -27925,7 +27948,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const entries = Object.entries(mgrCoverageDraft);
             for (const [key, draftBranch] of entries) {
               const [branchName, ym] = key.split("|");
-              const base = mgrClockinSchedCache[key] || {};
+              const base = _canonicalizeGrid(mgrClockinSchedCache[key] || {});
               const merged = _mergeDraft(base, draftBranch);
               await window.BOA_DB.saveSchedule(branchName, ym, merged, true);
               setMgrClockinSchedCache(prev => ({ ...prev, [key]: merged }));
