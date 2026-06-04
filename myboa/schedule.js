@@ -283,8 +283,26 @@
   }
   var ML_INFO = { kind: "leave", label: "Maternity leave", sub: "" };
 
+  // Cross-store day-loans (boa_mgr_loans_v1 / boa_tech_loans_v1) for this person,
+  // keyed by date. A loan day means they're borrowed to loan.toBranch.
+  function loanForDate(dt) {
+    var map = state.loans || {};
+    return map[ymdStr(dt)] || null;
+  }
+  function loanInfo(loan) {
+    return {
+      kind: "work",
+      label: "🔄 Working at " + (loan.toBranch || "another store"),
+      sub: "Borrowed" + (loan.fromBranch ? " from " + loan.fromBranch : "") + (loan.note ? " · " + loan.note : "") + " — hours are set by that store"
+    };
+  }
+
   function cellStatus(row, dt) {
     if (matMlOn(dt)) return ML_INFO;
+    // Cross-store day-loan (Manager Coverage / Movements): borrowed to ANOTHER
+    // branch this day. They're NOT off — show where they're working.
+    var loan = loanForDate(dt);
+    if (loan && loan.toBranch && loan.toBranch !== state.store) return loanInfo(loan);
     var code = getCell(row, dt);
     var c = (code == null ? "" : String(code)).toUpperCase();
     if (c === "O") return { kind: "off", label: "Off", sub: "" };
@@ -344,7 +362,11 @@
     if (matMlOn(dt)) return { published: true, info: ML_INFO };
     var grid = await loadCycle(ymForDate(dt));
     var row = rowFor(grid);
-    if (!row) return { published: false };
+    if (!row) {
+      var loan = loanForDate(dt);
+      if (loan && loan.toBranch && loan.toBranch !== state.store) return { published: true, info: loanInfo(loan) };
+      return { published: false };
+    }
     return { published: true, info: cellStatus(row, dt) };
   }
 
@@ -478,6 +500,19 @@
         }
       } catch (_e) {}
 
+      // Cross-store day-loans for this person (Manager Coverage / Movements).
+      // Without these a borrowed day would wrongly read as "Off".
+      state.loans = {};
+      try {
+        var loanKey = state.isManager ? "boa_mgr_loans_v1" : "boa_tech_loans_v1";
+        var lr = await sb.from("app_state").select("value").eq("key", loanKey).maybeSingle();
+        var loans = (lr && lr.data && lr.data.value) || [];
+        var ecUpL = String(found.ecKey).toUpperCase().trim();
+        (Array.isArray(loans) ? loans : []).forEach(function (l) {
+          if (l && l.ec && l.date && String(l.ec).toUpperCase().trim() === ecUpL) state.loans[l.date] = l;
+        });
+      } catch (_e) { state.loans = {}; }
+
       try { localStorage.setItem(LS_KEY, JSON.stringify({ store: store, ec: found.ecKey })); } catch (_e) {}
 
       var today = new Date(), tom = new Date(); tom.setDate(tom.getDate() + 1);
@@ -581,7 +616,11 @@
     var rows = days2.map(function (x) {
       var st = { published: false };
       if (matMlOn(x.date)) { st = { published: true, info: ML_INFO }; }
-      else { var grid = state.cache[ym], row = rowFor(grid); if (row) st = { published: true, info: cellStatus(row, x.date) }; }
+      else {
+        var grid = state.cache[ym], row = rowFor(grid);
+        if (row) st = { published: true, info: cellStatus(row, x.date) };
+        else { var loan = loanForDate(x.date); if (loan && loan.toBranch && loan.toBranch !== state.store) st = { published: true, info: loanInfo(loan) }; }
+      }
       return dayCard(x.date, st, false);
     }).join("");
     el.innerHTML =

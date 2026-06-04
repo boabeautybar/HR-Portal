@@ -27407,7 +27407,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const readCell = (grid, ec, d) => {
           if (!grid || !ec) return undefined;
           const _e1 = ec, _e2 = String(ec).trim();
-          const row = grid[_e1] || (_e2 !== _e1 ? grid[_e2] : null);
+          let row = grid[_e1] || (_e2 !== _e1 ? grid[_e2] : null);
+          // Fallback: tolerate dash/case differences between the staff code and
+          // the schedule-grid key (e.g. code "B941M" vs a legacy grid key
+          // "B941-M"), so renaming a code doesn't orphan that person's shifts.
+          if (!row) {
+            const want = _e2.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+            if (want) { for (const k in grid) { if (String(k).replace(/[^A-Za-z0-9]/g, "").toUpperCase() === want) { row = grid[k]; break; } } }
+          }
           if (!row) return undefined;
           return row[d.ymd] || row[d.dom] || row[String(d.dom)];
         };
