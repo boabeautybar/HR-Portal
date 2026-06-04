@@ -8942,13 +8942,14 @@ async function finalizeLeaveIfReady(r, deps) {
 
 function isManagerEc(ec) { return /M$/i.test(String(ec || "").trim()); }
 // Split a date range into calendar days vs actual leave days, using the usual
-// off-day pattern (managers ~2 off/week, nail techs ~1 off/week). An estimate
-// for the request flow — the Leave Planner shows schedule-exact figures once a
-// schedule exists. E.g. a manager's 14 calendar days ≈ 10 real leave days.
-function leaveDayBreakdown(startYmd, endYmd, isMgr) {
+// off-day pattern — managers and nail techs both normally get ~2 off-days per
+// week. An estimate for the request flow — the Leave Planner shows
+// schedule-exact figures once a schedule exists. E.g. 14 calendar days that
+// span two weeks ≈ 10 real leave days (4 off-days excluded).
+function leaveDayBreakdown(startYmd, endYmd, _isMgr) {
   const cal = leaveDays(startYmd, endYmd);
-  if (cal <= 0) return { cal: 0, off: 0, real: 0, perWeek: isMgr ? 2 : 1 };
-  const perWeek = isMgr ? 2 : 1;
+  const perWeek = 2; // managers ~2/week; nail techs also usually ~2/week
+  if (cal <= 0) return { cal: 0, off: 0, real: 0, perWeek };
   const off = Math.round((cal / 7) * perWeek);
   return { cal, off, real: Math.max(0, cal - off), perWeek };
 }
@@ -9783,7 +9784,7 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Ref</span><span>{r.ref_code}</span>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Requested</span><span>{fmtIncidentTime(r.created_at)}</span>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Leave days</span>
-                  <span><strong>{bd.cal}</strong> calendar day{bd.cal === 1 ? "" : "s"} · <strong style={{ color: "#0f766e" }}>≈ {bd.real} actual leave day{bd.real === 1 ? "" : "s"}</strong> <span style={{ color: "#9ca3af", fontSize: 12 }}>(≈ {bd.off} off-day{bd.off === 1 ? "" : "s"} excluded — {isMgrReq(r) ? "managers ~2/week" : "techs ~1/week"})</span></span>
+                  <span><strong>{bd.cal}</strong> calendar day{bd.cal === 1 ? "" : "s"} · <strong style={{ color: "#0f766e" }}>≈ {bd.real} actual leave day{bd.real === 1 ? "" : "s"}</strong> <span style={{ color: "#9ca3af", fontSize: 12 }}>(≈ {bd.off} off-day{bd.off === 1 ? "" : "s"} excluded — ~2/week)</span></span>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Employee code</span><span>{r.ec || "—"}</span>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Contact</span><span>{r.contact || "—"}</span>
                   {r.reason && (<><span style={{ color: "#9d6a82", fontWeight: 700 }}>Reason</span><span style={{ whiteSpace: "pre-wrap" }}>{linkifyText(r.reason)}</span></>)}
