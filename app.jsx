@@ -27607,6 +27607,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Coverage matches the schedule tab exactly; other stores read straight.
         const _covCell = (branchName, ec, d) => {
           if (!SPLIT_SHIFT_STORES[branchName]) return readWithFallback(branchName, ec, d);
+          // A manual custom-hours override for this exact day is the ROM's
+          // explicit choice — the schedule derivation must NOT relabel it. Leave
+          // the cell exactly as saved (the displayed time already uses the
+          // custom hours via _customTime), so custom times are never overwritten.
+          if (_effCustomTime(ec, d.ymd)) return readWithFallback(branchName, ec, d);
           const row = _buildCovLabels(branchName, d.mgrYm)[ec];
           if (row && Object.prototype.hasOwnProperty.call(row, d.ymd)) return row[d.ymd];
           return readWithFallback(branchName, ec, d);
