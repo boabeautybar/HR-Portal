@@ -7189,7 +7189,68 @@ function canSeeIncidents(user) {
          r.includes("national") || isRomRole(user.role);
 }
 
-function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFreshaCfgSave, overtimeCfg, onOvertimeCfgSave, cashupReviewCfg, onCashupReviewCfgSave }) {
+// Shared access-gate check: does this user fall inside an access config
+// ({ roles:[...], pins:[...] })? Owners always pass. Role keys are matched
+// loosely against the user's role title so seed/typo variants still work.
+function accessAllows(user, cfg) {
+  if (!user) return false;
+  if (user.isOwner) return true;
+  const role = (user.role || "").toLowerCase();
+  const roleMatch = (cfg && cfg.roles || []).some(k =>
+    k === "national" ? (role.includes("national ops") || role.includes("national operations") || role.includes("national"))
+      : k === "regional" ? (role.includes("regional") || /\brom\b/.test(role) || role.includes("regional ops"))
+        : k === "payroll" ? (role.includes("payroll") || role.includes("wages") || role.includes("finance"))
+          : k === "hr" ? (role.includes("hr") || role.includes("human res"))
+            : false
+  );
+  if (roleMatch) return true;
+  return (cfg && cfg.pins || []).includes(user.pin);
+}
+
+// Reusable Settings panel for granting an access list by role and/or by named
+// person (owners always included). Used for the leave-workflow gates.
+function AccessPanel({ title, blurb, cfg, onSave, users, roleOpts, accent, accentBg, border }) {
+  const c = cfg || { roles: [], pins: [] };
+  const userList = Object.keys(users || {})
+    .filter(pin => !(users[pin] && (users[pin].voucherEntryOnly || users[pin].demo)))
+    .map(pin => ({ pin, name: (users[pin] && users[pin].name) || pin, role: (users[pin] && users[pin].role) || "", isOwner: !!(users[pin] && users[pin].isOwner) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const toggleArr = (arr, val) => (arr || []).includes(val) ? (arr || []).filter(x => x !== val) : [...(arr || []), val];
+  const setCfg = (patch) => onSave({ ...c, ...patch });
+  const ac = accent || "#BE185D";
+  const chk = { width: 15, height: 15, accentColor: ac };
+  const colHead = { fontSize: 10, fontWeight: 800, color: ac, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 };
+  const rowL = { display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13, color: "#831843", cursor: "pointer" };
+  return (
+    <div style={{ marginTop: 26, background: accentBg || "#FDF2F8", border: "2px solid " + (border || "#FBCFE8"), borderRadius: 14, padding: "18px 20px" }}>
+      <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: ac, fontWeight: 700, marginBottom: 2 }}>{title}</div>
+      <div style={{ fontSize: 12, color: ac, marginBottom: 16, opacity: 0.85 }}>{blurb}</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 20 }}>
+        <div>
+          <div style={colHead}>Allowed by role</div>
+          {roleOpts.map(r => (
+            <label key={r.key} style={rowL}>
+              <input type="checkbox" style={chk} checked={(c.roles || []).includes(r.key)} onChange={() => setCfg({ roles: toggleArr(c.roles, r.key) })} />
+              {r.label}
+            </label>
+          ))}
+        </div>
+        <div>
+          <div style={colHead}>…or specific people</div>
+          {userList.map(u => (
+            <label key={u.pin} style={{ ...rowL, opacity: u.isOwner ? 0.6 : 1 }}>
+              <input type="checkbox" style={chk} checked={u.isOwner || (c.pins || []).includes(u.pin)} disabled={u.isOwner} onChange={() => setCfg({ pins: toggleArr(c.pins, u.pin) })} />
+              {u.name} <span style={{ color: "#F472B6", fontSize: 11 }}>· {u.role}{u.isOwner ? " · always" : ""}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+      <div style={{ fontSize: 11, color: ac, marginTop: 14, fontStyle: "italic", opacity: 0.85 }}>Owners always have access. Changes save automatically.</div>
+    </div>
+  );
+}
+
+function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFreshaCfgSave, overtimeCfg, onOvertimeCfgSave, cashupReviewCfg, onCashupReviewCfgSave, leaveOpsCfg, onLeaveOpsCfgSave, leavePayrollCfg, onLeavePayrollCfgSave }) {
   const users = appUsers || {};
   const [editing, setEditing] = useState(null);   // {pin, isNew, name, role, demo, isOwner, perms, originalPin}
   const [busy, setBusy] = useState(false);
@@ -7542,6 +7603,27 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
           </div>
         );
       })()}
+
+      {/* ── Leave workflow gates ── who clears the operational check and who
+          does the payroll / leave-balance check on the Leave Requests tab. */}
+      {onLeaveOpsCfgSave && (
+        <AccessPanel
+          title="🌴 Leave — operational check"
+          blurb="When staff request leave, an operational reviewer confirms the store can spare them (max 1 manager / 20% of techs on leave at once — the portal flags clashes automatically). Owners can always do this; grant others below."
+          cfg={leaveOpsCfg} onSave={onLeaveOpsCfgSave} users={users}
+          roleOpts={[{ key: "national", label: "National Ops Managers" }, { key: "regional", label: "Regional managers (all ROM variants)" }]}
+          accent="#7c3aed" accentBg="#faf5ff" border="#e9d5ff"
+        />
+      )}
+      {onLeavePayrollCfgSave && (
+        <AccessPanel
+          title="🧮 Leave — payroll / balance check"
+          blurb="Your payroll officer checks the leave balance on Sage, records how many days the person has, and ticks it off. Once both this and the operational check are done, the request is auto-approved and added to the Leave Planner. Owners can always do this; grant others below."
+          cfg={leavePayrollCfg} onSave={onLeavePayrollCfgSave} users={users}
+          roleOpts={[{ key: "payroll", label: "Payroll / wages / finance roles" }, { key: "hr", label: "HR roles" }]}
+          accent="#0f766e" accentBg="#f0fdfa" border="#99f6e4"
+        />
+      )}
 
       {/* ── Add / edit modal ── */}
       {editing && (
@@ -9325,30 +9407,125 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
   );
 }
 
-function LeaveRequestsTab({ requests, setRequests, currentUser }) {
+function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLeaveRecs, enriched, managers, staff, opsCfg, payrollCfg, logActivity }) {
   const [statusFilter, setStatusFilter] = useState("pending");
   const [storeFilter, setStoreFilter] = useState("");
   const [openId, setOpenId] = useState(null);
   const [noteDraft, setNoteDraft] = useState({});
   const [declineId, setDeclineId] = useState(null);
   const [declineText, setDeclineText] = useState("");
+  const [balDraft, setBalDraft] = useState({}); // per-request "days available" input
   const [busy, setBusy] = useState(false);
+
+  const actor = (currentUser && (currentUser.name || currentUser.pin)) || "";
+  const canOps = accessAllows(currentUser, opsCfg);
+  const canPayroll = accessAllows(currentUser, payrollCfg);
 
   const stores = Array.from(new Set(requests.map(r => r.store).filter(Boolean))).sort();
   const patchLocal = (id, patch) => setRequests(requests.map(r => r.id === id ? { ...r, ...patch } : r));
+
+  // ── Operational clash assessment ──────────────────────────────────────────
+  // Mirrors the Leave Planner's rule (1 manager / 20% of techs per store, per
+  // day) so the ops gate previews exactly what the calendar will accept. Counts
+  // only already-approved leave (the leaveRecs calendar). Returns matched:false
+  // when we can't tie the request to a known employee (no auto-check possible).
+  const findPerson = (ec) => {
+    const k = String(ec || "").trim().toUpperCase();
+    if (!k) return null;
+    return [...(enriched || []), ...(managers || [])].find(p => String(p.ec || "").toUpperCase() === k) || null;
+  };
+  const PEAK = (iso) => { const m = +String(iso).slice(5, 7); return m >= 10 || m <= 3; };
+  const assessOps = (r) => {
+    const ec = String(r.ec || "").trim().toUpperCase();
+    const isMgr = /M$/i.test(ec);
+    const pool = isMgr ? (managers || []) : (enriched || []);
+    const person = findPerson(ec);
+    if (!ec || !person) return { matched: false, isMgr };
+    const branch = person.branch || r.store;
+    const roleGuard = isMgr
+      ? (m) => (m.role === "SM" || m.role === "SSM" || m.role === "AM")
+      : (s) => /^[BT]/.test(String(s.ec || ""));
+    const peers = pool.filter(p => p.branch === branch && !p.onMat && roleGuard(p));
+    const headcount = peers.length;
+    const maxOff = Math.max(1, Math.floor(headcount * 0.2));
+    const clashDays = [];
+    let peakDays = 0;
+    const sd = new Date(r.start_date + "T00:00:00"), ed = new Date(r.end_date + "T00:00:00");
+    for (let d = new Date(sd); d <= ed; d.setDate(d.getDate() + 1)) {
+      const iso = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+      if (PEAK(iso)) peakDays++;
+      let ct = 1; // include this request
+      for (const lv of (leaveRecs || [])) {
+        if (lv.type !== "Annual leave") continue;
+        const lp = findPerson(lv.ec);
+        if (!lp || lp.branch !== branch || lp.onMat || !roleGuard(lp)) continue;
+        if (iso >= lv.startDate && iso <= lv.endDate) ct++;
+      }
+      if (ct > maxOff) clashDays.push(iso);
+    }
+    return { matched: true, isMgr, branch, headcount, maxOff, clashDays, peakDays, person };
+  };
+
+  // Write an approved request onto the Leave Planner calendar. Skips silently
+  // if it can't be matched to a known employee, or if an overlapping annual
+  // record already exists. Returns true when the leave is on the calendar.
+  const addToCalendar = async (r) => {
+    const person = findPerson(r.ec);
+    if (!person) return false;
+    const ecU = String(person.ec || "").toUpperCase();
+    const dup = (leaveRecs || []).find(lv => String(lv.ec || "").toUpperCase() === ecU
+      && lv.type === "Annual leave" && lv.startDate <= r.end_date && lv.endDate >= r.start_date);
+    if (dup) return true;
+    const rec = { _id: Date.now(), ec: person.ec, startDate: r.start_date, endDate: r.end_date, type: "Annual leave", notes: "[Leave request " + (r.ref_code || "") + "]", emergency: false };
+    const next = [...(leaveRecs || []), rec];
+    setLeaveRecs(next);
+    await window.BOA_DB.saveLeaveRecords(next);
+    return true;
+  };
+
+  // When both gates are green, auto-approve and put it on the calendar.
+  const maybeFinalize = async (r) => {
+    if (r.status === "approved") return;
+    if (!(r.ops_cleared_at && r.balance_checked_at)) return;
+    let added = false;
+    try { added = await addToCalendar(r); }
+    catch (e) { alert("Both checks done, but could not add to the calendar: " + (e.message || e)); }
+    const note = added ? "" : "Auto-approved — please add to the Leave Planner manually (no matching employee code).";
+    await window.BOA_DB.setLeaveStatus(r.id, "approved", note, actor);
+    patchLocal(r.id, { status: "approved", reviewed: true, decided_by: actor, decided_at: new Date().toISOString() });
+    if (logActivity) logActivity("Approved leave request", r.name, r.start_date + " → " + r.end_date + (added ? " · added to calendar" : ""), "Leave");
+  };
+
+  const toggleOps = async (r, clear) => {
+    setBusy(true);
+    try {
+      await window.BOA_DB.setLeaveOps(r.id, clear, actor);
+      const patch = clear
+        ? { ops_cleared_at: new Date().toISOString(), ops_cleared_by: actor, reviewed: true }
+        : { ops_cleared_at: null, ops_cleared_by: null };
+      patchLocal(r.id, patch);
+      if (clear) await maybeFinalize({ ...r, ...patch });
+    } catch (e) { alert("Could not update the operational check: " + (e.message || e)); }
+    setBusy(false);
+  };
+  const setBalance = async (r, ok) => {
+    const days = ok ? (balDraft[r.id] != null ? balDraft[r.id] : (r.balance_days != null ? r.balance_days : "")) : "";
+    setBusy(true);
+    try {
+      await window.BOA_DB.setLeaveBalance(r.id, ok, days, actor);
+      const patch = ok
+        ? { balance_checked_at: new Date().toISOString(), balance_checked_by: actor, balance_days: (days === "" ? null : Number(days)), reviewed: true }
+        : { balance_checked_at: null, balance_checked_by: null, balance_days: null };
+      patchLocal(r.id, patch);
+      if (ok) await maybeFinalize({ ...r, ...patch });
+    } catch (e) { alert("Could not update the balance check: " + (e.message || e)); }
+    setBusy(false);
+  };
 
   const onOpen = async (r) => {
     const next = openId === r.id ? null : r.id;
     setOpenId(next);
     if (next && !r.reviewed) { try { await window.BOA_DB.markLeaveReviewed(r.id); patchLocal(r.id, { reviewed: true }); } catch (_e) {} }
-  };
-  const approve = async (r) => {
-    setBusy(true);
-    try {
-      await window.BOA_DB.setLeaveStatus(r.id, "approved", "", currentUser.name || currentUser.pin || "");
-      patchLocal(r.id, { status: "approved", reviewed: true, decided_by: currentUser.name || "", decided_at: new Date().toISOString() });
-    } catch (e) { alert("Could not approve: " + (e.message || e)); }
-    setBusy(false);
   };
   const doDecline = async (r) => {
     const text = (declineText || "").trim();
@@ -9401,8 +9578,8 @@ function LeaveRequestsTab({ requests, setRequests, currentUser }) {
         <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#831843", margin: 0 }}>🌴 Leave Requests</h2>
         {pendingCount > 0 && <span style={chip(LEAVE_STATUS.pending)}>{pendingCount} pending</span>}
       </div>
-      <p style={{ color: "#9d6a82", fontSize: 13.5, marginTop: 4, maxWidth: 680 }}>
-        Leave requests staff send from My BOA. Approve or decline — declining asks for a reason that's recorded.
+      <p style={{ color: "#9d6a82", fontSize: 13.5, marginTop: 4, maxWidth: 720 }}>
+        Leave requests staff send from My BOA. Each goes through two checks — an <strong>operational check</strong> (the store can spare them; the portal flags clashes automatically) and a <strong>leave-balance check</strong> (payroll confirms days on Sage). Once both are ticked, it's auto-approved and added to the Leave Planner. Decline at any point with a reason. Who can do each check is set under <strong>Settings</strong>.
       </p>
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
@@ -9465,16 +9642,96 @@ function LeaveRequestsTab({ requests, setRequests, currentUser }) {
                   </div>
                 )}
 
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
-                  <button disabled={busy || r.status === "approved"} onClick={() => approve(r)}
-                    style={{ border: "1.5px solid #15803d", background: r.status === "approved" ? "#15803d" : "#fff", color: r.status === "approved" ? "#fff" : "#15803d", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: r.status === "approved" ? "default" : "pointer" }}>
-                    {r.status === "approved" ? "● Approved" : "Approve"}
-                  </button>
-                  <button disabled={busy || r.status === "declined"} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }}
-                    style={{ border: "1.5px solid #b91c1c", background: r.status === "declined" ? "#b91c1c" : "#fff", color: r.status === "declined" ? "#fff" : "#b91c1c", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: r.status === "declined" ? "default" : "pointer" }}>
-                    {r.status === "declined" ? "● Declined" : "Decline"}
-                  </button>
-                </div>
+                {/* ── Approval workflow: operational gate → balance gate → auto-approve ── */}
+                {r.status !== "declined" && (() => {
+                  const opsDone = !!r.ops_cleared_at;
+                  const balDone = !!r.balance_checked_at;
+                  const approved = r.status === "approved";
+                  const oa = assessOps(r);
+                  const peopleLabel = oa.isMgr ? "managers" : "techs";
+                  const pill = (done, n, label) => (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 10px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: done ? "#15803d" : "#9d6a82", background: done ? "#dcfce7" : "#f6e8ef" }}>
+                      <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 15, height: 15, borderRadius: "50%", background: done ? "#15803d" : "#cbb1bd", color: "#fff", fontSize: 9 }}>{done ? "✓" : n}</span>
+                      {label}
+                    </span>
+                  );
+                  const gateBox = { border: "1px solid #f3d4e0", borderRadius: 11, padding: "11px 13px", marginBottom: 10, background: "#fffdfe" };
+                  const gateHead = { fontSize: 12.5, fontWeight: 800, color: "#831843", marginBottom: 7, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" };
+                  const stampS = { fontSize: 11, color: "#15803d", fontWeight: 600 };
+                  const btn = (bg, fg, bd) => ({ border: "1.5px solid " + bd, background: bg, color: fg, borderRadius: 9, padding: "6px 13px", fontWeight: 700, fontSize: 12, fontFamily: "inherit", cursor: "pointer" });
+                  const verdict = (bg, bd, col) => ({ background: bg, border: "1px solid " + bd, color: col, borderRadius: 8, padding: "7px 10px", fontSize: 12.5, marginBottom: 8, lineHeight: 1.45 });
+                  return (
+                    <div style={{ marginBottom: 14 }}>
+                      <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 11 }}>
+                        {pill(opsDone, 1, "Operational")}
+                        {pill(balDone, 2, "Leave balance")}
+                        {pill(approved, 3, "Approved → calendar")}
+                      </div>
+
+                      {/* Gate 1 — operational */}
+                      <div style={gateBox}>
+                        <div style={gateHead}>
+                          <span>1 · Operational check</span>
+                          {opsDone && <span style={stampS}>✓ {r.ops_cleared_by || "—"}{r.ops_cleared_at ? " · " + fmtIncidentTime(r.ops_cleared_at) : ""}</span>}
+                        </div>
+                        {oa.matched ? (
+                          oa.clashDays.length > 0 ? (
+                            <div style={verdict("#fef2f2", "#fecaca", "#b91c1c")}>
+                              ⚠ <strong>Over the limit</strong> on {oa.clashDays.length} day{oa.clashDays.length === 1 ? "" : "s"} (e.g. {oa.clashDays.slice(0, 3).map(fmtIncidentDate).join(", ")}{oa.clashDays.length > 3 ? "…" : ""}). Max <strong>{oa.maxOff}</strong> of {oa.headcount} {peopleLabel} off at {oa.branch}{oa.isMgr ? "" : " (20%)"}.
+                            </div>
+                          ) : (
+                            <div style={verdict("#f0fdf4", "#bbf7d0", "#15803d")}>
+                              ✓ <strong>Within limit</strong> — max {oa.maxOff} of {oa.headcount} {peopleLabel} off at {oa.branch}{oa.isMgr ? " (1 at a time)" : " (20%)"}.{oa.peakDays > 0 ? " ⚠ " + oa.peakDays + " day(s) fall in peak season (Oct–Mar)." : ""}
+                            </div>
+                          )
+                        ) : (
+                          <div style={verdict("#fffbeb", "#fde68a", "#92400e")}>Can't auto-check — no matching employee code{r.ec ? " (" + r.ec + ")" : ""}. Confirm operationally by hand.</div>
+                        )}
+                        {canOps ? (
+                          opsDone
+                            ? <button disabled={busy} onClick={() => toggleOps(r, false)} style={btn("#fff", "#9d6a82", "#e7c6d4")}>Undo operational check</button>
+                            : <button disabled={busy} onClick={() => toggleOps(r, true)} style={btn("#fff", "#15803d", "#15803d")}>✓ Operationally clear</button>
+                        ) : (!opsDone && <span style={{ fontSize: 12, color: "#9d6a82", fontStyle: "italic" }}>Awaiting operational reviewer.</span>)}
+                      </div>
+
+                      {/* Gate 2 — leave balance (Sage) */}
+                      <div style={gateBox}>
+                        <div style={gateHead}>
+                          <span>2 · Leave balance <span style={{ fontWeight: 600, color: "#9d6a82" }}>(check on Sage)</span></span>
+                          {balDone && <span style={stampS}>✓ {r.balance_checked_by || "—"}{r.balance_days != null ? " · " + r.balance_days + " days available" : ""}</span>}
+                        </div>
+                        {canPayroll ? (
+                          balDone ? (
+                            <button disabled={busy} onClick={() => setBalance(r, false)} style={btn("#fff", "#9d6a82", "#e7c6d4")}>Undo balance check</button>
+                          ) : (
+                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                              <input type="number" min="0" step="0.5" placeholder="days available"
+                                value={balDraft[r.id] != null ? balDraft[r.id] : (r.balance_days != null ? r.balance_days : "")}
+                                onChange={e => setBalDraft({ ...balDraft, [r.id]: e.target.value })}
+                                style={{ width: 130, fontFamily: "inherit", fontSize: 13, padding: "7px 10px", borderRadius: 9, border: "1.5px solid #e7c6d4" }} />
+                              <button disabled={busy} onClick={() => setBalance(r, true)} style={btn("#0f766e", "#fff", "#0f766e")}>✓ Balance OK</button>
+                              <span style={{ fontSize: 11, color: "#9d6a82" }}>Requested {leaveDays(r.start_date, r.end_date)} day(s)</span>
+                            </div>
+                          )
+                        ) : (!balDone && <span style={{ fontSize: 12, color: "#9d6a82", fontStyle: "italic" }}>Awaiting payroll officer.</span>)}
+                      </div>
+
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                        {!approved && opsDone && balDone && <span style={{ fontSize: 12, color: "#15803d", fontWeight: 700 }}>Both checks done — approving…</span>}
+                        {!approved && <button disabled={busy} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }} style={btn("#fff", "#b91c1c", "#b91c1c")}>Decline</button>}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {r.status === "declined" && (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+                    <button disabled={busy} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }}
+                      style={{ border: "1.5px solid #b91c1c", background: "#b91c1c", color: "#fff", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>
+                      ● Declined — edit reason
+                    </button>
+                  </div>
+                )}
 
                 {declineId === r.id && (
                   <div style={{ background: "#fef2f2", border: "1.5px solid #fecaca", borderRadius: 11, padding: "12px 13px", marginBottom: 14 }}>
@@ -10689,6 +10946,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     try { if (window.BOA_DB.saveCashupReviewAccess) await window.BOA_DB.saveCashupReviewAccess(next); }
     catch (e) { window.alert("Could not save cash-up review access: " + (e.message || e)); }
   };
+  // Leave-request workflow gates: who clears the operational check
+  // (boa_leave_ops_access_v1, default Regional Ops) and who does the payroll /
+  // leave-balance check (boa_leave_payroll_access_v1, default Payroll roles).
+  const [leaveOpsAccess, setLeaveOpsAccess] = useState({});
+  const [leavePayrollAccess, setLeavePayrollAccess] = useState({});
+  const leaveOpsCfg = useMemo(() => {
+    const c = leaveOpsAccess || {};
+    return { roles: Array.isArray(c.roles) ? c.roles : ["regional"], pins: Array.isArray(c.pins) ? c.pins : [] };
+  }, [leaveOpsAccess]);
+  const leavePayrollCfg = useMemo(() => {
+    const c = leavePayrollAccess || {};
+    return { roles: Array.isArray(c.roles) ? c.roles : ["payroll"], pins: Array.isArray(c.pins) ? c.pins : [] };
+  }, [leavePayrollAccess]);
+  const saveLeaveOpsCfg = async (next) => {
+    setLeaveOpsAccess(next);
+    try { if (window.BOA_DB.saveLeaveOpsAccess) await window.BOA_DB.saveLeaveOpsAccess(next); }
+    catch (e) { window.alert("Could not save leave operational access: " + (e.message || e)); }
+  };
+  const saveLeavePayrollCfg = async (next) => {
+    setLeavePayrollAccess(next);
+    try { if (window.BOA_DB.saveLeavePayrollAccess) await window.BOA_DB.saveLeavePayrollAccess(next); }
+    catch (e) { window.alert("Could not save leave payroll access: " + (e.message || e)); }
+  };
   // App-scope trial persistence (the trial tab has its own copy inside an
   // IIFE; the dashboard Fresha card needs one too).
   const persistTrialList = async (next) => {
@@ -11762,12 +12042,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadFreshaAccess ? window.BOA_DB.loadFreshaAccess() : Promise.resolve({}),
       window.BOA_DB.loadOvertimeAccess ? window.BOA_DB.loadOvertimeAccess() : Promise.resolve({}),
       window.BOA_DB.loadCashupReviewAccess ? window.BOA_DB.loadCashupReviewAccess() : Promise.resolve({}),
+      window.BOA_DB.loadLeaveOpsAccess ? window.BOA_DB.loadLeaveOpsAccess() : Promise.resolve({}),
+      window.BOA_DB.loadLeavePayrollAccess ? window.BOA_DB.loadLeavePayrollAccess() : Promise.resolve({}),
       (window.BOA_DB.loadIncidentReports && canSeeIncidents(currentUser)) ? window.BOA_DB.loadIncidentReports() : Promise.resolve([]),
       (window.BOA_DB.loadLeaveRequests && _needRequests) ? window.BOA_DB.loadLeaveRequests() : Promise.resolve([]),
       (window.BOA_DB.loadExtraDayRequests && _needRequests) ? window.BOA_DB.loadExtraDayRequests() : Promise.resolve([]),
       window.BOA_DB.loadFreshaExtraOpenings ? window.BOA_DB.loadFreshaExtraOpenings() : Promise.resolve({}),
       window.BOA_DB.loadFreshaBlocks ? window.BOA_DB.loadFreshaBlocks() : Promise.resolve({})
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, cuReviewAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap]) => {
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, cuReviewAccess, lvOpsAccess, lvPayrollAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap]) => {
       setStaff(d.staff);
       setManagers(d.managers);
       setMatRecs(d.matRecs);
@@ -11782,6 +12064,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setFreshaAccess(freshaAcc && typeof freshaAcc === "object" ? freshaAcc : {});
       setOvertimeAccess(otAccess && typeof otAccess === "object" ? otAccess : {});
       setCashupReviewAccess(cuReviewAccess && typeof cuReviewAccess === "object" ? cuReviewAccess : {});
+      setLeaveOpsAccess(lvOpsAccess && typeof lvOpsAccess === "object" ? lvOpsAccess : {});
+      setLeavePayrollAccess(lvPayrollAccess && typeof lvPayrollAccess === "object" ? lvPayrollAccess : {});
       setIncidentReports(Array.isArray(incidents) ? incidents : []);
       setLeaveRequests(Array.isArray(leaveReqs) ? leaveReqs : []);
       setExtraDayRequests(Array.isArray(extraReqs) ? extraReqs : []);
@@ -17116,7 +17400,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* ── LEAVE REQUESTS TAB ── */}
         {tab === "leaveRequests" && canSeeIncidents(currentUser) && (
-          <LeaveRequestsTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} />
+          <LeaveRequestsTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} leaveRecs={leaveRecs} setLeaveRecs={setLeaveRecs} enriched={enriched} managers={managers} staff={staff} opsCfg={leaveOpsCfg} payrollCfg={leavePayrollCfg} logActivity={logActivity} />
         )}
 
         {/* ── CALLED IN SICK TAB ── */}
@@ -28201,6 +28485,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           onOvertimeCfgSave={saveOvertimeCfg}
           cashupReviewCfg={cashupReviewCfg}
           onCashupReviewCfgSave={saveCashupReviewCfg}
+          leaveOpsCfg={leaveOpsCfg}
+          onLeaveOpsCfgSave={saveLeaveOpsCfg}
+          leavePayrollCfg={leavePayrollCfg}
+          onLeavePayrollCfgSave={saveLeavePayrollCfg}
         /></div>
       )}
 

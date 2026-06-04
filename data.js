@@ -1552,6 +1552,32 @@
     return config || {};
   }
 
+  // ---------- Leave workflow access (operational + payroll gates) ----------
+  // Who may clear the operational gate (boa_leave_ops_access_v1) and who may
+  // do the leave-balance / payroll gate (boa_leave_payroll_access_v1). Shape:
+  //   { roles: ["regional"], pins: ["1234"] }
+  // Owners always have access regardless. Empty/missing → app default.
+  async function loadLeaveOpsAccess() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_leave_ops_access_v1").maybeSingle();
+    if (res.error) { console.error("loadLeaveOpsAccess:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveLeaveOpsAccess(config) {
+    var res = await sb.from("app_state").upsert({ key: "boa_leave_ops_access_v1", value: config || {} });
+    if (res.error) { console.error("saveLeaveOpsAccess:", res.error); throw res.error; }
+    return config || {};
+  }
+  async function loadLeavePayrollAccess() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_leave_payroll_access_v1").maybeSingle();
+    if (res.error) { console.error("loadLeavePayrollAccess:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveLeavePayrollAccess(config) {
+    var res = await sb.from("app_state").upsert({ key: "boa_leave_payroll_access_v1", value: config || {} });
+    if (res.error) { console.error("saveLeavePayrollAccess:", res.error); throw res.error; }
+    return config || {};
+  }
+
   // ---------- Attendance grid (boa_att_<branch>_<ym>) ----------
   // Same key the check-in kiosk app writes to. Status codes include:
   //   on, late, off, ext, sick_n, sick, frl, al, ph, mat, no, unpaid,
@@ -1892,6 +1918,10 @@
     saveOvertimeAccess: saveOvertimeAccess,
     loadCashupReviewAccess: loadCashupReviewAccess,
     saveCashupReviewAccess: saveCashupReviewAccess,
+    loadLeaveOpsAccess: loadLeaveOpsAccess,
+    saveLeaveOpsAccess: saveLeaveOpsAccess,
+    loadLeavePayrollAccess: loadLeavePayrollAccess,
+    saveLeavePayrollAccess: saveLeavePayrollAccess,
     loadComplianceActions: loadComplianceActions,
     saveComplianceActions: saveComplianceActions,
     loadUnpaidLegalRecords: loadUnpaidLegalRecords,
@@ -1923,6 +1953,8 @@
     markLeaveReviewed: markLeaveReviewed,
     addLeaveNote: addLeaveNote,
     deleteLeaveRequest: deleteLeaveRequest,
+    setLeaveOps: setLeaveOps,
+    setLeaveBalance: setLeaveBalance,
     loadExtraDayRequests: loadExtraDayRequests,
     setExtraDayStatus: setExtraDayStatus,
     deleteExtraDayRequest: deleteExtraDayRequest,
@@ -2019,6 +2051,24 @@
   async function deleteLeaveRequest(id) {
     var res = await sb.rpc("delete_leave_request", { p_key: incidentKey(), p_id: id });
     if (res.error) { console.error("deleteLeaveRequest:", res.error); throw res.error; }
+    return true;
+  }
+  // Operational gate — tick off (or undo) that the request is operationally
+  // clear (within the store's on-leave limits). See sql/leave_requests.sql.
+  async function setLeaveOps(id, cleared, actor) {
+    var res = await sb.rpc("set_leave_ops", { p_key: incidentKey(), p_id: id, p_clear: !!cleared, p_actor: actor || "" });
+    if (res.error) { console.error("setLeaveOps:", res.error); throw res.error; }
+    return true;
+  }
+  // Leave-balance gate — record the Sage balance (days available) and tick it
+  // off, or undo. Pass ok=false to clear the check.
+  async function setLeaveBalance(id, ok, days, actor) {
+    var res = await sb.rpc("set_leave_balance", {
+      p_key: incidentKey(), p_id: id, p_ok: !!ok,
+      p_days: (days === "" || days == null) ? null : Number(days),
+      p_actor: actor || ""
+    });
+    if (res.error) { console.error("setLeaveBalance:", res.error); throw res.error; }
     return true;
   }
 

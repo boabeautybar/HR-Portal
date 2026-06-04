@@ -181,3 +181,61 @@ grant execute on function set_leave_status(text,uuid,text,text,text)  to anon;
 grant execute on function mark_leave_reviewed(text,uuid)              to anon;
 grant execute on function add_leave_note(text,uuid,text,text)         to anon;
 grant execute on function delete_leave_request(text,uuid)             to anon;
+
+-- ============================================================================
+-- Approval workflow gates (added) — two sign-offs before a request is approved
+-- and lands on the Leave Planner calendar:
+--   1. Operational check  — a store can only carry so many people on leave at
+--      once (1 manager / 20% of techs). The portal auto-computes the clash; an
+--      operational reviewer (e.g. portfolio / regional ops manager) ticks it off.
+--   2. Leave-balance check — the payroll officer looks up the balance on Sage,
+--      records the days available, and ticks it off.
+-- Once BOTH gates are green the portal auto-approves and writes the leave onto
+-- the calendar. Who may do each gate is configured in the portal (app_state
+-- keys boa_leave_ops_access_v1 / boa_leave_payroll_access_v1).
+-- Idempotent — safe to re-run.
+-- ============================================================================
+alter table leave_requests
+  add column if not exists ops_cleared_at     timestamptz,
+  add column if not exists ops_cleared_by     text,
+  add column if not exists balance_checked_at timestamptz,
+  add column if not exists balance_checked_by text,
+  add column if not exists balance_days       numeric;
+
+-- ---- PORTAL: operational gate (clear / un-clear) ---------------------------
+create or replace function set_leave_ops(p_key text, p_id uuid, p_clear boolean, p_actor text default '')
+returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _check_hr_key(p_key);
+  update leave_requests
+     set ops_cleared_at = case when p_clear then now() else null end,
+         ops_cleared_by = case when p_clear then coalesce(p_actor, '') else null end,
+         reviewed = true,
+         internal_notes = internal_notes || jsonb_build_object('at', now(), 'by', coalesce(p_actor, ''),
+            'note', case when p_clear then 'Operational check: cleared ✓'
+                         else 'Operational check: cleared status removed' end),
+         updated_at = now()
+   where id = p_id;
+end $$;
+
+-- ---- PORTAL: leave-balance gate (Sage lookup) ------------------------------
+create or replace function set_leave_balance(p_key text, p_id uuid, p_ok boolean, p_days numeric default null, p_actor text default '')
+returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _check_hr_key(p_key);
+  update leave_requests
+     set balance_checked_at = case when p_ok then now() else null end,
+         balance_checked_by = case when p_ok then coalesce(p_actor, '') else null end,
+         balance_days       = case when p_ok then p_days else null end,
+         reviewed = true,
+         internal_notes = internal_notes || jsonb_build_object('at', now(), 'by', coalesce(p_actor, ''),
+            'note', case when p_ok then 'Leave balance checked: ' || coalesce(p_days::text, '?') || ' day(s) available ✓'
+                         else 'Leave balance check removed' end),
+         updated_at = now()
+   where id = p_id;
+end $$;
+
+grant execute on function set_leave_ops(text,uuid,boolean,text)             to anon;
+grant execute on function set_leave_balance(text,uuid,boolean,numeric,text) to anon;
