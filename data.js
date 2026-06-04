@@ -1490,6 +1490,19 @@
     return ins.data;
   }
 
+  // Hard-delete a single clock-in row (owner-only action in the UI). Used to
+  // remove a test / mistaken clock-in so it stops driving the attendance sheet.
+  // Also clears the row's selfie/GPS meta sidecar. Does NOT touch attendance
+  // grids or manager_day_status.
+  async function deleteClockin(id) {
+    if (id == null) throw new Error("clock-in id is required");
+    var res = await sb.from("clockins").delete().eq("id", id);
+    if (res.error) { console.error("deleteClockin:", res.error); throw res.error; }
+    try { await sb.from("app_state").delete().eq("key", "boa_mgrclockin_meta_" + id); }
+    catch (e) { console.warn("deleteClockin meta cleanup:", e); }
+    return true;
+  }
+
   // ---------- Manager personal PIN registry (boa_mgr_pins_v1) ----------
   // Map of {employee_code: 6-digit-pin}. Used by the check-in app's
   // Clock-in tab so each manager can confirm their own attendance.
@@ -2037,6 +2050,7 @@
     listRecentAttendanceCheckins: listRecentAttendanceCheckins,
     listRecentKioskCheckins: listRecentKioskCheckins,
     addManualKioskCheckin: addManualKioskCheckin,
+    deleteClockin: deleteClockin,
     reopenDailyCheckin: reopenDailyCheckin,
     listStoreOpenings: listStoreOpenings,
     loadEarlyLeaves: loadEarlyLeaves,
