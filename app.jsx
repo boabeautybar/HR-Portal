@@ -21321,11 +21321,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // absence-reason modal, but it's hidden from the grid.
           const _schedV = attSched[ec] && attSched[ec][d];
           const _scheduledOff = _schedV === "O" || _schedV === "R";
+          // A status the admin set directly on the attendance sheet (attGrid) is
+          // an explicit override and must win — for managers too. Without this,
+          // the manager_day_status overlay below intercepts and the manual cell
+          // (e.g. Sick over a test clock-in) reverted on reload, while nail-tech
+          // cells — which have no such overlay — stuck fine. attGrid persists the
+          // same way for both, so deferring to it here makes managers behave like
+          // techs. The ROM/modal overlay still applies to cells the admin hasn't
+          // touched on the sheet (attGrid empty).
+          const _manualGridV = attGrid[ec] && attGrid[ec][d];
           // ROM-managed manager-absence overlay. When a regional has
           // recorded a reason (sick + note / FRL + proof / annual / etc.)
           // for a manager's missed day, that's the source of truth for
-          // payroll and overrides any schedule mirror / attGrid value.
-          if (!_scheduledOff && _mgrStatusByEcYmd[ec]) {
+          // payroll and overrides the schedule mirror — but NOT a hand-set cell.
+          if (!_manualGridV && !_scheduledOff && _mgrStatusByEcYmd[ec]) {
             const _do = days.find(x => x.d === d);
             const _v = _do && _mgrStatusByEcYmd[ec][_do.ymd];
             if (_v) return _v;
