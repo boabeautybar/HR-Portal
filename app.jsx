@@ -21118,21 +21118,47 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // We map employee_code → staff_id via the live managers list, then
         // index mgrDayStatuses by staff_id+date.
         const _mgrEcToStaffId = {};
-        managers.forEach(m => { if (m.ec && (m._id || m.id)) _mgrEcToStaffId[m.ec] = m._id || m.id; });
+        managers.forEach(m => {
+          const sid = m._id || m.id;
+          if (m.ec && sid != null) {
+            _mgrEcToStaffId[m.ec] = sid;
+            const t = String(m.ec).trim();
+            if (t && !(t in _mgrEcToStaffId)) _mgrEcToStaffId[t] = sid;   // trimmed-key fallback
+          }
+        });
+        // Fallback: resolve a manager's canonical staff_id straight from their
+        // clock-in rows when the managers-list mapping didn't catch it (missing
+        // record id, or an EC that doesn't line up after a code change / stray
+        // space). Without this, a manual status override (Sick / Annual / …) for
+        // a manager who clocked in can't be mirrored into manager_day_status and
+        // silently reverts to the clock-in's "On Time" on the next reload.
+        (mgrClockinRows || []).forEach(r => {
+          if (!r || !r.staff) return;
+          const ec = String(r.staff.employee_code || "").trim();
+          const sid = r.staff_id != null ? r.staff_id : (r.staff.id != null ? r.staff.id : null);
+          if (ec && sid != null && !(ec in _mgrEcToStaffId)) _mgrEcToStaffId[ec] = sid;
+        });
         const _mgrStatusByEcYmd = {};
         const _mgrProofByEcYmd = {};
         const _mgrNoteByEcYmd = {};
         const _mgrRecorderByEcYmd = {};
         const _mgrRecordedAtByEcYmd = {};
         (mgrDayStatuses || []).forEach(r => {
+          // Compare staff_id as STRINGS. loadManagerDayStatuses can return it as
+          // a different JS type than the managers-list id (e.g. string vs
+          // number), so a strict === silently dropped the row on reload and the
+          // manager's saved status (Sick / Annual / …) reverted to the clock-in.
+          const rid = r && r.staff_id != null ? String(r.staff_id) : null;
+          if (!rid) return;
           for (const ec in _mgrEcToStaffId) {
-            if (_mgrEcToStaffId[ec] === r.staff_id) {
+            if (String(_mgrEcToStaffId[ec]) === rid) {
               (_mgrStatusByEcYmd[ec] = _mgrStatusByEcYmd[ec] || {})[r.date] = r.status;
               if (r.proof) (_mgrProofByEcYmd[ec] = _mgrProofByEcYmd[ec] || {})[r.date] = r.proof;
               if (r.note) (_mgrNoteByEcYmd[ec] = _mgrNoteByEcYmd[ec] || {})[r.date] = r.note;
               (_mgrRecorderByEcYmd[ec] = _mgrRecorderByEcYmd[ec] || {})[r.date] = r.updated_by || r.recorded_by || null;
               (_mgrRecordedAtByEcYmd[ec] = _mgrRecordedAtByEcYmd[ec] || {})[r.date] = r.updated_at || r.created_at || null;
-              break;
+              // No break — set every EC variant (raw + trimmed) that maps to this
+              // staff_id so getStatus matches whichever variant the grid row uses.
             }
           }
         });
@@ -21541,7 +21567,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // store so the override actually updates: absence/leave reasons are
           // upserted; present/off codes (and clearing) remove the override so
           // the day reverts to the clock-in / schedule reading.
-          const _mgrStaffId = _mgrEcToStaffId[ec];
+          const _mgrStaffId = _mgrEcToStaffId[ec] != null ? _mgrEcToStaffId[ec] : _mgrEcToStaffId[String(ec || "").trim()];
           if (_mgrStaffId) {
             const _do = days.find(x => x.d === d);
             const _ymd = _do && _do.ymd;
