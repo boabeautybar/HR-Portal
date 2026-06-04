@@ -8940,13 +8940,19 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
     try {
       if (!r || !r.work_date || !r.store || !r.ec) return;
       if (!window.BOA_DB || !window.BOA_DB.loadSchedule || !window.BOA_DB.saveSchedule) return;
-      if (/M$/i.test(String(r.ec).trim())) return;   // managers use a different (mgr) schedule — skip
       const p = String(r.work_date).split("-"); let y = +p[0], m = +p[1]; const dom = +p[2];
       if (!y || !m || !dom) return;
-      if (dom >= 25) { m += 1; if (m > 12) { m = 1; y += 1; } }   // 25th→24th cycle, END-month ym
-      const ym = y + "-" + String(m).padStart(2, "0");
+      if (dom >= 25) { m += 1; if (m > 12) { m = 1; y += 1; } }   // END-month ym (25th→24th cycle)
+      const endYm = y + "-" + String(m).padStart(2, "0");
       const dayKey = String(dom);
-      const sched = await window.BOA_DB.loadSchedule(r.store, ym, false);
+      // Managers live on the manager schedule (boa_mgrsched), stored under the
+      // cycle's START-month ym; nail techs on boa_sched under the END-month ym.
+      // Writing the manager grid is what makes an approved manager extra day
+      // show on the Scheduling tab AND the Manager Coverage overview.
+      const isMgr = /M$/i.test(String(r.ec).trim());
+      let smy = y, smm = m - 1; if (smm < 1) { smm = 12; smy -= 1; }
+      const schedYm = isMgr ? (smy + "-" + String(smm).padStart(2, "0")) : endYm;
+      const sched = await window.BOA_DB.loadSchedule(r.store, schedYm, isMgr);
       const grid = (sched && sched.grid) || {};
       const want = String(r.ec).trim().toUpperCase();
       const ecKey = Object.keys(grid).find(k => String(k).trim().toUpperCase() === want) || String(r.ec).trim();
@@ -8955,17 +8961,18 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
       if (publish) {
         row[String(dom)] = "E";
         grid[ecKey] = row;
-        await window.BOA_DB.saveSchedule(r.store, ym, grid, false);
-        // Mirror into the kiosk/attendance extras sidecar.
-        if (window.BOA_DB.saveExtraDay) {
-          try { await window.BOA_DB.saveExtraDay(r.store, ym, dayKey, String(r.ec).trim(), actor); }
+        await window.BOA_DB.saveSchedule(r.store, schedYm, grid, isMgr);
+        // Mirror into the kiosk/attendance extras sidecar (END-month keyed) —
+        // nail techs only; managers are clock-in based, not on the kiosk grid.
+        if (!isMgr && window.BOA_DB.saveExtraDay) {
+          try { await window.BOA_DB.saveExtraDay(r.store, endYm, dayKey, String(r.ec).trim(), actor); }
           catch (e2) { console.error("saveExtraDay:", e2); }
         }
       } else {
         // Only revert a schedule cell we set; always clear our sidecar entry.
-        if (cur === "E") { delete row[dom]; delete row[String(dom)]; grid[ecKey] = row; await window.BOA_DB.saveSchedule(r.store, ym, grid, false); }
-        if (window.BOA_DB.clearExtraDay) {
-          try { await window.BOA_DB.clearExtraDay(r.store, ym, dayKey, String(r.ec).trim()); }
+        if (cur === "E") { delete row[dom]; delete row[String(dom)]; grid[ecKey] = row; await window.BOA_DB.saveSchedule(r.store, schedYm, grid, isMgr); }
+        if (!isMgr && window.BOA_DB.clearExtraDay) {
+          try { await window.BOA_DB.clearExtraDay(r.store, endYm, dayKey, String(r.ec).trim()); }
           catch (e2) { console.error("clearExtraDay:", e2); }
         }
       }
@@ -8980,7 +8987,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
         "Check the schedule / demand for that day first — only approve if cover is genuinely needed.\n\n" +
         (isTech
           ? "Approving will auto-add this extra day to the schedule, and the store kiosk + attendance sheet for that day will read it as an Extra Day."
-          : "Approving records this extra day for the manager.")
+          : "Approving will auto-add this extra day to the manager schedule and the Manager Coverage overview, marked as Extra.")
       )) return;
     }
     setBusy(true);
@@ -9071,7 +9078,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
             {r.status !== "pending" && r.decided_by && (
               <div style={{ marginTop: 10, background: r.status === "approved" ? "#f0fdf4" : "#fef2f2", border: "1px solid " + (r.status === "approved" ? "#bbf7d0" : "#fecaca"), borderRadius: 11, padding: "10px 13px" }}>
                 <div style={{ fontSize: 12, fontWeight: 800, color: r.status === "approved" ? "#15803d" : "#b91c1c" }}>{r.status === "approved" ? "✅ Approved" : "✕ Declined"}</div>
-                {r.status === "approved" && !/M$/i.test(String(r.ec || "").trim()) && <div style={{ fontSize: 11.5, color: "#15803d", marginTop: 2 }}>📅 Published to {(r.name || "the tech").split(" ")[0]}'s schedule as an extra day ({fmtIncidentDate(r.work_date)}).</div>}
+                {r.status === "approved" && <div style={{ fontSize: 11.5, color: "#15803d", marginTop: 2 }}>📅 Published to {(r.name || "the").split(" ")[0]}'s {/M$/i.test(String(r.ec || "").trim()) ? "manager schedule & coverage" : "schedule"} as an extra day ({fmtIncidentDate(r.work_date)}).</div>}
                 {r.decision_note && <div style={{ fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{r.decision_note}</div>}
                 <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>{r.decided_by}{r.decided_at ? " · " + fmtIncidentTime(r.decided_at) : ""}</div>
               </div>
@@ -27218,10 +27225,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       {_absStyle.lbl}{_abs.proof ? " 📎" : ""}
                     </div>
                   )}
+                  {cellVal === "E" && !_abs && (
+                    <div title="Approved extra day" style={{ position: "absolute", top: 3, left: 3, right: 3, background: "#6ee7b7", color: "#064e3b", borderRadius: 4, padding: "1px 5px", fontSize: 9, fontWeight: 800, letterSpacing: "0.05em", textAlign: "center", boxShadow: "0 1px 2px rgba(0,0,0,0.18)" }}>
+                      ✨ EXTRA
+                    </div>
+                  )}
                   {dotColor && (
                     <span title={dotTitle} style={{ position: "absolute", top: 4, right: 4, width: 9, height: 9, borderRadius: 9, background: dotColor, border: "2px solid #fff", boxShadow: "0 0 0 1px rgba(0,0,0,0.12)" }} />
                   )}
-                  <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.01em", whiteSpace: "nowrap", marginTop: _abs ? 16 : 0 }}>{time}</div>
+                  <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.01em", whiteSpace: "nowrap", marginTop: (_abs || cellVal === "E") ? 16 : 0 }}>{time}</div>
                   <div style={{ fontSize: 10, fontWeight: 600, opacity: 0.95, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{branchName}{isGuest ? " ↪" : ""}</div>
                   <div style={{ fontSize: 9, fontWeight: 800, opacity: 0.92, letterSpacing: "0.06em", marginTop: 1 }}>
                     {(role || "").toUpperCase()}{cellVal !== "W" ? " · " + cellVal : ""}
