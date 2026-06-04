@@ -8940,6 +8940,43 @@ async function finalizeLeaveIfReady(r, deps) {
   if (logActivity) logActivity("Approved leave request", r.name, r.start_date + " → " + r.end_date + (added ? " · added to calendar" : ""), "Leave");
 }
 
+function isManagerEc(ec) { return /M$/i.test(String(ec || "").trim()); }
+// Split a date range into calendar days vs actual leave days, using the usual
+// off-day pattern (managers ~2 off/week, nail techs ~1 off/week). An estimate
+// for the request flow — the Leave Planner shows schedule-exact figures once a
+// schedule exists. E.g. a manager's 14 calendar days ≈ 10 real leave days.
+function leaveDayBreakdown(startYmd, endYmd, isMgr) {
+  const cal = leaveDays(startYmd, endYmd);
+  if (cal <= 0) return { cal: 0, off: 0, real: 0, perWeek: isMgr ? 2 : 1 };
+  const perWeek = isMgr ? 2 : 1;
+  const off = Math.round((cal / 7) * perWeek);
+  return { cal, off, real: Math.max(0, cal - off), perWeek };
+}
+// Existing leave that overlaps a request's dates — already-approved leave on the
+// calendar (leaveRecs) and other open requests for the same person — plus how
+// many of the requested days are already covered.
+function findLeaveOverlaps(r, leaveRecs, requests) {
+  const ec = String(r.ec || "").trim().toUpperCase();
+  const nm = String(r.name || "").trim().toLowerCase();
+  const sameByEc = (e) => !!ec && !!e && String(e).trim().toUpperCase() === ec;
+  const sameByName = (n) => !!nm && !!n && String(n).trim().toLowerCase() === nm;
+  const calOverlaps = (leaveRecs || []).filter(lv => sameByEc(lv.ec) && lv.startDate && lv.endDate && lv.startDate <= r.end_date && lv.endDate >= r.start_date);
+  const reqOverlaps = (requests || []).filter(o => o && o.id !== r.id && o.status !== "declined" && o.start_date && o.end_date && (sameByEc(o.ec) || (!o.ec && sameByName(o.name))) && o.start_date <= r.end_date && o.end_date >= r.start_date);
+  const ranges = [
+    ...calOverlaps.map(lv => ({ s: lv.startDate, e: lv.endDate })),
+    ...reqOverlaps.map(o => ({ s: o.start_date, e: o.end_date }))
+  ];
+  let coveredDays = 0;
+  try {
+    const sd = new Date(r.start_date + "T00:00:00"), ed = new Date(r.end_date + "T00:00:00");
+    for (let d = new Date(sd); d <= ed; d.setDate(d.getDate() + 1)) {
+      const iso = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+      if (ranges.some(rg => iso >= rg.s && iso <= rg.e)) coveredDays++;
+    }
+  } catch (_e) {}
+  return { calOverlaps, reqOverlaps, coveredDays };
+}
+
 // People who used the My BOA "Call in sick / Mark absent" tile — either sick
 // (leave_type "Sick") or absent for another reason ("Absent") — whose
 // away-period overlaps today or tomorrow.
@@ -9502,8 +9539,8 @@ function PayrollInboxTab({ requests, setRequests, currentUser, leaveRecs, setLea
   const setBalance = async (r) => {
     const days = balDraft[r.id];
     if (days === "" || days == null || isNaN(Number(days)) || Number(days) < 0) { alert("Enter the days available on Sage."); return; }
-    const reqDays = leaveDays(r.start_date, r.end_date);
-    if (Number(days) < reqDays && !window.confirm("Balance is " + days + " day(s) but this leave is " + reqDays + " day(s) — more than available.\n\nTick it off anyway?")) return;
+    const bd = leaveDayBreakdown(r.start_date, r.end_date, isManagerEc(r.ec));
+    if (Number(days) < bd.real && !window.confirm("Balance is " + days + " day(s) but this leave is ≈ " + bd.real + " actual leave day(s) (" + bd.cal + " calendar) — more than available.\n\nTick it off anyway?")) return;
     setBusy(true);
     try {
       await window.BOA_DB.setLeaveBalance(r.id, true, days, actor);
@@ -9532,18 +9569,24 @@ function PayrollInboxTab({ requests, setRequests, currentUser, leaveRecs, setLea
         <div style={{ ...card, textAlign: "center", color: "#0d9488" }}>🎉 All caught up — no balance checks waiting.</div>
       ) : needBalance.map(r => {
         const oa = assessLeaveOps(r, enriched, managers, leaveRecs);
-        const reqDays = leaveDays(r.start_date, r.end_date);
+        const bd = leaveDayBreakdown(r.start_date, r.end_date, isManagerEc(r.ec));
+        const ov = findLeaveOverlaps(r, leaveRecs, requests);
         return (
           <div key={r.id} style={card}>
             <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
               <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
               <span style={{ ...meta }}>{r.ec || "no EC"}{r.store ? " · " + r.store : ""}</span>
               <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(r.start_date)} → {fmtIncidentDate(r.end_date)}</span>
-              <span style={{ color: "#9ca3af", fontSize: 12 }}>· {reqDays} day{reqDays === 1 ? "" : "s"}</span>
+              <span style={{ color: "#9ca3af", fontSize: 12 }}>· {bd.cal} cal · <strong style={{ color: "#0f766e" }}>≈ {bd.real} leave day{bd.real === 1 ? "" : "s"}</strong></span>
               <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, color: r.ops_cleared_at ? "#15803d" : "#9d6a82", background: r.ops_cleared_at ? "#dcfce7" : "#f6e8ef", padding: "2px 9px", borderRadius: 999 }}>
                 {r.ops_cleared_at ? "✓ operational done" : "operational pending"}
               </span>
             </div>
+            {(ov.calOverlaps.length > 0 || ov.reqOverlaps.length > 0) && (
+              <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 9, padding: "7px 11px", marginBottom: 8, fontSize: 12, color: "#92400e" }}>
+                ⚠ Already has overlapping leave — {ov.coveredDays} of {bd.cal} day{bd.cal === 1 ? "" : "s"} already covered{ov.calOverlaps[0] ? " (calendar " + fmtIncidentDate(ov.calOverlaps[0].startDate) + " → " + fmtIncidentDate(ov.calOverlaps[0].endDate) + ")" : (ov.reqOverlaps[0] ? " (another request)" : "")}. Check it's not a duplicate.
+              </div>
+            )}
             {r.reason && <div style={{ fontSize: 12.5, color: "#4b5563", marginBottom: 8, whiteSpace: "pre-wrap" }}>{r.reason}</div>}
             {oa.matched && (
               <div style={{ fontSize: 11.5, color: oa.clashDays.length ? "#b91c1c" : "#15803d", marginBottom: 8 }}>
@@ -9731,15 +9774,33 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
               <span style={{ color: "#cbb1bd", fontSize: 18, lineHeight: 1 }}>{open ? "▾" : "▸"}</span>
             </div>
 
-            {open && (
+            {open && (() => {
+              const bd = leaveDayBreakdown(r.start_date, r.end_date, isMgrReq(r));
+              const ov = findLeaveOverlaps(r, leaveRecs, requests);
+              return (
               <div style={{ marginTop: 14, borderTop: "1px dashed #f3d4e0", paddingTop: 14 }}>
                 <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 16px", fontSize: 13.5, color: "#374151", marginBottom: 12 }}>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Ref</span><span>{r.ref_code}</span>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Requested</span><span>{fmtIncidentTime(r.created_at)}</span>
+                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>Leave days</span>
+                  <span><strong>{bd.cal}</strong> calendar day{bd.cal === 1 ? "" : "s"} · <strong style={{ color: "#0f766e" }}>≈ {bd.real} actual leave day{bd.real === 1 ? "" : "s"}</strong> <span style={{ color: "#9ca3af", fontSize: 12 }}>(≈ {bd.off} off-day{bd.off === 1 ? "" : "s"} excluded — {isMgrReq(r) ? "managers ~2/week" : "techs ~1/week"})</span></span>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Employee code</span><span>{r.ec || "—"}</span>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Contact</span><span>{r.contact || "—"}</span>
                   {r.reason && (<><span style={{ color: "#9d6a82", fontWeight: 700 }}>Reason</span><span style={{ whiteSpace: "pre-wrap" }}>{linkifyText(r.reason)}</span></>)}
                 </div>
+
+                {(ov.calOverlaps.length > 0 || ov.reqOverlaps.length > 0) && (
+                  <div style={{ background: "#fffbeb", border: "1.5px solid #fde68a", borderRadius: 11, padding: "10px 13px", marginBottom: 14 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 800, color: "#92400e", marginBottom: 4 }}>⚠ Already has leave overlapping these dates — {ov.coveredDays} of {bd.cal} requested day{bd.cal === 1 ? "" : "s"} already covered</div>
+                    {ov.calOverlaps.map((lv, i) => (
+                      <div key={"c" + i} style={{ fontSize: 12, color: "#78350f" }}>• On the calendar: {fmtIncidentDate(lv.startDate)} → {fmtIncidentDate(lv.endDate)}{lv.type && lv.type !== "Annual leave" ? " (" + lv.type + ")" : ""}{lv.emergency ? " · emergency" : ""}</div>
+                    ))}
+                    {ov.reqOverlaps.map((o, i) => (
+                      <div key={"r" + i} style={{ fontSize: 12, color: "#78350f" }}>• Another request ({(LEAVE_STATUS[o.status] || {}).label || o.status}): {fmtIncidentDate(o.start_date)} → {fmtIncidentDate(o.end_date)}{o.ref_code ? " · " + o.ref_code : ""}</div>
+                    ))}
+                    <div style={{ fontSize: 11, color: "#9a7b3a", marginTop: 4 }}>Check this isn't a duplicate before approving.</div>
+                  </div>
+                )}
 
                 {r.status !== "pending" && r.decided_by && (
                   <div style={{ background: r.status === "approved" ? "#f0fdf4" : "#fef2f2", border: "1px solid " + (r.status === "approved" ? "#bbf7d0" : "#fecaca"), borderRadius: 11, padding: "10px 13px", marginBottom: 14 }}>
@@ -9819,7 +9880,7 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                                 onChange={e => setBalDraft({ ...balDraft, [r.id]: e.target.value })}
                                 style={{ width: 130, fontFamily: "inherit", fontSize: 13, padding: "7px 10px", borderRadius: 9, border: "1.5px solid #e7c6d4" }} />
                               <button disabled={busy} onClick={() => setBalance(r, true)} style={btn("#0f766e", "#fff", "#0f766e")}>✓ Balance OK</button>
-                              <span style={{ fontSize: 11, color: "#9d6a82" }}>Requested {leaveDays(r.start_date, r.end_date)} day(s)</span>
+                              <span style={{ fontSize: 11, color: "#9d6a82" }}>Needs ≈ {leaveDayBreakdown(r.start_date, r.end_date, isMgrReq(r)).real} leave day(s) ({leaveDays(r.start_date, r.end_date)} cal)</span>
                             </div>
                           )
                         ) : (!balDone && <span style={{ fontSize: 12, color: "#9d6a82", fontStyle: "italic" }}>Awaiting payroll officer.</span>)}
@@ -9872,7 +9933,8 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                     style={{ background: "#831843", color: "#fff", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer", opacity: (noteDraft[r.id] || "").trim() ? 1 : 0.5 }}>Add</button>
                 </div>
               </div>
-            )}
+              );
+            })()}
           </div>
         );
           })}
@@ -22876,8 +22938,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (!f.balanceChecked) { alert("Please confirm you've checked this person's leave balance on Sage before adding annual leave to the calendar."); return; }
           const balNum = Number(f.balanceDays);
           if (f.balanceDays === "" || isNaN(balNum) || balNum < 0) { alert("Enter the leave balance (days available on Sage) so it's on record."); return; }
-          const reqDays = leaveDays(f.startDate, f.endDate);
-          if (balNum < reqDays && !confirm("Heads up: the balance you entered is " + balNum + " day(s), but this leave is " + reqDays + " day(s) — more than they have available.\n\nAdd it anyway?")) return;
+          const _bd = leaveDayBreakdown(f.startDate, f.endDate, !isTechMode);
+          if (balNum < _bd.real && !confirm("Heads up: the balance you entered is " + balNum + " day(s), but this leave works out to ≈ " + _bd.real + " actual leave day(s) (" + _bd.cal + " calendar) — more than they have available.\n\nAdd it anyway?")) return;
           // Block double-logging: same person already has annual / emergency leave
           // whose dates overlap these ones. Stops duplicate planner entries (which
           // also doubled up the Fresha block reminder).
@@ -23070,7 +23132,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 8, padding: "8px 12px", marginBottom: 10 }}>
                 <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "#0f766e", cursor: "pointer", fontWeight: 700 }}>
                   <input type="checkbox" checked={f.balanceChecked} onChange={e => setLeaveForm({ ...f, balanceChecked: e.target.checked })} style={{ width: 15, height: 15, accentColor: "#0f766e" }} />
-                  🧮 I've checked this person's leave balance on Sage{f.startDate && f.endDate ? " (this request is " + leaveDays(f.startDate, f.endDate) + " day" + (leaveDays(f.startDate, f.endDate) === 1 ? "" : "s") + ")" : ""}
+                  🧮 I've checked this person's leave balance on Sage{f.startDate && f.endDate ? (() => { const _b = leaveDayBreakdown(f.startDate, f.endDate, !isTechMode); return " (" + _b.cal + " calendar days ≈ " + _b.real + " actual leave day" + (_b.real === 1 ? "" : "s") + ")"; })() : ""}
                 </label>
               </div>
               <div style={{ display: "flex", gap: 14, alignItems: "flex-start", flexWrap: "wrap" }}>
