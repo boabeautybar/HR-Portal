@@ -10235,7 +10235,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Map of tab → category name. Kept in sync with the groups list below.
   const NAV_TAB_TO_CATEGORY = {
     onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
-    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
+    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations", freshaTodo: "Operations",
     attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll",
     alerts: "Insights", activity: "Insights",
     settings: "Admin", voucherAdmin: "Admin"
@@ -12993,6 +12993,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const n = extraDayRequests.filter(r => r.status === "pending").length;
                     return { t: "extraDayRequests", l: "💰 Extra-Day Requests" + (n ? "  (" + n + ")" : "") };
                   })()] : []),
+                  // Fresha To-Do is NOT gated by canSeeIncidents — it's granted
+                  // through the normal Settings show/hide permissions so the
+                  // owner can give it to the Fresha openers (e.g. Farida) too.
+                  (() => {
+                    const n = (extraDayRequests || []).filter(r => r.status === "approved" && !/M$/i.test(String(r.ec || "").trim()) && !(freshaExtraOpen && freshaExtraOpen[r.id] && freshaExtraOpen[r.id].opened)).length;
+                    return { t: "freshaTodo", l: "💇‍♀️ Fresha To-Do" + (n ? "  (" + n + ")" : "") };
+                  })(),
                   { t: "storeOpenings", l: "🔓 Store Openings" },
                   { t: "movements", l: "🔀 Today's Movements" },
                   { t: "dailyTasks", l: "📋 Daily Tasks" },
