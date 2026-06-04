@@ -9498,7 +9498,16 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
   const [adjSign, setAdjSign] = useState(-1);
   const [adjReason, setAdjReason] = useState("");
   const [showMissing, setShowMissing] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(null);   // which column "?" popover is open (tip text)
   const fileRef = useRef(null);
+
+  // Close the "?" help popover when clicking anywhere else.
+  useEffect(() => {
+    if (!helpOpen) return;
+    const close = () => setHelpOpen(null);
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, [helpOpen]);
 
   const lookups = useMemo(() => {
     const byNorm = {}, byCore = {};
@@ -9866,7 +9875,19 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
   // attached during sticky with border-collapse.
   const th = { textAlign: "left", padding: "8px 10px", fontSize: 10, fontWeight: 800, color: "#9d174d", textTransform: "uppercase", letterSpacing: "0.06em", whiteSpace: "nowrap", position: "sticky", top: 0, zIndex: 2, background: "#FDF2F8", boxShadow: "inset 0 -2px 0 #FBCFE8" };
   // Small "?" badge with a hover explanation for a column header.
-  const qmark = (tip) => <span title={tip} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 13, height: 13, marginLeft: 4, borderRadius: "50%", border: "1px solid #d8a7bd", color: "#9d174d", fontSize: 9, fontWeight: 800, cursor: "help", verticalAlign: "middle", lineHeight: 1 }}>?</span>;
+  const qmark = (tip) => (
+    <span style={{ position: "relative", display: "inline-block", verticalAlign: "middle" }}>
+      <span
+        onClick={(e) => { e.stopPropagation(); setHelpOpen(helpOpen === tip ? null : tip); }}
+        title={tip}
+        style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 15, height: 15, marginLeft: 4, borderRadius: "50%", border: "1px solid #d8a7bd", background: helpOpen === tip ? "#831843" : "#fff", color: helpOpen === tip ? "#fff" : "#9d174d", fontSize: 10, fontWeight: 800, cursor: "pointer", lineHeight: 1 }}>?</span>
+      {helpOpen === tip && (
+        <span
+          onClick={(e) => e.stopPropagation()}
+          style={{ position: "absolute", top: "135%", right: 0, zIndex: 50, width: 220, background: "#831843", color: "#fff", fontSize: 11.5, fontWeight: 500, lineHeight: 1.45, padding: "9px 11px", borderRadius: 9, boxShadow: "0 6px 18px rgba(0,0,0,0.28)", textTransform: "none", letterSpacing: 0, whiteSpace: "normal", textAlign: "left" }}>{tip}</span>
+      )}
+    </span>
+  );
   const td = { padding: "8px 10px", fontSize: 13, color: "#831843", borderBottom: "1px solid #FCE7F3", verticalAlign: "top" };
 
   if (loading) return <div style={{ padding: 24, color: "#9ca3af", fontStyle: "italic" }}>Loading leave balances…</div>;
