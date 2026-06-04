@@ -199,6 +199,9 @@
     // Before anything else, check whether someone has marked the store as
     // open today. If not, show the gate and block all nav buttons (except
     // LOG OUT). Once opened we fall through to the normal landing.
+    // Admin devices roam every branch and never open/check in — skip the gate
+    // and go straight to the branch home.
+    if (window.APP_DEVICE_ADMIN) { renderManagerLanding(); return; }
     if (configMissing()) { renderManagerLanding(); return; }
     try {
       var opened = await window.APP_DATA.getStoreOpenedToday();
