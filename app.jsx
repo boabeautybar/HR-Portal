@@ -11671,6 +11671,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setLoading(false);
       return;
     }
+    // The Fresha To-Do tab needs the leave + extra-day requests as well, so
+    // load them for anyone who can SEE that tab — not only canSeeIncidents
+    // users. Otherwise a Fresha opener (e.g. Farida) sees the tab but its
+    // extra-day cover / sick-block lists come up empty.
+    const _ftHideTabs = new Set((currentUser && currentUser.hideTabs) || []);
+    const _ftHideCats = new Set((currentUser && currentUser.hideCategories) || []);
+    const _ftShowTabs = new Set((currentUser && currentUser.showTabs) || []);
+    const _canSeeFreshaTodo = !_ftHideTabs.has("freshaTodo") && (!_ftHideCats.has("Operations") || _ftShowTabs.has("freshaTodo"));
+    const _needRequests = canSeeIncidents(currentUser) || _canSeeFreshaTodo;
     Promise.all([
       window.BOA_DB.loadAll(),
       window.BOA_DB.loadOnboarding(),
@@ -11684,8 +11693,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadFreshaAccess ? window.BOA_DB.loadFreshaAccess() : Promise.resolve({}),
       window.BOA_DB.loadOvertimeAccess ? window.BOA_DB.loadOvertimeAccess() : Promise.resolve({}),
       (window.BOA_DB.loadIncidentReports && canSeeIncidents(currentUser)) ? window.BOA_DB.loadIncidentReports() : Promise.resolve([]),
-      (window.BOA_DB.loadLeaveRequests && canSeeIncidents(currentUser)) ? window.BOA_DB.loadLeaveRequests() : Promise.resolve([]),
-      (window.BOA_DB.loadExtraDayRequests && canSeeIncidents(currentUser)) ? window.BOA_DB.loadExtraDayRequests() : Promise.resolve([]),
+      (window.BOA_DB.loadLeaveRequests && _needRequests) ? window.BOA_DB.loadLeaveRequests() : Promise.resolve([]),
+      (window.BOA_DB.loadExtraDayRequests && _needRequests) ? window.BOA_DB.loadExtraDayRequests() : Promise.resolve([]),
       window.BOA_DB.loadFreshaExtraOpenings ? window.BOA_DB.loadFreshaExtraOpenings() : Promise.resolve({}),
       window.BOA_DB.loadFreshaBlocks ? window.BOA_DB.loadFreshaBlocks() : Promise.resolve({})
     ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap]) => {
