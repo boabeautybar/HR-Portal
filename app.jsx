@@ -21118,7 +21118,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // We map employee_code → staff_id via the live managers list, then
         // index mgrDayStatuses by staff_id+date.
         const _mgrEcToStaffId = {};
-        managers.forEach(m => { if (m.ec && (m._id || m.id)) _mgrEcToStaffId[m.ec] = m._id || m.id; });
+        managers.forEach(m => {
+          const sid = m._id || m.id;
+          if (m.ec && sid != null) {
+            _mgrEcToStaffId[m.ec] = sid;
+            const t = String(m.ec).trim();
+            if (t && !(t in _mgrEcToStaffId)) _mgrEcToStaffId[t] = sid;   // trimmed-key fallback
+          }
+        });
+        // Fallback: resolve a manager's canonical staff_id straight from their
+        // clock-in rows when the managers-list mapping didn't catch it (missing
+        // record id, or an EC that doesn't line up after a code change / stray
+        // space). Without this, a manual status override (Sick / Annual / …) for
+        // a manager who clocked in can't be mirrored into manager_day_status and
+        // silently reverts to the clock-in's "On Time" on the next reload.
+        (mgrClockinRows || []).forEach(r => {
+          if (!r || !r.staff) return;
+          const ec = String(r.staff.employee_code || "").trim();
+          const sid = r.staff_id != null ? r.staff_id : (r.staff.id != null ? r.staff.id : null);
+          if (ec && sid != null && !(ec in _mgrEcToStaffId)) _mgrEcToStaffId[ec] = sid;
+        });
         const _mgrStatusByEcYmd = {};
         const _mgrProofByEcYmd = {};
         const _mgrNoteByEcYmd = {};
@@ -21541,7 +21560,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // store so the override actually updates: absence/leave reasons are
           // upserted; present/off codes (and clearing) remove the override so
           // the day reverts to the clock-in / schedule reading.
-          const _mgrStaffId = _mgrEcToStaffId[ec];
+          const _mgrStaffId = _mgrEcToStaffId[ec] != null ? _mgrEcToStaffId[ec] : _mgrEcToStaffId[String(ec || "").trim()];
           if (_mgrStaffId) {
             const _do = days.find(x => x.d === d);
             const _ymd = _do && _do.ymd;
