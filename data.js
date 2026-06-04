@@ -19,12 +19,14 @@
   // ---------- Row ↔ React-shape transforms ----------
   function getRoleType(ec, existingRole) {
     if (!ec) return existingRole || "tech";
-    const code = ec.toUpperCase();
-    if (code.endsWith("-M")) return "manager";
+    const code = ec.toUpperCase().trim();
     if (code.endsWith("-W")) return "warehouse";
     if (code.endsWith("-F")) return "maintenance";
     if (code.endsWith("-CC")) return "call_centre";
     if (code.endsWith("-C")) return "cleaner";
+    // Managers end in M — with or without a dash (B941M or legacy B941-M).
+    // (Matches the /M$/ manager test used throughout the app.)
+    if (code.endsWith("M")) return "manager";
     return existingRole || "tech";
   }
 
