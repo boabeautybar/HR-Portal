@@ -9805,17 +9805,21 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
     setBusy(false);
   };
 
-  const filtered = requests.filter(r => {
+  // The Leave Requests tab is the ANNUAL-leave approval workflow. Sick / Absent
+  // ("called in") aren't approved here — managers' go to the ROM (dashboard →
+  // Manager Check-ins), techs' to the Called in Sick tab — so they're excluded.
+  const annualReqs = requests.filter(r => r.leave_type !== "Sick" && r.leave_type !== "Absent");
+  const filtered = annualReqs.filter(r => {
     if (storeFilter && r.store !== storeFilter) return false;
     if (statusFilter === "all") return true;
     return r.status === statusFilter;
   });
-  const pendingCount = requests.filter(r => r.status === "pending").length;
+  const pendingCount = annualReqs.filter(r => r.status === "pending").length;
   // Live counts for the workflow overview (open = not declined / not approved).
-  const openReqs = requests.filter(r => r.status !== "approved" && r.status !== "declined");
+  const openReqs = annualReqs.filter(r => r.status !== "approved" && r.status !== "declined");
   const awaitingOps = openReqs.filter(r => !r.ops_cleared_at).length;
   const awaitingBalance = openReqs.filter(r => !r.balance_checked_at).length;
-  const approvedCount = requests.filter(r => r.status === "approved").length;
+  const approvedCount = annualReqs.filter(r => r.status === "approved").length;
 
   const card = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 18px", marginBottom: 16 };
   const chip = (c) => ({ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: c.color, background: c.bg });
@@ -13926,7 +13930,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "mgrclockins", l: "🕐 Manager Check-ins" },
                   { t: "leave", l: "🌴 Leave Planner" },
                   ...(canSeeIncidents(currentUser) ? [(() => {
-                    const pend = leaveRequests.filter(r => r.status === "pending").length;
+                    const pend = leaveRequests.filter(r => r.status === "pending" && r.leave_type !== "Sick" && r.leave_type !== "Absent").length;
                     return { t: "leaveRequests", l: "📨 Leave Requests" + (pend ? "  (" + pend + ")" : "") };
                   })()] : []),
                   ...(canSeeIncidents(currentUser) ? [(() => {
@@ -14949,11 +14953,77 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 );
               })()}
 
-              {/* ── SECTION: CALLED IN SICK / ABSENT (today & tomorrow) ──
-                  Overview of team members who called in via My BOA. Read-only
-                  summary; click through to the Called in Sick tab for details. */}
+              {/* ── SECTION: MANAGER CALLED IN SICK / ABSENT · ROM ACTION ──
+                  A manager who called in via My BOA isn't an annual-leave
+                  request — the ROM must mark them absent (and attach their sick
+                  note) on Manager Check-ins / Coverage. Shown here with the
+                  action and a "Mark done" so it can be cleared off the dashboard.
+                  Scoped to the ROM's own stores. */}
               {!(new Set(currentUser?.hideTabs || []).has("dashCalledInSick")) && canSeeIncidents(currentUser) && (() => {
                 const { today, tomorrow, list } = calledInSickWindow(leaveRequests);
+                const isMgrEc = (ec) => /M$/i.test(String(ec || "").trim());
+                const mgrSick = list.filter(r => isMgrEc(r.ec) && !r.reviewed
+                  && (!_hasStoreScope || (r.store && scopedSalonNames.has(r.store))))
+                  .sort((a, b) => (a.start_date || "").localeCompare(b.start_date || ""));
+                if (!mgrSick.length) return null;
+                const markDone = async (id) => {
+                  try {
+                    await window.BOA_DB.markLeaveReviewed(id);
+                    setLeaveRequests(prev => prev.map(x => x.id === id ? { ...x, reviewed: true } : x));
+                  } catch (e) { alert("Could not mark done: " + (e.message || e)); }
+                };
+                const proofOf = (r) => { const m = /Proof:\s*(https?:\/\/\S+)/i.exec(r.reason || ""); return m ? m[1] : null; };
+                const whenOf = (r) => {
+                  const t = r.start_date <= today && r.end_date >= today;
+                  const tm = r.start_date <= tomorrow && r.end_date >= tomorrow;
+                  return t && tm ? "today & tomorrow" : t ? "today" : tm ? "tomorrow" : (fmtIncidentDate(r.start_date) + "–" + fmtIncidentDate(r.end_date));
+                };
+                return (
+                  <div style={{ background: "#faf5ff", border: "2px solid #e9d5ff", borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: "0 4px 16px rgba(124,58,237,0.10)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: "#6b21a8" }}>👑 Manager called in sick / absent · action required</div>
+                      <div style={{ fontSize: 12.5, color: "#7c3aed", fontWeight: 700 }}>{mgrSick.length} to action</div>
+                      <div style={{ flex: 1 }} />
+                      <button onClick={() => tryChangeTab("mgrclockins")} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>Open Manager Check-ins →</button>
+                    </div>
+                    <div style={{ fontSize: 12, color: "#6b21a8", marginBottom: 10 }}>
+                      Mark them <strong>absent</strong> on <strong>Manager Check-ins</strong> (or <strong>Manager Coverage</strong>) and attach their <strong>sick note</strong> if they have one, then tap <strong>Mark done</strong> to clear it from here.
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 8 }}>
+                      {mgrSick.map(r => {
+                        const proof = proofOf(r);
+                        return (
+                          <div key={r.id} style={{ background: "#fff", border: "1px solid #e9d5ff", borderRadius: 10, padding: "9px 12px" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap", marginBottom: 4 }}>
+                              <span style={{ fontSize: 13, fontWeight: 800, color: "#831843" }}>{r.name}</span>
+                              <span style={{ display: "inline-flex", padding: "1px 8px", borderRadius: 999, fontSize: 10.5, fontWeight: 700, color: r.leave_type === "Sick" ? "#b45309" : "#6b21a8", background: r.leave_type === "Sick" ? "#fef3c7" : "#ede9fe" }}>{LEAVE_TYPE[r.leave_type] || r.leave_type}</span>
+                              {r.store && <span style={{ fontSize: 11, color: "#9d6a82" }}>· {r.store}</span>}
+                            </div>
+                            <div style={{ fontSize: 11.5, color: "#6b7280", marginBottom: 7 }}>
+                              {whenOf(r)} · {fmtIncidentDate(r.start_date)} → {fmtIncidentDate(r.end_date)}
+                              {proof
+                                ? <> · <a href={proof} target="_blank" rel="noreferrer" style={{ color: "#7c3aed", fontWeight: 700 }}>📎 sick note</a></>
+                                : (r.leave_type === "Sick" ? <span style={{ color: "#b45309" }}> · no note attached</span> : null)}
+                            </div>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                              <button onClick={() => tryChangeTab("mgrclockins")} style={{ background: "#fff", color: "#7c3aed", border: "1px solid #e9d5ff", borderRadius: 7, padding: "5px 11px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Mark in Check-ins →</button>
+                              <button onClick={() => markDone(r.id)} style={{ background: "#16a34a", color: "#fff", border: "none", borderRadius: 7, padding: "5px 11px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>✓ Mark done</button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* ── SECTION: CALLED IN SICK / ABSENT (today & tomorrow) ──
+                  Overview of NAIL TECHS who called in via My BOA. Read-only
+                  summary; click through to the Called in Sick tab for details.
+                  (Managers are handled by the ROM-action card above.) */}
+              {!(new Set(currentUser?.hideTabs || []).has("dashCalledInSick")) && canSeeIncidents(currentUser) && (() => {
+                const { today, tomorrow, list: _list } = calledInSickWindow(leaveRequests);
+                const list = _list.filter(r => !/M$/i.test(String(r.ec || "").trim()));
                 if (!list.length) return null;
                 const todayList = list.filter(r => r.start_date <= today && r.end_date >= today);
                 const tomorrowList = list.filter(r => r.start_date <= tomorrow && r.end_date >= tomorrow);
@@ -14974,7 +15044,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 return (
                   <div style={{ background: "linear-gradient(135deg,#fff7fb 0%,#FFFFFF 70%)", border: "2px solid #f6c9dd", borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: "0 4px 16px rgba(190,24,93,0.08)" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
-                      <div style={{ fontSize: 15, fontWeight: 800, color: "#9d174d" }}>🤒 Called in sick / absent</div>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: "#9d174d" }}>🤒 Nail techs called in sick / absent</div>
                       <div style={{ fontSize: 12.5, color: "#83476a", fontWeight: 700 }}>{sentence}</div>
                       <div style={{ flex: 1 }} />
                       <button onClick={() => tryChangeTab("calledInSick")}
