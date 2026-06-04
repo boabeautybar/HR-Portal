@@ -32,6 +32,13 @@
   ];
   var MAX_DAYS = 21; // annual leave requests longer than this must go via HR.
 
+  // Employee-code format: a letter + number, no spaces/dashes; managers end in M
+  // (e.g. B379 for a nail tech, B379M for a manager). We strip anything that
+  // isn't a letter or digit and upper-case, then check the shape.
+  var EC_HINT = "Your employee code should look like B379 (nail techs) or B379M (managers) — a letter, then your number, no spaces or dashes. Managers add an M at the end.";
+  function cleanEc(raw) { return String(raw == null ? "" : raw).replace(/[^A-Za-z0-9]/g, "").toUpperCase(); }
+  var EC_RE = /^[A-Z]\d+M?$/;
+
   var state = { busy: false, name: "", store: "", ec: "", recent: [] };
 
   // ── Step 1: identify yourself ─────────────────────────────────
@@ -47,7 +54,8 @@
         '<label class="field"><span>Your name</span>',
           '<input type="text" id="name" placeholder="First and last name" value="' + esc(state.name || "") + '" /></label>',
         '<label class="field"><span>Employee code</span>',
-          '<input type="text" id="ec" autocapitalize="characters" autocomplete="off" placeholder="e.g. B379" value="' + esc(state.ec || saved.ec || "") + '" /></label>',
+          '<input type="text" id="ec" autocapitalize="characters" autocomplete="off" placeholder="e.g. B379 — managers B379M" value="' + esc(state.ec || saved.ec || "") + '" />',
+          '<span class="hint">A letter then your number, no spaces or dashes. Managers end with M.</span></label>',
         '<label class="field"><span>Your branch</span>',
           '<select id="store"><option value="">— choose —</option>',
             STORES.map(function (s) { return '<option' + ((state.store || saved.store) === s ? ' selected' : '') + '>' + esc(s) + '</option>'; }).join(""),
@@ -63,12 +71,13 @@
   function identify() {
     if (state.busy) return;
     var name = (val("name") || "").trim();
-    var ec = (val("ec") || "").trim();
+    var ec = cleanEc(val("ec"));
     var store = val("store");
     setErr("");
     if (!name) { setErr("Please enter your name."); focus("name"); return; }
     if (name.split(/\s+/).filter(Boolean).length < 2) { setErr("Please enter both your first name and surname."); focus("name"); return; }
     if (!ec) { setErr("Please enter your employee code."); focus("ec"); return; }
+    if (!EC_RE.test(ec)) { setErr("Please check your employee code. " + EC_HINT); focus("ec"); return; }
     if (!store) { setErr("Please choose your branch."); return; }
 
     setBusy(true, "go", "Checking…");
@@ -80,7 +89,7 @@
         if (d.reason === "branch_mismatch") {
           renderIdentify("Employee code " + ec + " isn't registered at " + store + (d.branch ? " (we have it at " + d.branch + ")" : "") + ". Please choose your correct branch.");
         } else {
-          renderIdentify("We couldn't find employee code " + ec + ". Please check it's correct — ask your manager if you're unsure.");
+          renderIdentify("We couldn't find employee code " + ec + ". " + EC_HINT + " Still stuck? Ask your manager for your exact code.");
         }
         return;
       }
