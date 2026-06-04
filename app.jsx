@@ -8963,10 +8963,24 @@ function assessLeaveOps(r, enriched, managers, leaveRecs) {
   const person = findLeavePerson(ec, enriched, managers);
   if (!ec || !person) return { matched: false, isMgr };
   const branch = person.branch || r.store;
+  const _today = new Date();
+  const _todayYmd = _today.getFullYear() + "-" + String(_today.getMonth() + 1).padStart(2, "0") + "-" + String(_today.getDate()).padStart(2, "0");
+  // Active = counts toward the store's headcount and the on-leave cap. Mirrors
+  // the Leave Planner exactly: exclude maternity and anyone who has left /
+  // is off-boarded / hidden, so this check matches the calendar the user sees.
+  // (Without this, a departed tech's lingering leave inflated the count and a
+  // legitimate 3rd booking under a cap of 3 was wrongly flagged.)
+  const isActive = (p) => {
+    if (!p || p.onMat) return false;
+    if (p.offHidden) return false;
+    if (p.offboarded && p.offDaysSinceLeft != null && p.offDaysSinceLeft > 0) return false;
+    if (p.leftDate && p.leftDate <= _todayYmd) return false;
+    return true;
+  };
   const roleGuard = isMgr
-    ? (m) => (m.role === "SM" || m.role === "SSM" || m.role === "AM")
-    : (s) => /^[BT]/.test(String(s.ec || ""));
-  const peers = pool.filter(p => p.branch === branch && !p.onMat && roleGuard(p));
+    ? (m) => (m.role === "SM" || m.role === "SSM" || m.role === "AM") && isActive(m)
+    : (s) => /^[BT]/.test(String(s.ec || "")) && isActive(s);
+  const peers = pool.filter(p => p.branch === branch && roleGuard(p));
   const headcount = peers.length;
   const maxOff = Math.max(1, Math.floor(headcount * 0.2));
   const clashDays = [];
@@ -8976,11 +8990,13 @@ function assessLeaveOps(r, enriched, managers, leaveRecs) {
   for (let d = new Date(sd); d <= ed; d.setDate(d.getDate() + 1)) {
     const iso = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
     if (peak(iso)) peakDays++;
-    let ct = 1;
+    let ct = 1; // this request
     for (const lv of (leaveRecs || [])) {
       if (lv.type !== "Annual leave") continue;
       const lp = findLeavePerson(lv.ec, enriched, managers);
-      if (!lp || lp.branch !== branch || lp.onMat || !roleGuard(lp)) continue;
+      if (!lp || lp.branch !== branch || !roleGuard(lp)) continue;
+      // don't double-count the requester if they somehow already have a record
+      if (String(lv.ec || "").toUpperCase() === ec) continue;
       if (iso >= lv.startDate && iso <= lv.endDate) ct++;
     }
     if (ct > maxOff) clashDays.push(iso);
