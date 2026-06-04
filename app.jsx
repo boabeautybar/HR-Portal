@@ -1716,6 +1716,266 @@ function shiftTimes(role, code, branch, dow) {
   return "09:00 - 18:30";
 }
 
+// ─── PER-STORE MANAGER SHIFT LABELLING ────────────────────────────────────────────
+// Turns plain "W" working cells into the per-store WE/WM/WL/WB shift labels that
+// the schedule tab shows. Pulled out to module scope (from the manager-schedule
+// render) so Manager Coverage can derive the SAME labels — coverage used to read
+// whatever raw/stale label sat in the saved grid, which disagreed with the
+// schedule tab (e.g. Sandown gave a WL where the schedule said WM). All of these
+// are re-run-safe: they reset every working cell to "W" first, then re-assign
+// purely from WHO is working that day + their role, so the result depends only on
+// the work/off pattern, never on the labels already in the grid.
+//   grid:     { ec: { dayKey: code } }   (dayKey = whatever the caller uses)
+//   dates:    [{ d: dayKey, dow }]
+//   managers: [{ ec, role }]
+function applyMgrShiftSplit(grid, dates, managers, wmDows) {
+  if (!grid) return;
+  const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
+  const _earlyCount = {};
+  const _middleCount = {};
+  (managers || []).forEach(m => { _earlyCount[m.ec] = 0; _middleCount[m.ec] = 0; });
+  const _pickLowest = (list, counter) => {
+    const sorted = list.slice().sort((a, b) =>
+      ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
+      (a.ec || "").localeCompare(b.ec || "")
+    );
+    const winner = sorted[0];
+    counter[winner.ec] = (counter[winner.ec] || 0) + 1;
+    return winner;
+  };
+  (dates || []).forEach(dy => {
+    const workers = (managers || []).filter(m =>
+      m && m.ec && grid[m.ec] && (
+        grid[m.ec][dy.d] === "W" ||
+        grid[m.ec][dy.d] === "WE" ||
+        grid[m.ec][dy.d] === "WM" ||
+        grid[m.ec][dy.d] === "WL"
+      )
+    );
+    if (workers.length === 0) return;
+    // Reset to W so a re-run lands on the right labels (re-run-safe).
+    workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
+    const wmAllowedToday = wmDows && wmDows.has(dy.dow);
+    const sm = workers.find(_isSM);
+    const ams = workers.filter(m => !_isSM(m));
+    if (sm) {
+      grid[sm.ec][dy.d] = "WE";
+      // SM + 2+ AMs on a WM-eligible day → 1 middle shift, rest late.
+      if (wmAllowedToday && ams.length >= 2) {
+        const mid = _pickLowest(ams, _middleCount);
+        grid[mid.ec][dy.d] = "WM";
+        ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      } else {
+        ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      }
+    } else if (ams.length > 0) {
+      const opener = _pickLowest(ams, _earlyCount);
+      grid[opener.ec][dy.d] = "WE";
+      const rest = ams.filter(m => m.ec !== opener.ec);
+      // No-SM + 3+ AMs on a WM-eligible day → 1 early + 1 middle + rest late.
+      // (Need at least 2 non-opener AMs to spawn a WM so a WL still exists.)
+      if (wmAllowedToday && rest.length >= 2) {
+        const mid = _pickLowest(rest, _middleCount);
+        grid[mid.ec][dy.d] = "WM";
+        rest.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      } else {
+        rest.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      }
+    }
+  });
+}
+
+// Riverlands — Mon-Fri WE/WL split with a 4+ "WB" bonus-early; Sat/Sun single WE.
+function applyRiverlandsShifts(grid, dates, managers) {
+  if (!grid) return;
+  const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
+  const _earlyCount = {};
+  const _extraEarlyCount = {};
+  (managers || []).forEach(m => { _earlyCount[m.ec] = 0; _extraEarlyCount[m.ec] = 0; });
+  const _pickLowest = (list, counter) => {
+    const sorted = list.slice().sort((a, b) =>
+      ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
+      (a.ec || "").localeCompare(b.ec || "")
+    );
+    const winner = sorted[0];
+    counter[winner.ec] = (counter[winner.ec] || 0) + 1;
+    return winner;
+  };
+  (dates || []).forEach(dy => {
+    const workers = (managers || []).filter(m =>
+      m && m.ec && grid[m.ec] && (
+        grid[m.ec][dy.d] === "W" ||
+        grid[m.ec][dy.d] === "WE" ||
+        grid[m.ec][dy.d] === "WB" ||
+        grid[m.ec][dy.d] === "WM" ||
+        grid[m.ec][dy.d] === "WL"
+      )
+    );
+    if (workers.length === 0) return;
+    workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
+    const isMonFri = dy.dow >= 1 && dy.dow <= 5;
+    if (!isMonFri) {
+      workers.forEach(m => { grid[m.ec][dy.d] = "WE"; });
+      return;
+    }
+    const sm = workers.find(_isSM);
+    const ams = workers.filter(m => !_isSM(m));
+    if (sm) {
+      grid[sm.ec][dy.d] = "WE";
+      if (workers.length >= 4 && ams.length >= 1) {
+        const extra = _pickLowest(ams, _extraEarlyCount);
+        grid[extra.ec][dy.d] = "WB";
+        ams.filter(m => m.ec !== extra.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      } else {
+        ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      }
+    } else if (ams.length > 0) {
+      const opener = _pickLowest(ams, _earlyCount);
+      grid[opener.ec][dy.d] = "WE";
+      const rest = ams.filter(m => m.ec !== opener.ec);
+      if (workers.length >= 4 && rest.length >= 1) {
+        const extra = _pickLowest(rest, _extraEarlyCount);
+        grid[extra.ec][dy.d] = "WB";
+        rest.filter(m => m.ec !== extra.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      } else {
+        rest.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      }
+    }
+  });
+}
+
+// Ballito / Mall of the South — Mon-Sat: SM=WE, else WM(opener)+WL; Sunday single WE.
+function applyBallitoShifts(grid, dates, managers) {
+  if (!grid) return;
+  const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
+  const _middleCount = {};
+  (managers || []).forEach(m => { _middleCount[m.ec] = 0; });
+  const _pickLowest = (list, counter) => {
+    const sorted = list.slice().sort((a, b) =>
+      ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
+      (a.ec || "").localeCompare(b.ec || "")
+    );
+    const winner = sorted[0];
+    counter[winner.ec] = (counter[winner.ec] || 0) + 1;
+    return winner;
+  };
+  (dates || []).forEach(dy => {
+    const workers = (managers || []).filter(m =>
+      m && m.ec && grid[m.ec] && (
+        grid[m.ec][dy.d] === "W" ||
+        grid[m.ec][dy.d] === "WE" ||
+        grid[m.ec][dy.d] === "WB" ||
+        grid[m.ec][dy.d] === "WM" ||
+        grid[m.ec][dy.d] === "WL"
+      )
+    );
+    if (workers.length === 0) return;
+    workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
+    const isMonSat = dy.dow >= 1 && dy.dow <= 6;
+    if (!isMonSat) {
+      workers.forEach(m => { grid[m.ec][dy.d] = "WE"; });
+      return;
+    }
+    const sm = workers.find(_isSM);
+    const ams = workers.filter(m => !_isSM(m));
+    if (sm) {
+      grid[sm.ec][dy.d] = "WE";
+      if (ams.length >= 2) {
+        const mid = _pickLowest(ams, _middleCount);
+        grid[mid.ec][dy.d] = "WM";
+        ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      } else {
+        ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      }
+    } else if (ams.length === 1) {
+      grid[ams[0].ec][dy.d] = "WL";
+    } else if (ams.length > 0) {
+      const mid = _pickLowest(ams, _middleCount);
+      grid[mid.ec][dy.d] = "WM";
+      ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+    }
+  });
+}
+
+// Fourways — SM always WE; no-SM Mon-Sat gives a WE opener + WL; Sunday WE+WL.
+function applyFourwaysShifts(grid, dates, managers) {
+  if (!grid) return;
+  const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
+  const _middleCount = {};
+  const _earlyCount = {};
+  (managers || []).forEach(m => { _middleCount[m.ec] = 0; _earlyCount[m.ec] = 0; });
+  const _pickLowest = (list, counter) => {
+    const sorted = list.slice().sort((a, b) =>
+      ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
+      (a.ec || "").localeCompare(b.ec || "")
+    );
+    const winner = sorted[0];
+    counter[winner.ec] = (counter[winner.ec] || 0) + 1;
+    return winner;
+  };
+  (dates || []).forEach(dy => {
+    const workers = (managers || []).filter(m =>
+      m && m.ec && grid[m.ec] && (
+        grid[m.ec][dy.d] === "W" ||
+        grid[m.ec][dy.d] === "WE" ||
+        grid[m.ec][dy.d] === "WB" ||
+        grid[m.ec][dy.d] === "WM" ||
+        grid[m.ec][dy.d] === "WL"
+      )
+    );
+    if (workers.length === 0) return;
+    workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
+    const sms = workers.filter(_isSM);
+    const ams = workers.filter(m => !_isSM(m));
+    sms.forEach(m => { grid[m.ec][dy.d] = "WE"; });
+    const isSun = dy.dow === 0;
+    if (isSun) {
+      if (sms.length >= 1) {
+        ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      } else if (ams.length === 1) {
+        grid[ams[0].ec][dy.d] = "WE";
+      } else if (ams.length > 0) {
+        const opener = _pickLowest(ams, _earlyCount);
+        grid[opener.ec][dy.d] = "WE";
+        ams.filter(m => m.ec !== opener.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      }
+      return;
+    }
+    if (ams.length === 0) {
+      // pure SM day — already handled above
+    } else if (sms.length >= 1) {
+      if (ams.length >= 2) {
+        const mid = _pickLowest(ams, _middleCount);
+        grid[mid.ec][dy.d] = "WM";
+        ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      } else {
+        ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
+      }
+    } else if (ams.length === 1) {
+      grid[ams[0].ec][dy.d] = "WE";
+    } else {
+      const opener = _pickLowest(ams, _earlyCount);
+      grid[opener.ec][dy.d] = "WE";
+      ams.filter(m => m.ec !== opener.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
+    }
+  });
+}
+
+// Dispatch to the right per-store labeller. Stores without a split rule are
+// left untouched (their cells keep the plain "W"/explicit code they came with).
+function applyBranchShiftRules(grid, dates, managers, branch) {
+  if (!grid) return;
+  if (branch === "Sandown") return applyMgrShiftSplit(grid, dates, managers, new Set([1, 2, 3, 4, 5]));
+  if (branch === "Table Bay") return applyMgrShiftSplit(grid, dates, managers, new Set([1, 2, 3, 4, 5, 6]));
+  if (branch === "Riverlands") return applyRiverlandsShifts(grid, dates, managers);
+  if (branch === "Ballito") return applyBallitoShifts(grid, dates, managers);
+  if (branch === "Mall of the South") return applyBallitoShifts(grid, dates, managers);
+  if (branch === "Fourways") return applyFourwaysShifts(grid, dates, managers);
+}
+// Branches whose manager shifts carry a per-day WE/WM/WL split (used to decide
+// whether Coverage needs to re-derive labels for a store).
+const SPLIT_SHIFT_STORES = { "Sandown": 1, "Table Bay": 1, "Riverlands": 1, "Ballito": 1, "Mall of the South": 1, "Fourways": 1 };
+
 // Parse a "HH:MM - HH:MM" range into {start,end} minutes-from-midnight, or null.
 function parseShiftRange(s) {
   if (!s || typeof s !== "string") return null;
@@ -24110,345 +24370,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             });
           });
         }
-        // Sandown WE / WL stamper. Applied to the FINAL merged grid
-        // (after the haveDraft branch runs) so it can't be overwritten
-        // by a re-load of the saved draft. Re-run-safe: works whether
-        // the input cells are W, WE or WL.
-        // SM is always WE 08:00–17:00 every working day (incl. Sunday).
-        // When SM is on, every working AM that day is WL.
-        // When no SM is on, exactly one AM (the one with the fewest WE
-        // shifts so far) is WE, the rest are WL.
-        // Manager shift-split helper. Walks each day, identifies who's
-        // working that day on the grid, and re-stamps WE / WM / WL based
-        // on store-specific rules:
-        //   - SM / SSM always gets WE (the early shift). The role they
-        //     occupy never changes regardless of how many people are on.
-        //   - AMs split: when SM is on, AMs default to WL; when no SM is
-        //     on, one AM gets WE (opener) and the rest go WL.
-        //   - WM (middle shift) is a tie-breaker for when 3+ managers
-        //     are working a WM-eligible day-of-week. The wmDows set
-        //     decides which DOWs that applies to:
-        //       Sandown:   Mon-Fri only      → {1,2,3,4,5}
-        //       Table Bay: Mon-Sat           → {1,2,3,4,5,6}
-        //     If we'd be assigning a WM, we always keep at least one WL,
-        //     because both stores require an opener AND a closer on the
-        //     floor.
-        // Per-AM earlyCount / middleCount keep both rotations even
-        // across the cycle so the same AM doesn't always open or always
-        // get the middle shift.
-        const _applyMgrShiftSplit = (grid, dates, managers, wmDows) => {
-          if (!grid) return;
-          const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
-          const _earlyCount = {};
-          const _middleCount = {};
-          (managers || []).forEach(m => { _earlyCount[m.ec] = 0; _middleCount[m.ec] = 0; });
-          const _pickLowest = (list, counter) => {
-            const sorted = list.slice().sort((a, b) =>
-              ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
-              (a.ec || "").localeCompare(b.ec || "")
-            );
-            const winner = sorted[0];
-            counter[winner.ec] = (counter[winner.ec] || 0) + 1;
-            return winner;
-          };
-          (dates || []).forEach(dy => {
-            const workers = (managers || []).filter(m =>
-              m && m.ec && grid[m.ec] && (
-                grid[m.ec][dy.d] === "W" ||
-                grid[m.ec][dy.d] === "WE" ||
-                grid[m.ec][dy.d] === "WM" ||
-                grid[m.ec][dy.d] === "WL"
-              )
-            );
-            if (workers.length === 0) return;
-            // Reset to W so a re-run lands on the right labels (re-run-safe).
-            workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
-            const wmAllowedToday = wmDows && wmDows.has(dy.dow);
-            const sm = workers.find(_isSM);
-            const ams = workers.filter(m => !_isSM(m));
-            if (sm) {
-              grid[sm.ec][dy.d] = "WE";
-              // SM + 2+ AMs on a WM-eligible day → 1 middle shift, rest late.
-              if (wmAllowedToday && ams.length >= 2) {
-                const mid = _pickLowest(ams, _middleCount);
-                grid[mid.ec][dy.d] = "WM";
-                ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              } else {
-                ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              }
-            } else if (ams.length > 0) {
-              const opener = _pickLowest(ams, _earlyCount);
-              grid[opener.ec][dy.d] = "WE";
-              const rest = ams.filter(m => m.ec !== opener.ec);
-              // No-SM + 3+ AMs on a WM-eligible day → 1 early + 1 middle + rest late.
-              // (Need at least 2 non-opener AMs to spawn a WM so a WL still exists.)
-              if (wmAllowedToday && rest.length >= 2) {
-                const mid = _pickLowest(rest, _middleCount);
-                grid[mid.ec][dy.d] = "WM";
-                rest.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              } else {
-                rest.forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              }
-            }
-          });
-        };
-        // Riverlands has its own shape — different store-hours, no
-        // WM tier, but a 4-managers-or-more boost where one extra AM
-        // takes a second early shift Mon-Fri. Saturday is a single
-        // 9-18 shift; Sunday a single 8-17 shift.
-        //
-        //   Mon-Fri (store closes 19:00):
-        //     SM working → WE (08:00-17:00)
-        //     No SM      → 1 AM = WE (09:00-18:00, the AM-opener time)
-        //     Remaining AMs → WL (10:00-19:00)
-        //     4+ working → one additional AM also gets WE (08:00-17:00
-        //       extra opener). Labelled WE; banner explains the times.
-        //   Saturday: every working manager → WE (09:00-18:00 single shift).
-        //   Sunday:   every working manager → WE (08:00-17:00 single shift).
-        const _applyRiverlandsShifts = (grid, dates, managers) => {
-          if (!grid) return;
-          const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
-          const _earlyCount = {};        // rotation for AM-opener (no-SM Mon-Fri)
-          const _extraEarlyCount = {};   // rotation for the 4+ bonus early-AM
-          (managers || []).forEach(m => { _earlyCount[m.ec] = 0; _extraEarlyCount[m.ec] = 0; });
-          const _pickLowest = (list, counter) => {
-            const sorted = list.slice().sort((a, b) =>
-              ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
-              (a.ec || "").localeCompare(b.ec || "")
-            );
-            const winner = sorted[0];
-            counter[winner.ec] = (counter[winner.ec] || 0) + 1;
-            return winner;
-          };
-          (dates || []).forEach(dy => {
-            const workers = (managers || []).filter(m =>
-              m && m.ec && grid[m.ec] && (
-                grid[m.ec][dy.d] === "W" ||
-                grid[m.ec][dy.d] === "WE" ||
-                grid[m.ec][dy.d] === "WB" ||
-                grid[m.ec][dy.d] === "WM" ||
-                grid[m.ec][dy.d] === "WL"
-              )
-            );
-            if (workers.length === 0) return;
-            workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
-            const isMonFri = dy.dow >= 1 && dy.dow <= 5;
-            const isSat = dy.dow === 6;
-            const isSun = dy.dow === 0;
-            // Sat / Sun: single-shift days — everyone goes WE.
-            if (isSat || isSun) {
-              workers.forEach(m => { grid[m.ec][dy.d] = "WE"; });
-              return;
-            }
-            if (!isMonFri) {
-              workers.forEach(m => { grid[m.ec][dy.d] = "WE"; });
-              return;
-            }
-            // Mon-Fri: WE/WL split with optional extra-early on 4+.
-            const sm = workers.find(_isSM);
-            const ams = workers.filter(m => !_isSM(m));
-            if (sm) {
-              grid[sm.ec][dy.d] = "WE";
-              // 4+ on duty → one extra AM also gets an early shift, but
-              // labelled WB (Work Boost) so HR can pick out at a glance
-              // who's doing the extra 08:00–17:00 alongside the SM.
-              if (workers.length >= 4 && ams.length >= 1) {
-                const extra = _pickLowest(ams, _extraEarlyCount);
-                grid[extra.ec][dy.d] = "WB";
-                ams.filter(m => m.ec !== extra.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              } else {
-                ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              }
-            } else if (ams.length > 0) {
-              const opener = _pickLowest(ams, _earlyCount);
-              grid[opener.ec][dy.d] = "WE";
-              const rest = ams.filter(m => m.ec !== opener.ec);
-              if (workers.length >= 4 && rest.length >= 1) {
-                // Bonus AM-only path: regular opener is WE 09:00–18:00;
-                // bonus AM is WB 08:00–17:00. Two visually different
-                // 'early' people on the floor, which is the point.
-                const extra = _pickLowest(rest, _extraEarlyCount);
-                grid[extra.ec][dy.d] = "WB";
-                rest.filter(m => m.ec !== extra.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              } else {
-                rest.forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              }
-            }
-          });
-        };
-        // Ballito has its own shape too — store closes 19:00 Mon-Sat, but
-        // AMs ONLY work 09:00-18:00 (WM) or 10:00-19:00 (WL); the 08:00-
-        // 17:00 WE slot is SM-only. So when there's no SM on a Mon-Sat
-        // day the AMs split into WM/WL instead of WE/WL like Sandown.
-        //
-        //   Mon-Sat:
-        //     SM working → WE (08:00-17:00)
-        //     2+ AMs     → 1 AM = WM (09:00-18:00, the opener), rest WL
-        //                  (10:00-19:00, the closer). Rotated fairly.
-        //     1 AM only  → WL (closer). 9-10am window not covered; HR
-        //                  schedules a 2nd manager to fix.
-        //   Sunday: every working manager → WE (08:00-17:00 single shift).
-        const _applyBallitoShifts = (grid, dates, managers) => {
-          if (!grid) return;
-          const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
-          const _middleCount = {};
-          (managers || []).forEach(m => { _middleCount[m.ec] = 0; });
-          const _pickLowest = (list, counter) => {
-            const sorted = list.slice().sort((a, b) =>
-              ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
-              (a.ec || "").localeCompare(b.ec || "")
-            );
-            const winner = sorted[0];
-            counter[winner.ec] = (counter[winner.ec] || 0) + 1;
-            return winner;
-          };
-          (dates || []).forEach(dy => {
-            const workers = (managers || []).filter(m =>
-              m && m.ec && grid[m.ec] && (
-                grid[m.ec][dy.d] === "W" ||
-                grid[m.ec][dy.d] === "WE" ||
-                grid[m.ec][dy.d] === "WB" ||
-                grid[m.ec][dy.d] === "WM" ||
-                grid[m.ec][dy.d] === "WL"
-              )
-            );
-            if (workers.length === 0) return;
-            workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
-            const isMonSat = dy.dow >= 1 && dy.dow <= 6;
-            if (!isMonSat) {
-              // Sunday (and any other day): single-shift 08:00-17:00.
-              workers.forEach(m => { grid[m.ec][dy.d] = "WE"; });
-              return;
-            }
-            const sm = workers.find(_isSM);
-            const ams = workers.filter(m => !_isSM(m));
-            if (sm) {
-              grid[sm.ec][dy.d] = "WE";
-              if (ams.length >= 2) {
-                const mid = _pickLowest(ams, _middleCount);
-                grid[mid.ec][dy.d] = "WM";
-                ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              } else {
-                ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              }
-            } else if (ams.length === 1) {
-              grid[ams[0].ec][dy.d] = "WL";
-            } else if (ams.length > 0) {
-              const mid = _pickLowest(ams, _middleCount);
-              grid[mid.ec][dy.d] = "WM";
-              ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
-            }
-          });
-        };
-        // Fourways — store hours 09:00–20:00 Mon-Sat, 09:00–19:00 Sun.
-        //
-        //   Mon-Sat (closer 11:00–20:00, optional opener 10:00–19:00):
-        //     SM/SSM always work 08:00-17:00 (WE) — they never close;
-        //     the 11:00-20:00 close is carried by the AMs/techs.
-        //     WITH an SM/SSM on duty (the SM is the opener):
-        //       1 AM  → WL (11:00-20:00)
-        //       2+ AMs→ 1 WM (10:00-19:00, rotated) + rest WL (11:00-20:00)
-        //     NO SM/SSM on duty (an AM must open — store opens 09:00):
-        //       1 AM  → WE (08:00-17:00, opener priority; 17-20 needs a tech)
-        //       2+ AMs→ 1 WE (08:00-17:00, rotated) + rest WL (11:00-20:00)
-        //       …so there is always a WE opener AND a WL closer.
-        //   Sunday (one early 08:00-17:00 + one late 10:00-19:00):
-        //     SM/SSM → WE (08:00-17:00); AMs → WL (10:00-19:00)
-        //     No SM, 1 AM → WE (08:00-17:00, opener priority — covers
-        //                   store-open; 17-19 needs a tech)
-        //     No SM, 2+ AMs → 1 WE (rotated) + rest WL (10:00-19:00)
-        const _applyFourwaysShifts = (grid, dates, managers) => {
-          if (!grid) return;
-          const _isSM = (m) => /^(SSM|SM)$/i.test((m && m.role) || "");
-          const _middleCount   = {};   // rotation for Mon-Sat WM (AMs, 10-19 opener)
-          const _earlyCount    = {};   // rotation for Sunday WE when no SM (AMs)
-          (managers || []).forEach(m => {
-            _middleCount[m.ec]   = 0;
-            _earlyCount[m.ec]    = 0;
-          });
-          const _pickLowest = (list, counter) => {
-            const sorted = list.slice().sort((a, b) =>
-              ((counter[a.ec] || 0) - (counter[b.ec] || 0)) ||
-              (a.ec || "").localeCompare(b.ec || "")
-            );
-            const winner = sorted[0];
-            counter[winner.ec] = (counter[winner.ec] || 0) + 1;
-            return winner;
-          };
-          (dates || []).forEach(dy => {
-            const workers = (managers || []).filter(m =>
-              m && m.ec && grid[m.ec] && (
-                grid[m.ec][dy.d] === "W" ||
-                grid[m.ec][dy.d] === "WE" ||
-                grid[m.ec][dy.d] === "WB" ||
-                grid[m.ec][dy.d] === "WM" ||
-                grid[m.ec][dy.d] === "WL"
-              )
-            );
-            if (workers.length === 0) return;
-            // Reset to W so a re-run lands on the right labels.
-            workers.forEach(m => { grid[m.ec][dy.d] = "W"; });
-            const sms = workers.filter(_isSM);
-            const ams = workers.filter(m => !_isSM(m));
-            // SM placement (shared for Sun + Mon-Sat): SM/SSM always work
-            // the 08:00-17:00 opener (WE) and never close — the late
-            // 11:00-20:00 shift is carried by the AMs/techs.
-            sms.forEach(m => { grid[m.ec][dy.d] = "WE"; });
-            const isSun = dy.dow === 0;
-            if (isSun) {
-              if (sms.length >= 1) {
-                // SM(s) already placed above; remaining AMs all close.
-                ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              } else if (ams.length === 1) {
-                // Opener priority — store opens 09:00 so the lone AM
-                // takes the 08:00-17:00 shift even though it leaves
-                // 17-19 uncovered (HR can patch with a tech).
-                grid[ams[0].ec][dy.d] = "WE";
-              } else if (ams.length > 0) {
-                const opener = _pickLowest(ams, _earlyCount);
-                grid[opener.ec][dy.d] = "WE";
-                ams.filter(m => m.ec !== opener.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              }
-              return;
-            }
-            // Mon-Sat — SM(s) already placed; AMs follow standard rule.
-            if (ams.length === 0) {
-              // pure SM day — already handled above
-            } else if (sms.length >= 1) {
-              // With an SM opener already locked in, AMs use the
-              // normal 1=WL / 2+=WM+WL split.
-              if (ams.length >= 2) {
-                const mid = _pickLowest(ams, _middleCount);
-                grid[mid.ec][dy.d] = "WM";
-                ams.filter(m => m.ec !== mid.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              } else {
-                ams.forEach(m => { grid[m.ec][dy.d] = "WL"; });
-              }
-            } else if (ams.length === 1) {
-              // No SM working — the lone AM opens (WE 08:00-17:00) so the
-              // store can open at 09:00; HR patches the 17:00-20:00 close
-              // with a tech. (Opener priority, same as the Sunday rule.)
-              grid[ams[0].ec][dy.d] = "WE";
-            } else {
-              // No SM working — guarantee an opener AND a closer: one AM
-              // takes the WE 08:00-17:00 opener (rotated), the rest close on
-              // WL 11:00-20:00. Without this the day fell to WM+WL and nobody
-              // opened the store.
-              const opener = _pickLowest(ams, _earlyCount);
-              grid[opener.ec][dy.d] = "WE";
-              ams.filter(m => m.ec !== opener.ec).forEach(m => { grid[m.ec][dy.d] = "WL"; });
-            }
-          });
-        };
-        const _applyBranchShiftRules = (grid, dates, managers) => {
-          if (!grid) return;
-          if (branch === "Sandown") return _applyMgrShiftSplit(grid, dates, managers, new Set([1, 2, 3, 4, 5]));
-          if (branch === "Table Bay") return _applyMgrShiftSplit(grid, dates, managers, new Set([1, 2, 3, 4, 5, 6]));
-          if (branch === "Riverlands") return _applyRiverlandsShifts(grid, dates, managers);
-          if (branch === "Ballito") return _applyBallitoShifts(grid, dates, managers);
-          if (branch === "Mall of the South") return _applyBallitoShifts(grid, dates, managers);
-          if (branch === "Fourways") return _applyFourwaysShifts(grid, dates, managers);
-        };
+        // Per-store WE/WM/WL labelling lives at module scope now (shared with
+        // Manager Coverage so both surfaces derive identical shift labels from
+        // who's working each day). Thin wrapper binds the current branch.
+        const _applyBranchShiftRules = (grid, dates, managers) => applyBranchShiftRules(grid, dates, managers, branch);
         // Apply to the freshly-generated grid (covers the no-draft path).
         _applyBranchShiftRules(result.grid, result.dates, result.managers);
         const haveDraft = !!mgrSchedDraft;
@@ -24972,7 +24897,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (!mgrSchedDraft) { alert("Nothing to save — click Generate first."); return; }
           setMgrSchedSaving(true);
           try {
-            const v = await window.BOA_DB.saveSchedule(branch, ymKey, mgrSchedDraft, true);
+            // Persist WITH the per-store shift labels (WE/WL/WM) baked in, so
+            // everything that reads the saved grid — Manager Coverage,
+            // Attendance, exports — shows the exact same shift times as this
+            // schedule tab (e.g. Sandown Sunday WE 08:00–17:00, not the generic
+            // 'W' default). The grid is re-labelled on render too, so saving
+            // labels is idempotent and survives a reload.
+            const _toSave = JSON.parse(JSON.stringify(mgrSchedDraft));
+            _applyBranchShiftRules(_toSave, result.dates, result.managers);
+            const v = await window.BOA_DB.saveSchedule(branch, ymKey, _toSave, true);
             setMgrSchedSaved(mgrSchedDraft);
             setMgrSchedSavedAt((v && v.savedAt) || new Date().toISOString());
             setMgrSchedDirty(false);
@@ -25015,9 +24948,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           console.log("[saveFinal] manager — saving", { branch, ymKey, ecCount: Object.keys(draft).length, name: name.trim(), madeBy: madeBy.trim(), approvedBy: approvedBy.trim() });
           try {
             const u = window.BOA_CURRENT_USER || currentUser || {};
+            // Bake the per-store shift labels (WE/WL/WM) into the approved
+            // snapshot so Manager Coverage reads the same shift times this tab
+            // shows (idempotent — the grid is re-labelled on render anyway).
+            const _approvedGrid = JSON.parse(JSON.stringify(draft));
+            _applyBranchShiftRules(_approvedGrid, result.dates, result.managers);
             const saved = await window.BOA_DB.saveApprovedSchedule(branch, ymKey, true, {
               name: name.trim(),
-              grid: JSON.parse(JSON.stringify(draft)),
+              grid: _approvedGrid,
               madeBy: madeBy.trim(),
               approvedBy: approvedBy.trim(),
               note: note.trim(),
@@ -27636,6 +27574,49 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             || (a.name || "").localeCompare(b.name || "");
         }));
 
+        // ── Coverage shift labels: derive WE/WM/WL exactly like the schedule tab ──
+        // The saved manager grid stores plain "W" (or a possibly-stale label);
+        // the schedule tab turns it into WE/WM/WL at render time via
+        // applyBranchShiftRules. Coverage used to display whatever raw label
+        // happened to be in the grid, so it disagreed with the schedule (e.g.
+        // showing a WL where the schedule said WM). We re-derive the labels here
+        // from the same who's-working pattern, over the FULL 25th→24th cycle so
+        // the WM/WE rotation matches, then read each cell's label back. Cached
+        // per branch+cycle. Non-split stores are read straight through.
+        const _covLabelCache = {};
+        const _buildCovLabels = (branchName, mgrYm) => {
+          const key = branchName + "|" + mgrYm;
+          if (_covLabelCache[key]) return _covLabelCache[key];
+          const mgrs = (mgrByBranch[branchName] || []).map(m => ({ ec: m.ec, role: _effectiveRole(m) }));
+          const [cy, cm] = String(mgrYm).split("-").map(Number);
+          const cStart = new Date(cy, cm - 1, 25);     // cycle opens 25th of mgrYm's month
+          const cEnd = new Date(cy, cm, 24);           // …closes 24th of the next month
+          const dates = [];
+          const grid = {};
+          for (let c = new Date(cStart); c <= cEnd; c.setDate(c.getDate() + 1)) {
+            const ymd = c.getFullYear() + "-" + _p2(c.getMonth() + 1) + "-" + _p2(c.getDate());
+            const _d = { ymd, dom: c.getDate(), dow: c.getDay(), mgrYm };
+            dates.push({ d: ymd, dow: c.getDay() });
+            mgrs.forEach(m => { (grid[m.ec] = grid[m.ec] || {})[ymd] = readWithFallback(branchName, m.ec, _d) || ""; });
+          }
+          applyBranchShiftRules(grid, dates, mgrs, branchName);
+          _covLabelCache[key] = grid;
+          return grid;
+        };
+        // Cell value for display. Split-shift stores get the re-derived label so
+        // Coverage matches the schedule tab exactly; other stores read straight.
+        const _covCell = (branchName, ec, d) => {
+          if (!SPLIT_SHIFT_STORES[branchName]) return readWithFallback(branchName, ec, d);
+          // A manual custom-hours override for this exact day is the ROM's
+          // explicit choice — the schedule derivation must NOT relabel it. Leave
+          // the cell exactly as saved (the displayed time already uses the
+          // custom hours via _customTime), so custom times are never overwritten.
+          if (_effCustomTime(ec, d.ymd)) return readWithFallback(branchName, ec, d);
+          const row = _buildCovLabels(branchName, d.mgrYm)[ec];
+          if (row && Object.prototype.hasOwnProperty.call(row, d.ymd)) return row[d.ymd];
+          return readWithFallback(branchName, ec, d);
+        };
+
         // Manager clock-in lookup keyed by ec → ymd → true. Powers the
         // small green dot we render on cells where the manager actually
         // showed up. Today's clock-ins come straight from mgrClockinRows
@@ -28296,7 +28277,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                         )}
                                       </td>
                                       {weekDays.map(d => {
-                                        const v = readWithFallback(b, m.ec, d);
+                                        const v = _covCell(b, m.ec, d);
                                         return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow, m);
                                       })}
                                     </tr>
@@ -28361,7 +28342,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             )}
                           </td>
                           {weekDays.map(d => {
-                            const v = readWithFallback(b, m.ec, d);
+                            const v = _covCell(b, m.ec, d);
                             return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow, m);
                           })}
                         </tr>
