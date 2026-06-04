@@ -24972,7 +24972,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (!mgrSchedDraft) { alert("Nothing to save — click Generate first."); return; }
           setMgrSchedSaving(true);
           try {
-            const v = await window.BOA_DB.saveSchedule(branch, ymKey, mgrSchedDraft, true);
+            // Persist WITH the per-store shift labels (WE/WL/WM) baked in, so
+            // everything that reads the saved grid — Manager Coverage,
+            // Attendance, exports — shows the exact same shift times as this
+            // schedule tab (e.g. Sandown Sunday WE 08:00–17:00, not the generic
+            // 'W' default). The grid is re-labelled on render too, so saving
+            // labels is idempotent and survives a reload.
+            const _toSave = JSON.parse(JSON.stringify(mgrSchedDraft));
+            _applyBranchShiftRules(_toSave, result.dates, result.managers);
+            const v = await window.BOA_DB.saveSchedule(branch, ymKey, _toSave, true);
             setMgrSchedSaved(mgrSchedDraft);
             setMgrSchedSavedAt((v && v.savedAt) || new Date().toISOString());
             setMgrSchedDirty(false);
@@ -25015,9 +25023,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           console.log("[saveFinal] manager — saving", { branch, ymKey, ecCount: Object.keys(draft).length, name: name.trim(), madeBy: madeBy.trim(), approvedBy: approvedBy.trim() });
           try {
             const u = window.BOA_CURRENT_USER || currentUser || {};
+            // Bake the per-store shift labels (WE/WL/WM) into the approved
+            // snapshot so Manager Coverage reads the same shift times this tab
+            // shows (idempotent — the grid is re-labelled on render anyway).
+            const _approvedGrid = JSON.parse(JSON.stringify(draft));
+            _applyBranchShiftRules(_approvedGrid, result.dates, result.managers);
             const saved = await window.BOA_DB.saveApprovedSchedule(branch, ymKey, true, {
               name: name.trim(),
-              grid: JSON.parse(JSON.stringify(draft)),
+              grid: _approvedGrid,
               madeBy: madeBy.trim(),
               approvedBy: approvedBy.trim(),
               note: note.trim(),
