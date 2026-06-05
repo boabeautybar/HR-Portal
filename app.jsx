@@ -24704,7 +24704,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         const wknd = d.dow === 0 || d.dow === 6;
                         const isToday = d.iso === todayIso;
                         return (
-                          <th key={d.iso} title={fmtLeaveDay(d.iso) + (isToday ? " · today" : "")} style={{ padding: "3px 2px", textAlign: "center", borderBottom: isToday ? "2px solid #BE185D" : "1px solid " + Y, background: isToday ? "#fbcfe8" : (d.peak ? "#fef3c7" : (wknd ? "#f3f4f6" : aA)), color: d.peak ? "#78350f" : (wknd ? "#b91c1c" : "#831843"), minWidth: 23, fontWeight: 700, borderLeft: isMS ? "2px solid " + Y : "none" }}>
+                          <th key={d.iso} title={fmtLeaveDay(d.iso) + (isToday ? " · today" : "")} style={{ padding: "3px 2px", textAlign: "center", borderTop: isToday ? "2px solid #BE185D" : "none", borderBottom: isToday ? "2px solid #BE185D" : "1px solid " + Y, background: isToday ? "#fbcfe8" : (d.peak ? "#fef3c7" : (wknd ? "#f3f4f6" : aA)), color: d.peak ? "#78350f" : (wknd ? "#b91c1c" : "#831843"), minWidth: 23, fontWeight: 700, borderLeft: isToday ? "2px solid #BE185D" : (isMS ? "2px solid " + Y : "none"), borderRight: isToday ? "2px solid #BE185D" : "none" }}>
                             <div style={{ fontSize: 8, lineHeight: 1, fontWeight: 700, opacity: 0.85 }}>{WD[d.dow]}</div>
                             <div style={{ fontSize: 11, lineHeight: 1.25, fontWeight: isToday ? 800 : 700 }}>{d.d}</div>
                           </th>
@@ -24745,7 +24745,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               onClick={lv ? () => {
                                 if (confirm("Remove this leave?\n\n" + (st.name || st.ec) + "\n" + lv.type + ": " + lv.startDate + " → " + lv.endDate)) removeLeave(lv._id);
                               } : undefined}
-                              style={{ padding: 0, minWidth: 23, height: 26, textAlign: "center", borderBottom: "1px solid " + aA, background: bg, color: fg, borderLeft: isMS ? "2px solid " + Y : "none", fontSize: 11, fontWeight: 800, cursor: lv ? "pointer" : "default" }}>{lbl}</td>
+                              style={{ padding: 0, minWidth: 23, height: 26, textAlign: "center", borderBottom: "1px solid " + aA, background: bg, color: fg, borderLeft: isToday ? "2px solid #BE185D" : (isMS ? "2px solid " + Y : "none"), borderRight: isToday ? "2px solid #BE185D" : "none", fontSize: 11, fontWeight: 800, cursor: lv ? "pointer" : "default" }}>{lbl}</td>
                           );
                         })}
                       </tr>
@@ -24760,7 +24760,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         const isToday = d.iso === todayIso;
                         if (ct === 0 && isToday) bg = "#fbcfe8";
                         return (
-                          <td key={d.iso} title={fmtLeaveDay(d.iso) + ": " + ct + " on annual leave" + (isToday ? " · today" : "")} style={{ padding: "3px 0", minWidth: 23, textAlign: "center", borderTop: "2px solid " + Y, background: bg, color: fg, borderLeft: isMS ? "2px solid " + Y : "none", fontSize: 10, fontWeight: 800 }}>{ct || "·"}</td>
+                          <td key={d.iso} title={fmtLeaveDay(d.iso) + ": " + ct + " on annual leave" + (isToday ? " · today" : "")} style={{ padding: "3px 0", minWidth: 23, textAlign: "center", borderTop: isToday ? "2px solid #BE185D" : "2px solid " + Y, borderBottom: isToday ? "2px solid #BE185D" : "none", background: bg, color: fg, borderLeft: isToday ? "2px solid #BE185D" : (isMS ? "2px solid " + Y : "none"), borderRight: isToday ? "2px solid #BE185D" : "none", fontSize: 10, fontWeight: 800 }}>{ct || "·"}</td>
                         );
                       })}
                     </tr>
