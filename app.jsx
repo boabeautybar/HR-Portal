@@ -9304,13 +9304,23 @@ async function finalizeLeaveIfReady(r, deps) {
 }
 
 function isManagerEc(ec) { return /M$/i.test(String(ec || "").trim()); }
+// Estimated off-days inside a stretch of `calDays` calendar days when there is
+// no saved roster to read the real off-days from. Short requests (1–5 days) are
+// assumed to land entirely on working days, so nothing is deducted. Longer
+// stretches lose ~2 off-days for every 7-day week (always 2 off-days/week), e.g.
+// 7→2, 14→4, 21→6 — so 21 consecutive days counts as 15 leave days.
+function estimateOffDays(calDays, perWeek) {
+  if (calDays <= 5) return 0;
+  return Math.round((calDays / 7) * perWeek);
+}
 // Split a date range into calendar days vs actual leave days. When a saved
 // schedule grid is supplied (opts: { schedCache, ymdToSchedYm, ec, branch }),
 // off-days are read EXACTLY from the roster (O / R cells) for the days the
 // schedule covers — so a 2-day request on two working days correctly counts as
 // 2 leave days. Days with no schedule yet (and the no-schedule fallback) use
-// the usual ~2 off-days/week estimate. E.g. 14 calendar days spanning two full
-// weeks ≈ 10 real leave days.
+// the usual ~2 off-days/week estimate, but short requests of 5 days or fewer are
+// treated as all working days (no deduction). E.g. 14 calendar days spanning two
+// full weeks ≈ 10 real leave days; 21 consecutive days ≈ 15.
 function leaveDayBreakdown(startYmd, endYmd, _isMgr, opts) {
   const cal = leaveDays(startYmd, endYmd);
   const perWeek = 2; // managers ~2/week; nail techs also usually ~2/week
@@ -9331,11 +9341,11 @@ function leaveDayBreakdown(startYmd, endYmd, _isMgr, opts) {
         if (cell === "O" || cell === "R") knownOff++;
       } else unknownDays++;
     }
-    const estUnknownOff = Math.round((unknownDays / 7) * perWeek);
+    const estUnknownOff = estimateOffDays(unknownDays, perWeek);
     const off = knownOff + estUnknownOff;
     return { cal, off, real: Math.max(0, cal - off), perWeek, fromSchedule: knownDays > 0, knownDays, unknownDays };
   }
-  const off = Math.round((cal / 7) * perWeek);
+  const off = estimateOffDays(cal, perWeek);
   return { cal, off, real: Math.max(0, cal - off), perWeek, fromSchedule: false };
 }
 // Existing leave that overlaps a request's dates — already-approved leave on the
