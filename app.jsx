@@ -11021,6 +11021,14 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
   const awaitingOps = openReqs.filter(r => !r.ops_cleared_at).length;
   const awaitingBalance = openReqs.filter(r => !r.balance_checked_at).length;
   const approvedCount = annualReqs.filter(r => r.status === "approved").length;
+  // Most-recently approved leave — a glanceable confirmation list so you can see
+  // what just went through without switching the filter.
+  const recentApproved = annualReqs
+    .filter(r => r.status === "approved")
+    .slice()
+    .sort((a, b) => String(b.decided_at || "").localeCompare(String(a.decided_at || "")))
+    .slice(0, 8);
+  const fmtAppr = (iso) => { if (!iso) return ""; try { return new Date(iso).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }); } catch (_e) { return ""; } };
 
   const card = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 18px", marginBottom: 16 };
   const chip = (c) => ({ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: c.color, background: c.bg });
@@ -11044,6 +11052,33 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
       <p style={{ color: "#9d6a82", fontSize: 13.5, marginTop: 4, maxWidth: 760 }}>
         How a leave request flows from request to the calendar — and who does each step. A request is <strong>auto-approved and added to the Leave Planner</strong> only once both checks below are ticked. Anyone can <strong>decline</strong> at any point with a reason. Who can do each check is set under <strong>Settings</strong>.
       </p>
+
+      {recentApproved.length > 0 && (
+        <div style={{ ...card, background: "#f0fdf4", border: "1px solid #bbf7d0" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 9, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 13, fontWeight: 800, color: "#15803d" }}>✅ Recently approved leave</span>
+            <span style={{ fontSize: 11.5, color: "#6b7280" }}>· latest {recentApproved.length}{approvedCount > recentApproved.length ? " of " + approvedCount : ""}</span>
+            {approvedCount > recentApproved.length && <button onClick={() => setStatusFilter("approved")} style={{ marginLeft: "auto", background: "#fff", color: "#15803d", border: "1px solid #bbf7d0", borderRadius: 8, padding: "5px 11px", fontWeight: 700, fontSize: 11.5, cursor: "pointer" }}>See all approved →</button>}
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {recentApproved.map(r => {
+              const p = findLeavePerson(r.ec, enriched, managers);
+              const nm = (p && p.name) || r.name || r.ec || "?";
+              const need = leaveDayBreakdown(r.start_date, r.end_date, isMgrReq(r), schedOpts(r)).real;
+              return (
+                <div key={r.id} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, fontSize: 12.5, color: "#14532d", borderBottom: "1px solid #dcfce7", paddingBottom: 6 }}>
+                  <strong>{nm}</strong>
+                  <span style={{ color: "#6b7280", fontSize: 11.5 }}>{r.ec}{p && p.branch ? " · " + p.branch : ""}</span>
+                  <span>📅 {fmtIncidentDate(r.start_date)} → {fmtIncidentDate(r.end_date)}</span>
+                  <span style={{ color: "#0f766e", fontWeight: 700 }}>{fmtDays(need)} leave day{need === 1 ? "" : "s"}</span>
+                  {r.balance_days != null && <span style={{ color: "#6b7280", fontSize: 11.5 }}>· bal {r.balance_days}d</span>}
+                  <span style={{ marginLeft: "auto", fontSize: 11, color: "#6b7280" }}>✓ {r.decided_by || "—"}{r.decided_at ? " · " + fmtAppr(r.decided_at) : ""}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {(() => {
         const stepWrap = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 16px 14px", marginBottom: 16 };
