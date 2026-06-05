@@ -6583,9 +6583,20 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                   <td style={{ position: "sticky", left: 0, background: "#831843", padding: "12px 10px", borderTop: "3px solid #831843", borderBottom: "3px solid #831843", color: "#FFFFFF", fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", zIndex: 2 }}>Working / Needed</td>
                   {(() => {
                     const activeTechs = techs.filter(t => !t.onMat); return days.map(d => {
-                      const working = activeTechs.filter(s => {
+                      const _dYmd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
+                      // The day's "working" tally counts everyone who is accounted
+                      // for, not just bodies on the floor: actual shifts PLUS people
+                      // on annual leave (L), on maternity (ML), or permanently
+                      // transferred out to another branch. They shouldn't make the
+                      // branch read as short — their absence is already covered for.
+                      const working = techs.filter(s => {
                         const v = (grid[s.ec] || {})[d.d];
-                        return v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E";
+                        if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") return true;
+                        if (v === "L" || v === "ML") return true;          // annual leave / maternity
+                        if (s.onMat) return true;                           // full-cycle maternity row
+                        const _xd = s.transferDate || null;                 // permanently transferred out from here
+                        if (_xd && !s.isShadow && s.transferring && _dYmd >= _xd) return true;
+                        return false;
                       }).length;
                       const needed = minWorkingFor(d, activeTechs.length);
                       const ok = working >= needed;
