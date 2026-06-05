@@ -20314,9 +20314,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             files: [],
             _editId: null, _fromTrialId: r._id, _mgrTrial: isMgrTrial
           });
-          persistTrial(trialList.map(x => x._id === r._id
-            ? { ...x, promotedToOnboarding: true, promotedAt: new Date().toISOString() }
-            : x));
+          // Don't close the trial out here — promotion only pre-fills the
+          // onboarding form. The trial is finalised (status → "hired") when
+          // that form is actually SUBMITTED (see submitOb). Marking it as
+          // promoted now would drop the candidate from BOTH the trial "passed"
+          // list and the onboarded list if the form is left unfinished.
           setTab("onboard");
           setObShowForm(true);
         };
@@ -20380,7 +20382,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         const currentList = trialList.filter(r => (r.role || "nt") === trialSubTab);
         const activeTrials = currentList.filter(r => r.status !== "passed" && r.status !== "failed" && r.status !== "hired");
-        const passedTrials = currentList.filter(r => r.status === "passed" && !r.promotedToOnboarding);
+        // Passed = cleared the trial but not yet onboarded (status flips to
+        // "hired" only when the onboarding form is submitted). We intentionally
+        // DON'T exclude promotedToOnboarding here: a candidate whose onboarding
+        // was started but never finished must stay visible/recoverable rather
+        // than vanish from both the trial pipeline and the onboarded list.
+        const passedTrials = currentList.filter(r => r.status === "passed");
         const failedTrials = currentList.filter(r => r.status === "failed");
         // Recently-hired techs (onboarded in the last 30 days). Surfaced so they
         // can be reviewed and removed here — otherwise a "hired" record is
@@ -21161,7 +21168,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // 2. Mark Trial Period as completely passed/hired if applicable
           if (obForm._fromTrialId) {
             const updatedTrial = trialList.map(t =>
-              t._id === obForm._fromTrialId ? { ...t, status: "hired", updatedAt: new Date().toISOString() } : t
+              t._id === obForm._fromTrialId ? { ...t, status: "hired", promotedToOnboarding: true, promotedAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : t
             );
             setTrialList(updatedTrial);
             try { await window.BOA_DB.saveTrialPeriod(updatedTrial); } catch (e) { }
@@ -25944,27 +25951,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // role on the record. `_onSmTrial` is kept around so we can tag the
         // schedule row with a small "SM trial" hint.
         const _smTrialEcs = new Set((smTrialList || []).filter(t => t && t.status === "active" && t.ec).map(t => t.ec));
-        // Names of AM trials still in progress at this branch. Someone mid-trial
-        // shows as a read-only "🧪 AM TRIAL" ghost row below, so keep them OUT of
-        // the real manager pool — otherwise they'd ALSO render as a full working
-        // manager (the duplicate row + "working the whole month" the user saw).
-        // Trials have no EC yet, so we match by name (within this branch).
-        const _activeTrialNames = new Set(
-          (trialList || [])
-            .filter(c => c && c.branch === branch
-              && String(c.role || "nt").toLowerCase() === "am"
-              && c.status !== "passed" && c.status !== "failed" && c.status !== "hired"
-              && c.startDate && c.name)
-            .map(c => c.name.trim().toLowerCase())
-        );
-        const allMgrs = _allMgrsRaw
-          .filter(m => !(m && m.name && _activeTrialNames.has(m.name.trim().toLowerCase())))
-          .map(m => {
-            if (m && m.role === "AM" && _smTrialEcs.has(m.ec)) {
-              return { ...m, role: "SM", _origRole: "AM", _onSmTrial: true };
-            }
-            return m;
-          });
+        const allMgrs = _allMgrsRaw.map(m => {
+          if (m && m.role === "AM" && _smTrialEcs.has(m.ec)) {
+            return { ...m, role: "SM", _origRole: "AM", _onSmTrial: true };
+          }
+          return m;
+        });
         const mgrLeaves = (leaveRecs || []).filter(L => allMgrs.some(m => m.ec === L.ec));
         // Synthetic full-cycle leaves for on-mat managers - mgrSched
         // treats these as 'L' cells so the on-mat manager doesn't get
@@ -26143,6 +26135,45 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const emptyTotals = {};
           for (const x of result.dates) emptyTotals[x.d] = { dow: x.dow, working: 0, off: 0, leave: 0 };
           result = { ...result, grid: emptyGrid, dayTotals: emptyTotals, conflicts: [] };
+        }
+
+        // ── Pre-start blanking ────────────────────────────────────────────
+        // A manager only "exists" on the schedule from their start date. Blank
+        // out (X, rendered "—") any cell before a manager's start date so a
+        // mid-cycle hire doesn't look like they're working the whole month
+        // before they've started. "X" is the recognised pre-start marker here
+        // (skipped by the drag handler and not counted in the totals). Managers
+        // who started in the past (or have no start date) are unaffected.
+        const _startByEcMgr = {};
+        allMgrs.forEach(m => {
+          const sd = m && (m.startDate || m._startDate);
+          if (m && m.ec && sd) _startByEcMgr[String(m.ec).trim()] = sd;
+        });
+        let _appliedPreStart = false;
+        if (result && result.grid) {
+          Object.keys(result.grid).forEach(ec => {
+            const sd = _startByEcMgr[String(ec).trim()];
+            if (!sd) return;
+            result.dates.forEach(x => {
+              if (x.d < sd && result.grid[ec][x.d] !== "X") { result.grid[ec][x.d] = "X"; _appliedPreStart = true; }
+            });
+          });
+          // Recompute the working/off/leave totals so the footer matches the
+          // blanked cells (X counts as none of them).
+          if (_appliedPreStart && result.dayTotals) {
+            const _dt = {};
+            for (const x of result.dates) _dt[x.d] = { dow: x.dow, working: 0, off: 0, leave: 0 };
+            for (const mm of result.managers) {
+              if (mm._onMat) continue;
+              for (const x of result.dates) {
+                const v = result.grid[mm.ec] && result.grid[mm.ec][x.d];
+                if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") _dt[x.d].working++;
+                else if (v === "O" || v === "R") _dt[x.d].off++;
+                else if (v === "L") _dt[x.d].leave++;
+              }
+            }
+            result.dayTotals = _dt;
+          }
         }
 
         const editKey = branch + "|" + ymKey;
