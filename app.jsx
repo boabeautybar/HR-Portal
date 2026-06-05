@@ -14672,11 +14672,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       .filter(m => m && !m.isShadow && m.transferring && m.transferTo === salon.name && m.transferDate && m.transferDate >= _ymd && !m.offHidden)
       .map(m => ({ ...m, _id: "shadow-mgr-" + (m.ec || m._id), branch: salon.name, transferFrom: m.branch, isShadow: true }));
 
-    // Trial candidates assigned to this branch and not yet passed/failed/hired.
-    // "hired" entries have already moved to Onboarding — they shouldn't linger
-    // on the branch's trial strip. Split by role: nail-tech trials sit with the
-    // techs; AM trials belong in the management-team box.
-    const trialAll = trialList.filter(c => c.branch === salon.name && c.status !== "passed" && c.status !== "failed" && c.status !== "hired");
+    // Trial candidates assigned to this branch who are still pre-onboarding.
+    // Keep "passed" candidates on the strip: they've cleared the trial but
+    // haven't been promoted to onboarding yet, so they should still show under
+    // the branch (with a green "passed" pill) until that happens. We drop
+    // "failed", "hired", and anyone already promoted to onboarding — those have
+    // left the trial strip. Split by role: nail-tech trials sit with the techs;
+    // AM trials belong in the management-team box.
+    const trialAll = trialList.filter(c => c.branch === salon.name && c.status !== "failed" && c.status !== "hired" && !c.promotedToOnboarding);
     const trial = trialAll.filter(c => (c.role || "nt") !== "am");
     const trialMgrs = trialAll.filter(c => (c.role || "nt") === "am");
 
@@ -17594,14 +17597,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               box (not the nail-tech list) since they're trialling for
                               a manager role. Amber dashed treatment marks them as
                               pre-contract, with their current trial stage. */}
-                              {(salon.trialMgrs || []).map(t => (
-                                <div key={t._id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 7px", borderRadius: 7, background: "#FFFBEB", border: "1.5px dashed #FCD34D" }}>
-                                  <span style={{ fontSize: 13 }}>⏳</span>
-                                  <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: "#78350f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name}</span>
-                                  <span style={{ fontSize: 9, background: "#FCD34D", color: "#78350f", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{t.status}</span>
+                              {(salon.trialMgrs || []).map(t => {
+                                const isPassed = t.status === "passed";
+                                return (
+                                <div key={t._id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 7px", borderRadius: 7, background: isPassed ? "#F0FDF4" : "#FFFBEB", border: "1.5px dashed " + (isPassed ? "#86EFAC" : "#FCD34D") }}>
+                                  <span style={{ fontSize: 13 }}>{isPassed ? "✅" : "⏳"}</span>
+                                  <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: isPassed ? "#14532d" : "#78350f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name}</span>
+                                  <span style={{ fontSize: 9, background: isPassed ? "#86EFAC" : "#FCD34D", color: isPassed ? "#14532d" : "#78350f", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{isPassed ? "passed" : t.status}</span>
                                   <span style={{ fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 700, letterSpacing: "0.04em" }}>AM · TRIAL</span>
                                 </div>
-                              ))}
+                                );
+                              })}
                               {/* Arriving (pending incoming transfer) — managers
                               from another branch with transferTo === this salon.
                               Shows the source store + expected start date. Same
@@ -17762,14 +17768,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             </div>
                           );
                         })}
-                        {/* Trial Candidates occupying vacant seats */}
-                        {salon.trial && salon.trial.map(m => (
-                          <div key={m._id} style={{ padding: "5px 7px", borderRadius: 7, background: "#FFFBEB", border: "1px dashed #FCD34D", display: "flex", alignItems: "center", gap: 6 }}>
-                            <span style={{ fontSize: 12 }}>⏳</span>
+                        {/* Trial Candidates occupying vacant seats. "passed"
+                            candidates have cleared the trial but aren't yet
+                            onboarded — show them in green so they read as done. */}
+                        {salon.trial && salon.trial.map(m => {
+                          const isPassed = m.status === "passed";
+                          return (
+                          <div key={m._id} style={{ padding: "5px 7px", borderRadius: 7, background: isPassed ? "#F0FDF4" : "#FFFBEB", border: "1px dashed " + (isPassed ? "#86EFAC" : "#FCD34D"), display: "flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ fontSize: 12 }}>{isPassed ? "✅" : "⏳"}</span>
                             <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: "#111827" }}>{m.name}</span>
-                            <span style={{ fontSize: 9, background: "#FCD34D", color: "#78350f", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{m.status}</span>
+                            <span style={{ fontSize: 9, background: isPassed ? "#86EFAC" : "#FCD34D", color: isPassed ? "#14532d" : "#78350f", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{isPassed ? "passed" : m.status}</span>
                           </div>
-                        ))}
+                          );
+                        })}
 
                         {/* Remaining Vacant seats */}
                         {Array.from({ length: Math.max(0, salon.capacity - salon.active.length - salon.offboarded.length - (salon.trial ? salon.trial.length : 0)) }).map((_, i) => (
