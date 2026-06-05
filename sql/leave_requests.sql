@@ -250,6 +250,13 @@ grant execute on function set_leave_balance(text,uuid,boolean,numeric,text) to a
 -- whether their last request was approved or declined and why. No HR key — a
 -- person can only ever see their OWN requests (they must know their own code +
 -- branch). No write access. Idempotent — safe to re-run.
+--
+-- Branch check is roster-aware (same source of truth the schedule view uses):
+-- it passes when the chosen branch matches `staff.branch` OR when the person
+-- appears on a published roster at that branch. This keeps transfers working —
+-- e.g. a tech moved from one branch to another can request leave at her new
+-- branch the moment its roster is published, even before `staff.branch` is
+-- updated, instead of being forced to pick her old branch.
 -- ============================================================================
 create or replace function lookup_my_leave(p_ec text, p_branch text)
 returns jsonb
@@ -273,7 +280,24 @@ begin
   if v_name is null then
     return jsonb_build_object('matched', false, 'reason', 'no_ec');
   end if;
-  if coalesce(btrim(p_branch), '') <> '' and lower(btrim(coalesce(v_branch, ''))) <> lower(btrim(p_branch)) then
+  if coalesce(btrim(p_branch), '') <> ''
+     and lower(btrim(coalesce(v_branch, ''))) <> lower(btrim(p_branch))
+     -- staff.branch is stale (e.g. after a transfer): fall back to the live
+     -- rosters. Accept the branch if this code is on a published tech or
+     -- manager grid there (`boa_sched_<branch>_<ym>` / `boa_mgrsched_…`), the
+     -- same grids the My BOA schedule view treats as the source of truth.
+     and not exists (
+       select 1
+       from app_state s
+       cross join lateral jsonb_object_keys(
+         case when jsonb_typeof(s.value -> 'grid') = 'object'
+              then s.value -> 'grid' else '{}'::jsonb end
+       ) as gk
+       where (s.key like 'boa_sched_'   || p_branch || '_%'
+           or s.key like 'boa_mgrsched_' || p_branch || '_%')
+         and upper(btrim(gk)) = upper(btrim(p_ec))
+     )
+  then
     return jsonb_build_object('matched', false, 'reason', 'branch_mismatch', 'branch', v_branch);
   end if;
 
