@@ -9315,12 +9315,14 @@ function estimateOffDays(calDays, perWeek) {
 }
 // Split a date range into calendar days vs actual leave days. When a saved
 // schedule grid is supplied (opts: { schedCache, ymdToSchedYm, ec, branch }),
-// off-days are read EXACTLY from the roster (O / R cells) for the days the
-// schedule covers — so a 2-day request on two working days correctly counts as
-// 2 leave days. Days with no schedule yet (and the no-schedule fallback) use
-// the usual ~2 off-days/week estimate, but short requests of 5 days or fewer are
-// treated as all working days (no deduction). E.g. 14 calendar days spanning two
-// full weeks ≈ 10 real leave days; 21 consecutive days ≈ 15.
+// real off-days (O / R cells) and real working shifts are read EXACTLY from the
+// roster — so a 2-day request on two working days correctly counts as 2 leave
+// days. Days that carry no off-day information — leave-stamped cells (L / ML,
+// where the original off-day pattern was overwritten by the leave itself),
+// blank cells, and months with no schedule yet — fall back to the usual ~2
+// off-days/week estimate, but short requests of 5 days or fewer are treated as
+// all working days (no deduction). E.g. 14 calendar days spanning two full weeks
+// ≈ 10 real leave days; a 21-day leave stamped entirely as L ≈ 15.
 function leaveDayBreakdown(startYmd, endYmd, _isMgr, opts) {
   const cal = leaveDays(startYmd, endYmd);
   const perWeek = 2; // managers ~2/week; nail techs also usually ~2/week
@@ -9335,11 +9337,10 @@ function leaveDayBreakdown(startYmd, endYmd, _isMgr, opts) {
       const grid = sched[branch + "|" + toSchedYm(ymd)];
       // grids may key the employee by exact or upper-cased EC; cells by number or string
       const row = grid && (grid[ec] || grid[ecU]);
-      if (row) {
-        knownDays++;
-        const cell = row[d.getDate()] || row[String(d.getDate())];
-        if (cell === "O" || cell === "R") knownOff++;
-      } else unknownDays++;
+      const cell = row && (row[d.getDate()] || row[String(d.getDate())]);
+      if (cell === "O" || cell === "R") { knownDays++; knownOff++; }          // roster says off
+      else if (cell && cell !== "L" && cell !== "ML") { knownDays++; }        // roster says a real working shift
+      else unknownDays++;   // leave-stamped (L / ML), blank or no grid → no off-day info, so estimate
     }
     const estUnknownOff = estimateOffDays(unknownDays, perWeek);
     const off = knownOff + estUnknownOff;
@@ -24518,36 +24519,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           .slice()
           .sort((a, b) => a.startDate.localeCompare(b.startDate));
 
-        // Compute "leave days used" = calendar days minus theoretical off-days.
-        // Reads each tech's saved schedule grid (boa_sched_<branch>_<ym>) from
-        // the schedCache populated by the useEffect above. Off-days = cells
-        // marked O (off-day rotation) or R (requested off). For any month
-        // where no schedule has been generated yet, falls back to Sundays-as-
-        // proxy so the count is still informative.
+        // "Leave days used" = calendar days minus off-days, via the SAME
+        // leaveDayBreakdown used by the Leave Balances and Leave Request tabs so
+        // every screen shows one number. Real O/R off-days (and working shifts)
+        // are read from the roster; leave-stamped (L) days carry no off-day info
+        // — the leave overwrote the original pattern — so they fall back to the
+        // ~2 off-days/week estimate (≤5-day leaves deduct nothing, 21 → 15).
         const computeLeaveDays = (lv) => {
-          const sd2 = new Date(lv.startDate), ed2 = new Date(lv.endDate);
-          if (isNaN(sd2) || isNaN(ed2) || sd2 > ed2) return { cal: 0, off: 0, used: 0 };
+          if (!lv.startDate || !lv.endDate || lv.startDate > lv.endDate) return { cal: 0, off: 0, used: 0 };
           const techRec = staff.find(x => x.ec === lv.ec) || managers.find(x => x.ec === lv.ec);
           const techBranch = techRec ? techRec.branch : br;
-          let cal = 0, off = 0;
-          for (let d = new Date(sd2); d <= ed2; d.setDate(d.getDate() + 1)) {
-            cal++;
-            const ymd = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-            const schedYm = ymdToSchedYm(ymd);
-            const grid = schedCache[techBranch + "|" + schedYm];
-            if (grid && grid[lv.ec]) {
-              // Schedule grids key by day-of-month (string); count O / R as off
-              const cell = grid[lv.ec][d.getDate()] || grid[lv.ec][String(d.getDate())];
-              if (cell === "O" || cell === "R") off++;
-            } else if (grid === null && d.getDay() === 0) {
-              // Schedule loaded but missing/empty for this month → Sunday proxy
-              off++;
-            } else if (grid === undefined && d.getDay() === 0) {
-              // Not yet fetched (rare) → Sunday proxy as fallback
-              off++;
-            }
-          }
-          return { cal, off, used: Math.max(0, cal - off) };
+          const bd = leaveDayBreakdown(lv.startDate, lv.endDate, isManagerEc(lv.ec), { schedCache, ymdToSchedYm, ec: lv.ec, branch: techBranch });
+          return { cal: bd.cal, off: bd.off, used: bd.real };
         };
         const totalStats = storeLeave.reduce((acc, lv) => {
           const s = computeLeaveDays(lv);
