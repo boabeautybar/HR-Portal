@@ -24832,7 +24832,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#831843", cursor: "pointer", whiteSpace: "nowrap" }}>
                   <input type="checkbox" checked={f.emergency} onChange={e => setLeaveForm({ ...f, emergency: e.target.checked })} />
                   <strong>Emergency leave (with proof)</strong>
-                  <span style={{ color: "#F472B6", fontSize: 11 }}>— required for peak-season annual leave</span>
+                  <span style={{ color: "#F472B6", fontSize: 11 }}>— required for peak-season annual leave · <strong style={{ color: "#9a3412" }}>unpaid</strong></span>
                 </label>
                 {f.emergency && (
                   <div style={{ flex: 1, minWidth: 240 }}>
@@ -24899,7 +24899,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const isCS = cycleStarts.has(di);
                           const isToday = d.iso === todayIso;
                           if (!lv && isToday) bg = "#fbcfe8";   // highlight today's column
-                          const ttl = lv ? (lv.type + ": " + lv.startDate + " → " + lv.endDate + (lv.notes ? " · " + lv.notes : "") + "\n\n(Click to remove this leave)")
+                          const ttl = lv ? (lv.type + (lv.emergency ? " (UNPAID emergency)" : "") + ": " + lv.startDate + " → " + lv.endDate + (lv.notes ? " · " + lv.notes : "") + "\n\n(Click to remove this leave)")
                             : (fmtLeaveDay(d.iso) + (isToday ? " · today" : "") + (d.peak ? " (peak season)" : ""));
                           return (
                             <td key={d.iso} title={ttl}
@@ -24934,7 +24934,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             <div style={{ background: "#FFFFFF", borderRadius: 11, border: "1px solid " + Y, padding: "10px 16px", fontSize: 11, display: "flex", gap: 14, flexWrap: "wrap", color: "#831843", marginBottom: 14, alignItems: "center" }}>
               <span style={{ fontWeight: 700 }}>Legend:</span>
               <span><span style={{ background: "#dbeafe", color: "#1e3a8a", padding: "2px 6px", borderRadius: 3, fontWeight: 700 }}>A</span> Annual</span>
-              <span><span style={{ background: "#fed7aa", color: "#9a3412", padding: "2px 6px", borderRadius: 3, fontWeight: 700 }}>E</span> Emergency</span>
+              <span><span style={{ background: "#fed7aa", color: "#9a3412", padding: "2px 6px", borderRadius: 3, fontWeight: 700 }}>E</span> Emergency <span style={{ color: "#9a3412", fontWeight: 700 }}>(unpaid)</span></span>
               <span><span style={{ background: "#fee2e2", color: "#7f1d1d", padding: "2px 6px", borderRadius: 3, fontWeight: 700 }}>S</span> Sick</span>
               <span><span style={{ background: "#fce7f3", color: "#BE185D", padding: "2px 6px", borderRadius: 3, fontWeight: 700 }}>M</span> Maternity</span>
               <span><span style={{ background: "#e5e7eb", color: "#374151", padding: "2px 6px", borderRadius: 3, fontWeight: 700 }}>U</span> Unpaid</span>
@@ -24981,7 +24981,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <div style={{ minWidth: 0 }}>
                             <div style={{ fontWeight: 700, color: isLeft ? "#6b7280" : "#831843", fontSize: 13 }}>
                               {s2 ? s2.name : "?"} <span style={{ color: "#9ca3af", fontSize: 11, fontWeight: 400 }}>· {lv.ec}</span>
-                              {lv.emergency && <span style={{ marginLeft: 6, background: "#fed7aa", color: "#9a3412", padding: "1px 7px", borderRadius: 5, fontSize: 9.5, fontWeight: 800, letterSpacing: "0.03em" }} title={lv.notes || "Emergency leave"}>⚠ EMERGENCY</span>}
+                              {lv.emergency && <span style={{ marginLeft: 6, background: "#fed7aa", color: "#9a3412", padding: "1px 7px", borderRadius: 5, fontSize: 9.5, fontWeight: 800, letterSpacing: "0.03em" }} title={"Emergency leave — UNPAID (not deducted from the annual-leave balance)." + (lv.notes ? "\n" + lv.notes : "")}>⚠ EMERGENCY · UNPAID</span>}
                               {isLeft && <span style={{ marginLeft: 6, background: "#fee2e2", color: "#991b1b", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>👋 LEFT {leftDate}</span>}
                             </div>
                             <div style={{ fontSize: 12.5, color: isLeft ? "#9ca3af" : "#BE185D", fontWeight: 700, marginTop: 4 }}>
