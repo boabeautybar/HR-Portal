@@ -1461,7 +1461,7 @@
         ? '<div class="dly-loaned-note">Working at ' + esc(s._awayAt || "") + ' today · no action needed</div>'
         : actionsHtml;
       var rowSwapHtml = loanedOut ? '' : swapAreaHtml;
-      return '<div class="dly-row' + (hasStatus ? ' dly-confirmed' : '') + ((isLocked || loanedOut) ? ' dly-locked' : '') + (loanedOut ? ' dly-row-loaned' : '') + '" data-ec="' + esc(s.employee_code) + '" data-id="' + s.id + '" data-name="' + esc(s.name) + '">' +
+      return '<div class="dly-row' + (hasStatus ? ' dly-confirmed' : '') + ((isLocked || loanedOut) ? ' dly-locked' : '') + (loanedOut ? ' dly-row-loaned' : '') + '" data-ec="' + esc(s.employee_code) + '" data-id="' + s.id + '" data-name="' + esc(s.name) + '" data-start="' + esc(s.start_date || s.startDate || "") + '">' +
         '<div class="dly-row-info">' +
           '<div class="dly-checkmark">' + (loanedOut ? '→' : (hasStatus ? '✓' : '')) + '</div>' +
           '<div class="dly-row-text">' +
@@ -1541,6 +1541,11 @@
         if (btn.dataset.convert) {
           var target = btn.dataset.convert;
           if (isLocked && cur !== "sick" && cur !== "absent") return;
+          // FRL balance gate — block paid FRL with no days left; use Unpaid.
+          if (target === "frl" && window.APP_DATA.frlMarkGuard) {
+            var gC = await window.APP_DATA.frlMarkGuard(ec, row.dataset.start, ym, dayKey);
+            if (gC && gC.block) { alert("⚠ " + name + "\n\n" + gC.message); return; }
+          }
           openProofModal({
             status:    target,
             label:     target === "sick_n" ? "Sick + note" : "FRL + proof",
@@ -1581,6 +1586,11 @@
 
         // Sick + note OR FRL → require proof (or downgrade to unpaid)
         if (status === "sick_n" || status === "frl") {
+          // FRL balance gate — block paid FRL with no days left; use Unpaid.
+          if (status === "frl" && window.APP_DATA.frlMarkGuard) {
+            var gF = await window.APP_DATA.frlMarkGuard(ec, row.dataset.start, ym, dayKey);
+            if (gF && gF.block) { alert("⚠ " + name + "\n\n" + gF.message); return; }
+          }
           openProofModal({
             status:   status,
             label:    status === "sick_n" ? "Sick + note" : "FRL + proof",
