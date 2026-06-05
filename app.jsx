@@ -21257,13 +21257,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const fmt = ymd => ymd ? new Date(ymd + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : "";
         const daysFrom = ymd => Math.floor((t0 - new Date(ymd + "T00:00:00")) / 86400000);
 
+        // The start date HR maintains lives on the staff / manager record. The
+        // onboarding-history row keeps its OWN copy, which goes stale when HR
+        // later corrects the date on the staff record (e.g. fixing a mistyped
+        // year like 2006 → 2026). Re-sync each onboarding row to the live record
+        // by EC so this tab — and the "recent starters" filter — reflect the
+        // corrected date instead of the old onboarded-20-years-ago value.
+        const _liveStartByEc = {};
+        [...(staff || []), ...(managers || [])].forEach(p => {
+          if (p && p.ec && p.startDate) { const k = String(p.ec).trim().toUpperCase(); if (!(k in _liveStartByEc)) _liveStartByEc[k] = p.startDate; }
+        });
+        const obListEff = (obList || []).map(r => {
+          const live = _liveStartByEc[String(r.ec || "").trim().toUpperCase()];
+          return live && live !== r.startDate ? { ...r, startDate: live } : r;
+        });
         // Surface recent starters AND any record that's still missing a start
         // date — an undated record is an incomplete new starter that needs
         // attention, not an old one to hide (e.g. someone promoted from trial
         // who never got a start date filled in).
-        const recentActive = obList.filter(r => !r.startDate || daysFrom(r.startDate) <= 31);
+        const recentActive = obListEff.filter(r => !r.startDate || daysFrom(r.startDate) <= 31);
         const last30 = recentActive.length;
-        const future = obList.filter(r => r.startDate && daysFrom(r.startDate) < 0).length;
+        const future = obListEff.filter(r => r.startDate && daysFrom(r.startDate) < 0).length;
         // Active list = what the grid below renders. Defaults to the
         // "last 31 days" view so HR sees who they're actively chasing;
         // flip to All to see every onboarded employee on record
@@ -21296,7 +21310,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               : "Nail Tech";
             return { _id: "orphan-" + p.ec, name: p.name, ec: p.ec, branch: p.branch, position, startDate: p.startDate || "", notes: p.notes || "", _orphanStarter: true, _noStartDate: !p.startDate };
           });
-        const active = [...(obFilter === "all" ? obList.slice() : recentActive), ...orphanStarters];
+        const active = [...(obFilter === "all" ? obListEff.slice() : recentActive), ...orphanStarters];
 
         const grp = { "Nail Tech": [], "Manager": [], "Head Office": [], "Other": [] };
         for (const r of active) {
