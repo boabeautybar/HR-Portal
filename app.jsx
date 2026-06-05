@@ -19748,16 +19748,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             + (outstanding.length ? "Some steps are still outstanding:\n\n" : "All checks complete:\n\n");
           if (!window.confirm(head + lines + (outstanding.length ? "\n\nPromote anyway?" : ""))) return;
           // Pre-fill the onboarding form and switch to onboarding tab
+          const isMgrTrial = r.role === "am";
           const allEcs = [...staff.map(s => s.ec), ...managers.map(m => m.ec), ...obList.map(o => o.ec)].filter(Boolean);
           const maxNum = allEcs.reduce((max, ec) => {
             const m = /B[- ]?(\d+)/i.exec(ec || "");
             return m ? Math.max(max, parseInt(m[1], 10)) : max;
           }, 900);
-          const nextEc = "B" + (maxNum + 1);
+          // Managers (AM trials) get an "M"-suffixed code — that suffix is what
+          // marks them as a manager everywhere (scheduling, clock-ins, leave).
+          const nextEc = "B" + (maxNum + 1) + (isMgrTrial ? "M" : "");
           setObForm({
             name: r.name || "", ec: nextEc,
             branch: r.branch || SALONS[0].name,
-            position: (r.role === "am" ? "AM" : "Nail Tech"), positionOther: "",
+            position: (isMgrTrial ? "AM" : "Nail Tech"), positionOther: "",
             startDate: "", notes: "Promoted from Trial Period · " + fmtDate(r.startDate),
             phone: r.phone || "", email: r.email || "", homeAddress: r.homeAddress || "",
             idType: "sa_id", idDetails: "",
@@ -20551,6 +20554,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (!obForm.name || !obForm.ec || !obForm.startDate) { alert("Name, EC, and start date are required."); return; }
           setObSubmitting(true);
 
+          // Manager positions get an "M"-suffixed employee code — that suffix is
+          // what marks someone as a manager throughout the app (scheduling,
+          // clock-ins, leave balances). The Position dropdown is also carried
+          // through as the role_type fallback, so even a code that somehow
+          // doesn't end in "M" still lands as a manager (and vice-versa).
+          const isMgrPos = ["SSM", "SM", "AM"].includes(obForm.position);
+          const roleType = isMgrPos ? "manager" : "tech";
+          let ec = (obForm.ec || "").trim();
+          if (isMgrPos && ec && !/M$/i.test(ec)) ec = ec + "M";
+
           let driveFolderId = null;
           if (obForm.files && obForm.files.length > 0) {
             if (!window.google) {
@@ -20558,7 +20571,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               setObSubmitting(false);
               return;
             }
-            const folderName = obForm.ec + " - " + obForm.name;
+            const folderName = ec + " - " + obForm.name;
             try {
               driveFolderId = await uploadFilesToDrive(obForm.files, folderName);
             } catch (err) {
@@ -20568,15 +20581,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }
           }
 
-          // 1. Create active staff record
+          // 1. Create active staff record. roleType comes from the Position
+          // dropdown (manager vs tech) and is used as the role_type fallback in
+          // data.js when the code suffix doesn't already decide it.
           const newStaff = {
-            ec: obForm.ec,
+            ec: ec,
             name: obForm.name,
             branch: obForm.branch,
             contract: "Probation (3 Months)",
             notes: obForm.notes,
             startDate: obForm.startDate,
-            role_type: "tech" // Handled by saveStaff in data.js
+            roleType: roleType // manager when a manager Position is picked, else tech
           };
 
           let savedStaff;
@@ -20606,7 +20621,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // days), with days before they start marked X, for the manager to
           // fine-tune on the Scheduling tab.
           try {
-            const isTech = obForm.position !== "AM" && obForm.position !== "SM";
+            const isTech = !isMgrPos;
             if (isTech && obForm.branch && window.BOA_DB.currentSchedYm && window.BOA_DB.periodDays && window.BOA_DB.loadSchedule && window.BOA_DB.saveSchedule) {
               const ym = window.BOA_DB.currentSchedYm();
               const days = window.BOA_DB.periodDays(ym) || [];
@@ -20661,7 +20676,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     }
                     row[d.d] = off ? "O" : "W";
                   });
-                  grid[obForm.ec] = row;
+                  grid[ec] = row;
                   await window.BOA_DB.saveSchedule(obForm.branch, ym, grid, false);
                 }
               }
@@ -20671,7 +20686,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // 3. Add to onboarding history (for the UI grid and historical data)
           const obRecord = {
             _id: Date.now(),
-            name: obForm.name, ec: obForm.ec, branch: obForm.branch,
+            name: obForm.name, ec: ec, branch: obForm.branch,
             position: obForm.position, positionOther: obForm.positionOther || "",
             startDate: obForm.startDate, notes: obForm.notes,
             phone: obForm.phone, email: obForm.email, homeAddress: obForm.homeAddress,
@@ -20683,7 +20698,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           };
           persistOb([...obList, obRecord]);
 
-          logActivity("Onboarded staff", obForm.name + " (" + obForm.ec + ")", obForm.position + " · " + obForm.branch);
+          logActivity("Onboarded staff", obForm.name + " (" + ec + ")", obForm.position + " · " + obForm.branch);
 
           setObForm({ name: "", ec: "", branch: SALONS[0].name, position: "Nail Tech", positionOther: "", startDate: "", notes: "", phone: "", email: "", homeAddress: "", idType: "sa_id", idDetails: "", bankName: "", accNumber: "", branchCode: "", nextOfKinName: "", nextOfKinPhone: "", files: [], _editId: null, _fromTrialId: null });
           setObShowForm(false);
@@ -20738,7 +20753,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <div style={{ fontSize: 14, fontWeight: 800, color: "#BE185D", marginBottom: 12 }}>1. Employee Details</div>
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                         <div style={{ gridColumn: "1 / -1" }}><label style={lbl}>Full Name *</label><input style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={obForm.name || ""} onChange={e => setObForm({ ...obForm, name: e.target.value })} placeholder="Full official name" /></div>
-                        <div><label style={lbl}>EC Code *</label><input style={{ ...inp, width: "100%", boxSizing: "border-box", background: "#fdf2f8", fontWeight: 700 }} value={obForm.ec || ""} onChange={e => setObForm({ ...obForm, ec: e.target.value })} placeholder="e.g. B950" /></div>
+                        <div><label style={lbl}>EC Code *</label><input style={{ ...inp, width: "100%", boxSizing: "border-box", background: "#fdf2f8", fontWeight: 700 }} value={obForm.ec || ""} onChange={e => setObForm({ ...obForm, ec: e.target.value })} placeholder="e.g. B950" />
+                          {["SSM", "SM", "AM"].includes(obForm.position) && obForm.ec && !/M$/i.test(obForm.ec.trim()) && (
+                            <div style={{ fontSize: 10.5, color: "#BE185D", marginTop: 3, fontWeight: 700 }}>Manager → saved as {obForm.ec.trim() + "M"} (the “M” marks them as a manager)</div>
+                          )}
+                        </div>
                         <div><label style={lbl}>Start Date *</label><input type="date" style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={obForm.startDate || ""} onChange={e => setObForm({ ...obForm, startDate: e.target.value })} /></div>
                         <div><label style={lbl}>Branch *</label>
                           <select style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={obForm.branch || ""} onChange={e => setObForm({ ...obForm, branch: e.target.value })}>
