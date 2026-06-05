@@ -20427,6 +20427,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             ? { ...r, status: "passed", updatedAt: new Date().toISOString() }
             : r));
         };
+        // Permanently remove a trial candidate (e.g. a duplicate or mistaken
+        // entry). Cannot be undone — only filters the record out of the board.
+        const deleteCandidate = (r) => {
+          if (!confirm("Permanently delete trial candidate “" + (r.name || "this candidate") + "”?\n\nThis removes them from the Trial Period board entirely. Use it for duplicates or mistakes — it cannot be undone.")) return;
+          persistTrial((trialList || []).filter(x => x._id !== r._id));
+          if (typeof logActivity === "function") { try { logActivity("Deleted trial candidate", (r.name || "") + (r.branch ? " · " + r.branch : ""), "", "People"); } catch (_e) { } }
+        };
         const promoteToOnboarding = (r) => {
           // Pre-promotion readiness checklist — surface anything still
           // outstanding so a tech isn't promoted with gaps. Non-blocking:
@@ -20813,6 +20820,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 {r.status !== "failed" && r.status !== "induction" && (
                                   <button onClick={() => markFailed(r._id)} style={{ padding: "6px 8px", borderRadius: 7, border: "1px solid #fca5a5", background: "#fff", color: "#991b1b", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>❌ Fail</button>
                                 )}
+                                <button onClick={() => deleteCandidate(r)} title="Delete this candidate (e.g. a duplicate) — cannot be undone" style={{ padding: "6px 8px", borderRadius: 7, border: "1px solid #e5e7eb", background: "#fff", color: "#9ca3af", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>🗑</button>
                               </div>
                             </div>
                           );
@@ -20836,7 +20844,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <div key={r._id} style={{ background: "#fff", borderRadius: 12, border: "1.5px solid #bbf7d0", padding: "12px 14px", boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                           <div style={{ fontWeight: 700, color: "#111827", fontSize: 13, marginBottom: 2 }}>{r.name}</div>
-                          <button onClick={() => editTrial(r)} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 13, lineHeight: 1, padding: 0 }} title="Edit details & location">✏️</button>
+                          <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                            <button onClick={() => editTrial(r)} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 13, lineHeight: 1, padding: 0 }} title="Edit details & location">✏️</button>
+                            <button onClick={() => deleteCandidate(r)} style={{ background: "none", border: "none", cursor: "pointer", color: "#dc2626", fontSize: 13, lineHeight: 1, padding: 0 }} title="Delete this candidate (e.g. a duplicate) — cannot be undone">🗑</button>
+                          </div>
                         </div>
                         <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 10 }}>📍 {r.branch}</div>
                         <button
