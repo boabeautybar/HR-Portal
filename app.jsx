@@ -6583,9 +6583,19 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                   <td style={{ position: "sticky", left: 0, background: "#831843", padding: "12px 10px", borderTop: "3px solid #831843", borderBottom: "3px solid #831843", color: "#FFFFFF", fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", zIndex: 2 }}>Working / Needed</td>
                   {(() => {
                     const activeTechs = techs.filter(t => !t.onMat); return days.map(d => {
+                      const _dYmd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
+                      // Count ONLY people actually on THIS store's floor that day.
+                      // Annual leave (L) and maternity (ML / on-mat) are already
+                      // non-work cells; on top of that we drop anyone whose shift
+                      // isn't here — permanently transferred out, or loaned out to
+                      // another store for the day.
                       const working = activeTechs.filter(s => {
                         const v = (grid[s.ec] || {})[d.d];
-                        return v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E";
+                        if (!(v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E")) return false;
+                        const _xd = s.transferDate || null;
+                        if (_xd && !s.isShadow && s.transferring && _dYmd >= _xd) return false;   // permanently transferred out
+                        if ((techLoans || []).some(l => l && l.ec === s.ec && l.date === _dYmd && l.fromBranch === branch)) return false;   // loaned out to another store today
+                        return true;
                       }).length;
                       const needed = minWorkingFor(d, activeTechs.length);
                       const ok = working >= needed;
@@ -27672,7 +27682,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       const _activeMgrs = (result.managers || []).filter(mg => !mg._onMat).length;
                       return result.dates.map((dy, di) => {
                         const dt = result.dayTotals[dy.d] || { working: 0, leave: 0 };
-                        const w = dt.working || 0;
+                        // Count only managers actually on THIS store's floor that
+                        // day. Maternity (ML), leave (L) and loaned-out ('loan_out')
+                        // cells aren't work shifts so they're already out; on top of
+                        // that, drop anyone permanently transferred out (day on/after
+                        // their transfer date) even though their cell still reads W.
+                        const w = (result.managers || []).filter(mg => {
+                          if (mg._onMat) return false;
+                          const cell = (result.grid[mg.ec] && result.grid[mg.ec][dy.d]) || "";
+                          if (!(cell === "W" || cell === "WE" || cell === "WB" || cell === "WM" || cell === "WL" || cell === "E")) return false;
+                          if (!mg.isShadow && mg.transferring && mg.transferDate && dy.d >= mg.transferDate) return false;   // permanently transferred out
+                          return true;
+                        }).length;
                         const activeToday = _activeMgrs - (dt.leave || 0);
                         const minCov = activeToday >= 3 ? 2 : 1;
                         const understaffed = w < minCov;
