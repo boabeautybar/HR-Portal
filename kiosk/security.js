@@ -186,7 +186,10 @@
     location.reload();
   }
 
-  // ---- 0864 admin fallback: self-enrol this device for the branch ------------
+  // ---- Admin fallback: self-enrol this device as an all-branch admin device --
+  // Accepts the owner code (0864) or the GM code (1478) — both grant identical
+  // admin access on the kiosk.
+  var ADMIN_CODES = ["0864", "1478"];
   function bindAdmin(adminBtn) {
     if (!adminBtn) return;
     adminBtn.onclick = function () {
@@ -219,7 +222,7 @@
       async function tryPin() {
         var pin = inputs.map(function (i) { return i.value; }).join("");
         if (pin.length !== 4) return;
-        if (pin !== "0864") {
+        if (ADMIN_CODES.indexOf(pin) === -1) {
           card.classList.add("pin-shake");
           setTimeout(function () { card.classList.remove("pin-shake"); }, 400);
           errEl.textContent = "Incorrect PIN.";
