@@ -378,7 +378,14 @@
     var norm = function (s) { return String(s == null ? "" : s).replace(/[^A-Za-z0-9]/g, "").toUpperCase(); };
     var oN = norm(_o), nN = norm(_n);
     var summary = { schedules: 0, attendance: 0, history: 0, approved: 0, earlyLeaves: 0, leave: 0, requests: 0, customTimes: 0, balances: 0 };
-    if (!_o || !_n || oN === nN) return summary;   // nothing to do (no change, or only case/dash diff which reads already tolerate)
+    // Skip only when the LITERAL code is unchanged. A case/dash-only change
+    // (e.g. B185-M → B185M) still needs migrating: schedule grids, attendance,
+    // leave records, day-off requests and custom hours are stored under the
+    // EXACT old spelling and most reads look the code up exactly — so without
+    // moving the data the person drops off schedules/coverage and their leave
+    // records orphan. The rewrite helpers below match by NORMALISED code, so
+    // they correctly consolidate every dash/case variant onto the new spelling.
+    if (!_o || !_n || _o === _n) return summary;
 
     // Rewrite an {ec:{...}} grid: move the row whose key matches oldEc → newEc.
     function rewriteGrid(grid) {
