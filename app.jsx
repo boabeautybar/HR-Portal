@@ -10901,6 +10901,40 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
   const [declineText, setDeclineText] = useState("");
   const [balDraft, setBalDraft] = useState({}); // per-request "days available" input
   const [busy, setBusy] = useState(false);
+  // Uploaded leave-balance sheet — so the form can show how many days the person
+  // actually has (opening + accrual − leave already on the calendar) and flag at
+  // a glance whether this request fits.
+  const [leaveBalances, setLeaveBalances] = useState(null);
+  useEffect(() => { let go = true; (async () => { try { const d = window.BOA_DB.loadLeaveBalances ? await window.BOA_DB.loadLeaveBalances() : null; if (go) setLeaveBalances(d || null); } catch (_e) { } })(); return () => { go = false; }; }, []);
+  const fmtDays = (x) => { const v = Math.round((Number(x) || 0) * 100) / 100; return v === Math.floor(v) ? String(v) : v.toFixed(2).replace(/0$/, ""); };
+  const _today = new Date().toISOString().slice(0, 10);
+  const _addDays = (ymd, n) => { const d = new Date(ymd + "T00:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+  // Available annual-leave days from the uploaded sheet for an employee code:
+  // opening + manual adjustments + accrued (1.25 per completed cycle since the
+  // as-of date) − all paid annual leave already taken/booked on the calendar.
+  // Returns null when the person isn't on the sheet.
+  const availableForEc = (ec) => {
+    const lb = leaveBalances;
+    if (!lb || !lb.entries) return null;
+    const norm = lbNormEc(ec);
+    const entry = lb.entries[norm];
+    if (!entry) return null;
+    const asOf = lb.asOf || "2026-05-24";
+    const opening = Number(entry.opening) || 0;
+    const adj = (entry.adjustments || []).reduce((s, a) => s + (Number(a.days) || 0), 0);
+    const accrued = accruedLeave(asOf, _today);
+    const p = findLeavePerson(ec, enriched, managers);
+    const opts = { schedCache, ymdToSchedYm, ec: (p && p.ec) || ec, branch: p && p.branch };
+    let used = 0;
+    (leaveRecs || []).forEach(lv => {
+      if (!lv || lv.type !== "Annual leave" || lv.emergency || !lv.startDate || !lv.endDate) return;
+      if (lbNormEc(lv.ec) !== norm) return;
+      const from = lv.startDate > _addDays(asOf, 1) ? lv.startDate : _addDays(asOf, 1);
+      if (from > lv.endDate) return;
+      used += leaveDayBreakdown(from, lv.endDate, isMgrReq({ ec }), opts).real;
+    });
+    return { available: opening + adj + accrued - used, opening, adj, accrued, used, asOf };
+  };
 
   const actor = (currentUser && (currentUser.name || currentUser.pin)) || "";
   const canOps = accessAllows(currentUser, opsCfg);
@@ -11188,6 +11222,19 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                           <span>2 · Leave balance <span style={{ fontWeight: 600, color: "#9d6a82" }}>(check on Sage)</span></span>
                           {balDone && <span style={stampS}>✓ {r.balance_checked_by || "—"}{r.balance_days != null ? " · " + r.balance_days + " days available" : ""}</span>}
                         </div>
+                        {/* Available days from the uploaded balance sheet vs what this request needs. */}
+                        {(() => {
+                          const bal = availableForEc(r.ec);
+                          const need = leaveDayBreakdown(r.start_date, r.end_date, isMgrReq(r), schedOpts(r)).real;
+                          if (!bal) return <div style={verdict("#fffbeb", "#fde68a", "#92400e")}>No balance on the uploaded sheet for {r.ec || "this person"} yet — verify on Sage.</div>;
+                          const enough = bal.available + 1e-9 >= need;
+                          return (
+                            <div style={verdict(enough ? "#f0fdf4" : "#fef2f2", enough ? "#bbf7d0" : "#fecaca", enough ? "#15803d" : "#b91c1c")}>
+                              {enough ? "✓" : "⚠"} <strong>{fmtDays(bal.available)} day{bal.available === 1 ? "" : "s"} available</strong> on the sheet · needs <strong>{fmtDays(need)}</strong> → {enough ? "enough" : "SHORT by " + fmtDays(need - bal.available)}
+                              <div style={{ fontSize: 10.5, fontWeight: 400, marginTop: 2, opacity: 0.85 }}>opening {fmtDays(bal.opening)}{bal.adj ? " · adj " + (bal.adj > 0 ? "+" : "") + fmtDays(bal.adj) : ""}{bal.accrued ? " · +" + fmtDays(bal.accrued) + " earned" : ""}{bal.used ? " · −" + fmtDays(bal.used) + " already on calendar" : ""} <span style={{ fontStyle: "italic" }}>· still confirm on Sage</span></div>
+                            </div>
+                          );
+                        })()}
                         {canPayroll ? (
                           balDone ? (
                             <button disabled={busy} onClick={() => setBalance(r, false)} style={btn("#fff", "#9d6a82", "#e7c6d4")}>Undo balance check</button>
