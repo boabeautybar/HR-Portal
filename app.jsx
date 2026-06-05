@@ -12556,6 +12556,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const c = leavePayrollAccess || {};
     return { roles: Array.isArray(c.roles) ? c.roles : ["payroll"], pins: Array.isArray(c.pins) ? c.pins : [] };
   }, [leavePayrollAccess]);
+  // Who can see the Leave Requests tab: the broad incident roles PLUS anyone
+  // granted the operational or payroll leave check in Settings (e.g. an Ops
+  // person ticked for the operational gate). Previously this only used
+  // canSeeIncidents, so granting leave-ops access alone didn't reveal the tab.
+  const canSeeLeaveRequests = canSeeIncidents(currentUser) || accessAllows(currentUser, leaveOpsCfg) || accessAllows(currentUser, leavePayrollCfg);
   const saveLeaveOpsCfg = async (next) => {
     setLeaveOpsAccess(next);
     try { if (window.BOA_DB.saveLeaveOpsAccess) await window.BOA_DB.saveLeaveOpsAccess(next); }
@@ -15251,7 +15256,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "checkins", l: "📲 Nail Tech Check-ins" },
                   { t: "mgrclockins", l: "🕐 Manager Check-ins" },
                   { t: "leave", l: "🌴 Leave Planner" },
-                  ...(canSeeIncidents(currentUser) ? [(() => {
+                  ...(canSeeLeaveRequests ? [(() => {
                     const pend = leaveRequests.filter(r => r.status === "pending" && r.leave_type !== "Sick" && r.leave_type !== "Absent").length;
                     return { t: "leaveRequests", l: "📨 Leave Requests" + (pend ? "  (" + pend + ")" : "") };
                   })()] : []),
@@ -19134,7 +19139,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         )}
 
         {/* ── LEAVE REQUESTS TAB ── */}
-        {tab === "leaveRequests" && canSeeIncidents(currentUser) && (
+        {tab === "leaveRequests" && canSeeLeaveRequests && (
           <LeaveRequestsTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} leaveRecs={leaveRecs} setLeaveRecs={setLeaveRecs} enriched={enriched} managers={managers} staff={staff} opsCfg={leaveOpsCfg} payrollCfg={leavePayrollCfg} logActivity={logActivity} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} />
         )}
 
