@@ -9806,6 +9806,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     // is unpaid, so it's excluded from taken/booked/recon entirely.
     const annual = (leaveRecs || []).filter(lv => lv && lv.type === "Annual leave" && !lv.emergency && lv.startDate && lv.endDate && lbNormEc(lv.ec) === norm);
     let taken = 0, bookedCycle = 0, bookedBeyond = 0;
+    let takenCal = 0, bookedCal = 0;   // raw calendar days (before off-day deduction)
     const future = [];
     const cEnd = cycle ? cycle.end : todayYmd;   // last day of the current pay cycle
     annual.forEach(lv => {
@@ -9819,20 +9820,20 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
       const weight = wb.cal > 0 ? wb.real / wb.cal : 0;
       // Taken: after the as-of cutoff (already in opening), up to & incl. today.
       const ps = maxYmd(lv.startDate, addDaysYmd(asOf, 1)), pe = minYmd(lv.endDate, todayYmd);
-      if (ps <= pe) taken += leaveDays(ps, pe) * weight;
+      if (ps <= pe) { const c = leaveDays(ps, pe); taken += c * weight; takenCal += c; }
       // Booked: strictly after today. A range that straddles the cycle end is
       // split — the part within this cycle vs the part beyond it.
       const fs = maxYmd(lv.startDate, addDaysYmd(todayYmd, 1));
       if (fs > lv.endDate) return;
       const tcEnd = minYmd(lv.endDate, cEnd);
       if (cycle && fs <= tcEnd) {
-        const d = leaveDays(fs, tcEnd) * weight;
-        if (d > 0) { bookedCycle += d; future.push({ start: fs, end: tcEnd, days: d, emergency: !!lv.emergency, bucket: "cycle" }); }
+        const c = leaveDays(fs, tcEnd), d = c * weight;
+        if (d > 0) { bookedCycle += d; bookedCal += c; future.push({ start: fs, end: tcEnd, days: d, cal: c, emergency: !!lv.emergency, bucket: "cycle" }); }
       }
       const bStart = cycle ? maxYmd(fs, addDaysYmd(cEnd, 1)) : fs;
       if (bStart <= lv.endDate) {
-        const d = leaveDays(bStart, lv.endDate) * weight;
-        if (d > 0) { bookedBeyond += d; future.push({ start: bStart, end: lv.endDate, days: d, emergency: !!lv.emergency, bucket: "later" }); }
+        const c = leaveDays(bStart, lv.endDate), d = c * weight;
+        if (d > 0) { bookedBeyond += d; bookedCal += c; future.push({ start: bStart, end: lv.endDate, days: d, cal: c, emergency: !!lv.emergency, bucket: "later" }); }
       }
     });
     const booked = bookedCycle + bookedBeyond;
@@ -9854,6 +9855,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     return {
       norm, rawEc: e.rawEc || norm, name: e.name || (r ? r.name : ""), branch, role: r ? r.role : "", isMgr,
       opening, openingSet: e.opening != null, net, taken, booked, bookedCycle, bookedBeyond, current, projected, adjustments: adjs,
+      takenCal, bookedCal, calTotal: takenCal + bookedCal,
       recon, future, workedCount: recon.filter(x => x.status === "worked").length, overbooked: projected < -0.001
     };
   };
@@ -9870,9 +9872,9 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
   }, [allRows, q]);
 
   const stats = useMemo(() => {
-    let current = 0, projected = 0, taken = 0, booked = 0, bookedCycle = 0, bookedBeyond = 0, adjusted = 0, overbooked = 0;
-    allRows.forEach(r => { current += r.current; projected += r.projected; taken += r.taken; booked += r.booked; bookedCycle += r.bookedCycle; bookedBeyond += r.bookedBeyond; if (r.adjustments.length) adjusted++; if (r.overbooked) overbooked++; });
-    return { n: allRows.length, current, projected, taken, booked, bookedCycle, bookedBeyond, adjusted, overbooked };
+    let current = 0, projected = 0, taken = 0, booked = 0, bookedCycle = 0, bookedBeyond = 0, adjusted = 0, overbooked = 0, calTotal = 0;
+    allRows.forEach(r => { current += r.current; projected += r.projected; taken += r.taken; booked += r.booked; bookedCycle += r.bookedCycle; bookedBeyond += r.bookedBeyond; calTotal += r.calTotal; if (r.adjustments.length) adjusted++; if (r.overbooked) overbooked++; });
+    return { n: allRows.length, current, projected, taken, booked, bookedCycle, bookedBeyond, adjusted, overbooked, calTotal };
   }, [allRows]);
 
   const fmtDays = (x) => { const v = Math.round((Number(x) || 0) * 100) / 100; return (v === Math.floor(v)) ? String(v) : v.toFixed(2).replace(/0$/, ""); };
@@ -9939,7 +9941,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
         <div style={{ ...card, flex: "1 1 140px", minWidth: 130 }}>
           <div style={{ fontSize: 10, fontWeight: 800, color: "#9d174d", letterSpacing: "0.06em", textTransform: "uppercase" }}>Current total</div>
           <div style={{ fontSize: 26, fontWeight: 800, color: "#831843", marginTop: 4 }}>{fmtDays(stats.current)}</div>
-          <div style={{ fontSize: 10.5, color: "#9d6a82" }}>after {fmtDays(stats.taken)}d taken</div>
+          <div style={{ fontSize: 10.5, color: "#9d6a82" }}>after {fmtDays(stats.taken)}d taken{stats.calTotal > 0 ? " · " + fmtDays(stats.calTotal) + " cal days away" : ""}</div>
         </div>
         <div style={{ ...card, flex: "1 1 160px", minWidth: 150 }}>
           <div style={{ fontSize: 10, fontWeight: 800, color: "#9d174d", letterSpacing: "0.06em", textTransform: "uppercase" }}>Booked ahead</div>
@@ -10082,6 +10084,9 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
                         <td style={td}>
                           <div style={{ fontWeight: 700 }}>{r.name || <span style={{ color: "#b45309" }}>{r.rawEc}</span>}</div>
                           <div style={{ fontSize: 10.5, color: "#9d6a82" }}>{r.rawEc}{r.branch ? " · " + r.branch : ""}{r.role ? " · " + r.role : ""}</div>
+                          {r.calTotal > 0 && (
+                            <div style={{ fontSize: 10, color: "#9d6a82", marginTop: 2 }} title={"Total calendar days of annual leave since the as-of date: " + fmtDays(r.takenCal) + " taken + " + fmtDays(r.bookedCal) + " booked. Leave days (off-days deducted) are shown in the columns to the right."}>🗓 {fmtDays(r.calTotal)} calendar day{r.calTotal === 1 ? "" : "s"} away</div>
+                          )}
                         </td>
                         <td style={{ ...td, textAlign: "right", color: r.openingSet ? "#831843" : "#cbb1bd" }}>{r.openingSet ? fmtDays(r.opening) : "—"}</td>
                         <td style={{ ...td, textAlign: "right", color: r.net === 0 ? "#9d6a82" : (r.net > 0 ? "#15803d" : "#b91c1c"), fontWeight: r.net ? 700 : 400 }}>
@@ -10140,6 +10145,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
                                           <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#92400e" }}>
                                             <span style={{ fontWeight: 800, minWidth: 44 }}>−{fmtDays(f.days)}d</span>
                                             <span>{fmtDayShort(f.start)}{f.end !== f.start ? " – " + fmtDayShort(f.end) : ""}</span>
+                                            {f.cal ? <span style={{ fontSize: 10.5, color: "#9d6a82" }}>· {f.cal} cal day{f.cal === 1 ? "" : "s"}</span> : null}
                                             {f.emergency ? <span style={{ fontSize: 10.5, color: "#9d6a82" }}>· with proof</span> : null}
                                           </div>
                                         ))}
