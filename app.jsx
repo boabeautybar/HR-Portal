@@ -3196,7 +3196,7 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, onStar
 }
 
 // ─── SCHEDULE EDITOR (Phase 2a — manual editing, save to Supabase) ──────────────
-function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, leaveRecs, obList, techLoans, onTechLoansChange, initialBranch }) {
+function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, leaveRecs, obList, techLoans, onTechLoansChange, initialBranch, isOwner }) {
   const [branch, setBranch] = useState(initialBranch || SALONS[0].name);
   const [ym, setYm] = useState(window.BOA_DB ? window.BOA_DB.currentSchedYm() : "2026-05");
   const [grid, setGrid] = useState({});
@@ -6391,7 +6391,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                       <td style={{ position: "sticky", left: 0, background: nameBg, padding: "6px 10px", borderBottom: "1px solid #FCE7F3", color: nameColor, fontWeight: 600, fontSize: 12, zIndex: 1 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                           <span>{s.name}</span>
-                          {!s.isShadow && (
+                          {isOwner && !s.isShadow && (
                             <button type="button" title={"Regenerate only " + s.name + "'s row — keeps everyone else (and custom movements) as-is"} onClick={() => {
                               if (!window.confirm("Regenerate only " + s.name + "'s row for this cycle?\n\nIt rebuilds just their cells from the current rules (start date, maternity, leave). Everyone else — and any custom movements — stays exactly as-is. Click Save afterwards to keep it.")) return;
                               const _r = fillRowForTech(s, grid);
@@ -17829,6 +17829,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               catch (e) { console.error("saveTechLoans (auto):", e); }
             }}
             initialBranch={_myStores[0] || SALONS[0].name}
+            isOwner={!!(currentUser && currentUser.isOwner)}
           />
         )}
 
@@ -27516,7 +27517,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <td style={{ position: "sticky", left: 0, background: mg._guestFromBranch ? "#eff6ff" : (mg._offGhost ? "#f9fafb" : (mg._onMat ? "#f5e1ed" : (mg.isShadow ? "#eff6ff" : (mg.transferring ? "#fffbeb" : (mg._obStarting ? "#fefce8" : "#fff"))))), padding: "6px 10px", borderBottom: "1px solid #FCE7F3", borderRight: "2px solid #FBCFE8", zIndex: 2, minWidth: 200, opacity: mg._offGhost || mg._onMat ? 0.55 : 1 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                           <div style={{ fontSize: 12, fontWeight: 700, color: mg._guestFromBranch ? "#1e40af" : (mg._offGhost ? "#9ca3af" : mg._onMat ? "#7A4258" : "#831843"), textDecoration: mg._offGhost ? "line-through" : "none", fontStyle: (mg._offGhost || mg._onMat) ? "italic" : "normal" }}>{mg._onMat ? "🤱 " : ""}{mg._guestFromBranch ? "↪ " : ""}{mg.name}</div>
-                          {!mg.isShadow && !mg._guestFromBranch && (
+                          {currentUser && currentUser.isOwner && !mg.isShadow && !mg._guestFromBranch && (
                             <button type="button" title={"Regenerate only " + mg.name + "'s row — keeps everyone else (and custom movements) as-is"} onClick={() => regenerateOneMgr(mg.ec)} style={{ border: "1px solid #FBCFE8", background: "#fff", color: "#BE185D", borderRadius: 6, padding: "0 6px", fontSize: 11, lineHeight: "18px", height: 20, cursor: "pointer", fontWeight: 700 }}>↻</button>
                           )}
                         </div>
