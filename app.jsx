@@ -10962,8 +10962,8 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
     } catch (e) { alert("Could not update the operational check: " + (e.message || e)); }
     setBusy(false);
   };
-  const setBalance = async (r, ok) => {
-    const days = ok ? (balDraft[r.id] != null ? balDraft[r.id] : (r.balance_days != null ? r.balance_days : "")) : "";
+  const setBalance = async (r, ok, explicitDays) => {
+    const days = ok ? (explicitDays != null ? explicitDays : (balDraft[r.id] != null ? balDraft[r.id] : (r.balance_days != null ? r.balance_days : ""))) : "";
     setBusy(true);
     try {
       await window.BOA_DB.setLeaveBalance(r.id, ok, days, actor);
@@ -11238,16 +11238,23 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                         {canPayroll ? (
                           balDone ? (
                             <button disabled={busy} onClick={() => setBalance(r, false)} style={btn("#fff", "#9d6a82", "#e7c6d4")}>Undo balance check</button>
-                          ) : (
-                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                              <input type="number" min="0" step="0.5" placeholder="days available"
-                                value={balDraft[r.id] != null ? balDraft[r.id] : (r.balance_days != null ? r.balance_days : "")}
-                                onChange={e => setBalDraft({ ...balDraft, [r.id]: e.target.value })}
-                                style={{ width: 130, fontFamily: "inherit", fontSize: 13, padding: "7px 10px", borderRadius: 9, border: "1.5px solid #e7c6d4" }} />
-                              <button disabled={busy} onClick={() => setBalance(r, true)} style={btn("#0f766e", "#fff", "#0f766e")}>✓ Balance OK</button>
-                              {(() => { const _b = leaveDayBreakdown(r.start_date, r.end_date, isMgrReq(r), schedOpts(r)); return <span style={{ fontSize: 11, color: "#9d6a82" }}>Needs {_b.fromSchedule ? "" : "≈ "}{_b.real} leave day(s) ({_b.cal} cal)</span>; })()}
-                            </div>
-                          )
+                          ) : (() => {
+                            const bal = availableForEc(r.ec);
+                            const need = leaveDayBreakdown(r.start_date, r.end_date, isMgrReq(r), schedOpts(r)).real;
+                            const enough = bal && bal.available + 1e-9 >= need;
+                            const avail = bal ? Math.round(bal.available * 100) / 100 : null;
+                            return (
+                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                                {enough && <button disabled={busy} onClick={() => setBalance(r, true, avail)} title={"Records " + fmtDays(avail) + " days available (from the sheet) and clears this gate — no typing needed."} style={btn("#15803d", "#fff", "#15803d")}>✓ Enough — confirm ({fmtDays(avail)} available)</button>}
+                                <input type="number" min="0" step="0.5" placeholder={avail != null ? "or type (sheet: " + fmtDays(avail) + ")" : "days available"}
+                                  value={balDraft[r.id] != null ? balDraft[r.id] : (r.balance_days != null ? r.balance_days : "")}
+                                  onChange={e => setBalDraft({ ...balDraft, [r.id]: e.target.value })}
+                                  style={{ width: 150, fontFamily: "inherit", fontSize: 13, padding: "7px 10px", borderRadius: 9, border: "1.5px solid #e7c6d4" }} />
+                                <button disabled={busy} onClick={() => setBalance(r, true)} style={btn(enough ? "#fff" : "#0f766e", enough ? "#0f766e" : "#fff", "#0f766e")}>✓ Balance OK</button>
+                                <span style={{ fontSize: 11, color: "#9d6a82" }}>Needs {need} leave day(s)</span>
+                              </div>
+                            );
+                          })()
                         ) : (!balDone && <span style={{ fontSize: 12, color: "#9d6a82", fontStyle: "italic" }}>Awaiting payroll officer.</span>)}
                       </div>
 
