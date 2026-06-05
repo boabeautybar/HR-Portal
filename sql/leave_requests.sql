@@ -250,22 +250,35 @@ grant execute on function set_leave_balance(text,uuid,boolean,numeric,text) to a
 -- whether their last request was approved or declined and why. No HR key — a
 -- person can only ever see their OWN requests (they must know their own code +
 -- branch). No write access. Idempotent — safe to re-run.
+--
+-- Branch check follows transfers. A branch transfer is stored on `staff` as
+-- flags (transferring / transfer_to / transfer_date) without rewriting `branch`
+-- — the original is kept so date-aware history (e.g. loan attribution) still
+-- resolves correctly. So once a scheduled transfer's date has passed, the live
+-- home branch is `transfer_to`, even though `staff.branch` still holds the old
+-- one. We compute that effective home branch here (mirroring the HR app's
+-- effHomeBranch) and validate against it, so a transferred employee requests
+-- leave at her new branch instead of being forced to pick her old one.
 -- ============================================================================
 create or replace function lookup_my_leave(p_ec text, p_branch text)
 returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare
-  v_name   text;
-  v_role   text;
-  v_branch text;
-  v_reqs   jsonb;
+  v_name        text;
+  v_role        text;
+  v_branch      text;
+  v_transferring boolean;
+  v_transfer_to text;
+  v_transfer_dt date;
+  v_home        text;
+  v_reqs        jsonb;
 begin
   if coalesce(btrim(p_ec), '') = '' then
     return jsonb_build_object('matched', false, 'reason', 'no_ec');
   end if;
 
-  select name, role_type, branch
-    into v_name, v_role, v_branch
+  select name, role_type, branch, transferring, transfer_to, transfer_date
+    into v_name, v_role, v_branch, v_transferring, v_transfer_to, v_transfer_dt
   from staff
   where upper(btrim(employee_code)) = upper(btrim(p_ec))
   limit 1;
@@ -273,8 +286,19 @@ begin
   if v_name is null then
     return jsonb_build_object('matched', false, 'reason', 'no_ec');
   end if;
-  if coalesce(btrim(p_branch), '') <> '' and lower(btrim(coalesce(v_branch, ''))) <> lower(btrim(p_branch)) then
-    return jsonb_build_object('matched', false, 'reason', 'branch_mismatch', 'branch', v_branch);
+
+  -- Effective home branch: destination once a scheduled transfer's date has
+  -- arrived, otherwise the stored branch.
+  v_home := v_branch;
+  if coalesce(v_transferring, false)
+     and coalesce(btrim(v_transfer_to), '') <> ''
+     and v_transfer_dt is not null
+     and v_transfer_dt <= (now() at time zone 'Africa/Johannesburg')::date then
+    v_home := v_transfer_to;
+  end if;
+
+  if coalesce(btrim(p_branch), '') <> '' and lower(btrim(coalesce(v_home, ''))) <> lower(btrim(p_branch)) then
+    return jsonb_build_object('matched', false, 'reason', 'branch_mismatch', 'branch', v_home);
   end if;
 
   select coalesce(jsonb_agg(to_jsonb(t) order by t.created_at desc), '[]'::jsonb)
@@ -292,7 +316,7 @@ begin
     'matched', true,
     'name', v_name,
     'role_type', v_role,
-    'branch', v_branch,
+    'branch', v_home,
     'requests', coalesce(v_reqs, '[]'::jsonb)
   );
 end $$;
