@@ -9232,6 +9232,41 @@ function accrualCyclesEarned(asOfYmd, toYmd) {
 }
 function accruedLeave(asOfYmd, toYmd) { return accrualCyclesEarned(asOfYmd, toYmd) * LEAVE_ACCRUAL_PER_CYCLE; }
 
+// ─── Employment-tenure + Family Responsibility Leave (FRL) helpers ──────────
+// FRL: 3 paid days per employment year, available only after 4 months' service,
+// reset on each work anniversary (no roll-over).
+const FRL_DAYS_PER_YEAR = 3;
+const FRL_QUALIFY_MONTHS = 4;
+function normYmd(s) { return s ? String(s).replace(/\//g, "-").slice(0, 10) : ""; }
+function ymdStr(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+// Whole calendar months between two dates (completed months only).
+function monthsBetween(fromYmd, toYmd) {
+  const a = new Date(normYmd(fromYmd) + "T00:00:00"), b = new Date(normYmd(toYmd) + "T00:00:00");
+  if (isNaN(a.getTime()) || isNaN(b.getTime()) || b < a) return 0;
+  let m = (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth());
+  if (b.getDate() < a.getDate()) m -= 1;
+  return Math.max(0, m);
+}
+function addMonthsYmd(ymd, n) { const d = new Date(normYmd(ymd) + "T00:00:00"); if (isNaN(d.getTime())) return ""; d.setMonth(d.getMonth() + n); return ymdStr(d); }
+// The employment-anniversary year (FRL cycle) that contains `toYmd`.
+function frlCycle(startYmd, toYmd) {
+  const s = normYmd(startYmd); if (!s) return null;
+  const a = new Date(s + "T00:00:00"), b = new Date(normYmd(toYmd) + "T00:00:00");
+  if (isNaN(a.getTime()) || isNaN(b.getTime())) return null;
+  let years = b.getFullYear() - a.getFullYear();
+  const anniv = new Date(a.getFullYear() + years, a.getMonth(), a.getDate());
+  if (anniv > b) years -= 1;
+  const start = new Date(a.getFullYear() + years, a.getMonth(), a.getDate());
+  const end = new Date(a.getFullYear() + years + 1, a.getMonth(), a.getDate()); end.setDate(end.getDate() - 1);
+  return { start: ymdStr(start), end: ymdStr(end), index: Math.max(0, years) };
+}
+function ymdAddDays(ymd, n) { const d = new Date(normYmd(ymd) + "T00:00:00"); if (isNaN(d.getTime())) return ""; d.setDate(d.getDate() + n); return ymdStr(d); }
+// Attendance grids are keyed by the START-month of the 25th→24th cycle, with
+// day-of-month cell keys (days 25–31 = start month, 1–24 = next month).
+function ymdToAttYm(ymd) { const p = normYmd(ymd).split("-").map(Number); let yy = p[0], mm = p[1]; if (p[2] < 25) { mm -= 1; if (mm < 1) { mm = 12; yy -= 1; } } return yy + "-" + String(mm).padStart(2, "0"); }
+function attCellYmd(attYm, dayKey) { const p = String(attYm).split("-").map(Number); const day = Number(dayKey); if (!day || day < 1 || day > 31) return ""; let Y = p[0], M = p[1]; if (day < 25) { M += 1; if (M > 12) { M = 1; Y += 1; } } return Y + "-" + String(M).padStart(2, "0") + "-" + String(day).padStart(2, "0"); }
+function listAttYms(fromYmd, toYmd) { const out = []; let ym = ymdToAttYm(fromYmd); const endYm = ymdToAttYm(toYmd); let guard = 0; while (guard++ < 24) { out.push(ym); if (ym === endYm) break; const q = ym.split("-").map(Number); let M = q[1] + 1, Y = q[0]; if (M > 12) { M = 1; Y += 1; } ym = Y + "-" + String(M).padStart(2, "0"); } return out; }
+
 // ─── Shared leave-request gate helpers ─────────────────────────────────────
 // Used by both the Leave Requests tab and the Payroll Inbox so the two-gate
 // workflow behaves identically wherever a gate is actioned.
@@ -9478,8 +9513,11 @@ function dedupeBlockTodos(list, isBlocked) {
 function lbNormEc(ec) { return String(ec == null ? "" : ec).toUpperCase().replace(/[^A-Z0-9]/g, ""); }
 function lbCoreEc(normed) { return String(normed || "").replace(/[A-Z]+$/, ""); }   // B013M → B013
 function lbIsNum(s) { return /^-?\d+(\.\d+)?$/.test(String(s == null ? "" : s).trim()); }
-// From a row of cells, pull { rawEc, days } — the first employee-code-looking
-// token and the last plain number after it. Header / junk rows return null.
+// Normalised person name for fallback matching (lowercase, collapse spaces).
+function lbNormName(s) { return String(s == null ? "" : s).toLowerCase().replace(/\s+/g, " ").trim(); }
+// From a row of cells, pull { rawEc, name, days } — the first employee-code-looking
+// token, the longest text cell as a name (for fallback matching), and the last
+// plain number. Header / junk rows return null.
 function lbParseRow(cells) {
   if (!cells || !cells.length) return null;
   let ec = null, ecIdx = -1;
@@ -9492,7 +9530,15 @@ function lbParseRow(cells) {
   for (let i = cells.length - 1; i > ecIdx; i--) { if (lbIsNum(cells[i])) { days = parseFloat(String(cells[i]).trim()); break; } }
   if (days == null) { for (let i = cells.length - 1; i >= 0; i--) { if (i !== ecIdx && lbIsNum(cells[i])) { days = parseFloat(String(cells[i]).trim()); break; } } }
   if (days == null || isNaN(days)) return null;
-  return { rawEc: ec, days: days };
+  // Name = longest non-numeric, non-code text cell (e.g. "Millicent Moyo").
+  let name = "";
+  for (let i = 0; i < cells.length; i++) {
+    if (i === ecIdx) continue;
+    const c = String(cells[i] == null ? "" : cells[i]).trim();
+    if (!c || lbIsNum(c) || /^[A-Za-z]{1,3}\d{2,}/.test(c)) continue;
+    if ((c.match(/[A-Za-z]/g) || []).length >= 2 && c.length > name.length) name = c;
+  }
+  return { rawEc: ec, name: name, days: days };
 }
 function lbParsePaste(text) {
   const out = [];
@@ -9515,6 +9561,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
   const [loadErr, setLoadErr] = useState("");
   const [saving, setSaving] = useState(false);
   const [q, setQ] = useState("");
+  const [sortBy, setSortBy] = useState("name");   // "name" | "code"
   const [showImport, setShowImport] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [preview, setPreview] = useState(null);
@@ -9537,19 +9584,27 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
   }, [helpOpen]);
 
   const lookups = useMemo(() => {
-    const byNorm = {}, byCore = {};
+    const byNorm = {}, byCore = {}, byName = {};
     const add = (p, role) => {
       if (!p || !p.ec) return;
       const n = lbNormEc(p.ec); if (!n) return;
       const rec = { ec: p.ec, name: p.name || "", branch: p.branch || "", role: role };
       if (!byNorm[n]) byNorm[n] = rec;
       const c = lbCoreEc(n); if (c && !byCore[c]) byCore[c] = rec;
+      const nm = lbNormName(p.name); if (nm && !byName[nm]) byName[nm] = rec;
     };
     (enriched || []).forEach(p => add(p, "Nail tech"));
     (managers || []).forEach(m => add(m, m.role || "Manager"));
-    return { byNorm, byCore };
+    return { byNorm, byCore, byName };
   }, [enriched, managers]);
-  const resolve = (rawEc) => { const n = lbNormEc(rawEc); return lookups.byNorm[n] || lookups.byCore[lbCoreEc(n)] || null; };
+  // Code first (tolerant of -M / M / case), then fall back to the person's name.
+  const resolve = (rawEc, name) => {
+    const n = lbNormEc(rawEc);
+    const hit = lookups.byNorm[n] || lookups.byCore[lbCoreEc(n)];
+    if (hit) return hit;
+    const nm = lbNormName(name);
+    return (nm && lookups.byName[nm]) || null;
+  };
   // Everyone on the HR portal (techs + managers), deduped — the source for the
   // "add by name" lookup and the "missing a leave record" list. Departed people
   // (off-boarded / past their last day) are flagged so we don't nag about them.
@@ -9600,10 +9655,10 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     const byNorm = {};
     rows.forEach(r => { byNorm[lbNormEc(r.rawEc)] = r; });
     const list = Object.keys(byNorm).map(norm => {
-      const r = byNorm[norm]; const nm = resolve(r.rawEc);
-      return { norm, rawEc: r.rawEc, days: r.days, portalEc: nm ? nm.ec : null, name: nm ? nm.name : "", branch: nm ? nm.branch : "", matched: !!nm };
+      const r = byNorm[norm]; const nm = resolve(r.rawEc, r.name);
+      return { norm, rawEc: r.rawEc, uploadName: r.name || "", days: r.days, portalEc: nm ? nm.ec : null, name: nm ? nm.name : "", branch: nm ? nm.branch : "", matchedBy: nm ? (lbCoreEc(lbNormEc(r.rawEc)) === lbCoreEc(lbNormEc(nm.ec)) ? "code" : "name") : null, matched: !!nm };
     }).sort((a, b) => (b.matched - a.matched) || (a.name || a.rawEc).localeCompare(b.name || b.rawEc));
-    setPreview({ list: list, total: list.length, matched: list.filter(x => x.matched).length });
+    setPreview({ list: list, total: list.length, matched: list.filter(x => x.matched).length, unmatched: list.filter(x => !x.matched) });
   };
 
   const onFile = async (e) => {
@@ -9711,6 +9766,40 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
   const addDaysYmd = (ymd, n) => { const d = new Date(ymd + "T00:00:00"); d.setDate(d.getDate() + n); return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()); };
   const minYmd = (a, b) => (a < b ? a : b);
   const maxYmd = (a, b) => (a > b ? a : b);
+
+  // New starters (hired after the opening-balance as-of date and not on the
+  // uploaded sheet): their balance is earned purely from their start date at
+  // 1.25 leave days per completed month, minus any annual leave already taken or
+  // booked. Uploaded balances are left untouched — these are shown separately.
+  const newStarters = useMemo(() => {
+    if (!data) return [];
+    const asOf = data.asOf || "2026-05-24";
+    const seen = new Set(); const out = [];
+    const add = (p, role) => {
+      if (!p || !p.ec) return; const norm = lbNormEc(p.ec); if (!norm || seen.has(norm)) return; seen.add(norm);
+      if (data.entries[norm]) return;                                  // already on the uploaded sheet
+      if (p.offboarded || (p.leftDate && String(p.leftDate) < todayYmd)) return;
+      const start = normYmd(p.startDate);
+      if (!start || start <= asOf) return;                             // only genuinely-new hires
+      const months = monthsBetween(start, todayYmd);
+      const earned = months * LEAVE_ACCRUAL_PER_CYCLE;
+      const isMgr = isManagerEc(p.ec);
+      const opts = { schedCache, ymdToSchedYm, ec: p.ec, branch: p.branch };
+      let taken = 0, booked = 0;
+      (leaveRecs || []).filter(lv => lv && lv.type === "Annual leave" && !lv.emergency && lv.startDate && lv.endDate && lbNormEc(lv.ec) === norm).forEach(lv => {
+        const wb = leaveDayBreakdown(lv.startDate, lv.endDate, isMgr, opts); const weight = wb.cal > 0 ? wb.real / wb.cal : 0;
+        const ps = maxYmd(lv.startDate, start), pe = minYmd(lv.endDate, todayYmd);
+        if (ps <= pe) taken += leaveDays(ps, pe) * weight;
+        const fs = maxYmd(lv.startDate, addDaysYmd(todayYmd, 1));
+        if (fs <= lv.endDate) booked += leaveDays(fs, lv.endDate) * weight;
+      });
+      const current = earned - taken; const projected = current - booked;
+      out.push({ norm, ec: p.ec, name: p.name || p.ec, branch: p.branch || "", role, start, months, earned, taken, booked, current, projected });
+    };
+    (enriched || []).forEach(p => add(p, "Nail tech"));
+    (managers || []).forEach(m => add(m, m.role || "Manager"));
+    return out.sort((a, b) => (a.name || a.ec).localeCompare(b.name || b.ec));
+  }, [data, enriched, managers, leaveRecs, schedCache, ymdToSchedYm]);
 
   // Current pay cycle (25th→24th). Attendance grids key by the START-month
   // (currentAttYm); the schedule keys by END-month (ymdToSchedYm) — different
@@ -9895,8 +9984,11 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
 
   const rows = useMemo(() => {
     const qq = q.trim().toLowerCase();
-    return qq ? allRows.filter(r => (r.name || "").toLowerCase().includes(qq) || (r.rawEc || "").toLowerCase().includes(qq) || (r.branch || "").toLowerCase().includes(qq)) : allRows;
-  }, [allRows, q]);
+    const base = qq ? allRows.filter(r => (r.name || "").toLowerCase().includes(qq) || (r.rawEc || "").toLowerCase().includes(qq) || (r.branch || "").toLowerCase().includes(qq)) : allRows;
+    return base.slice().sort((a, b) => sortBy === "code"
+      ? String(a.rawEc || "").localeCompare(String(b.rawEc || ""), undefined, { numeric: true })
+      : (a.name || a.rawEc || "").localeCompare(b.name || b.rawEc || ""));
+  }, [allRows, q, sortBy]);
 
   const stats = useMemo(() => {
     let current = 0, projected = 0, taken = 0, booked = 0, bookedCycle = 0, bookedBeyond = 0, adjusted = 0, overbooked = 0, calTotal = 0, accrued = 0;
@@ -10020,7 +10112,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
                     {preview.list.map(x => (
                       <tr key={x.norm} style={{ opacity: x.matched ? 1 : 0.5 }}>
                         <td style={td}>{x.rawEc}</td>
-                        <td style={td}>{x.matched ? <span style={{ fontWeight: 600 }}>{x.name}</span> : <span style={{ color: "#b45309" }}>⚠ not on portal — ignored</span>}{x.matched && x.branch ? <span style={{ color: "#9d6a82", fontSize: 11 }}> · {x.branch}</span> : null}</td>
+                        <td style={td}>{x.matched ? <span style={{ fontWeight: 600 }}>{x.name}{x.matchedBy === "name" ? <span style={{ color: "#9d6a82", fontSize: 11, fontStyle: "italic" }}> · matched by name</span> : null}</span> : <span style={{ color: "#b45309" }}>⚠ {x.uploadName ? x.uploadName + " — " : ""}no system record — skipped</span>}{x.matched && x.branch ? <span style={{ color: "#9d6a82", fontSize: 11 }}> · {x.branch}</span> : null}</td>
                         <td style={{ ...td, fontWeight: 700, textAlign: "right" }}>{fmtDays(x.days)}</td>
                       </tr>
                     ))}
@@ -10040,6 +10132,14 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
       {/* Toolbar */}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
         <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search name, code or store…" style={{ ...inp, flex: "1 1 240px", minWidth: 200 }} />
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 11, color: "#9d6a82", fontWeight: 700 }}>Sort:</span>
+          <div style={{ display: "inline-flex", border: "1px solid #FBCFE8", borderRadius: 8, overflow: "hidden" }}>
+            {[{ k: "name", l: "Name" }, { k: "code", l: "Employee code" }].map(o => (
+              <button key={o.k} onClick={() => setSortBy(o.k)} style={{ background: sortBy === o.k ? "#831843" : "#fff", color: sortBy === o.k ? "#fff" : "#9d174d", border: "none", padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{o.l}</button>
+            ))}
+          </div>
+        </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flex: "1 1 260px", minWidth: 220 }}>
           <span style={{ fontSize: 12, fontWeight: 700, color: "#9d174d", whiteSpace: "nowrap" }}>＋ Add person</span>
           <div style={{ flex: 1 }}>
@@ -10219,6 +10319,43 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
                   );
                 })}
                 {rows.length === 0 && <tr><td style={{ ...td, textAlign: "center", color: "#9d6a82" }} colSpan={10}>No matches for “{q}”.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {newStarters.length > 0 && (
+        <div style={{ ...card, padding: 0, overflow: "hidden", marginTop: 18 }}>
+          <div style={{ padding: "12px 16px", borderBottom: "1px solid #FBCFE8" }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: "#15803d" }}>🌱 New starters — earned from start date</div>
+            <div style={{ fontSize: 11.5, color: "#9d6a82", marginTop: 2 }}>Hired after {(data && data.asOf) ? new Date(data.asOf + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : "the as-of date"} and not on the uploaded sheet. Balance = <strong>1.25 × completed months</strong> since their start date, minus annual leave taken/booked. Uploaded balances above are unchanged.</div>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 800 }}>
+              <thead><tr>
+                <th style={th}>Employee</th>
+                <th style={th}>Start date</th>
+                <th style={{ ...th, textAlign: "right" }}>Months</th>
+                <th style={{ ...th, textAlign: "right" }}>Earned</th>
+                <th style={{ ...th, textAlign: "right" }}>Taken</th>
+                <th style={{ ...th, textAlign: "right" }}>Current</th>
+                <th style={{ ...th, textAlign: "right" }}>Booked</th>
+                <th style={{ ...th, textAlign: "right" }}>Projected</th>
+              </tr></thead>
+              <tbody>
+                {newStarters.map(r => (
+                  <tr key={r.norm}>
+                    <td style={td}><div style={{ fontWeight: 700 }}>{r.name}</div><div style={{ fontSize: 10.5, color: "#9d6a82" }}>{r.ec}{r.branch ? " · " + r.branch : ""}</div></td>
+                    <td style={td}>{new Date(r.start + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" })}</td>
+                    <td style={{ ...td, textAlign: "right" }}>{r.months}</td>
+                    <td style={{ ...td, textAlign: "right", color: "#15803d", fontWeight: 700 }}>+{fmtDays(r.earned)}</td>
+                    <td style={{ ...td, textAlign: "right", color: r.taken > 0 ? "#b91c1c" : "#cbb1bd" }}>{r.taken > 0 ? "−" + fmtDays(r.taken) : "—"}</td>
+                    <td style={{ ...td, textAlign: "right", fontWeight: 800, fontSize: 14 }}>{fmtDays(r.current)}</td>
+                    <td style={{ ...td, textAlign: "right", color: r.booked > 0 ? "#b45309" : "#cbb1bd" }}>{r.booked > 0 ? "−" + fmtDays(r.booked) : "—"}</td>
+                    <td style={{ ...td, textAlign: "right", fontWeight: 800, fontSize: 14, color: r.projected < -0.001 ? "#b91c1c" : "#15803d" }}>{fmtDays(r.projected)}{r.projected < -0.001 ? " ⚠" : ""}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -10887,6 +11024,349 @@ function PayrollInboxTab({ requests, setRequests, currentUser, leaveRecs, setLea
           ))}
         </>
       )}
+    </div>
+  );
+}
+
+// Payroll → Family Responsibility Leave. 3 paid days per employment year, only
+// after 4 months' service, reset on each work anniversary (no roll-over). Days
+// used are seeded from an uploaded list (FRL isn't on the Leave Planner — it's
+// tracked on the master timesheet) and can be edited per person going forward.
+function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [q, setQ] = useState("");
+  const [sortBy, setSortBy] = useState("name");   // "name" | "code"
+  const [showImport, setShowImport] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [preview, setPreview] = useState(null);
+  const [frlTaken, setFrlTaken] = useState({});   // normEc → Set(ymd) of FRL days recorded in attendance / check-ins
+  const [scanLoading, setScanLoading] = useState(true);
+  const fileRef = useRef(null);
+  const today = new Date().toISOString().slice(0, 10);
+  const SCAN_DAYS = 120;   // how far back we look in attendance/check-ins for recorded FRL
+
+  const lookups = useMemo(() => {
+    const byNorm = {}, byCore = {}, byName = {};
+    const add = (p, role) => {
+      if (!p || !p.ec) return; const n = lbNormEc(p.ec); if (!n) return;
+      const rec = { ec: p.ec, name: p.name || "", branch: p.branch || "", role, startDate: normYmd(p.startDate), departed: !!p.offboarded || (p.leftDate && String(p.leftDate) < today) };
+      if (!byNorm[n]) byNorm[n] = rec;
+      const c = lbCoreEc(n); if (c && !byCore[c]) byCore[c] = rec;
+      const nm = lbNormName(p.name); if (nm && !byName[nm]) byName[nm] = rec;
+    };
+    (enriched || []).forEach(p => add(p, "Nail tech"));
+    (managers || []).forEach(m => add(m, m.role || "Manager"));
+    return { byNorm, byCore, byName };
+  }, [enriched, managers]);
+  // Match on code first (tolerant of -M / M / case via normalising), then fall
+  // back to the person's name.
+  const resolve = (rawEc, name) => {
+    const n = lbNormEc(rawEc);
+    const hit = lookups.byNorm[n] || lookups.byCore[lbCoreEc(n)];
+    if (hit) return hit;
+    const nm = lbNormName(name);
+    return (nm && lookups.byName[nm]) || null;
+  };
+
+  useEffect(() => {
+    let off = false;
+    (async () => {
+      try { const d = window.BOA_DB.loadFRL ? await window.BOA_DB.loadFRL() : null; if (!off) setData(d && typeof d === "object" && d.entries ? d : { entries: {} }); }
+      catch (_e) { if (!off) setData({ entries: {} }); }
+      finally { if (!off) setLoading(false); }
+    })();
+    return () => { off = true; };
+  }, []);
+
+  // Scan attendance grids + kiosk check-ins + manager day-statuses for days
+  // marked "frl" (Family Responsibility Leave) in the recent window, so we can
+  // auto-deduct any FRL taken since the balances were captured. Read-only.
+  useEffect(() => {
+    let off = false;
+    (async () => {
+      setScanLoading(true);
+      const winStart = ymdAddDays(today, -SCAN_DAYS);
+      const taken = {};   // norm → Map(ymd → provisional?)  (provisional = mirrored "~frl", not yet confirmed)
+      const addDay = (norm, ymd, prov) => {
+        if (!norm || !ymd || ymd < winStart || ymd > today) return;
+        const m = taken[norm] || (taken[norm] = new Map());
+        const cur = m.get(ymd);
+        if (cur === undefined) m.set(ymd, !!prov);
+        else if (cur === true && !prov) m.set(ymd, false);   // a confirmed sighting upgrades a provisional one
+      };
+      const yms = listAttYms(winStart, today);
+      // 1. Attendance sheets (techs) — covers the master timesheet + mirrored kiosk check-ins.
+      try {
+        await Promise.all(SALONS.flatMap(s => yms.map(async ym => {
+          let a = null; try { a = await window.BOA_DB.loadAttendance(s.name, ym); } catch (_e) { return; }
+          const grid = (a && a.grid) || {};
+          Object.keys(grid).forEach(ec => {
+            const row = grid[ec] || {};
+            Object.keys(row).forEach(dk => {
+              const raw = String(row[dk] == null ? "" : row[dk]);
+              if (raw.replace(/^~/, "") !== "frl") return;
+              addDay(lbNormEc(ec), attCellYmd(ym, dk), raw.charAt(0) === "~");
+            });
+          });
+        })));
+      } catch (_e) { }
+      // 2. Nail-tech kiosk check-ins (in case not yet mirrored into the sheet).
+      try {
+        const rows = (window.BOA_DB.listRecentKioskCheckins ? await window.BOA_DB.listRecentKioskCheckins(SCAN_DAYS + 2, SALONS.map(s => s.name)) : []) || [];
+        rows.forEach(r => { if (r && r.ec && r.ymd && String(r.status || "").replace(/^~/, "") === "frl") addDay(lbNormEc(r.ec), r.ymd, String(r.status || "").charAt(0) === "~"); });
+      } catch (_e) { }
+      // 3. Manager check-ins (manager_day_status is keyed by staff_id).
+      try {
+        const ecBySid = {};
+        (managers || []).forEach(m => { const sid = m._id || m.id; if (sid && m.ec) ecBySid[String(sid)] = m.ec; });
+        const rows = (window.BOA_DB.loadManagerDayStatuses ? await window.BOA_DB.loadManagerDayStatuses(SCAN_DAYS + 2) : []) || [];
+        rows.forEach(s => { if (s && s.date && String(s.status || "").replace(/^~/, "") === "frl") { const ec = ecBySid[String(s.staff_id)]; if (ec) addDay(lbNormEc(ec), s.date, String(s.status || "").charAt(0) === "~"); } });
+      } catch (_e) { }
+      if (!off) { setFrlTaken(taken); setScanLoading(false); }
+    })();
+    return () => { off = true; };
+  }, [managers]);
+
+  const persist = async (next) => {
+    const stamped = { ...next, updatedBy: (currentUser && (currentUser.name || currentUser.email)) || "", updatedAt: new Date().toISOString() };
+    setData(stamped); setSaving(true);
+    try { if (window.BOA_DB.saveFRL) await window.BOA_DB.saveFRL(stamped); }
+    catch (e) { window.alert("Could not save: " + (e.message || e)); }
+    finally { setSaving(false); }
+  };
+
+  // Per active person: tenure, eligibility, current FRL year, used (reset when a
+  // newer anniversary has passed since the upload), available.
+  // Current payroll cycle (25th → 24th) that contains today.
+  const payCycle = useMemo(() => { const ym = ymdToAttYm(today); return { start: attCellYmd(ym, "25"), end: attCellYmd(ym, "24") }; }, [today]);
+
+  const rows = useMemo(() => {
+    if (!data) return [];
+    const seen = new Set(); const out = [];
+    const add = (p, role) => {
+      if (!p || !p.ec) return; const norm = lbNormEc(p.ec); if (!norm || seen.has(norm)) return; seen.add(norm);
+      if (p.offboarded || (p.leftDate && String(p.leftDate) < today)) return;   // skip leavers
+      const start = normYmd(p.startDate);
+      const cyc = start ? frlCycle(start, today) : null;
+      const months = start ? monthsBetween(start, today) : 0;
+      const eligible = !!start && months >= FRL_QUALIFY_MONTHS;
+      const entitlement = eligible ? FRL_DAYS_PER_YEAR : 0;
+      const entry = data.entries[norm];
+      // The stored figure is the employee's CURRENT balance (what they have left),
+      // and it only counts for the current cycle — once a new anniversary passes
+      // the allowance resets to the full entitlement.
+      const recorded = !!(entry && cyc && entry.cycleStart === cyc.start);
+      let base = entitlement;   // balance as captured (before auto-deductions)
+      if (recorded) base = entry.remaining != null ? Number(entry.remaining) : (entry.used != null ? entitlement - Number(entry.used) : entitlement);
+      base = Math.max(0, Math.min(entitlement, base));
+      // Confirmed FRL recorded AFTER the balance was captured (per-entry asOf,
+      // else the global as-of, else cycle start) is deducted from the balance.
+      // Provisional ("~frl") days are NOT deducted yet — they show as pending.
+      let since = cyc ? cyc.start : start;
+      if (recorded) since = entry.asOf || data.asOf || since;
+      else if (data.asOf && cyc && data.asOf > cyc.start) since = data.asOf;
+      let autoUsed = 0; const autoDates = [];
+      let pendingCount = 0; const pendingDates = [];   // FRL in the current payroll cycle (planned deduction)
+      if (eligible && cyc) {
+        const m = frlTaken[norm];
+        if (m) m.forEach((prov, ymd) => {
+          const inCyc = ymd >= cyc.start && ymd <= cyc.end;
+          if (!inCyc) return;
+          if (!prov && ymd > since && ymd <= today) { autoUsed++; autoDates.push(ymd); }
+          if (ymd >= payCycle.start && ymd <= payCycle.end) { pendingCount++; pendingDates.push({ ymd, prov }); }
+        });
+      }
+      autoDates.sort();
+      pendingDates.sort((a, b) => a.ymd.localeCompare(b.ymd));
+      const available = eligible ? Math.max(0, Math.min(entitlement, base - autoUsed)) : 0;
+      const used = eligible ? entitlement - available : 0;
+      const eligibleOn = start ? addMonthsYmd(start, FRL_QUALIFY_MONTHS) : "";
+      out.push({ norm, ec: p.ec, name: p.name || p.ec, branch: p.branch || "", role, start, months, eligible, eligibleOn, cyc, used, entitlement, available, recorded, autoUsed, autoDates, pendingCount, pendingDates });
+    };
+    (enriched || []).forEach(p => add(p, "Nail tech"));
+    (managers || []).forEach(m => add(m, m.role || "Manager"));
+    return out.sort((a, b) => (a.name || a.ec).localeCompare(b.name || b.ec));
+  }, [data, enriched, managers, frlTaken, payCycle]);
+
+  const filtered = useMemo(() => {
+    const qq = q.trim().toLowerCase();
+    const base = qq ? rows.filter(r => (r.name || "").toLowerCase().includes(qq) || (r.ec || "").toLowerCase().includes(qq) || (r.branch || "").toLowerCase().includes(qq)) : rows;
+    return base.slice().sort((a, b) => sortBy === "code"
+      ? String(a.ec || "").localeCompare(String(b.ec || ""), undefined, { numeric: true })
+      : (a.name || a.ec || "").localeCompare(b.name || b.ec || ""));
+  }, [rows, q, sortBy]);
+
+  // Edits the employee's CURRENT balance (days they have left this cycle).
+  const setAvailable = (r, val) => {
+    if (!data || !r.cyc) return;
+    const remaining = Math.max(0, Math.min(r.entitlement || FRL_DAYS_PER_YEAR, Number(val) || 0));
+    // Stamp asOf = today so this manual balance isn't re-reduced by FRL already
+    // recorded on or before today; only future FRL is auto-deducted from here.
+    persist({ ...data, entries: { ...data.entries, [r.norm]: { remaining, cycleStart: r.cyc.start, asOf: today } } });
+  };
+
+  const buildPreview = (rowsIn) => {
+    if (!rowsIn.length) { window.alert("No rows found. Expecting an employee code (and/or name) and the number of days they have LEFT, e.g.  B024\tMillicent Moyo\t2"); return; }
+    const byNorm = {}; rowsIn.forEach(r => { byNorm[lbNormEc(r.rawEc)] = r; });
+    const list = Object.keys(byNorm).map(norm => {
+      const r = byNorm[norm]; const nm = resolve(r.rawEc, r.name);
+      return { norm, rawEc: r.rawEc, uploadName: r.name || "", balance: r.days, portalEc: nm ? nm.ec : null, name: nm ? nm.name : "", matchedBy: nm ? (lbNormEc(r.rawEc) === lbNormEc(nm.ec) || lbCoreEc(lbNormEc(r.rawEc)) === lbCoreEc(lbNormEc(nm.ec)) ? "code" : "name") : null, matched: !!nm };
+    }).sort((a, b) => (b.matched - a.matched) || (a.name || a.rawEc).localeCompare(b.name || b.rawEc));
+    setPreview({ list, matched: list.filter(x => x.matched).length, unmatched: list.filter(x => !x.matched) });
+  };
+  const onFile = async (e) => {
+    const file = e.target.files && e.target.files[0]; if (!file) return;
+    try {
+      let rowsIn = [];
+      if (file.name.toLowerCase().endsWith(".csv")) rowsIn = lbParsePaste(await file.text());
+      else if (window.XLSX) { const wb = window.XLSX.read(await file.arrayBuffer(), { type: "array" }); const aoa = window.XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, blankrows: false }); aoa.forEach(c => { const r = lbParseRow(c); if (r) rowsIn.push(r); }); }
+      else { window.alert("Spreadsheet reader not loaded — paste the rows instead."); return; }
+      buildPreview(rowsIn);
+    } catch (err) { window.alert("Could not read file: " + (err.message || err)); }
+    finally { if (fileRef.current) fileRef.current.value = ""; }
+  };
+  const applyImport = () => {
+    if (!preview || !data) return;
+    const matched = preview.list.filter(x => x.matched && x.portalEc);
+    if (!matched.length) { window.alert("None of these codes match someone on the portal."); return; }
+    const entries = { ...data.entries };
+    matched.forEach(x => { const norm = lbNormEc(x.portalEc); const p = resolve(x.portalEc); const cyc = p && p.startDate ? frlCycle(p.startDate, today) : null; entries[norm] = { remaining: Math.max(0, Math.min(FRL_DAYS_PER_YEAR, Number(x.balance) || 0)), cycleStart: cyc ? cyc.start : today, asOf: today }; });
+    persist({ ...data, entries, asOf: today });
+    if (logActivity) logActivity("Imported FRL balances", matched.length + " employees", "", "Payroll");
+    setShowImport(false); setPreview(null); setPasteText("");
+  };
+  const clearAll = () => { if (!data || !window.confirm("Clear all FRL usage records?")) return; persist({ ...data, entries: {} }); if (logActivity) logActivity("Cleared FRL usage", "", "", "Payroll"); };
+
+  const fmtD = (ymd) => { if (!ymd) return "—"; try { return new Date(ymd + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }); } catch (_e) { return ymd; } };
+  const th = { textAlign: "left", padding: "8px 10px", fontSize: 10, fontWeight: 800, color: "#9d174d", textTransform: "uppercase", letterSpacing: "0.06em", whiteSpace: "nowrap", background: "#FDF2F8", borderBottom: "2px solid #FBCFE8", position: "sticky", top: 0, zIndex: 2 };
+  const td = { padding: "8px 10px", fontSize: 13, color: "#831843", borderBottom: "1px solid #FCE7F3", verticalAlign: "middle" };
+  const card = { background: "#fff", border: "1px solid #FBCFE8", borderRadius: 14, padding: "16px 18px" };
+  const inp = { padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, color: "#831843" };
+
+  const stats = useMemo(() => { let elig = 0, avail = 0, used = 0, auto = 0, pend = 0; rows.forEach(r => { if (r.eligible) elig++; avail += r.available; used += r.used; auto += r.autoUsed || 0; pend += r.pendingCount || 0; }); return { n: rows.length, elig, avail, used, auto, pend }; }, [rows]);
+
+  if (loading) return <div style={{ padding: 24, color: "#9ca3af", fontStyle: "italic" }}>Loading family responsibility leave…</div>;
+
+  return (
+    <div style={{ padding: "8px 24px 40px" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 14 }}>
+        <div>
+          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700 }}>👪 Family Responsibility Leave</div>
+          <div style={{ fontSize: 12.5, color: "#9d6a82", marginTop: 2, maxWidth: 880 }}>3 paid days per employment year — available only after <strong>4 months'</strong> service, and reset on each <strong>work anniversary</strong> (unused days don't roll over). Upload each person's <strong>current balance</strong> (days they have left); from then on any FRL marked on the <strong>attendance sheet or a check-in</strong> (status “FRL”) is <strong>deducted automatically</strong>. The <strong>This pay cycle</strong> column shows the planned deduction for the current payroll run — {fmtD(payCycle.start)} → {fmtD(payCycle.end)}.</div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11.5, color: "#7c3aed", fontWeight: 700 }}>{scanLoading ? "Scanning attendance…" : "✓ Attendance scanned"}</span>
+          <span style={{ fontSize: 11.5, color: saving ? "#b45309" : "#15803d", fontWeight: 700 }}>{saving ? "Saving…" : "✓ Saved"}</span>
+          {Object.keys((data && data.entries) || {}).length > 0 && <button onClick={clearAll} style={{ background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 9, padding: "9px 14px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>🗑 Clear all</button>}
+          <button onClick={() => { setShowImport(v => !v); setPreview(null); }} style={{ background: "#9333ea", color: "#fff", border: "none", borderRadius: 9, padding: "9px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{showImport ? "Close importer" : "⬆ Upload / import balances"}</button>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+        {[{ l: "Employees", v: stats.n }, { l: "Eligible (4 mo+)", v: stats.elig }, { l: "Days available", v: stats.avail }, { l: "Days used (cycle)", v: stats.used }, { l: "Auto-deducted", v: stats.auto }, { l: "This pay cycle", v: stats.pend }].map(s => (
+          <div key={s.l} style={{ ...card, flex: "1 1 130px", minWidth: 120 }}>
+            <div style={{ fontSize: 10, fontWeight: 800, color: "#9d174d", letterSpacing: "0.06em", textTransform: "uppercase" }}>{s.l}</div>
+            <div style={{ fontSize: 26, fontWeight: 800, color: "#831843", marginTop: 4 }}>{s.v}</div>
+          </div>
+        ))}
+      </div>
+
+      {showImport && (
+        <div style={{ ...card, marginBottom: 14 }}>
+          <div style={{ fontSize: 12, color: "#7c3aed", marginBottom: 10 }}>Upload an <strong>.xlsx</strong>/<strong>.csv</strong> or paste rows of <strong>employee code</strong> (or name) + <strong>days remaining</strong> (their current balance, 0–3 — not the days to deduct). Codes are matched ignoring dashes/case (so <em>B013-M</em> = <em>B013M</em>); if the code can't be found we fall back to the <strong>name</strong>. Anyone with no matching system record is filtered out and listed below.</div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-start" }}>
+            <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" onChange={onFile} style={{ fontSize: 12 }} />
+            <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} placeholder={"Paste rows, e.g.\nB024\tMillicent Moyo\t1\nB117-M\tJohn Smith\t2"} style={{ ...inp, flex: "1 1 240px", minHeight: 70, fontFamily: "monospace" }} />
+            <button onClick={() => buildPreview(lbParsePaste(pasteText))} style={{ background: "#831843", color: "#fff", border: "none", borderRadius: 9, padding: "9px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Preview</button>
+          </div>
+          {preview && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 12.5, color: "#831843", marginBottom: 6 }}><strong style={{ color: "#15803d" }}>{preview.matched}</strong> matched · <strong style={{ color: preview.unmatched.length ? "#b91c1c" : "#9d6a82" }}>{preview.unmatched.length}</strong> not matched (will be skipped).</div>
+              <div style={{ maxHeight: 150, overflow: "auto", border: "1px solid #FCE7F3", borderRadius: 8 }}>
+                {preview.list.filter(x => x.matched).map(x => (
+                  <div key={x.norm} style={{ display: "flex", gap: 8, padding: "5px 10px", fontSize: 12, borderBottom: "1px solid #FCE7F3", color: "#15803d" }}>
+                    <span style={{ minWidth: 70, fontWeight: 700 }}>{x.portalEc}</span><span style={{ flex: 1 }}>{x.name}{x.matchedBy === "name" ? <span style={{ color: "#9d6a82", fontStyle: "italic" }}> · matched by name</span> : null}</span><span>{x.balance}d left</span>
+                  </div>
+                ))}
+              </div>
+              {preview.unmatched.length > 0 && (
+                <div style={{ marginTop: 10, border: "1px solid #fecaca", background: "#fef2f2", borderRadius: 8, padding: "8px 10px" }}>
+                  <div style={{ fontSize: 11.5, fontWeight: 800, color: "#b91c1c", marginBottom: 4 }}>⚠ No system record — skipped ({preview.unmatched.length})</div>
+                  {preview.unmatched.map(x => (
+                    <div key={x.norm} style={{ display: "flex", gap: 8, padding: "2px 0", fontSize: 12, color: "#7f1d1d" }}>
+                      <span style={{ minWidth: 70, fontWeight: 700 }}>{x.rawEc}</span><span style={{ flex: 1 }}>{x.uploadName || <em style={{ color: "#9d6a82" }}>(no name in file)</em>}</span><span>{x.balance}d</span>
+                    </div>
+                  ))}
+                  <div style={{ fontSize: 10.5, color: "#9a3a3a", marginTop: 4 }}>Check the code or name against the system, or add the person, then re-upload.</div>
+                </div>
+              )}
+              <button onClick={applyImport} disabled={preview.matched === 0} style={{ marginTop: 10, background: preview.matched ? "#15803d" : "#d1d5db", color: "#fff", border: "none", borderRadius: 9, padding: "9px 16px", fontWeight: 700, fontSize: 13, cursor: preview.matched ? "pointer" : "not-allowed" }}>Apply import ({preview.matched})</button>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search name / code / branch…" style={{ ...inp, flex: "1 1 240px", maxWidth: 340 }} />
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 11, color: "#9d6a82", fontWeight: 700 }}>Sort:</span>
+          <div style={{ display: "inline-flex", border: "1px solid #FBCFE8", borderRadius: 8, overflow: "hidden" }}>
+            {[{ k: "name", l: "Name" }, { k: "code", l: "Employee code" }].map(o => (
+              <button key={o.k} onClick={() => setSortBy(o.k)} style={{ background: sortBy === o.k ? "#831843" : "#fff", color: sortBy === o.k ? "#fff" : "#9d174d", border: "none", padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{o.l}</button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ ...card, padding: 0, overflow: "hidden" }}>
+        <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "66vh" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+            <thead><tr>
+              <th style={th}>Employee</th>
+              <th style={th}>Start date</th>
+              <th style={th}>Tenure</th>
+              <th style={th}>Eligible</th>
+              <th style={th}>FRL year</th>
+              <th style={{ ...th, textAlign: "right" }} title={"FRL marked in the current payroll cycle (" + fmtD(payCycle.start) + " – " + fmtD(payCycle.end) + ") — the planned deduction for this run."}>This pay cycle</th>
+              <th style={{ ...th, textAlign: "right" }}>Used</th>
+              <th style={{ ...th, textAlign: "right" }}>Available (current)</th>
+            </tr></thead>
+            <tbody>
+              {filtered.map(r => (
+                <tr key={r.norm}>
+                  <td style={td}><div style={{ fontWeight: 700 }}>{r.name}</div><div style={{ fontSize: 10.5, color: "#9d6a82" }}>{r.ec}{r.branch ? " · " + r.branch : ""}</div></td>
+                  <td style={td}>{r.start ? fmtD(r.start) : <span style={{ color: "#b45309" }} title="No start date on file — add it so FRL can be worked out.">no start date</span>}</td>
+                  <td style={td}>{r.start ? (r.months + " mo") : "—"}</td>
+                  <td style={td}>{!r.start ? "—" : r.eligible ? <span style={{ color: "#15803d", fontWeight: 700 }}>✓ yes</span> : <span style={{ color: "#b45309" }} title={"Eligible after 4 months — on " + fmtD(r.eligibleOn)}>⏳ on {fmtD(r.eligibleOn)}</span>}</td>
+                  <td style={td}>{r.cyc ? <span style={{ fontSize: 11.5, color: "#9d6a82" }}>{fmtD(r.cyc.start)} – {fmtD(r.cyc.end)}</span> : "—"}</td>
+                  <td style={{ ...td, textAlign: "right" }}>
+                    {!r.eligible || r.pendingCount === 0
+                      ? <span style={{ color: "#cbb1bd" }}>—</span>
+                      : (() => { const prov = r.pendingDates.filter(d => d.prov).length; return (
+                          <span title={"Planned deduction this payroll cycle:\n" + r.pendingDates.map(d => fmtD(d.ymd) + (d.prov ? " (planned)" : "")).join("\n")} style={{ display: "inline-block", fontSize: 11.5, fontWeight: 800, color: prov ? "#b45309" : "#9333ea", background: prov ? "#FEF3C7" : "#F3E8FF", borderRadius: 6, padding: "2px 8px", cursor: "help", whiteSpace: "nowrap" }}>−{r.pendingCount}{prov ? " ⏳" : ""}</span>
+                        ); })()}
+                  </td>
+                  <td style={{ ...td, textAlign: "right", color: !r.eligible ? "#cbb1bd" : r.used > 0 ? "#b45309" : "#9d6a82" }}>
+                    {r.eligible ? r.used : "—"}
+                    {r.eligible && r.autoUsed > 0 ? <span title={"Auto-deducted from attendance / check-ins:\n" + r.autoDates.map(d => fmtD(d)).join("\n")} style={{ marginLeft: 5, fontSize: 9.5, fontWeight: 800, color: "#7c3aed", background: "#F3E8FF", borderRadius: 5, padding: "1px 5px", whiteSpace: "nowrap", cursor: "help" }}>👪 {r.autoUsed} auto</span> : null}
+                  </td>
+                  <td style={{ ...td, textAlign: "right" }}>
+                    {r.eligible
+                      ? <span style={{ display: "inline-flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
+                          <input type="number" min="0" max={r.entitlement} step="1" value={r.available} onChange={e => setAvailable(r, e.target.value)} title={"Days they currently have left this employment year." + (r.autoUsed > 0 ? "\n" + r.autoUsed + " FRL day(s) auto-deducted from attendance/check-ins on:\n" + r.autoDates.map(d => fmtD(d)).join("\n") : "") + "\nEditing re-sets the balance from today."} style={{ width: 56, textAlign: "right", ...inp, padding: "5px 7px", fontWeight: 800, color: r.available === 0 ? "#b91c1c" : "#15803d" }} />
+                          <span style={{ fontSize: 11, color: "#9d6a82" }}>/ {FRL_DAYS_PER_YEAR}</span>
+                        </span>
+                      : <span style={{ color: "#cbb1bd" }}>0</span>}
+                  </td>
+                </tr>
+              ))}
+              {filtered.length === 0 && <tr><td style={{ ...td, textAlign: "center", color: "#9d6a82" }} colSpan={8}>No staff{q ? " match “" + q + "”" : ""}.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
@@ -12350,7 +12830,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const NAV_TAB_TO_CATEGORY = {
     onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
     scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", freshaTodo: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
-    attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll", payrollInbox: "Payroll", leaveBalances: "Payroll",
+    attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll", payrollInbox: "Payroll", leaveBalances: "Payroll", frl: "Payroll",
     leaveRequests: "Operations", calledInSick: "Operations", extraDayRequests: "Operations",
     alerts: "Insights", activity: "Insights",
     settings: "Admin", voucherAdmin: "Admin"
@@ -14672,11 +15152,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       .filter(m => m && !m.isShadow && m.transferring && m.transferTo === salon.name && m.transferDate && m.transferDate >= _ymd && !m.offHidden)
       .map(m => ({ ...m, _id: "shadow-mgr-" + (m.ec || m._id), branch: salon.name, transferFrom: m.branch, isShadow: true }));
 
-    // Trial candidates assigned to this branch and not yet passed/failed/hired.
-    // "hired" entries have already moved to Onboarding — they shouldn't linger
-    // on the branch's trial strip. Split by role: nail-tech trials sit with the
-    // techs; AM trials belong in the management-team box.
-    const trialAll = trialList.filter(c => c.branch === salon.name && c.status !== "passed" && c.status !== "failed" && c.status !== "hired");
+    // Trial candidates assigned to this branch who are still pre-onboarding.
+    // Keep "passed" candidates on the strip: they've cleared the trial but
+    // haven't been promoted to onboarding yet, so they should still show under
+    // the branch (with a green "passed" pill) until that happens. We drop
+    // "failed", "hired", and anyone already promoted to onboarding — those have
+    // left the trial strip. Split by role: nail-tech trials sit with the techs;
+    // AM trials belong in the management-team box.
+    const trialAll = trialList.filter(c => c.branch === salon.name && c.status !== "failed" && c.status !== "hired" && !c.promotedToOnboarding);
     const trial = trialAll.filter(c => (c.role || "nt") !== "am");
     const trialMgrs = trialAll.filter(c => (c.role || "nt") === "am");
 
@@ -15313,7 +15796,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const n = nReq + nCal;
                     return { t: "payrollInbox", l: "📥 Payroll Inbox" + (n ? "  (" + n + ")" : ""), forceShow: true };
                   })()] : []),
-                  ...(accessAllows(currentUser, leaveBalancesCfg) ? [{ t: "leaveBalances", l: "🧾 Leave Balances", forceShow: true }] : [])
+                  ...(accessAllows(currentUser, leaveBalancesCfg) ? [{ t: "leaveBalances", l: "🧾 Leave Balances", forceShow: true }] : []),
+                  ...(accessAllows(currentUser, leaveBalancesCfg) ? [{ t: "frl", l: "👪 Family Responsibility", forceShow: true }] : [])
                 ]
               },
               {
@@ -17594,14 +18078,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               box (not the nail-tech list) since they're trialling for
                               a manager role. Amber dashed treatment marks them as
                               pre-contract, with their current trial stage. */}
-                              {(salon.trialMgrs || []).map(t => (
-                                <div key={t._id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 7px", borderRadius: 7, background: "#FFFBEB", border: "1.5px dashed #FCD34D" }}>
-                                  <span style={{ fontSize: 13 }}>⏳</span>
-                                  <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: "#78350f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name}</span>
-                                  <span style={{ fontSize: 9, background: "#FCD34D", color: "#78350f", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{t.status}</span>
+                              {(salon.trialMgrs || []).map(t => {
+                                const isPassed = t.status === "passed";
+                                return (
+                                <div key={t._id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 7px", borderRadius: 7, background: isPassed ? "#F0FDF4" : "#FFFBEB", border: "1.5px dashed " + (isPassed ? "#86EFAC" : "#FCD34D") }}>
+                                  <span style={{ fontSize: 13 }}>{isPassed ? "✅" : "⏳"}</span>
+                                  <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: isPassed ? "#14532d" : "#78350f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name}</span>
+                                  <span style={{ fontSize: 9, background: isPassed ? "#86EFAC" : "#FCD34D", color: isPassed ? "#14532d" : "#78350f", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{isPassed ? "passed" : t.status}</span>
                                   <span style={{ fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 700, letterSpacing: "0.04em" }}>AM · TRIAL</span>
                                 </div>
-                              ))}
+                                );
+                              })}
                               {/* Arriving (pending incoming transfer) — managers
                               from another branch with transferTo === this salon.
                               Shows the source store + expected start date. Same
@@ -17762,14 +18249,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             </div>
                           );
                         })}
-                        {/* Trial Candidates occupying vacant seats */}
-                        {salon.trial && salon.trial.map(m => (
-                          <div key={m._id} style={{ padding: "5px 7px", borderRadius: 7, background: "#FFFBEB", border: "1px dashed #FCD34D", display: "flex", alignItems: "center", gap: 6 }}>
-                            <span style={{ fontSize: 12 }}>⏳</span>
+                        {/* Trial Candidates occupying vacant seats. "passed"
+                            candidates have cleared the trial but aren't yet
+                            onboarded — show them in green so they read as done. */}
+                        {salon.trial && salon.trial.map(m => {
+                          const isPassed = m.status === "passed";
+                          return (
+                          <div key={m._id} style={{ padding: "5px 7px", borderRadius: 7, background: isPassed ? "#F0FDF4" : "#FFFBEB", border: "1px dashed " + (isPassed ? "#86EFAC" : "#FCD34D"), display: "flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ fontSize: 12 }}>{isPassed ? "✅" : "⏳"}</span>
                             <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: "#111827" }}>{m.name}</span>
-                            <span style={{ fontSize: 9, background: "#FCD34D", color: "#78350f", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{m.status}</span>
+                            <span style={{ fontSize: 9, background: isPassed ? "#86EFAC" : "#FCD34D", color: isPassed ? "#14532d" : "#78350f", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{isPassed ? "passed" : m.status}</span>
                           </div>
-                        ))}
+                          );
+                        })}
 
                         {/* Remaining Vacant seats */}
                         {Array.from({ length: Math.max(0, salon.capacity - salon.active.length - salon.offboarded.length - (salon.trial ? salon.trial.length : 0)) }).map((_, i) => (
@@ -19151,6 +19643,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         {/* ── LEAVE BALANCES TAB ── */}
         {tab === "leaveBalances" && accessAllows(currentUser, leaveBalancesCfg) && (
           <LeaveBalancesTab enriched={enriched} managers={enrichedManagers} currentUser={currentUser} logActivity={logActivity} leaveRecs={leaveRecs} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} />
+        )}
+
+        {tab === "frl" && accessAllows(currentUser, leaveBalancesCfg) && (
+          <FamilyResponsibilityTab enriched={enriched} managers={enrichedManagers} currentUser={currentUser} logActivity={logActivity} />
         )}
 
         {/* ── CALLED IN SICK TAB ── */}
@@ -24691,11 +25187,59 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (!canCheckBalance) window.alert("Leave added and flagged for the payroll officer to verify the balance (you don't have access to leave balances).");
           setLeaveForm({ ec: "", startDate: "", endDate: "", emergency: false, emergencyNote: "", balanceDays: "", balanceChecked: false });
         };
+        // Clear the 'L' cells the Schedule auto-stamped for a now-removed leave,
+        // so deleting leave in the planner also makes it disappear from the
+        // nail-tech schedule. Only the tech schedule needs this — the manager
+        // planner regenerates its grid from leaveRecs and self-heals stale 'L'.
+        // We touch only cells still reading 'L' (never a real shift / 'ML' / 'X')
+        // and skip any day still covered by another remaining leave record.
+        const clearTechScheduleLeave = async (lv, remaining) => {
+          try {
+            if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return;
+            if (!window.BOA_DB || !window.BOA_DB.loadSchedule || !window.BOA_DB.saveSchedule) return;
+            // Managers (M-suffixed codes / in the managers list) self-heal — skip.
+            if (/M$/i.test(String(lv.ec).trim()) || managers.some(m => m.ec === lv.ec)) return;
+            const person = (staff || []).find(x => x.ec === lv.ec) || (enriched || []).find(x => x.ec === lv.ec);
+            const branch = person && person.branch;
+            if (!branch) return;
+            const want = String(lv.ec).trim().toUpperCase();
+            const _p2 = n => String(n).padStart(2, "0");
+            const stillCovered = (ymd) => (remaining || []).some(r => r && r.ec === lv.ec && r.startDate && r.endDate && ymd >= r.startDate && ymd <= r.endDate);
+            const sd = new Date(lv.startDate + "T00:00:00"), ed = new Date(lv.endDate + "T00:00:00");
+            if (isNaN(sd) || isNaN(ed)) return;
+            // Group the leave's days by the schedule period (25th–24th) that covers them.
+            const byYm = {};
+            for (let d = new Date(sd); d <= ed; d.setDate(d.getDate() + 1)) {
+              const ymd = d.getFullYear() + "-" + _p2(d.getMonth() + 1) + "-" + _p2(d.getDate());
+              if (stillCovered(ymd)) continue;             // another leave still owns this day
+              (byYm[ymdToSchedYm(ymd)] = byYm[ymdToSchedYm(ymd)] || new Set()).add(d.getDate());
+            }
+            for (const ym of Object.keys(byYm)) {
+              const sched = await window.BOA_DB.loadSchedule(branch, ym, false);
+              const grid = (sched && sched.grid) || {};
+              const ecKey = Object.keys(grid).find(k => String(k).trim().toUpperCase() === want);
+              if (!ecKey) continue;
+              const row = grid[ecKey];
+              let touched = false;
+              for (const dom of byYm[ym]) {
+                if (row[dom] === "L") { delete row[dom]; touched = true; }
+                if (row[String(dom)] === "L") { delete row[String(dom)]; touched = true; }
+              }
+              if (touched) {
+                grid[ecKey] = row;
+                await window.BOA_DB.saveSchedule(branch, ym, grid, false);
+                setSchedCache(prev => ({ ...prev, [branch + "|" + ym]: grid }));   // keep breakdowns in sync
+              }
+            }
+          } catch (e) { console.error("clearTechScheduleLeave:", e); }
+        };
         const removeLeave = (id) => {
           const lv = leaveRecs.find(x => x._id === id);
           if (!confirm("Remove this leave record?")) return;
-          persistLeaves(leaveRecs.filter(x => x._id !== id));
+          const remaining = leaveRecs.filter(x => x._id !== id);
+          persistLeaves(remaining);
           if (lv) {
+            clearTechScheduleLeave(lv, remaining);
             const st = staff.find(x => x.ec === lv.ec) || managers.find(x => x.ec === lv.ec);
             const subj = st ? (st.name + " (" + st.ec + ")") : lv.ec;
             logActivity("Removed leave", subj, lv.startDate + " → " + lv.endDate + (lv.notes ? " · " + lv.notes : ""), "Leave");
