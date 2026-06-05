@@ -25944,12 +25944,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // role on the record. `_onSmTrial` is kept around so we can tag the
         // schedule row with a small "SM trial" hint.
         const _smTrialEcs = new Set((smTrialList || []).filter(t => t && t.status === "active" && t.ec).map(t => t.ec));
-        const allMgrs = _allMgrsRaw.map(m => {
-          if (m && m.role === "AM" && _smTrialEcs.has(m.ec)) {
-            return { ...m, role: "SM", _origRole: "AM", _onSmTrial: true };
-          }
-          return m;
-        });
+        // Names of AM trials still in progress at this branch. Someone mid-trial
+        // shows as a read-only "🧪 AM TRIAL" ghost row below, so keep them OUT of
+        // the real manager pool — otherwise they'd ALSO render as a full working
+        // manager (the duplicate row + "working the whole month" the user saw).
+        // Trials have no EC yet, so we match by name (within this branch).
+        const _activeTrialNames = new Set(
+          (trialList || [])
+            .filter(c => c && c.branch === branch
+              && String(c.role || "nt").toLowerCase() === "am"
+              && c.status !== "passed" && c.status !== "failed" && c.status !== "hired"
+              && c.startDate && c.name)
+            .map(c => c.name.trim().toLowerCase())
+        );
+        const allMgrs = _allMgrsRaw
+          .filter(m => !(m && m.name && _activeTrialNames.has(m.name.trim().toLowerCase())))
+          .map(m => {
+            if (m && m.role === "AM" && _smTrialEcs.has(m.ec)) {
+              return { ...m, role: "SM", _origRole: "AM", _onSmTrial: true };
+            }
+            return m;
+          });
         const mgrLeaves = (leaveRecs || []).filter(L => allMgrs.some(m => m.ec === L.ec));
         // Synthetic full-cycle leaves for on-mat managers - mgrSched
         // treats these as 'L' cells so the on-mat manager doesn't get
