@@ -9809,21 +9809,29 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     const future = [];
     const cEnd = cycle ? cycle.end : todayYmd;   // last day of the current pay cycle
     annual.forEach(lv => {
+      // Off-days are worked out ONCE for the WHOLE leave (so 21 days is always 15
+      // leave days), then shared across the Taken / Booked·cycle / Booked·later
+      // buckets by calendar-day weight. Splitting the leave at "today" or the
+      // cycle end can never change its total — without this, a slice of ≤5 days
+      // would dodge the deduction and the buckets would sum to more than the
+      // whole. `weight` = leave-days counted per calendar day for this leave.
+      const wb = leaveDayBreakdown(lv.startDate, lv.endDate, isMgr, opts);
+      const weight = wb.cal > 0 ? wb.real / wb.cal : 0;
       // Taken: after the as-of cutoff (already in opening), up to & incl. today.
       const ps = maxYmd(lv.startDate, addDaysYmd(asOf, 1)), pe = minYmd(lv.endDate, todayYmd);
-      if (ps <= pe) taken += leaveDayBreakdown(ps, pe, isMgr, opts).real;
+      if (ps <= pe) taken += leaveDays(ps, pe) * weight;
       // Booked: strictly after today. A range that straddles the cycle end is
       // split — the part within this cycle vs the part beyond it.
       const fs = maxYmd(lv.startDate, addDaysYmd(todayYmd, 1));
       if (fs > lv.endDate) return;
       const tcEnd = minYmd(lv.endDate, cEnd);
       if (cycle && fs <= tcEnd) {
-        const d = leaveDayBreakdown(fs, tcEnd, isMgr, opts).real;
+        const d = leaveDays(fs, tcEnd) * weight;
         if (d > 0) { bookedCycle += d; future.push({ start: fs, end: tcEnd, days: d, emergency: !!lv.emergency, bucket: "cycle" }); }
       }
       const bStart = cycle ? maxYmd(fs, addDaysYmd(cEnd, 1)) : fs;
       if (bStart <= lv.endDate) {
-        const d = leaveDayBreakdown(bStart, lv.endDate, isMgr, opts).real;
+        const d = leaveDays(bStart, lv.endDate) * weight;
         if (d > 0) { bookedBeyond += d; future.push({ start: bStart, end: lv.endDate, days: d, emergency: !!lv.emergency, bucket: "later" }); }
       }
     });
