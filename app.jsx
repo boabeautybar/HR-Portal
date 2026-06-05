@@ -13156,7 +13156,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     bankName: "", accNumber: "", branchCode: "",
     nextOfKinName: "", nextOfKinPhone: "",
     files: [], // Array to hold File objects before upload
-    _editId: null, _fromTrialId: null
+    _editId: null, _fromTrialId: null, _mgrTrial: false
   });
   const [hrTaskModal, setHrTaskModal] = useState(null); // { task: <task object>, scores: { lateness:5, reliability:5 }, docs: [] }
   const [quickPick, setQuickPick] = useState(null);   // pending-term quick-pick modal
@@ -20465,11 +20465,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             bankName: "", accNumber: "", branchCode: "",
             nextOfKinName: "", nextOfKinPhone: "",
             files: [],
-            _editId: null, _fromTrialId: r._id
+            _editId: null, _fromTrialId: r._id, _mgrTrial: isMgrTrial
           });
-          persistTrial(trialList.map(x => x._id === r._id
-            ? { ...x, promotedToOnboarding: true, promotedAt: new Date().toISOString() }
-            : x));
+          // Don't close the trial out here — promotion only pre-fills the
+          // onboarding form. The trial is finalised (status → "hired") when
+          // that form is actually SUBMITTED (see submitOb). Marking it as
+          // promoted now would drop the candidate from BOTH the trial "passed"
+          // list and the onboarded list if the form is left unfinished.
           setTab("onboard");
           setObShowForm(true);
         };
@@ -20533,7 +20535,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         const currentList = trialList.filter(r => (r.role || "nt") === trialSubTab);
         const activeTrials = currentList.filter(r => r.status !== "passed" && r.status !== "failed" && r.status !== "hired");
-        const passedTrials = currentList.filter(r => r.status === "passed" && !r.promotedToOnboarding);
+        // Passed = cleared the trial but not yet onboarded (status flips to
+        // "hired" only when the onboarding form is submitted). We intentionally
+        // DON'T exclude promotedToOnboarding here: a candidate whose onboarding
+        // was started but never finished must stay visible/recoverable rather
+        // than vanish from both the trial pipeline and the onboarded list.
+        const passedTrials = currentList.filter(r => r.status === "passed");
         const failedTrials = currentList.filter(r => r.status === "failed");
         // Recently-hired techs (onboarded in the last 30 days). Surfaced so they
         // can be reviewed and removed here — otherwise a "hired" record is
@@ -21294,8 +21301,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
           let savedStaff;
           try {
-            savedStaff = await window.BOA_DB.saveStaff(newStaff);
-            setStaff([...staff.filter(s => s.ec !== newStaff.ec), savedStaff]);
+            if (isMgrPos) {
+              // Manager hire (incl. promoted AM/SM trials): persist via the
+              // manager path so the row is manager-shaped and lands in the
+              // managers list — not the nail-tech list. Without this, a
+              // promoted trial manager showed up as a nail tech until reload.
+              savedStaff = await window.BOA_DB.saveManager(newStaff);
+              setManagers(ms => [...(ms || []).filter(m => m.ec !== newStaff.ec), savedStaff]);
+            } else {
+              savedStaff = await window.BOA_DB.saveStaff(newStaff);
+              setStaff([...staff.filter(s => s.ec !== newStaff.ec), savedStaff]);
+            }
           } catch (e) {
             alert("Failed to save staff record: " + (e.message || e));
             setObSubmitting(false);
@@ -21305,7 +21321,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // 2. Mark Trial Period as completely passed/hired if applicable
           if (obForm._fromTrialId) {
             const updatedTrial = trialList.map(t =>
-              t._id === obForm._fromTrialId ? { ...t, status: "hired", updatedAt: new Date().toISOString() } : t
+              t._id === obForm._fromTrialId ? { ...t, status: "hired", promotedToOnboarding: true, promotedAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : t
             );
             setTrialList(updatedTrial);
             try { await window.BOA_DB.saveTrialPeriod(updatedTrial); } catch (e) { }
@@ -21398,7 +21414,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
           logActivity("Onboarded staff", obForm.name + " (" + ec + ")", obForm.position + " · " + obForm.branch);
 
-          setObForm({ name: "", ec: "", branch: SALONS[0].name, position: "Nail Tech", positionOther: "", startDate: "", notes: "", phone: "", email: "", homeAddress: "", idType: "sa_id", idDetails: "", bankName: "", accNumber: "", branchCode: "", nextOfKinName: "", nextOfKinPhone: "", files: [], _editId: null, _fromTrialId: null });
+          setObForm({ name: "", ec: "", branch: SALONS[0].name, position: "Nail Tech", positionOther: "", startDate: "", notes: "", phone: "", email: "", homeAddress: "", idType: "sa_id", idDetails: "", bankName: "", accNumber: "", branchCode: "", nextOfKinName: "", nextOfKinPhone: "", files: [], _editId: null, _fromTrialId: null, _mgrTrial: false });
           setObShowForm(false);
           setObSubmitting(false);
           alert("✅ Successfully onboarded! " + obForm.name + " is now an Active Staff member.");
@@ -21430,7 +21446,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div style={{ fontSize: 13, color: "#F472B6" }}>Convert passing trial members to official employees. Upload contracts to Drive automatically.</div>
               </div>
               <button
-                onClick={() => setObShowForm(!obShowForm)}
+                onClick={() => {
+                  // Opening the generic registration button = a fresh direct hire,
+                  // so drop any leftover trial-conversion context (which would
+                  // otherwise lock the Position dropdown to manager roles).
+                  if (!obShowForm) setObForm(f => ({ ...f, _mgrTrial: false, _fromTrialId: null }));
+                  setObShowForm(!obShowForm);
+                }}
                 style={{ padding: "10px 20px", borderRadius: 10, border: "none", background: "#BE185D", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}
               >
                 {obShowForm ? "Close Registration" : "➕ Register New Employee"}
@@ -21464,9 +21486,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           </select>
                         </div>
                         <div><label style={lbl}>Position *</label>
+                          {/* Manager-trial conversions can only land as a manager
+                              (AM default, or SM/SSM) — never a nail tech. Direct
+                              hires keep the full list. */}
                           <select style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={obForm.position || ""} onChange={e => setObForm({ ...obForm, position: e.target.value })}>
-                            <option value="Nail Tech">Nail Tech</option><option value="SSM">Senior Store Manager (SSM)</option><option value="SM">Store Manager (SM)</option><option value="AM">Assistant Manager (AM)</option><option value="Other">Other</option>
+                            {obForm._mgrTrial ? (
+                              <><option value="AM">Assistant Manager (AM)</option><option value="SM">Store Manager (SM)</option><option value="SSM">Senior Store Manager (SSM)</option></>
+                            ) : (
+                              <><option value="Nail Tech">Nail Tech</option><option value="SSM">Senior Store Manager (SSM)</option><option value="SM">Store Manager (SM)</option><option value="AM">Assistant Manager (AM)</option><option value="Other">Other</option></>
+                            )}
                           </select>
+                          {obForm._mgrTrial && <div style={{ fontSize: 10, color: "#BE185D", marginTop: 4 }}>Manager trial — defaults to AM; change to SM/SSM if needed.</div>}
                         </div>
                       </div>
                     </div>
@@ -26313,6 +26343,45 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           result = { ...result, grid: emptyGrid, dayTotals: emptyTotals, conflicts: [] };
         }
 
+        // ── Pre-start blanking ────────────────────────────────────────────
+        // A manager only "exists" on the schedule from their start date. Blank
+        // out (X, rendered "—") any cell before a manager's start date so a
+        // mid-cycle hire doesn't look like they're working the whole month
+        // before they've started. "X" is the recognised pre-start marker here
+        // (skipped by the drag handler and not counted in the totals). Managers
+        // who started in the past (or have no start date) are unaffected.
+        const _startByEcMgr = {};
+        allMgrs.forEach(m => {
+          const sd = m && (m.startDate || m._startDate);
+          if (m && m.ec && sd) _startByEcMgr[String(m.ec).trim()] = sd;
+        });
+        let _appliedPreStart = false;
+        if (result && result.grid) {
+          Object.keys(result.grid).forEach(ec => {
+            const sd = _startByEcMgr[String(ec).trim()];
+            if (!sd) return;
+            result.dates.forEach(x => {
+              if (x.d < sd && result.grid[ec][x.d] !== "X") { result.grid[ec][x.d] = "X"; _appliedPreStart = true; }
+            });
+          });
+          // Recompute the working/off/leave totals so the footer matches the
+          // blanked cells (X counts as none of them).
+          if (_appliedPreStart && result.dayTotals) {
+            const _dt = {};
+            for (const x of result.dates) _dt[x.d] = { dow: x.dow, working: 0, off: 0, leave: 0 };
+            for (const mm of result.managers) {
+              if (mm._onMat) continue;
+              for (const x of result.dates) {
+                const v = result.grid[mm.ec] && result.grid[mm.ec][x.d];
+                if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") _dt[x.d].working++;
+                else if (v === "O" || v === "R") _dt[x.d].off++;
+                else if (v === "L") _dt[x.d].leave++;
+              }
+            }
+            result.dayTotals = _dt;
+          }
+        }
+
         const editKey = branch + "|" + ymKey;
         const histArr = mgrSchedHist[editKey] || [];
 
@@ -26884,6 +26953,36 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // just don't surface duplicate guest rows in the editor.
         const sortedMgrsRender = sortedMgrs;
 
+        // AM trials at this branch that haven't been onboarded yet appear as
+        // read-only "🧪 TRIAL" ghost rows — mirroring the nail-tech trial ghosts
+        // on the tech schedule. The 2-week trial runs 10 WORKING days (Mon–Fri,
+        // excluding SA public holidays) from the trial start date, before the
+        // formal start. They're not real managers yet: never editable, never
+        // counted in coverage.
+        const _pad2g = n => String(n).padStart(2, "0");
+        const mgrTrialGhosts = (trialList || [])
+          .filter(c => c && c.branch === branch
+            && String(c.role || "nt").toLowerCase() === "am"
+            && c.status !== "passed" && c.status !== "failed" && c.status !== "hired"
+            && c.startDate)
+          .map(c => {
+            const daySet = new Set();
+            const start = new Date(c.startDate + "T12:00:00");
+            let lastYmd = null;
+            if (!isNaN(start)) {
+              const cur = new Date(start);
+              for (let guard = 0; guard < 60 && daySet.size < 10; guard++) {
+                const y = cur.getFullYear(), m = cur.getMonth() + 1, dd = cur.getDate();
+                const ymd = y + "-" + _pad2g(m) + "-" + _pad2g(dd);
+                const dow = cur.getDay();
+                const isHol = !!(saHolidays(y) || {})[ymd];
+                if (dow !== 0 && dow !== 6 && !isHol) { daySet.add(ymd); lastYmd = ymd; }
+                cur.setDate(cur.getDate() + 1);
+              }
+            }
+            return { _id: "mgrtrial-" + c._id, name: c.name || "Trial manager", _startDate: c.startDate, _daySet: daySet, _lastYmd: lastYmd };
+          });
+
         return (
           <div>
             <div style={{ marginBottom: 14 }}>
@@ -27275,7 +27374,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedMgrsRender.length === 0 && (
+                  {sortedMgrsRender.length === 0 && mgrTrialGhosts.length === 0 && (
                     <tr><td colSpan={result.dates.length + 1} style={{ padding: 30, textAlign: "center", color: "#9ca3af", fontStyle: "italic" }}>No managers at {branch}.</td></tr>
                   )}
                   {sortedMgrsRender.map(mg => (
@@ -27377,6 +27476,48 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       })}
                     </tr>
                   ))}
+                  {/* AM trial candidates — read-only yellow ghost rows. Not in
+                      the saved grid, never editable, never counted in coverage. */}
+                  {mgrTrialGhosts.map(t => {
+                    const trialDaysInCycle = result.dates.filter(dy => t._daySet.has(dy.d)).length;
+                    if (trialDaysInCycle === 0) return null;   // no trial days this cycle
+                    const startLbl = t._startDate ? new Date(t._startDate + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : "";
+                    return (
+                      <tr key={t._id} style={{ opacity: 0.92 }}>
+                        <td style={{ position: "sticky", left: 0, background: "#fefce8", padding: "6px 10px", borderBottom: "1px solid #FCE7F3", borderRight: "2px solid #FBCFE8", zIndex: 2, minWidth: 200 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                            <span style={{ fontSize: 12, fontWeight: 700, color: "#854d0e" }}>{t.name}</span>
+                            <span style={{ background: "#fef08a", color: "#854d0e", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 800, letterSpacing: "0.04em" }}>🧪 AM TRIAL</span>
+                          </div>
+                          <div style={{ fontSize: 9, color: "#a16207", marginTop: 1, fontStyle: "italic" }}>10-day trial · started {startLbl} · not yet a manager</div>
+                        </td>
+                        {result.dates.map(dy => {
+                          const dYmd = dy.d;
+                          const isMon = dy.dow === 1;
+                          // Pre-start days grey (—); trial working days yellow (T);
+                          // weekends & public holidays inside the trial window OFF;
+                          // days after the 10th trial day stay blank.
+                          let code = "", cs = { background: "#fff", color: "#e5e7eb" }, title = t.name + " · on trial";
+                          if (t._startDate && dYmd < t._startDate) {
+                            code = "—"; cs = { background: "#f3f4f6", color: "#9ca3af" };
+                            title = t.name + " · not started yet — joins " + startLbl;
+                          } else if (t._daySet.has(dYmd)) {
+                            code = "T"; cs = { background: "#fef08a", color: "#854d0e" };
+                            title = t.name + " · " + dYmd + " · trial working day (Mon–Fri, excludes weekends & public holidays)";
+                          } else if (t._lastYmd && dYmd <= t._lastYmd) {
+                            code = "OFF"; cs = { background: "#FCE7F3", color: "#831843" };
+                            title = t.name + " · " + dYmd + " · off (weekend / public holiday during trial)";
+                          }
+                          return (
+                            <td key={t._id + "-" + dy.d} title={title}
+                              style={{ ...cs, padding: "4px 0", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: isMon ? "3px solid #E84B9B" : "1px solid #FCE7F3", fontSize: 10, fontWeight: 700, userSelect: "none", cursor: "default" }}>
+                              {code}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
                 </tbody>
                 <tfoot>
                   <tr>
