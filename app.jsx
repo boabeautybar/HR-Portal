@@ -3196,7 +3196,7 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, onStar
 }
 
 // ─── SCHEDULE EDITOR (Phase 2a — manual editing, save to Supabase) ──────────────
-function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, leaveRecs, obList, techLoans, onTechLoansChange, initialBranch }) {
+function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, leaveRecs, obList, techLoans, onTechLoansChange, initialBranch, isOwner }) {
   const [branch, setBranch] = useState(initialBranch || SALONS[0].name);
   const [ym, setYm] = useState(window.BOA_DB ? window.BOA_DB.currentSchedYm() : "2026-05");
   const [grid, setGrid] = useState({});
@@ -6391,6 +6391,14 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                       <td style={{ position: "sticky", left: 0, background: nameBg, padding: "6px 10px", borderBottom: "1px solid #FCE7F3", color: nameColor, fontWeight: 600, fontSize: 12, zIndex: 1 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                           <span>{s.name}</span>
+                          {isOwner && !s.isShadow && (
+                            <button type="button" title={"Regenerate only " + s.name + "'s row — keeps everyone else (and custom movements) as-is"} onClick={() => {
+                              if (!window.confirm("Regenerate only " + s.name + "'s row for this cycle?\n\nIt rebuilds just their cells from the current rules (start date, maternity, leave). Everyone else — and any custom movements — stays exactly as-is. Click Save afterwards to keep it.")) return;
+                              const _r = fillRowForTech(s, grid);
+                              setGrid(g => Object.assign({}, g, { [s.ec]: _r.row }));
+                              setDirty(true);
+                            }} style={{ border: "1px solid #FBCFE8", background: "#fff", color: "#BE185D", borderRadius: 6, padding: "0 6px", fontSize: 11, lineHeight: "18px", height: 20, cursor: "pointer", fontWeight: 700 }}>↻</button>
+                          )}
                           {fullMat && <span style={{ background: "#e5e7eb", color: "#374151", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>🤱 ON MAT</span>}
                           {!fullMat && matFromYmd && <span style={{ background: "#ede9fe", color: "#6b21a8", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>🤱 {matUntilYmd ? "BACK " + new Date(matUntilYmd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : "ML FROM " + new Date(matFromYmd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}</span>}
                           {!fullMat && isLeaving && <span style={{ background: "#fee2e2", color: "#991b1b", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>👋 LEFT {s.leftDate}</span>}
@@ -17230,6 +17238,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           if (_onLeaveEcs.has(String(m.ec || "").trim())) return;   // annual leave
                           if (offboardedMap[String(m.ec || "").trim()]) return;     // resigned / off-boarded — don't chase reasons
                           if (m.active === false) return;                            // deactivated record
+                          if (m.startDate && ymd < m.startDate) return;              // not started yet on this date — a roster published before their start date still carries working cells
+                          if (m.leftDate && ymd > m.leftDate) return;                // already left by this date
                           const grid = mgrClockinSchedCache[(m.branch || "") + "|" + ymOf];
                           if (!grid) return;
                           const cell = (grid[m.ec]) ? (grid[m.ec][ymd] || grid[m.ec][dom]) : undefined;
@@ -17819,6 +17829,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               catch (e) { console.error("saveTechLoans (auto):", e); }
             }}
             initialBranch={_myStores[0] || SALONS[0].name}
+            isOwner={!!(currentUser && currentUser.isOwner)}
           />
         )}
 
@@ -26720,6 +26731,39 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           setMgrSchedHist(h => { const n = { ...h }; delete n[editKey]; return n; });
         };
 
+        // Regenerate just ONE manager's row into the draft, leaving every other
+        // manager (and any custom movements / loans) exactly as they are. Used
+        // when a single person's inputs changed — e.g. a start date moved to
+        // next week, or a maternity return — and a full regenerate would wipe
+        // hand-made movements. Runs the same solver but copies back only this
+        // manager's cells (with the same maternity ML rewrite the load/generate
+        // paths apply).
+        const regenerateOneMgr = (ec) => {
+          if (!window.confirm("Regenerate only this manager's row for this cycle?\n\nIt rebuilds just their cells from the current rules (start date, maternity, leave). Everyone else — and any custom movements — stays exactly as-is. Click Save afterwards to keep it.")) return;
+          const fresh = mgrSched(branch, cycleStart, allMgrs, mgrLeavesPlusMat, currentRequests, mgrPriorCtx);
+          if (!fresh || !fresh.grid || !fresh.grid[ec]) {
+            alert("Couldn't regenerate this row — this person isn't on " + branch + "'s roster for this cycle.");
+            return;
+          }
+          const cell = JSON.parse(JSON.stringify(fresh.grid[ec]));
+          // Same ML rewrite the load/generate paths use: maternity 'L' → 'ML',
+          // bounded by a returner's return date.
+          const mm = allMgrs.find(x => x && x.ec === ec);
+          if (mm && (mm._onMat || mm._matFromYmd)) {
+            const from = mm._onMat ? cycleStart : mm._matFromYmd;
+            const until = (!mm._onMat && mm._matUntilYmd) ? mm._matUntilYmd : null;
+            Object.keys(cell).forEach(k => {
+              if (k >= from && (!until || k < until) && cell[k] === "L") cell[k] = "ML";
+            });
+          }
+          const base = mgrSchedDraft ? JSON.parse(JSON.stringify(mgrSchedDraft)) : JSON.parse(JSON.stringify(_sourceGridForDiff || {}));
+          base[ec] = cell;
+          setMgrSchedDraft(base);
+          setMgrSchedDirty(true);
+          setMgrSchedHist(h => { const n = { ...h }; delete n[editKey]; return n; });
+          if (window.BOA_LOG_ACTIVITY) window.BOA_LOG_ACTIVITY("Regenerated one manager row", branch + " · " + ymKey, ec, "Schedule");
+        };
+
         // Build the export payload from the current draft (post-save the
         // draft equals the saved version). Falls back to the saved version
         // if the draft is empty (e.g. just-loaded existing schedule).
@@ -27471,7 +27515,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   {sortedMgrsRender.map(mg => (
                     <tr key={mg.ec}>
                       <td style={{ position: "sticky", left: 0, background: mg._guestFromBranch ? "#eff6ff" : (mg._offGhost ? "#f9fafb" : (mg._onMat ? "#f5e1ed" : (mg.isShadow ? "#eff6ff" : (mg.transferring ? "#fffbeb" : (mg._obStarting ? "#fefce8" : "#fff"))))), padding: "6px 10px", borderBottom: "1px solid #FCE7F3", borderRight: "2px solid #FBCFE8", zIndex: 2, minWidth: 200, opacity: mg._offGhost || mg._onMat ? 0.55 : 1 }}>
-                        <div style={{ fontSize: 12, fontWeight: 700, color: mg._guestFromBranch ? "#1e40af" : (mg._offGhost ? "#9ca3af" : mg._onMat ? "#7A4258" : "#831843"), textDecoration: mg._offGhost ? "line-through" : "none", fontStyle: (mg._offGhost || mg._onMat) ? "italic" : "normal" }}>{mg._onMat ? "🤱 " : ""}{mg._guestFromBranch ? "↪ " : ""}{mg.name}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: mg._guestFromBranch ? "#1e40af" : (mg._offGhost ? "#9ca3af" : mg._onMat ? "#7A4258" : "#831843"), textDecoration: mg._offGhost ? "line-through" : "none", fontStyle: (mg._offGhost || mg._onMat) ? "italic" : "normal" }}>{mg._onMat ? "🤱 " : ""}{mg._guestFromBranch ? "↪ " : ""}{mg.name}</div>
+                          {currentUser && currentUser.isOwner && !mg.isShadow && !mg._guestFromBranch && (
+                            <button type="button" title={"Regenerate only " + mg.name + "'s row — keeps everyone else (and custom movements) as-is"} onClick={() => regenerateOneMgr(mg.ec)} style={{ border: "1px solid #FBCFE8", background: "#fff", color: "#BE185D", borderRadius: 6, padding: "0 6px", fontSize: 11, lineHeight: "18px", height: 20, cursor: "pointer", fontWeight: 700 }}>↻</button>
+                          )}
+                        </div>
                         {mg._guestFromBranch && (
                           <div style={{ fontSize: 9, color: "#1e40af", fontWeight: 700, marginTop: 1 }}>↪ ON LOAN FROM {mg._guestFromBranch}</div>
                         )}
