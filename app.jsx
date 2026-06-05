@@ -11029,6 +11029,14 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
     .sort((a, b) => String(b.decided_at || "").localeCompare(String(a.decided_at || "")))
     .slice(0, 8);
   const fmtAppr = (iso) => { if (!iso) return ""; try { return new Date(iso).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }); } catch (_e) { return ""; } };
+  // Current payroll cycle (25th → 24th) — used to flag short-notice requests
+  // (leave falling in the cycle we're already in, rather than booked ahead).
+  const _ct = new Date();
+  const _cycStart = _ct.getDate() >= 25 ? new Date(_ct.getFullYear(), _ct.getMonth(), 25) : new Date(_ct.getFullYear(), _ct.getMonth() - 1, 25);
+  const _cycEnd = new Date(_cycStart.getFullYear(), _cycStart.getMonth() + 1, 24);
+  const _ymdOf = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  const cycleStartYmd = _ymdOf(_cycStart), cycleEndYmd = _ymdOf(_cycEnd);
+  const isCurrentCycleReq = (r) => !!(r && r.start_date && r.end_date && r.start_date <= cycleEndYmd && r.end_date >= cycleStartYmd);
 
   const card = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 18px", marginBottom: 16 };
   const chip = (c) => ({ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: c.color, background: c.bg });
@@ -11147,14 +11155,16 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
         const open = openId === r.id;
         const notes = Array.isArray(r.internal_notes) ? r.internal_notes : [];
         const days = leaveDays(r.start_date, r.end_date);
+        const thisCycle = isCurrentCycleReq(r);
         return (
-          <div key={r.id} style={{ ...card, marginBottom: 12 }}>
-            <div onClick={() => onOpen(r)} style={{ display: "flex", gap: 10, alignItems: "center", cursor: "pointer", flexWrap: "wrap" }}>
+          <div key={r.id} style={{ ...card, marginBottom: 12, ...(thisCycle ? { borderLeft: "5px solid #f59e0b" } : {}) }}>
+            <div onClick={() => onOpen(r)} style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer", flexWrap: "wrap" }}>
               {!r.reviewed && <span style={{ width: 9, height: 9, borderRadius: 999, background: "#BE185D", display: "inline-block" }} title="Not yet opened" />}
               <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
               <span style={chip({ color: "#6b21a8", bg: "#ede9fe" })}>{LEAVE_TYPE[r.leave_type] || r.leave_type}</span>
-              <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(r.start_date)} → {fmtIncidentDate(r.end_date)}</span>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#fdf2f8", border: "1px solid #f9a8d4", color: "#9d174d", fontWeight: 800, fontSize: 14, padding: "4px 11px", borderRadius: 9 }}>📅 {fmtIncidentDate(r.start_date)} → {fmtIncidentDate(r.end_date)}</span>
               <span style={{ color: "#9ca3af", fontSize: 12 }}>· {days} day{days === 1 ? "" : "s"}{r.store ? " · " + r.store : ""}</span>
+              {thisCycle && <span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "#fef3c7", border: "1px solid #f59e0b", color: "#92400e", fontWeight: 800, fontSize: 11, padding: "3px 9px", borderRadius: 999, letterSpacing: "0.02em" }} title={"This leave falls in the CURRENT pay cycle (" + fmtIncidentDate(cycleStartYmd) + " – " + fmtIncidentDate(cycleEndYmd) + "). Leave should be booked in advance — you can still approve it."}>⚠ THIS CYCLE · short notice</span>}
               <span style={{ marginLeft: "auto", ...chip(st) }}>{st.label}</span>
               <span style={{ color: "#cbb1bd", fontSize: 18, lineHeight: 1 }}>{open ? "▾" : "▸"}</span>
             </div>
@@ -11164,6 +11174,11 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
               const ov = findLeaveOverlaps(r, leaveRecs, requests);
               return (
               <div style={{ marginTop: 14, borderTop: "1px dashed #f3d4e0", paddingTop: 14 }}>
+                {thisCycle && (
+                  <div style={{ background: "#fef3c7", border: "1.5px solid #f59e0b", borderRadius: 11, padding: "10px 13px", marginBottom: 14, fontSize: 12.5, color: "#92400e", lineHeight: 1.5 }}>
+                    <strong>⚠ Short notice — this leave is in the current pay cycle</strong> ({fmtIncidentDate(cycleStartYmd)} – {fmtIncidentDate(cycleEndYmd)}). Leave is meant to be requested in advance, not during the month. You can still approve it below.
+                  </div>
+                )}
                 <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 16px", fontSize: 13.5, color: "#374151", marginBottom: 12 }}>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Ref</span><span>{r.ref_code}</span>
                   <span style={{ color: "#9d6a82", fontWeight: 700 }}>Requested</span><span>{fmtIncidentTime(r.created_at)}</span>
