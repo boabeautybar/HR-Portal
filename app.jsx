@@ -1481,10 +1481,19 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
       h._offReason = h.offRec ? h.offRec.reason : "";
       if (grid[h.ec]) for (const x of dates) if (x.d > h.leftDate) grid[h.ec][x.d] = "X";
     }
-    if (h._onboarding && h._startDate) {
-      h._obStarting = true;
-      h._obStartDate = h._startDate;
-      if (grid[h.ec]) for (const x of dates) if (x.d < h._startDate) grid[h.ec][x.d] = "X";
+    // Pre-start blanking: a manager only exists on the schedule from their
+    // start date. Blank (X → rendered "—") any cell before it so a mid-cycle
+    // hire — e.g. a promoted trial AM starting on the 8th — isn't scheduled
+    // for the whole month. The onboarding wrapper carries _startDate; a saved
+    // or just-promoted manager carries startDate (and no _onboarding flag), so
+    // gate on either. Established managers are unaffected — no cycle day falls
+    // before a past start date. Done here in the solver (not only in the tab's
+    // post-load pass) so the Generate / Sync drafts and the published schedule
+    // are blanked too, not just the on-screen view.
+    const _startD = h._startDate || h.startDate;
+    if (_startD) {
+      if (h._onboarding) { h._obStarting = true; h._obStartDate = _startD; }
+      if (grid[h.ec]) for (const x of dates) if (x.d < _startD) grid[h.ec][x.d] = "X";
     }
   }
   // Seed grid rows for on-mat managers (they were not in `f` so the
