@@ -27682,7 +27682,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       const _activeMgrs = (result.managers || []).filter(mg => !mg._onMat).length;
                       return result.dates.map((dy, di) => {
                         const dt = result.dayTotals[dy.d] || { working: 0, leave: 0 };
-                        const w = dt.working || 0;
+                        // Count only managers actually on THIS store's floor that
+                        // day. Maternity (ML), leave (L) and loaned-out ('loan_out')
+                        // cells aren't work shifts so they're already out; on top of
+                        // that, drop anyone permanently transferred out (day on/after
+                        // their transfer date) even though their cell still reads W.
+                        const w = (result.managers || []).filter(mg => {
+                          if (mg._onMat) return false;
+                          const cell = (result.grid[mg.ec] && result.grid[mg.ec][dy.d]) || "";
+                          if (!(cell === "W" || cell === "WE" || cell === "WB" || cell === "WM" || cell === "WL" || cell === "E")) return false;
+                          if (!mg.isShadow && mg.transferring && mg.transferDate && dy.d >= mg.transferDate) return false;   // permanently transferred out
+                          return true;
+                        }).length;
                         const activeToday = _activeMgrs - (dt.leave || 0);
                         const minCov = activeToday >= 3 ? 2 : 1;
                         const understaffed = w < minCov;
