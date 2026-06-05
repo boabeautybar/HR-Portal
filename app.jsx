@@ -24570,6 +24570,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           return { cal: acc.cal + s.cal, off: acc.off + s.off, used: acc.used + s.used };
         }, { cal: 0, off: 0, used: 0 });
 
+        // Friendly date helpers for the records list: weekday + date for the
+        // leave range, and a short stamp for the audit (added / checked) times.
+        const fmtLeaveDay = (ymd) => { try { return new Date(ymd + "T00:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short", year: "numeric" }); } catch (_e) { return String(ymd || "—"); } };
+        const fmtWhen = (iso) => { if (!iso) return ""; try { return new Date(iso).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }); } catch (_e) { return ""; } };
+
         const aA = "#FDEEF5"; const Y = "#F9A8D4";
 
         return (
@@ -24768,7 +24773,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <span style={{ marginLeft: 10, fontSize: 11, color: "#F472B6", fontWeight: 500 }}>({storeLeave.length} record{storeLeave.length !== 1 ? "s" : ""})</span>
               </div>
               <div style={{ fontSize: 11, color: "#F472B6", marginBottom: 8 }}>
-                Leave-days used = calendar days minus theoretical off-days (read from each tech's saved schedule for the months covered — O and R cells count as off; Sundays count as a fallback if no schedule has been generated yet).
+                Leave-days used = calendar days minus off-days. Real off-days (O / R) are read from the saved schedule where it exists; days with no off-day info fall back to ~2 off-days a week (leaves of 5 days or fewer count in full).
                 {storeLeave.length > 0 && <span style={{ marginLeft: 6 }}>Total: <strong style={{ color: "#831843" }}>{totalStats.used}</strong> leave days across {totalStats.cal} calendar days ({totalStats.off} off-days excluded).</span>}
               </div>
               {storeLeave.length === 0 ? (
@@ -24784,27 +24789,44 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     // also show when they left.
                     const leftDate = s2 && (s2.offRec && s2.offRec.leftDate) || (s2 && s2.leftDate) || null;
                     const isLeft = !!leftDate;
+                    // Audit trail: who logged it, and who verified the Sage
+                    // balance (the approval gate). When added by someone with
+                    // balance access, the adder and the checker are the same.
+                    const addedBy = lv.balanceRequestedBy || lv.balanceCheckedBy || null;
+                    const addedWhen = fmtWhen(lv.balanceRequestedAt || lv.balanceCheckedAt);
+                    const checkedBy = lv.balanceCheckedBy || null;
+                    const checkedWhen = fmtWhen(lv.balanceCheckedAt);
+                    const cleanNote = (lv.notes || "").replace(/^\[EMERGENCY\]\s*/, "").trim();
                     return (
-                      <div key={lv._id} style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr auto auto auto", gap: 8, alignItems: "center", padding: "7px 0", borderBottom: "1px solid " + aA, fontSize: 12, opacity: isLeft ? 0.55 : 1, color: isLeft ? "#6b7280" : undefined }}>
-                        <div>
-                          <strong style={{ color: isLeft ? "#6b7280" : undefined }}>{s2 ? s2.name : "?"}</strong> · <span style={{ color: "#9ca3af", fontSize: 11 }}>{lv.ec}</span>
-                          {isLeft && <span style={{ marginLeft: 6, background: "#fee2e2", color: "#991b1b", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>👋 LEFT {leftDate}</span>}
-                          {lv.balancePending
-                            ? <div style={{ fontSize: 9.5, color: "#b45309", marginTop: 1, fontWeight: 700 }} title={"Added by " + (lv.balanceRequestedBy || "?") + " — awaiting the payroll officer to verify the balance on Sage."}>⏳ balance pending payroll check{lv.balanceRequestedBy ? " · added by " + lv.balanceRequestedBy : ""}</div>
-                            : lv.balanceCheckedBy
-                              ? <div style={{ fontSize: 9.5, color: "#0f766e", marginTop: 1 }} title={"Leave balance checked by " + lv.balanceCheckedBy + (lv.balanceCheckedAt ? " on " + fmtIncidentDate(lv.balanceCheckedAt) : "")}>🧮 balance {lv.balanceDays != null ? lv.balanceDays + "d" : "checked"} · {lv.balanceCheckedBy}</div>
-                              : <div style={{ fontSize: 9.5, color: "#cbb1bd", marginTop: 1 }} title="Added before the balance check was required.">balance not recorded</div>}
+                      <div key={lv._id} style={{ border: "1px solid " + aA, borderRadius: 10, padding: "9px 12px", marginBottom: 8, background: isLeft ? "#fafafa" : "#fff", opacity: isLeft ? 0.7 : 1 }}>
+                        {/* Top row: person · date range — and leave-days + remove */}
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 700, color: isLeft ? "#6b7280" : "#831843", fontSize: 13 }}>
+                              {s2 ? s2.name : "?"} <span style={{ color: "#9ca3af", fontSize: 11, fontWeight: 400 }}>· {lv.ec}</span>
+                              {lv.emergency && <span style={{ marginLeft: 6, background: "#fed7aa", color: "#9a3412", padding: "1px 7px", borderRadius: 5, fontSize: 9.5, fontWeight: 800, letterSpacing: "0.03em" }} title={lv.notes || "Emergency leave"}>⚠ EMERGENCY</span>}
+                              {isLeft && <span style={{ marginLeft: 6, background: "#fee2e2", color: "#991b1b", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>👋 LEFT {leftDate}</span>}
+                            </div>
+                            <div style={{ fontSize: 12.5, color: isLeft ? "#9ca3af" : "#BE185D", fontWeight: 700, marginTop: 4 }}>
+                              📅 {fmtLeaveDay(lv.startDate)} <span style={{ color: "#d8a7bd" }}>→</span> {fmtLeaveDay(lv.endDate)}
+                            </div>
+                            {cleanNote && <div style={{ fontSize: 10.5, color: "#9d6a82", marginTop: 3, fontStyle: "italic" }}>📝 {cleanNote}</div>}
+                          </div>
+                          <div style={{ display: "flex", alignItems: "flex-start", gap: 8, whiteSpace: "nowrap" }}>
+                            <div title={stats.cal + " calendar day" + (stats.cal !== 1 ? "s" : "") + ", " + stats.off + " theoretical off-day" + (stats.off !== 1 ? "s" : "") + " excluded, " + stats.used + " leave day" + (stats.used !== 1 ? "s" : "") + " used"} style={{ textAlign: "right", lineHeight: 1.25 }}>
+                              <div style={{ fontWeight: 800, color: isLeft ? "#6b7280" : "#0f766e", fontSize: 14 }}>{stats.used} leave day{stats.used !== 1 ? "s" : ""}</div>
+                              <div style={{ fontSize: 9.5, color: "#9ca3af" }}>{stats.cal} cal{stats.off > 0 ? " · −" + stats.off + " off" : ""}</div>
+                            </div>
+                            <button onClick={() => removeLeave(lv._id)} title="Remove this leave record" style={{ background: "transparent", border: "none", color: "#dc2626", cursor: "pointer", fontSize: 15, lineHeight: 1, padding: "0 2px" }}>✕</button>
+                          </div>
                         </div>
-                        <div>{lv.startDate}</div>
-                        <div>{lv.endDate}</div>
-                        <div title={stats.cal + " calendar day" + (stats.cal !== 1 ? "s" : "") + ", " + stats.off + " theoretical off-day" + (stats.off !== 1 ? "s" : "") + " excluded, " + stats.used + " leave day" + (stats.used !== 1 ? "s" : "") + " used"} style={{ color: isLeft ? "#6b7280" : "#831843", fontSize: 11, textAlign: "right", lineHeight: 1.2 }}>
-                          <div style={{ fontWeight: 700 }}>{stats.used} leave day{stats.used !== 1 ? "s" : ""}</div>
-                          <div style={{ fontSize: 9, color: "#9ca3af" }}>{stats.cal} cal.{stats.off > 0 ? " (−" + stats.off + " off)" : ""}</div>
+                        {/* Audit row: who added it + who balance-checked / approved it */}
+                        <div style={{ marginTop: 8, paddingTop: 7, borderTop: "1px dashed " + aA, display: "flex", flexWrap: "wrap", gap: "3px 16px", fontSize: 10.5, color: "#9d6a82" }}>
+                          <span>➕ <strong style={{ color: "#7c5866" }}>Added by</strong> {addedBy || "—"}{addedWhen ? " · " + addedWhen : ""}</span>
+                          {checkedBy
+                            ? <span title={"Sage balance verified" + (checkedWhen ? " on " + checkedWhen : "")}>✅ <strong style={{ color: "#0f766e" }}>Balance checked by</strong> {checkedBy}{checkedWhen ? " · " + checkedWhen : ""}{lv.balanceDays != null ? " · " + lv.balanceDays + "d available" : ""}</span>
+                            : <span style={{ color: "#b45309", fontWeight: 700 }}>⏳ Awaiting payroll balance check</span>}
                         </div>
-                        {lv.emergency
-                          ? <div title={lv.notes || ""}><span style={{ background: "#fed7aa", color: "#9a3412", padding: "2px 8px", borderRadius: 5, fontSize: 10, fontWeight: 700 }}>⚠ EMERGENCY</span></div>
-                          : <div></div>}
-                        <button onClick={() => removeLeave(lv._id)} style={{ background: "transparent", border: "none", color: "#dc2626", cursor: "pointer", fontSize: 14 }}>✕</button>
                       </div>
                     );
                   })}
