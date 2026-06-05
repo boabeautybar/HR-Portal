@@ -24702,11 +24702,59 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (!canCheckBalance) window.alert("Leave added and flagged for the payroll officer to verify the balance (you don't have access to leave balances).");
           setLeaveForm({ ec: "", startDate: "", endDate: "", emergency: false, emergencyNote: "", balanceDays: "", balanceChecked: false });
         };
+        // Clear the 'L' cells the Schedule auto-stamped for a now-removed leave,
+        // so deleting leave in the planner also makes it disappear from the
+        // nail-tech schedule. Only the tech schedule needs this — the manager
+        // planner regenerates its grid from leaveRecs and self-heals stale 'L'.
+        // We touch only cells still reading 'L' (never a real shift / 'ML' / 'X')
+        // and skip any day still covered by another remaining leave record.
+        const clearTechScheduleLeave = async (lv, remaining) => {
+          try {
+            if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return;
+            if (!window.BOA_DB || !window.BOA_DB.loadSchedule || !window.BOA_DB.saveSchedule) return;
+            // Managers (M-suffixed codes / in the managers list) self-heal — skip.
+            if (/M$/i.test(String(lv.ec).trim()) || managers.some(m => m.ec === lv.ec)) return;
+            const person = (staff || []).find(x => x.ec === lv.ec) || (enriched || []).find(x => x.ec === lv.ec);
+            const branch = person && person.branch;
+            if (!branch) return;
+            const want = String(lv.ec).trim().toUpperCase();
+            const _p2 = n => String(n).padStart(2, "0");
+            const stillCovered = (ymd) => (remaining || []).some(r => r && r.ec === lv.ec && r.startDate && r.endDate && ymd >= r.startDate && ymd <= r.endDate);
+            const sd = new Date(lv.startDate + "T00:00:00"), ed = new Date(lv.endDate + "T00:00:00");
+            if (isNaN(sd) || isNaN(ed)) return;
+            // Group the leave's days by the schedule period (25th–24th) that covers them.
+            const byYm = {};
+            for (let d = new Date(sd); d <= ed; d.setDate(d.getDate() + 1)) {
+              const ymd = d.getFullYear() + "-" + _p2(d.getMonth() + 1) + "-" + _p2(d.getDate());
+              if (stillCovered(ymd)) continue;             // another leave still owns this day
+              (byYm[ymdToSchedYm(ymd)] = byYm[ymdToSchedYm(ymd)] || new Set()).add(d.getDate());
+            }
+            for (const ym of Object.keys(byYm)) {
+              const sched = await window.BOA_DB.loadSchedule(branch, ym, false);
+              const grid = (sched && sched.grid) || {};
+              const ecKey = Object.keys(grid).find(k => String(k).trim().toUpperCase() === want);
+              if (!ecKey) continue;
+              const row = grid[ecKey];
+              let touched = false;
+              for (const dom of byYm[ym]) {
+                if (row[dom] === "L") { delete row[dom]; touched = true; }
+                if (row[String(dom)] === "L") { delete row[String(dom)]; touched = true; }
+              }
+              if (touched) {
+                grid[ecKey] = row;
+                await window.BOA_DB.saveSchedule(branch, ym, grid, false);
+                setSchedCache(prev => ({ ...prev, [branch + "|" + ym]: grid }));   // keep breakdowns in sync
+              }
+            }
+          } catch (e) { console.error("clearTechScheduleLeave:", e); }
+        };
         const removeLeave = (id) => {
           const lv = leaveRecs.find(x => x._id === id);
           if (!confirm("Remove this leave record?")) return;
-          persistLeaves(leaveRecs.filter(x => x._id !== id));
+          const remaining = leaveRecs.filter(x => x._id !== id);
+          persistLeaves(remaining);
           if (lv) {
+            clearTechScheduleLeave(lv, remaining);
             const st = staff.find(x => x.ec === lv.ec) || managers.find(x => x.ec === lv.ec);
             const subj = st ? (st.name + " (" + st.ec + ")") : lv.ec;
             logActivity("Removed leave", subj, lv.startDate + " → " + lv.endDate + (lv.notes ? " · " + lv.notes : ""), "Leave");
