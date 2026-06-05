@@ -170,6 +170,24 @@ function effHomeBranch(s, onDate) {
 }
 function fmt(d) { return d ? new Date(d).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : "—"; }
 
+// Catches a mistyped start-date YEAR (e.g. 2006 keyed instead of 2026, which
+// showed up as "20 yrs tenure"). Returns a short human phrase to show in a
+// confirm, or null when the date looks fine. `strict` is for new hires
+// (onboarding) where the start should be around now; the looser default still
+// flags dates that are implausible for anyone — well in the future, or so far
+// back it's almost certainly a wrong year.
+function startDateYearWarning(ymd, opts) {
+  opts = opts || {};
+  if (!ymd) return null;
+  const d = new Date(ymd + "T00:00:00");
+  if (isNaN(d.getTime())) return null;
+  const yrs = (Date.now() - d.getTime()) / (365.25 * 86400000);
+  const r = Math.abs(Math.round(yrs));
+  if (yrs < -1.25) return "is about " + r + " year" + (r === 1 ? "" : "s") + " in the future";
+  if (yrs > (opts.strict ? 1.25 : 15)) return "is about " + r + " years ago" + (opts.strict ? " — new starters begin around now" : "");
+  return null;
+}
+
 // Compress an image File → JPEG data URL bounded by maxDim & quality.
 // Matches the kiosk's helper of the same name so proof images stored
 // from either side stay around the same KB envelope.
@@ -2723,6 +2741,8 @@ function StaffModal({ s, onClose, onSave, onTransfer, allStaff, isOwner, onHardD
 
   const submit = () => {
     if (blockSave) return;
+    const _yw = startDateYearWarning(f.startDate);
+    if (_yw && !window.confirm("⚠ The start date (" + f.startDate + ") " + _yw + ".\n\nThat usually means the year was mistyped (e.g. 2006 instead of 2026). Save it anyway?")) return;
     const fullName = (f.firstName.trim() + " " + f.surname.trim()).trim();
     const out = { ...f, name: fullName, level: f.position };
     onSave(out);
@@ -3179,6 +3199,8 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, onStar
               const hasName = (f.firstName || "").trim() || (f.surname || "").trim();
               if (!hasName) return;
               if (pinInput && pinInput.length !== 6) { alert("Personal PIN must be exactly 6 digits, or left empty."); return; }
+              const _yw = startDateYearWarning(f.startDate);
+              if (_yw && !window.confirm("⚠ The start date (" + f.startDate + ") " + _yw + ".\n\nThat usually means the year was mistyped (e.g. 2006 instead of 2026). Save it anyway?")) return;
               const fullName = ((f.firstName || "").trim() + " " + (f.surname || "").trim()).trim();
               const out = { ...f, name: fullName };
               // Pass the PIN value (could be the same as before, a new one, or empty to clear)
@@ -21373,6 +21395,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         const submitOb = async () => {
           if (!obForm.name || !obForm.ec || !obForm.startDate) { alert("Name, EC, and start date are required."); return; }
+          const _startWarn = startDateYearWarning(obForm.startDate, { strict: true });
+          if (_startWarn && !window.confirm("⚠ The start date (" + obForm.startDate + ") " + _startWarn + ".\n\nThat usually means the year was mistyped (e.g. 2006 instead of 2026). Continue anyway?")) return;
           setObSubmitting(true);
 
           // Manager positions get an "M"-suffixed employee code — that suffix is
