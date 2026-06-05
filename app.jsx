@@ -21257,9 +21257,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const fmt = ymd => ymd ? new Date(ymd + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : "";
         const daysFrom = ymd => Math.floor((t0 - new Date(ymd + "T00:00:00")) / 86400000);
 
-        const recentActive = obList.filter(r => r.startDate && daysFrom(r.startDate) <= 31);
+        // The start date HR maintains lives on the staff / manager record. The
+        // onboarding-history row keeps its OWN copy, which goes stale when HR
+        // later corrects the date on the staff record (e.g. fixing a mistyped
+        // year like 2006 → 2026). Re-sync each onboarding row to the live record
+        // by EC so this tab — and the "recent starters" filter — reflect the
+        // corrected date instead of the old onboarded-20-years-ago value.
+        const _liveStartByEc = {};
+        [...(staff || []), ...(managers || [])].forEach(p => {
+          if (p && p.ec && p.startDate) { const k = String(p.ec).trim().toUpperCase(); if (!(k in _liveStartByEc)) _liveStartByEc[k] = p.startDate; }
+        });
+        const obListEff = (obList || []).map(r => {
+          const live = _liveStartByEc[String(r.ec || "").trim().toUpperCase()];
+          return live && live !== r.startDate ? { ...r, startDate: live } : r;
+        });
+        // Surface recent starters AND any record that's still missing a start
+        // date — an undated record is an incomplete new starter that needs
+        // attention, not an old one to hide (e.g. someone promoted from trial
+        // who never got a start date filled in).
+        const recentActive = obListEff.filter(r => !r.startDate || daysFrom(r.startDate) <= 31);
         const last30 = recentActive.length;
-        const future = obList.filter(r => r.startDate && daysFrom(r.startDate) < 0).length;
+        const future = obListEff.filter(r => r.startDate && daysFrom(r.startDate) < 0).length;
         // Active list = what the grid below renders. Defaults to the
         // "last 31 days" view so HR sees who they're actively chasing;
         // flip to All to see every onboarded employee on record
@@ -21273,21 +21291,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // and tag them so the card can show they have no formal record.
         const _obEcs = new Set((obList || []).map(o => String(o.ec || "").trim().toUpperCase()).filter(Boolean));
         const _isProbationContract = c => /probation/i.test(c || "");
+        const _fromTrialNote = n => /promoted from trial/i.test(n || "");
         const orphanStarters = [...(staff || []), ...(managers || [])]
           .filter(p => {
             if (!p || !p.ec || p.leftDate || p.isShadow) return false;
             if (_obEcs.has(String(p.ec).trim().toUpperCase())) return false;   // already tracked
             const recent = p.startDate && daysFrom(p.startDate) <= 60;
-            return _isProbationContract(p.contract) || recent;                 // a genuine new starter
+            // A genuine new starter: on probation, recently started, OR carrying
+            // the "Promoted from Trial" note. The last case catches a promoted
+            // manager who was never given a start date — without it they'd vanish
+            // from this tab entirely (no date to match on, not in obList).
+            return _isProbationContract(p.contract) || recent || _fromTrialNote(p.notes);
           })
           .map(p => {
             const isMgr = isManagerEc(p.ec) || p.roleType === "manager";
             const position = isMgr
               ? (p.role && /^(AM|SM|SSM)$/i.test(p.role) ? p.role.toUpperCase() : "Manager")
               : "Nail Tech";
-            return { _id: "orphan-" + p.ec, name: p.name, ec: p.ec, branch: p.branch, position, startDate: p.startDate || "", notes: "", _orphanStarter: true };
+            return { _id: "orphan-" + p.ec, name: p.name, ec: p.ec, branch: p.branch, position, startDate: p.startDate || "", notes: p.notes || "", _orphanStarter: true, _noStartDate: !p.startDate };
           });
-        const active = [...(obFilter === "all" ? obList.slice() : recentActive), ...orphanStarters];
+        const active = [...(obFilter === "all" ? obListEff.slice() : recentActive), ...orphanStarters];
 
         const grp = { "Nail Tech": [], "Manager": [], "Head Office": [], "Other": [] };
         for (const r of active) {
@@ -21719,9 +21742,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                       {items.map(r => {
-                        const ds = daysFrom(r.startDate);
-                        const statusLabel = ds < 0 ? "starts in " + Math.abs(ds) + "d" : ds === 0 ? "started today" : ds === 1 ? "started yesterday" : ds + " days in";
-                        const [bg, color] = ds < 0 ? ["#dbeafe", "#1e3a8a"] : ds <= 7 ? ["#dcfce7", "#14532d"] : ["#f3f4f6", "#475569"];
+                        const hasStart = !!r.startDate;
+                        const ds = hasStart ? daysFrom(r.startDate) : null;
+                        const statusLabel = !hasStart ? "needs start date"
+                          : ds < 0 ? "starts in " + Math.abs(ds) + "d" : ds === 0 ? "started today" : ds === 1 ? "started yesterday" : ds + " days in";
+                        const [bg, color] = !hasStart ? ["#fee2e2", "#991b1b"]
+                          : ds < 0 ? ["#dbeafe", "#1e3a8a"] : ds <= 7 ? ["#dcfce7", "#14532d"] : ["#f3f4f6", "#475569"];
                         const posLabel = r.position === "SSM" ? "Senior Store Manager" : r.position === "SM" ? "Store Manager" : r.position === "AM" ? "Assistant Manager" : (r.position === "Other" && r.positionOther) ? r.positionOther : r.position;
                         return (
                           <div key={r._id} style={{ background: "#FFFFFF", borderRadius: 11, border: "1px solid #FBCFE8", padding: "12px 14px", boxShadow: "0 2px 4px rgba(0,0,0,0.02)" }}>
@@ -21738,7 +21764,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             </div>
                             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
                               <span style={{ background: "#fce7f3", color: "#831843", fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 99 }}>{posLabel}</span>
-                              <span style={{ fontSize: 11, color: "#831843", fontWeight: 600 }}>📅 {fmt(r.startDate)}</span>
+                              <span style={{ fontSize: 11, color: "#831843", fontWeight: 600 }}>📅 {hasStart ? fmt(r.startDate) : "—"}</span>
                               <span style={{ background: bg, color: color, fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 99 }}>{statusLabel}</span>
                             </div>
                             {r.notes && <div style={{ fontSize: 12, color: "#6b7280", marginTop: 8, fontStyle: "italic" }}>{r.notes}</div>}
