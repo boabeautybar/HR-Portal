@@ -6584,19 +6584,18 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                   {(() => {
                     const activeTechs = techs.filter(t => !t.onMat); return days.map(d => {
                       const _dYmd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
-                      // The day's "working" tally counts everyone who is accounted
-                      // for, not just bodies on the floor: actual shifts PLUS people
-                      // on annual leave (L), on maternity (ML), or permanently
-                      // transferred out to another branch. They shouldn't make the
-                      // branch read as short — their absence is already covered for.
-                      const working = techs.filter(s => {
+                      // Count ONLY people actually on THIS store's floor that day.
+                      // Annual leave (L) and maternity (ML / on-mat) are already
+                      // non-work cells; on top of that we drop anyone whose shift
+                      // isn't here — permanently transferred out, or loaned out to
+                      // another store for the day.
+                      const working = activeTechs.filter(s => {
                         const v = (grid[s.ec] || {})[d.d];
-                        if (v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E") return true;
-                        if (v === "L" || v === "ML") return true;          // annual leave / maternity
-                        if (s.onMat) return true;                           // full-cycle maternity row
-                        const _xd = s.transferDate || null;                 // permanently transferred out from here
-                        if (_xd && !s.isShadow && s.transferring && _dYmd >= _xd) return true;
-                        return false;
+                        if (!(v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E")) return false;
+                        const _xd = s.transferDate || null;
+                        if (_xd && !s.isShadow && s.transferring && _dYmd >= _xd) return false;   // permanently transferred out
+                        if ((techLoans || []).some(l => l && l.ec === s.ec && l.date === _dYmd && l.fromBranch === branch)) return false;   // loaned out to another store today
+                        return true;
                       }).length;
                       const needed = minWorkingFor(d, activeTechs.length);
                       const ok = working >= needed;
