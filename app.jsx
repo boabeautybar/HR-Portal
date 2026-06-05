@@ -24422,6 +24422,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             label: MN[prevM - 1] + " 25 – " + MN[m - 1] + " 24, " + y
           });
         }
+        // Payroll-cycle helpers. A cycle runs the 25th → the 24th of the next
+        // month; `ym` (YYYY-MM) names the cycle by its END month. cycleStarts
+        // holds the first allDays index of each cycle so the grid can draw a
+        // clear boundary where one cycle ends and the next begins.
+        const cycleStarts = new Set(monthLabels.map(ml => ml.start));
+        const cycleLabel = (ymStr) => {
+          if (!ymStr) return "";
+          const p = String(ymStr).split("-").map(Number); const yy = p[0], mm = p[1];
+          if (!yy || !mm) return ymStr;
+          let pm = mm - 1, py = yy; if (pm < 1) { pm = 12; py = yy - 1; }
+          return "25 " + MN[pm - 1] + (py !== yy ? " " + py : "") + " – 24 " + MN[mm - 1] + " " + yy;
+        };
+        const cycleOptions = (() => {
+          const out = [], now = new Date();
+          for (let i = -18; i <= 18; i++) { const dt = new Date(now.getFullYear(), now.getMonth() + i, 1); out.push(dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0")); }
+          if (ym && out.indexOf(ym) === -1) out.push(ym);
+          return out.sort();
+        })();
         const onLeaveAt = (ec, iso) => {
           for (const lv of leaveRecs) {
             if (lv.ec === ec && iso >= lv.startDate && iso <= lv.endDate) return lv;
@@ -24613,7 +24631,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                 <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>FROM CYCLE</label>
-                <input type="month" value={ym} onChange={e => setLeaveYM(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: "1px solid " + Y, fontFamily: "inherit", fontSize: 13, background: aA }} />
+                <select value={ym} onChange={e => setLeaveYM(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: "1px solid " + Y, fontFamily: "inherit", fontSize: 13, background: aA, minWidth: 210 }}>
+                  {cycleOptions.map(v => <option key={v} value={v}>{cycleLabel(v)}</option>)}
+                </select>
               </div>
               <div style={{ flex: 1, minWidth: 240, fontSize: 12, color: "#831843", lineHeight: 1.5 }}>
                 <div><strong>{peopleAtBranch.length}</strong> active {peopleAtBranch.length !== 1 ? peopleTypePlural : peopleType} at <strong>{br}</strong> · cap: <strong style={{ color: "#F472B6" }}>max {maxLeave} on annual leave per day</strong> (20%)</div>
@@ -24692,8 +24712,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <tr>
                       <th style={{ padding: "6px 8px", textAlign: "left", position: "sticky", left: 0, background: aA, zIndex: 2, minWidth: 160, fontSize: 9, color: "#F472B6", borderBottom: "1px solid " + Y, borderRight: "2px solid " + Y }}>{isTechMode ? "NAIL TECH" : "MANAGER"}</th>
                       {monthLabels.map(ml => (
-                        <th key={ml.y + "-" + ml.m} colSpan={ml.len} style={{ padding: "5px 0", textAlign: "center", borderBottom: "1px solid " + Y, background: ml.peak ? "#fef3c7" : aA, fontSize: 11, fontWeight: 700, color: ml.peak ? "#78350f" : "#831843", borderLeft: "2px solid " + Y }}>
-                          {ml.label}{ml.peak ? " ⚠" : ""}
+                        <th key={ml.y + "-" + ml.m} colSpan={ml.len} style={{ padding: "6px 0", textAlign: "center", borderBottom: "1px solid " + Y, background: ml.peak ? "#fef3c7" : "#fce7f3", fontSize: 11.5, fontWeight: 800, color: ml.peak ? "#78350f" : "#831843", borderLeft: "3px solid #831843" }}>
+                          {cycleLabel(ml.y + "-" + String(ml.m).padStart(2, "0"))}{ml.peak ? " ⚠" : ""}
                         </th>
                       ))}
                     </tr>
@@ -24701,10 +24721,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <th style={{ padding: "3px 8px", position: "sticky", left: 0, background: aA, zIndex: 2, fontSize: 9, color: "#F472B6", borderBottom: "1px solid " + Y, borderRight: "2px solid " + Y }}></th>
                       {allDays.map((d, di) => {
                         const isMS = di === 0 || d.m !== allDays[di - 1].m;
+                        const isCS = cycleStarts.has(di);
                         const wknd = d.dow === 0 || d.dow === 6;
                         const isToday = d.iso === todayIso;
                         return (
-                          <th key={d.iso} title={fmtLeaveDay(d.iso) + (isToday ? " · today" : "")} style={{ padding: "3px 2px", textAlign: "center", borderTop: isToday ? "2px solid #BE185D" : "none", borderBottom: isToday ? "2px solid #BE185D" : "1px solid " + Y, background: isToday ? "#fbcfe8" : (d.peak ? "#fef3c7" : (wknd ? "#f3f4f6" : aA)), color: d.peak ? "#78350f" : (wknd ? "#b91c1c" : "#831843"), minWidth: 23, fontWeight: 700, borderLeft: isToday ? "2px solid #BE185D" : (isMS ? "2px solid " + Y : "none"), borderRight: isToday ? "2px solid #BE185D" : "none" }}>
+                          <th key={d.iso} title={fmtLeaveDay(d.iso) + (isToday ? " · today" : "") + (isCS ? " · cycle start" : (d.d === 24 ? " · cycle end" : ""))} style={{ padding: "3px 2px", textAlign: "center", borderTop: isToday ? "2px solid #BE185D" : "none", borderBottom: isToday ? "2px solid #BE185D" : "1px solid " + Y, background: isToday ? "#fbcfe8" : (d.peak ? "#fef3c7" : (wknd ? "#f3f4f6" : aA)), color: d.peak ? "#78350f" : (wknd ? "#b91c1c" : "#831843"), minWidth: 23, fontWeight: 700, borderLeft: isToday ? "2px solid #BE185D" : (isCS ? "3px solid #831843" : (isMS ? "2px solid " + Y : "none")), borderRight: isToday ? "2px solid #BE185D" : "none" }}>
                             <div style={{ fontSize: 8, lineHeight: 1, fontWeight: 700, opacity: 0.85 }}>{WD[d.dow]}</div>
                             <div style={{ fontSize: 11, lineHeight: 1.25, fontWeight: isToday ? 800 : 700 }}>{d.d}</div>
                           </th>
@@ -24736,6 +24757,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           } else if (d.peak) bg = "#fefce8";
                           else if (d.dow === 0 || d.dow === 6) bg = "#f3f4f6";
                           const isMS = di === 0 || d.m !== allDays[di - 1].m;
+                          const isCS = cycleStarts.has(di);
                           const isToday = d.iso === todayIso;
                           if (!lv && isToday) bg = "#fbcfe8";   // highlight today's column
                           const ttl = lv ? (lv.type + ": " + lv.startDate + " → " + lv.endDate + (lv.notes ? " · " + lv.notes : "") + "\n\n(Click to remove this leave)")
@@ -24745,7 +24767,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               onClick={lv ? () => {
                                 if (confirm("Remove this leave?\n\n" + (st.name || st.ec) + "\n" + lv.type + ": " + lv.startDate + " → " + lv.endDate)) removeLeave(lv._id);
                               } : undefined}
-                              style={{ padding: 0, minWidth: 23, height: 26, textAlign: "center", borderBottom: "1px solid " + aA, background: bg, color: fg, borderLeft: isToday ? "2px solid #BE185D" : (isMS ? "2px solid " + Y : "none"), borderRight: isToday ? "2px solid #BE185D" : "none", fontSize: 11, fontWeight: 800, cursor: lv ? "pointer" : "default" }}>{lbl}</td>
+                              style={{ padding: 0, minWidth: 23, height: 26, textAlign: "center", borderBottom: "1px solid " + aA, background: bg, color: fg, borderLeft: isToday ? "2px solid #BE185D" : (isCS ? "3px solid #831843" : (isMS ? "2px solid " + Y : "none")), borderRight: isToday ? "2px solid #BE185D" : "none", fontSize: 11, fontWeight: 800, cursor: lv ? "pointer" : "default" }}>{lbl}</td>
                           );
                         })}
                       </tr>
@@ -24757,10 +24779,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         let bg = ct === 0 ? "transparent" : ct < maxLeave ? "#dcfce7" : ct === maxLeave ? "#fef3c7" : "#fee2e2";
                         const fg = ct === 0 ? "#cbd5e1" : ct < maxLeave ? "#14532d" : ct === maxLeave ? "#78350f" : "#7f1d1d";
                         const isMS = di === 0 || d.m !== allDays[di - 1].m;
+                        const isCS = cycleStarts.has(di);
                         const isToday = d.iso === todayIso;
                         if (ct === 0 && isToday) bg = "#fbcfe8";
                         return (
-                          <td key={d.iso} title={fmtLeaveDay(d.iso) + ": " + ct + " on annual leave" + (isToday ? " · today" : "")} style={{ padding: "3px 0", minWidth: 23, textAlign: "center", borderTop: isToday ? "2px solid #BE185D" : "2px solid " + Y, borderBottom: isToday ? "2px solid #BE185D" : "none", background: bg, color: fg, borderLeft: isToday ? "2px solid #BE185D" : (isMS ? "2px solid " + Y : "none"), borderRight: isToday ? "2px solid #BE185D" : "none", fontSize: 10, fontWeight: 800 }}>{ct || "·"}</td>
+                          <td key={d.iso} title={fmtLeaveDay(d.iso) + ": " + ct + " on annual leave" + (isToday ? " · today" : "")} style={{ padding: "3px 0", minWidth: 23, textAlign: "center", borderTop: isToday ? "2px solid #BE185D" : "2px solid " + Y, borderBottom: isToday ? "2px solid #BE185D" : "none", background: bg, color: fg, borderLeft: isToday ? "2px solid #BE185D" : (isCS ? "3px solid #831843" : (isMS ? "2px solid " + Y : "none")), borderRight: isToday ? "2px solid #BE185D" : "none", fontSize: 10, fontWeight: 800 }}>{ct || "·"}</td>
                         );
                       })}
                     </tr>
@@ -24778,6 +24801,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <span><span style={{ background: "#e5e7eb", color: "#374151", padding: "2px 6px", borderRadius: 3, fontWeight: 700 }}>U</span> Unpaid</span>
               <span><span style={{ background: "#fef3c7", padding: "2px 8px", borderRadius: 3, border: "1px solid #fcd34d" }}>&nbsp;&nbsp;&nbsp;</span> Peak season month</span>
               <span><span style={{ background: "#fbcfe8", padding: "2px 8px", borderRadius: 3, border: "1px solid #BE185D" }}>&nbsp;&nbsp;&nbsp;</span> Today</span>
+              <span><span style={{ display: "inline-block", borderLeft: "3px solid #831843", paddingLeft: 4, height: 12, verticalAlign: "middle" }}></span> Cycle boundary (25th → 24th)</span>
               <span><span style={{ background: "#dcfce7", color: "#14532d", padding: "2px 6px", borderRadius: 3, fontWeight: 800 }}>3</span> count under cap</span>
               <span><span style={{ background: "#fef3c7", color: "#78350f", padding: "2px 6px", borderRadius: 3, fontWeight: 800 }}>{maxLeave}</span> at cap</span>
             </div>
