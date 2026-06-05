@@ -14093,7 +14093,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // would otherwise read as "scheduled to work".
         const _branchMgrEcs = new Set(
           (managers || [])
-            .filter(m => m && m.branch === name && !m.onMat && !m.offboarded && !(m.leftDate && ymd > m.leftDate))
+            .filter(m => m && m.branch === name && !m.onMat && !m.offboarded && !(m.leftDate && ymd > m.leftDate) && !(m.startDate && ymd < m.startDate))
             .map(m => String(m.ec || "").trim())
             .filter(Boolean)
         );
@@ -16767,7 +16767,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     if (onLeaveEcs.has(ec)) continue;
                     const m = mgrByEc[ec];
                     if (!m) continue;
-                    if (m.onMat || m.offboarded || (m.leftDate && _todayYmd > m.leftDate)) continue;
+                    if (m.onMat || m.offboarded || (m.leftDate && _todayYmd > m.leftDate) || (m.startDate && _todayYmd < m.startDate)) continue;
                     const sid = m._id || m.id;
                     if (sid && taggedKeys.has(sid + "|" + _todayYmd)) continue;
                     pending.push({ ec, name: m.name, branch: branchName, staffId: sid });
