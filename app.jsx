@@ -21141,8 +21141,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
           let savedStaff;
           try {
-            savedStaff = await window.BOA_DB.saveStaff(newStaff);
-            setStaff([...staff.filter(s => s.ec !== newStaff.ec), savedStaff]);
+            if (isMgrPos) {
+              // Manager hire (incl. promoted AM/SM trials): persist via the
+              // manager path so the row is manager-shaped and lands in the
+              // managers list — not the nail-tech list. Without this, a
+              // promoted trial manager showed up as a nail tech until reload.
+              savedStaff = await window.BOA_DB.saveManager(newStaff);
+              setManagers(ms => [...(ms || []).filter(m => m.ec !== newStaff.ec), savedStaff]);
+            } else {
+              savedStaff = await window.BOA_DB.saveStaff(newStaff);
+              setStaff([...staff.filter(s => s.ec !== newStaff.ec), savedStaff]);
+            }
           } catch (e) {
             alert("Failed to save staff record: " + (e.message || e));
             setObSubmitting(false);
