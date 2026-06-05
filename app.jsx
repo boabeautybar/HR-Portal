@@ -24574,6 +24574,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // leave range, and a short stamp for the audit (added / checked) times.
         const fmtLeaveDay = (ymd) => { try { return new Date(ymd + "T00:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short", year: "numeric" }); } catch (_e) { return String(ymd || "—"); } };
         const fmtWhen = (iso) => { if (!iso) return ""; try { return new Date(iso).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }); } catch (_e) { return ""; } };
+        // Weekday initials + today marker so the dense calendar grid is readable.
+        const WD = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+        const _td = new Date();
+        const todayIso = _td.getFullYear() + "-" + String(_td.getMonth() + 1).padStart(2, "0") + "-" + String(_td.getDate()).padStart(2, "0");
 
         const aA = "#FDEEF5"; const Y = "#F9A8D4";
 
@@ -24697,8 +24701,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <th style={{ padding: "3px 8px", position: "sticky", left: 0, background: aA, zIndex: 2, fontSize: 9, color: "#F472B6", borderBottom: "1px solid " + Y, borderRight: "2px solid " + Y }}></th>
                       {allDays.map((d, di) => {
                         const isMS = di === 0 || d.m !== allDays[di - 1].m;
+                        const wknd = d.dow === 0 || d.dow === 6;
+                        const isToday = d.iso === todayIso;
                         return (
-                          <th key={d.iso} style={{ padding: "3px 1px", textAlign: "center", borderBottom: "1px solid " + Y, background: d.peak ? "#fef3c7" : (d.dow === 0 || d.dow === 6 ? "#fafafa" : aA), fontSize: 9, color: d.peak ? "#78350f" : (d.dow === 0 || d.dow === 6 ? "#7f1d1d" : "#831843"), minWidth: 18, fontWeight: 600, borderLeft: isMS ? "2px solid " + Y : "none" }}>{d.d}</th>
+                          <th key={d.iso} title={fmtLeaveDay(d.iso) + (isToday ? " · today" : "")} style={{ padding: "3px 2px", textAlign: "center", borderBottom: isToday ? "2px solid #BE185D" : "1px solid " + Y, background: isToday ? "#fbcfe8" : (d.peak ? "#fef3c7" : (wknd ? "#f3f4f6" : aA)), color: d.peak ? "#78350f" : (wknd ? "#b91c1c" : "#831843"), minWidth: 23, fontWeight: 700, borderLeft: isMS ? "2px solid " + Y : "none" }}>
+                            <div style={{ fontSize: 8, lineHeight: 1, fontWeight: 700, opacity: 0.85 }}>{WD[d.dow]}</div>
+                            <div style={{ fontSize: 11, lineHeight: 1.25, fontWeight: isToday ? 800 : 700 }}>{d.d}</div>
+                          </th>
                         );
                       })}
                     </tr>
@@ -24725,16 +24734,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             else if (lv.type === "Unpaid") { bg = "#e5e7eb"; fg = "#374151"; lbl = "U"; }
                             else { bg = "#fef9c3"; fg = "#854d0e"; lbl = (lv.type || "?")[0]; }
                           } else if (d.peak) bg = "#fefce8";
-                          else if (d.dow === 0 || d.dow === 6) bg = "#fafafa";
+                          else if (d.dow === 0 || d.dow === 6) bg = "#f3f4f6";
                           const isMS = di === 0 || d.m !== allDays[di - 1].m;
+                          const isToday = d.iso === todayIso;
+                          if (!lv && isToday) bg = "#fbcfe8";   // highlight today's column
                           const ttl = lv ? (lv.type + ": " + lv.startDate + " → " + lv.endDate + (lv.notes ? " · " + lv.notes : "") + "\n\n(Click to remove this leave)")
-                            : d.peak ? (d.iso + " (peak season)") : d.iso;
+                            : (fmtLeaveDay(d.iso) + (isToday ? " · today" : "") + (d.peak ? " (peak season)" : ""));
                           return (
                             <td key={d.iso} title={ttl}
                               onClick={lv ? () => {
                                 if (confirm("Remove this leave?\n\n" + (st.name || st.ec) + "\n" + lv.type + ": " + lv.startDate + " → " + lv.endDate)) removeLeave(lv._id);
                               } : undefined}
-                              style={{ padding: 0, minWidth: 18, height: 22, textAlign: "center", borderBottom: "1px solid " + aA, background: bg, color: fg, borderLeft: isMS ? "2px solid " + Y : "none", fontSize: 9, fontWeight: 700, cursor: lv ? "pointer" : "default" }}>{lbl}</td>
+                              style={{ padding: 0, minWidth: 23, height: 26, textAlign: "center", borderBottom: "1px solid " + aA, background: bg, color: fg, borderLeft: isMS ? "2px solid " + Y : "none", fontSize: 11, fontWeight: 800, cursor: lv ? "pointer" : "default" }}>{lbl}</td>
                           );
                         })}
                       </tr>
@@ -24743,11 +24754,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <td style={{ padding: "5px 8px", position: "sticky", left: 0, background: aA, fontSize: 9, fontWeight: 700, color: "#F472B6", letterSpacing: "0.04em", borderTop: "2px solid " + Y, borderRight: "2px solid " + Y }}>ANNUAL / {maxLeave}</td>
                       {allDays.map((d, di) => {
                         const ct = annualCount(d.iso);
-                        const bg = ct === 0 ? "transparent" : ct < maxLeave ? "#dcfce7" : ct === maxLeave ? "#fef3c7" : "#fee2e2";
+                        let bg = ct === 0 ? "transparent" : ct < maxLeave ? "#dcfce7" : ct === maxLeave ? "#fef3c7" : "#fee2e2";
                         const fg = ct === 0 ? "#cbd5e1" : ct < maxLeave ? "#14532d" : ct === maxLeave ? "#78350f" : "#7f1d1d";
                         const isMS = di === 0 || d.m !== allDays[di - 1].m;
+                        const isToday = d.iso === todayIso;
+                        if (ct === 0 && isToday) bg = "#fbcfe8";
                         return (
-                          <td key={d.iso} title={d.iso + ": " + ct + " on annual leave"} style={{ padding: "3px 0", minWidth: 18, textAlign: "center", borderTop: "2px solid " + Y, background: bg, color: fg, borderLeft: isMS ? "2px solid " + Y : "none", fontSize: 9, fontWeight: 800 }}>{ct || "·"}</td>
+                          <td key={d.iso} title={fmtLeaveDay(d.iso) + ": " + ct + " on annual leave" + (isToday ? " · today" : "")} style={{ padding: "3px 0", minWidth: 23, textAlign: "center", borderTop: "2px solid " + Y, background: bg, color: fg, borderLeft: isMS ? "2px solid " + Y : "none", fontSize: 10, fontWeight: 800 }}>{ct || "·"}</td>
                         );
                       })}
                     </tr>
@@ -24764,6 +24777,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <span><span style={{ background: "#fce7f3", color: "#BE185D", padding: "2px 6px", borderRadius: 3, fontWeight: 700 }}>M</span> Maternity</span>
               <span><span style={{ background: "#e5e7eb", color: "#374151", padding: "2px 6px", borderRadius: 3, fontWeight: 700 }}>U</span> Unpaid</span>
               <span><span style={{ background: "#fef3c7", padding: "2px 8px", borderRadius: 3, border: "1px solid #fcd34d" }}>&nbsp;&nbsp;&nbsp;</span> Peak season month</span>
+              <span><span style={{ background: "#fbcfe8", padding: "2px 8px", borderRadius: 3, border: "1px solid #BE185D" }}>&nbsp;&nbsp;&nbsp;</span> Today</span>
               <span><span style={{ background: "#dcfce7", color: "#14532d", padding: "2px 6px", borderRadius: 3, fontWeight: 800 }}>3</span> count under cap</span>
               <span><span style={{ background: "#fef3c7", color: "#78350f", padding: "2px 6px", borderRadius: 3, fontWeight: 800 }}>{maxLeave}</span> at cap</span>
             </div>
@@ -24825,7 +24839,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <span>➕ <strong style={{ color: "#7c5866" }}>Added by</strong> {addedBy || "—"}{addedWhen ? " · " + addedWhen : ""}</span>
                           {checkedBy
                             ? <span title={"Sage balance verified" + (checkedWhen ? " on " + checkedWhen : "")}>✅ <strong style={{ color: "#0f766e" }}>Balance checked by</strong> {checkedBy}{checkedWhen ? " · " + checkedWhen : ""}{lv.balanceDays != null ? " · " + lv.balanceDays + "d available" : ""}</span>
-                            : <span style={{ color: "#b45309", fontWeight: 700 }}>⏳ Awaiting payroll balance check</span>}
+                            : lv.balancePending
+                              ? <span style={{ color: "#b45309", fontWeight: 700 }}>⏳ Awaiting payroll balance check</span>
+                              : <span style={{ color: "#0f766e", fontWeight: 600 }} title="Added before the balance-check step — already on the approved calendar.">✅ Already approved</span>}
                         </div>
                       </div>
                     );
