@@ -11088,8 +11088,14 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
     (async () => {
       setScanLoading(true);
       const winStart = ymdAddDays(today, -SCAN_DAYS);
-      const taken = {};
-      const addDay = (norm, ymd) => { if (!norm || !ymd || ymd < winStart || ymd > today) return; (taken[norm] || (taken[norm] = new Set())).add(ymd); };
+      const taken = {};   // norm → Map(ymd → provisional?)  (provisional = mirrored "~frl", not yet confirmed)
+      const addDay = (norm, ymd, prov) => {
+        if (!norm || !ymd || ymd < winStart || ymd > today) return;
+        const m = taken[norm] || (taken[norm] = new Map());
+        const cur = m.get(ymd);
+        if (cur === undefined) m.set(ymd, !!prov);
+        else if (cur === true && !prov) m.set(ymd, false);   // a confirmed sighting upgrades a provisional one
+      };
       const yms = listAttYms(winStart, today);
       // 1. Attendance sheets (techs) — covers the master timesheet + mirrored kiosk check-ins.
       try {
@@ -11099,8 +11105,9 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
           Object.keys(grid).forEach(ec => {
             const row = grid[ec] || {};
             Object.keys(row).forEach(dk => {
-              if (String(row[dk] == null ? "" : row[dk]).replace(/^~/, "") !== "frl") return;
-              addDay(lbNormEc(ec), attCellYmd(ym, dk));
+              const raw = String(row[dk] == null ? "" : row[dk]);
+              if (raw.replace(/^~/, "") !== "frl") return;
+              addDay(lbNormEc(ec), attCellYmd(ym, dk), raw.charAt(0) === "~");
             });
           });
         })));
@@ -11108,14 +11115,14 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
       // 2. Nail-tech kiosk check-ins (in case not yet mirrored into the sheet).
       try {
         const rows = (window.BOA_DB.listRecentKioskCheckins ? await window.BOA_DB.listRecentKioskCheckins(SCAN_DAYS + 2, SALONS.map(s => s.name)) : []) || [];
-        rows.forEach(r => { if (r && r.ec && r.ymd && String(r.status || "").replace(/^~/, "") === "frl") addDay(lbNormEc(r.ec), r.ymd); });
+        rows.forEach(r => { if (r && r.ec && r.ymd && String(r.status || "").replace(/^~/, "") === "frl") addDay(lbNormEc(r.ec), r.ymd, String(r.status || "").charAt(0) === "~"); });
       } catch (_e) { }
       // 3. Manager check-ins (manager_day_status is keyed by staff_id).
       try {
         const ecBySid = {};
         (managers || []).forEach(m => { const sid = m._id || m.id; if (sid && m.ec) ecBySid[String(sid)] = m.ec; });
         const rows = (window.BOA_DB.loadManagerDayStatuses ? await window.BOA_DB.loadManagerDayStatuses(SCAN_DAYS + 2) : []) || [];
-        rows.forEach(s => { if (s && s.date && String(s.status || "").replace(/^~/, "") === "frl") { const ec = ecBySid[String(s.staff_id)]; if (ec) addDay(lbNormEc(ec), s.date); } });
+        rows.forEach(s => { if (s && s.date && String(s.status || "").replace(/^~/, "") === "frl") { const ec = ecBySid[String(s.staff_id)]; if (ec) addDay(lbNormEc(ec), s.date, String(s.status || "").charAt(0) === "~"); } });
       } catch (_e) { }
       if (!off) { setFrlTaken(taken); setScanLoading(false); }
     })();
@@ -11132,6 +11139,9 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
 
   // Per active person: tenure, eligibility, current FRL year, used (reset when a
   // newer anniversary has passed since the upload), available.
+  // Current payroll cycle (25th → 24th) that contains today.
+  const payCycle = useMemo(() => { const ym = ymdToAttYm(today); return { start: attCellYmd(ym, "25"), end: attCellYmd(ym, "24") }; }, [today]);
+
   const rows = useMemo(() => {
     if (!data) return [];
     const seen = new Set(); const out = [];
@@ -11151,27 +11161,34 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
       let base = entitlement;   // balance as captured (before auto-deductions)
       if (recorded) base = entry.remaining != null ? Number(entry.remaining) : (entry.used != null ? entitlement - Number(entry.used) : entitlement);
       base = Math.max(0, Math.min(entitlement, base));
-      // Auto-deduct any FRL recorded in attendance / check-ins AFTER the balance
-      // was captured (per-entry asOf, else the global as-of, else cycle start),
-      // within the current cycle.
+      // Confirmed FRL recorded AFTER the balance was captured (per-entry asOf,
+      // else the global as-of, else cycle start) is deducted from the balance.
+      // Provisional ("~frl") days are NOT deducted yet — they show as pending.
       let since = cyc ? cyc.start : start;
       if (recorded) since = entry.asOf || data.asOf || since;
       else if (data.asOf && cyc && data.asOf > cyc.start) since = data.asOf;
       let autoUsed = 0; const autoDates = [];
+      let pendingCount = 0; const pendingDates = [];   // FRL in the current payroll cycle (planned deduction)
       if (eligible && cyc) {
-        const set = frlTaken[norm];
-        if (set) set.forEach(ymd => { if (ymd > since && ymd >= cyc.start && ymd <= cyc.end && ymd <= today) { autoUsed++; autoDates.push(ymd); } });
+        const m = frlTaken[norm];
+        if (m) m.forEach((prov, ymd) => {
+          const inCyc = ymd >= cyc.start && ymd <= cyc.end;
+          if (!inCyc) return;
+          if (!prov && ymd > since && ymd <= today) { autoUsed++; autoDates.push(ymd); }
+          if (ymd >= payCycle.start && ymd <= payCycle.end) { pendingCount++; pendingDates.push({ ymd, prov }); }
+        });
       }
       autoDates.sort();
+      pendingDates.sort((a, b) => a.ymd.localeCompare(b.ymd));
       const available = eligible ? Math.max(0, Math.min(entitlement, base - autoUsed)) : 0;
       const used = eligible ? entitlement - available : 0;
       const eligibleOn = start ? addMonthsYmd(start, FRL_QUALIFY_MONTHS) : "";
-      out.push({ norm, ec: p.ec, name: p.name || p.ec, branch: p.branch || "", role, start, months, eligible, eligibleOn, cyc, used, entitlement, available, recorded, autoUsed, autoDates });
+      out.push({ norm, ec: p.ec, name: p.name || p.ec, branch: p.branch || "", role, start, months, eligible, eligibleOn, cyc, used, entitlement, available, recorded, autoUsed, autoDates, pendingCount, pendingDates });
     };
     (enriched || []).forEach(p => add(p, "Nail tech"));
     (managers || []).forEach(m => add(m, m.role || "Manager"));
     return out.sort((a, b) => (a.name || a.ec).localeCompare(b.name || b.ec));
-  }, [data, enriched, managers, frlTaken]);
+  }, [data, enriched, managers, frlTaken, payCycle]);
 
   const filtered = useMemo(() => {
     const qq = q.trim().toLowerCase();
@@ -11228,7 +11245,7 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
   const card = { background: "#fff", border: "1px solid #FBCFE8", borderRadius: 14, padding: "16px 18px" };
   const inp = { padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, color: "#831843" };
 
-  const stats = useMemo(() => { let elig = 0, avail = 0, used = 0, auto = 0; rows.forEach(r => { if (r.eligible) elig++; avail += r.available; used += r.used; auto += r.autoUsed || 0; }); return { n: rows.length, elig, avail, used, auto }; }, [rows]);
+  const stats = useMemo(() => { let elig = 0, avail = 0, used = 0, auto = 0, pend = 0; rows.forEach(r => { if (r.eligible) elig++; avail += r.available; used += r.used; auto += r.autoUsed || 0; pend += r.pendingCount || 0; }); return { n: rows.length, elig, avail, used, auto, pend }; }, [rows]);
 
   if (loading) return <div style={{ padding: 24, color: "#9ca3af", fontStyle: "italic" }}>Loading family responsibility leave…</div>;
 
@@ -11237,7 +11254,7 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 14 }}>
         <div>
           <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700 }}>👪 Family Responsibility Leave</div>
-          <div style={{ fontSize: 12.5, color: "#9d6a82", marginTop: 2, maxWidth: 860 }}>3 paid days per employment year — available only after <strong>4 months'</strong> service, and reset on each <strong>work anniversary</strong> (unused days don't roll over). Upload each person's <strong>current balance</strong> (days they have left); from then on any FRL marked on the <strong>attendance sheet or a check-in</strong> (status “FRL”) is <strong>deducted automatically</strong> for the current cycle.</div>
+          <div style={{ fontSize: 12.5, color: "#9d6a82", marginTop: 2, maxWidth: 880 }}>3 paid days per employment year — available only after <strong>4 months'</strong> service, and reset on each <strong>work anniversary</strong> (unused days don't roll over). Upload each person's <strong>current balance</strong> (days they have left); from then on any FRL marked on the <strong>attendance sheet or a check-in</strong> (status “FRL”) is <strong>deducted automatically</strong>. The <strong>This pay cycle</strong> column shows the planned deduction for the current payroll run — {fmtD(payCycle.start)} → {fmtD(payCycle.end)}.</div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <span style={{ fontSize: 11.5, color: "#7c3aed", fontWeight: 700 }}>{scanLoading ? "Scanning attendance…" : "✓ Attendance scanned"}</span>
@@ -11248,7 +11265,7 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
       </div>
 
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
-        {[{ l: "Employees", v: stats.n }, { l: "Eligible (4 mo+)", v: stats.elig }, { l: "Days available", v: stats.avail }, { l: "Days used (cycle)", v: stats.used }, { l: "Auto-deducted", v: stats.auto }].map(s => (
+        {[{ l: "Employees", v: stats.n }, { l: "Eligible (4 mo+)", v: stats.elig }, { l: "Days available", v: stats.avail }, { l: "Days used (cycle)", v: stats.used }, { l: "Auto-deducted", v: stats.auto }, { l: "This pay cycle", v: stats.pend }].map(s => (
           <div key={s.l} style={{ ...card, flex: "1 1 130px", minWidth: 120 }}>
             <div style={{ fontSize: 10, fontWeight: 800, color: "#9d174d", letterSpacing: "0.06em", textTransform: "uppercase" }}>{s.l}</div>
             <div style={{ fontSize: 26, fontWeight: 800, color: "#831843", marginTop: 4 }}>{s.v}</div>
@@ -11312,6 +11329,7 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
               <th style={th}>Tenure</th>
               <th style={th}>Eligible</th>
               <th style={th}>FRL year</th>
+              <th style={{ ...th, textAlign: "right" }} title={"FRL marked in the current payroll cycle (" + fmtD(payCycle.start) + " – " + fmtD(payCycle.end) + ") — the planned deduction for this run."}>This pay cycle</th>
               <th style={{ ...th, textAlign: "right" }}>Used</th>
               <th style={{ ...th, textAlign: "right" }}>Available (current)</th>
             </tr></thead>
@@ -11323,6 +11341,13 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
                   <td style={td}>{r.start ? (r.months + " mo") : "—"}</td>
                   <td style={td}>{!r.start ? "—" : r.eligible ? <span style={{ color: "#15803d", fontWeight: 700 }}>✓ yes</span> : <span style={{ color: "#b45309" }} title={"Eligible after 4 months — on " + fmtD(r.eligibleOn)}>⏳ on {fmtD(r.eligibleOn)}</span>}</td>
                   <td style={td}>{r.cyc ? <span style={{ fontSize: 11.5, color: "#9d6a82" }}>{fmtD(r.cyc.start)} – {fmtD(r.cyc.end)}</span> : "—"}</td>
+                  <td style={{ ...td, textAlign: "right" }}>
+                    {!r.eligible || r.pendingCount === 0
+                      ? <span style={{ color: "#cbb1bd" }}>—</span>
+                      : (() => { const prov = r.pendingDates.filter(d => d.prov).length; return (
+                          <span title={"Planned deduction this payroll cycle:\n" + r.pendingDates.map(d => fmtD(d.ymd) + (d.prov ? " (planned)" : "")).join("\n")} style={{ display: "inline-block", fontSize: 11.5, fontWeight: 800, color: prov ? "#b45309" : "#9333ea", background: prov ? "#FEF3C7" : "#F3E8FF", borderRadius: 6, padding: "2px 8px", cursor: "help", whiteSpace: "nowrap" }}>−{r.pendingCount}{prov ? " ⏳" : ""}</span>
+                        ); })()}
+                  </td>
                   <td style={{ ...td, textAlign: "right", color: !r.eligible ? "#cbb1bd" : r.used > 0 ? "#b45309" : "#9d6a82" }}>
                     {r.eligible ? r.used : "—"}
                     {r.eligible && r.autoUsed > 0 ? <span title={"Auto-deducted from attendance / check-ins:\n" + r.autoDates.map(d => fmtD(d)).join("\n")} style={{ marginLeft: 5, fontSize: 9.5, fontWeight: 800, color: "#7c3aed", background: "#F3E8FF", borderRadius: 5, padding: "1px 5px", whiteSpace: "nowrap", cursor: "help" }}>👪 {r.autoUsed} auto</span> : null}
@@ -11337,7 +11362,7 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
                   </td>
                 </tr>
               ))}
-              {filtered.length === 0 && <tr><td style={{ ...td, textAlign: "center", color: "#9d6a82" }} colSpan={7}>No staff{q ? " match “" + q + "”" : ""}.</td></tr>}
+              {filtered.length === 0 && <tr><td style={{ ...td, textAlign: "center", color: "#9d6a82" }} colSpan={8}>No staff{q ? " match “" + q + "”" : ""}.</td></tr>}
             </tbody>
           </table>
         </div>
