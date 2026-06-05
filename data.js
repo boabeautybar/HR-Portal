@@ -1762,6 +1762,17 @@
     if (res.error) { console.error("saveLeaveBalancesAccess:", res.error); throw res.error; }
     return config || {};
   }
+  // Family Responsibility Leave usage. Shape: { asOf, entries: { normEc: { used, cycleStart } } }.
+  async function loadFRL() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_frl_v1").maybeSingle();
+    if (res.error) { console.error("loadFRL:", res.error); return null; }
+    return (res.data && res.data.value) || null;
+  }
+  async function saveFRL(data) {
+    var res = await sb.from("app_state").upsert({ key: "boa_frl_v1", value: data || {} });
+    if (res.error) { console.error("saveFRL:", res.error); throw res.error; }
+    return data || {};
+  }
 
   // ---------- Attendance grid (boa_att_<branch>_<ym>) ----------
   // Same key the check-in kiosk app writes to. Status codes include:
@@ -2112,6 +2123,8 @@
     saveLeaveBalances: saveLeaveBalances,
     loadLeaveBalancesAccess: loadLeaveBalancesAccess,
     saveLeaveBalancesAccess: saveLeaveBalancesAccess,
+    loadFRL: loadFRL,
+    saveFRL: saveFRL,
     migrateEmployeeCode: migrateEmployeeCode,
     loadComplianceActions: loadComplianceActions,
     saveComplianceActions: saveComplianceActions,
