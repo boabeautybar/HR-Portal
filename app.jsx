@@ -218,7 +218,7 @@ function payrollYmFor(ymd) {
 }
 
 // Modal body for marking / editing a manager's absence reason.
-function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose, onSaved }) {
+function MgrReasonModalBody({ modal, personStartDate, existing, locked, currentUserName, onClose, onSaved }) {
   const [status, setStatus] = useState(existing?.status || "");
   const [note, setNote] = useState(existing?.note || "");
   const [proof, setProof] = useState(existing?.proof || null);
@@ -249,6 +249,18 @@ function MgrReasonModalBody({ modal, existing, locked, currentUserName, onClose,
 
   async function save() {
     if (!canSave) return;
+    // FRL gate — block paid Family Responsibility Leave when there are no days
+    // left (or the person isn't eligible / can't be confirmed). The manager is
+    // then steered to "Absent" (unpaid, with a note).
+    if (status === "frl") {
+      setSaving(true);
+      const g = await frlMarkGuard({ ec: modal.ec, startDate: personStartDate, staffId: modal.staffId, isManager: true, branch: modal.branch, date: modal.date });
+      setSaving(false);
+      if (g.block) {
+        if (window.confirm(g.message + "\n\nSwitch this to “Absent” (unpaid) now? You'll need to add a short note.")) setStatus("absent");
+        return;
+      }
+    }
     setSaving(true);
     try {
       // "Sick + note" without a doctor's note → downgrade to "Sick NO
@@ -9266,6 +9278,52 @@ function ymdAddDays(ymd, n) { const d = new Date(normYmd(ymd) + "T00:00:00"); if
 function ymdToAttYm(ymd) { const p = normYmd(ymd).split("-").map(Number); let yy = p[0], mm = p[1]; if (p[2] < 25) { mm -= 1; if (mm < 1) { mm = 12; yy -= 1; } } return yy + "-" + String(mm).padStart(2, "0"); }
 function attCellYmd(attYm, dayKey) { const p = String(attYm).split("-").map(Number); const day = Number(dayKey); if (!day || day < 1 || day > 31) return ""; let Y = p[0], M = p[1]; if (day < 25) { M += 1; if (M > 12) { M = 1; Y += 1; } } return Y + "-" + String(M).padStart(2, "0") + "-" + String(day).padStart(2, "0"); }
 function listAttYms(fromYmd, toYmd) { const out = []; let ym = ymdToAttYm(fromYmd); const endYm = ymdToAttYm(toYmd); let guard = 0; while (guard++ < 24) { out.push(ym); if (ym === endYm) break; const q = ym.split("-").map(Number); let M = q[1] + 1, Y = q[0]; if (M > 12) { M = 1; Y += 1; } ym = Y + "-" + String(M).padStart(2, "0"); } return out; }
+
+// Gate for marking a day as Family Responsibility Leave ("frl"). Returns
+// { block, available, message }. Blocks when the person isn't eligible (needs 4
+// months' service), has no FRL days left this cycle, or the balance can't be
+// determined (fail closed). `date` is the day being marked (excluded from the
+// already-taken tally so re-marking the same day is fine).
+async function frlMarkGuard({ ec, startDate, staffId, isManager, branch, date }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const start = normYmd(startDate);
+  if (!start) return { block: true, available: 0, message: "No start date on file for this person, so the Family Responsibility Leave balance can't be confirmed. Mark as Unpaid Absent instead." };
+  const cyc = frlCycle(start, today);
+  if (!cyc) return { block: true, available: 0, message: "Couldn't work out the FRL cycle for this person. Mark as Unpaid Absent instead." };
+  if (monthsBetween(start, today) < FRL_QUALIFY_MONTHS) return { block: true, available: 0, message: "Not yet eligible for paid Family Responsibility Leave (it starts after 4 months' service). Mark as Unpaid Absent instead." };
+  let frlData;
+  try { frlData = window.BOA_DB.loadFRL ? await window.BOA_DB.loadFRL() : null; }
+  catch (_e) { return { block: true, available: null, message: "Couldn't load the FRL balance to check remaining days. Please try again, or mark as Unpaid Absent." }; }
+  const norm = lbNormEc(ec);
+  const entry = frlData && frlData.entries && frlData.entries[norm];
+  const recorded = !!(entry && entry.cycleStart === cyc.start);
+  let baseBal = FRL_DAYS_PER_YEAR;
+  if (recorded) baseBal = entry.remaining != null ? Number(entry.remaining) : (entry.used != null ? FRL_DAYS_PER_YEAR - Number(entry.used) : FRL_DAYS_PER_YEAR);
+  baseBal = Math.max(0, Math.min(FRL_DAYS_PER_YEAR, baseBal));
+  let since = cyc.start;
+  if (recorded) since = entry.asOf || (frlData && frlData.asOf) || since;
+  else if (frlData && frlData.asOf && frlData.asOf > cyc.start) since = frlData.asOf;
+  // Confirmed FRL already recorded this cycle (after `since`), excluding the day being marked.
+  const days = new Set();
+  try {
+    if (isManager) {
+      const rows = (window.BOA_DB.loadManagerDayStatuses ? await window.BOA_DB.loadManagerDayStatuses(400) : []) || [];
+      rows.forEach(s => { if (s && String(s.staff_id) === String(staffId) && s.date && String(s.status || "").replace(/^~/, "") === "frl") days.add(s.date); });
+    } else {
+      const yms = listAttYms(since, today);
+      await Promise.all(yms.map(async ym => {
+        let a = null; try { a = await window.BOA_DB.loadAttendance(branch, ym); } catch (_e) { return; }
+        const grid = (a && a.grid) || {}; const row = grid[ec] || grid[String(ec).toUpperCase()] || {};
+        Object.keys(row).forEach(dk => { if (String(row[dk] == null ? "" : row[dk]).replace(/^~/, "") === "frl") days.add(attCellYmd(ym, dk)); });
+      }));
+      try { const kr = (window.BOA_DB.listRecentKioskCheckins ? await window.BOA_DB.listRecentKioskCheckins(200, branch ? [branch] : undefined) : []) || []; kr.forEach(r => { if (r && lbNormEc(r.ec) === norm && r.ymd && String(r.status || "").replace(/^~/, "") === "frl") days.add(r.ymd); }); } catch (_e) { }
+    }
+  } catch (_e) { return { block: true, available: null, message: "Couldn't check recent FRL for this person. Please try again, or mark as Unpaid Absent." }; }
+  let taken = 0; days.forEach(ymd => { if (ymd !== date && ymd > since && ymd >= cyc.start && ymd <= cyc.end && ymd <= today) taken++; });
+  const available = Math.max(0, baseBal - taken);
+  if (available < 1) return { block: true, available, message: "No Family Responsibility Leave days left this cycle (" + available + " of " + FRL_DAYS_PER_YEAR + " remaining). Mark as Unpaid Absent instead." };
+  return { block: false, available };
+}
 
 // ─── Shared leave-request gate helpers ─────────────────────────────────────
 // Used by both the Leave Requests tab and the Payroll Inbox so the two-gate
@@ -23603,6 +23661,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
           if (val === "frl") {
             if (!checkFRLEligibility(s.ec, s.name, dy.ymd)) return;
+            const g = await frlMarkGuard({ ec: s.ec, startDate: findStartDate(s.ec), isManager: false, branch: attBranch, date: dy.ymd });
+            if (g.block) {
+              if (window.confirm("⚠ " + s.name + "\n\n" + g.message + "\n\nMark as Unpaid instead?")) return setCellAndReview(s.ec, dy.d, "unpaid");
+              return;
+            }
             return setCellAndReview(s.ec, dy.d, "frl");
           }
           if (val === "term") {
@@ -31550,9 +31613,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // future date (e.g. a manager handing one in for next Monday)
         // needs to be recordable in advance. Future cycles stay open.
         const locked = payrollYmFor(m.date) < payrollYmFor(t0);
+        const _mgrRec = (managers || []).find(mm => String(mm._id || mm.id) === String(m.staffId)) || (managers || []).find(mm => lbNormEc(mm.ec) === lbNormEc(m.ec));
         return (
           <MgrReasonModalBody
             modal={m}
+            personStartDate={_mgrRec ? _mgrRec.startDate : null}
             existing={existing}
             locked={locked}
             currentUserName={currentUser?.name || ""}
