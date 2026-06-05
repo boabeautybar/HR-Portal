@@ -11091,14 +11091,18 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
       const cyc = start ? frlCycle(start, today) : null;
       const months = start ? monthsBetween(start, today) : 0;
       const eligible = !!start && months >= FRL_QUALIFY_MONTHS;
-      const entry = data.entries[norm];
-      // Used only counts if it was recorded for the CURRENT cycle; otherwise the
-      // anniversary has reset the allowance.
-      const used = (entry && cyc && entry.cycleStart === cyc.start) ? (Number(entry.used) || 0) : 0;
       const entitlement = eligible ? FRL_DAYS_PER_YEAR : 0;
-      const available = Math.max(0, entitlement - used);
+      const entry = data.entries[norm];
+      // The stored figure is the employee's CURRENT balance (what they have left),
+      // and it only counts for the current cycle — once a new anniversary passes
+      // the allowance resets to the full entitlement.
+      const recorded = !!(entry && cyc && entry.cycleStart === cyc.start);
+      let rawRemaining = entitlement;
+      if (recorded) rawRemaining = entry.remaining != null ? Number(entry.remaining) : (entry.used != null ? entitlement - Number(entry.used) : entitlement);
+      const available = eligible ? Math.max(0, Math.min(entitlement, rawRemaining)) : 0;
+      const used = eligible ? entitlement - available : 0;
       const eligibleOn = start ? addMonthsYmd(start, FRL_QUALIFY_MONTHS) : "";
-      out.push({ norm, ec: p.ec, name: p.name || p.ec, branch: p.branch || "", role, start, months, eligible, eligibleOn, cyc, used, entitlement, available });
+      out.push({ norm, ec: p.ec, name: p.name || p.ec, branch: p.branch || "", role, start, months, eligible, eligibleOn, cyc, used, entitlement, available, recorded });
     };
     (enriched || []).forEach(p => add(p, "Nail tech"));
     (managers || []).forEach(m => add(m, m.role || "Manager"));
@@ -11113,18 +11117,19 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
       : (a.name || a.ec || "").localeCompare(b.name || b.ec || ""));
   }, [rows, q, sortBy]);
 
-  const setUsed = (r, val) => {
+  // Edits the employee's CURRENT balance (days they have left this cycle).
+  const setAvailable = (r, val) => {
     if (!data || !r.cyc) return;
-    const used = Math.max(0, Math.min(FRL_DAYS_PER_YEAR, Number(val) || 0));
-    persist({ ...data, entries: { ...data.entries, [r.norm]: { used, cycleStart: r.cyc.start } } });
+    const remaining = Math.max(0, Math.min(r.entitlement || FRL_DAYS_PER_YEAR, Number(val) || 0));
+    persist({ ...data, entries: { ...data.entries, [r.norm]: { remaining, cycleStart: r.cyc.start } } });
   };
 
   const buildPreview = (rowsIn) => {
-    if (!rowsIn.length) { window.alert("No rows found. Expecting an employee code (and/or name) and a number of days used, e.g.  B024\tMillicent Moyo\t1"); return; }
+    if (!rowsIn.length) { window.alert("No rows found. Expecting an employee code (and/or name) and the number of days they have LEFT, e.g.  B024\tMillicent Moyo\t2"); return; }
     const byNorm = {}; rowsIn.forEach(r => { byNorm[lbNormEc(r.rawEc)] = r; });
     const list = Object.keys(byNorm).map(norm => {
       const r = byNorm[norm]; const nm = resolve(r.rawEc, r.name);
-      return { norm, rawEc: r.rawEc, uploadName: r.name || "", used: r.days, portalEc: nm ? nm.ec : null, name: nm ? nm.name : "", matchedBy: nm ? (lbNormEc(r.rawEc) === lbNormEc(nm.ec) || lbCoreEc(lbNormEc(r.rawEc)) === lbCoreEc(lbNormEc(nm.ec)) ? "code" : "name") : null, matched: !!nm };
+      return { norm, rawEc: r.rawEc, uploadName: r.name || "", balance: r.days, portalEc: nm ? nm.ec : null, name: nm ? nm.name : "", matchedBy: nm ? (lbNormEc(r.rawEc) === lbNormEc(nm.ec) || lbCoreEc(lbNormEc(r.rawEc)) === lbCoreEc(lbNormEc(nm.ec)) ? "code" : "name") : null, matched: !!nm };
     }).sort((a, b) => (b.matched - a.matched) || (a.name || a.rawEc).localeCompare(b.name || b.rawEc));
     setPreview({ list, matched: list.filter(x => x.matched).length, unmatched: list.filter(x => !x.matched) });
   };
@@ -11144,9 +11149,9 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
     const matched = preview.list.filter(x => x.matched && x.portalEc);
     if (!matched.length) { window.alert("None of these codes match someone on the portal."); return; }
     const entries = { ...data.entries };
-    matched.forEach(x => { const norm = lbNormEc(x.portalEc); const p = resolve(x.portalEc); const cyc = p && p.startDate ? frlCycle(p.startDate, today) : null; entries[norm] = { used: Math.max(0, Number(x.used) || 0), cycleStart: cyc ? cyc.start : today }; });
+    matched.forEach(x => { const norm = lbNormEc(x.portalEc); const p = resolve(x.portalEc); const cyc = p && p.startDate ? frlCycle(p.startDate, today) : null; entries[norm] = { remaining: Math.max(0, Math.min(FRL_DAYS_PER_YEAR, Number(x.balance) || 0)), cycleStart: cyc ? cyc.start : today }; });
     persist({ ...data, entries });
-    if (logActivity) logActivity("Imported FRL usage", matched.length + " employees", "", "Payroll");
+    if (logActivity) logActivity("Imported FRL balances", matched.length + " employees", "", "Payroll");
     setShowImport(false); setPreview(null); setPasteText("");
   };
   const clearAll = () => { if (!data || !window.confirm("Clear all FRL usage records?")) return; persist({ ...data, entries: {} }); if (logActivity) logActivity("Cleared FRL usage", "", "", "Payroll"); };
@@ -11166,12 +11171,12 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 14 }}>
         <div>
           <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700 }}>👪 Family Responsibility Leave</div>
-          <div style={{ fontSize: 12.5, color: "#9d6a82", marginTop: 2, maxWidth: 820 }}>3 paid days per employment year — available only after <strong>4 months'</strong> service, and reset on each <strong>work anniversary</strong> (unused days don't roll over). Days used are seeded from your uploaded list and can be edited per person.</div>
+          <div style={{ fontSize: 12.5, color: "#9d6a82", marginTop: 2, maxWidth: 820 }}>3 paid days per employment year — available only after <strong>4 months'</strong> service, and reset on each <strong>work anniversary</strong> (unused days don't roll over). Upload each person's <strong>current balance</strong> (the days they have left) — not the days to deduct; it can be edited per person as leave is taken.</div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <span style={{ fontSize: 11.5, color: saving ? "#b45309" : "#15803d", fontWeight: 700 }}>{saving ? "Saving…" : "✓ Saved"}</span>
           {Object.keys((data && data.entries) || {}).length > 0 && <button onClick={clearAll} style={{ background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 9, padding: "9px 14px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>🗑 Clear all</button>}
-          <button onClick={() => { setShowImport(v => !v); setPreview(null); }} style={{ background: "#9333ea", color: "#fff", border: "none", borderRadius: 9, padding: "9px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{showImport ? "Close importer" : "⬆ Upload / import used"}</button>
+          <button onClick={() => { setShowImport(v => !v); setPreview(null); }} style={{ background: "#9333ea", color: "#fff", border: "none", borderRadius: 9, padding: "9px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{showImport ? "Close importer" : "⬆ Upload / import balances"}</button>
         </div>
       </div>
 
@@ -11186,7 +11191,7 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
 
       {showImport && (
         <div style={{ ...card, marginBottom: 14 }}>
-          <div style={{ fontSize: 12, color: "#7c3aed", marginBottom: 10 }}>Upload an <strong>.xlsx</strong>/<strong>.csv</strong> or paste rows of <strong>employee code</strong> (or name) + <strong>days used</strong>. Codes are matched ignoring dashes/case (so <em>B013-M</em> = <em>B013M</em>); if the code can't be found we fall back to the <strong>name</strong>. Anyone with no matching system record is filtered out and listed below.</div>
+          <div style={{ fontSize: 12, color: "#7c3aed", marginBottom: 10 }}>Upload an <strong>.xlsx</strong>/<strong>.csv</strong> or paste rows of <strong>employee code</strong> (or name) + <strong>days remaining</strong> (their current balance, 0–3 — not the days to deduct). Codes are matched ignoring dashes/case (so <em>B013-M</em> = <em>B013M</em>); if the code can't be found we fall back to the <strong>name</strong>. Anyone with no matching system record is filtered out and listed below.</div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-start" }}>
             <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" onChange={onFile} style={{ fontSize: 12 }} />
             <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} placeholder={"Paste rows, e.g.\nB024\tMillicent Moyo\t1\nB117-M\tJohn Smith\t2"} style={{ ...inp, flex: "1 1 240px", minHeight: 70, fontFamily: "monospace" }} />
@@ -11198,7 +11203,7 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
               <div style={{ maxHeight: 150, overflow: "auto", border: "1px solid #FCE7F3", borderRadius: 8 }}>
                 {preview.list.filter(x => x.matched).map(x => (
                   <div key={x.norm} style={{ display: "flex", gap: 8, padding: "5px 10px", fontSize: 12, borderBottom: "1px solid #FCE7F3", color: "#15803d" }}>
-                    <span style={{ minWidth: 70, fontWeight: 700 }}>{x.portalEc}</span><span style={{ flex: 1 }}>{x.name}{x.matchedBy === "name" ? <span style={{ color: "#9d6a82", fontStyle: "italic" }}> · matched by name</span> : null}</span><span>{x.used}d used</span>
+                    <span style={{ minWidth: 70, fontWeight: 700 }}>{x.portalEc}</span><span style={{ flex: 1 }}>{x.name}{x.matchedBy === "name" ? <span style={{ color: "#9d6a82", fontStyle: "italic" }}> · matched by name</span> : null}</span><span>{x.balance}d left</span>
                   </div>
                 ))}
               </div>
@@ -11207,7 +11212,7 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
                   <div style={{ fontSize: 11.5, fontWeight: 800, color: "#b91c1c", marginBottom: 4 }}>⚠ No system record — skipped ({preview.unmatched.length})</div>
                   {preview.unmatched.map(x => (
                     <div key={x.norm} style={{ display: "flex", gap: 8, padding: "2px 0", fontSize: 12, color: "#7f1d1d" }}>
-                      <span style={{ minWidth: 70, fontWeight: 700 }}>{x.rawEc}</span><span style={{ flex: 1 }}>{x.uploadName || <em style={{ color: "#9d6a82" }}>(no name in file)</em>}</span><span>{x.used}d</span>
+                      <span style={{ minWidth: 70, fontWeight: 700 }}>{x.rawEc}</span><span style={{ flex: 1 }}>{x.uploadName || <em style={{ color: "#9d6a82" }}>(no name in file)</em>}</span><span>{x.balance}d</span>
                     </div>
                   ))}
                   <div style={{ fontSize: 10.5, color: "#9a3a3a", marginTop: 4 }}>Check the code or name against the system, or add the person, then re-upload.</div>
@@ -11241,7 +11246,7 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
               <th style={th}>Eligible</th>
               <th style={th}>FRL year</th>
               <th style={{ ...th, textAlign: "right" }}>Used</th>
-              <th style={{ ...th, textAlign: "right" }}>Available</th>
+              <th style={{ ...th, textAlign: "right" }}>Available (current)</th>
             </tr></thead>
             <tbody>
               {filtered.map(r => (
@@ -11251,10 +11256,15 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
                   <td style={td}>{r.start ? (r.months + " mo") : "—"}</td>
                   <td style={td}>{!r.start ? "—" : r.eligible ? <span style={{ color: "#15803d", fontWeight: 700 }}>✓ yes</span> : <span style={{ color: "#b45309" }} title={"Eligible after 4 months — on " + fmtD(r.eligibleOn)}>⏳ on {fmtD(r.eligibleOn)}</span>}</td>
                   <td style={td}>{r.cyc ? <span style={{ fontSize: 11.5, color: "#9d6a82" }}>{fmtD(r.cyc.start)} – {fmtD(r.cyc.end)}</span> : "—"}</td>
+                  <td style={{ ...td, textAlign: "right", color: !r.eligible ? "#cbb1bd" : r.used > 0 ? "#b45309" : "#9d6a82" }}>{r.eligible ? r.used : "—"}</td>
                   <td style={{ ...td, textAlign: "right" }}>
-                    {r.eligible ? <input type="number" min="0" max={FRL_DAYS_PER_YEAR} step="1" value={r.used} onChange={e => setUsed(r, e.target.value)} title="Days used this employment year (edit as FRL is taken)" style={{ width: 56, textAlign: "right", ...inp, padding: "5px 7px" }} /> : "—"}
+                    {r.eligible
+                      ? <span style={{ display: "inline-flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
+                          <input type="number" min="0" max={r.entitlement} step="1" value={r.available} onChange={e => setAvailable(r, e.target.value)} title="Days they currently have left this employment year (edit as FRL is taken)" style={{ width: 56, textAlign: "right", ...inp, padding: "5px 7px", fontWeight: 800, color: r.available === 0 ? "#b91c1c" : "#15803d" }} />
+                          <span style={{ fontSize: 11, color: "#9d6a82" }}>/ {FRL_DAYS_PER_YEAR}</span>
+                        </span>
+                      : <span style={{ color: "#cbb1bd" }}>0</span>}
                   </td>
-                  <td style={{ ...td, textAlign: "right", fontWeight: 800, fontSize: 15, color: !r.eligible ? "#cbb1bd" : r.available === 0 ? "#b91c1c" : "#15803d" }}>{r.eligible ? r.available + " / " + FRL_DAYS_PER_YEAR : "0"}</td>
                 </tr>
               ))}
               {filtered.length === 0 && <tr><td style={{ ...td, textAlign: "center", color: "#9d6a82" }} colSpan={7}>No staff{q ? " match “" + q + "”" : ""}.</td></tr>}
