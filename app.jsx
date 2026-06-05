@@ -6383,6 +6383,12 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         // sync pass to stamp X.
                         const dYmd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
                         const isPastLeft = isLeaving && dYmd > s.leftDate;
+                        // Pre-start: a tech only appears on the schedule from
+                        // their start date. Days before it render as a locked
+                        // grey "—" (like post-departure days) so a mid-cycle
+                        // starter doesn't look like they're working the whole
+                        // month before they've started.
+                        const isPreStart = !!s.startDate && dYmd < s.startDate;
                         // Maternity cell: lavender 'ML' from the start date on.
                         // A full-cycle mat means every cell; a mid-cycle start
                         // means only days on/after it — days before stay the
@@ -6404,7 +6410,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         const transferOtherBranch = transferEdge === "in" ? (s.transferFrom || "")
                           : transferEdge === "out" ? (s.transferTo || "")
                             : null;
-                        const cellLocked = cellMat || isPastLeft || !!transferEdge;
+                        const cellLocked = cellMat || isPastLeft || isPreStart || !!transferEdge;
                         // Cross-store loan: if this tech has a same-day loan FROM
                         // this branch, the cell is tinted teal and shows the
                         // destination store (e.g. Betty's first-Sunday Bree/GP
@@ -6420,7 +6426,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         // leave) and from a post-departure ghost cell.
                         const matCell = cellMat
                           ? { background: "#ede9fe", color: "#6b21a8" }
-                          : isPastLeft
+                          : (isPastLeft || isPreStart)
                             ? { background: "#e5e7eb", color: "#9ca3af" }
                             : transferEdge === "out"
                               ? { background: "#fef3c7", color: "#92400e" }   // amber — moving out
@@ -6437,7 +6443,9 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         const dragCursor = cellLocked ? "default" : (v ? "grab" : "pointer");
                         const cellTitle = cellMat
                           ? `${s.name} · on maternity leave${matFromYmd && !fullMat ? " (from " + matFromYmd + ")" : ""}`
-                          : isPastLeft
+                          : isPreStart
+                            ? `${s.name} · starts ${s.startDate} — not on the schedule until then`
+                            : isPastLeft
                             ? `${s.name} · left ${s.leftDate} — no longer scheduled`
                             : transferEdge === "out"
                               ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · transferring to ${transferOtherBranch} on ${_xferDate} — fill remaining days on the destination schedule`
@@ -6457,7 +6465,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                             title={cellTitle}
                             style={{ ...matCell, padding: 0, height: 30, textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", borderRight: weekEnd ? "3px solid #BE185D" : "none", cursor: dragCursor, fontSize: 11, fontWeight: 700, userSelect: "none", outline: dropOutline, outlineOffset: -1, opacity: isSrc ? 0.4 : undefined, position: "relative" }}>
                             {cellMat ? "ML"
-                              : isPastLeft ? "—"
+                              : (isPastLeft || isPreStart) ? "—"
                                 : transferEdge === "out" ? (
                                   <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: "0.04em" }}>
                                     →{transferOtherBranch === "Green Point" ? "GP" : transferOtherBranch.slice(0, 4)}
@@ -21194,7 +21202,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // flip to All to see every onboarded employee on record
         // (including older starters that the recent filter hides — the
         // reason Total Onboarded > 0 but the grid was empty).
-        const active = obFilter === "all" ? obList.slice() : recentActive;
+        // Safety net: surface recently-started employees who have a staff /
+        // manager record but NO onboarding-history entry (e.g. added before
+        // onboarding tracking, or via an older flow). Without this they never
+        // appear on this tab even though they're real new starters. Match on
+        // EC, limit to people on probation or who started in the last ~60 days,
+        // and tag them so the card can show they have no formal record.
+        const _obEcs = new Set((obList || []).map(o => String(o.ec || "").trim().toUpperCase()).filter(Boolean));
+        const _isProbationContract = c => /probation/i.test(c || "");
+        const orphanStarters = [...(staff || []), ...(managers || [])]
+          .filter(p => {
+            if (!p || !p.ec || p.leftDate || p.isShadow) return false;
+            if (_obEcs.has(String(p.ec).trim().toUpperCase())) return false;   // already tracked
+            const recent = p.startDate && daysFrom(p.startDate) <= 60;
+            return _isProbationContract(p.contract) || recent;                 // a genuine new starter
+          })
+          .map(p => {
+            const isMgr = isManagerEc(p.ec) || p.roleType === "manager";
+            const position = isMgr
+              ? (p.role && /^(AM|SM|SSM)$/i.test(p.role) ? p.role.toUpperCase() : "Manager")
+              : "Nail Tech";
+            return { _id: "orphan-" + p.ec, name: p.name, ec: p.ec, branch: p.branch, position, startDate: p.startDate || "", notes: "", _orphanStarter: true };
+          });
+        const active = [...(obFilter === "all" ? obList.slice() : recentActive), ...orphanStarters];
 
         const grp = { "Nail Tech": [], "Manager": [], "Head Office": [], "Other": [] };
         for (const r of active) {
@@ -21638,7 +21668,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 <div style={{ fontSize: 11, color: "#9ca3af" }}>{r.ec || "—"} · {r.branch}</div>
                               </div>
                               <div style={{ display: "flex", gap: 4 }}>
-                                <button onClick={() => delOb(r._id)} title="Remove from view" style={{ background: "none", border: "1px solid #fca5a5", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 11, color: "#991b1b" }}>✕ Remove</button>
+                                {r._orphanStarter
+                                  ? <span title="On the staff list but has no onboarding record" style={{ fontSize: 9, fontWeight: 800, padding: "3px 8px", borderRadius: 6, background: "#fef3c7", color: "#92400e", letterSpacing: "0.02em" }}>NO ONBOARDING RECORD</span>
+                                  : <button onClick={() => delOb(r._id)} title="Remove from view" style={{ background: "none", border: "1px solid #fca5a5", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 11, color: "#991b1b" }}>✕ Remove</button>}
                               </div>
                             </div>
                             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
