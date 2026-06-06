@@ -20599,10 +20599,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           dates.forEach(d => { checkins[d] = "on"; });
           persistTrial(trialList.map(x => x._id === r._id ? { ...x, checkins, updatedAt: new Date().toISOString() } : x));
         };
-        // Remove a single recorded day (fine correction from the history list).
-        const removeCheckin = (r, date) => {
+        // Set (or clear, when status is null) the status for ONE specific date.
+        // This is the precise capture tool: for a tech the kiosk didn't check in
+        // properly, HR ticks exactly which days she was in and how (worked / late
+        // / absent), day by day, instead of relying on a count.
+        const setCheckinStatus = (r, date, status) => {
+          if (!date) return;
           const ci = { ...(r.checkins || {}) };
-          delete ci[date];
+          if (status == null) delete ci[date]; else ci[date] = status;
           persistTrial(trialList.map(x => x._id === r._id ? { ...x, checkins: ci, updatedAt: new Date().toISOString() } : x));
         };
 
@@ -21118,35 +21122,44 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       <button onClick={() => { const el = document.getElementById("daycorr-" + r._id); setCompletedDays(r, el ? el.value : workedDaysOf(r)); }} style={{ marginLeft: "auto", padding: "5px 14px", borderRadius: 6, border: "none", background: "#d97706", color: "#fff", cursor: "pointer", fontWeight: 800, fontSize: 12 }}>Set</button>
                                     </div>
                                   </div>
-                                  <div style={{ maxHeight: 150, overflowY: "auto" }}>
-                                    <div style={{ fontSize: 11, fontWeight: 700, color: "#111827", marginBottom: 6 }}>Attendance History <span style={{ fontWeight: 400, color: "#9ca3af" }}>· ✕ to remove a wrong day</span></div>
-                                    {Object.entries(r.checkins || {}).sort((a, b) => b[0].localeCompare(a[0])).map(([date, status]) => {
-                                      const statusLabels = {
-                                        "on": "On Time",
-                                        "late": "Late",
-                                        "sick_n": "Sick + note",
-                                        "sick": "Sick NO note",
-                                        "absent": "Absent",
-                                        "no": "No Show",
-                                        "frl": "FRL + proof"
-                                      };
-                                      const isPositive = status === "on" || status === "late";
-                                      return (
-                                        <div key={date} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6, fontSize: 11, marginBottom: 4 }}>
-                                          <span style={{ color: "#6b7280" }}>{fmtDate(date)}</span>
-                                          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                            <span style={{ background: isPositive ? "#def7ec" : "#fde8e8", color: isPositive ? "#03543f" : "#9b1c1c", padding: "1px 6px", borderRadius: 4, fontWeight: 700, fontSize: 10 }}>
-                                              {statusLabels[status] || status}
-                                            </span>
-                                            <button onClick={() => removeCheckin(r, date)} title="Remove this day" style={{ background: "none", border: "none", color: "#d1d5db", cursor: "pointer", fontSize: 12, lineHeight: 1, padding: 0 }}>✕</button>
-                                          </span>
+                                  <div style={{ fontSize: 11, fontWeight: 800, color: "#111827", marginBottom: 2 }}>📅 Set the exact days she was in</div>
+                                  <div style={{ fontSize: 10, color: "#6b7280", marginBottom: 8, lineHeight: 1.45 }}>Tick each day she was actually in store and how — use this when the kiosk didn’t check her in properly. Worked & Late count as paid trial days; Absent does not.</div>
+                                  {!r.startDate && <div style={{ fontSize: 11, color: "#b45309", marginBottom: 8 }}>Set a trial start date first (▶ Start in-store trial) to list her trial days.</div>}
+                                  {(() => {
+                                    const ci = r.checkins || {};
+                                    const planned = trialWorkingDates(r.startDate, 10);
+                                    const plannedSet = new Set(planned);
+                                    const allDates = Array.from(new Set([...planned, ...Object.keys(ci)])).sort();
+                                    const wkd = d => new Date(d + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "short" });
+                                    const opts = [["on", "Worked", "#16a34a"], ["late", "Late", "#d97706"], ["absent", "Absent", "#dc2626"]];
+                                    return (
+                                      <>
+                                        <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid #f3f4f6", borderRadius: 8 }}>
+                                          {allDates.length === 0 && <div style={{ fontSize: 11, color: "#9ca3af", textAlign: "center", padding: "10px 0" }}>No trial days yet.</div>}
+                                          {allDates.map(date => {
+                                            const cur = ci[date];
+                                            const offPlan = !plannedSet.has(date);
+                                            return (
+                                              <div key={date} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, padding: "5px 8px", borderBottom: "1px solid #f3f4f6", flexWrap: "wrap" }}>
+                                                <span style={{ fontSize: 11, color: "#374151", fontWeight: 600, whiteSpace: "nowrap" }}>{wkd(date)} {fmtDate(date)}{offPlan && <span style={{ marginLeft: 5, fontSize: 8, fontWeight: 800, color: "#9ca3af", background: "#f3f4f6", borderRadius: 3, padding: "0 4px" }}>OFF-PLAN</span>}</span>
+                                                <span style={{ display: "flex", gap: 3, alignItems: "center" }}>
+                                                  {opts.map(([st, lbl, col]) => {
+                                                    const on = cur === st;
+                                                    return <button key={st} onClick={() => setCheckinStatus(r, date, on ? null : st)} title={lbl} style={{ padding: "3px 8px", borderRadius: 5, border: "1px solid " + (on ? col : "#e5e7eb"), background: on ? col : "#fff", color: on ? "#fff" : "#6b7280", cursor: "pointer", fontSize: 10, fontWeight: 800 }}>{lbl}</button>;
+                                                  })}
+                                                  {cur && <button onClick={() => setCheckinStatus(r, date, null)} title="Clear this day" style={{ background: "none", border: "none", color: "#d1d5db", cursor: "pointer", fontSize: 12, lineHeight: 1, padding: "0 2px" }}>✕</button>}
+                                                </span>
+                                              </div>
+                                            );
+                                          })}
                                         </div>
-                                      );
-                                    })}
-                                    {Object.keys(r.checkins || {}).length === 0 && (
-                                      <div style={{ fontSize: 11, color: "#9ca3af", textAlign: "center" }}>No records found</div>
-                                    )}
-                                  </div>
+                                        <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 8 }}>
+                                          <input type="date" id={"addday-" + r._id} style={{ flex: 1, minWidth: 0, padding: "5px 6px", border: "1px solid #e5e7eb", borderRadius: 6, fontSize: 12, fontFamily: "inherit" }} />
+                                          <button onClick={() => { const el = document.getElementById("addday-" + r._id); const d = el && el.value; if (!d) { alert("Pick a date first."); return; } setCheckinStatus(r, d, "on"); if (el) el.value = ""; }} style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: "#16a34a", color: "#fff", cursor: "pointer", fontWeight: 800, fontSize: 11, whiteSpace: "nowrap" }}>+ Add a day</button>
+                                        </div>
+                                      </>
+                                    );
+                                  })()}
                                 </div>
                               )}
                               {/* Completed evaluations — the real form the manager
