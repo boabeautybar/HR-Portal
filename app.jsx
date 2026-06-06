@@ -730,7 +730,30 @@ function saHolidays(year) {
   return out;
 }
 
-// ─── MATERNITY-LEAVE WINDOW for a single 25th→24th schedule cycle ──────────────────
+// ─── TRIAL DOCUMENTS — the checklist HR collects from a trial tech ─────────────
+// Collected during the trial; the signed contract is added once they've passed
+// and are being onboarded. Stored on the trial record as r.docs = { key: true }.
+const TRIAL_DOC_ITEMS = [
+  { k: "idPermit", label: "ID / Passport + valid asylum & form (verifiable with Home Affairs) — or a valid work permit" },
+  { k: "sars", label: "SARS registration" },
+  { k: "particulars", label: "Personal particulars form (completed)" },
+  { k: "bank", label: "Proof of bank account" },
+  { k: "address", label: "Proof of address" },
+  { k: "trialContract", label: "2-week trial contract" }
+];
+const TRIAL_SIGNED_CONTRACT = { k: "signedContract", label: "Signed contract (after a successful trial)", onboard: true };
+// Items applicable to a record now — the signed contract only appears once the
+// tech has passed / is being onboarded.
+function trialDocList(r) {
+  const items = TRIAL_DOC_ITEMS.slice();
+  if (r && (r.status === "passed" || r.status === "hired")) items.push(TRIAL_SIGNED_CONTRACT);
+  return items;
+}
+function trialDocsDone(r) { const d = (r && r.docs) || {}; return trialDocList(r).filter(it => !!d[it.k]).length; }
+function trialDocsTotal(r) { return trialDocList(r).length; }
+function trialDocsComplete(r) { return trialDocsTotal(r) > 0 && trialDocsDone(r) === trialDocsTotal(r); }
+
+
 // Maternity used to blank a person's ENTIRE row the instant their status
 // flipped to "on maternity". Instead we honour the Maternity tab's start
 // date: schedule them normally up to that date and only show 'ML' from it
@@ -13218,6 +13241,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   };
   const [expandedTrialCards, setExpandedTrialCards] = useState(new Set()); // tracking expanded state for trial cards
   const [trialDayEditOpen, setTrialDayEditOpen] = useState(new Set());     // pathway cards whose day editor (✏️) is open
+  const [trialDocsOpen, setTrialDocsOpen] = useState(new Set());           // cards whose documents checklist is open
   const [trialStartDraft, setTrialStartDraft] = useState(null); // { id, date } while HR is setting an in-store trial start date
   const [hrTasks, setHrTasks] = useState([]);         // HR Tasks (mocked for now)
   const [offList, setOffList] = useState([]);         // leaver records
@@ -16747,11 +16771,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const total = docs.length + held.length + onboard.length + fresha.length;
                 if (total === 0) return null;
 
-                const markDocs = (id) => {
-                  const next = (trialList || []).map(r => r._id === id ? { ...r, docsCollected: true, docsCollectedAt: new Date().toISOString() } : r);
-                  setTrialList(next);
-                  window.BOA_DB.saveTrialPeriod(next).catch(() => {});
-                };
                 const linkBtn = (label, onClick) => (
                   <button onClick={onClick} style={{ background: "#fff", color: "#6b21a8", border: "1px solid #ddd6fe", borderRadius: 8, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{label}</button>
                 );
@@ -16777,7 +16796,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <div style={{ flex: 1 }} />
                       <button onClick={() => tryChangeTab("trialPeriod")} style={{ background: "#fff", color: "#6b21a8", border: "1px solid #ddd6fe", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>Open Trial Period →</button>
                     </div>
-                    {docs.map(c => row("td-" + c._id, c.name, "📄 Collect all documents · in trial since " + (c.startDate ? fmtIncidentDate(c.startDate) : "—") + (c.branch ? " · 📍 " + c.branch : ""), linkBtn("Mark collected", () => markDocs(c._id))))}
+                    {docs.map(c => row("td-" + c._id, c.name, "📄 Documents to collect · " + trialDocsDone(c) + "/" + trialDocsTotal(c) + " done" + (c.branch ? " · 📍 " + c.branch : ""), linkBtn("Open checklist →", () => tryChangeTab("trialPeriod"))))}
                     {fresha.map(c => row("tf-" + c._id, c.name, "🧪 Open on Fresha · trial starts " + (c.startDate ? fmtIncidentDate(c.startDate) : "—") + (c.branch ? " · 📍 " + c.branch : ""), linkBtn("Open Fresha To-Do →", () => tryChangeTab("freshaTodo"))))}
                     {held.map(c => row("th-" + c._id, c.name, "⚖️ Evaluation below pass — review · " + heldScore(c) + (c.branch ? " · 📍 " + c.branch : ""), linkBtn("Review →", () => tryChangeTab("trialPeriod"))))}
                     {onboard.map(c => row("to-" + c._id, c.name, "🎓 Passed — complete onboarding" + (c.branch ? " · 📍 " + c.branch : ""), linkBtn("Onboard →", () => tryChangeTab("trialPeriod"))))}
@@ -20776,12 +20795,47 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           return d.getFullYear() + "-" + _p(d.getMonth() + 1) + "-" + _p(d.getDate());
         };
 
-        // Mark all the tech's documents collected (or undo it). HR-only nudge
-        // that runs from the moment the in-store trial starts.
-        const setTrialDocs = (id, done) => {
-          persistTrial(trialList.map(r => r._id === id
-            ? { ...r, docsCollected: done, docsCollectedAt: done ? new Date().toISOString() : null, updatedAt: new Date().toISOString() }
-            : r));
+        // Tick (or untick) a single document on the collection checklist.
+        // docsCollected stays in sync — true only when every applicable item is
+        // collected — so the dashboard nudge and chips keep working.
+        const setTrialDoc = (r, key, val) => {
+          const docs = { ...(r.docs || {}), [key]: val };
+          const updated = { ...r, docs, updatedAt: new Date().toISOString() };
+          updated.docsCollected = trialDocsComplete(updated);
+          if (updated.docsCollected && !r.docsCollected) updated.docsCollectedAt = new Date().toISOString();
+          persistTrial(trialList.map(x => x._id === r._id ? updated : x));
+        };
+        // Mark every applicable document collected (or clear them all).
+        const setAllTrialDocs = (r, done) => {
+          const docs = { ...(r.docs || {}) };
+          trialDocList(r).forEach(it => { docs[it.k] = done; });
+          const updated = { ...r, docs, docsCollected: done, docsCollectedAt: done ? new Date().toISOString() : null, updatedAt: new Date().toISOString() };
+          persistTrial(trialList.map(x => x._id === r._id ? updated : x));
+        };
+        // The documents-to-collect checklist for one tech.
+        const docsChecklistPanel = (r) => {
+          const items = trialDocList(r);
+          const done = trialDocsDone(r), total = trialDocsTotal(r);
+          const docs = r.docs || {};
+          return (
+            <div style={{ marginTop: 10, borderTop: "1px solid #e5e7eb", paddingTop: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: "#111827" }}>📄 Documents to collect <span style={{ color: done === total ? "#16a34a" : "#92400e" }}>· {done}/{total}</span></div>
+                <button onClick={() => setAllTrialDocs(r, done !== total)} style={{ fontSize: 10, fontWeight: 800, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", borderRadius: 6, padding: "3px 9px", cursor: "pointer" }}>{done === total ? "Clear all" : "Mark all collected"}</button>
+              </div>
+              <div style={{ border: "1px solid #f3f4f6", borderRadius: 8, overflow: "hidden" }}>
+                {items.map(it => {
+                  const on = !!docs[it.k];
+                  return (
+                    <button key={it.k} onClick={() => setTrialDoc(r, it.k, !on)} style={{ display: "flex", alignItems: "flex-start", gap: 8, width: "100%", textAlign: "left", padding: "7px 9px", border: "none", borderBottom: "1px solid #f3f4f6", background: on ? "#f0fdf4" : (it.onboard ? "#faf5ff" : "#fff"), cursor: "pointer", fontFamily: "inherit" }}>
+                      <span style={{ flexShrink: 0, width: 16, height: 16, borderRadius: 4, border: "1.5px solid " + (on ? "#16a34a" : "#d1d5db"), background: on ? "#16a34a" : "#fff", color: "#fff", fontSize: 11, fontWeight: 900, lineHeight: "13px", textAlign: "center", marginTop: 1 }}>{on ? "✓" : ""}</span>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: on ? "#166534" : "#374151", lineHeight: 1.35 }}>{it.label}{it.onboard && <span style={{ marginLeft: 5, fontSize: 8, fontWeight: 800, color: "#6b21a8", background: "#ede9fe", borderRadius: 3, padding: "0 4px" }}>ONBOARDING</span>}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          );
         };
 
         // Resolve an evaluation that scored below the pass mark and was held for
@@ -20861,7 +20915,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             [!!(r.midEval && r.midEval.submittedAt), "Mid-trial review done"],
             [!!(r.finalEval && r.finalEval.submittedAt), "Final review done"],
             [ci >= 5, "At least 5 trial check-ins (has " + ci + ")"],
-            [!!r.freshaTrialOpened, "Opened on Fresha for the trial"]
+            [!!r.freshaTrialOpened, "Opened on Fresha for the trial"],
+            [trialDocsComplete(r), "All documents collected (" + trialDocsDone(r) + "/" + trialDocsTotal(r) + ")"]
           ];
           const outstanding = checks.filter(c => !c[0]);
           const lines = checks.map(c => (c[0] ? "✅ " : "⚠️ ") + c[1]).join("\n");
@@ -21285,14 +21340,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 );
                               })()}
 
-                              {/* Document-collection nudge — runs from the moment the in-store trial starts. */}
-                              {trialSubTab === "nt" && (r.status === "trial_w1" || r.status === "trial_w2") && (
-                                <div style={{ marginBottom: 8 }}>
-                                  <button onClick={() => setTrialDocs(r._id, !r.docsCollected)} style={{ fontSize: 10, fontWeight: 700, border: "1px solid", borderColor: r.docsCollected ? "#86efac" : "#fcd34d", background: r.docsCollected ? "#f0fdf4" : "#fffbeb", color: r.docsCollected ? "#166534" : "#92400e", borderRadius: 99, padding: "3px 9px", cursor: "pointer" }}>
-                                    {r.docsCollected ? "📄 Documents collected ✓" : "📄 Collect documents ⏳"}
-                                  </button>
-                                </div>
-                              )}
+                              {/* Documents-to-collect CHECKLIST — opens from the moment the
+                                  in-store trial starts; the signed contract joins it once passed. */}
+                              {trialSubTab === "nt" && ["trial_w1", "trial_w2", "pending_mid_review", "pending_final_review", "passed"].includes(r.status) && (() => {
+                                const done = trialDocsDone(r), total = trialDocsTotal(r);
+                                const open = trialDocsOpen.has(r._id);
+                                return (
+                                  <div style={{ marginBottom: 8 }}>
+                                    <button onClick={() => setTrialDocsOpen(prev => { const n = new Set(prev); n.has(r._id) ? n.delete(r._id) : n.add(r._id); return n; })} style={{ fontSize: 10, fontWeight: 800, border: "1px solid", borderColor: done === total ? "#86efac" : "#fcd34d", background: done === total ? "#f0fdf4" : "#fffbeb", color: done === total ? "#166534" : "#92400e", borderRadius: 99, padding: "3px 10px", cursor: "pointer" }}>
+                                      📄 Documents {done}/{total} {done === total ? "✓" : "⏳"} {open ? "▾" : "▸"}
+                                    </button>
+                                    {open && docsChecklistPanel(r)}
+                                  </div>
+                                );
+                              })()}
 
                               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                                 {/* Induction → in-store trial: HR's one manual advance, sets the start date. */}
@@ -21360,6 +21421,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           </div>
                         </div>
                         <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 10 }}>📍 {r.branch}</div>
+                        {/* Documents checklist — now includes the signed contract. */}
+                        {(() => {
+                          const done = trialDocsDone(r), total = trialDocsTotal(r);
+                          const open = trialDocsOpen.has(r._id);
+                          return (
+                            <div style={{ marginBottom: 10 }}>
+                              <button onClick={() => setTrialDocsOpen(prev => { const n = new Set(prev); n.has(r._id) ? n.delete(r._id) : n.add(r._id); return n; })} style={{ fontSize: 10, fontWeight: 800, border: "1px solid", borderColor: done === total ? "#86efac" : "#fcd34d", background: done === total ? "#f0fdf4" : "#fffbeb", color: done === total ? "#166534" : "#92400e", borderRadius: 99, padding: "3px 10px", cursor: "pointer" }}>
+                                📄 Documents {done}/{total} {done === total ? "✓" : "⏳"} {open ? "▾" : "▸"}
+                              </button>
+                              {open && docsChecklistPanel(r)}
+                            </div>
+                          );
+                        })()}
                         <button
                           onClick={() => promoteToOnboarding(r)}
                           style={{ width: "100%", padding: "8px", borderRadius: 8, border: "none", background: "#BE185D", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700 }}
