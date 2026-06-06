@@ -12859,6 +12859,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [fShow, setFShow] = useState("all"); // all | on_mat | active_only
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
+  const [updateAvailable, setUpdateAvailable] = useState(false);   // a newer deploy is live — show the refresh prompt
+  const lastRefreshRef = React.useRef(0);                          // throttles the quiet background data refresh
 
   // ── Manager personal PIN registry (boa_mgr_pins_v1) ─────────────────
   const [mgrPins, setMgrPins] = useState({});         // {ec: "6-digit-pin"}
@@ -14262,7 +14264,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return () => { cancelled = true; };
   }, [tab, currentUser.pin]);
 
-  useEffect(() => {
+  // Core data loader, extracted so it can be re-run for a quiet background
+  // refresh (on tab focus / periodically) — not just once at startup. It never
+  // flips the full-screen "Loading…" state after the first load, so refreshing
+  // is invisible and never interrupts what the user is doing.
+  const reloadCoreData = React.useCallback(() => {
     if (!window.BOA_DB || !window.BOA_DB.isReady) {
       setLoadError("Supabase isn't configured yet — fill in BOA_SUPABASE_CONFIG and reload.");
       setLoading(false);
@@ -14326,6 +14332,52 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setLoadError("Could not load data: " + (err.message || err));
       setLoading(false);
     });
+  }, [currentUser]);
+
+  // Initial load.
+  useEffect(() => { lastRefreshRef.current = Date.now(); reloadCoreData(); }, [reloadCoreData]);
+
+  // Auto-refresh DATA quietly so people who leave the portal open still see
+  // changes others made (check-ins, schedule edits, leave, trial days) without
+  // a manual reload. Refresh when the tab is brought back into focus and on a
+  // gentle timer while it's visible. Throttled so focus + visibility don't
+  // double-fire. This re-fetches into state in place — it does NOT reload the
+  // page, so an in-progress schedule/attendance edit is never lost.
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastRefreshRef.current < 15000) return;   // at most once / 15s
+      lastRefreshRef.current = Date.now();
+      reloadCoreData();
+    };
+    const onVis = () => { if (document.visibilityState === "visible") refresh(); };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVis);
+    const id = setInterval(refresh, 90 * 1000);                  // every 90s while visible
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVis);
+      clearInterval(id);
+    };
+  }, [reloadCoreData]);
+
+  // Detect a NEW deploy. The portal's pass-through service worker means a
+  // reload always pulls the freshest code — but nobody reloads. We watch the
+  // main script's ETag / Last-Modified (which changes on every Netlify deploy)
+  // and, when it moves, surface a small "refresh" prompt. We never auto-reload
+  // here: a forced reload could discard an unsaved schedule/attendance edit, so
+  // the user taps it when they're ready.
+  useEffect(() => {
+    let base = null, stopped = false;
+    const tag = () => fetch("app.jsx", { method: "HEAD", cache: "no-store" })
+      .then(r => r.headers.get("etag") || r.headers.get("last-modified") || null)
+      .catch(() => null);
+    tag().then(t => { base = t; });
+    const id = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      tag().then(t => { if (!stopped && t && base && t !== base) setUpdateAvailable(true); });
+    }, 90 * 1000);
+    return () => { stopped = true; clearInterval(id); };
   }, []);
 
   // Default the manager-schedule cycle to "current cycle's 25th" when first opened.
@@ -15768,6 +15820,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   return (
     <div className="boa-app" style={{ minHeight: "100vh", background: cream, fontFamily: "'DM Sans',sans-serif", color: "#831843" }}>
       <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Playfair+Display:wght@700;900&family=Cormorant+Garamond:wght@600;700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+      {/* New-version prompt — a new deploy is live. We don't auto-reload (it
+          could discard an unsaved edit); the user taps Refresh when ready. */}
+      {updateAvailable && (
+        <div style={{ position: "fixed", bottom: 18, left: "50%", transform: "translateX(-50%)", zIndex: 100000, background: "#831843", color: "#fff", borderRadius: 999, padding: "10px 12px 10px 18px", boxShadow: "0 8px 28px rgba(131,24,67,0.4)", display: "flex", alignItems: "center", gap: 12, fontSize: 13, fontWeight: 700, fontFamily: "'DM Sans',sans-serif", maxWidth: "92vw" }}>
+          <span>🔄 A new version of the portal is available.</span>
+          <button onClick={() => { try { window.location.reload(); } catch (_e) { } }} style={{ background: "#fff", color: "#831843", border: "none", borderRadius: 999, padding: "7px 16px", fontWeight: 800, fontSize: 13, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>Refresh now</button>
+          <button onClick={() => setUpdateAvailable(false)} title="Dismiss" style={{ background: "transparent", color: "#fff", border: "none", cursor: "pointer", fontSize: 17, lineHeight: 1, padding: "0 4px" }}>✕</button>
+        </div>
+      )}
       {/* Baseline mobile fixes for content that isn't inline-laid-out (mainly wide
           tables). Chrome responsiveness is handled by the isMobile branches. */}
       <style>{`
