@@ -2384,10 +2384,11 @@
         // Each criterion carries a ⓘ button that reveals the form's own
         // description of what it means, so the manager scores consistently.
         return '<div style="padding:8px 0;border-top:1px solid #f3f4f6">' +
-          '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">' +
+          '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap">' +
             '<span style="font-size:12.5px;font-weight:700;color:#374151">' + esc(it.label) + '</span>' +
             (it.key ? '<span class="pill" style="background:#fef3c7;color:#92400e">Key · min 3</span>' : '') +
-            (it.desc ? '<button type="button" class="eval-info" data-k="' + it.k + '" title="What does this mean?" style="margin-left:auto;border:1px solid #ddd6fe;background:#f5f3ff;color:#6b21a8;border-radius:99px;width:20px;height:20px;font-size:11px;font-weight:800;cursor:pointer;line-height:1;flex:0 0 auto">i</button>' : '') +
+            (it.desc ? '<button type="button" class="eval-info" data-k="' + it.k + '" title="Tap for what this means" style="display:inline-flex;align-items:center;gap:4px;border:1px solid #c4b5fd;background:#ede9fe;color:#6b21a8;border-radius:99px;padding:2px 9px 2px 6px;font-size:10px;font-weight:800;cursor:pointer;line-height:1.4;flex:0 0 auto">' +
+              '<span style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:99px;background:#6b21a8;color:#fff;font-size:9px;font-weight:900;line-height:1">i</span>Details</button>' : '') +
           '</div>' +
           (it.desc ? '<div class="eval-desc" data-desc="' + it.k + '" style="display:none;font-size:11.5px;color:#6b21a8;background:#f5f3ff;border:1px solid #ede9fe;border-radius:7px;padding:6px 9px;margin-bottom:7px;line-height:1.45">' + esc(it.desc) + '</div>' : '') +
           '<div style="display:flex;gap:5px" data-row="' + it.k + '">' + opts + '</div>' +
@@ -2459,7 +2460,13 @@
     Array.prototype.forEach.call(modal.querySelectorAll(".eval-info"), function (b) {
       b.onclick = function () {
         var d = modal.querySelector('.eval-desc[data-desc="' + b.dataset.k + '"]');
-        if (d) d.style.display = (d.style.display === "none" || !d.style.display) ? "block" : "none";
+        if (!d) return;
+        var show = (d.style.display === "none" || !d.style.display);
+        d.style.display = show ? "block" : "none";
+        // Reflect the open/closed state on the button so it's obviously a toggle.
+        if (b.lastChild && b.lastChild.nodeType === 3) b.lastChild.textContent = show ? "Hide" : "Details";
+        b.style.background = show ? "#6b21a8" : "#ede9fe";
+        b.style.color = show ? "#fff" : "#6b21a8";
       };
     });
     // Global guidance toggle — show / hide every description at once.
