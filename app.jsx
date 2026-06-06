@@ -13215,6 +13215,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       : r));
   };
   const [expandedTrialCards, setExpandedTrialCards] = useState(new Set()); // tracking expanded state for trial cards
+  const [trialStartDraft, setTrialStartDraft] = useState(null); // { id, date } while HR is setting an in-store trial start date
   const [hrTasks, setHrTasks] = useState([]);         // HR Tasks (mocked for now)
   const [offList, setOffList] = useState([]);         // leaver records
   const [smTrialList, setSmTrialList] = useState([]); // AMs on 3-month Store Manager trial
@@ -16661,6 +16662,63 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     {urgentTrial.map(c => row("ut-" + c._id, c.name, "🧪 Open for trial start · " + fmtIncidentDate(c.startDate) + (c.branch ? " · 📍 " + c.branch : ""), "open " + dl(c._d)))}
                     {urgentBlock.map(r => row("ub-" + r.key, r.name, "🚫 Block — " + (r.emergency ? "Emergency leave" : (LEAVE_TYPE[r.leave_type] || r.leave_type)) + " · " + fmtIncidentDate(r.start_date) + (r.store ? " · 📍 " + r.store : ""), "close " + dl(Math.max(0, r._d ?? 0))))}
                     {urgentRemove.map(r => row("ur-" + r.key, r.name, "👋 Remove from Fresha — off-boarded" + (r.leftDate ? " · " + fmtIncidentDate(r.leftDate) : "") + (r.store ? " · 📍 " + r.store : ""), "remove " + dl(Math.max(0, r._d ?? 0))))}
+                  </div>
+                );
+              })()}
+
+              {/* ── SECTION: TRIAL AUTOMATION · HR ACTIONS ──
+                  Everything in the nail-tech trial that needs a human at HR:
+                  documents to collect (from the moment the in-store trial
+                  starts), techs to open on Fresha (as soon as a start date is
+                  set), evaluations that scored below the pass mark and are held
+                  for an HR decision, and techs who passed and are waiting to be
+                  onboarded. The trial itself runs automatically from the kiosk;
+                  this card is the short list of things only HR can do. */}
+              {canSeeIncidents(currentUser) && (() => {
+                const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
+                const _active = (c) => ["trial_w1", "trial_w2", "pending_mid_review", "pending_final_review"].includes(c.status);
+                const list = (trialList || []).filter(_nt);
+                const docs = list.filter(c => _active(c) && !c.docsCollected);
+                const held = list.filter(c => (c.midEval && c.midEval.heldForHr) || (c.finalEval && c.finalEval.heldForHr));
+                const onboard = list.filter(c => c.status === "passed");
+                const fresha = list.filter(c => c.startDate && !c.freshaTrialOpened && _active(c));
+                const total = docs.length + held.length + onboard.length + fresha.length;
+                if (total === 0) return null;
+
+                const markDocs = (id) => {
+                  const next = (trialList || []).map(r => r._id === id ? { ...r, docsCollected: true, docsCollectedAt: new Date().toISOString() } : r);
+                  setTrialList(next);
+                  window.BOA_DB.saveTrialPeriod(next).catch(() => {});
+                };
+                const linkBtn = (label, onClick) => (
+                  <button onClick={onClick} style={{ background: "#fff", color: "#6b21a8", border: "1px solid #ddd6fe", borderRadius: 8, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{label}</button>
+                );
+                const row = (key, name, sub, action) => (
+                  <div key={key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "1px dashed #ddd6fe", flexWrap: "wrap" }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#5b21b6" }}>{name}</div>
+                      <div style={{ fontSize: 11, color: "#7c3aed", marginTop: 1 }}>{sub}</div>
+                    </div>
+                    {action}
+                  </div>
+                );
+                const heldScore = (c) => {
+                  const ev = (c.finalEval && c.finalEval.heldForHr) ? c.finalEval : c.midEval;
+                  return ev ? (ev.total + "/" + ev.max + (ev.keyOk ? "" : " · key indicator <3")) : "";
+                };
+
+                return (
+                  <div style={{ background: "#faf5ff", border: "2px solid #e9d5ff", borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: "0 4px 16px rgba(124,58,237,0.08)" }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: "#6b21a8", letterSpacing: "0.04em", textTransform: "uppercase" }}>🧪 Trial · HR actions</div>
+                      <div style={{ fontSize: 12, color: "#7c3aed", fontWeight: 700 }}>{total} {total === 1 ? "item" : "items"} for HR</div>
+                      <div style={{ flex: 1 }} />
+                      <button onClick={() => tryChangeTab("trialPeriod")} style={{ background: "#fff", color: "#6b21a8", border: "1px solid #ddd6fe", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>Open Trial Period →</button>
+                    </div>
+                    {docs.map(c => row("td-" + c._id, c.name, "📄 Collect all documents · in trial since " + (c.startDate ? fmtIncidentDate(c.startDate) : "—") + (c.branch ? " · 📍 " + c.branch : ""), linkBtn("Mark collected", () => markDocs(c._id))))}
+                    {fresha.map(c => row("tf-" + c._id, c.name, "🧪 Open on Fresha · trial starts " + (c.startDate ? fmtIncidentDate(c.startDate) : "—") + (c.branch ? " · 📍 " + c.branch : ""), linkBtn("Open Fresha To-Do →", () => tryChangeTab("freshaTodo"))))}
+                    {held.map(c => row("th-" + c._id, c.name, "⚖️ Evaluation below pass — review · " + heldScore(c) + (c.branch ? " · 📍 " + c.branch : ""), linkBtn("Review →", () => tryChangeTab("trialPeriod"))))}
+                    {onboard.map(c => row("to-" + c._id, c.name, "🎓 Passed — complete onboarding" + (c.branch ? " · 📍 " + c.branch : ""), linkBtn("Onboard →", () => tryChangeTab("trialPeriod"))))}
                   </div>
                 );
               })()}
@@ -20420,9 +20478,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const ALL_STAGES = [
           { key: "induction", label: "Induction", color: "#7c3aed", bg: "#ede9fe", emoji: "🎓", roles: ["nt"] },
           { key: "trial_w1", label: "Trial Week 1", color: "#0891b2", bg: "#cffafe", emoji: "📅", roles: ["nt", "am"] },
-          { key: "pending_mid_review", label: "Mid-Review Pending", color: "#d97706", bg: "#fef3c7", emoji: "⏳", roles: ["nt", "am"] },
+          { key: "pending_mid_review", label: "Mid-Review Pending", color: "#d97706", bg: "#fef3c7", emoji: "⏳", roles: ["am"] },
           { key: "trial_w2", label: "Trial Week 2", color: "#059669", bg: "#d1fae5", emoji: "📅", roles: ["nt", "am"] },
-          { key: "pending_final_review", label: "Final Review", color: "#BE185D", bg: "#fce7f3", emoji: "⏳", roles: ["nt", "am"] },
+          { key: "pending_final_review", label: "Final Review", color: "#BE185D", bg: "#fce7f3", emoji: "⏳", roles: ["am"] },
         ];
         const TRIAL_STAGES = ALL_STAGES.filter(s => s.roles.includes(trialSubTab));
         const RESULT_STAGES = [
@@ -20458,10 +20516,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           return { done, total: 10 };
         };
         const nextMilestone = {
-          induction: "Begin Trial Week 1",
-          trial_w1: "Mid-trial review",
+          induction: "Start in-store trial (set date)",
+          trial_w1: "Week 1 evaluation · auto after 5 days",
           pending_mid_review: "Complete the mid-review",
-          trial_w2: "Final review",
+          trial_w2: "Final evaluation · auto after 10 days",
           pending_final_review: "Final decision — pass / fail"
         };
 
@@ -20469,6 +20527,135 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           setTrialList(next);
           try { await window.BOA_DB.saveTrialPeriod(next); }
           catch (e) { alert("Could not save trial data: " + (e.message || e)); }
+        };
+
+        // ── Trial evaluation form (kept in lock-step with kiosk/staff-app.js) ──
+        // 26 criteria across 5 sections, scored 1–5 each (max 130). Items
+        // flagged `key:true` are the form's "Key Indicators".
+        const EVAL_SECTIONS = [
+          { title: "Customer Service & Experience", max: 50, items: [
+            { k: "greeting", label: "Client Greeting & Warmth" }, { k: "consultation", label: "Consultation Clarity" },
+            { k: "comfort", label: "Client Comfort", key: true }, { k: "quality", label: "Service Quality", key: true },
+            { k: "time", label: "Time Management" }, { k: "complaints", label: "Handling Complaints" },
+            { k: "presentation", label: "Professional Presentation" }, { k: "aftercare", label: "Aftercare Education" },
+            { k: "retail", label: "Retail & Upgrades" }, { k: "feedback", label: "Client Feedback" } ] },
+          { title: "Teamwork & Workplace Conduct", max: 25, items: [
+            { k: "communication", label: "Communication", key: true }, { k: "support", label: "Support & Collaboration" },
+            { k: "reliability", label: "Reliability", key: true }, { k: "attitude", label: "Professional Attitude" },
+            { k: "leadership", label: "Respect for Leadership", key: true } ] },
+          { title: "Cleanliness & Hygiene Compliance", max: 25, items: [
+            { k: "toolsan", label: "Tool Sanitation" }, { k: "workstation", label: "Workstation Cleanliness" },
+            { k: "towel", label: "Towel & Product Use" }, { k: "hygiene", label: "Personal Hygiene" },
+            { k: "infection", label: "Infection Control" } ] },
+          { title: "Policy & Operational Compliance", max: 20, items: [
+            { k: "timekeeping", label: "Time Keeping", key: true }, { k: "phone", label: "Phone Rules" },
+            { k: "language", label: "Language" }, { k: "procedure", label: "Procedure Following" } ] },
+          { title: "Brand Ambassadorship & Professionalism", max: 10, items: [
+            { k: "brand", label: "Brand Image" }, { k: "community", label: "Community Presence" } ] }
+        ];
+        const EVAL_MAX = 130, EVAL_PASS = 91, EVAL_KEY_MIN = 3;
+
+        // Cumulative trial working days a candidate has actually worked.
+        const workedDaysOf = (r) => {
+          const m = (r && r.checkins && typeof r.checkins === "object" && !Array.isArray(r.checkins)) ? r.checkins : {};
+          return Object.values(m).filter(st => st === "on" || st === "late").length;
+        };
+        const absentDaysOf = (r) => {
+          const m = (r && r.checkins && typeof r.checkins === "object" && !Array.isArray(r.checkins)) ? r.checkins : {};
+          return Object.values(m).filter(st => st === "absent").length;
+        };
+
+        // The first N trial working dates (Mon–Fri, excl. SA public holidays)
+        // counting from a start date. Used by the kiosk-correction tool below.
+        const trialWorkingDates = (startDate, n) => {
+          const out = [];
+          if (!startDate) return out;
+          const start = new Date(startDate + "T12:00:00");
+          if (isNaN(start)) return out;
+          const _p2 = x => String(x).padStart(2, "0");
+          const cur = new Date(start);
+          for (let g = 0; g < 90 && out.length < n; g++) {
+            const y = cur.getFullYear(), m = cur.getMonth() + 1, d = cur.getDate();
+            const ymd = y + "-" + _p2(m) + "-" + _p2(d), dow = cur.getDay();
+            if (dow !== 0 && dow !== 6 && !(saHolidays(y) || {})[ymd]) out.push(ymd);
+            cur.setDate(cur.getDate() + 1);
+          }
+          return out;
+        };
+
+        // Correction tool — the kiosk under-counted some current trials, so HR
+        // needs to set the real number of completed trial days. This rewrites
+        // the candidate's check-in log to N on-time days on their first N trial
+        // working dates, so the count (and every automation that reads it) lines
+        // up. Future kiosk check-ins then add on naturally.
+        const setCompletedDays = (r, raw) => {
+          const n = Math.max(0, Math.min(10, Math.floor(Number(raw) || 0)));
+          if (!r.startDate) { alert("Set a trial start date first (▶ Start in-store trial)."); return; }
+          const dates = trialWorkingDates(r.startDate, n);
+          if (dates.length < n) { alert("Couldn't map " + n + " trial working days from " + fmtDate(r.startDate) + "."); return; }
+          const range = n === 0 ? "" : ("\n\n" + dates[0] + (n > 1 ? " … " + dates[n - 1] : ""));
+          if (!confirm("Set " + (r.name || "this tech") + "'s completed trial days to " + n + "?\n\nThis rewrites their kiosk check-in log to " + n + " on-time day(s) on their first " + n + " trial working days." + range + "\n\nUse this to fix counts the kiosk recorded incorrectly.")) return;
+          const checkins = {};
+          dates.forEach(d => { checkins[d] = "on"; });
+          persistTrial(trialList.map(x => x._id === r._id ? { ...x, checkins, updatedAt: new Date().toISOString() } : x));
+        };
+        // Remove a single recorded day (fine correction from the history list).
+        const removeCheckin = (r, date) => {
+          const ci = { ...(r.checkins || {}) };
+          delete ci[date];
+          persistTrial(trialList.map(x => x._id === r._id ? { ...x, checkins: ci, updatedAt: new Date().toISOString() } : x));
+        };
+
+        // The single manual step HR keeps: move an inducted tech into the
+        // in-store trial. Sets the start date, flips status to Week 1, and from
+        // here the kiosk drives everything (check-ins, evaluations, advancing).
+        // Setting the date is also what triggers the Fresha "to open" reminder
+        // and the document-collection nudge on the dashboard.
+        const startInStoreTrial = (id, date) => {
+          if (!date) { alert("Please pick a trial start date."); return; }
+          const dt = new Date(date + "T12:00:00");
+          if (isNaN(dt)) { alert("That start date isn't valid."); return; }
+          persistTrial(trialList.map(r => r._id === id
+            ? { ...r, status: "trial_w1", startDate: date, updatedAt: new Date().toISOString() }
+            : r));
+          setTrialStartDraft(null);
+        };
+
+        // Next Monday (sensible default trial start — trial days are Mon–Fri).
+        const nextMondayStr = () => {
+          const d = new Date(); d.setHours(12, 0, 0, 0);
+          d.setDate(d.getDate() + ((8 - d.getDay()) % 7 || 7));
+          const _p = n => String(n).padStart(2, "0");
+          return d.getFullYear() + "-" + _p(d.getMonth() + 1) + "-" + _p(d.getDate());
+        };
+
+        // Mark all the tech's documents collected (or undo it). HR-only nudge
+        // that runs from the moment the in-store trial starts.
+        const setTrialDocs = (id, done) => {
+          persistTrial(trialList.map(r => r._id === id
+            ? { ...r, docsCollected: done, docsCollectedAt: done ? new Date().toISOString() : null, updatedAt: new Date().toISOString() }
+            : r));
+        };
+
+        // Resolve an evaluation that scored below the pass mark and was held for
+        // HR: either override to a pass (advance) or fail the candidate.
+        const resolveHeldEval = (id, which, outcome) => {
+          const rec = trialList.find(r => r._id === id);
+          if (!rec) return;
+          const evalKey = which === "final" ? "finalEval" : "midEval";
+          const ev = rec[evalKey] || {};
+          if (outcome === "pass") {
+            const newStatus = which === "final" ? "passed" : "trial_w2";
+            if (!confirm("Override " + (rec.name || "this tech") + "'s " + (which === "final" ? "final" : "week-1") + " evaluation to a PASS and advance them?")) return;
+            persistTrial(trialList.map(r => r._id === id
+              ? { ...r, [evalKey]: { ...ev, heldForHr: false, hrOverride: "pass", hrDecidedAt: new Date().toISOString() }, status: newStatus, updatedAt: new Date().toISOString() }
+              : r));
+          } else {
+            if (!confirm("Fail " + (rec.name || "this tech") + " on their " + (which === "final" ? "final" : "week-1") + " evaluation? They move to the Failed column.")) return;
+            persistTrial(trialList.map(r => r._id === id
+              ? { ...r, [evalKey]: { ...ev, heldForHr: false, hrOverride: "fail", hrDecidedAt: new Date().toISOString() }, status: "failed", updatedAt: new Date().toISOString() }
+              : r));
+          }
         };
 
         const advanceStage = (id) => {
@@ -20701,48 +20888,107 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               ))}
             </div>
 
-            {/* Pipeline overview — at-a-glance progress for everyone still in
-                trial: trial-day counter, current stage, the next milestone,
-                and readiness chips (on schedule / induction / reviews / Fresha). */}
-            {activeTrials.length > 0 && (
-              <div style={{ background: "#fff", borderRadius: 16, border: "1px solid #ede9fe", padding: "18px 20px", marginBottom: 24, boxShadow: "0 2px 10px rgba(124,58,237,0.05)" }}>
-                <div style={{ fontSize: 13, fontWeight: 800, color: "#6b21a8", letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 14 }}>📊 Trial pipeline · {activeTrials.length} in progress</div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
-                  {activeTrials.slice().sort((a, b) => (a.startDate || "").localeCompare(b.startDate || "")).map(r => {
-                    const prog = trialDayProgress(r.startDate);
-                    const ds = daysInStage(r);
-                    const stale = ds > 10;
-                    const stg = TRIAL_STAGES.find(s => s.key === r.status) || { label: r.status, color: "#6b7280", emoji: "•" };
-                    const pct = Math.min(100, Math.round((prog.done / prog.total) * 100));
-                    const chip = (ok, label) => <span style={{ display: "inline-flex", alignItems: "center", gap: 3, background: ok ? "#dcfce7" : "#f3f4f6", color: ok ? "#166534" : "#9ca3af", padding: "2px 7px", borderRadius: 5, fontSize: 10, fontWeight: 700 }}>{ok ? "✓" : "○"} {label}</span>;
-                    return (
-                      <div key={r._id} style={{ border: `1.5px solid ${stale ? "#fca5a5" : "#ede9fe"}`, borderRadius: 12, padding: "12px 14px", background: stale ? "#fff5f5" : "#fafafa" }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
-                          <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>{r.name}</div>
-                          {stale && <span style={{ fontSize: 9, fontWeight: 800, color: "#991b1b", background: "#fee2e2", padding: "1px 6px", borderRadius: 4, whiteSpace: "nowrap" }}>⚠ {ds}d in stage</span>}
-                        </div>
-                        <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 8 }}>📍 {r.branch}{r.startDate ? " · started " + fmtDate(r.startDate) : ""}</div>
-                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, fontWeight: 700, color: "#6b21a8", marginBottom: 3 }}>
-                          <span>Trial day {prog.done} / {prog.total}</span>
-                          <span>{stg.emoji} {stg.label}</span>
-                        </div>
-                        <div style={{ height: 6, background: "#ede9fe", borderRadius: 99, overflow: "hidden", marginBottom: 8 }}>
-                          <div style={{ width: pct + "%", height: "100%", background: "#7c3aed" }} />
-                        </div>
-                        <div style={{ fontSize: 10, color: "#7c3aed", fontWeight: 700, marginBottom: 8 }}>Next: {nextMilestone[r.status] || "—"}</div>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                          {chip(!!r.startDate, "On schedule")}
-                          {trialSubTab === "nt" && chip(!!r.inductionPassDate, "Induction")}
-                          {chip(!!(r.midEval && r.midEval.submittedAt), "Mid-review")}
-                          {chip(!!(r.finalEval && r.finalEval.submittedAt), "Final review")}
-                          {chip(!!r.freshaTrialOpened, "Fresha")}
-                        </div>
-                      </div>
-                    );
-                  })}
+            {/* Pipeline overview — a left-to-right PATHWAY for each tech so HR
+                can read the journey at a glance: Induction → first 5 days →
+                Week 1 evaluation → next 5 days → Final evaluation → Passed. The
+                day stretches fill from real kiosk check-ins, and each card has an
+                inline day-count correction for fixing what the kiosk missed. */}
+            {activeTrials.length > 0 && (() => {
+              const rank = { induction: 0, trial_w1: 1, pending_mid_review: 1, trial_w2: 2, pending_final_review: 2 };
+              const rows = activeTrials.slice().sort((a, b) =>
+                (rank[b.status] || 0) - (rank[a.status] || 0)
+                || workedDaysOf(b) - workedDaysOf(a)
+                || (a.name || "").localeCompare(b.name || ""));
+
+              // A milestone circle on the pathway.
+              const Node = ({ icon, iconColor, bg, label, sub, subColor, current }) => (
+                <div style={{ flex: "0 0 86px", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                  <div style={{ height: 40, display: "flex", alignItems: "center" }}>
+                    <div style={{ width: 38, height: 38, borderRadius: 99, background: bg, color: iconColor, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17, boxShadow: current ? "0 0 0 4px #ede9fe" : "none", border: current ? "2px solid #7c3aed" : "2px solid transparent" }}>{icon}</div>
+                  </div>
+                  <div style={{ fontSize: 10.5, fontWeight: 800, color: current ? "#6b21a8" : "#6b7280", textAlign: "center", lineHeight: 1.15 }}>{label}{current ? " ◂" : ""}</div>
+                  <div style={{ fontSize: 9.5, fontWeight: 700, color: subColor || "#9ca3af", textAlign: "center" }}>{sub}</div>
                 </div>
-              </div>
-            )}
+              );
+              // A 5-day stretch connecting two milestones; fills green as worked.
+              const Conn = ({ label, fillPct, count, active, current }) => (
+                <div style={{ flex: "1 1 66px", minWidth: 60, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                  <div style={{ height: 40, display: "flex", alignItems: "center", width: "100%" }}>
+                    <div style={{ width: "100%", height: 11, background: "#ede9fe", borderRadius: 99, overflow: "hidden", border: current ? "1px solid #c4b5fd" : "none" }}>
+                      <div style={{ width: fillPct + "%", height: "100%", background: active ? "#16a34a" : "#c4b5fd", borderRadius: 99, transition: "width 0.3s" }} />
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 10.5, fontWeight: 800, color: current ? "#6b21a8" : "#6b7280", textAlign: "center", lineHeight: 1.15 }}>{label}{current ? " ◂" : ""}</div>
+                  <div style={{ fontSize: 9.5, fontWeight: 800, color: "#16a34a", textAlign: "center" }}>{count}</div>
+                </div>
+              );
+
+              return (
+                <div style={{ background: "#fff", borderRadius: 16, border: "1px solid #ede9fe", padding: "16px 18px", marginBottom: 24, boxShadow: "0 2px 10px rgba(124,58,237,0.05)" }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "#6b21a8", letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 4 }}>🛣️ Trial journeys · {activeTrials.length} in progress</div>
+                  <div style={{ fontSize: 11, color: "#9d6a82", marginBottom: 14 }}>Each tech's path from induction to passing. Day stretches fill from real kiosk check-ins — use <strong>− N +</strong> on a card to correct days the kiosk missed.</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                    {rows.map(r => {
+                      const ds = daysInStage(r);
+                      const stale = ds > 14;
+                      const worked = workedDaysOf(r);
+                      const absent = absentDaysOf(r);
+                      const st = r.status;
+                      const w1 = Math.min(worked, 5);
+                      const w2 = Math.max(0, Math.min(worked, 10) - 5);
+                      const midDue = st === "trial_w1" && worked >= 5 && !(r.midEval && r.midEval.submittedAt);
+                      const finalDue = st === "trial_w2" && worked >= 10 && !(r.finalEval && r.finalEval.submittedAt);
+                      // Where the tech currently sits on the path.
+                      let cur = "induction";
+                      if (st === "trial_w1") cur = worked >= 5 ? "wk1eval" : "w1";
+                      else if (st === "trial_w2") cur = worked >= 10 ? "finaleval" : "w2";
+                      else if (st === "passed") cur = "passed";
+                      const inductionDone = st !== "induction";
+                      const evNode = (ev, due, pendingSub) => {
+                        if (ev && ev.submittedAt) return ev.pass
+                          ? { bg: "#16a34a", iconColor: "#fff", icon: "✓", sub: ev.total + "/" + ev.max, subColor: "#16a34a" }
+                          : { bg: "#f59e0b", iconColor: "#fff", icon: "⏳", sub: "held " + ev.total, subColor: "#b45309" };
+                        if (due) return { bg: "#7c3aed", iconColor: "#fff", icon: "📋", sub: "due now", subColor: "#6b21a8" };
+                        return { bg: "#f3f4f6", iconColor: "#c4b5fd", icon: "📋", sub: pendingSub, subColor: "#9ca3af" };
+                      };
+                      const mid = evNode(r.midEval, midDue, "after 5 days");
+                      const fin = evNode(r.finalEval, finalDue, "after 10 days");
+                      return (
+                        <div key={r._id} style={{ border: `1px solid ${stale ? "#fecaca" : "#f0ebff"}`, borderRadius: 14, padding: "12px 14px", background: stale ? "#fffafa" : "#fdfcff" }}>
+                          {/* Header row: identity + inline day correction */}
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
+                            <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                              <span style={{ fontSize: 14, fontWeight: 800, color: "#111827" }}>{r.name}</span>
+                              <span style={{ fontSize: 11, color: "#9ca3af" }}>📍 {r.branch}{r.startDate ? " · since " + fmtDate(r.startDate) : ""}</span>
+                              <span style={{ fontSize: 11, fontWeight: 800, color: "#6b21a8" }}>· {Math.min(worked, 10)}/10 days{absent > 0 ? " · " + absent + " abs" : ""}</span>
+                              {stale && <span style={{ fontSize: 9, fontWeight: 800, color: "#991b1b", background: "#fee2e2", padding: "1px 6px", borderRadius: 4 }}>⚠ {ds}d in stage</span>}
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 4 }} title="Correct the completed-day count if the kiosk missed check-ins">
+                              <span style={{ fontSize: 9.5, color: "#92400e", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.04em" }}>Correct days</span>
+                              <button onClick={() => setCompletedDays(r, worked - 1)} title="One day fewer" style={{ width: 22, height: 24, borderRadius: 5, border: "1px solid #fcd34d", background: "#fffbeb", color: "#92400e", cursor: "pointer", fontWeight: 800, fontSize: 13, lineHeight: 1 }}>−</button>
+                              <input key={"ovday-" + r._id + "-" + worked} id={"ovday-" + r._id} type="number" min="0" max="10" defaultValue={worked} style={{ width: 40, padding: "3px 4px", border: "1px solid #fcd34d", borderRadius: 5, fontSize: 12, fontFamily: "inherit", textAlign: "center", boxSizing: "border-box" }} />
+                              <button onClick={() => setCompletedDays(r, worked + 1)} title="One day more" style={{ width: 22, height: 24, borderRadius: 5, border: "1px solid #fcd34d", background: "#fffbeb", color: "#92400e", cursor: "pointer", fontWeight: 800, fontSize: 13, lineHeight: 1 }}>+</button>
+                              <button onClick={() => { const el = document.getElementById("ovday-" + r._id); setCompletedDays(r, el ? el.value : worked); }} title="Set the corrected number of completed trial days" style={{ padding: "3px 10px", borderRadius: 5, border: "none", background: "#d97706", color: "#fff", cursor: "pointer", fontWeight: 800, fontSize: 11 }}>Set</button>
+                            </div>
+                          </div>
+                          {/* The pathway */}
+                          <div style={{ display: "flex", alignItems: "flex-start", overflowX: "auto", paddingTop: 2 }}>
+                            {trialSubTab === "nt" && (
+                              <Node icon={inductionDone ? "✓" : "🎓"} iconColor={inductionDone ? "#fff" : "#6b21a8"} bg={inductionDone ? "#16a34a" : "#7c3aed"} label="Induction" sub={inductionDone ? "done" : "in progress"} subColor={inductionDone ? "#16a34a" : "#6b21a8"} current={cur === "induction"} />
+                            )}
+                            <Conn label="First 5 days" fillPct={(w1 / 5) * 100} count={w1 + "/5"} active={w1 > 0} current={cur === "w1"} />
+                            <Node icon={mid.icon} iconColor={mid.iconColor} bg={mid.bg} label="Week 1 eval" sub={mid.sub} subColor={mid.subColor} current={cur === "wk1eval"} />
+                            <Conn label="Next 5 days" fillPct={(w2 / 5) * 100} count={w2 + "/5"} active={w2 > 0} current={cur === "w2"} />
+                            <Node icon={fin.icon} iconColor={fin.iconColor} bg={fin.bg} label="Final eval" sub={fin.sub} subColor={fin.subColor} current={cur === "finaleval"} />
+                            <Node icon="🏆" iconColor={st === "passed" ? "#fff" : "#c4b5fd"} bg={st === "passed" ? "#16a34a" : "#f3f4f6"} label="Passed" sub={st === "passed" ? "passed" : "goal"} subColor={st === "passed" ? "#16a34a" : "#9ca3af"} current={cur === "passed"} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Add Trainee Form */}
             {tForm._open && (
@@ -20784,7 +21030,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             <div style={{ overflowX: "auto", paddingBottom: 8 }}>
               <div style={{ display: "flex", gap: 16, minWidth: "max-content" }}>
                 {TRIAL_STAGES.map(stage => {
-                  const cards = currentList.filter(r => r.status === stage.key);
+                  // For nail techs the pipeline is now Induction → Week 1 →
+                  // Week 2, driven by kiosk evaluations. Any legacy records left
+                  // in the old "pending review" statuses fold into the matching
+                  // week column so they stay visible and actionable.
+                  const normStatus = (st) => trialSubTab === "nt"
+                    ? ({ pending_mid_review: "trial_w1", pending_final_review: "trial_w2" }[st] || st)
+                    : st;
+                  const cards = currentList.filter(r => normStatus(r.status) === stage.key);
                   return (
                     <div key={stage.key} style={{ width: 240, flexShrink: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
@@ -20850,56 +21103,131 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 </button>
                               </div>
 
-                              {/* Expanded View: Attendance History */}
+                              {/* Expanded View: kiosk-day correction + attendance history */}
                               {expandedTrialCards.has(r._id) && (
-                                <div style={{ marginTop: 10, borderTop: "1px solid #e5e7eb", paddingTop: 10, maxHeight: 150, overflowY: "auto" }}>
-                                  <div style={{ fontSize: 11, fontWeight: 700, color: "#111827", marginBottom: 6 }}>Attendance History</div>
-                                  {Object.entries(r.checkins || {}).sort((a, b) => b[0].localeCompare(a[0])).map(([date, status]) => {
-                                    const statusLabels = {
-                                      "on": "On Time",
-                                      "late": "Late",
-                                      "sick_n": "Sick + note",
-                                      "sick": "Sick NO note",
-                                      "absent": "Absent",
-                                      "no": "No Show",
-                                      "frl": "FRL + proof"
-                                    };
-                                    const isPositive = status === "on" || status === "late";
-                                    return (
-                                      <div key={date} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11, marginBottom: 4 }}>
-                                        <span style={{ color: "#6b7280" }}>{fmtDate(date)}</span>
-                                        <span style={{ background: isPositive ? "#def7ec" : "#fde8e8", color: isPositive ? "#03543f" : "#9b1c1c", padding: "1px 6px", borderRadius: 4, fontWeight: 700, fontSize: 10 }}>
-                                          {statusLabels[status] || status}
-                                        </span>
-                                      </div>
-                                    );
-                                  })}
-                                  {Object.keys(r.checkins || {}).length === 0 && (
-                                    <div style={{ fontSize: 11, color: "#9ca3af", textAlign: "center" }}>No records found</div>
-                                  )}
-                                </div>
-                              )}
-                              {/* Mock Eval card for review stages */}
-                              {(r.status === "pending_mid_review" || r.status === "pending_final_review") && (
-                                <div style={{ background: "#fef9f0", border: "1px solid #fbbf24", borderRadius: 8, padding: "8px 10px", marginBottom: 8, fontSize: 11 }}>
-                                  <div style={{ fontWeight: 700, color: "#92400e", marginBottom: 6 }}>📋 {r.status === "pending_mid_review" ? "Mid-Trial" : "Final"} Evaluation</div>
-                                  {["Technique & Skill", "Client Manner", "Time Management", "Cleanliness"].map(criterion => (
-                                    <div key={criterion} style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
-                                      <span style={{ color: "#6b7280" }}>{criterion}</span>
-                                      <span style={{ fontWeight: 700, color: "#d97706" }}>{'⭐'.repeat(Math.floor(Math.random() * 2) + 3)}</span>
+                                <div style={{ marginTop: 10, borderTop: "1px solid #e5e7eb", paddingTop: 10 }}>
+                                  {/* Correct the completed-day count when the kiosk missed check-ins */}
+                                  <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "9px 10px", marginBottom: 10 }}>
+                                    <div style={{ fontSize: 11, fontWeight: 800, color: "#92400e", marginBottom: 4 }}>🔧 Correct trial-day count</div>
+                                    <div style={{ fontSize: 10, color: "#92400e", marginBottom: 8, lineHeight: 1.45 }}>Kiosk missed some check-ins? Set the real number of completed trial days — this rewrites the check-in log to match so the count and evaluations line up.</div>
+                                    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                                      <button onClick={() => setCompletedDays(r, workedDaysOf(r) - 1)} title="One day fewer" style={{ width: 26, height: 28, borderRadius: 6, border: "1px solid #fcd34d", background: "#fff", color: "#92400e", cursor: "pointer", fontWeight: 800, fontSize: 13 }}>−</button>
+                                      <input key={"daycorr-" + r._id + "-" + workedDaysOf(r)} id={"daycorr-" + r._id} type="number" min="0" max="10" defaultValue={workedDaysOf(r)} style={{ width: 50, padding: "5px 6px", border: "1px solid #fcd34d", borderRadius: 6, fontSize: 13, fontFamily: "inherit", textAlign: "center", boxSizing: "border-box" }} />
+                                      <span style={{ fontSize: 10, color: "#92400e", fontWeight: 700 }}>/ 10</span>
+                                      <button onClick={() => setCompletedDays(r, workedDaysOf(r) + 1)} title="One day more" style={{ width: 26, height: 28, borderRadius: 6, border: "1px solid #fcd34d", background: "#fff", color: "#92400e", cursor: "pointer", fontWeight: 800, fontSize: 13 }}>+</button>
+                                      <button onClick={() => { const el = document.getElementById("daycorr-" + r._id); setCompletedDays(r, el ? el.value : workedDaysOf(r)); }} style={{ marginLeft: "auto", padding: "5px 14px", borderRadius: 6, border: "none", background: "#d97706", color: "#fff", cursor: "pointer", fontWeight: 800, fontSize: 12 }}>Set</button>
                                     </div>
-                                  ))}
-                                  <div style={{ marginTop: 6, fontSize: 10, color: "#92400e", fontStyle: "italic" }}>Auto-generated mock · Branch evaluation pending</div>
+                                  </div>
+                                  <div style={{ maxHeight: 150, overflowY: "auto" }}>
+                                    <div style={{ fontSize: 11, fontWeight: 700, color: "#111827", marginBottom: 6 }}>Attendance History <span style={{ fontWeight: 400, color: "#9ca3af" }}>· ✕ to remove a wrong day</span></div>
+                                    {Object.entries(r.checkins || {}).sort((a, b) => b[0].localeCompare(a[0])).map(([date, status]) => {
+                                      const statusLabels = {
+                                        "on": "On Time",
+                                        "late": "Late",
+                                        "sick_n": "Sick + note",
+                                        "sick": "Sick NO note",
+                                        "absent": "Absent",
+                                        "no": "No Show",
+                                        "frl": "FRL + proof"
+                                      };
+                                      const isPositive = status === "on" || status === "late";
+                                      return (
+                                        <div key={date} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6, fontSize: 11, marginBottom: 4 }}>
+                                          <span style={{ color: "#6b7280" }}>{fmtDate(date)}</span>
+                                          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                            <span style={{ background: isPositive ? "#def7ec" : "#fde8e8", color: isPositive ? "#03543f" : "#9b1c1c", padding: "1px 6px", borderRadius: 4, fontWeight: 700, fontSize: 10 }}>
+                                              {statusLabels[status] || status}
+                                            </span>
+                                            <button onClick={() => removeCheckin(r, date)} title="Remove this day" style={{ background: "none", border: "none", color: "#d1d5db", cursor: "pointer", fontSize: 12, lineHeight: 1, padding: 0 }}>✕</button>
+                                          </span>
+                                        </div>
+                                      );
+                                    })}
+                                    {Object.keys(r.checkins || {}).length === 0 && (
+                                      <div style={{ fontSize: 11, color: "#9ca3af", textAlign: "center" }}>No records found</div>
+                                    )}
+                                  </div>
                                 </div>
                               )}
+                              {/* Completed evaluations — the real form the manager
+                                  filled on the kiosk, kept here for HR reference. */}
+                              {(() => {
+                                const evalBox = (ev, label) => {
+                                  if (!ev || !ev.submittedAt) return null;
+                                  const ok = ev.pass;
+                                  return (
+                                    <div key={label} style={{ background: ok ? "#f0fdf4" : "#fff7ed", border: `1px solid ${ok ? "#86efac" : "#fdba74"}`, borderRadius: 8, padding: "8px 10px", marginBottom: 8, fontSize: 11 }}>
+                                      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, color: ok ? "#166534" : "#9a3412" }}>
+                                        <span>📋 {label}</span>
+                                        <span>{ev.total}/{ev.max} · {ok ? "PASS" : "BELOW PASS"}</span>
+                                      </div>
+                                      <div style={{ color: "#6b7280", marginTop: 2 }}>by {ev.submittedBy || "—"}{ev.submittedAt ? " · " + fmtDate(String(ev.submittedAt).slice(0, 10)) : ""}</div>
+                                      {!ev.keyOk && <div style={{ color: "#b45309", marginTop: 2 }}>⚠ A Key Indicator scored below 3.</div>}
+                                      {ev.notes && <div style={{ color: "#6b7280", marginTop: 2, fontStyle: "italic" }}>“{ev.notes}”</div>}
+                                      {ev.heldForHr && <div style={{ color: "#9a3412", marginTop: 3, fontWeight: 700 }}>⏳ Held for your review</div>}
+                                      {ev.hrOverride && <div style={{ color: "#6b7280", marginTop: 2 }}>HR decision: {ev.hrOverride === "pass" ? "passed" : "failed"}</div>}
+                                    </div>
+                                  );
+                                };
+                                return (<>{evalBox(r.midEval, "Week 1 evaluation")}{evalBox(r.finalEval, "Final evaluation")}</>);
+                              })()}
+
+                              {/* Automation hint — nail-tech evaluations auto-send from the kiosk. */}
+                              {trialSubTab === "nt" && (r.status === "trial_w1" || r.status === "trial_w2") && (() => {
+                                const isW1 = r.status === "trial_w1";
+                                const have = isW1 ? (r.midEval && r.midEval.submittedAt) : (r.finalEval && r.finalEval.submittedAt);
+                                if (have) return null;
+                                const need = isW1 ? 5 : 10;
+                                return (
+                                  <div style={{ background: "#f5f3ff", border: "1px dashed #c4b5fd", borderRadius: 8, padding: "7px 10px", marginBottom: 8, fontSize: 11, color: "#6b21a8" }}>
+                                    🤖 {isW1 ? "Week 1" : "Final"} evaluation auto-sends to the {r.branch} kiosk after {need} trial days · worked {workedDaysOf(r)}/{need}
+                                  </div>
+                                );
+                              })()}
+
+                              {/* Document-collection nudge — runs from the moment the in-store trial starts. */}
+                              {trialSubTab === "nt" && (r.status === "trial_w1" || r.status === "trial_w2") && (
+                                <div style={{ marginBottom: 8 }}>
+                                  <button onClick={() => setTrialDocs(r._id, !r.docsCollected)} style={{ fontSize: 10, fontWeight: 700, border: "1px solid", borderColor: r.docsCollected ? "#86efac" : "#fcd34d", background: r.docsCollected ? "#f0fdf4" : "#fffbeb", color: r.docsCollected ? "#166534" : "#92400e", borderRadius: 99, padding: "3px 9px", cursor: "pointer" }}>
+                                    {r.docsCollected ? "📄 Documents collected ✓" : "📄 Collect documents ⏳"}
+                                  </button>
+                                </div>
+                              )}
+
                               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                                {r.status !== "passed" && r.status !== "failed" && (
+                                {/* Induction → in-store trial: HR's one manual advance, sets the start date. */}
+                                {r.status === "induction" && (
+                                  trialStartDraft && trialStartDraft.id === r._id ? (
+                                    <div style={{ display: "flex", gap: 6, width: "100%", flexWrap: "wrap", alignItems: "center" }}>
+                                      <input type="date" value={trialStartDraft.date} onChange={e => setTrialStartDraft({ id: r._id, date: e.target.value })} style={{ flex: 1, minWidth: 120, padding: "6px 8px", borderRadius: 7, border: "1px solid #c4b5fd", fontSize: 11, fontFamily: "inherit" }} />
+                                      <button onClick={() => startInStoreTrial(r._id, trialStartDraft.date)} style={{ padding: "6px 10px", borderRadius: 7, border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>Start ▶</button>
+                                      <button onClick={() => setTrialStartDraft(null)} style={{ padding: "6px 8px", borderRadius: 7, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", cursor: "pointer", fontFamily: "inherit", fontSize: 11 }}>✕</button>
+                                    </div>
+                                  ) : (
+                                    <button onClick={() => setTrialStartDraft({ id: r._id, date: r.startDate || nextMondayStr() })} style={{ flex: 1, padding: "6px 8px", borderRadius: 7, border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>▶ Start in-store trial</button>
+                                  )
+                                )}
+
+                                {/* Held-for-HR evaluation decisions (below-pass scores). */}
+                                {r.midEval && r.midEval.heldForHr && (<>
+                                  <button onClick={() => resolveHeldEval(r._id, "mid", "pass")} style={{ padding: "6px 8px", borderRadius: 7, border: "none", background: "#15803d", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>✅ Pass wk 1</button>
+                                  <button onClick={() => resolveHeldEval(r._id, "mid", "fail")} style={{ padding: "6px 8px", borderRadius: 7, border: "1px solid #fca5a5", background: "#fff", color: "#991b1b", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>❌ Fail</button>
+                                </>)}
+                                {r.finalEval && r.finalEval.heldForHr && (<>
+                                  <button onClick={() => resolveHeldEval(r._id, "final", "pass")} style={{ padding: "6px 8px", borderRadius: 7, border: "none", background: "#15803d", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>✅ Pass final</button>
+                                  <button onClick={() => resolveHeldEval(r._id, "final", "fail")} style={{ padding: "6px 8px", borderRadius: 7, border: "1px solid #fca5a5", background: "#fff", color: "#991b1b", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>❌ Fail</button>
+                                </>)}
+
+                                {/* Assistant-Manager trials keep the manual pipeline buttons. */}
+                                {trialSubTab === "am" && r.status !== "passed" && r.status !== "failed" && (
                                   <button onClick={() => advanceStage(r._id)} style={{ flex: 1, padding: "6px 8px", borderRadius: 7, border: "none", background: stage.color, color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>Advance →</button>
                                 )}
-                                {r.status === "pending_final_review" && (
+                                {trialSubTab === "am" && r.status === "pending_final_review" && (
                                   <button onClick={() => markPassed(r._id)} style={{ padding: "6px 8px", borderRadius: 7, border: "none", background: "#15803d", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>✅ Pass</button>
                                 )}
-                                {r.status !== "failed" && r.status !== "induction" && (
+
+                                {/* Manual fail override (not while inducting, and not when an eval is already held). */}
+                                {r.status !== "failed" && r.status !== "induction" && !(r.midEval && r.midEval.heldForHr) && !(r.finalEval && r.finalEval.heldForHr) && (
                                   <button onClick={() => markFailed(r._id)} style={{ padding: "6px 8px", borderRadius: 7, border: "1px solid #fca5a5", background: "#fff", color: "#991b1b", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>❌ Fail</button>
                                 )}
                                 <button onClick={() => deleteCandidate(r)} title="Delete this candidate (e.g. a duplicate) — cannot be undone" style={{ padding: "6px 8px", borderRadius: 7, border: "1px solid #e5e7eb", background: "#fff", color: "#9ca3af", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>🗑</button>

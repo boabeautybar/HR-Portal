@@ -491,6 +491,94 @@
     return set;
   }
 
+  // ── Nail-tech trial evaluation form ──────────────────────────────────────
+  // The BOA Beauty Bar Nail Technician Evaluation Form: 26 criteria across 5
+  // sections, each scored 1–5, for a maximum of 130 points. Items flagged
+  // `key:true` are the "Key Indicators" on the form. Keep this in lock-step
+  // with the identical definition in the HR portal (app.jsx) so a form filled
+  // on the kiosk renders the same scores back to HR.
+  var TRIAL_EVAL_SECTIONS = [
+    { title: "Customer Service & Experience", max: 50, items: [
+      { k: "greeting", label: "Client Greeting & Warmth" },
+      { k: "consultation", label: "Consultation Clarity" },
+      { k: "comfort", label: "Client Comfort", key: true },
+      { k: "quality", label: "Service Quality", key: true },
+      { k: "time", label: "Time Management" },
+      { k: "complaints", label: "Handling Complaints" },
+      { k: "presentation", label: "Professional Presentation" },
+      { k: "aftercare", label: "Aftercare Education" },
+      { k: "retail", label: "Retail & Upgrades" },
+      { k: "feedback", label: "Client Feedback" }
+    ] },
+    { title: "Teamwork & Workplace Conduct", max: 25, items: [
+      { k: "communication", label: "Communication", key: true },
+      { k: "support", label: "Support & Collaboration" },
+      { k: "reliability", label: "Reliability", key: true },
+      { k: "attitude", label: "Professional Attitude" },
+      { k: "leadership", label: "Respect for Leadership", key: true }
+    ] },
+    { title: "Cleanliness & Hygiene Compliance", max: 25, items: [
+      { k: "toolsan", label: "Tool Sanitation" },
+      { k: "workstation", label: "Workstation Cleanliness" },
+      { k: "towel", label: "Towel & Product Use" },
+      { k: "hygiene", label: "Personal Hygiene" },
+      { k: "infection", label: "Infection Control" }
+    ] },
+    { title: "Policy & Operational Compliance", max: 20, items: [
+      { k: "timekeeping", label: "Time Keeping", key: true },
+      { k: "phone", label: "Phone Rules" },
+      { k: "language", label: "Language" },
+      { k: "procedure", label: "Procedure Following" }
+    ] },
+    { title: "Brand Ambassadorship & Professionalism", max: 10, items: [
+      { k: "brand", label: "Brand Image" },
+      { k: "community", label: "Community Presence" }
+    ] }
+  ];
+  var TRIAL_EVAL_MAX = 130;        // 26 criteria × 5
+  var TRIAL_EVAL_PASS = 91;        // 70% of 130
+  var TRIAL_EVAL_KEY_MIN = 3;      // every Key Indicator must be ≥ 3/5
+
+  // Score a set of {criterionKey: 1..5} answers. Pass requires BOTH the 70%
+  // total AND a minimum of 3/5 on every Key Indicator.
+  function scoreTrialEval(scores) {
+    var total = 0, keyOk = true, answered = 0, count = 0;
+    TRIAL_EVAL_SECTIONS.forEach(function (sec) {
+      sec.items.forEach(function (it) {
+        count++;
+        var v = Number(scores[it.k]);
+        if (isFinite(v) && v >= 1) { total += v; answered++; }
+        if (it.key && (!isFinite(v) || v < TRIAL_EVAL_KEY_MIN)) keyOk = false;
+      });
+    });
+    return {
+      total: total, max: TRIAL_EVAL_MAX,
+      complete: answered === count,
+      keyOk: keyOk,
+      pass: total >= TRIAL_EVAL_PASS && keyOk
+    };
+  }
+
+  // Count the trial working days a candidate has actually worked (On Time or
+  // Late). This drives when each evaluation falls due (5 → week 1, 10 → final).
+  function trialWorkedDays(c) {
+    var m = (c && c.checkins && !Array.isArray(c.checkins)) ? c.checkins : {};
+    return Object.keys(m).filter(function (d) { return m[d] === "on" || m[d] === "late"; }).length;
+  }
+
+  // Which evaluation (if any) is due for a candidate right now:
+  //   "mid"   — finished 5 days in week 1, week-1 form not yet submitted
+  //   "final" — passed week 1 and finished 10 days, final form not submitted
+  //   null    — nothing due
+  function trialEvalDue(c) {
+    var worked = trialWorkedDays(c);
+    var midDone = !!(c.midEval && c.midEval.submittedAt);
+    var finalDone = !!(c.finalEval && c.finalEval.submittedAt);
+    if (c.status === "trial_w1" && worked >= 5 && !midDone) return "mid";
+    if (c.status === "trial_w2" && worked >= 10 && !finalDone) return "final";
+    return null;
+  }
+
   // out of renderSchedule so the picker can call it without re-running
   // the picker UI. Back button returns to the picker.
   async function renderScheduleKind(kind, ym) {
@@ -596,6 +684,7 @@
         if (!c || c.branch !== thisBranch) return;
         if (String(c.role || "nt").toLowerCase() !== "nt") return;   // nail techs only (excludes AM/SM/managers, any case)
         if (c.status === "passed" || c.status === "failed" || c.status === "hired") return;
+        if (c.status === "induction") return;  // not on the floor until HR starts the in-store trial
         if (!c.startDate) return;
         var daySet = _trialDaySet(c.startDate);
         var inCycle = days.some(function (d) { return daySet[_ymdOf(d)]; });
@@ -1238,6 +1327,25 @@
       if (st === "on") onTime++;
     });
 
+    // Trial nail techs are COMPULSORY to check in: a trial tech who has a trial
+    // working day today (per their 10-day Mon–Fri schedule) must be marked On
+    // Time / Late / Absent before the manager can sign the day off — otherwise
+    // a manager could close the day for everyone except the trial techs. We
+    // fold their counts straight into the same confirmed/total gate.
+    var today = window.APP_DATA.todayStr();
+    var trialActiveToday = myTrialCand.filter(function (c) {
+      if (c.status !== "trial_w1" && c.status !== "trial_w2") return false;
+      var ds = _trialDaySet(c.startDate);
+      return !!ds[today];
+    });
+    trialActiveToday.forEach(function (c) {
+      var m = (c.checkins && !Array.isArray(c.checkins)) ? c.checkins : {};
+      var st = m[today];
+      total++;
+      if (st === "on" || st === "late" || st === "absent") confirmed++;
+      if (st === "on") onTime++;
+    });
+
     var awaySuffix = loanedOutCount > 0 ? ' · ' + loanedOutCount + ' away' : '';
     if (total === 0) {
       badgeEl.innerHTML = loanedOutCount > 0 ? '✓ All techs loaned out today' : '';
@@ -1267,35 +1375,73 @@
       { code: "frl",    label: "FRL + proof"   }
     ];
 
+    // Trial techs get only three honest statuses — On Time / Late / Absent.
+    // No "sick / FRL / no-show" reasons during a trial: the manager records
+    // exactly what happened on a trial day, nothing else.
+    var trialStatusButtons = [
+      { code: "on",     label: "On Time" },
+      { code: "late",   label: "Late"    },
+      { code: "absent", label: "Absent"  }
+    ];
+    var STAGE_LABEL = { trial_w1: "Trial Week 1", trial_w2: "Trial Week 2", passed: "Passed", induction: "Induction" };
+
     var trialHtml = "";
     if (myTrialCand.length > 0) {
-      var today = window.APP_DATA.todayStr();
       trialHtml = '<div class="dly-section-head" style="margin-top:20px">📍 Trial Candidates</div>' +
         myTrialCand.map(function(c) {
-          var checkinMap = c.checkins || {};
-          var workedDays = Object.values(checkinMap).filter(function(st) { return st === "on" || st === "late"; }).length;
+          var checkinMap = (c.checkins && !Array.isArray(c.checkins)) ? c.checkins : {};
+          var workedDays = trialWorkedDays(c);
           var currentStatus = checkinMap[today];
-          
-          var buttonsHtml = statusButtons.map(function(b) {
+          var isTrialDayToday = !!_trialDaySet(c.startDate)[today];
+
+          var buttonsHtml = trialStatusButtons.map(function(b) {
             var isActive = currentStatus === b.code;
             return '<button type="button" class="trial-act dly-act-' + b.code +
                    (isActive ? ' dly-act-active' : '') +
-                   '" style="padding:6px 10px;border-radius:6px;font-size:11px;font-weight:700;border:1px solid #e5e7eb;background:' + (isActive ? '#BE185D' : '#fff') + ';color:' + (isActive ? '#fff' : '#374151') + ';cursor:pointer" ' +
+                   '" style="padding:7px 12px;border-radius:6px;font-size:12px;font-weight:700;border:1px solid #e5e7eb;background:' + (isActive ? '#BE185D' : '#fff') + ';color:' + (isActive ? '#fff' : '#374151') + ';cursor:pointer" ' +
                    'data-id="' + esc(c._id) + '" data-status="' + b.code + '">' + b.label + '</button>';
           }).join("");
-          
-          return '<div class="dly-row" style="display:flex;flex-direction:column;gap:8px;padding:10px 14px;background:#fff;border:1px solid #FBCFE8;border-radius:12px;margin-bottom:8px">' +
+
+          // Evaluation state — a due form (call to action), an already-passed
+          // result, or one held back for HR because it scored below the bar.
+          var due = trialEvalDue(c);
+          var evalHtml = "";
+          ["mid", "final"].forEach(function (which) {
+            var ev = which === "mid" ? c.midEval : c.finalEval;
+            if (!ev || !ev.submittedAt) return;
+            var ttl = which === "mid" ? "Week 1 evaluation" : "Final evaluation";
+            if (ev.pass) {
+              evalHtml += '<div style="font-size:11px;color:#03543f;background:#def7ec;border-radius:6px;padding:5px 8px;margin-top:6px">✓ ' + ttl + ' passed · ' + ev.total + '/' + ev.max + '</div>';
+            } else {
+              evalHtml += '<div style="font-size:11px;color:#9b1c1c;background:#fde8e8;border-radius:6px;padding:5px 8px;margin-top:6px">⏳ ' + ttl + ' submitted · ' + ev.total + '/' + ev.max + ' — held for HR review</div>';
+            }
+          });
+          var dueBtn = due
+            ? '<button type="button" class="trial-eval-open" data-id="' + esc(c._id) + '" data-which="' + due + '" ' +
+                'style="margin-top:8px;width:100%;padding:10px;border-radius:8px;border:none;background:#7c3aed;color:#fff;font-size:13px;font-weight:800;cursor:pointer;box-shadow:0 3px 10px rgba(124,58,237,0.25)">' +
+                '📋 ' + (due === "mid" ? "Week 1" : "Final") + ' evaluation due — complete now</button>'
+            : "";
+
+          var needsMark = isTrialDayToday && (c.status === "trial_w1" || c.status === "trial_w2") && !(currentStatus === "on" || currentStatus === "late" || currentStatus === "absent");
+          var borderColor = needsMark ? "#f59e0b" : "#FBCFE8";
+
+          return '<div class="dly-row" style="display:flex;flex-direction:column;gap:8px;padding:10px 14px;background:#fff;border:1px solid ' + borderColor + ';border-radius:12px;margin-bottom:8px">' +
             '<div style="display:flex;justify-content:space-between;align-items:center">' +
               '<div>' +
-                '<div style="font-weight:700;color:#BE185D;font-size:14px">' + esc(c.name || "(no name)") + '</div>' +
+                '<div style="font-weight:700;color:#BE185D;font-size:14px">' + esc(c.name || "(no name)") +
+                  ' <span class="pill" style="background:#ede9fe;color:#6b21a8">🧪 ' + esc(STAGE_LABEL[c.status] || c.status) + '</span>' +
+                  (needsMark ? ' <span class="pill" style="background:#fef3c7;color:#92400e">needs check-in</span>' : '') +
+                '</div>' +
                 '<div style="font-size:11px;color:var(--gray-500);margin-top:2px">' +
-                  'Status: ' + esc(c.status) + ' · Worked Days: ' + workedDays + '/5' +
+                  'Trial days worked: ' + workedDays + '/10' +
                 '</div>' +
               '</div>' +
             '</div>' +
             '<div style="display:flex;gap:6px;flex-wrap:wrap">' +
               buttonsHtml +
             '</div>' +
+            evalHtml +
+            dueBtn +
           '</div>';
         }).join("");
     }
@@ -1524,6 +1670,14 @@
           alert("Could not record check-in: " + (e.message || e));
           Array.prototype.forEach.call(acts, function (el) { el.disabled = false; });
         }
+      };
+    });
+
+    // Wire the "evaluation due" buttons — open the full evaluation form.
+    Array.prototype.forEach.call(listEl.querySelectorAll(".trial-eval-open"), function (btn) {
+      btn.onclick = function () {
+        var c = myTrialCand.find(function (x) { return String(x._id) === String(btn.dataset.id); });
+        if (c) openTrialEvalModal(c, btn.dataset.which);
       };
     });
 
@@ -2152,6 +2306,123 @@
     hoursEl.addEventListener("keydown", function (e) {
       if (e.key === "Enter") saveBtn.click();
     });
+  }
+
+  // ---------------- Trial evaluation modal ----------------
+  // The manager scores the trial tech on the BOA evaluation form (26 criteria,
+  // 1–5 each). On submit we compute the result and, if it passes (≥91/130 AND
+  // every Key Indicator ≥3), auto-advance the tech to the next trial stage. A
+  // below-pass score is saved and held for an HR decision — never auto-failed.
+  // Either way the completed form lands on the candidate record for HR.
+  function openTrialEvalModal(candidate, which) {
+    var prev = document.getElementById("boa-eval-modal");
+    if (prev) prev.remove();
+    var isFinal = which === "final";
+    var title = isFinal ? "Final evaluation" : "Week 1 evaluation";
+    var scores = {};
+
+    function sectionHtml(sec) {
+      var rows = sec.items.map(function (it) {
+        var opts = [1, 2, 3, 4, 5].map(function (n) {
+          return '<button type="button" class="eval-score" data-k="' + it.k + '" data-v="' + n + '" ' +
+            'style="flex:1;min-width:34px;padding:8px 0;border-radius:7px;border:1px solid #e5e7eb;background:#fff;color:#374151;font-weight:800;font-size:13px;cursor:pointer">' + n + '</button>';
+        }).join("");
+        return '<div style="padding:8px 0;border-top:1px solid #f3f4f6">' +
+          '<div style="font-size:12.5px;font-weight:700;color:#374151;margin-bottom:6px">' + esc(it.label) +
+            (it.key ? ' <span class="pill" style="background:#fef3c7;color:#92400e">Key · min 3</span>' : '') +
+          '</div>' +
+          '<div style="display:flex;gap:5px" data-row="' + it.k + '">' + opts + '</div>' +
+        '</div>';
+      }).join("");
+      return '<div style="margin-top:14px">' +
+        '<div style="font-size:13px;font-weight:800;color:#6b21a8">' + esc(sec.title) + ' <span style="font-weight:600;color:#9ca3af">(' + sec.max + ' pts)</span></div>' +
+        rows +
+      '</div>';
+    }
+
+    var modal = document.createElement("div");
+    modal.id = "boa-eval-modal";
+    modal.className = "boa-modal-backdrop";
+    modal.innerHTML =
+      '<div class="boa-modal-card" style="max-width:560px;max-height:88vh;overflow-y:auto">' +
+        '<h2 class="boa-modal-title">📋 ' + esc(title) + ' — ' + esc(candidate.name || "trial tech") + '</h2>' +
+        '<p class="boa-modal-body">Score each criterion from 1 (poor) to 5 (excellent). A pass needs <strong>' + TRIAL_EVAL_PASS + '/' + TRIAL_EVAL_MAX + '</strong> and at least <strong>3/5 on every Key Indicator</strong>. This form is sent to HR either way.</p>' +
+        TRIAL_EVAL_SECTIONS.map(sectionHtml).join("") +
+        '<label class="lbl" style="margin-top:14px">Evaluator name</label>' +
+        '<input id="boa-eval-by" type="text" class="input" placeholder="Manager full name" autocomplete="name">' +
+        '<label class="lbl" style="margin-top:10px">Notes (optional)</label>' +
+        '<textarea id="boa-eval-notes" class="input" rows="2" placeholder="Anything HR should know"></textarea>' +
+        '<div id="boa-eval-tally" style="margin-top:12px;font-size:13px;font-weight:800;color:#6b21a8">Total: 0 / ' + TRIAL_EVAL_MAX + '</div>' +
+        '<div id="boa-eval-err" class="err-line"></div>' +
+        '<div class="btn-row" style="justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:6px">' +
+          '<button type="button" class="link-btn link-btn-dark" id="boa-eval-cancel">Cancel</button>' +
+          '<button type="button" class="btn btn-primary" id="boa-eval-save">Submit evaluation</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(modal);
+
+    var byEl = document.getElementById("boa-eval-by");
+    var notesEl = document.getElementById("boa-eval-notes");
+    var tallyEl = document.getElementById("boa-eval-tally");
+    var errEl = document.getElementById("boa-eval-err");
+    var saveBtn = document.getElementById("boa-eval-save");
+    var cancelBtn = document.getElementById("boa-eval-cancel");
+    function close() { modal.remove(); }
+    cancelBtn.onclick = close;
+    modal.addEventListener("click", function (e) { if (e.target === modal) close(); });
+
+    function refreshTally() {
+      var r = scoreTrialEval(scores);
+      tallyEl.innerHTML = 'Total: ' + r.total + ' / ' + TRIAL_EVAL_MAX +
+        (r.complete ? (r.pass ? ' · <span style="color:#03543f">PASS ✓</span>' : ' · <span style="color:#9b1c1c">below pass — will hold for HR</span>') : ' · ' + 'score all criteria');
+    }
+
+    Array.prototype.forEach.call(modal.querySelectorAll(".eval-score"), function (b) {
+      b.onclick = function () {
+        var k = b.dataset.k, v = Number(b.dataset.v);
+        scores[k] = v;
+        Array.prototype.forEach.call(modal.querySelectorAll('[data-row="' + k + '"] .eval-score'), function (el) {
+          var on = Number(el.dataset.v) === v;
+          el.style.background = on ? "#7c3aed" : "#fff";
+          el.style.color = on ? "#fff" : "#374151";
+        });
+        refreshTally();
+      };
+    });
+
+    saveBtn.onclick = async function () {
+      errEl.textContent = "";
+      var r = scoreTrialEval(scores);
+      if (!r.complete) { errEl.textContent = "Please score every criterion (1–5) before submitting."; return; }
+      if (!(byEl.value || "").trim()) { errEl.textContent = "Please enter the evaluator's name."; return; }
+      var confirmMsg = r.pass
+        ? candidate.name + " scored " + r.total + "/" + TRIAL_EVAL_MAX + " — PASS.\n\nSubmit and advance them to the next stage?"
+        : candidate.name + " scored " + r.total + "/" + TRIAL_EVAL_MAX + (r.keyOk ? "" : " (a Key Indicator is below 3)") + " — below the pass mark.\n\nSubmit and send to HR to review? They will NOT be auto-failed.";
+      if (!window.confirm(confirmMsg)) return;
+      saveBtn.disabled = true; saveBtn.textContent = "Submitting…";
+      var evalObj = {
+        submittedAt: new Date().toISOString(),
+        submittedBy: byEl.value.trim(),
+        which: isFinal ? "final" : "mid",
+        scores: scores,
+        total: r.total, max: TRIAL_EVAL_MAX,
+        keyOk: r.keyOk, pass: r.pass,
+        heldForHr: !r.pass,
+        notes: (notesEl.value || "").trim()
+      };
+      // Auto-advance only on a pass: mid → Week 2, final → Passed. A fail keeps
+      // the current status and is flagged for HR on their dashboard.
+      var newStatus = null;
+      if (r.pass) newStatus = isFinal ? "passed" : "trial_w2";
+      try {
+        await window.APP_DATA.saveTrialEvaluation(candidate._id, isFinal ? "finalEval" : "midEval", evalObj, newStatus);
+        close();
+        await renderDay();
+      } catch (e) {
+        saveBtn.disabled = false; saveBtn.textContent = "Submit evaluation";
+        errEl.textContent = "Could not save: " + (e.message || e);
+      }
+    };
   }
 
   function openProofModal(opts) {
