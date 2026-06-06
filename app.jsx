@@ -20621,8 +20621,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const ci = r.checkins || {};
           const planned = trialWorkingDates(r.startDate, 10);
           const plannedSet = new Set(planned);
-          const allDates = Array.from(new Set([...planned, ...Object.keys(ci)])).sort();
+          // Show the WHOLE trial window — including weekends and public holidays
+          // — so a day she worked on a weekend (some techs do) can be ticked
+          // right here. The window runs from the start date to the last planned
+          // working day; any recorded days outside it still show too.
+          const _p2 = x => String(x).padStart(2, "0");
+          const spanDates = [];
+          if (planned.length && r.startDate) {
+            const start = new Date(r.startDate + "T12:00:00");
+            const last = new Date(planned[planned.length - 1] + "T12:00:00");
+            for (let cur = new Date(start); cur <= last; cur.setDate(cur.getDate() + 1)) {
+              spanDates.push(cur.getFullYear() + "-" + _p2(cur.getMonth() + 1) + "-" + _p2(cur.getDate()));
+            }
+          }
+          const allDates = Array.from(new Set([...spanDates, ...planned, ...Object.keys(ci)])).sort();
           const wkd = d => new Date(d + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "short" });
+          // Tag a date that isn't one of the planned Mon–Fri trial days.
+          const dayTag = (date) => {
+            if (plannedSet.has(date)) return null;
+            const dt = new Date(date + "T12:00:00");
+            const dow = dt.getDay();
+            if (dow === 0 || dow === 6) return { t: "WEEKEND", c: "#1e40af", bg: "#dbeafe" };
+            if ((saHolidays(dt.getFullYear()) || {})[date]) return { t: "HOLIDAY", c: "#6b21a8", bg: "#ede9fe" };
+            return { t: "OFF-PLAN", c: "#9ca3af", bg: "#f3f4f6" };
+          };
           const opts = [["on", "Worked", "#16a34a"], ["late", "Late", "#d97706"], ["absent", "Absent", "#dc2626"]];
           const countId = "daycorr-" + scope + "-" + r._id;
           const addId = "addday-" + scope + "-" + r._id;
@@ -20641,16 +20663,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               </div>
               <div style={{ fontSize: 11, fontWeight: 800, color: "#111827", marginBottom: 2 }}>📅 Set the exact days she was in</div>
-              <div style={{ fontSize: 10, color: "#6b7280", marginBottom: 8, lineHeight: 1.45 }}>Tick each day she was actually in store and how — use this when the kiosk didn’t check her in properly. Worked & Late count as paid trial days; Absent does not.</div>
+              <div style={{ fontSize: 10, color: "#6b7280", marginBottom: 8, lineHeight: 1.45 }}>Tick each day she was actually in store and how — use this when the kiosk didn’t check her in properly. Worked & Late count as paid trial days; Absent does not. Weekends &amp; public holidays are listed too, so a day she worked then can be ticked.</div>
               {!r.startDate && <div style={{ fontSize: 11, color: "#b45309", marginBottom: 8 }}>Set a trial start date first (▶ Start in-store trial) to list her trial days.</div>}
               <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid #f3f4f6", borderRadius: 8 }}>
                 {allDates.length === 0 && <div style={{ fontSize: 11, color: "#9ca3af", textAlign: "center", padding: "10px 0" }}>No trial days yet.</div>}
                 {allDates.map(date => {
                   const cur = ci[date];
-                  const offPlan = !plannedSet.has(date);
+                  const tag = dayTag(date);
                   return (
-                    <div key={date} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, padding: "5px 8px", borderBottom: "1px solid #f3f4f6", flexWrap: "wrap" }}>
-                      <span style={{ fontSize: 11, color: "#374151", fontWeight: 600, whiteSpace: "nowrap" }}>{wkd(date)} {fmtDate(date)}{offPlan && <span style={{ marginLeft: 5, fontSize: 8, fontWeight: 800, color: "#9ca3af", background: "#f3f4f6", borderRadius: 3, padding: "0 4px" }}>OFF-PLAN</span>}</span>
+                    <div key={date} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, padding: "5px 8px", borderBottom: "1px solid #f3f4f6", flexWrap: "wrap", background: tag && !cur ? "#fcfcfd" : "#fff" }}>
+                      <span style={{ fontSize: 11, color: "#374151", fontWeight: 600, whiteSpace: "nowrap" }}>{wkd(date)} {fmtDate(date)}{tag && <span style={{ marginLeft: 5, fontSize: 8, fontWeight: 800, color: tag.c, background: tag.bg, borderRadius: 3, padding: "0 4px" }}>{tag.t}</span>}</span>
                       <span style={{ display: "flex", gap: 3, alignItems: "center" }}>
                         {opts.map(([st, lbl, col]) => {
                           const on = cur === st;
