@@ -20888,91 +20888,103 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               ))}
             </div>
 
-            {/* Pipeline overview — a compact, scannable table: one row per tech
-                so HR can see who is how far at a glance even with many on trial.
-                Each row carries an inline day-count correction for fixing counts
-                the kiosk missed. */}
+            {/* Pipeline overview — a left-to-right PATHWAY for each tech so HR
+                can read the journey at a glance: Induction → first 5 days →
+                Week 1 evaluation → next 5 days → Final evaluation → Passed. The
+                day stretches fill from real kiosk check-ins, and each card has an
+                inline day-count correction for fixing what the kiosk missed. */}
             {activeTrials.length > 0 && (() => {
               const rank = { induction: 0, trial_w1: 1, pending_mid_review: 1, trial_w2: 2, pending_final_review: 2 };
               const rows = activeTrials.slice().sort((a, b) =>
                 (rank[b.status] || 0) - (rank[a.status] || 0)
                 || workedDaysOf(b) - workedDaysOf(a)
                 || (a.name || "").localeCompare(b.name || ""));
-              const cols = "minmax(150px,1.3fr) minmax(120px,1fr) minmax(250px,1.7fr) minmax(150px,1.1fr) minmax(120px,1fr)";
-              const head = { fontSize: 10, fontWeight: 800, color: "#9d6a82", letterSpacing: "0.05em", textTransform: "uppercase" };
-              const miniPill = (bg, col, txt) => <span style={{ background: bg, color: col, padding: "2px 7px", borderRadius: 6, fontSize: 10, fontWeight: 800, whiteSpace: "nowrap" }}>{txt}</span>;
-              const evalPill = (ev, due, label) => {
-                if (ev && ev.submittedAt) return ev.pass ? miniPill("#dcfce7", "#166534", label + " ✓ " + ev.total) : miniPill("#fef3c7", "#92400e", label + " ⏳ " + ev.total);
-                if (due) return miniPill("#ede9fe", "#6b21a8", label + " due");
-                return miniPill("#f3f4f6", "#9ca3af", label + " –");
-              };
+
+              // A milestone circle on the pathway.
+              const Node = ({ icon, iconColor, bg, label, sub, subColor, current }) => (
+                <div style={{ flex: "0 0 86px", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                  <div style={{ height: 40, display: "flex", alignItems: "center" }}>
+                    <div style={{ width: 38, height: 38, borderRadius: 99, background: bg, color: iconColor, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17, boxShadow: current ? "0 0 0 4px #ede9fe" : "none", border: current ? "2px solid #7c3aed" : "2px solid transparent" }}>{icon}</div>
+                  </div>
+                  <div style={{ fontSize: 10.5, fontWeight: 800, color: current ? "#6b21a8" : "#6b7280", textAlign: "center", lineHeight: 1.15 }}>{label}{current ? " ◂" : ""}</div>
+                  <div style={{ fontSize: 9.5, fontWeight: 700, color: subColor || "#9ca3af", textAlign: "center" }}>{sub}</div>
+                </div>
+              );
+              // A 5-day stretch connecting two milestones; fills green as worked.
+              const Conn = ({ label, fillPct, count, active, current }) => (
+                <div style={{ flex: "1 1 66px", minWidth: 60, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                  <div style={{ height: 40, display: "flex", alignItems: "center", width: "100%" }}>
+                    <div style={{ width: "100%", height: 11, background: "#ede9fe", borderRadius: 99, overflow: "hidden", border: current ? "1px solid #c4b5fd" : "none" }}>
+                      <div style={{ width: fillPct + "%", height: "100%", background: active ? "#16a34a" : "#c4b5fd", borderRadius: 99, transition: "width 0.3s" }} />
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 10.5, fontWeight: 800, color: current ? "#6b21a8" : "#6b7280", textAlign: "center", lineHeight: 1.15 }}>{label}{current ? " ◂" : ""}</div>
+                  <div style={{ fontSize: 9.5, fontWeight: 800, color: "#16a34a", textAlign: "center" }}>{count}</div>
+                </div>
+              );
+
               return (
                 <div style={{ background: "#fff", borderRadius: 16, border: "1px solid #ede9fe", padding: "16px 18px", marginBottom: 24, boxShadow: "0 2px 10px rgba(124,58,237,0.05)" }}>
-                  <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 4 }}>
-                    <div style={{ fontSize: 13, fontWeight: 800, color: "#6b21a8", letterSpacing: "0.04em", textTransform: "uppercase" }}>📊 Trial pipeline · {activeTrials.length} in progress</div>
-                  </div>
-                  <div style={{ fontSize: 11, color: "#9d6a82", marginBottom: 12 }}>Sorted by how far along they are. Counts come from real kiosk check-ins — use <strong>− N +</strong> on a row to correct days the kiosk missed.</div>
-                  <div style={{ overflowX: "auto" }}>
-                    <div style={{ minWidth: 760 }}>
-                      {/* Header */}
-                      <div style={{ display: "grid", gridTemplateColumns: cols, gap: 12, padding: "0 4px 8px 4px", borderBottom: "2px solid #ede9fe" }}>
-                        <div style={head}>Tech</div><div style={head}>Stage</div><div style={head}>Trial days · correct</div><div style={head}>Evaluations</div><div style={head}>Next</div>
-                      </div>
-                      {rows.map(r => {
-                        const ds = daysInStage(r);
-                        const stale = ds > 14;
-                        const worked = workedDaysOf(r);
-                        const absent = absentDaysOf(r);
-                        const left = Math.max(0, 10 - worked);
-                        const steps = trialSubTab === "nt" ? ["induction", "trial_w1", "trial_w2", "passed"] : ["trial_w1", "pending_mid_review", "trial_w2", "pending_final_review", "passed"];
-                        const normSt = trialSubTab === "nt" ? ({ pending_mid_review: "trial_w1", pending_final_review: "trial_w2" }[r.status] || r.status) : r.status;
-                        const curIdx = Math.max(0, steps.indexOf(normSt));
-                        const stg = TRIAL_STAGES.find(s => s.key === normSt) || { label: r.status, color: "#7c3aed" };
-                        const midDue = r.status === "trial_w1" && worked >= 5 && !(r.midEval && r.midEval.submittedAt);
-                        const finalDue = r.status === "trial_w2" && worked >= 10 && !(r.finalEval && r.finalEval.submittedAt);
-                        return (
-                          <div key={r._id} style={{ display: "grid", gridTemplateColumns: cols, gap: 12, padding: "11px 4px", borderBottom: "1px solid #f5f3ff", alignItems: "center" }}>
-                            {/* Tech */}
-                            <div style={{ minWidth: 0 }}>
-                              <div style={{ fontSize: 13, fontWeight: 700, color: "#111827", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</div>
-                              <div style={{ fontSize: 10.5, color: "#9ca3af", display: "flex", alignItems: "center", gap: 5 }}>📍 {r.branch}{stale && <span style={{ color: "#991b1b", fontWeight: 800 }}>· ⚠ {ds}d</span>}</div>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "#6b21a8", letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 4 }}>🛣️ Trial journeys · {activeTrials.length} in progress</div>
+                  <div style={{ fontSize: 11, color: "#9d6a82", marginBottom: 14 }}>Each tech's path from induction to passing. Day stretches fill from real kiosk check-ins — use <strong>− N +</strong> on a card to correct days the kiosk missed.</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                    {rows.map(r => {
+                      const ds = daysInStage(r);
+                      const stale = ds > 14;
+                      const worked = workedDaysOf(r);
+                      const absent = absentDaysOf(r);
+                      const st = r.status;
+                      const w1 = Math.min(worked, 5);
+                      const w2 = Math.max(0, Math.min(worked, 10) - 5);
+                      const midDue = st === "trial_w1" && worked >= 5 && !(r.midEval && r.midEval.submittedAt);
+                      const finalDue = st === "trial_w2" && worked >= 10 && !(r.finalEval && r.finalEval.submittedAt);
+                      // Where the tech currently sits on the path.
+                      let cur = "induction";
+                      if (st === "trial_w1") cur = worked >= 5 ? "wk1eval" : "w1";
+                      else if (st === "trial_w2") cur = worked >= 10 ? "finaleval" : "w2";
+                      else if (st === "passed") cur = "passed";
+                      const inductionDone = st !== "induction";
+                      const evNode = (ev, due, pendingSub) => {
+                        if (ev && ev.submittedAt) return ev.pass
+                          ? { bg: "#16a34a", iconColor: "#fff", icon: "✓", sub: ev.total + "/" + ev.max, subColor: "#16a34a" }
+                          : { bg: "#f59e0b", iconColor: "#fff", icon: "⏳", sub: "held " + ev.total, subColor: "#b45309" };
+                        if (due) return { bg: "#7c3aed", iconColor: "#fff", icon: "📋", sub: "due now", subColor: "#6b21a8" };
+                        return { bg: "#f3f4f6", iconColor: "#c4b5fd", icon: "📋", sub: pendingSub, subColor: "#9ca3af" };
+                      };
+                      const mid = evNode(r.midEval, midDue, "after 5 days");
+                      const fin = evNode(r.finalEval, finalDue, "after 10 days");
+                      return (
+                        <div key={r._id} style={{ border: `1px solid ${stale ? "#fecaca" : "#f0ebff"}`, borderRadius: 14, padding: "12px 14px", background: stale ? "#fffafa" : "#fdfcff" }}>
+                          {/* Header row: identity + inline day correction */}
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
+                            <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                              <span style={{ fontSize: 14, fontWeight: 800, color: "#111827" }}>{r.name}</span>
+                              <span style={{ fontSize: 11, color: "#9ca3af" }}>📍 {r.branch}{r.startDate ? " · since " + fmtDate(r.startDate) : ""}</span>
+                              <span style={{ fontSize: 11, fontWeight: 800, color: "#6b21a8" }}>· {Math.min(worked, 10)}/10 days{absent > 0 ? " · " + absent + " abs" : ""}</span>
+                              {stale && <span style={{ fontSize: 9, fontWeight: 800, color: "#991b1b", background: "#fee2e2", padding: "1px 6px", borderRadius: 4 }}>⚠ {ds}d in stage</span>}
                             </div>
-                            {/* Stage — mini dots + label */}
-                            <div>
-                              <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 3 }}>
-                                {steps.map((sk, i) => (
-                                  <div key={sk} style={{ width: 9, height: 9, borderRadius: 99, background: i <= curIdx ? "#7c3aed" : "#ede9fe", border: i === curIdx ? "2px solid #c4b5fd" : "none", boxSizing: "content-box" }} />
-                                ))}
-                              </div>
-                              <div style={{ fontSize: 10.5, fontWeight: 800, color: stg.color }}>{stg.label}</div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 4 }} title="Correct the completed-day count if the kiosk missed check-ins">
+                              <span style={{ fontSize: 9.5, color: "#92400e", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.04em" }}>Correct days</span>
+                              <button onClick={() => setCompletedDays(r, worked - 1)} title="One day fewer" style={{ width: 22, height: 24, borderRadius: 5, border: "1px solid #fcd34d", background: "#fffbeb", color: "#92400e", cursor: "pointer", fontWeight: 800, fontSize: 13, lineHeight: 1 }}>−</button>
+                              <input key={"ovday-" + r._id + "-" + worked} id={"ovday-" + r._id} type="number" min="0" max="10" defaultValue={worked} style={{ width: 40, padding: "3px 4px", border: "1px solid #fcd34d", borderRadius: 5, fontSize: 12, fontFamily: "inherit", textAlign: "center", boxSizing: "border-box" }} />
+                              <button onClick={() => setCompletedDays(r, worked + 1)} title="One day more" style={{ width: 22, height: 24, borderRadius: 5, border: "1px solid #fcd34d", background: "#fffbeb", color: "#92400e", cursor: "pointer", fontWeight: 800, fontSize: 13, lineHeight: 1 }}>+</button>
+                              <button onClick={() => { const el = document.getElementById("ovday-" + r._id); setCompletedDays(r, el ? el.value : worked); }} title="Set the corrected number of completed trial days" style={{ padding: "3px 10px", borderRadius: 5, border: "none", background: "#d97706", color: "#fff", cursor: "pointer", fontWeight: 800, fontSize: 11 }}>Set</button>
                             </div>
-                            {/* Trial days — tracker bar + count + inline correction */}
-                            <div>
-                              <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 5 }}>
-                                <div style={{ display: "flex", gap: 2, flex: 1, minWidth: 70 }}>
-                                  {Array.from({ length: 10 }).map((_, i) => <div key={i} style={{ flex: 1, height: 9, borderRadius: 2, background: i < worked ? "#16a34a" : "#ede9fe", marginRight: i === 4 ? 5 : 0 }} />)}
-                                </div>
-                                <span style={{ fontSize: 11.5, fontWeight: 800, color: "#6b21a8", whiteSpace: "nowrap" }}>{Math.min(worked, 10)}/10</span>
-                              </div>
-                              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                                <button onClick={() => setCompletedDays(r, worked - 1)} title="One day fewer" style={{ width: 22, height: 24, borderRadius: 5, border: "1px solid #fcd34d", background: "#fffbeb", color: "#92400e", cursor: "pointer", fontWeight: 800, fontSize: 13, lineHeight: 1 }}>−</button>
-                                <input key={"ovday-" + r._id + "-" + worked} id={"ovday-" + r._id} type="number" min="0" max="10" defaultValue={worked} style={{ width: 40, padding: "3px 4px", border: "1px solid #fcd34d", borderRadius: 5, fontSize: 12, fontFamily: "inherit", textAlign: "center", boxSizing: "border-box" }} />
-                                <button onClick={() => setCompletedDays(r, worked + 1)} title="One day more" style={{ width: 22, height: 24, borderRadius: 5, border: "1px solid #fcd34d", background: "#fffbeb", color: "#92400e", cursor: "pointer", fontWeight: 800, fontSize: 13, lineHeight: 1 }}>+</button>
-                                <button onClick={() => { const el = document.getElementById("ovday-" + r._id); setCompletedDays(r, el ? el.value : worked); }} title="Set the corrected number of completed trial days" style={{ padding: "3px 10px", borderRadius: 5, border: "none", background: "#d97706", color: "#fff", cursor: "pointer", fontWeight: 800, fontSize: 11 }}>Set</button>
-                                <span style={{ fontSize: 9.5, color: "#9ca3af", whiteSpace: "nowrap" }}>{left > 0 ? left + " to go" : "done"}{absent > 0 ? " · " + absent + " abs" : ""}</span>
-                              </div>
-                            </div>
-                            {/* Evaluations */}
-                            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                              {evalPill(r.midEval, midDue, "Wk 1")}
-                              {evalPill(r.finalEval, finalDue, "Final")}
-                            </div>
-                            {/* Next */}
-                            <div style={{ fontSize: 10.5, color: "#7c3aed", fontWeight: 700, lineHeight: 1.3 }}>{nextMilestone[r.status] || "—"}</div>
                           </div>
-                        );
-                      })}
-                    </div>
+                          {/* The pathway */}
+                          <div style={{ display: "flex", alignItems: "flex-start", overflowX: "auto", paddingTop: 2 }}>
+                            {trialSubTab === "nt" && (
+                              <Node icon={inductionDone ? "✓" : "🎓"} iconColor={inductionDone ? "#fff" : "#6b21a8"} bg={inductionDone ? "#16a34a" : "#7c3aed"} label="Induction" sub={inductionDone ? "done" : "in progress"} subColor={inductionDone ? "#16a34a" : "#6b21a8"} current={cur === "induction"} />
+                            )}
+                            <Conn label="First 5 days" fillPct={(w1 / 5) * 100} count={w1 + "/5"} active={w1 > 0} current={cur === "w1"} />
+                            <Node icon={mid.icon} iconColor={mid.iconColor} bg={mid.bg} label="Week 1 eval" sub={mid.sub} subColor={mid.subColor} current={cur === "wk1eval"} />
+                            <Conn label="Next 5 days" fillPct={(w2 / 5) * 100} count={w2 + "/5"} active={w2 > 0} current={cur === "w2"} />
+                            <Node icon={fin.icon} iconColor={fin.iconColor} bg={fin.bg} label="Final eval" sub={fin.sub} subColor={fin.subColor} current={cur === "finaleval"} />
+                            <Node icon="🏆" iconColor={st === "passed" ? "#fff" : "#c4b5fd"} bg={st === "passed" ? "#16a34a" : "#f3f4f6"} label="Passed" sub={st === "passed" ? "passed" : "goal"} subColor={st === "passed" ? "#16a34a" : "#9ca3af"} current={cur === "passed"} />
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               );
