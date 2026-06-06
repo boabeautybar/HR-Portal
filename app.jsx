@@ -20560,6 +20560,51 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const m = (r && r.checkins && typeof r.checkins === "object" && !Array.isArray(r.checkins)) ? r.checkins : {};
           return Object.values(m).filter(st => st === "on" || st === "late").length;
         };
+        const absentDaysOf = (r) => {
+          const m = (r && r.checkins && typeof r.checkins === "object" && !Array.isArray(r.checkins)) ? r.checkins : {};
+          return Object.values(m).filter(st => st === "absent").length;
+        };
+
+        // The first N trial working dates (Mon–Fri, excl. SA public holidays)
+        // counting from a start date. Used by the kiosk-correction tool below.
+        const trialWorkingDates = (startDate, n) => {
+          const out = [];
+          if (!startDate) return out;
+          const start = new Date(startDate + "T12:00:00");
+          if (isNaN(start)) return out;
+          const _p2 = x => String(x).padStart(2, "0");
+          const cur = new Date(start);
+          for (let g = 0; g < 90 && out.length < n; g++) {
+            const y = cur.getFullYear(), m = cur.getMonth() + 1, d = cur.getDate();
+            const ymd = y + "-" + _p2(m) + "-" + _p2(d), dow = cur.getDay();
+            if (dow !== 0 && dow !== 6 && !(saHolidays(y) || {})[ymd]) out.push(ymd);
+            cur.setDate(cur.getDate() + 1);
+          }
+          return out;
+        };
+
+        // Correction tool — the kiosk under-counted some current trials, so HR
+        // needs to set the real number of completed trial days. This rewrites
+        // the candidate's check-in log to N on-time days on their first N trial
+        // working dates, so the count (and every automation that reads it) lines
+        // up. Future kiosk check-ins then add on naturally.
+        const setCompletedDays = (r, raw) => {
+          const n = Math.max(0, Math.min(10, Math.floor(Number(raw) || 0)));
+          if (!r.startDate) { alert("Set a trial start date first (▶ Start in-store trial)."); return; }
+          const dates = trialWorkingDates(r.startDate, n);
+          if (dates.length < n) { alert("Couldn't map " + n + " trial working days from " + fmtDate(r.startDate) + "."); return; }
+          const range = n === 0 ? "" : ("\n\n" + dates[0] + (n > 1 ? " … " + dates[n - 1] : ""));
+          if (!confirm("Set " + (r.name || "this tech") + "'s completed trial days to " + n + "?\n\nThis rewrites their kiosk check-in log to " + n + " on-time day(s) on their first " + n + " trial working days." + range + "\n\nUse this to fix counts the kiosk recorded incorrectly.")) return;
+          const checkins = {};
+          dates.forEach(d => { checkins[d] = "on"; });
+          persistTrial(trialList.map(x => x._id === r._id ? { ...x, checkins, updatedAt: new Date().toISOString() } : x));
+        };
+        // Remove a single recorded day (fine correction from the history list).
+        const removeCheckin = (r, date) => {
+          const ci = { ...(r.checkins || {}) };
+          delete ci[date];
+          persistTrial(trialList.map(x => x._id === r._id ? { ...x, checkins: ci, updatedAt: new Date().toISOString() } : x));
+        };
 
         // The single manual step HR keeps: move an inducted tech into the
         // in-store trial. Sets the start date, flips status to Week 1, and from
@@ -20849,34 +20894,82 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             {activeTrials.length > 0 && (
               <div style={{ background: "#fff", borderRadius: 16, border: "1px solid #ede9fe", padding: "18px 20px", marginBottom: 24, boxShadow: "0 2px 10px rgba(124,58,237,0.05)" }}>
                 <div style={{ fontSize: 13, fontWeight: 800, color: "#6b21a8", letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 14 }}>📊 Trial pipeline · {activeTrials.length} in progress</div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(330px, 1fr))", gap: 14 }}>
                   {activeTrials.slice().sort((a, b) => (a.startDate || "").localeCompare(b.startDate || "")).map(r => {
-                    const prog = trialDayProgress(r.startDate);
                     const ds = daysInStage(r);
-                    const stale = ds > 10;
-                    const stg = TRIAL_STAGES.find(s => s.key === r.status) || { label: r.status, color: "#6b7280", emoji: "•" };
-                    const pct = Math.min(100, Math.round((prog.done / prog.total) * 100));
+                    const stale = ds > 14;
+                    const worked = workedDaysOf(r);        // real days the kiosk recorded
+                    const absent = absentDaysOf(r);
+                    const left = Math.max(0, 10 - worked);
+                    // Stage stepper — nail techs run Induction → Wk 1 → Wk 2 → Pass;
+                    // AM trials keep their mid/final review steps.
+                    const steps = trialSubTab === "nt"
+                      ? [{ k: "induction", l: "Induction" }, { k: "trial_w1", l: "Week 1" }, { k: "trial_w2", l: "Week 2" }, { k: "passed", l: "Pass" }]
+                      : [{ k: "trial_w1", l: "Week 1" }, { k: "pending_mid_review", l: "Mid" }, { k: "trial_w2", l: "Week 2" }, { k: "pending_final_review", l: "Final" }, { k: "passed", l: "Pass" }];
+                    const normSt = trialSubTab === "nt" ? ({ pending_mid_review: "trial_w1", pending_final_review: "trial_w2" }[r.status] || r.status) : r.status;
+                    const curIdx = Math.max(0, steps.findIndex(s => s.k === normSt));
+
+                    const midDue = r.status === "trial_w1" && worked >= 5 && !(r.midEval && r.midEval.submittedAt);
+                    const finalDue = r.status === "trial_w2" && worked >= 10 && !(r.finalEval && r.finalEval.submittedAt);
+                    const evalPill = (ev, due, label) => {
+                      let bg = "#f3f4f6", col = "#9ca3af", txt = label + " · pending";
+                      if (ev && ev.submittedAt) {
+                        if (ev.pass) { bg = "#dcfce7"; col = "#166534"; txt = label + " ✓ " + ev.total + "/" + ev.max; }
+                        else { bg = "#fef3c7"; col = "#92400e"; txt = label + " ⏳ held " + ev.total + "/" + ev.max; }
+                      } else if (due) { bg = "#ede9fe"; col = "#6b21a8"; txt = label + " · due now"; }
+                      return <span style={{ background: bg, color: col, padding: "3px 8px", borderRadius: 6, fontSize: 10.5, fontWeight: 800 }}>{txt}</span>;
+                    };
                     const chip = (ok, label) => <span style={{ display: "inline-flex", alignItems: "center", gap: 3, background: ok ? "#dcfce7" : "#f3f4f6", color: ok ? "#166534" : "#9ca3af", padding: "2px 7px", borderRadius: 5, fontSize: 10, fontWeight: 700 }}>{ok ? "✓" : "○"} {label}</span>;
+                    const dayCells = (from, to) => Array.from({ length: to - from }).map((_, j) => {
+                      const idx = from + j, filled = idx < worked;
+                      return <div key={idx} title={"Trial day " + (idx + 1) + (filled ? " · worked" : "")} style={{ flex: 1, height: 11, borderRadius: 3, background: filled ? "#16a34a" : "#ede9fe" }} />;
+                    });
                     return (
-                      <div key={r._id} style={{ border: `1.5px solid ${stale ? "#fca5a5" : "#ede9fe"}`, borderRadius: 12, padding: "12px 14px", background: stale ? "#fff5f5" : "#fafafa" }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
-                          <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>{r.name}</div>
+                      <div key={r._id} style={{ border: `1.5px solid ${stale ? "#fca5a5" : "#ede9fe"}`, borderRadius: 14, padding: "14px 16px", background: "#fff", boxShadow: "0 1px 6px rgba(124,58,237,0.04)" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 2 }}>
+                          <div style={{ fontSize: 14, fontWeight: 800, color: "#111827" }}>{r.name}</div>
                           {stale && <span style={{ fontSize: 9, fontWeight: 800, color: "#991b1b", background: "#fee2e2", padding: "1px 6px", borderRadius: 4, whiteSpace: "nowrap" }}>⚠ {ds}d in stage</span>}
                         </div>
-                        <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 8 }}>📍 {r.branch}{r.startDate ? " · started " + fmtDate(r.startDate) : ""}</div>
-                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, fontWeight: 700, color: "#6b21a8", marginBottom: 3 }}>
-                          <span>Trial day {prog.done} / {prog.total}</span>
-                          <span>{stg.emoji} {stg.label}</span>
+                        <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 12 }}>📍 {r.branch}{r.startDate ? " · started " + fmtDate(r.startDate) : " · no start date yet"}</div>
+
+                        {/* Stage stepper */}
+                        <div style={{ display: "flex", alignItems: "flex-start", marginBottom: 14 }}>
+                          {steps.map((s, i) => {
+                            const done = i < curIdx, current = i === curIdx;
+                            return (
+                              <div key={s.k} style={{ display: "flex", alignItems: "center", flex: i === 0 ? "0 0 auto" : "1 1 auto" }}>
+                                {i > 0 && <div style={{ flex: 1, height: 2, background: i <= curIdx ? "#7c3aed" : "#ede9fe", margin: "0 3px", marginTop: -14 }} />}
+                                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, width: 46 }}>
+                                  <div style={{ width: 20, height: 20, borderRadius: 99, background: (done || current) ? "#7c3aed" : "#fff", border: current ? "2px solid #5b21b6" : (done ? "none" : "2px solid #ede9fe"), color: (done || current) ? "#fff" : "#c4b5fd", fontSize: 10, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>{done ? "✓" : (i + 1)}</div>
+                                  <span style={{ fontSize: 9, fontWeight: 700, color: current ? "#6b21a8" : "#9ca3af", whiteSpace: "nowrap", textAlign: "center" }}>{s.l}</span>
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
-                        <div style={{ height: 6, background: "#ede9fe", borderRadius: 99, overflow: "hidden", marginBottom: 8 }}>
-                          <div style={{ width: pct + "%", height: "100%", background: "#7c3aed" }} />
+
+                        {/* 10-day tracker, split into the two evaluation weeks */}
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+                          <span style={{ fontSize: 12, fontWeight: 800, color: "#6b21a8" }}>Day {Math.min(worked, 10)} <span style={{ color: "#c4b5fd" }}>/ 10</span></span>
+                          <span style={{ fontSize: 10, fontWeight: 700, color: left > 0 ? "#7c3aed" : "#16a34a" }}>{left > 0 ? left + " trial day" + (left === 1 ? "" : "s") + " to go" : "all days done"}{absent > 0 ? " · " + absent + " absent" : ""}</span>
                         </div>
-                        <div style={{ fontSize: 10, color: "#7c3aed", fontWeight: 700, marginBottom: 8 }}>Next: {nextMilestone[r.status] || "—"}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+                          <div style={{ display: "flex", gap: 3, flex: 1 }}>{dayCells(0, 5)}</div>
+                          <span title="Week 1 evaluation (after 5 days)" style={{ fontSize: 12 }}>📋</span>
+                          <div style={{ display: "flex", gap: 3, flex: 1 }}>{dayCells(5, 10)}</div>
+                          <span title="Final evaluation (after 10 days)" style={{ fontSize: 12 }}>🏁</span>
+                        </div>
+
+                        {/* Evaluation status + next action */}
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                          {evalPill(r.midEval, midDue, "Wk 1 eval")}
+                          {evalPill(r.finalEval, finalDue, "Final eval")}
+                        </div>
+                        <div style={{ fontSize: 10, color: "#7c3aed", fontWeight: 700, marginBottom: 8 }}>➡ Next: {nextMilestone[r.status] || "—"}</div>
                         <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
                           {chip(!!r.startDate, "On schedule")}
                           {trialSubTab === "nt" && chip(!!r.inductionPassDate, "Induction")}
-                          {chip(!!(r.midEval && r.midEval.submittedAt), "Mid-review")}
-                          {chip(!!(r.finalEval && r.finalEval.submittedAt), "Final review")}
+                          {trialSubTab === "nt" && chip(!!r.docsCollected, "Docs")}
                           {chip(!!r.freshaTrialOpened, "Fresha")}
                         </div>
                       </div>
@@ -20999,33 +21092,50 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 </button>
                               </div>
 
-                              {/* Expanded View: Attendance History */}
+                              {/* Expanded View: kiosk-day correction + attendance history */}
                               {expandedTrialCards.has(r._id) && (
-                                <div style={{ marginTop: 10, borderTop: "1px solid #e5e7eb", paddingTop: 10, maxHeight: 150, overflowY: "auto" }}>
-                                  <div style={{ fontSize: 11, fontWeight: 700, color: "#111827", marginBottom: 6 }}>Attendance History</div>
-                                  {Object.entries(r.checkins || {}).sort((a, b) => b[0].localeCompare(a[0])).map(([date, status]) => {
-                                    const statusLabels = {
-                                      "on": "On Time",
-                                      "late": "Late",
-                                      "sick_n": "Sick + note",
-                                      "sick": "Sick NO note",
-                                      "absent": "Absent",
-                                      "no": "No Show",
-                                      "frl": "FRL + proof"
-                                    };
-                                    const isPositive = status === "on" || status === "late";
-                                    return (
-                                      <div key={date} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11, marginBottom: 4 }}>
-                                        <span style={{ color: "#6b7280" }}>{fmtDate(date)}</span>
-                                        <span style={{ background: isPositive ? "#def7ec" : "#fde8e8", color: isPositive ? "#03543f" : "#9b1c1c", padding: "1px 6px", borderRadius: 4, fontWeight: 700, fontSize: 10 }}>
-                                          {statusLabels[status] || status}
-                                        </span>
-                                      </div>
-                                    );
-                                  })}
-                                  {Object.keys(r.checkins || {}).length === 0 && (
-                                    <div style={{ fontSize: 11, color: "#9ca3af", textAlign: "center" }}>No records found</div>
-                                  )}
+                                <div style={{ marginTop: 10, borderTop: "1px solid #e5e7eb", paddingTop: 10 }}>
+                                  {/* Correct the completed-day count when the kiosk missed check-ins */}
+                                  <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "9px 10px", marginBottom: 10 }}>
+                                    <div style={{ fontSize: 11, fontWeight: 800, color: "#92400e", marginBottom: 4 }}>🔧 Correct trial-day count</div>
+                                    <div style={{ fontSize: 10, color: "#92400e", marginBottom: 8, lineHeight: 1.45 }}>Kiosk missed some check-ins? Set the real number of completed trial days — this rewrites the check-in log to match so the count and evaluations line up.</div>
+                                    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                                      <button onClick={() => setCompletedDays(r, workedDaysOf(r) - 1)} title="One day fewer" style={{ width: 26, height: 28, borderRadius: 6, border: "1px solid #fcd34d", background: "#fff", color: "#92400e", cursor: "pointer", fontWeight: 800, fontSize: 13 }}>−</button>
+                                      <input key={"daycorr-" + r._id + "-" + workedDaysOf(r)} id={"daycorr-" + r._id} type="number" min="0" max="10" defaultValue={workedDaysOf(r)} style={{ width: 50, padding: "5px 6px", border: "1px solid #fcd34d", borderRadius: 6, fontSize: 13, fontFamily: "inherit", textAlign: "center", boxSizing: "border-box" }} />
+                                      <span style={{ fontSize: 10, color: "#92400e", fontWeight: 700 }}>/ 10</span>
+                                      <button onClick={() => setCompletedDays(r, workedDaysOf(r) + 1)} title="One day more" style={{ width: 26, height: 28, borderRadius: 6, border: "1px solid #fcd34d", background: "#fff", color: "#92400e", cursor: "pointer", fontWeight: 800, fontSize: 13 }}>+</button>
+                                      <button onClick={() => { const el = document.getElementById("daycorr-" + r._id); setCompletedDays(r, el ? el.value : workedDaysOf(r)); }} style={{ marginLeft: "auto", padding: "5px 14px", borderRadius: 6, border: "none", background: "#d97706", color: "#fff", cursor: "pointer", fontWeight: 800, fontSize: 12 }}>Set</button>
+                                    </div>
+                                  </div>
+                                  <div style={{ maxHeight: 150, overflowY: "auto" }}>
+                                    <div style={{ fontSize: 11, fontWeight: 700, color: "#111827", marginBottom: 6 }}>Attendance History <span style={{ fontWeight: 400, color: "#9ca3af" }}>· ✕ to remove a wrong day</span></div>
+                                    {Object.entries(r.checkins || {}).sort((a, b) => b[0].localeCompare(a[0])).map(([date, status]) => {
+                                      const statusLabels = {
+                                        "on": "On Time",
+                                        "late": "Late",
+                                        "sick_n": "Sick + note",
+                                        "sick": "Sick NO note",
+                                        "absent": "Absent",
+                                        "no": "No Show",
+                                        "frl": "FRL + proof"
+                                      };
+                                      const isPositive = status === "on" || status === "late";
+                                      return (
+                                        <div key={date} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6, fontSize: 11, marginBottom: 4 }}>
+                                          <span style={{ color: "#6b7280" }}>{fmtDate(date)}</span>
+                                          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                            <span style={{ background: isPositive ? "#def7ec" : "#fde8e8", color: isPositive ? "#03543f" : "#9b1c1c", padding: "1px 6px", borderRadius: 4, fontWeight: 700, fontSize: 10 }}>
+                                              {statusLabels[status] || status}
+                                            </span>
+                                            <button onClick={() => removeCheckin(r, date)} title="Remove this day" style={{ background: "none", border: "none", color: "#d1d5db", cursor: "pointer", fontSize: 12, lineHeight: 1, padding: 0 }}>✕</button>
+                                          </span>
+                                        </div>
+                                      );
+                                    })}
+                                    {Object.keys(r.checkins || {}).length === 0 && (
+                                      <div style={{ fontSize: 11, color: "#9ca3af", textAlign: "center" }}>No records found</div>
+                                    )}
+                                  </div>
                                 </div>
                               )}
                               {/* Completed evaluations — the real form the manager
