@@ -7570,6 +7570,7 @@ const SETTINGS_TABS = [
   // their tab-visibility settings.
   { t: "alerts", l: "Alerts", cat: "Insights", icon: "🔔" },
   { t: "activity", l: "Activity Log", cat: "Insights", icon: "📜" },
+  { t: "storeReports", l: "Store Reports", cat: "Insights", icon: "🏆" },
   { t: "kioskPins", l: "Kiosk PINs", cat: "Admin", icon: "🔑" },
   { t: "managerPins", l: "Manager PINs", cat: "Admin", icon: "🆔" },
   { t: "storeAllocation", l: "Store Allocation", cat: "Admin", icon: "🏬" },
@@ -12024,6 +12025,275 @@ function useIsMobile(bp) {
   return m;
 }
 
+// ─── STORE REPORTS (Insights) ─────────────────────────────────────────────
+// Three cross-store rankings, fetched on demand for a chosen window:
+//   1. Best attendance (on-time %) by store
+//   2. Earliest store opening by store
+//   3. Most extra days worked, by person
+// Attendance comes from the kiosk audit log (signed-off days only); openings
+// from the explicit store-open records, falling back to the earliest manager
+// clock-in; extras from approved extra-day requests.
+function StoreReportsTab({ extraDayRequests, managers }) {
+  const [days, setDays] = React.useState(30);
+  const [loading, setLoading] = React.useState(true);
+  const [err, setErr] = React.useState(null);
+  const [data, setData] = React.useState(null);
+
+  const _p2 = n => String(n).padStart(2, "0");
+  const ymdOf = (d) => d.getFullYear() + "-" + _p2(d.getMonth() + 1) + "-" + _p2(d.getDate());
+  // Local (South Africa) time-of-day, in minutes since midnight, for an ISO ts.
+  const saMinutes = (iso) => {
+    try {
+      const s = new Date(iso).toLocaleString("en-GB", { timeZone: "Africa/Johannesburg", hour: "2-digit", minute: "2-digit", hour12: false });
+      const m = /(\d{1,2}):(\d{2})/.exec(s); if (!m) return null;
+      return (+m[1]) * 60 + (+m[2]);
+    } catch (_e) { return null; }
+  };
+  const saYmd = (iso) => { try { return new Date(iso).toLocaleDateString("en-CA", { timeZone: "Africa/Johannesburg" }); } catch (_e) { return null; } };
+  const fmtMins = (m) => { const h = Math.floor(m / 60), mm = Math.round(m % 60); return _p2(h) + ":" + _p2(mm); };
+
+  const load = React.useCallback(async (d) => {
+    setLoading(true); setErr(null);
+    try {
+      const branches = SALONS.map(s => s.name);
+      const dayList = [];
+      for (let i = 0; i < d; i++) { const x = new Date(); x.setHours(12, 0, 0, 0); x.setDate(x.getDate() - i); dayList.push(ymdOf(x)); }
+      const sinceYmd = dayList[dayList.length - 1];
+
+      const [checkins, openingArrays, mgrIns, extrasRaw, mgrStatuses] = await Promise.all([
+        window.BOA_DB.listRecentKioskCheckins ? window.BOA_DB.listRecentKioskCheckins(d, branches).catch(() => []) : Promise.resolve([]),
+        Promise.all(dayList.map(y => (window.BOA_DB.listStoreOpenings ? window.BOA_DB.listStoreOpenings(y).catch(() => []) : Promise.resolve([])))),
+        window.BOA_DB.listRecentManagerClockins ? window.BOA_DB.listRecentManagerClockins(d).catch(() => []) : Promise.resolve([]),
+        (extraDayRequests && extraDayRequests.length) ? Promise.resolve(extraDayRequests)
+          : (window.BOA_DB.loadExtraDayRequests ? window.BOA_DB.loadExtraDayRequests().catch(() => []) : Promise.resolve([])),
+        window.BOA_DB.loadManagerDayStatuses ? window.BOA_DB.loadManagerDayStatuses(d).catch(() => []) : Promise.resolve([])
+      ]);
+
+      // ── 1. Attendance — final signed-off status per (branch, ec, day) ──
+      const final = {};
+      (checkins || []).forEach(e => {
+        if (!e || !e.branch || !e.ec || !e.ymd || !e.signedOff) return;
+        const k = e.branch + "|" + e.ec + "|" + e.ymd;
+        if (!final[k] || String(e.ts) > String(final[k].ts)) final[k] = e;
+      });
+      // We only care about reliability: a day worked (present) vs. the four
+      // absence types — sick, FRL, absent and no-show. Annual / emergency leave,
+      // maternity, public holidays, terminated and off days are NOT counted at
+      // all (neither for nor against a store).
+      const aByBranch = {};
+      Object.values(final).forEach(e => {
+        const b = aByBranch[e.branch] || (aByBranch[e.branch] = { branch: e.branch, present: 0, sick: 0, frl: 0, absent: 0, no: 0 });
+        const s = e.status;
+        if (s === "on" || s === "late" || s === "ext" || s === "trial" || s === "swap_i") b.present++;
+        else if (s === "sick" || s === "sick_n") b.sick++;
+        else if (s === "frl") b.frl++;
+        else if (s === "absent") b.absent++;
+        else if (s === "no") b.no++;
+        // al / el / mat / ph / term / off / swap_o / unpaid → ignored
+      });
+      const attendance = Object.values(aByBranch).map(b => {
+        const issues = b.sick + b.frl + b.absent + b.no;
+        const total = b.present + issues;
+        return { ...b, issues, total, attendRate: total ? b.present / total : 0 };
+      }).filter(b => b.total > 0).sort((a, b) => b.attendRate - a.attendRate || a.issues - b.issues || a.branch.localeCompare(b.branch));
+
+      // ── 2. Openings — explicit store-open, else earliest manager clock-in ──
+      const openByBranch = {}, seen = {};
+      const addOpen = (branch, ymd, iso) => {
+        const mins = saMinutes(iso); if (branch == null || mins == null) return;
+        const key = branch + "|" + ymd; if (seen[key]) return; seen[key] = true;
+        (openByBranch[branch] || (openByBranch[branch] = [])).push(mins);
+      };
+      (openingArrays || []).forEach(arr => (arr || []).forEach(o => { if (o && o.openedAt) addOpen(o.branch, o.ymd, o.openedAt); }));
+      const mgrEarliest = {};
+      (mgrIns || []).forEach(r => {
+        if (!r || r.type !== "in" || !r.ts) return;
+        const branch = (r.staff && r.staff.branch) || r.branch; if (!branch) return;
+        const y = saYmd(r.ts); if (!y) return;
+        const key = branch + "|" + y;
+        if (!mgrEarliest[key] || r.ts < mgrEarliest[key].ts) mgrEarliest[key] = { ts: r.ts, branch, y };
+      });
+      Object.values(mgrEarliest).forEach(o => addOpen(o.branch, o.y, o.ts));
+      const openings = Object.entries(openByBranch).map(([branch, mins]) => ({
+        branch, avg: mins.reduce((a, b) => a + b, 0) / mins.length, earliest: Math.min.apply(null, mins), latest: Math.max.apply(null, mins), days: mins.length
+      })).sort((a, b) => a.avg - b.avg || a.branch.localeCompare(b.branch));
+
+      // ── 3. Extras — approved extra days per person, within the window ──
+      const eByEc = {};
+      (extrasRaw || []).forEach(r => {
+        if (!r || r.status !== "approved" || !r.work_date || r.work_date < sinceYmd) return;
+        const k = r.ec || r.name || r.id;
+        const e = eByEc[k] || (eByEc[k] = { ec: r.ec, name: r.name, store: r.store, count: 0 });
+        e.count++; if (r.store) e.store = r.store;
+      });
+      const extras = Object.values(eByEc).sort((a, b) => b.count - a.count || (a.name || "").localeCompare(b.name || ""));
+
+      // ── 4. Manager attendance by store ──
+      // Worked days come from manager clock-ins; absences from manager_day_status
+      // (sick / FRL / absent / no-show — the same set, and again no leave types).
+      // Both are attributed to the manager's home store.
+      const mgrById = {};
+      (managers || []).forEach(m => { if (m && m.id != null) mgrById[String(m.id)] = m; });
+      const mByBranch = {};
+      const ensureMB = (branch) => mByBranch[branch] || (mByBranch[branch] = { branch, worked: 0, sick: 0, frl: 0, absent: 0, no: 0 });
+      const workedSeen = {};
+      (mgrIns || []).forEach(r => {
+        if (!r || r.type !== "in" || !r.ts) return;
+        const sid = String(r.staff_id || (r.staff && r.staff.id) || "");
+        const branch = (mgrById[sid] && mgrById[sid].branch) || (r.staff && r.staff.branch) || r.branch;
+        const y = saYmd(r.ts);
+        if (!sid || !branch || !y) return;
+        const key = sid + "|" + y; if (workedSeen[key]) return; workedSeen[key] = true;
+        ensureMB(branch).worked++;
+      });
+      (mgrStatuses || []).forEach(r => {
+        if (!r || !r.staff_id || !r.date || !r.status) return;
+        const m = mgrById[String(r.staff_id)]; const branch = m && m.branch; if (!branch) return;
+        const b = ensureMB(branch);
+        if (r.status === "sick" || r.status === "sick_n") b.sick++;
+        else if (r.status === "frl") b.frl++;
+        else if (r.status === "absent") b.absent++;
+        else if (r.status === "no") b.no++;
+      });
+      const mgrAttendance = Object.values(mByBranch).map(b => {
+        const issues = b.sick + b.frl + b.absent + b.no;
+        const total = b.worked + issues;
+        return { ...b, issues, total, attendRate: total ? b.worked / total : 0 };
+      }).filter(b => b.total > 0).sort((a, b) => b.attendRate - a.attendRate || a.issues - b.issues || a.branch.localeCompare(b.branch));
+
+      // ── 1c. Combined — nail techs + managers per store ──
+      const combo = {};
+      const ensureC = (branch) => combo[branch] || (combo[branch] = { branch, worked: 0, sick: 0, frl: 0, absent: 0, no: 0 });
+      attendance.forEach(b => { const c = ensureC(b.branch); c.worked += b.present; c.sick += b.sick; c.frl += b.frl; c.absent += b.absent; c.no += b.no; });
+      mgrAttendance.forEach(b => { const c = ensureC(b.branch); c.worked += b.worked; c.sick += b.sick; c.frl += b.frl; c.absent += b.absent; c.no += b.no; });
+      const combined = Object.values(combo).map(b => {
+        const issues = b.sick + b.frl + b.absent + b.no;
+        const total = b.worked + issues;
+        return { ...b, issues, total, attendRate: total ? b.worked / total : 0 };
+      }).filter(b => b.total > 0).sort((a, b) => b.attendRate - a.attendRate || a.issues - b.issues || a.branch.localeCompare(b.branch));
+
+      setData({ combined, attendance, openings, extras, mgrAttendance });
+    } catch (e) { setErr(e && (e.message || String(e))); }
+    finally { setLoading(false); }
+  }, [extraDayRequests, managers]);
+
+  React.useEffect(() => { load(days); }, [load, days]);
+
+  const pct = (x) => Math.round(x * 100) + "%";
+  const medal = (i) => i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : (i + 1) + ".";
+  const card = { background: "#fff", borderRadius: 16, border: "1px solid #EDE9FE", boxShadow: "0 2px 10px rgba(124,58,237,0.05)", padding: "16px 18px", marginBottom: 20 };
+  const cardHead = { fontSize: 15, fontWeight: 800, color: "#5B21B6", marginBottom: 4 };
+  const cardSub = { fontSize: 11.5, color: "#9d6a82", marginBottom: 12 };
+  const rowS = (top) => ({ display: "grid", gap: 10, alignItems: "center", padding: "8px 6px", borderTop: top ? "none" : "1px solid #F3F4F6" });
+  const rankCell = { fontSize: 15, fontWeight: 800, color: "#6b21a8", textAlign: "center", width: 34 };
+  const nameCell = { fontSize: 13, fontWeight: 700, color: "#111827", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+  const headCell = { fontSize: 9.5, fontWeight: 800, color: "#9d6a82", letterSpacing: "0.05em", textTransform: "uppercase", textAlign: "right" };
+  const numCell = { fontSize: 13, fontWeight: 800, textAlign: "right" };
+
+  // Shared attendance-ranking table (used for combined / techs / managers).
+  const attCard = (title, sub, rows, noteFor, emptyMsg) => (
+    <div style={card}>
+      <div style={cardHead}>{title}</div>
+      <div style={cardSub}>{sub}</div>
+      {(!rows || rows.length === 0) ? <div style={{ fontSize: 12, color: "#9ca3af" }}>{emptyMsg || "Not enough data in this window yet."}</div> : (
+        <div>
+          <div style={{ ...rowS(true), gridTemplateColumns: "34px 1fr 80px 58px 58px 58px 64px" }}>
+            <div /><div style={{ ...headCell, textAlign: "left" }}>Store</div><div style={headCell}>Attend</div><div style={headCell}>Sick</div><div style={headCell}>FRL</div><div style={headCell}>Absent</div><div style={headCell}>No-show</div>
+          </div>
+          {rows.map((b, i) => (
+            <div key={b.branch} style={{ ...rowS(false), gridTemplateColumns: "34px 1fr 80px 58px 58px 58px 64px", background: i < 3 ? "#FAF5FF" : "transparent", borderRadius: 8 }}>
+              <div style={rankCell}>{medal(i)}</div>
+              <div style={nameCell}>{b.branch}<span style={{ fontSize: 10, color: "#9ca3af", fontWeight: 500 }}> · {noteFor(b)}</span></div>
+              <div style={{ ...numCell, color: b.attendRate >= 0.95 ? "#16a34a" : b.attendRate >= 0.85 ? "#d97706" : "#dc2626" }}>{pct(b.attendRate)}</div>
+              <div style={{ ...numCell, color: b.sick ? "#9a3412" : "#9ca3af" }}>{b.sick}</div>
+              <div style={{ ...numCell, color: b.frl ? "#78350f" : "#9ca3af" }}>{b.frl}</div>
+              <div style={{ ...numCell, color: b.absent ? "#dc2626" : "#9ca3af" }}>{b.absent}</div>
+              <div style={{ ...numCell, color: b.no ? "#dc2626" : "#9ca3af" }}>{b.no}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div style={{ padding: "0 24px 40px" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+        <div>
+          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#5B21B6", fontWeight: 700, marginBottom: 4 }}>🏆 Store Reports</div>
+          <div style={{ fontSize: 12.5, color: "#9d6a82" }}>Cross-store rankings over the last {days} days.</div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", background: "#F3F4F6", padding: 3, borderRadius: 10, border: "1px solid #E5E7EB" }}>
+            {[30, 60, 90].map(d => (
+              <button key={d} onClick={() => setDays(d)} style={{ padding: "6px 13px", borderRadius: 8, border: "none", background: days === d ? "#fff" : "transparent", color: days === d ? "#5B21B6" : "#6B7280", boxShadow: days === d ? "0 2px 4px rgba(0,0,0,0.05)" : "none", cursor: "pointer", fontSize: 12.5, fontWeight: 700, fontFamily: "inherit" }}>{d}d</button>
+            ))}
+          </div>
+          <button onClick={() => load(days)} style={{ background: "#5B21B6", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontWeight: 700, fontSize: 12.5 }}>{loading ? "Loading…" : "↻ Refresh"}</button>
+        </div>
+      </div>
+
+      {err && <div style={{ ...card, color: "#9b1c1c", border: "1px solid #fecaca", background: "#fef2f2" }}>Couldn't load reports: {err}</div>}
+      {loading && !data && <div style={{ ...card, color: "#9d6a82" }}>Crunching the numbers across all stores…</div>}
+
+      {data && (<>
+        {/* 1a. Combined — techs + managers */}
+        {attCard("🏆 Best attendance — all staff", "Nail techs and managers combined, per store. Ranked by attendance rate (days worked vs. sick / FRL / absent / no-show). Leave, maternity, public holidays and terminated days are ignored.", data.combined, b => b.total + " staff-days", "Not enough attendance data in this window yet.")}
+
+        {/* 1b. Nail techs */}
+        {attCard("💅 Best attendance — Nail Techs", "Nail techs only, from signed-off kiosk check-ins. Only sick, FRL, absent and no-show count against a store.", data.attendance, b => b.total + " days", "No signed-off nail-tech check-ins in this window yet.")}
+
+        {/* 1c. Managers */}
+        {attCard("👑 Best attendance — Managers", "Managers only — days clocked in vs. sick / FRL / absent / no-show recorded for them.", data.mgrAttendance, b => b.worked + " worked", "No manager clock-ins or absences in this window yet.")}
+
+        {/* 2. Openings */}
+        <div style={card}>
+          <div style={cardHead}>🌅 Earliest store opening</div>
+          <div style={cardSub}>Ranked by average opening time (South Africa time). Uses the store-open record, or the earliest manager clock-in when that's missing.</div>
+          {data.openings.length === 0 ? <div style={{ fontSize: 12, color: "#9ca3af" }}>No opening times recorded in this window.</div> : (
+            <div>
+              <div style={{ ...rowS(true), gridTemplateColumns: "34px 1fr 90px 80px 80px" }}>
+                <div /><div style={{ ...headCell, textAlign: "left" }}>Store</div><div style={headCell}>Avg open</div><div style={headCell}>Earliest</div><div style={headCell}>Latest</div>
+              </div>
+              {data.openings.map((o, i) => (
+                <div key={o.branch} style={{ ...rowS(false), gridTemplateColumns: "34px 1fr 90px 80px 80px", background: i < 3 ? "#FAF5FF" : "transparent", borderRadius: 8 }}>
+                  <div style={rankCell}>{medal(i)}</div>
+                  <div style={nameCell}>{o.branch}<span style={{ fontSize: 10, color: "#9ca3af", fontWeight: 500 }}> · {o.days} days</span></div>
+                  <div style={{ ...numCell, color: "#5B21B6" }}>{fmtMins(o.avg)}</div>
+                  <div style={{ ...numCell, color: "#16a34a" }}>{fmtMins(o.earliest)}</div>
+                  <div style={{ ...numCell, color: "#6b7280" }}>{fmtMins(o.latest)}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* 3. Extras */}
+        <div style={card}>
+          <div style={cardHead}>💪 Most extra days worked</div>
+          <div style={cardSub}>Approved extra days per person in the window, across all stores.</div>
+          {data.extras.length === 0 ? <div style={{ fontSize: 12, color: "#9ca3af" }}>No approved extra days in this window.</div> : (
+            <div>
+              <div style={{ ...rowS(true), gridTemplateColumns: "34px 1fr 1fr 90px" }}>
+                <div /><div style={{ ...headCell, textAlign: "left" }}>Person</div><div style={{ ...headCell, textAlign: "left" }}>Store</div><div style={headCell}>Extra days</div>
+              </div>
+              {data.extras.slice(0, 20).map((p, i) => (
+                <div key={(p.ec || p.name) + "_" + i} style={{ ...rowS(false), gridTemplateColumns: "34px 1fr 1fr 90px", background: i < 3 ? "#FAF5FF" : "transparent", borderRadius: 8 }}>
+                  <div style={rankCell}>{medal(i)}</div>
+                  <div style={nameCell}>{p.name || p.ec || "—"}</div>
+                  <div style={{ fontSize: 12, color: "#6b7280", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.store || "—"}</div>
+                  <div style={{ ...numCell, color: "#5B21B6" }}>{p.count}</div>
+                </div>
+              ))}
+              {data.extras.length > 20 && <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 8, textAlign: "center" }}>Showing top 20 of {data.extras.length}.</div>}
+            </div>
+          )}
+        </div>
+      </>)}
+    </div>
+  );
+}
+
 function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // ── Activity logger — records who did what to the boa_activity_log_v1 row.
   // Failures are swallowed so a logging hiccup never blocks the actual edit.
@@ -12994,7 +13264,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", freshaTodo: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
     attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll", payrollInbox: "Payroll", leaveBalances: "Payroll", frl: "Payroll",
     leaveRequests: "Operations", calledInSick: "Operations", extraDayRequests: "Operations",
-    alerts: "Insights", activity: "Insights",
+    alerts: "Insights", activity: "Insights", storeReports: "Insights",
     settings: "Admin", voucherAdmin: "Admin"
   };
   useEffect(() => {
@@ -16029,6 +16299,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 color: { bg: "#EDE9FE", bgActive: "#DDD6FE", ink: "#5B21B6" },
                 items: [
                   { t: "alerts", l: "🔔 Alerts" },
+                  { t: "storeReports", l: "🏆 Store Reports" },
                   { t: "activity", l: "📜 Activity Log" }
                 ]
               },
@@ -28535,6 +28806,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       })()}
 
       {/* ── ACTIVITY LOG ── */}
+      {tab === "storeReports" && <StoreReportsTab extraDayRequests={extraDayRequests} managers={managers} />}
+
       {tab === "activity" && (() => {
         const whoOpts = ["All", ...Array.from(new Set(activityRows.map(r => r.who).filter(Boolean)))];
         const actionOpts = ["All", ...Array.from(new Set(activityRows.map(r => r.action).filter(Boolean))).sort()];
