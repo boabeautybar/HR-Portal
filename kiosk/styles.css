@@ -958,3 +958,37 @@ textarea.input { resize: vertical; min-height: 64px; }
   border: 1px solid #6ee7b7; border-radius: 16px;
   padding: 14px 18px; margin: 0 0 16px;
 }
+
+/* ── Trial-evaluation URGENT banner — pink neon "do it now" ──────────────
+   Surfaces on the kiosk home the moment a trial tech is due for her Week 1
+   or Final evaluation, so the manager can't miss it. */
+.eval-neon {
+  background: #fff0f7;
+  border: 2.5px solid #ff1493;
+  border-radius: 16px;
+  padding: 14px 16px;
+  margin: 0 0 16px;
+  color: #9d174d;
+  box-shadow: 0 0 12px rgba(255, 20, 147, 0.55), 0 0 26px rgba(255, 20, 147, 0.30), inset 0 0 10px rgba(255, 20, 147, 0.10);
+  animation: boaEvalNeon 1.5s ease-in-out infinite;
+}
+@keyframes boaEvalNeon {
+  0%, 100% { box-shadow: 0 0 10px rgba(255, 20, 147, 0.45), 0 0 20px rgba(255, 20, 147, 0.25); }
+  50%      { box-shadow: 0 0 20px rgba(255, 20, 147, 0.90), 0 0 40px rgba(255, 20, 147, 0.55); }
+}
+@media (prefers-reduced-motion: reduce) { .eval-neon { animation: none; } }
+.eval-neon-head {
+  font-weight: 900; font-size: 16px; letter-spacing: 0.04em;
+  color: #ff1493; text-shadow: 0 0 8px rgba(255, 20, 147, 0.45);
+}
+.eval-neon-sub { font-size: 12px; color: #9d174d; margin-top: 3px; line-height: 1.45; }
+.eval-neon-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 9px 0; border-top: 1px solid rgba(255, 20, 147, 0.25);
+}
+.eval-neon-do {
+  background: #ff1493; color: #fff; border: none; border-radius: 9px;
+  padding: 9px 15px; font-weight: 800; font-size: 13px; cursor: pointer;
+  white-space: nowrap; box-shadow: 0 0 10px rgba(255, 20, 147, 0.65);
+}
+.eval-neon-do:hover { background: #ec1085; }

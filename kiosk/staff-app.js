@@ -94,6 +94,7 @@
     // Re-check the submit-your-check-in nag each minute so it appears the
     // moment the clock passes 10:30 and clears as soon as the day is signed off.
     setInterval(refreshCheckinNag, 60 * 1000);
+    setInterval(function () { if (document.getElementById("eval-due-slot")) refreshEvalNag(); }, 60 * 1000);
 
     renderLanding();
   }
@@ -118,6 +119,7 @@
         '<div class="hero-brand">' + esc(cfg.branchDisplayName || cfg.branchName || "BOA Check-in") + '</div>' +
         '<div class="hero-title">What would you like to do?</div>' +
       '</div>' +
+      '<div id="eval-due-slot"></div>' +
       '<div id="sick-today-slot"></div>' +
       '<div id="checkin-nag-slot"></div>' +
       '<div id="cashup-nag-slot"></div>' +
@@ -148,9 +150,61 @@
     document.getElementById("tile-schedule").onclick = renderSchedule;
     document.getElementById("tile-offreq").onclick   = renderOffRequests;
     document.getElementById("tile-cashup").onclick   = function () { renderCashup(); };
+    refreshEvalNag();
     refreshCheckinNag();
     refreshCashupNag();
     refreshSickToday();
+  }
+
+  // Home-screen URGENT banner (pink neon) for trial-tech evaluations that are
+  // due RIGHT NOW — a tech has reached 5 days (Week 1) or 10 days (Final) and
+  // the manager still has to complete the evaluation form. Tapping a row jumps
+  // straight into the form so it can't be missed.
+  async function refreshEvalNag() {
+    var el = document.getElementById("eval-due-slot");
+    if (!el) return;
+    if (!window.APP_DATA || !window.APP_DATA.listTrialCandidates) { el.innerHTML = ""; return; }
+    var myBranch = cfg.branchName || "";
+    var due = [];
+    try {
+      var cands = (await window.APP_DATA.listTrialCandidates()) || [];
+      cands.forEach(function (c) {
+        if (!c || c.branch !== myBranch) return;
+        if (String(c.role || "nt").toLowerCase() !== "nt") return;
+        var which = trialEvalDue(c);
+        if (which) due.push({ c: c, which: which });
+      });
+    } catch (e) { console.warn("eval nag check failed (non-fatal):", e); el.innerHTML = ""; return; }
+    if (!due.length) { el.innerHTML = ""; return; }
+
+    var rows = due.map(function (d) {
+      var worked = trialWorkedDays(d.c);
+      var label = d.which === "mid" ? "Week 1 evaluation" : "Final evaluation";
+      return '<div class="eval-neon-row">' +
+               '<div style="min-width:0">' +
+                 '<div style="font-weight:800;font-size:14px">' + esc(d.c.name || "Trial tech") + '</div>' +
+                 '<div style="font-size:11.5px;opacity:0.85">' + esc(label) + ' · ' + worked + '/10 days done</div>' +
+               '</div>' +
+               '<button class="btn eval-neon-do" data-id="' + esc(d.c._id) + '" data-which="' + d.which + '">📋 Evaluate now →</button>' +
+             '</div>';
+    }).join("");
+    el.innerHTML =
+      '<div class="eval-neon" role="alert">' +
+        '<div class="eval-neon-head">🔔 EVALUATION DUE — ' + due.length + ' TRIAL TECH' + (due.length === 1 ? '' : 'S') + '</div>' +
+        '<div class="eval-neon-sub">A trial tech has done enough days and needs her evaluation completed to move forward. Tap <strong>Evaluate now</strong> — it only takes a few minutes.</div>' +
+        '<div style="margin-top:6px">' + rows + '</div>' +
+      '</div>';
+    Array.prototype.forEach.call(el.querySelectorAll(".eval-neon-do"), function (btn) {
+      btn.onclick = async function () {
+        var cands = (await window.APP_DATA.listTrialCandidates()) || [];
+        var c = cands.find(function (x) { return String(x._id) === String(btn.dataset.id); });
+        if (!c) { refreshEvalNag(); return; }
+        // Open the form on top of the daily check-in screen so its post-submit
+        // refresh has a screen to land on.
+        await renderCheckin();
+        openTrialEvalModal(c, btn.dataset.which);
+      };
+    });
   }
 
   // ---------------- News (read-only viewer) ----------------
@@ -499,40 +553,40 @@
   // on the kiosk renders the same scores back to HR.
   var TRIAL_EVAL_SECTIONS = [
     { title: "Customer Service & Experience", max: 50, items: [
-      { k: "greeting", label: "Client Greeting & Warmth" },
-      { k: "consultation", label: "Consultation Clarity" },
-      { k: "comfort", label: "Client Comfort", key: true },
-      { k: "quality", label: "Service Quality", key: true },
-      { k: "time", label: "Time Management" },
-      { k: "complaints", label: "Handling Complaints" },
-      { k: "presentation", label: "Professional Presentation" },
-      { k: "aftercare", label: "Aftercare Education" },
-      { k: "retail", label: "Retail & Upgrades" },
-      { k: "feedback", label: "Client Feedback" }
+      { k: "greeting", label: "Client Greeting & Warmth", desc: "Greets clients politely, introduces herself with name, maintains positive energy and friendly presence." },
+      { k: "consultation", label: "Consultation Clarity", desc: "Asks questions, confirms service, length, shape, design, price before starting." },
+      { k: "comfort", label: "Client Comfort", key: true, desc: "Ensures client is comfortable, checks in during treatment, gentle handling." },
+      { k: "quality", label: "Service Quality", key: true, desc: "Nail work is clean, precise, balanced and meets BOA quality standards." },
+      { k: "time", label: "Time Management", desc: "Completes work efficiently without rushing or compromising quality." },
+      { k: "complaints", label: "Handling Complaints", desc: "Remains calm, solution-focused, involves manager where needed." },
+      { k: "presentation", label: "Professional Presentation", desc: "Wears clean uniform, neat grooming, fresh appearance." },
+      { k: "aftercare", label: "Aftercare Education", desc: "Explains upkeep, refill cycles, and product recommendations." },
+      { k: "retail", label: "Retail & Upgrades", desc: "Suggests appropriate treatments and products confidently." },
+      { k: "feedback", label: "Client Feedback", desc: "Encourages positive Fresha reviews and responds well to feedback." }
     ] },
     { title: "Teamwork & Workplace Conduct", max: 25, items: [
-      { k: "communication", label: "Communication", key: true },
-      { k: "support", label: "Support & Collaboration" },
-      { k: "reliability", label: "Reliability", key: true },
-      { k: "attitude", label: "Professional Attitude" },
-      { k: "leadership", label: "Respect for Leadership", key: true }
+      { k: "communication", label: "Communication", key: true, desc: "Speaks respectfully to colleagues and managers." },
+      { k: "support", label: "Support & Collaboration", desc: "Helps team during busy times without being asked." },
+      { k: "reliability", label: "Reliability", key: true, desc: "Arrives on time, prepared, no lateness or absenteeism." },
+      { k: "attitude", label: "Professional Attitude", desc: "Avoids conflict, gossip, negative behavior." },
+      { k: "leadership", label: "Respect for Leadership", key: true, desc: "Follows manager instructions without attitude or resistance." }
     ] },
     { title: "Cleanliness & Hygiene Compliance", max: 25, items: [
-      { k: "toolsan", label: "Tool Sanitation" },
-      { k: "workstation", label: "Workstation Cleanliness" },
-      { k: "towel", label: "Towel & Product Use" },
-      { k: "hygiene", label: "Personal Hygiene" },
-      { k: "infection", label: "Infection Control" }
+      { k: "toolsan", label: "Tool Sanitation", desc: "Fully follows BOA autoclave and sanitation procedures." },
+      { k: "workstation", label: "Workstation Cleanliness", desc: "Keeps table/pedi station clean before, during and after service." },
+      { k: "towel", label: "Towel & Product Use", desc: "Does not waste products; follows towel and cleaning procedures." },
+      { k: "hygiene", label: "Personal Hygiene", desc: "Fresh, tidy, and clean presentation at all times." },
+      { k: "infection", label: "Infection Control", desc: "Identifies nail infections, follows safe refusal and escalation process." }
     ] },
     { title: "Policy & Operational Compliance", max: 20, items: [
-      { k: "timekeeping", label: "Time Keeping", key: true },
-      { k: "phone", label: "Phone Rules" },
-      { k: "language", label: "Language" },
-      { k: "procedure", label: "Procedure Following" }
+      { k: "timekeeping", label: "Time Keeping", key: true, desc: "Clocks in/out correctly, updates statuses, no misuse." },
+      { k: "phone", label: "Phone Rules", desc: "Adheres to cellphone restrictions." },
+      { k: "language", label: "Language", desc: "Speaks English and does not speak to colleagues during treatments." },
+      { k: "procedure", label: "Procedure Following", desc: "Follows BOA protocols exactly (fixes, complaints, upselling, etc)." }
     ] },
     { title: "Brand Ambassadorship & Professionalism", max: 10, items: [
-      { k: "brand", label: "Brand Image" },
-      { k: "community", label: "Community Presence" }
+      { k: "brand", label: "Brand Image", desc: "Acts as the face of BOA in demeanor and attitude." },
+      { k: "community", label: "Community Presence", desc: "Promotes BOA positively in local and online spaces." }
     ] }
   ];
   var TRIAL_EVAL_MAX = 130;        // 26 criteria × 5
@@ -1417,8 +1471,8 @@
             }
           });
           var dueBtn = due
-            ? '<button type="button" class="trial-eval-open" data-id="' + esc(c._id) + '" data-which="' + due + '" ' +
-                'style="margin-top:8px;width:100%;padding:10px;border-radius:8px;border:none;background:#7c3aed;color:#fff;font-size:13px;font-weight:800;cursor:pointer;box-shadow:0 3px 10px rgba(124,58,237,0.25)">' +
+            ? '<button type="button" class="trial-eval-open eval-neon-do" data-id="' + esc(c._id) + '" data-which="' + due + '" ' +
+                'style="margin-top:8px;width:100%;padding:11px;white-space:normal">' +
                 '📋 ' + (due === "mid" ? "Week 1" : "Final") + ' evaluation due — complete now</button>'
             : "";
 
@@ -2327,10 +2381,15 @@
           return '<button type="button" class="eval-score" data-k="' + it.k + '" data-v="' + n + '" ' +
             'style="flex:1;min-width:34px;padding:8px 0;border-radius:7px;border:1px solid #e5e7eb;background:#fff;color:#374151;font-weight:800;font-size:13px;cursor:pointer">' + n + '</button>';
         }).join("");
+        // Each criterion carries a ⓘ button that reveals the form's own
+        // description of what it means, so the manager scores consistently.
         return '<div style="padding:8px 0;border-top:1px solid #f3f4f6">' +
-          '<div style="font-size:12.5px;font-weight:700;color:#374151;margin-bottom:6px">' + esc(it.label) +
-            (it.key ? ' <span class="pill" style="background:#fef3c7;color:#92400e">Key · min 3</span>' : '') +
+          '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">' +
+            '<span style="font-size:12.5px;font-weight:700;color:#374151">' + esc(it.label) + '</span>' +
+            (it.key ? '<span class="pill" style="background:#fef3c7;color:#92400e">Key · min 3</span>' : '') +
+            (it.desc ? '<button type="button" class="eval-info" data-k="' + it.k + '" title="What does this mean?" style="margin-left:auto;border:1px solid #ddd6fe;background:#f5f3ff;color:#6b21a8;border-radius:99px;width:20px;height:20px;font-size:11px;font-weight:800;cursor:pointer;line-height:1;flex:0 0 auto">i</button>' : '') +
           '</div>' +
+          (it.desc ? '<div class="eval-desc" data-desc="' + it.k + '" style="display:none;font-size:11.5px;color:#6b21a8;background:#f5f3ff;border:1px solid #ede9fe;border-radius:7px;padding:6px 9px;margin-bottom:7px;line-height:1.45">' + esc(it.desc) + '</div>' : '') +
           '<div style="display:flex;gap:5px" data-row="' + it.k + '">' + opts + '</div>' +
         '</div>';
       }).join("");
@@ -2347,6 +2406,12 @@
       '<div class="boa-modal-card" style="max-width:560px;max-height:88vh;overflow-y:auto">' +
         '<h2 class="boa-modal-title">📋 ' + esc(title) + ' — ' + esc(candidate.name || "trial tech") + '</h2>' +
         '<p class="boa-modal-body">Score each criterion from 1 (poor) to 5 (excellent). A pass needs <strong>' + TRIAL_EVAL_PASS + '/' + TRIAL_EVAL_MAX + '</strong> and at least <strong>3/5 on every Key Indicator</strong>. This form is sent to HR either way.</p>' +
+        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:4px 0 2px">' +
+          '<button type="button" id="boa-eval-guide" style="border:1px solid #ddd6fe;background:#f5f3ff;color:#6b21a8;border-radius:8px;padding:6px 11px;font-size:11.5px;font-weight:800;cursor:pointer">ⓘ Show guidance for every point</button>' +
+        '</div>' +
+        '<div style="background:#f5f3ff;border:1px solid #ede9fe;border-radius:8px;padding:7px 10px;margin:6px 0 2px;font-size:11px;color:#6b21a8;line-height:1.5">' +
+          '<strong>Scoring scale:</strong> 1 = well below standard · 2 = needs work · 3 = meets BOA standard (minimum for Key Indicators) · 4 = strong · 5 = excellent.' +
+        '</div>' +
         TRIAL_EVAL_SECTIONS.map(sectionHtml).join("") +
         '<label class="lbl" style="margin-top:14px">Evaluator name</label>' +
         '<input id="boa-eval-by" type="text" class="input" placeholder="Manager full name" autocomplete="name">' +
@@ -2389,6 +2454,22 @@
         refreshTally();
       };
     });
+
+    // Per-criterion ⓘ — reveal that point's description.
+    Array.prototype.forEach.call(modal.querySelectorAll(".eval-info"), function (b) {
+      b.onclick = function () {
+        var d = modal.querySelector('.eval-desc[data-desc="' + b.dataset.k + '"]');
+        if (d) d.style.display = (d.style.display === "none" || !d.style.display) ? "block" : "none";
+      };
+    });
+    // Global guidance toggle — show / hide every description at once.
+    var guideBtn = document.getElementById("boa-eval-guide");
+    var guideOn = false;
+    guideBtn.onclick = function () {
+      guideOn = !guideOn;
+      Array.prototype.forEach.call(modal.querySelectorAll(".eval-desc"), function (d) { d.style.display = guideOn ? "block" : "none"; });
+      guideBtn.textContent = guideOn ? "ⓘ Hide guidance" : "ⓘ Show guidance for every point";
+    };
 
     saveBtn.onclick = async function () {
       errEl.textContent = "";
@@ -3244,7 +3325,8 @@
     renderNews:         function () { return renderNews.apply(null, arguments); },
     refreshNewsBadge:   function () { return refreshNewsBadge.apply(null, arguments); },
     refreshCheckinNag:  function () { return refreshCheckinNag.apply(null, arguments); },
-    refreshCashupNag:   function () { return refreshCashupNag.apply(null, arguments); }
+    refreshCashupNag:   function () { return refreshCashupNag.apply(null, arguments); },
+    refreshEvalNag:     function () { return refreshEvalNag.apply(null, arguments); }
   };
 })();
 
