@@ -1464,7 +1464,33 @@
     
     var up = await c.from("app_state").upsert({ key: "boa_trial_period_v1", value: list });
     if (up.error) throw up.error;
-    
+
+    return candidate;
+  }
+
+  // Persist a completed trial evaluation (week-1 "mid" or week-2 "final") onto
+  // the candidate's record and, in the SAME write, advance their trial status
+  // when they pass. This is what makes the trial self-driving from the store:
+  // the manager fills the form on the kiosk, and the HR portal simply reflects
+  // the new status the next time it loads.
+  //   evalKey   — "midEval" | "finalEval"
+  //   evalObj   — { submittedAt, submittedBy, scores, total, max, pass, keyOk, heldForHr, notes }
+  //   newStatus — the status to move the candidate to (or null to leave as-is;
+  //               used when an evaluation falls below the pass mark and must be
+  //               held for an HR decision instead of auto-advancing).
+  async function saveTrialEvaluation(candidateId, evalKey, evalObj, newStatus) {
+    var c = client(); if (!c) throw new Error("Supabase not configured");
+    var res = await c.from("app_state").select("value").eq("key", "boa_trial_period_v1").maybeSingle();
+    if (res.error) throw res.error;
+    var v = res.data && res.data.value;
+    var list = Array.isArray(v) ? v : [];
+    var candidate = list.find(function (item) { return String(item._id) === String(candidateId); });
+    if (!candidate) throw new Error("Candidate not found");
+    candidate[evalKey] = evalObj;
+    if (newStatus) candidate.status = newStatus;
+    candidate.updatedAt = new Date().toISOString();
+    var up = await c.from("app_state").upsert({ key: "boa_trial_period_v1", value: list });
+    if (up.error) throw up.error;
     return candidate;
   }
 
@@ -1479,6 +1505,7 @@
     listKioskReminders: listKioskReminders,
     listTrialCandidates: listTrialCandidates,
     recordTrialCheckin: recordTrialCheckin,
+    saveTrialEvaluation: saveTrialEvaluation,
     markKioskReminderDone: markKioskReminderDone,
     markKioskReminderUndone: markKioskReminderUndone,
     categorizeStaff: categorizeStaff, addStaff: addStaff, updateStaff: updateStaff,
