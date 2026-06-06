@@ -24849,6 +24849,61 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     );
                     return <React.Fragment key={s.ec}>{sectionRow}{dataRow}</React.Fragment>;
                   })}
+                  {/* ── Trial techs — paid in-store trial days (read-only) ──
+                      A trial nail tech appears here as soon as the kiosk has
+                      recorded their first trial day. Completed days (On Time /
+                      Late) render as yellow "T" trial days and are paid; an
+                      absent trial day shows red "A". Source of truth is the
+                      trial record's check-ins (corrected from the Trial Period
+                      tab), so these rows are read-only on the payroll sheet. */}
+                  {(() => {
+                    const cycleYmd = new Set(days.map(d => d.ymd));
+                    const trialRows = (trialList || []).filter(c =>
+                      c && String(c.role || "nt").toLowerCase() === "nt"
+                      && c.branch === attBranch
+                      && c.status !== "hired" && c.status !== "induction"
+                      && c.checkins && typeof c.checkins === "object" && !Array.isArray(c.checkins)
+                      && Object.keys(c.checkins).some(y => cycleYmd.has(y) && (c.checkins[y] === "on" || c.checkins[y] === "late" || c.checkins[y] === "absent"))
+                    ).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+                    if (!trialRows.length) return null;
+                    const STG = { trial_w1: "Week 1", trial_w2: "Week 2", pending_mid_review: "Week 1", pending_final_review: "Week 2", passed: "Passed", failed: "Failed" };
+                    return (
+                      <React.Fragment key="trial-att-section">
+                        <tr>
+                          <td colSpan={days.length + 10} style={{ background: "#fefce8", padding: 0, borderTop: "2px solid #fde68a", borderBottom: "1px solid #fde68a" }}>
+                            <div style={{ position: "sticky", left: 0, padding: "8px 14px", fontSize: 11, fontWeight: 800, color: "#854d0e", letterSpacing: "0.12em", textTransform: "uppercase", background: "#fefce8", width: "max-content" }}>🧪 Trial Techs · paid trial days</div>
+                          </td>
+                        </tr>
+                        {trialRows.map(c => {
+                          const ci = c.checkins || {};
+                          let paid = 0, absent = 0;
+                          days.forEach(dy => { const s = ci[dy.ymd]; if (s === "on" || s === "late") paid++; else if (s === "absent") absent++; });
+                          return (
+                            <tr key={"trial-" + c._id} style={{ background: "#fffdf5" }}>
+                              <td style={{ position: "sticky", left: 0, background: "#fffdf5", padding: "6px 10px", borderBottom: "1px solid #FCE7F3", borderRight: "2px solid #FBCFE8", zIndex: 2, minWidth: 170 }}>
+                                <div style={{ fontSize: 11, fontWeight: 700, color: "#854d0e", display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                                  <span>{c.name}</span>
+                                  <span title="In-store trial — paid for trial days worked" style={{ background: "#fef08a", color: "#854d0e", border: "1px solid #fde047", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>🧪 TRIAL</span>
+                                </div>
+                                <div style={{ fontSize: 9, color: "#9ca3af" }}>Trial · {STG[c.status] || c.status}</div>
+                              </td>
+                              {days.map(dy => {
+                                const s = ci[dy.ymd];
+                                const isWk = dy.dow === 0 || dy.dow === 6;
+                                let bg = isWk ? "#fafafa" : "#fff", fg = "#e5e7eb", txt = "";
+                                if (s === "on" || s === "late") { bg = "#fde047"; fg = "#713f12"; txt = "T"; }
+                                else if (s === "absent") { bg = "#fca5a5"; fg = "#7f1d1d"; txt = "A"; }
+                                return <td key={dy.d} title={txt === "T" ? (c.name + " · trial day worked (paid)" + (s === "late" ? " · late" : "")) : (txt === "A" ? (c.name + " · absent (unpaid)") : "")} style={{ padding: 0, textAlign: "center", fontSize: 10, fontWeight: 800, color: fg, background: bg, borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", height: 34 }}>{txt}</td>;
+                              })}
+                              <td colSpan={10} style={{ padding: "6px 10px", fontSize: 11, fontWeight: 800, color: "#854d0e", textAlign: "left", borderBottom: "1px solid #FCE7F3", borderLeft: "3px solid #FBCFE8", background: "#fefce8" }}>
+                                {paid} paid trial day{paid === 1 ? "" : "s"}{absent > 0 ? " · " + absent + " absent" : ""}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </React.Fragment>
+                    );
+                  })()}
                 </tbody>
               </table>
             </div>
