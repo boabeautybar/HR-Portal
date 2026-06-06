@@ -13215,6 +13215,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       : r));
   };
   const [expandedTrialCards, setExpandedTrialCards] = useState(new Set()); // tracking expanded state for trial cards
+  const [trialDayEditOpen, setTrialDayEditOpen] = useState(new Set());     // pathway cards whose day editor (✏️) is open
   const [trialStartDraft, setTrialStartDraft] = useState(null); // { id, date } while HR is setting an in-store trial start date
   const [hrTasks, setHrTasks] = useState([]);         // HR Tasks (mocked for now)
   const [offList, setOffList] = useState([]);         // leaver records
@@ -20610,6 +20611,65 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           persistTrial(trialList.map(x => x._id === r._id ? { ...x, checkins: ci, updatedAt: new Date().toISOString() } : x));
         };
 
+        // Shared day editor — a quick whole-number setter PLUS a per-date editor
+        // (tick each planned/off-plan day as Worked / Late / Absent, or add a
+        // day outside the planned window). Used both in the kanban card and,
+        // behind the ✏️ pencil, in the pathway overview. `scope` keeps the input
+        // element ids unique when the same tech's editor is open in two places.
+        const dayEditorPanel = (r, scope) => {
+          const worked = workedDaysOf(r);
+          const ci = r.checkins || {};
+          const planned = trialWorkingDates(r.startDate, 10);
+          const plannedSet = new Set(planned);
+          const allDates = Array.from(new Set([...planned, ...Object.keys(ci)])).sort();
+          const wkd = d => new Date(d + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "short" });
+          const opts = [["on", "Worked", "#16a34a"], ["late", "Late", "#d97706"], ["absent", "Absent", "#dc2626"]];
+          const countId = "daycorr-" + scope + "-" + r._id;
+          const addId = "addday-" + scope + "-" + r._id;
+          const stepBtn = { width: 26, height: 28, borderRadius: 6, border: "1px solid #fcd34d", background: "#fff", color: "#92400e", cursor: "pointer", fontWeight: 800, fontSize: 13 };
+          return (
+            <div style={{ marginTop: 10, borderTop: "1px solid #e5e7eb", paddingTop: 10 }}>
+              <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "9px 10px", marginBottom: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: "#92400e", marginBottom: 4 }}>🔧 Quick set — number of completed days</div>
+                <div style={{ fontSize: 10, color: "#92400e", marginBottom: 8, lineHeight: 1.45 }}>Fills the first N trial working days as worked. For the exact days, use the editor below.</div>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                  <button onClick={() => setCompletedDays(r, workedDaysOf(r) - 1)} title="One day fewer" style={stepBtn}>−</button>
+                  <input key={countId + "-" + worked} id={countId} type="number" min="0" max="10" defaultValue={worked} style={{ width: 50, padding: "5px 6px", border: "1px solid #fcd34d", borderRadius: 6, fontSize: 13, fontFamily: "inherit", textAlign: "center", boxSizing: "border-box" }} />
+                  <span style={{ fontSize: 10, color: "#92400e", fontWeight: 700 }}>/ 10</span>
+                  <button onClick={() => setCompletedDays(r, workedDaysOf(r) + 1)} title="One day more" style={stepBtn}>+</button>
+                  <button onClick={() => { const el = document.getElementById(countId); setCompletedDays(r, el ? el.value : workedDaysOf(r)); }} style={{ marginLeft: "auto", padding: "5px 14px", borderRadius: 6, border: "none", background: "#d97706", color: "#fff", cursor: "pointer", fontWeight: 800, fontSize: 12 }}>Set</button>
+                </div>
+              </div>
+              <div style={{ fontSize: 11, fontWeight: 800, color: "#111827", marginBottom: 2 }}>📅 Set the exact days she was in</div>
+              <div style={{ fontSize: 10, color: "#6b7280", marginBottom: 8, lineHeight: 1.45 }}>Tick each day she was actually in store and how — use this when the kiosk didn’t check her in properly. Worked & Late count as paid trial days; Absent does not.</div>
+              {!r.startDate && <div style={{ fontSize: 11, color: "#b45309", marginBottom: 8 }}>Set a trial start date first (▶ Start in-store trial) to list her trial days.</div>}
+              <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid #f3f4f6", borderRadius: 8 }}>
+                {allDates.length === 0 && <div style={{ fontSize: 11, color: "#9ca3af", textAlign: "center", padding: "10px 0" }}>No trial days yet.</div>}
+                {allDates.map(date => {
+                  const cur = ci[date];
+                  const offPlan = !plannedSet.has(date);
+                  return (
+                    <div key={date} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, padding: "5px 8px", borderBottom: "1px solid #f3f4f6", flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 11, color: "#374151", fontWeight: 600, whiteSpace: "nowrap" }}>{wkd(date)} {fmtDate(date)}{offPlan && <span style={{ marginLeft: 5, fontSize: 8, fontWeight: 800, color: "#9ca3af", background: "#f3f4f6", borderRadius: 3, padding: "0 4px" }}>OFF-PLAN</span>}</span>
+                      <span style={{ display: "flex", gap: 3, alignItems: "center" }}>
+                        {opts.map(([st, lbl, col]) => {
+                          const on = cur === st;
+                          return <button key={st} onClick={() => setCheckinStatus(r, date, on ? null : st)} title={lbl} style={{ padding: "3px 8px", borderRadius: 5, border: "1px solid " + (on ? col : "#e5e7eb"), background: on ? col : "#fff", color: on ? "#fff" : "#6b7280", cursor: "pointer", fontSize: 10, fontWeight: 800 }}>{lbl}</button>;
+                        })}
+                        {cur && <button onClick={() => setCheckinStatus(r, date, null)} title="Clear this day" style={{ background: "none", border: "none", color: "#d1d5db", cursor: "pointer", fontSize: 12, lineHeight: 1, padding: "0 2px" }}>✕</button>}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 8 }}>
+                <input type="date" id={addId} style={{ flex: 1, minWidth: 0, padding: "5px 6px", border: "1px solid #e5e7eb", borderRadius: 6, fontSize: 12, fontFamily: "inherit" }} />
+                <button onClick={() => { const el = document.getElementById(addId); const d = el && el.value; if (!d) { alert("Pick a date first."); return; } setCheckinStatus(r, d, "on"); if (el) el.value = ""; }} style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: "#16a34a", color: "#fff", cursor: "pointer", fontWeight: 800, fontSize: 11, whiteSpace: "nowrap" }}>+ Add a day</button>
+              </div>
+            </div>
+          );
+        };
+
         // The single manual step HR keeps: move an inducted tech into the
         // in-store trial. Sets the start date, flips status to Week 1, and from
         // here the kiosk drives everything (check-ins, evaluations, advancing).
@@ -20967,13 +21027,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               <span style={{ fontSize: 11, fontWeight: 800, color: "#6b21a8" }}>· {Math.min(worked, 10)}/10 days{absent > 0 ? " · " + absent + " abs" : ""}</span>
                               {stale && <span style={{ fontSize: 9, fontWeight: 800, color: "#991b1b", background: "#fee2e2", padding: "1px 6px", borderRadius: 4 }}>⚠ {ds}d in stage</span>}
                             </div>
-                            <div style={{ display: "flex", alignItems: "center", gap: 4 }} title="Correct the completed-day count if the kiosk missed check-ins">
-                              <span style={{ fontSize: 9.5, color: "#92400e", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.04em" }}>Correct days</span>
-                              <button onClick={() => setCompletedDays(r, worked - 1)} title="One day fewer" style={{ width: 22, height: 24, borderRadius: 5, border: "1px solid #fcd34d", background: "#fffbeb", color: "#92400e", cursor: "pointer", fontWeight: 800, fontSize: 13, lineHeight: 1 }}>−</button>
-                              <input key={"ovday-" + r._id + "-" + worked} id={"ovday-" + r._id} type="number" min="0" max="10" defaultValue={worked} style={{ width: 40, padding: "3px 4px", border: "1px solid #fcd34d", borderRadius: 5, fontSize: 12, fontFamily: "inherit", textAlign: "center", boxSizing: "border-box" }} />
-                              <button onClick={() => setCompletedDays(r, worked + 1)} title="One day more" style={{ width: 22, height: 24, borderRadius: 5, border: "1px solid #fcd34d", background: "#fffbeb", color: "#92400e", cursor: "pointer", fontWeight: 800, fontSize: 13, lineHeight: 1 }}>+</button>
-                              <button onClick={() => { const el = document.getElementById("ovday-" + r._id); setCompletedDays(r, el ? el.value : worked); }} title="Set the corrected number of completed trial days" style={{ padding: "3px 10px", borderRadius: 5, border: "none", background: "#d97706", color: "#fff", cursor: "pointer", fontWeight: 800, fontSize: 11 }}>Set</button>
-                            </div>
+                            <button onClick={() => setTrialDayEditOpen(prev => { const n = new Set(prev); n.has(r._id) ? n.delete(r._id) : n.add(r._id); return n; })} title="Edit how many days & which dates she was in" style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 7, border: "1px solid " + (trialDayEditOpen.has(r._id) ? "#d97706" : "#fcd34d"), background: trialDayEditOpen.has(r._id) ? "#d97706" : "#fffbeb", color: trialDayEditOpen.has(r._id) ? "#fff" : "#92400e", cursor: "pointer", fontWeight: 800, fontSize: 11 }}>✏️ {trialDayEditOpen.has(r._id) ? "Close" : "Edit days"}</button>
                           </div>
                           {/* The pathway */}
                           <div style={{ display: "flex", alignItems: "flex-start", overflowX: "auto", paddingTop: 2 }}>
@@ -20986,6 +21040,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             <Node icon={fin.icon} iconColor={fin.iconColor} bg={fin.bg} label="Final eval" sub={fin.sub} subColor={fin.subColor} current={cur === "finaleval"} />
                             <Node icon="🏆" iconColor={st === "passed" ? "#fff" : "#c4b5fd"} bg={st === "passed" ? "#16a34a" : "#f3f4f6"} label="Passed" sub={st === "passed" ? "passed" : "goal"} subColor={st === "passed" ? "#16a34a" : "#9ca3af"} current={cur === "passed"} />
                           </div>
+                          {/* Day editor — opened by the ✏️ pencil above. Edit the
+                              count and the exact dates she was in. */}
+                          {trialDayEditOpen.has(r._id) && dayEditorPanel(r, "ov")}
                         </div>
                       );
                     })}
@@ -21107,61 +21164,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 </button>
                               </div>
 
-                              {/* Expanded View: kiosk-day correction + attendance history */}
-                              {expandedTrialCards.has(r._id) && (
-                                <div style={{ marginTop: 10, borderTop: "1px solid #e5e7eb", paddingTop: 10 }}>
-                                  {/* Correct the completed-day count when the kiosk missed check-ins */}
-                                  <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "9px 10px", marginBottom: 10 }}>
-                                    <div style={{ fontSize: 11, fontWeight: 800, color: "#92400e", marginBottom: 4 }}>🔧 Correct trial-day count</div>
-                                    <div style={{ fontSize: 10, color: "#92400e", marginBottom: 8, lineHeight: 1.45 }}>Kiosk missed some check-ins? Set the real number of completed trial days — this rewrites the check-in log to match so the count and evaluations line up.</div>
-                                    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                                      <button onClick={() => setCompletedDays(r, workedDaysOf(r) - 1)} title="One day fewer" style={{ width: 26, height: 28, borderRadius: 6, border: "1px solid #fcd34d", background: "#fff", color: "#92400e", cursor: "pointer", fontWeight: 800, fontSize: 13 }}>−</button>
-                                      <input key={"daycorr-" + r._id + "-" + workedDaysOf(r)} id={"daycorr-" + r._id} type="number" min="0" max="10" defaultValue={workedDaysOf(r)} style={{ width: 50, padding: "5px 6px", border: "1px solid #fcd34d", borderRadius: 6, fontSize: 13, fontFamily: "inherit", textAlign: "center", boxSizing: "border-box" }} />
-                                      <span style={{ fontSize: 10, color: "#92400e", fontWeight: 700 }}>/ 10</span>
-                                      <button onClick={() => setCompletedDays(r, workedDaysOf(r) + 1)} title="One day more" style={{ width: 26, height: 28, borderRadius: 6, border: "1px solid #fcd34d", background: "#fff", color: "#92400e", cursor: "pointer", fontWeight: 800, fontSize: 13 }}>+</button>
-                                      <button onClick={() => { const el = document.getElementById("daycorr-" + r._id); setCompletedDays(r, el ? el.value : workedDaysOf(r)); }} style={{ marginLeft: "auto", padding: "5px 14px", borderRadius: 6, border: "none", background: "#d97706", color: "#fff", cursor: "pointer", fontWeight: 800, fontSize: 12 }}>Set</button>
-                                    </div>
-                                  </div>
-                                  <div style={{ fontSize: 11, fontWeight: 800, color: "#111827", marginBottom: 2 }}>📅 Set the exact days she was in</div>
-                                  <div style={{ fontSize: 10, color: "#6b7280", marginBottom: 8, lineHeight: 1.45 }}>Tick each day she was actually in store and how — use this when the kiosk didn’t check her in properly. Worked & Late count as paid trial days; Absent does not.</div>
-                                  {!r.startDate && <div style={{ fontSize: 11, color: "#b45309", marginBottom: 8 }}>Set a trial start date first (▶ Start in-store trial) to list her trial days.</div>}
-                                  {(() => {
-                                    const ci = r.checkins || {};
-                                    const planned = trialWorkingDates(r.startDate, 10);
-                                    const plannedSet = new Set(planned);
-                                    const allDates = Array.from(new Set([...planned, ...Object.keys(ci)])).sort();
-                                    const wkd = d => new Date(d + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "short" });
-                                    const opts = [["on", "Worked", "#16a34a"], ["late", "Late", "#d97706"], ["absent", "Absent", "#dc2626"]];
-                                    return (
-                                      <>
-                                        <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid #f3f4f6", borderRadius: 8 }}>
-                                          {allDates.length === 0 && <div style={{ fontSize: 11, color: "#9ca3af", textAlign: "center", padding: "10px 0" }}>No trial days yet.</div>}
-                                          {allDates.map(date => {
-                                            const cur = ci[date];
-                                            const offPlan = !plannedSet.has(date);
-                                            return (
-                                              <div key={date} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, padding: "5px 8px", borderBottom: "1px solid #f3f4f6", flexWrap: "wrap" }}>
-                                                <span style={{ fontSize: 11, color: "#374151", fontWeight: 600, whiteSpace: "nowrap" }}>{wkd(date)} {fmtDate(date)}{offPlan && <span style={{ marginLeft: 5, fontSize: 8, fontWeight: 800, color: "#9ca3af", background: "#f3f4f6", borderRadius: 3, padding: "0 4px" }}>OFF-PLAN</span>}</span>
-                                                <span style={{ display: "flex", gap: 3, alignItems: "center" }}>
-                                                  {opts.map(([st, lbl, col]) => {
-                                                    const on = cur === st;
-                                                    return <button key={st} onClick={() => setCheckinStatus(r, date, on ? null : st)} title={lbl} style={{ padding: "3px 8px", borderRadius: 5, border: "1px solid " + (on ? col : "#e5e7eb"), background: on ? col : "#fff", color: on ? "#fff" : "#6b7280", cursor: "pointer", fontSize: 10, fontWeight: 800 }}>{lbl}</button>;
-                                                  })}
-                                                  {cur && <button onClick={() => setCheckinStatus(r, date, null)} title="Clear this day" style={{ background: "none", border: "none", color: "#d1d5db", cursor: "pointer", fontSize: 12, lineHeight: 1, padding: "0 2px" }}>✕</button>}
-                                                </span>
-                                              </div>
-                                            );
-                                          })}
-                                        </div>
-                                        <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 8 }}>
-                                          <input type="date" id={"addday-" + r._id} style={{ flex: 1, minWidth: 0, padding: "5px 6px", border: "1px solid #e5e7eb", borderRadius: 6, fontSize: 12, fontFamily: "inherit" }} />
-                                          <button onClick={() => { const el = document.getElementById("addday-" + r._id); const d = el && el.value; if (!d) { alert("Pick a date first."); return; } setCheckinStatus(r, d, "on"); if (el) el.value = ""; }} style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: "#16a34a", color: "#fff", cursor: "pointer", fontWeight: 800, fontSize: 11, whiteSpace: "nowrap" }}>+ Add a day</button>
-                                        </div>
-                                      </>
-                                    );
-                                  })()}
-                                </div>
-                              )}
+                              {/* Expanded View: day editor (count + exact dates) */}
+                              {expandedTrialCards.has(r._id) && dayEditorPanel(r, "kb")}
                               {/* Completed evaluations — the real form the manager
                                   filled on the kiosk, kept here for HR reference. */}
                               {(() => {
