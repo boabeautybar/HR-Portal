@@ -12033,7 +12033,7 @@ function useIsMobile(bp) {
 // Attendance comes from the kiosk audit log (signed-off days only); openings
 // from the explicit store-open records, falling back to the earliest manager
 // clock-in; extras from approved extra-day requests.
-function StoreReportsTab({ extraDayRequests }) {
+function StoreReportsTab({ extraDayRequests, managers }) {
   const [days, setDays] = React.useState(30);
   const [loading, setLoading] = React.useState(true);
   const [err, setErr] = React.useState(null);
@@ -12060,12 +12060,13 @@ function StoreReportsTab({ extraDayRequests }) {
       for (let i = 0; i < d; i++) { const x = new Date(); x.setHours(12, 0, 0, 0); x.setDate(x.getDate() - i); dayList.push(ymdOf(x)); }
       const sinceYmd = dayList[dayList.length - 1];
 
-      const [checkins, openingArrays, mgrIns, extrasRaw] = await Promise.all([
+      const [checkins, openingArrays, mgrIns, extrasRaw, mgrStatuses] = await Promise.all([
         window.BOA_DB.listRecentKioskCheckins ? window.BOA_DB.listRecentKioskCheckins(d, branches).catch(() => []) : Promise.resolve([]),
         Promise.all(dayList.map(y => (window.BOA_DB.listStoreOpenings ? window.BOA_DB.listStoreOpenings(y).catch(() => []) : Promise.resolve([])))),
         window.BOA_DB.listRecentManagerClockins ? window.BOA_DB.listRecentManagerClockins(d).catch(() => []) : Promise.resolve([]),
         (extraDayRequests && extraDayRequests.length) ? Promise.resolve(extraDayRequests)
-          : (window.BOA_DB.loadExtraDayRequests ? window.BOA_DB.loadExtraDayRequests().catch(() => []) : Promise.resolve([]))
+          : (window.BOA_DB.loadExtraDayRequests ? window.BOA_DB.loadExtraDayRequests().catch(() => []) : Promise.resolve([])),
+        window.BOA_DB.loadManagerDayStatuses ? window.BOA_DB.loadManagerDayStatuses(d).catch(() => []) : Promise.resolve([])
       ]);
 
       // ── 1. Attendance — final signed-off status per (branch, ec, day) ──
@@ -12127,10 +12128,43 @@ function StoreReportsTab({ extraDayRequests }) {
       });
       const extras = Object.values(eByEc).sort((a, b) => b.count - a.count || (a.name || "").localeCompare(b.name || ""));
 
-      setData({ attendance, openings, extras });
+      // ── 4. Manager attendance by store ──
+      // Worked days come from manager clock-ins; absences from manager_day_status
+      // (sick / FRL / absent / no-show — the same set, and again no leave types).
+      // Both are attributed to the manager's home store.
+      const mgrById = {};
+      (managers || []).forEach(m => { if (m && m.id != null) mgrById[String(m.id)] = m; });
+      const mByBranch = {};
+      const ensureMB = (branch) => mByBranch[branch] || (mByBranch[branch] = { branch, worked: 0, sick: 0, frl: 0, absent: 0, no: 0 });
+      const workedSeen = {};
+      (mgrIns || []).forEach(r => {
+        if (!r || r.type !== "in" || !r.ts) return;
+        const sid = String(r.staff_id || (r.staff && r.staff.id) || "");
+        const branch = (mgrById[sid] && mgrById[sid].branch) || (r.staff && r.staff.branch) || r.branch;
+        const y = saYmd(r.ts);
+        if (!sid || !branch || !y) return;
+        const key = sid + "|" + y; if (workedSeen[key]) return; workedSeen[key] = true;
+        ensureMB(branch).worked++;
+      });
+      (mgrStatuses || []).forEach(r => {
+        if (!r || !r.staff_id || !r.date || !r.status) return;
+        const m = mgrById[String(r.staff_id)]; const branch = m && m.branch; if (!branch) return;
+        const b = ensureMB(branch);
+        if (r.status === "sick" || r.status === "sick_n") b.sick++;
+        else if (r.status === "frl") b.frl++;
+        else if (r.status === "absent") b.absent++;
+        else if (r.status === "no") b.no++;
+      });
+      const mgrAttendance = Object.values(mByBranch).map(b => {
+        const issues = b.sick + b.frl + b.absent + b.no;
+        const total = b.worked + issues;
+        return { ...b, issues, total, attendRate: total ? b.worked / total : 0 };
+      }).filter(b => b.total > 0).sort((a, b) => b.attendRate - a.attendRate || a.issues - b.issues || a.branch.localeCompare(b.branch));
+
+      setData({ attendance, openings, extras, mgrAttendance });
     } catch (e) { setErr(e && (e.message || String(e))); }
     finally { setLoading(false); }
-  }, [extraDayRequests]);
+  }, [extraDayRequests, managers]);
 
   React.useEffect(() => { load(days); }, [load, days]);
 
@@ -12179,6 +12213,30 @@ function StoreReportsTab({ extraDayRequests }) {
                 <div key={b.branch} style={{ ...rowS(false), gridTemplateColumns: "34px 1fr 80px 58px 58px 58px 64px", background: i < 3 ? "#FAF5FF" : "transparent", borderRadius: 8 }}>
                   <div style={rankCell}>{medal(i)}</div>
                   <div style={nameCell}>{b.branch}<span style={{ fontSize: 10, color: "#9ca3af", fontWeight: 500 }}> · {b.total} days</span></div>
+                  <div style={{ ...numCell, color: b.attendRate >= 0.95 ? "#16a34a" : b.attendRate >= 0.85 ? "#d97706" : "#dc2626" }}>{pct(b.attendRate)}</div>
+                  <div style={{ ...numCell, color: b.sick ? "#9a3412" : "#9ca3af" }}>{b.sick}</div>
+                  <div style={{ ...numCell, color: b.frl ? "#78350f" : "#9ca3af" }}>{b.frl}</div>
+                  <div style={{ ...numCell, color: b.absent ? "#dc2626" : "#9ca3af" }}>{b.absent}</div>
+                  <div style={{ ...numCell, color: b.no ? "#dc2626" : "#9ca3af" }}>{b.no}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* 1b. Manager attendance */}
+        <div style={card}>
+          <div style={cardHead}>👑 Best-attending managers by store</div>
+          <div style={cardSub}>Ranked by manager attendance rate — days managers clocked in vs. sick / FRL / absent / no-show recorded for them. Leave types are not counted.</div>
+          {(data.mgrAttendance || []).length === 0 ? <div style={{ fontSize: 12, color: "#9ca3af" }}>No manager clock-ins or absences in this window yet.</div> : (
+            <div>
+              <div style={{ ...rowS(true), gridTemplateColumns: "34px 1fr 80px 58px 58px 58px 64px" }}>
+                <div /><div style={{ ...headCell, textAlign: "left" }}>Store</div><div style={headCell}>Attend</div><div style={headCell}>Sick</div><div style={headCell}>FRL</div><div style={headCell}>Absent</div><div style={headCell}>No-show</div>
+              </div>
+              {data.mgrAttendance.map((b, i) => (
+                <div key={b.branch} style={{ ...rowS(false), gridTemplateColumns: "34px 1fr 80px 58px 58px 58px 64px", background: i < 3 ? "#FAF5FF" : "transparent", borderRadius: 8 }}>
+                  <div style={rankCell}>{medal(i)}</div>
+                  <div style={nameCell}>{b.branch}<span style={{ fontSize: 10, color: "#9ca3af", fontWeight: 500 }}> · {b.worked} worked</span></div>
                   <div style={{ ...numCell, color: b.attendRate >= 0.95 ? "#16a34a" : b.attendRate >= 0.85 ? "#d97706" : "#dc2626" }}>{pct(b.attendRate)}</div>
                   <div style={{ ...numCell, color: b.sick ? "#9a3412" : "#9ca3af" }}>{b.sick}</div>
                   <div style={{ ...numCell, color: b.frl ? "#78350f" : "#9ca3af" }}>{b.frl}</div>
@@ -28750,7 +28808,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       })()}
 
       {/* ── ACTIVITY LOG ── */}
-      {tab === "storeReports" && <StoreReportsTab extraDayRequests={extraDayRequests} />}
+      {tab === "storeReports" && <StoreReportsTab extraDayRequests={extraDayRequests} managers={managers} />}
 
       {tab === "activity" && (() => {
         const whoOpts = ["All", ...Array.from(new Set(activityRows.map(r => r.who).filter(Boolean)))];
