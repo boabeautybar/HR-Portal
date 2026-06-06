@@ -193,6 +193,8 @@
       setInterval(window.BOA_FLOWS.refreshCheckinNag, 60 * 1000);
       // Keep the "previous day's cash-up still owed" reminder live too.
       if (window.BOA_FLOWS.refreshCashupNag) setInterval(window.BOA_FLOWS.refreshCashupNag, 60 * 1000);
+      // Keep the urgent "evaluation due" banner live on the landing.
+      if (window.BOA_FLOWS.refreshEvalNag) setInterval(function () { if (document.getElementById("eval-due-slot")) window.BOA_FLOWS.refreshEvalNag(); }, 60 * 1000);
     }
 
     // ── Store-open gate ─────────────────────────────────────────
@@ -627,6 +629,10 @@
       '<div class="hero-brand">' + esc(cfg.branchDisplayName || cfg.branchName || "BOA Check-in") + ' · Manager</div>' +
       '<div class="hero-title">What would you like to do?</div>' +
       '</div>' +
+      // URGENT pink-neon banner when a trial tech is due her Week 1 / Final
+      // evaluation — populated async by BOA_FLOWS.refreshEvalNag so managers
+      // see it the moment they open the tablet, not only inside check-in.
+      '<div id="eval-due-slot"></div>' +
       // Big blinking warning when today's nail-tech check-in hasn't been
       // submitted yet (and it's past 10:30) — populated async below.
       '<div id="checkin-nag-slot"></div>' +
@@ -641,9 +647,9 @@
       // catches a manager who walks in, opens the tablet, and stops at
       // the landing. Populated async by loadMgrClockinNagIntoPanel.
       '<div id="mgr-clockin-nag-slot" style="display:none"></div>' +
-      // Calm "on emergency leave today · no action required" panel — populated
-      // async by loadOnLeaveTodayIntoPanel.
-      '<div id="mgr-on-leave-slot" style="display:none"></div>' +
+      // (Removed the "on emergency leave today" home panel — a tech on leave
+      // already shows greyed out under Nail Tech Check-in, so no need to repeat
+      // it big on the landing.)
       '<div class="tile-grid tile-grid-4">' +
       '<button class="tile tile-big" id="tile-nailtech" type="button">' +
       '<div class="tile-icon">✍️</div>' +
@@ -674,8 +680,7 @@
     );
     loadKioskRemindersIntoPanel();
     loadMgrClockinNagIntoPanel();
-    loadOnLeaveTodayIntoPanel();
-    if (window.BOA_FLOWS) { window.BOA_FLOWS.refreshCheckinNag(); window.BOA_FLOWS.refreshCashupNag(); }
+    if (window.BOA_FLOWS) { window.BOA_FLOWS.refreshEvalNag(); window.BOA_FLOWS.refreshCheckinNag(); window.BOA_FLOWS.refreshCashupNag(); }
     document.getElementById("tile-nailtech").onclick = function () {
       if (window.BOA_FLOWS) window.BOA_FLOWS.renderCheckin();
     };
