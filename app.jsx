@@ -12161,7 +12161,18 @@ function StoreReportsTab({ extraDayRequests, managers }) {
         return { ...b, issues, total, attendRate: total ? b.worked / total : 0 };
       }).filter(b => b.total > 0).sort((a, b) => b.attendRate - a.attendRate || a.issues - b.issues || a.branch.localeCompare(b.branch));
 
-      setData({ attendance, openings, extras, mgrAttendance });
+      // ── 1c. Combined — nail techs + managers per store ──
+      const combo = {};
+      const ensureC = (branch) => combo[branch] || (combo[branch] = { branch, worked: 0, sick: 0, frl: 0, absent: 0, no: 0 });
+      attendance.forEach(b => { const c = ensureC(b.branch); c.worked += b.present; c.sick += b.sick; c.frl += b.frl; c.absent += b.absent; c.no += b.no; });
+      mgrAttendance.forEach(b => { const c = ensureC(b.branch); c.worked += b.worked; c.sick += b.sick; c.frl += b.frl; c.absent += b.absent; c.no += b.no; });
+      const combined = Object.values(combo).map(b => {
+        const issues = b.sick + b.frl + b.absent + b.no;
+        const total = b.worked + issues;
+        return { ...b, issues, total, attendRate: total ? b.worked / total : 0 };
+      }).filter(b => b.total > 0).sort((a, b) => b.attendRate - a.attendRate || a.issues - b.issues || a.branch.localeCompare(b.branch));
+
+      setData({ combined, attendance, openings, extras, mgrAttendance });
     } catch (e) { setErr(e && (e.message || String(e))); }
     finally { setLoading(false); }
   }, [extraDayRequests, managers]);
@@ -12178,6 +12189,32 @@ function StoreReportsTab({ extraDayRequests, managers }) {
   const nameCell = { fontSize: 13, fontWeight: 700, color: "#111827", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
   const headCell = { fontSize: 9.5, fontWeight: 800, color: "#9d6a82", letterSpacing: "0.05em", textTransform: "uppercase", textAlign: "right" };
   const numCell = { fontSize: 13, fontWeight: 800, textAlign: "right" };
+
+  // Shared attendance-ranking table (used for combined / techs / managers).
+  const attCard = (title, sub, rows, noteFor, emptyMsg) => (
+    <div style={card}>
+      <div style={cardHead}>{title}</div>
+      <div style={cardSub}>{sub}</div>
+      {(!rows || rows.length === 0) ? <div style={{ fontSize: 12, color: "#9ca3af" }}>{emptyMsg || "Not enough data in this window yet."}</div> : (
+        <div>
+          <div style={{ ...rowS(true), gridTemplateColumns: "34px 1fr 80px 58px 58px 58px 64px" }}>
+            <div /><div style={{ ...headCell, textAlign: "left" }}>Store</div><div style={headCell}>Attend</div><div style={headCell}>Sick</div><div style={headCell}>FRL</div><div style={headCell}>Absent</div><div style={headCell}>No-show</div>
+          </div>
+          {rows.map((b, i) => (
+            <div key={b.branch} style={{ ...rowS(false), gridTemplateColumns: "34px 1fr 80px 58px 58px 58px 64px", background: i < 3 ? "#FAF5FF" : "transparent", borderRadius: 8 }}>
+              <div style={rankCell}>{medal(i)}</div>
+              <div style={nameCell}>{b.branch}<span style={{ fontSize: 10, color: "#9ca3af", fontWeight: 500 }}> · {noteFor(b)}</span></div>
+              <div style={{ ...numCell, color: b.attendRate >= 0.95 ? "#16a34a" : b.attendRate >= 0.85 ? "#d97706" : "#dc2626" }}>{pct(b.attendRate)}</div>
+              <div style={{ ...numCell, color: b.sick ? "#9a3412" : "#9ca3af" }}>{b.sick}</div>
+              <div style={{ ...numCell, color: b.frl ? "#78350f" : "#9ca3af" }}>{b.frl}</div>
+              <div style={{ ...numCell, color: b.absent ? "#dc2626" : "#9ca3af" }}>{b.absent}</div>
+              <div style={{ ...numCell, color: b.no ? "#dc2626" : "#9ca3af" }}>{b.no}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div style={{ padding: "0 24px 40px" }}>
@@ -12200,53 +12237,14 @@ function StoreReportsTab({ extraDayRequests, managers }) {
       {loading && !data && <div style={{ ...card, color: "#9d6a82" }}>Crunching the numbers across all stores…</div>}
 
       {data && (<>
-        {/* 1. Attendance */}
-        <div style={card}>
-          <div style={cardHead}>📋 Best attendance by store</div>
-          <div style={cardSub}>Ranked by attendance rate (days worked vs. absences). Only sick, FRL, absent and no-show count against a store — annual & emergency leave, maternity, public holidays and terminated days are ignored.</div>
-          {data.attendance.length === 0 ? <div style={{ fontSize: 12, color: "#9ca3af" }}>No signed-off check-ins in this window yet.</div> : (
-            <div>
-              <div style={{ ...rowS(true), gridTemplateColumns: "34px 1fr 80px 58px 58px 58px 64px" }}>
-                <div /><div style={{ ...headCell, textAlign: "left" }}>Store</div><div style={headCell}>Attend</div><div style={headCell}>Sick</div><div style={headCell}>FRL</div><div style={headCell}>Absent</div><div style={headCell}>No-show</div>
-              </div>
-              {data.attendance.map((b, i) => (
-                <div key={b.branch} style={{ ...rowS(false), gridTemplateColumns: "34px 1fr 80px 58px 58px 58px 64px", background: i < 3 ? "#FAF5FF" : "transparent", borderRadius: 8 }}>
-                  <div style={rankCell}>{medal(i)}</div>
-                  <div style={nameCell}>{b.branch}<span style={{ fontSize: 10, color: "#9ca3af", fontWeight: 500 }}> · {b.total} days</span></div>
-                  <div style={{ ...numCell, color: b.attendRate >= 0.95 ? "#16a34a" : b.attendRate >= 0.85 ? "#d97706" : "#dc2626" }}>{pct(b.attendRate)}</div>
-                  <div style={{ ...numCell, color: b.sick ? "#9a3412" : "#9ca3af" }}>{b.sick}</div>
-                  <div style={{ ...numCell, color: b.frl ? "#78350f" : "#9ca3af" }}>{b.frl}</div>
-                  <div style={{ ...numCell, color: b.absent ? "#dc2626" : "#9ca3af" }}>{b.absent}</div>
-                  <div style={{ ...numCell, color: b.no ? "#dc2626" : "#9ca3af" }}>{b.no}</div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        {/* 1a. Combined — techs + managers */}
+        {attCard("🏆 Best attendance — all staff", "Nail techs and managers combined, per store. Ranked by attendance rate (days worked vs. sick / FRL / absent / no-show). Leave, maternity, public holidays and terminated days are ignored.", data.combined, b => b.total + " staff-days", "Not enough attendance data in this window yet.")}
 
-        {/* 1b. Manager attendance */}
-        <div style={card}>
-          <div style={cardHead}>👑 Best-attending managers by store</div>
-          <div style={cardSub}>Ranked by manager attendance rate — days managers clocked in vs. sick / FRL / absent / no-show recorded for them. Leave types are not counted.</div>
-          {(data.mgrAttendance || []).length === 0 ? <div style={{ fontSize: 12, color: "#9ca3af" }}>No manager clock-ins or absences in this window yet.</div> : (
-            <div>
-              <div style={{ ...rowS(true), gridTemplateColumns: "34px 1fr 80px 58px 58px 58px 64px" }}>
-                <div /><div style={{ ...headCell, textAlign: "left" }}>Store</div><div style={headCell}>Attend</div><div style={headCell}>Sick</div><div style={headCell}>FRL</div><div style={headCell}>Absent</div><div style={headCell}>No-show</div>
-              </div>
-              {data.mgrAttendance.map((b, i) => (
-                <div key={b.branch} style={{ ...rowS(false), gridTemplateColumns: "34px 1fr 80px 58px 58px 58px 64px", background: i < 3 ? "#FAF5FF" : "transparent", borderRadius: 8 }}>
-                  <div style={rankCell}>{medal(i)}</div>
-                  <div style={nameCell}>{b.branch}<span style={{ fontSize: 10, color: "#9ca3af", fontWeight: 500 }}> · {b.worked} worked</span></div>
-                  <div style={{ ...numCell, color: b.attendRate >= 0.95 ? "#16a34a" : b.attendRate >= 0.85 ? "#d97706" : "#dc2626" }}>{pct(b.attendRate)}</div>
-                  <div style={{ ...numCell, color: b.sick ? "#9a3412" : "#9ca3af" }}>{b.sick}</div>
-                  <div style={{ ...numCell, color: b.frl ? "#78350f" : "#9ca3af" }}>{b.frl}</div>
-                  <div style={{ ...numCell, color: b.absent ? "#dc2626" : "#9ca3af" }}>{b.absent}</div>
-                  <div style={{ ...numCell, color: b.no ? "#dc2626" : "#9ca3af" }}>{b.no}</div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        {/* 1b. Nail techs */}
+        {attCard("💅 Best attendance — Nail Techs", "Nail techs only, from signed-off kiosk check-ins. Only sick, FRL, absent and no-show count against a store.", data.attendance, b => b.total + " days", "No signed-off nail-tech check-ins in this window yet.")}
+
+        {/* 1c. Managers */}
+        {attCard("👑 Best attendance — Managers", "Managers only — days clocked in vs. sick / FRL / absent / no-show recorded for them.", data.mgrAttendance, b => b.worked + " worked", "No manager clock-ins or absences in this window yet.")}
 
         {/* 2. Openings */}
         <div style={card}>
