@@ -12075,18 +12075,26 @@ function StoreReportsTab({ extraDayRequests }) {
         const k = e.branch + "|" + e.ec + "|" + e.ymd;
         if (!final[k] || String(e.ts) > String(final[k].ts)) final[k] = e;
       });
+      // We only care about reliability: a day worked (present) vs. the four
+      // absence types — sick, FRL, absent and no-show. Annual / emergency leave,
+      // maternity, public holidays, terminated and off days are NOT counted at
+      // all (neither for nor against a store).
       const aByBranch = {};
       Object.values(final).forEach(e => {
-        const b = aByBranch[e.branch] || (aByBranch[e.branch] = { branch: e.branch, on: 0, late: 0, absent: 0 });
-        if (e.status === "on") b.on++;
-        else if (e.status === "late") b.late++;
-        else if (e.status === "absent" || e.status === "no") b.absent++;
-        // everything else (excused leave, off, ext/trial/swap) is neutral
+        const b = aByBranch[e.branch] || (aByBranch[e.branch] = { branch: e.branch, present: 0, sick: 0, frl: 0, absent: 0, no: 0 });
+        const s = e.status;
+        if (s === "on" || s === "late" || s === "ext" || s === "trial" || s === "swap_i") b.present++;
+        else if (s === "sick" || s === "sick_n") b.sick++;
+        else if (s === "frl") b.frl++;
+        else if (s === "absent") b.absent++;
+        else if (s === "no") b.no++;
+        // al / el / mat / ph / term / off / swap_o / unpaid → ignored
       });
       const attendance = Object.values(aByBranch).map(b => {
-        const total = b.on + b.late + b.absent;
-        return { ...b, total, onTimeRate: total ? b.on / total : 0, attendRate: total ? (b.on + b.late) / total : 0 };
-      }).filter(b => b.total > 0).sort((a, b) => b.onTimeRate - a.onTimeRate || a.absent - b.absent || a.branch.localeCompare(b.branch));
+        const issues = b.sick + b.frl + b.absent + b.no;
+        const total = b.present + issues;
+        return { ...b, issues, total, attendRate: total ? b.present / total : 0 };
+      }).filter(b => b.total > 0).sort((a, b) => b.attendRate - a.attendRate || a.issues - b.issues || a.branch.localeCompare(b.branch));
 
       // ── 2. Openings — explicit store-open, else earliest manager clock-in ──
       const openByBranch = {}, seen = {};
@@ -12161,20 +12169,21 @@ function StoreReportsTab({ extraDayRequests }) {
         {/* 1. Attendance */}
         <div style={card}>
           <div style={cardHead}>📋 Best attendance by store</div>
-          <div style={cardSub}>Ranked by on-time rate across signed-off check-ins. Excused leave (sick with note, FRL, annual, public holidays) is not counted against a store.</div>
+          <div style={cardSub}>Ranked by attendance rate (days worked vs. absences). Only sick, FRL, absent and no-show count against a store — annual & emergency leave, maternity, public holidays and terminated days are ignored.</div>
           {data.attendance.length === 0 ? <div style={{ fontSize: 12, color: "#9ca3af" }}>No signed-off check-ins in this window yet.</div> : (
             <div>
-              <div style={{ ...rowS(true), gridTemplateColumns: "34px 1fr 90px 70px 70px 70px" }}>
-                <div /><div style={{ ...headCell, textAlign: "left" }}>Store</div><div style={headCell}>On-time</div><div style={headCell}>On</div><div style={headCell}>Late</div><div style={headCell}>Absent</div>
+              <div style={{ ...rowS(true), gridTemplateColumns: "34px 1fr 80px 58px 58px 58px 64px" }}>
+                <div /><div style={{ ...headCell, textAlign: "left" }}>Store</div><div style={headCell}>Attend</div><div style={headCell}>Sick</div><div style={headCell}>FRL</div><div style={headCell}>Absent</div><div style={headCell}>No-show</div>
               </div>
               {data.attendance.map((b, i) => (
-                <div key={b.branch} style={{ ...rowS(false), gridTemplateColumns: "34px 1fr 90px 70px 70px 70px", background: i < 3 ? "#FAF5FF" : "transparent", borderRadius: 8 }}>
+                <div key={b.branch} style={{ ...rowS(false), gridTemplateColumns: "34px 1fr 80px 58px 58px 58px 64px", background: i < 3 ? "#FAF5FF" : "transparent", borderRadius: 8 }}>
                   <div style={rankCell}>{medal(i)}</div>
                   <div style={nameCell}>{b.branch}<span style={{ fontSize: 10, color: "#9ca3af", fontWeight: 500 }}> · {b.total} days</span></div>
-                  <div style={{ ...numCell, color: b.onTimeRate >= 0.9 ? "#16a34a" : b.onTimeRate >= 0.75 ? "#d97706" : "#dc2626" }}>{pct(b.onTimeRate)}</div>
-                  <div style={{ ...numCell, color: "#15803d" }}>{b.on}</div>
-                  <div style={{ ...numCell, color: "#92400e" }}>{b.late}</div>
+                  <div style={{ ...numCell, color: b.attendRate >= 0.95 ? "#16a34a" : b.attendRate >= 0.85 ? "#d97706" : "#dc2626" }}>{pct(b.attendRate)}</div>
+                  <div style={{ ...numCell, color: b.sick ? "#9a3412" : "#9ca3af" }}>{b.sick}</div>
+                  <div style={{ ...numCell, color: b.frl ? "#78350f" : "#9ca3af" }}>{b.frl}</div>
                   <div style={{ ...numCell, color: b.absent ? "#dc2626" : "#9ca3af" }}>{b.absent}</div>
+                  <div style={{ ...numCell, color: b.no ? "#dc2626" : "#9ca3af" }}>{b.no}</div>
                 </div>
               ))}
             </div>
