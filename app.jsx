@@ -21449,13 +21449,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             {(() => {
               const toggle = () => setShowTrialWorkflow(v => { const nv = !v; try { localStorage.setItem("boa_trial_workflow_hidden", nv ? "0" : "1"); } catch (_e) { } return nv; });
               const STEPS = [
-                { icon: "🎨", title: "Interview & skills assessment", bg: "#ede9fe", color: "#7c3aed", desc: "HR arranges an interview with the candidate and our trainer. The candidate completes a white gel-polish application, which the trainer documents with photographs and uses to determine progression to induction." },
-                { icon: "🎓", title: "Induction & training (~4 days)", bg: "#cffafe", color: "#0891b2", desc: "Over approximately four days, the trainer covers BOA treatments and procedures and assesses the candidate's readiness for the salon floor, screening out unsuitable candidates. The trainer also identifies appropriate stores and confirms availability with recruitment." },
-                { icon: "📦", title: "Kit, uniform & trial agreement", bg: "#fef3c7", color: "#d97706", desc: "On the final induction day, the trainer orders the kit and uniform. The nail technician signs the two-week trial agreement and submits all required documentation herself before commencing in store — typically the following Monday." },
-                { icon: "🏪", title: "In-store trial · Week 1", bg: "#d1fae5", color: "#059669", desc: "The candidate completes five trial days in store, after which the store conducts the Week 1 performance evaluation." },
-                { icon: "📋", title: "In-store trial · Week 2", bg: "#fce7f3", color: "#BE185D", desc: "Upon a successful Week 1 evaluation, the candidate completes a further five trial days, followed by the final evaluation." },
-                { icon: "🌱", title: "Onboarding & Fresha activation", bg: "#dcfce7", color: "#16a34a", desc: "Once the final evaluation is passed, HR completes the onboarding form, which initiates the candidate's activation on Fresha." },
-                { icon: "✍️", title: "Permanent appointment", bg: "#e0e7ff", color: "#4338ca", desc: "The candidate signs a permanent employment contract before returning to store, joining BOA as a permanent nail technician." }
+                { icon: "🎨", title: "Interview & assessment", bg: "#ede9fe", color: "#7c3aed", desc: "Interview with HR & trainer; white gel-polish test, photographed. Trainer decides who proceeds to induction." },
+                { icon: "🎓", title: "Induction (~4 days)", bg: "#cffafe", color: "#0891b2", desc: "Trainer teaches BOA treatments & procedures, assesses floor-readiness, and confirms store fit & availability with recruitment." },
+                { icon: "📦", title: "Kit & trial agreement", bg: "#fef3c7", color: "#d97706", desc: "Trainer orders kit & uniform. The nail tech signs the 2-week trial agreement and submits all documents." },
+                { icon: "🏪", title: "In-store · Week 1", bg: "#d1fae5", color: "#059669", desc: "5 trial days in store, then the store completes the Week 1 evaluation." },
+                { icon: "📋", title: "In-store · Week 2", bg: "#fce7f3", color: "#BE185D", desc: "If passed, 5 more trial days, then the final evaluation." },
+                { icon: "🌱", title: "Onboarding & Fresha", bg: "#dcfce7", color: "#16a34a", desc: "On passing, HR completes the onboarding form, which opens the tech on Fresha." },
+                { icon: "✍️", title: "Permanent contract", bg: "#e0e7ff", color: "#4338ca", desc: "Signs the permanent contract before returning to store as a permanent nail tech." }
               ];
               return (
                 <div style={{ background: "#fff", borderRadius: 16, border: "1px solid #ede9fe", padding: "16px 18px", marginBottom: 24, boxShadow: "0 2px 10px rgba(124,58,237,0.05)" }}>
@@ -21464,16 +21464,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <button onClick={toggle} style={{ background: "#f5f3ff", color: "#6b21a8", border: "1px solid #ddd6fe", borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 12, fontWeight: 800 }}>{showTrialWorkflow ? "Hide ▲" : "Show ▼"}</button>
                   </div>
                   {showTrialWorkflow && (
-                    <div style={{ display: "flex", alignItems: "flex-start", overflowX: "auto", marginTop: 16, paddingBottom: 8 }}>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 14 }}>
                       {STEPS.map((s, i) => (
-                        <React.Fragment key={i}>
-                          <div style={{ flex: "0 0 188px", display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", padding: "0 4px" }}>
-                            <div style={{ width: 46, height: 46, borderRadius: 99, background: s.bg, color: s.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 21, border: "2px solid " + s.color, marginBottom: 8 }}>{s.icon}</div>
-                            <div style={{ fontSize: 12.5, fontWeight: 800, color: "#374151", marginBottom: 5, lineHeight: 1.2 }}>{i + 1}. {s.title}</div>
-                            <div style={{ fontSize: 11, color: "#6b7280", lineHeight: 1.5 }}>{s.desc}</div>
+                        <div key={i} style={{ flex: "1 1 150px", minWidth: 140, background: "#fafaff", border: "1px solid #f0ebff", borderRadius: 10, padding: "9px 10px" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 4 }}>
+                            <span style={{ width: 26, height: 26, borderRadius: 99, background: s.bg, color: s.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, flexShrink: 0 }}>{s.icon}</span>
+                            <span style={{ fontSize: 11.5, fontWeight: 800, color: "#374151", lineHeight: 1.15 }}>{i + 1}. {s.title}</span>
                           </div>
-                          {i < STEPS.length - 1 && <div style={{ flex: "0 0 22px", marginTop: 14, color: "#c4b5fd", fontSize: 20, fontWeight: 800, textAlign: "center" }}>→</div>}
-                        </React.Fragment>
+                          <div style={{ fontSize: 10.5, color: "#6b7280", lineHeight: 1.4 }}>{s.desc}</div>
+                        </div>
                       ))}
                     </div>
                   )}
