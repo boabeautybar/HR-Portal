@@ -21553,17 +21553,31 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <button onClick={toggle} style={{ background: "#f5f3ff", color: "#6b21a8", border: "1px solid #ddd6fe", borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 12, fontWeight: 800 }}>{showTrialWorkflow ? "Hide ▲" : "Show ▼"}</button>
                   </div>
                   {showTrialWorkflow && (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 14 }}>
-                      {STEPS.map((s, i) => (
-                        <div key={i} style={{ flex: "1 1 150px", minWidth: 140, background: "#fafaff", border: "1px solid #f0ebff", borderRadius: 10, padding: "9px 10px" }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 4 }}>
-                            <span style={{ width: 26, height: 26, borderRadius: 99, background: s.bg, color: s.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, flexShrink: 0 }}>{s.icon}</span>
-                            <span style={{ fontSize: 11.5, fontWeight: 800, color: "#374151", lineHeight: 1.15 }}>{i + 1}. {s.title}</span>
+                    <React.Fragment>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 14 }}>
+                        {STEPS.map((s, i) => (
+                          <div key={i} style={{ flex: "1 1 150px", minWidth: 140, background: "#fafaff", border: "1px solid #f0ebff", borderRadius: 10, padding: "9px 10px" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 4 }}>
+                              <span style={{ width: 26, height: 26, borderRadius: 99, background: s.bg, color: s.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, flexShrink: 0 }}>{s.icon}</span>
+                              <span style={{ fontSize: 11.5, fontWeight: 800, color: "#374151", lineHeight: 1.15 }}>{i + 1}. {s.title}</span>
+                            </div>
+                            <div style={{ fontSize: 10.5, color: "#6b7280", lineHeight: 1.4 }}>{s.desc}</div>
                           </div>
-                          <div style={{ fontSize: 10.5, color: "#6b7280", lineHeight: 1.4 }}>{s.desc}</div>
+                        ))}
+                      </div>
+                      {/* How trial-AM clock-in works across the two locations. */}
+                      {isAm && (
+                        <div style={{ marginTop: 12, background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: "11px 13px" }}>
+                          <div style={{ fontSize: 12, fontWeight: 800, color: "#92400e", marginBottom: 5 }}>⏱️ How clocking in works during the AM trial</div>
+                          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, color: "#7c5e10", lineHeight: 1.55 }}>
+                            <li><b>Store days</b> — she's checked in at the <b>store kiosk</b> → <i>Manager Clock-in</i> screen → the <b>⭐ Trial AMs</b> section (no PIN yet): tap <b>Worked</b>, <b>Late</b> or <b>Absent</b>.</li>
+                            <li><b>Head-office days</b> — there's no kiosk at head office, so the <b>trainer records these in the portal</b> on her card below (<b>📅 Set the exact days</b>, or <b>+ HO day</b>), tagged <b>HO</b>.</li>
+                            <li><b>Both</b> store and head-office days count as <b>paid trial days</b> (yellow) and show on the attendance sheet — store as <b>T</b>, head office as <b>HO</b>.</li>
+                            <li>If a trial day (Mon–Fri, excl. public holidays) passes with <b>no check-in</b> from either, it's flagged in the <b>⚠️ AM trial check-in missing</b> notice at the top for the trainer to confirm and record.</li>
+                          </ul>
                         </div>
-                      ))}
-                    </div>
+                      )}
+                    </React.Fragment>
                   )}
                 </div>
               );
