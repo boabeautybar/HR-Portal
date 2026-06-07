@@ -21669,6 +21669,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 {!failed && st !== "induction" && st !== "passed" && !heldMid && !heldFinal && (
                                   <button onClick={() => markFailed(r._id)} style={btn("#fff", "#991b1b", "1px solid #fca5a5")}>❌ Fail</button>
                                 )}
+                                {/* Owner-only test override — force a candidate to "passed"
+                                    (skipping evaluations) so onboarding can be tested. */}
+                                {currentUser?.isOwner && st !== "passed" && !failed && (
+                                  <button onClick={() => { if (window.confirm("⚡ TEST OVERRIDE\n\nForce-pass " + (r.name || "this candidate") + " without evaluations? This skips the trial checks and lets you test onboarding. Owner-only.")) persistTrial(trialList.map(x => x._id === r._id ? { ...x, status: "passed", forcedPassAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : x)); }} title="Owner only — force pass for testing onboarding" style={btn("#fff", "#6b21a8", "1px dashed #c4b5fd")}>⚡ Force pass (test)</button>
+                                )}
                               </div>
                             );
                           })()}
