@@ -13512,6 +13512,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [expandedTrialCards, setExpandedTrialCards] = useState(new Set()); // tracking expanded state for trial cards
   const [trialDayEditOpen, setTrialDayEditOpen] = useState(new Set());     // pathway cards whose day editor (✏️) is open
   const [trialDocsOpen, setTrialDocsOpen] = useState(new Set());           // cards whose documents checklist is open
+  const [evalFullView, setEvalFullView] = useState(null);                 // { ev, label, name } — full evaluation breakdown modal
   const [trialStartDraft, setTrialStartDraft] = useState(null); // { id, date } while HR is setting an in-store trial start date
   const [hrTasks, setHrTasks] = useState([]);         // HR Tasks (mocked for now)
   const [offList, setOffList] = useState([]);         // leaver records
@@ -21305,6 +21306,56 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         return (
           <div style={{ fontFamily: "'DM Sans', sans-serif", padding: "0 24px 40px 24px" }}>
+            {/* Full evaluation breakdown — opened by clicking a score on a card. */}
+            {evalFullView && (() => {
+              const ev = evalFullView.ev || {};
+              const scores = ev.scores || {};
+              const closeBtn = { background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 20, lineHeight: 1, padding: 0 };
+              return (
+                <div onClick={() => setEvalFullView(null)} style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.55)", zIndex: 100000, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", overflowY: "auto" }}>
+                  <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, maxWidth: 560, width: "100%", padding: "20px 22px", boxShadow: "0 24px 70px rgba(0,0,0,0.35)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+                      <div>
+                        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: "#7c3aed" }}>📋 {evalFullView.label}</div>
+                        <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>{evalFullView.name || ""} · by {ev.submittedBy || "—"}{ev.submittedAt ? " · " + fmtDate(String(ev.submittedAt).slice(0, 10)) : ""}</div>
+                      </div>
+                      <button onClick={() => setEvalFullView(null)} style={closeBtn}>✕</button>
+                    </div>
+                    <div style={{ background: ev.pass ? "#f0fdf4" : "#fff7ed", border: `1px solid ${ev.pass ? "#86efac" : "#fdba74"}`, borderRadius: 8, padding: "9px 12px", margin: "10px 0", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontWeight: 800, color: ev.pass ? "#166534" : "#9a3412" }}>{ev.pass ? "PASS ✓" : "BELOW PASS"}{ev.keyOk === false ? " · a Key Indicator < 3" : ""}</span>
+                      <span style={{ fontWeight: 800, fontSize: 17, color: "#5b21b6" }}>{ev.total}/{ev.max}</span>
+                    </div>
+                    {EVAL_SECTIONS.map(sec => {
+                      const subtotal = sec.items.reduce((a, it) => a + (Number(scores[it.k]) || 0), 0);
+                      return (
+                        <div key={sec.title} style={{ marginTop: 12 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 800, color: "#6b21a8", marginBottom: 2 }}>
+                            <span>{sec.title}</span><span style={{ color: "#9ca3af" }}>{subtotal}/{sec.max}</span>
+                          </div>
+                          {sec.items.map(it => {
+                            const v = Number(scores[it.k]) || 0;
+                            const low = it.key && v > 0 && v < 3;
+                            return (
+                              <div key={it.k} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "5px 0", borderTop: "1px solid #f3f4f6" }}>
+                                <span style={{ fontSize: 12, color: "#374151" }}>{it.label}{it.key && <span style={{ marginLeft: 5, fontSize: 8, fontWeight: 800, color: "#92400e", background: "#fef3c7", borderRadius: 3, padding: "0 4px" }}>KEY</span>}</span>
+                                <span style={{ display: "flex", gap: 3, flexShrink: 0 }}>
+                                  {[1, 2, 3, 4, 5].map(n => (
+                                    <span key={n} style={{ width: 18, height: 18, borderRadius: 4, fontSize: 10, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", background: n === v ? (low ? "#dc2626" : "#7c3aed") : "#f3f4f6", color: n === v ? "#fff" : "#d1d5db" }}>{n}</span>
+                                  ))}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })}
+                    {ev.notes && <div style={{ marginTop: 14, fontSize: 12, color: "#4b5563", fontStyle: "italic", background: "#f9fafb", borderRadius: 8, padding: "8px 10px" }}>“{ev.notes}”</div>}
+                    {ev.heldForHr && <div style={{ marginTop: 8, fontSize: 12, color: "#9a3412", fontWeight: 700 }}>⏳ Held for HR review</div>}
+                    {ev.hrOverride && <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>HR decision: {ev.hrOverride === "pass" ? "passed" : "failed"}</div>}
+                  </div>
+                </div>
+              );
+            })()}
             {/* Header */}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24, flexWrap: "wrap", gap: 16 }}>
               <div style={{ display: "flex", gap: 24, alignItems: "center", flexWrap: "wrap" }}>
@@ -21585,7 +21636,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                     <div key={label} style={{ background: ok ? "#f0fdf4" : "#fff7ed", border: `1px solid ${ok ? "#86efac" : "#fdba74"}`, borderRadius: 8, padding: "8px 10px", marginBottom: 8, fontSize: 11 }}>
                                       <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, color: ok ? "#166534" : "#9a3412" }}>
                                         <span>📋 {label}</span>
-                                        <span>{ev.total}/{ev.max} · {ok ? "PASS" : "BELOW PASS"}</span>
+                                        <button onClick={() => setEvalFullView({ ev, label, name: r.name })} title="See the full evaluation breakdown" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 800, color: ok ? "#166534" : "#9a3412", textDecoration: "underline dotted", textUnderlineOffset: 2 }}>{ev.total}/{ev.max} · {ok ? "PASS" : "BELOW PASS"} 🔍</button>
                                       </div>
                                       <div style={{ color: "#6b7280", marginTop: 2 }}>by {ev.submittedBy || "—"}{ev.submittedAt ? " · " + fmtDate(String(ev.submittedAt).slice(0, 10)) : ""}</div>
                                       {!ev.keyOk && <div style={{ color: "#b45309", marginTop: 2 }}>⚠ A Key Indicator scored below 3.</div>}
