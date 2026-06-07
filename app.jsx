@@ -22254,6 +22254,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             try { await window.BOA_DB.saveTrialPeriod(updatedTrial); } catch (e) { }
           }
 
+          // 2a. Carry the paid TRIAL DAYS onto the attendance sheet. Trial
+          // check-ins live on the trial record (under the trial id); once she's
+          // a real staff member they'd otherwise vanish from the payroll sheet.
+          // Trial days ARE paid and we need to see when she was in store, so we
+          // copy them into the attendance grid under her new employee code:
+          // worked (on / late) → the yellow "trial" day, absent → "absent".
+          // Grids are keyed by the start-month ym (attGridYmFor), day-of-month.
+          if (obForm._fromTrialId && roleType !== "manager") {
+            try {
+              const trialRec = (trialList || []).find(t => t._id === obForm._fromTrialId);
+              const ci = (trialRec && trialRec.checkins && typeof trialRec.checkins === "object" && !Array.isArray(trialRec.checkins)) ? trialRec.checkins : {};
+              const byYm = {};
+              Object.keys(ci).forEach(ymd => {
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return;
+                const code = (ci[ymd] === "on" || ci[ymd] === "late") ? "trial" : (ci[ymd] === "absent" ? "absent" : null);
+                if (!code) return;
+                const aym = attGridYmFor(ymd);
+                const dom = String(parseInt(ymd.slice(8, 10), 10));
+                (byYm[aym] = byYm[aym] || {})[dom] = code;
+              });
+              for (const aym of Object.keys(byYm)) {
+                const att = await window.BOA_DB.loadAttendance(obForm.branch, aym);
+                const grid = (att && att.grid) || {};
+                grid[ec] = Object.assign({}, grid[ec], byYm[aym]);
+                await window.BOA_DB.saveAttendance(obForm.branch, aym, grid);
+              }
+            } catch (e) { console.warn("trial-day attendance carry-over (continuing):", e); }
+          }
+
           // 2b. Auto-sync into the current schedule cycle. A freshly-onboarded
           // nail tech is now a schedule row but has no shifts yet — easy to
           // forget once the trial ends. If their start date falls within the
