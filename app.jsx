@@ -21449,18 +21449,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             {(() => {
               const toggle = () => setShowTrialWorkflow(v => { const nv = !v; try { localStorage.setItem("boa_trial_workflow_hidden", nv ? "0" : "1"); } catch (_e) { } return nv; });
               const STEPS = [
-                { icon: "🎨", title: "Interview & gel test", bg: "#ede9fe", color: "#7c3aed", desc: "HR books an interview with the candidate and our trainer. She paints white gel polish; the trainer submits photos and decides who goes into induction." },
-                { icon: "🎓", title: "Induction (~4 days)", bg: "#cffafe", color: "#0891b2", desc: "The trainer teaches BOA treatments & procedures and assesses if she's fit for the floor — filtering candidates further. The trainer also checks which stores suit her and confirms availability with recruitment." },
-                { icon: "📦", title: "Kit, uniform & 2-week contract", bg: "#fef3c7", color: "#d97706", desc: "On the last induction day the trainer orders her basket & uniform. She signs the 2-week trial contract and submits ALL paperwork before going into store — usually starting the following Monday." },
-                { icon: "🏪", title: "In-store · Week 1 (5 days)", bg: "#d1fae5", color: "#059669", desc: "She works 5 trial days in the store, then the store completes her Week 1 evaluation on the kiosk." },
-                { icon: "📋", title: "In-store · Week 2 (5 days)", bg: "#fce7f3", color: "#BE185D", desc: "If she passes, another 5 trial days in store, then the store completes the final evaluation." },
-                { icon: "🌱", title: "Onboarding & Fresha", bg: "#dcfce7", color: "#16a34a", desc: "Once she passes the final evaluation, HR completes the onboarding form — which triggers opening her on Fresha." },
-                { icon: "✍️", title: "Permanent contract", bg: "#e0e7ff", color: "#4338ca", desc: "She signs her permanent contract before returning to the store after the trial phase — now a permanent BOA nail tech." }
+                { icon: "🎨", title: "Interview & skills assessment", bg: "#ede9fe", color: "#7c3aed", desc: "HR arranges an interview with the candidate and our trainer. The candidate completes a white gel-polish application, which the trainer documents with photographs and uses to determine progression to induction." },
+                { icon: "🎓", title: "Induction & training (~4 days)", bg: "#cffafe", color: "#0891b2", desc: "Over approximately four days, the trainer covers BOA treatments and procedures and assesses the candidate's readiness for the salon floor, screening out unsuitable candidates. The trainer also identifies appropriate stores and confirms availability with recruitment." },
+                { icon: "📦", title: "Kit, uniform & trial agreement", bg: "#fef3c7", color: "#d97706", desc: "On the final induction day, the trainer orders the candidate's kit and uniform. The candidate signs the two-week trial agreement and submits all required documentation before commencing in store — typically the following Monday." },
+                { icon: "🏪", title: "In-store trial · Week 1", bg: "#d1fae5", color: "#059669", desc: "The candidate completes five trial days in store, after which the store conducts the Week 1 performance evaluation." },
+                { icon: "📋", title: "In-store trial · Week 2", bg: "#fce7f3", color: "#BE185D", desc: "Upon a successful Week 1 evaluation, the candidate completes a further five trial days, followed by the final evaluation." },
+                { icon: "🌱", title: "Onboarding & Fresha activation", bg: "#dcfce7", color: "#16a34a", desc: "Once the final evaluation is passed, HR completes the onboarding form, which initiates the candidate's activation on Fresha." },
+                { icon: "✍️", title: "Permanent appointment", bg: "#e0e7ff", color: "#4338ca", desc: "The candidate signs a permanent employment contract before returning to store, joining BOA as a permanent nail technician." }
               ];
               return (
                 <div style={{ background: "#fff", borderRadius: 16, border: "1px solid #ede9fe", padding: "16px 18px", marginBottom: 24, boxShadow: "0 2px 10px rgba(124,58,237,0.05)" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                    <div style={{ fontSize: 14, fontWeight: 800, color: "#6b21a8" }}>🗺️ How the nail-tech trial works — interview to permanent</div>
+                    <div style={{ fontSize: 14, fontWeight: 800, color: "#6b21a8" }}>🗺️ Nail Technician Trial Process — from interview to permanent appointment</div>
                     <button onClick={toggle} style={{ background: "#f5f3ff", color: "#6b21a8", border: "1px solid #ddd6fe", borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 12, fontWeight: 800 }}>{showTrialWorkflow ? "Hide ▲" : "Show ▼"}</button>
                   </div>
                   {showTrialWorkflow && (
