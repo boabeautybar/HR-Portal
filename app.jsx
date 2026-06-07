@@ -454,6 +454,80 @@ function _triggerDownload(filename, content, mime) {
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+// Fillable trial-evaluation modal — used in the HR portal for the AM Week-1
+// review that the trainers (HQ) complete. Mirrors the kiosk evaluation form:
+// score each criterion 1–5, with per-point guidance and a live tally. A pass
+// needs the form's pass mark AND every Key Indicator at/above its minimum.
+// `onSubmit({ scores, by, notes })` hands the raw form back to the caller,
+// which validates completeness, confirms, and persists/advances.
+function TrialEvalModal({ name, which, sections, max, keyMin, pass, onClose, onSubmit }) {
+  const [scores, setScores] = React.useState({});
+  const [by, setBy] = React.useState("");
+  const [notes, setNotes] = React.useState("");
+  const [guide, setGuide] = React.useState(false);
+  const [openK, setOpenK] = React.useState({});
+  let total = 0, answered = 0, count = 0, keyOk = true;
+  sections.forEach(sec => sec.items.forEach(it => { count++; const v = Number(scores[it.k]) || 0; if (v >= 1 && v <= 5) { total += v; answered++; if (it.key && v < keyMin) keyOk = false; } }));
+  const complete = answered === count;
+  const willPass = complete && total >= pass && keyOk;
+  const title = which === "final" ? "Final evaluation" : "Week 1 evaluation";
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.55)", zIndex: 100001, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", overflowY: "auto" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, maxWidth: 580, width: "100%", padding: "20px 22px", boxShadow: "0 24px 70px rgba(0,0,0,0.35)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: "#7c3aed" }}>📋 {title} — {name}</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 20, lineHeight: 1, padding: 0 }}>✕</button>
+        </div>
+        <div style={{ fontSize: 12, color: "#6b7280", margin: "6px 0 2px", lineHeight: 1.5 }}>Score each criterion 1 (poor) – 5 (excellent). A pass needs <b>{pass}/{max}</b> and every Key Indicator at <b>{keyMin}+</b>. The form is submitted to HR either way.</div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "6px 0" }}>
+          <button onClick={() => setGuide(g => !g)} style={{ border: "1px solid #ddd6fe", background: "#f5f3ff", color: "#6b21a8", borderRadius: 8, padding: "6px 11px", fontSize: 11.5, fontWeight: 800, cursor: "pointer" }}>{guide ? "ⓘ Hide guidance" : "ⓘ Show guidance for every point"}</button>
+        </div>
+        {sections.map(sec => {
+          const sub = sec.items.reduce((a, it) => a + (Number(scores[it.k]) || 0), 0);
+          return (
+            <div key={sec.title} style={{ marginTop: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 800, color: "#6b21a8" }}>
+                <span>{sec.title}</span><span style={{ color: "#9ca3af" }}>{sub}/{sec.max}</span>
+              </div>
+              {sec.items.map(it => {
+                const v = Number(scores[it.k]) || 0;
+                const show = guide || openK[it.k];
+                return (
+                  <div key={it.k} style={{ padding: "7px 0", borderTop: "1px solid #f3f4f6" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 12.5, fontWeight: 700, color: "#374151" }}>{it.label}</span>
+                      {it.key && <span style={{ background: "#fef3c7", color: "#92400e", borderRadius: 4, padding: "0 6px", fontSize: 9, fontWeight: 800 }}>Key · min {keyMin}</span>}
+                      {it.desc && <button onClick={() => setOpenK(o => ({ ...o, [it.k]: !o[it.k] }))} style={{ border: "1px solid #c4b5fd", background: show ? "#6b21a8" : "#ede9fe", color: show ? "#fff" : "#6b21a8", borderRadius: 99, padding: "2px 9px", fontSize: 10, fontWeight: 800, cursor: "pointer" }}>{show ? "Hide" : "Details"}</button>}
+                    </div>
+                    {it.desc && show && <div style={{ fontSize: 11.5, color: "#6b21a8", background: "#f5f3ff", border: "1px solid #ede9fe", borderRadius: 7, padding: "6px 9px", marginBottom: 7, lineHeight: 1.45 }}>{it.desc}</div>}
+                    <div style={{ display: "flex", gap: 5 }}>
+                      {[1, 2, 3, 4, 5].map(n => {
+                        const on = v === n;
+                        const low = it.key && on && n < keyMin;
+                        return <button key={n} onClick={() => setScores(s => ({ ...s, [it.k]: n }))} style={{ flex: 1, minWidth: 34, padding: "8px 0", borderRadius: 7, border: "1px solid " + (on ? (low ? "#dc2626" : "#7c3aed") : "#e5e7eb"), background: on ? (low ? "#dc2626" : "#7c3aed") : "#fff", color: on ? "#fff" : "#374151", fontWeight: 800, fontSize: 13, cursor: "pointer" }}>{n}</button>;
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+        <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", margin: "14px 0 4px" }}>Evaluator name</label>
+        <input value={by} onChange={e => setBy(e.target.value)} placeholder="Trainer / evaluator full name" style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 13, fontFamily: "inherit" }} />
+        <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", margin: "10px 0 4px" }}>Notes (optional)</label>
+        <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Anything HR should know" style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 13, fontFamily: "inherit", resize: "vertical" }} />
+        <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: willPass ? "#16a34a" : "#6b21a8" }}>Total: {total} / {max}{complete ? (willPass ? " · PASS ✓" : " · below pass — holds for HR") : " · score all " + count}</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={onClose} style={{ background: "#fff", color: "#6b7280", border: "1px solid #e5e7eb", borderRadius: 8, padding: "8px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Cancel</button>
+            <button onClick={() => onSubmit({ scores, by, notes })} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 800, cursor: "pointer" }}>Submit evaluation</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 // opts: { title, subtitle, columns:[{key, label, sub}], rows:[{label, sub, cells:{[key]:{code,text}}}],
 //         legend:[{code,label}], totals:[{key,value}], filenameBase, codeStyles:{[code]:{bg,fg}} }
 function exportScheduleCsv(opts) {
@@ -13525,7 +13599,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [trialDayEditOpen, setTrialDayEditOpen] = useState(new Set());     // pathway cards whose day editor (✏️) is open
   const [showTrialWorkflow, setShowTrialWorkflow] = useState(() => { try { return localStorage.getItem("boa_trial_workflow_hidden") !== "1"; } catch (_e) { return true; } });
   const [trialDocsOpen, setTrialDocsOpen] = useState(new Set());           // cards whose documents checklist is open
-  const [evalFullView, setEvalFullView] = useState(null);                 // { ev, label, name } — full evaluation breakdown modal
+  const [evalFullView, setEvalFullView] = useState(null);                 // { ev, label, name, role } — full evaluation breakdown modal
+  const [evalForm, setEvalForm] = useState(null);                         // { rec, which } — fillable AM evaluation modal (portal)
   const [trialStartDraft, setTrialStartDraft] = useState(null); // { id, date } while HR is setting an in-store trial start date
   const [hrTasks, setHrTasks] = useState([]);         // HR Tasks (mocked for now)
   const [offList, setOffList] = useState([]);         // leaver records
@@ -17074,12 +17149,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   this card is the short list of things only HR can do. */}
               {canSeeIncidents(currentUser) && (() => {
                 const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
+                const _trial = (c) => c && ["nt", "am"].includes(String(c.role || "nt").toLowerCase());
                 const _active = (c) => ["trial_w1", "trial_w2", "pending_mid_review", "pending_final_review"].includes(c.status);
-                const list = (trialList || []).filter(_nt);
+                // Documents, held evals and onboarding apply to BOTH nail-tech and
+                // AM trials — AMs need the document reminder from week 1 too. Only
+                // Fresha-opening is nail-tech-specific (AMs are managers).
+                const list = (trialList || []).filter(_trial);
                 const docs = list.filter(c => _active(c) && !c.docsCollected);
                 const held = list.filter(c => (c.midEval && c.midEval.heldForHr) || (c.finalEval && c.finalEval.heldForHr));
                 const onboard = list.filter(c => c.status === "passed");
-                const fresha = list.filter(c => c.startDate && !c.freshaTrialOpened && _active(c));
+                const fresha = list.filter(c => _nt(c) && c.startDate && !c.freshaTrialOpened && _active(c));
                 const total = docs.length + held.length + onboard.length + fresha.length;
                 if (total === 0) return null;
 
@@ -20958,6 +21037,60 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         ];
         const EVAL_MAX = 130, EVAL_PASS = 91, EVAL_KEY_MIN = 3;
 
+        // ── Assistant-Manager evaluation (BOA Manager Evaluation Form) ──
+        // 27 criteria across 5 sections, scored 1–5 (max 135). Pass = 70%
+        // (95/135) AND every Key Indicator ≥4 (per the form's extension rule).
+        const AM_EVAL_SECTIONS = [
+          { title: "Customer Service Excellence", max: 50, items: [
+            { k: "greeting_ssco", label: "Client Greeting – SSCO", key: true, desc: "Greets all clients warmly using Stand–Smile–Confirm–Offer." },
+            { k: "booking_conf", label: "Booking Confirmation", desc: "Confirms booking and treatment details before the appointment time." },
+            { k: "proactive", label: "Proactive Service", desc: "Anticipates client needs and ensures comfort." },
+            { k: "recovery", label: "Service Recovery", desc: "Handles complaints effectively, maintains calmness." },
+            { k: "presentation", label: "Professional Presentation", key: true, desc: "Displays neat grooming and welcoming demeanor. Wears full BOA uniform." },
+            { k: "wait_mgmt", label: "Wait Management", desc: "Informs clients of delays courteously." },
+            { k: "product_know", label: "Product Knowledge", desc: "Explains services and retail confidently." },
+            { k: "feedback", label: "Feedback Collection", desc: "Encourages positive Google Reviews." },
+            { k: "upsell", label: "Upselling & Retail", desc: "Suggests appropriate upgrades and aftercare." },
+            { k: "brand_rep", label: "Brand Representation", desc: "Creates a calm, elegant atmosphere in line with BOA." } ] },
+          { title: "Leadership & Team Management", max: 25, items: [
+            { k: "team_comm", label: "Team Communication", desc: "Holds regular briefings and maintains professionalism." },
+            { k: "fairness", label: "Fairness & Discipline", desc: "Applies HR policies consistently and fairly." },
+            { k: "motivation", label: "Motivation & Recognition", desc: "Supports and recognizes team effort." },
+            { k: "scheduling", label: "Scheduling", key: true, desc: "Manages shifts, off-days, and attendance accurately." },
+            { k: "conflict", label: "Conflict Resolution", desc: "Resolves disputes respectfully and promptly." } ] },
+          { title: "Cleanliness & Hygiene Compliance", max: 20, items: [
+            { k: "tool_san", label: "Tool Sanitation Checks", desc: "Verifies clean tools and sends photo proof on Basket Check Day before 10 a.m." },
+            { k: "salon_appear", label: "Salon Appearance", key: true, desc: "Maintains spotless and inviting salon atmosphere." },
+            { k: "product_mgmt", label: "Product Management", desc: "Prevents waste, monitors stock use." },
+            { k: "staff_hygiene", label: "Staff Hygiene", desc: "Ensures uniforms and grooming standards are met." } ] },
+          { title: "Operational & Policy Adherence", max: 25, items: [
+            { k: "hr_policy", label: "HR Policy Compliance", key: true, desc: "Enforces attendance, cellphone and language rules." },
+            { k: "cash_digital", label: "Cash & Digital Handling", key: true, desc: "Enforces only accepted payment methods." },
+            { k: "report_sub", label: "Report Submission", desc: "Submits accurate End-Day-Reports." },
+            { k: "fresha_usage", label: "Fresha Usage", key: true, desc: "Uses Fresha accurately and efficiently." },
+            { k: "stock_takes", label: "Stock Takes", key: true, desc: "Conducts accurate stock takes and places orders timely." } ] },
+          { title: "Brand Ambassadorship & Professionalism", max: 15, items: [
+            { k: "brand_image", label: "Brand Image", key: true, desc: "Acts as the face of BOA in demeanor and attitude." },
+            { k: "community", label: "Community Presence", desc: "Promotes BOA positively in local and online spaces." },
+            { k: "ethical", label: "Ethical Leadership", desc: "Displays honesty, fairness, and discretion." } ] }
+        ];
+        const AM_EVAL_MAX = 135, AM_EVAL_PASS = 95, AM_EVAL_KEY_MIN = 4;
+        // Resolve the right evaluation form for a role, and score a set of marks.
+        const evalFormFor = (role) => (String(role || "nt").toLowerCase() === "am")
+          ? { sections: AM_EVAL_SECTIONS, max: AM_EVAL_MAX, pass: AM_EVAL_PASS, keyMin: AM_EVAL_KEY_MIN }
+          : { sections: EVAL_SECTIONS, max: EVAL_MAX, pass: EVAL_PASS, keyMin: EVAL_KEY_MIN };
+        const scoreEval = (scores, role) => {
+          const f = evalFormFor(role);
+          let total = 0, answered = 0, count = 0, keyOk = true;
+          f.sections.forEach(sec => sec.items.forEach(it => {
+            count++;
+            const v = Number((scores || {})[it.k]) || 0;
+            if (v >= 1 && v <= 5) { total += v; answered++; if (it.key && v < f.keyMin) keyOk = false; }
+          }));
+          const complete = answered === count;
+          return { total, complete, keyOk, pass: complete && total >= f.pass && keyOk, max: f.max, keyMin: f.keyMin };
+        };
+
         // Cumulative trial working days a candidate has actually worked.
         const workedDaysOf = (r) => {
           const m = (r && r.checkins && typeof r.checkins === "object" && !Array.isArray(r.checkins)) ? r.checkins : {};
@@ -21214,42 +21347,37 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
         };
 
-        const advanceStage = (id) => {
-          const rec = trialList.find(r => r._id === id);
+        // Submit a portal evaluation (the AM Week-1 review the trainers complete,
+        // and the final review as a fallback). Same principle as the kiosk: a
+        // pass auto-advances (mid → Week 2, final → Passed); below-pass is saved
+        // and held for an HR decision — never auto-failed.
+        const submitTrialEval = (rec, which, scores, by, notes) => {
           if (!rec) return;
-
-          // Auto-validation: check for 5 check-ins
-          const checkins = rec.checkins || {};
-          const workedDays = typeof checkins === "object" && !Array.isArray(checkins)
-            ? Object.values(checkins).filter(st => st === "on" || st === "late").length
-            : 0;
-          if (workedDays < 5) {
-            if (!confirm("This candidate has only completed " + workedDays + " out of 5 required days. Are you sure you want to advance them?")) {
-              return;
-            }
-          }
-
-          const role = rec.role || "nt";
-          const order = role === "am"
-            ? ["trial_w1", "pending_mid_review", "trial_w2", "pending_final_review", "passed"]
-            : ["induction", "trial_w1", "pending_mid_review", "trial_w2", "pending_final_review", "passed"];
-
-          const idx = order.indexOf(rec.status);
-          if (idx < 0 || idx >= order.length - 1) return;
-          persistTrial(trialList.map(r => r._id === id
-            ? { ...r, status: order[idx + 1], updatedAt: new Date().toISOString() }
-            : r));
+          const r = scoreEval(scores, rec.role);
+          if (!r.complete) { alert("Please score every criterion (1–5) before submitting."); return; }
+          if (!String(by || "").trim()) { alert("Please enter the evaluator's name."); return; }
+          const msg = r.pass
+            ? rec.name + " scored " + r.total + "/" + r.max + " — PASS.\n\nSubmit and advance to the next stage?"
+            : rec.name + " scored " + r.total + "/" + r.max + (r.keyOk ? "" : " (a Key Indicator is below " + r.keyMin + ")") + " — below the pass mark.\n\nSubmit and send to HR to review? They will NOT be auto-failed.";
+          if (!confirm(msg)) return;
+          const evalKey = which === "final" ? "finalEval" : "midEval";
+          const evalObj = {
+            submittedAt: new Date().toISOString(), submittedBy: String(by).trim(),
+            which: which === "final" ? "final" : "mid", scores: { ...scores },
+            total: r.total, max: r.max, keyOk: r.keyOk, pass: r.pass,
+            heldForHr: !r.pass, notes: String(notes || "").trim()
+          };
+          const newStatus = r.pass ? (which === "final" ? "passed" : "trial_w2") : null;
+          persistTrial(trialList.map(x => x._id === rec._id
+            ? { ...x, [evalKey]: evalObj, ...(newStatus ? { status: newStatus } : {}), updatedAt: new Date().toISOString() }
+            : x));
+          setEvalForm(null);
         };
+
         const markFailed = (id) => {
           if (!confirm("Mark this candidate as failed? They will be archived in the Trial Staff folder.")) return;
           persistTrial(trialList.map(r => r._id === id
             ? { ...r, status: "failed", updatedAt: new Date().toISOString() }
-            : r));
-        };
-        const markPassed = (id) => {
-          if (!confirm("Mark this candidate as passed? This will allow you to promote them to Onboarding.")) return;
-          persistTrial(trialList.map(r => r._id === id
-            ? { ...r, status: "passed", updatedAt: new Date().toISOString() }
             : r));
         };
         // Permanently remove a trial candidate (e.g. a duplicate or mistaken
@@ -21390,9 +21518,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         return (
           <div style={{ fontFamily: "'DM Sans', sans-serif", padding: "0 24px 40px 24px" }}>
             {/* Full evaluation breakdown — opened by clicking a score on a card. */}
+            {/* Fillable AM evaluation (portal) — Week-1 review by the trainers,
+                and the final review as a portal fallback. */}
+            {evalForm && (() => {
+              const f = evalFormFor(evalForm.rec && evalForm.rec.role);
+              return (
+                <TrialEvalModal
+                  name={(evalForm.rec && evalForm.rec.name) || "candidate"}
+                  which={evalForm.which}
+                  sections={f.sections} max={f.max} keyMin={f.keyMin} pass={f.pass}
+                  onClose={() => setEvalForm(null)}
+                  onSubmit={({ scores, by, notes }) => submitTrialEval(evalForm.rec, evalForm.which, scores, by, notes)}
+                />
+              );
+            })()}
             {evalFullView && (() => {
               const ev = evalFullView.ev || {};
               const scores = ev.scores || {};
+              const EVS = evalFormFor(evalFullView.role).sections;
               const closeBtn = { background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 20, lineHeight: 1, padding: 0 };
               return (
                 <div onClick={() => setEvalFullView(null)} style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.55)", zIndex: 100000, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", overflowY: "auto" }}>
@@ -21408,7 +21551,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <span style={{ fontWeight: 800, color: ev.pass ? "#166534" : "#9a3412" }}>{ev.pass ? "PASS ✓" : "BELOW PASS"}{ev.keyOk === false ? " · a Key Indicator < 3" : ""}</span>
                       <span style={{ fontWeight: 800, fontSize: 17, color: "#5b21b6" }}>{ev.total}/{ev.max}</span>
                     </div>
-                    {EVAL_SECTIONS.map(sec => {
+                    {EVS.map(sec => {
                       const subtotal = sec.items.reduce((a, it) => a + (Number(scores[it.k]) || 0), 0);
                       return (
                         <div key={sec.title} style={{ marginTop: 12 }}>
@@ -21706,9 +21849,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               <Node icon={inductionDone ? "✓" : "🎓"} iconColor={inductionDone ? "#fff" : "#6b21a8"} bg={inductionDone ? "#16a34a" : "#7c3aed"} label="Induction" sub={inductionDone ? "done" : "in progress"} subColor={inductionDone ? "#16a34a" : "#6b21a8"} current={cur === "induction"} />
                             )}
                             <Conn label="First 5 days" fillPct={(w1 / 5) * 100} count={w1 + "/5"} active={w1 > 0} current={cur === "w1"} />
-                            <Node icon={mid.icon} iconColor={mid.iconColor} bg={mid.bg} label="Week 1 eval" sub={mid.sub} subColor={mid.subColor} current={cur === "wk1eval"} onClick={(r.midEval && r.midEval.submittedAt) ? () => setEvalFullView({ ev: r.midEval, label: "Week 1 evaluation", name: r.name }) : undefined} />
+                            <Node icon={mid.icon} iconColor={mid.iconColor} bg={mid.bg} label="Week 1 eval" sub={mid.sub} subColor={mid.subColor} current={cur === "wk1eval"} onClick={(r.midEval && r.midEval.submittedAt) ? () => setEvalFullView({ ev: r.midEval, label: "Week 1 evaluation", name: r.name, role: r.role }) : undefined} />
                             <Conn label="Next 5 days" fillPct={(w2 / 5) * 100} count={w2 + "/5"} active={w2 > 0} current={cur === "w2"} />
-                            <Node icon={fin.icon} iconColor={fin.iconColor} bg={fin.bg} label="Final eval" sub={fin.sub} subColor={fin.subColor} current={cur === "finaleval"} onClick={(r.finalEval && r.finalEval.submittedAt) ? () => setEvalFullView({ ev: r.finalEval, label: "Final evaluation", name: r.name }) : undefined} />
+                            <Node icon={fin.icon} iconColor={fin.iconColor} bg={fin.bg} label="Final eval" sub={fin.sub} subColor={fin.subColor} current={cur === "finaleval"} onClick={(r.finalEval && r.finalEval.submittedAt) ? () => setEvalFullView({ ev: r.finalEval, label: "Final evaluation", name: r.name, role: r.role }) : undefined} />
                             <Node icon="🏆" iconColor={st === "passed" ? "#fff" : "#c4b5fd"} bg={st === "passed" ? "#16a34a" : "#f3f4f6"} label="Passed" sub={st === "passed" ? "passed" : "goal"} subColor={st === "passed" ? "#16a34a" : "#9ca3af"} current={cur === "passed"} />
                           </div>
                           {/* Documents checklist — opened by the 📄 chip above. */}
@@ -21747,12 +21890,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   <button onClick={() => resolveHeldEval(r._id, "final", "pass")} style={btn("#15803d", "#fff")}>✅ Pass final</button>
                                   <button onClick={() => resolveHeldEval(r._id, "final", "fail")} style={btn("#fff", "#991b1b", "1px solid #fca5a5")}>❌ Fail</button>
                                 </>)}
-                                {/* Assistant-Manager trials keep the manual pipeline. */}
-                                {trialSubTab === "am" && st !== "passed" && !failed && (
-                                  <button onClick={() => advanceStage(r._id)} style={btn("#0891b2", "#fff")}>Advance →</button>
+                                {/* Assistant-Manager trials are evaluation-driven, same
+                                    as nail techs. The Week-1 review is completed here by
+                                    the trainers; the final review is completed by the
+                                    store (kiosk) but can also be done here as a fallback.
+                                    A pass auto-advances; below-pass holds for HR above. */}
+                                {trialSubTab === "am" && midDue && !heldMid && (
+                                  <button onClick={() => setEvalForm({ rec: r, which: "mid" })} style={btn("#7c3aed", "#fff")}>📋 Complete Week 1 evaluation</button>
                                 )}
-                                {trialSubTab === "am" && st === "pending_final_review" && (
-                                  <button onClick={() => markPassed(r._id)} style={btn("#15803d", "#fff")}>✅ Pass</button>
+                                {trialSubTab === "am" && finalDue && !heldFinal && (
+                                  <button onClick={() => setEvalForm({ rec: r, which: "final" })} style={btn("#7c3aed", "#fff")}>📋 Complete final evaluation</button>
                                 )}
                                 {/* Passed → onboarding. */}
                                 {st === "passed" && (
