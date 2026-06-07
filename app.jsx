@@ -21550,8 +21550,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   <button onClick={() => setTrialDocsOpen(prev => { const n = new Set(prev); n.has(r._id) ? n.delete(r._id) : n.add(r._id); return n; })} title="Documents to collect" style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 7, border: "1px solid " + (full ? "#86efac" : "#fcd34d"), background: open ? (full ? "#16a34a" : "#d97706") : (full ? "#f0fdf4" : "#fffbeb"), color: open ? "#fff" : (full ? "#166534" : "#92400e"), cursor: "pointer", fontWeight: 800, fontSize: 11 }}>📄 {dn}/{tt}{full ? " ✓" : ""}</button>
                                 );
                               })()}
-                              <button onClick={() => setTrialDayEditOpen(prev => { const n = new Set(prev); n.has(r._id) ? n.delete(r._id) : n.add(r._id); return n; })} title="Edit how many days & which dates she was in" style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 7, border: "1px solid " + (trialDayEditOpen.has(r._id) ? "#d97706" : "#fcd34d"), background: trialDayEditOpen.has(r._id) ? "#d97706" : "#fffbeb", color: trialDayEditOpen.has(r._id) ? "#fff" : "#92400e", cursor: "pointer", fontWeight: 800, fontSize: 11 }}>✏️ {trialDayEditOpen.has(r._id) ? "Close" : "Edit days"}</button>
-                              <button onClick={() => editTrial(r)} title="Edit details (name, branch, contact, induction date)" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 30, height: 28, borderRadius: 7, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", cursor: "pointer", fontSize: 13 }}>✎</button>
+                              <button onClick={() => editTrial(r)} title="Edit details and trial days / dates" style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 12px", borderRadius: 7, border: "1px solid #ddd6fe", background: "#f5f3ff", color: "#6b21a8", cursor: "pointer", fontWeight: 800, fontSize: 11 }}>✏️ Edit</button>
                               <button onClick={() => deleteCandidate(r)} title="Delete this candidate (e.g. a duplicate) — cannot be undone" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 30, height: 28, borderRadius: 7, border: "1px solid #fecaca", background: "#fff", color: "#dc2626", cursor: "pointer", fontSize: 13 }}>🗑</button>
                             </div>
                           </div>
@@ -21566,9 +21565,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             <Node icon={fin.icon} iconColor={fin.iconColor} bg={fin.bg} label="Final eval" sub={fin.sub} subColor={fin.subColor} current={cur === "finaleval"} onClick={(r.finalEval && r.finalEval.submittedAt) ? () => setEvalFullView({ ev: r.finalEval, label: "Final evaluation", name: r.name }) : undefined} />
                             <Node icon="🏆" iconColor={st === "passed" ? "#fff" : "#c4b5fd"} bg={st === "passed" ? "#16a34a" : "#f3f4f6"} label="Passed" sub={st === "passed" ? "passed" : "goal"} subColor={st === "passed" ? "#16a34a" : "#9ca3af"} current={cur === "passed"} />
                           </div>
-                          {/* Day editor — opened by the ✏️ pencil above. Edit the
-                              count and the exact dates she was in. */}
-                          {trialDayEditOpen.has(r._id) && dayEditorPanel(r, "ov")}
                           {/* Documents checklist — opened by the 📄 chip above. */}
                           {trialDocsOpen.has(r._id) && docsChecklistPanel(r)}
 
@@ -21579,17 +21575,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const heldFinal = r.finalEval && r.finalEval.heldForHr;
                             return (
                               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
-                                {/* Induction → in-store trial: set the start date here. */}
+                                {/* Induction → in-store trial: the first step of the
+                                    journey, shown as a banner under the pathway. */}
                                 {st === "induction" && (
-                                  (trialStartDraft && trialStartDraft.id === r._id) ? (
-                                    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                                      <input type="date" value={trialStartDraft.date} onChange={e => setTrialStartDraft({ id: r._id, date: e.target.value })} style={{ padding: "6px 8px", borderRadius: 8, border: "1px solid #c4b5fd", fontSize: 12, fontFamily: "inherit" }} />
-                                      <button onClick={() => startInStoreTrial(r._id, trialStartDraft.date)} style={btn("#7c3aed", "#fff")}>Start ▶</button>
-                                      <button onClick={() => setTrialStartDraft(null)} style={btn("#fff", "#6b7280", "1px solid #e5e7eb")}>✕</button>
-                                    </div>
-                                  ) : (
-                                    <button onClick={() => setTrialStartDraft({ id: r._id, date: r.startDate || nextMondayStr() })} style={btn("#7c3aed", "#fff")}>▶ Start in-store trial</button>
-                                  )
+                                  <div style={{ width: "100%", background: "#f5f3ff", border: "1px solid #ddd6fe", borderRadius: 10, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                                    <span style={{ fontSize: 12, fontWeight: 800, color: "#6b21a8" }}>🎓 Induction → set her in-store trial start date</span>
+                                    <div style={{ flex: 1 }} />
+                                    {(trialStartDraft && trialStartDraft.id === r._id) ? (
+                                      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                                        <input type="date" value={trialStartDraft.date} onChange={e => setTrialStartDraft({ id: r._id, date: e.target.value })} style={{ padding: "6px 8px", borderRadius: 8, border: "1px solid #c4b5fd", fontSize: 12, fontFamily: "inherit" }} />
+                                        <button onClick={() => startInStoreTrial(r._id, trialStartDraft.date)} style={btn("#7c3aed", "#fff")}>Start ▶</button>
+                                        <button onClick={() => setTrialStartDraft(null)} style={btn("#fff", "#6b7280", "1px solid #e5e7eb")}>✕</button>
+                                      </div>
+                                    ) : (
+                                      <button onClick={() => setTrialStartDraft({ id: r._id, date: r.startDate || nextMondayStr() })} style={btn("#7c3aed", "#fff")}>▶ Start in-store trial</button>
+                                    )}
+                                  </div>
                                 )}
                                 {/* Below-pass evaluations held for an HR decision. */}
                                 {heldMid && (<>
@@ -21626,10 +21627,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               );
             })()}
 
-            {/* Add Trainee Form */}
+            {/* Add / Edit Trainee — modal popup */}
             {tForm._open && (
-              <div style={{ background: "#fff", borderRadius: 16, border: "2px solid #7c3aed", padding: "20px 22px", marginBottom: 24, boxShadow: "0 4px 20px rgba(124,58,237,0.08)" }}>
-                <div style={{ fontSize: 14, fontWeight: 800, color: "#7c3aed", marginBottom: 16 }}>{tForm._editId ? "✏️ Edit Trial Candidate" : "➕ New Trial Candidate"}</div>
+              <div onClick={() => setTForm(f => ({ ...f, _open: false, _editId: null }))} style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 100000, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", overflowY: "auto" }}>
+              <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, border: "2px solid #7c3aed", padding: "20px 22px", width: "100%", maxWidth: 620, maxHeight: "88vh", overflowY: "auto", boxShadow: "0 24px 70px rgba(0,0,0,0.35)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                  <div style={{ fontSize: 16, fontWeight: 800, color: "#7c3aed" }}>{tForm._editId ? "✏️ Edit Trial Candidate" : "➕ New Trial Candidate"}</div>
+                  <button onClick={() => setTForm(f => ({ ...f, _open: false, _editId: null }))} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 20, lineHeight: 1, padding: 0 }}>✕</button>
+                </div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12, marginBottom: 12 }}>
                   <div><label style={lbl}>Full Name *</label><input style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.name || ""} onChange={e => setTForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Thandi Mokoena" /></div>
                   <div><label style={lbl}>Phone</label><input style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.phone || ""} onChange={e => setTForm(f => ({ ...f, phone: e.target.value }))} placeholder="+27 ..." /></div>
@@ -21655,10 +21660,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <label style={lbl}>Notes</label>
                   <textarea rows={2} style={{ ...inp, width: "100%", boxSizing: "border-box", resize: "vertical" }} value={tForm.notes || ""} onChange={e => setTForm(f => ({ ...f, notes: e.target.value }))} />
                 </div>
-                <div style={{ display: "flex", gap: 8 }}>
+                {/* Trial days & dates — edit the actual days she was in, right here. */}
+                {tForm._editId && (() => {
+                  const rec = trialList.find(x => x._id === tForm._editId);
+                  return rec ? (
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: "#7c3aed", borderTop: "1px solid #ede9fe", paddingTop: 14 }}>🗓 Trial days &amp; dates</div>
+                      {dayEditorPanel(rec, "edit")}
+                    </div>
+                  ) : null;
+                })()}
+                <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
                   <button onClick={submitTrial} style={{ padding: "9px 22px", borderRadius: 9, border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>{tForm._editId ? "💾 Save Changes" : "🧪 Add to " + (trialSubTab === "am" ? "AM Trial" : "Trial Pipeline")}</button>
                   <button onClick={() => setTForm(f => ({ ...f, _open: false, _editId: null }))} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>Cancel</button>
                 </div>
+              </div>
               </div>
             )}
 
