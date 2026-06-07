@@ -21448,7 +21448,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             {/* ── Workflow explainer (collapsible) ── */}
             {(() => {
               const toggle = () => setShowTrialWorkflow(v => { const nv = !v; try { localStorage.setItem("boa_trial_workflow_hidden", nv ? "0" : "1"); } catch (_e) { } return nv; });
-              const STEPS = [
+              const NT_STEPS = [
                 { icon: "🎨", title: "Interview & assessment", bg: "#ede9fe", color: "#7c3aed", desc: "Interview with HR & trainer; white gel-polish test, photographed. Trainer decides who proceeds to induction." },
                 { icon: "🎓", title: "Induction (~4 days)", bg: "#cffafe", color: "#0891b2", desc: "Trainer teaches BOA treatments & procedures, assesses floor-readiness, and confirms store fit & availability with recruitment." },
                 { icon: "📦", title: "Kit & trial agreement", bg: "#fef3c7", color: "#d97706", desc: "Trainer orders kit & uniform. The nail tech signs the 2-week trial agreement and submits all documents." },
@@ -21457,10 +21457,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 { icon: "🌱", title: "Onboarding & Fresha", bg: "#dcfce7", color: "#16a34a", desc: "On passing, HR completes the onboarding form, which opens the tech on Fresha." },
                 { icon: "✍️", title: "Permanent contract", bg: "#e0e7ff", color: "#4338ca", desc: "Signs the permanent contract before returning to store as a permanent nail tech." }
               ];
+              const AM_STEPS = [
+                { icon: "🤝", title: "Interview", bg: "#ede9fe", color: "#7c3aed", desc: "Interview with HR." },
+                { icon: "✍️", title: "Trial agreement & documents", bg: "#fef3c7", color: "#d97706", desc: "Signs the 2-week trial agreement and submits all documents to HR — the 2-week trial then begins." },
+                { icon: "🎓", title: "Training · head office & store", bg: "#cffafe", color: "#0891b2", desc: "Across the 2 weeks: 5 days head-office training and 5 days in store. Days can alternate between the two." },
+                { icon: "📋", title: "Evaluation · after 5 days", bg: "#d1fae5", color: "#059669", desc: "A management evaluation after the first 5 days." },
+                { icon: "📋", title: "Final evaluation · after 10 days", bg: "#fce7f3", color: "#BE185D", desc: "A second evaluation after the final 5 days." },
+                { icon: "✍️", title: "Permanent contract", bg: "#e0e7ff", color: "#4338ca", desc: "If both evaluations are successful, signs the permanent contract." }
+              ];
+              const isAm = trialSubTab === "am";
+              const STEPS = isAm ? AM_STEPS : NT_STEPS;
               return (
                 <div style={{ background: "#fff", borderRadius: 16, border: "1px solid #ede9fe", padding: "16px 18px", marginBottom: 24, boxShadow: "0 2px 10px rgba(124,58,237,0.05)" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                    <div style={{ fontSize: 14, fontWeight: 800, color: "#6b21a8" }}>🗺️ Nail Technician Trial Process — from interview to permanent appointment</div>
+                    <div style={{ fontSize: 14, fontWeight: 800, color: "#6b21a8" }}>🗺️ {isAm ? "Assistant Manager" : "Nail Technician"} Trial Process — from interview to permanent appointment</div>
                     <button onClick={toggle} style={{ background: "#f5f3ff", color: "#6b21a8", border: "1px solid #ddd6fe", borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 12, fontWeight: 800 }}>{showTrialWorkflow ? "Hide ▲" : "Show ▼"}</button>
                   </div>
                   {showTrialWorkflow && (
