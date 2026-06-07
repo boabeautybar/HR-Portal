@@ -21537,7 +21537,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               <span style={{ fontSize: 11, fontWeight: 800, color: "#6b21a8" }}>· {Math.min(worked, 10)}/10 days{absent > 0 ? " · " + absent + " abs" : ""}</span>
                               {stale && <span style={{ fontSize: 9, fontWeight: 800, color: "#991b1b", background: "#fee2e2", padding: "1px 6px", borderRadius: 4 }}>⚠ {ds}d in stage</span>}
                             </div>
-                            <button onClick={() => setTrialDayEditOpen(prev => { const n = new Set(prev); n.has(r._id) ? n.delete(r._id) : n.add(r._id); return n; })} title="Edit how many days & which dates she was in" style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 7, border: "1px solid " + (trialDayEditOpen.has(r._id) ? "#d97706" : "#fcd34d"), background: trialDayEditOpen.has(r._id) ? "#d97706" : "#fffbeb", color: trialDayEditOpen.has(r._id) ? "#fff" : "#92400e", cursor: "pointer", fontWeight: 800, fontSize: 11 }}>✏️ {trialDayEditOpen.has(r._id) ? "Close" : "Edit days"}</button>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                              {(() => {
+                                const dn = trialDocsDone(r), tt = trialDocsTotal(r), open = trialDocsOpen.has(r._id), full = dn === tt;
+                                return (
+                                  <button onClick={() => setTrialDocsOpen(prev => { const n = new Set(prev); n.has(r._id) ? n.delete(r._id) : n.add(r._id); return n; })} title="Documents to collect" style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 7, border: "1px solid " + (full ? "#86efac" : "#fcd34d"), background: open ? (full ? "#16a34a" : "#d97706") : (full ? "#f0fdf4" : "#fffbeb"), color: open ? "#fff" : (full ? "#166534" : "#92400e"), cursor: "pointer", fontWeight: 800, fontSize: 11 }}>📄 {dn}/{tt}{full ? " ✓" : ""}</button>
+                                );
+                              })()}
+                              <button onClick={() => setTrialDayEditOpen(prev => { const n = new Set(prev); n.has(r._id) ? n.delete(r._id) : n.add(r._id); return n; })} title="Edit how many days & which dates she was in" style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 7, border: "1px solid " + (trialDayEditOpen.has(r._id) ? "#d97706" : "#fcd34d"), background: trialDayEditOpen.has(r._id) ? "#d97706" : "#fffbeb", color: trialDayEditOpen.has(r._id) ? "#fff" : "#92400e", cursor: "pointer", fontWeight: 800, fontSize: 11 }}>✏️ {trialDayEditOpen.has(r._id) ? "Close" : "Edit days"}</button>
+                              <button onClick={() => deleteCandidate(r)} title="Delete this candidate (e.g. a duplicate) — cannot be undone" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 30, height: 28, borderRadius: 7, border: "1px solid #fecaca", background: "#fff", color: "#dc2626", cursor: "pointer", fontSize: 13 }}>🗑</button>
+                            </div>
                           </div>
                           {/* The pathway */}
                           <div style={{ display: "flex", alignItems: "flex-start", overflowX: "auto", paddingTop: 2 }}>
@@ -21553,6 +21562,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           {/* Day editor — opened by the ✏️ pencil above. Edit the
                               count and the exact dates she was in. */}
                           {trialDayEditOpen.has(r._id) && dayEditorPanel(r, "ov")}
+                          {/* Documents checklist — opened by the 📄 chip above. */}
+                          {trialDocsOpen.has(r._id) && docsChecklistPanel(r)}
                         </div>
                       );
                     })}
