@@ -235,6 +235,16 @@ function payrollYmFor(ymd) {
   return yy + "-" + String(mm).padStart(2, "0");
 }
 
+// Attendance grids (boa_att_<branch>_<ym>) are saved under the START-month ym
+// of the 25th→24th cycle — 25 May → 24 Jun lives at "2026-05" — the opposite
+// of payrollYmFor's end-month convention. Use this to look one up.
+function attGridYmFor(ymd) {
+  const [y, m, d] = ymd.split("-").map(Number);
+  let yy = y, mm = m;
+  if (d <= 24) { mm -= 1; if (mm < 1) { mm = 12; yy--; } }
+  return yy + "-" + String(mm).padStart(2, "0");
+}
+
 // Modal body for marking / editing a manager's absence reason.
 function MgrReasonModalBody({ modal, personStartDate, existing, locked, currentUserName, onClose, onSaved }) {
   const [status, setStatus] = useState(existing?.status || "");
@@ -14959,12 +14969,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Also load the payroll ATTENDANCE sheet for each branch × cycle so the
         // "Manager reasons to add" scan can use it as a fallback: a manager with
         // a filled-in attendance cell is accounted for and won't be chased.
-        // Attendance is keyed by END-month ym (payrollYmFor), e.g. 25-May→24-Jun
-        // is "2026-06".
+        // Attendance grids are keyed by the START-month ym (attGridYmFor), e.g.
+        // 25-May→24-Jun is "2026-05".
         const attYmsInRange = new Set();
         for (let cur = new Date(since); cur <= today; cur.setDate(cur.getDate() + 1)) {
           const _y = cur.getFullYear(), _m = cur.getMonth() + 1, _d = cur.getDate();
-          attYmsInRange.add(payrollYmFor(_y + "-" + String(_m).padStart(2, "0") + "-" + String(_d).padStart(2, "0")));
+          attYmsInRange.add(attGridYmFor(_y + "-" + String(_m).padStart(2, "0") + "-" + String(_d).padStart(2, "0")));
         }
         const needAtt = [];
         for (const aym of attYmsInRange) for (const sl of SALONS) {
@@ -17722,7 +17732,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // already accounted for — don't chase a reason. This
                           // covers days the kiosk wasn't recording clock-ins yet,
                           // where presence was captured on the sheet instead.
-                          const _attYm = payrollYmFor(ymd);
+                          const _attYm = attGridYmFor(ymd);
                           const _attGrid = mgrAttGridCache[(m.branch || "") + "|" + _attYm];
                           const _attCell = _attGrid && _attGrid[m.ec] && (_attGrid[m.ec][String(dom)] || _attGrid[m.ec][ymd]);
                           if (_attCell) return;
