@@ -22945,7 +22945,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           unpaid: { lbl: "Unpaid", bg: "#e9d5ff", fg: "#581c87", cat: "unpaid" },
           deduct: { lbl: "Hours Deduction", bg: "#fed7aa", fg: "#7f1d1d", cat: "unpaid_h" },
           trial: { lbl: "Trial Day", bg: "#fde047", fg: "#713f12", cat: "work" },
-          prestart: { lbl: "·", bg: "#f3f4f6", fg: "#cbd5e1", cat: "none" },
+          prestart: { lbl: "Pre-start", bg: "#eef1f4", fg: "#c4cdd6", cat: "none" },
           term: { lbl: "TERMINATED", bg: "#dc2626", fg: "#FFFFFF", cat: "none" },
           swap_o: { lbl: "Owes", bg: "#cbd5e1", fg: "#dc2626", cat: "swap" },
           swap_i: { lbl: "Owed", bg: "#86efac", fg: "#14532d", cat: "swap" },
@@ -24813,6 +24813,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <td style={{ position: "sticky", left: 0, background: isMgr ? "#fffaf0" : "#FFFFFF", padding: "6px 10px", borderBottom: "1px solid #FCE7F3", borderRight: "2px solid #FBCFE8", zIndex: 2, minWidth: 170 }}>
                           <div style={{ fontSize: 11, fontWeight: 700, color: "#831843", display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
                             <span>{isMgr ? (s.role === "SM" ? "👑 " : s.role === "SSM" ? "💎 " : "⭐ ") : ""}{s.name}</span>
+                            {(() => {
+                              // New-starter banner: show the official start date on the
+                              // sheet for anyone who starts on/after this cycle's first day
+                              // (a starter this cycle, or whose pre-start days show here).
+                              const _sd = startByEc[String(s.ec).trim()];
+                              if (!_sd || !days.length || _sd < days[0].ymd) return null;
+                              const _d = new Date(_sd + "T00:00:00");
+                              const _short = _d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short" });
+                              const _full = _d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" });
+                              const _todayY = new Date(); _todayY.setHours(0, 0, 0, 0);
+                              const _word = _d > _todayY ? "starts" : "started";
+                              return <span title={"Official start date: " + _full} style={{ background: "#dcfce7", color: "#166534", border: "1px solid #86efac", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>🌱 {_word} {_short}</span>;
+                            })()}
                             {s.smTrial && <span title="On a Store-Manager trial (SM Trials tab) — works SM shifts" style={{ background: "#FFEDD5", color: "#9A3412", border: "1px solid #FED7AA", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>⭐ SM TRIAL</span>}
                             {s.movedFrom && <span title={"Transferred from " + s.movedFrom + (s.movedOn ? " on " + new Date(s.movedOn + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : "") + " — earlier cells in this cycle are from " + s.movedFrom} style={{ background: "#dbeafe", color: "#1e40af", border: "1px solid #93c5fd", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>🔄 FROM {s.movedFrom}{s.movedOn ? " · " + new Date(s.movedOn + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
                           </div>
@@ -25162,22 +25175,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           //  • allMatchWork  → green (scheduled + checked-in + Fresha appt)
                           //  • allMatchOff   → slate (scheduled off + no check-in + no appt)
                           //  • allAgreeAbsent → kiosk reason colour (sick / no-show / etc.)
-                          const cellBaseBg = allMatchWork ? C_WORK
-                            : allMatchOff ? C_OFF
-                              : baseBgRaw;
+                          const cellBaseBg = bareV === "prestart" ? "#eef1f4"
+                            : allMatchWork ? C_WORK
+                              : allMatchOff ? C_OFF
+                                : baseBgRaw;
                           const cleanFill = !!(allMatchWork || allMatchOff || allAgreeAbsent);
                           const stripeMergeBg = cleanFill ? cellBaseBg : null;
                           const allMatchBg = null;
                           const allMatchEdge = "1px solid #FCE7F3";
-                          const schedStripeColor = stripeMergeBg ? stripeMergeBg
-                            : scheduleSaysWork ? C_WORK
-                              : (hint === "off" || hint === "al" || hint === "el" || hint === "ph" || hint === "mat" || hint === "term") ? C_OFF
-                                : hint ? (STAT[hint] || {}).bg || "transparent"
+                          const schedStripeColor = bareV === "prestart" ? "#eef1f4"
+                            : stripeMergeBg ? stripeMergeBg
+                              : scheduleSaysWork ? C_WORK
+                                : (hint === "off" || hint === "al" || hint === "el" || hint === "ph" || hint === "mat" || hint === "term") ? C_OFF
+                                  : hint ? (STAT[hint] || {}).bg || "transparent"
+                                    : "transparent";
+                          const freshaStripeColor = bareV === "prestart" ? "#eef1f4"
+                            : stripeMergeBg ? stripeMergeBg
+                              : freshaWorkedCell ? C_WORK
+                                : freshaCoversThisDay ? C_OFF
                                   : "transparent";
-                          const freshaStripeColor = stripeMergeBg ? stripeMergeBg
-                            : freshaWorkedCell ? C_WORK
-                              : freshaCoversThisDay ? C_OFF
-                                : "transparent";
                           return (
                             <td key={dy.d} style={{ padding: 0, borderBottom: "1px solid #FCE7F3", borderLeft: allMatchEdge, background: allMatchBg || cellBaseBg, position: "relative" }}>
                               <div style={{ position: "relative", height: 36, width: "100%" }}>
@@ -25284,6 +25300,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       know what the grey means. */}
                                 {allMatchOff && (
                                   <div style={{ position: "absolute", top: 6, bottom: s.role === "NT" ? 6 : 0, left: 0, right: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: "#475569", pointerEvents: "none", letterSpacing: "0.08em" }}>OFF</div>
+                                )}
+                                {bareV === "prestart" && (
+                                  <div title="Before start date" style={{ position: "absolute", top: 6, bottom: s.role === "NT" ? 6 : 0, left: 0, right: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, color: "#c4cdd6", pointerEvents: "none" }}>✕</div>
                                 )}
                                 <select value="" onChange={e => onCellChange(s, dy, e.target.value)} title={cellTooltip}
                                   style={{ position: "absolute", top: 6, bottom: s.role === "NT" ? 6 : 0, left: 0, right: 0, width: "100%", border: "none", background: "transparent", color: "transparent", fontSize: 9, fontWeight: 400, opacity: 1, textAlign: "center", cursor: "pointer", padding: "0 1px", fontFamily: "inherit", outline: "none", appearance: "none" }}>
