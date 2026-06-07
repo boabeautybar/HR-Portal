@@ -17074,12 +17074,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   this card is the short list of things only HR can do. */}
               {canSeeIncidents(currentUser) && (() => {
                 const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
+                const _trial = (c) => c && ["nt", "am"].includes(String(c.role || "nt").toLowerCase());
                 const _active = (c) => ["trial_w1", "trial_w2", "pending_mid_review", "pending_final_review"].includes(c.status);
-                const list = (trialList || []).filter(_nt);
+                // Documents, held evals and onboarding apply to BOTH nail-tech and
+                // AM trials — AMs need the document reminder from week 1 too. Only
+                // Fresha-opening is nail-tech-specific (AMs are managers).
+                const list = (trialList || []).filter(_trial);
                 const docs = list.filter(c => _active(c) && !c.docsCollected);
                 const held = list.filter(c => (c.midEval && c.midEval.heldForHr) || (c.finalEval && c.finalEval.heldForHr));
                 const onboard = list.filter(c => c.status === "passed");
-                const fresha = list.filter(c => c.startDate && !c.freshaTrialOpened && _active(c));
+                const fresha = list.filter(c => _nt(c) && c.startDate && !c.freshaTrialOpened && _active(c));
                 const total = docs.length + held.length + onboard.length + fresha.length;
                 if (total === 0) return null;
 
