@@ -22611,12 +22611,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             if (isMgrPos && obForm.branch && window.BOA_DB.currentSchedYm && window.BOA_DB.periodDays && window.BOA_DB.loadSchedule && window.BOA_DB.saveSchedule) {
               const ym = window.BOA_DB.currentSchedYm();
               const days = window.BOA_DB.periodDays(ym) || [];
+              // Manager schedules are stored under the cycle's START-month ym
+              // (one month behind currentSchedYm, which is the END-month key the
+              // tech grid + periodDays use). Manager Coverage reads that
+              // start-month key, so load AND save the manager grid under it —
+              // otherwise the row lands where Coverage never looks.
+              const _ymP = ym.split("-").map(Number);
+              let _mgrY = _ymP[0], _mgrM = _ymP[1] - 1; if (_mgrM < 1) { _mgrM = 12; _mgrY--; }
+              const mgrYm = _mgrY + "-" + String(_mgrM).padStart(2, "0");
               const _pad = n => String(n).padStart(2, "0");
               const ymdOf = d => d.year + "-" + _pad(d.monthIdx + 1) + "-" + _pad(d.d);
               const cycleEnd = days.length ? ymdOf(days[days.length - 1]) : null;
               const start = obForm.startDate;
               if (cycleEnd && start && start <= cycleEnd) {
-                const mgrSched = await window.BOA_DB.loadSchedule(obForm.branch, ym, true);
+                const mgrSched = await window.BOA_DB.loadSchedule(obForm.branch, mgrYm, true);
                 const grid = (mgrSched && mgrSched.grid) || {};
                 // Pick the branch's most-populated existing manager row as the
                 // pattern to copy (working days + their shift codes WE/WL/W).
@@ -22650,7 +22658,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     }
                   });
                   grid[ec] = row;
-                  await window.BOA_DB.saveSchedule(obForm.branch, ym, grid, true);
+                  await window.BOA_DB.saveSchedule(obForm.branch, mgrYm, grid, true);
                 }
               }
             }
