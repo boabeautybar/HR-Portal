@@ -13522,6 +13522,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   };
   const [expandedTrialCards, setExpandedTrialCards] = useState(new Set()); // tracking expanded state for trial cards
   const [trialDayEditOpen, setTrialDayEditOpen] = useState(new Set());     // pathway cards whose day editor (✏️) is open
+  const [showTrialWorkflow, setShowTrialWorkflow] = useState(() => { try { return localStorage.getItem("boa_trial_workflow_hidden") !== "1"; } catch (_e) { return true; } });
   const [trialDocsOpen, setTrialDocsOpen] = useState(new Set());           // cards whose documents checklist is open
   const [evalFullView, setEvalFullView] = useState(null);                 // { ev, label, name } — full evaluation breakdown modal
   const [trialStartDraft, setTrialStartDraft] = useState(null); // { id, date } while HR is setting an in-store trial start date
@@ -21444,6 +21445,41 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </button>
             </div>
 
+            {/* ── Workflow explainer (collapsible) ── */}
+            {(() => {
+              const toggle = () => setShowTrialWorkflow(v => { const nv = !v; try { localStorage.setItem("boa_trial_workflow_hidden", nv ? "0" : "1"); } catch (_e) { } return nv; });
+              const STEPS = [
+                { icon: "🎨", title: "Interview & assessment", bg: "#ede9fe", color: "#7c3aed", desc: "Interview with HR & trainer; white gel-polish test, photographed. Trainer decides who proceeds to induction." },
+                { icon: "🎓", title: "Induction (~4 days)", bg: "#cffafe", color: "#0891b2", desc: "Trainer teaches BOA treatments & procedures, assesses floor-readiness, and confirms store fit & availability with recruitment." },
+                { icon: "📦", title: "Kit & trial agreement", bg: "#fef3c7", color: "#d97706", desc: "Trainer orders kit & uniform. The nail tech signs the 2-week trial agreement and submits all documents." },
+                { icon: "🏪", title: "In-store · Week 1", bg: "#d1fae5", color: "#059669", desc: "5 trial days in store, then the store completes the Week 1 evaluation." },
+                { icon: "📋", title: "In-store · Week 2", bg: "#fce7f3", color: "#BE185D", desc: "If passed, 5 more trial days, then the final evaluation." },
+                { icon: "🌱", title: "Onboarding & Fresha", bg: "#dcfce7", color: "#16a34a", desc: "On passing, HR completes the onboarding form, which opens the tech on Fresha." },
+                { icon: "✍️", title: "Permanent contract", bg: "#e0e7ff", color: "#4338ca", desc: "Signs the permanent contract before returning to store as a permanent nail tech." }
+              ];
+              return (
+                <div style={{ background: "#fff", borderRadius: 16, border: "1px solid #ede9fe", padding: "16px 18px", marginBottom: 24, boxShadow: "0 2px 10px rgba(124,58,237,0.05)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <div style={{ fontSize: 14, fontWeight: 800, color: "#6b21a8" }}>🗺️ Nail Technician Trial Process — from interview to permanent appointment</div>
+                    <button onClick={toggle} style={{ background: "#f5f3ff", color: "#6b21a8", border: "1px solid #ddd6fe", borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 12, fontWeight: 800 }}>{showTrialWorkflow ? "Hide ▲" : "Show ▼"}</button>
+                  </div>
+                  {showTrialWorkflow && (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 14 }}>
+                      {STEPS.map((s, i) => (
+                        <div key={i} style={{ flex: "1 1 150px", minWidth: 140, background: "#fafaff", border: "1px solid #f0ebff", borderRadius: 10, padding: "9px 10px" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 4 }}>
+                            <span style={{ width: 26, height: 26, borderRadius: 99, background: s.bg, color: s.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, flexShrink: 0 }}>{s.icon}</span>
+                            <span style={{ fontSize: 11.5, fontWeight: 800, color: "#374151", lineHeight: 1.15 }}>{i + 1}. {s.title}</span>
+                          </div>
+                          <div style={{ fontSize: 10.5, color: "#6b7280", lineHeight: 1.4 }}>{s.desc}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* Stats */}
             <div style={{ display: "flex", gap: 10, marginBottom: 24, flexWrap: "wrap" }}>
               {[
@@ -21465,10 +21501,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 Week 1 evaluation → next 5 days → Final evaluation → Passed. The
                 day stretches fill from real kiosk check-ins, and each card has an
                 inline day-count correction for fixing what the kiosk missed. */}
-            {activeTrials.length > 0 && (() => {
-              const rank = { induction: 0, trial_w1: 1, pending_mid_review: 1, trial_w2: 2, pending_final_review: 2 };
-              const rows = activeTrials.slice().sort((a, b) =>
-                (rank[b.status] || 0) - (rank[a.status] || 0)
+            {currentList.some(r => r.status !== "hired") && (() => {
+              const grp = (s) => s === "passed" ? 1 : s === "failed" ? 2 : 0;
+              const prog = { trial_w2: 3, pending_final_review: 3, trial_w1: 2, pending_mid_review: 2, induction: 1 };
+              const rows = currentList.filter(r => r.status !== "hired").slice().sort((a, b) =>
+                grp(a.status) - grp(b.status)
+                || (prog[b.status] || 0) - (prog[a.status] || 0)
                 || workedDaysOf(b) - workedDaysOf(a)
                 || (a.name || "").localeCompare(b.name || ""));
 
@@ -21499,8 +21537,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
               return (
                 <div style={{ background: "#fff", borderRadius: 16, border: "1px solid #ede9fe", padding: "16px 18px", marginBottom: 24, boxShadow: "0 2px 10px rgba(124,58,237,0.05)" }}>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: "#6b21a8", letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 4 }}>🛣️ Trial journeys · {activeTrials.length} in progress</div>
-                  <div style={{ fontSize: 11, color: "#9d6a82", marginBottom: 14 }}>Each tech's path from induction to passing. Day stretches fill from real kiosk check-ins — use <strong>− N +</strong> on a card to correct days the kiosk missed.</div>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "#6b21a8", letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 4 }}>🛣️ Trial journeys · {activeTrials.length} in progress{passedTrials.length ? " · " + passedTrials.length + " passed" : ""}{failedTrials.length ? " · " + failedTrials.length + " failed" : ""}</div>
+                  <div style={{ fontSize: 11, color: "#9d6a82", marginBottom: 14 }}>Each tech's full journey — set the start date, edit days, collect documents, view evaluations, and pass / fail / promote, all from here.</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                     {rows.map(r => {
                       const ds = daysInStage(r);
@@ -21512,9 +21550,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       const w2 = Math.max(0, Math.min(worked, 10) - 5);
                       const midDue = st === "trial_w1" && worked >= 5 && !(r.midEval && r.midEval.submittedAt);
                       const finalDue = st === "trial_w2" && worked >= 10 && !(r.finalEval && r.finalEval.submittedAt);
+                      const failed = st === "failed";
                       // Where the tech currently sits on the path.
-                      let cur = "induction";
-                      if (st === "trial_w1") cur = worked >= 5 ? "wk1eval" : "w1";
+                      let cur = "";
+                      if (st === "induction") cur = "induction";
+                      else if (st === "trial_w1") cur = worked >= 5 ? "wk1eval" : "w1";
                       else if (st === "trial_w2") cur = worked >= 10 ? "finaleval" : "w2";
                       else if (st === "passed") cur = "passed";
                       const inductionDone = st !== "induction";
@@ -21535,16 +21575,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       const mid = evNode(r.midEval, midDue, "after 5 days");
                       const fin = evNode(r.finalEval, finalDue, "after 10 days");
                       return (
-                        <div key={r._id} style={{ border: `1px solid ${stale ? "#fecaca" : "#f0ebff"}`, borderRadius: 14, padding: "12px 14px", background: stale ? "#fffafa" : "#fdfcff" }}>
+                        <div key={r._id} style={{ border: `1px solid ${failed ? "#fecaca" : stale ? "#fecaca" : st === "passed" ? "#bbf7d0" : "#f0ebff"}`, borderRadius: 14, padding: "12px 14px", background: failed ? "#fff7f7" : st === "passed" ? "#f6fef9" : stale ? "#fffafa" : "#fdfcff", opacity: failed ? 0.92 : 1 }}>
                           {/* Header row: identity + inline day correction */}
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
                             <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
                               <span style={{ fontSize: 14, fontWeight: 800, color: "#111827" }}>{r.name}</span>
                               <span style={{ fontSize: 11, color: "#9ca3af" }}>📍 {r.branch}{r.startDate ? " · since " + fmtDate(r.startDate) : ""}</span>
                               <span style={{ fontSize: 11, fontWeight: 800, color: "#6b21a8" }}>· {Math.min(worked, 10)}/10 days{absent > 0 ? " · " + absent + " abs" : ""}</span>
-                              {stale && <span style={{ fontSize: 9, fontWeight: 800, color: "#991b1b", background: "#fee2e2", padding: "1px 6px", borderRadius: 4 }}>⚠ {ds}d in stage</span>}
+                              {st === "passed" && <span style={{ fontSize: 9, fontWeight: 800, color: "#166534", background: "#dcfce7", padding: "1px 6px", borderRadius: 4 }}>✅ PASSED</span>}
+                              {failed && <span style={{ fontSize: 9, fontWeight: 800, color: "#991b1b", background: "#fee2e2", padding: "1px 6px", borderRadius: 4 }}>❌ FAILED</span>}
+                              {stale && !failed && st !== "passed" && <span style={{ fontSize: 9, fontWeight: 800, color: "#991b1b", background: "#fee2e2", padding: "1px 6px", borderRadius: 4 }}>⚠ {ds}d in stage</span>}
                             </div>
-                            <button onClick={() => setTrialDayEditOpen(prev => { const n = new Set(prev); n.has(r._id) ? n.delete(r._id) : n.add(r._id); return n; })} title="Edit how many days & which dates she was in" style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 7, border: "1px solid " + (trialDayEditOpen.has(r._id) ? "#d97706" : "#fcd34d"), background: trialDayEditOpen.has(r._id) ? "#d97706" : "#fffbeb", color: trialDayEditOpen.has(r._id) ? "#fff" : "#92400e", cursor: "pointer", fontWeight: 800, fontSize: 11 }}>✏️ {trialDayEditOpen.has(r._id) ? "Close" : "Edit days"}</button>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                              {(() => {
+                                const dn = trialDocsDone(r), tt = trialDocsTotal(r), open = trialDocsOpen.has(r._id), full = dn === tt;
+                                return (
+                                  <button onClick={() => setTrialDocsOpen(prev => { const n = new Set(prev); n.has(r._id) ? n.delete(r._id) : n.add(r._id); return n; })} title="Documents to collect" style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 7, border: "1px solid " + (full ? "#86efac" : "#fcd34d"), background: open ? (full ? "#16a34a" : "#d97706") : (full ? "#f0fdf4" : "#fffbeb"), color: open ? "#fff" : (full ? "#166534" : "#92400e"), cursor: "pointer", fontWeight: 800, fontSize: 11 }}>📄 {dn}/{tt}{full ? " ✓" : ""}</button>
+                                );
+                              })()}
+                              <button onClick={() => editTrial(r)} title="Edit details and trial days / dates" style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 12px", borderRadius: 7, border: "1px solid #ddd6fe", background: "#f5f3ff", color: "#6b21a8", cursor: "pointer", fontWeight: 800, fontSize: 11 }}>✏️ Edit</button>
+                              <button onClick={() => deleteCandidate(r)} title="Delete this candidate (e.g. a duplicate) — cannot be undone" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 30, height: 28, borderRadius: 7, border: "1px solid #fecaca", background: "#fff", color: "#dc2626", cursor: "pointer", fontSize: 13 }}>🗑</button>
+                            </div>
                           </div>
                           {/* The pathway */}
                           <div style={{ display: "flex", alignItems: "flex-start", overflowX: "auto", paddingTop: 2 }}>
@@ -21557,9 +21608,60 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             <Node icon={fin.icon} iconColor={fin.iconColor} bg={fin.bg} label="Final eval" sub={fin.sub} subColor={fin.subColor} current={cur === "finaleval"} onClick={(r.finalEval && r.finalEval.submittedAt) ? () => setEvalFullView({ ev: r.finalEval, label: "Final evaluation", name: r.name }) : undefined} />
                             <Node icon="🏆" iconColor={st === "passed" ? "#fff" : "#c4b5fd"} bg={st === "passed" ? "#16a34a" : "#f3f4f6"} label="Passed" sub={st === "passed" ? "passed" : "goal"} subColor={st === "passed" ? "#16a34a" : "#9ca3af"} current={cur === "passed"} />
                           </div>
-                          {/* Day editor — opened by the ✏️ pencil above. Edit the
-                              count and the exact dates she was in. */}
-                          {trialDayEditOpen.has(r._id) && dayEditorPanel(r, "ov")}
+                          {/* Documents checklist — opened by the 📄 chip above. */}
+                          {trialDocsOpen.has(r._id) && docsChecklistPanel(r)}
+
+                          {/* Actions — everything the kanban used to carry. */}
+                          {(() => {
+                            const btn = (bg, color, border) => ({ padding: "6px 12px", borderRadius: 8, border: border || "none", background: bg, color, cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700 });
+                            const heldMid = r.midEval && r.midEval.heldForHr;
+                            const heldFinal = r.finalEval && r.finalEval.heldForHr;
+                            return (
+                              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
+                                {/* Induction → in-store trial: the first step of the
+                                    journey, shown as a banner under the pathway. */}
+                                {st === "induction" && (
+                                  <div style={{ width: "100%", background: "#f5f3ff", border: "1px solid #ddd6fe", borderRadius: 10, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                                    <span style={{ fontSize: 12, fontWeight: 800, color: "#6b21a8" }}>🎓 Induction → set her in-store trial start date</span>
+                                    <div style={{ flex: 1 }} />
+                                    {(trialStartDraft && trialStartDraft.id === r._id) ? (
+                                      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                                        <input type="date" value={trialStartDraft.date} onChange={e => setTrialStartDraft({ id: r._id, date: e.target.value })} style={{ padding: "6px 8px", borderRadius: 8, border: "1px solid #c4b5fd", fontSize: 12, fontFamily: "inherit" }} />
+                                        <button onClick={() => startInStoreTrial(r._id, trialStartDraft.date)} style={btn("#7c3aed", "#fff")}>Start ▶</button>
+                                        <button onClick={() => setTrialStartDraft(null)} style={btn("#fff", "#6b7280", "1px solid #e5e7eb")}>✕</button>
+                                      </div>
+                                    ) : (
+                                      <button onClick={() => setTrialStartDraft({ id: r._id, date: r.startDate || nextMondayStr() })} style={btn("#7c3aed", "#fff")}>▶ Start in-store trial</button>
+                                    )}
+                                  </div>
+                                )}
+                                {/* Below-pass evaluations held for an HR decision. */}
+                                {heldMid && (<>
+                                  <button onClick={() => resolveHeldEval(r._id, "mid", "pass")} style={btn("#15803d", "#fff")}>✅ Pass wk 1</button>
+                                  <button onClick={() => resolveHeldEval(r._id, "mid", "fail")} style={btn("#fff", "#991b1b", "1px solid #fca5a5")}>❌ Fail</button>
+                                </>)}
+                                {heldFinal && (<>
+                                  <button onClick={() => resolveHeldEval(r._id, "final", "pass")} style={btn("#15803d", "#fff")}>✅ Pass final</button>
+                                  <button onClick={() => resolveHeldEval(r._id, "final", "fail")} style={btn("#fff", "#991b1b", "1px solid #fca5a5")}>❌ Fail</button>
+                                </>)}
+                                {/* Assistant-Manager trials keep the manual pipeline. */}
+                                {trialSubTab === "am" && st !== "passed" && !failed && (
+                                  <button onClick={() => advanceStage(r._id)} style={btn("#0891b2", "#fff")}>Advance →</button>
+                                )}
+                                {trialSubTab === "am" && st === "pending_final_review" && (
+                                  <button onClick={() => markPassed(r._id)} style={btn("#15803d", "#fff")}>✅ Pass</button>
+                                )}
+                                {/* Passed → onboarding. */}
+                                {st === "passed" && (
+                                  <button onClick={() => promoteToOnboarding(r)} style={btn("#BE185D", "#fff")}>🌱 Promote to Onboarding</button>
+                                )}
+                                {/* Manual fail override (active, not induction, not already held). */}
+                                {!failed && st !== "induction" && st !== "passed" && !heldMid && !heldFinal && (
+                                  <button onClick={() => markFailed(r._id)} style={btn("#fff", "#991b1b", "1px solid #fca5a5")}>❌ Fail</button>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </div>
                       );
                     })}
@@ -21568,10 +21670,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               );
             })()}
 
-            {/* Add Trainee Form */}
+            {/* Add / Edit Trainee — modal popup */}
             {tForm._open && (
-              <div style={{ background: "#fff", borderRadius: 16, border: "2px solid #7c3aed", padding: "20px 22px", marginBottom: 24, boxShadow: "0 4px 20px rgba(124,58,237,0.08)" }}>
-                <div style={{ fontSize: 14, fontWeight: 800, color: "#7c3aed", marginBottom: 16 }}>{tForm._editId ? "✏️ Edit Trial Candidate" : "➕ New Trial Candidate"}</div>
+              <div onClick={() => setTForm(f => ({ ...f, _open: false, _editId: null }))} style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 100000, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", overflowY: "auto" }}>
+              <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, border: "2px solid #7c3aed", padding: "20px 22px", width: "100%", maxWidth: 620, maxHeight: "88vh", overflowY: "auto", boxShadow: "0 24px 70px rgba(0,0,0,0.35)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                  <div style={{ fontSize: 16, fontWeight: 800, color: "#7c3aed" }}>{tForm._editId ? "✏️ Edit Trial Candidate" : "➕ New Trial Candidate"}</div>
+                  <button onClick={() => setTForm(f => ({ ...f, _open: false, _editId: null }))} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 20, lineHeight: 1, padding: 0 }}>✕</button>
+                </div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12, marginBottom: 12 }}>
                   <div><label style={lbl}>Full Name *</label><input style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.name || ""} onChange={e => setTForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Thandi Mokoena" /></div>
                   <div><label style={lbl}>Phone</label><input style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.phone || ""} onChange={e => setTForm(f => ({ ...f, phone: e.target.value }))} placeholder="+27 ..." /></div>
@@ -21597,234 +21703,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <label style={lbl}>Notes</label>
                   <textarea rows={2} style={{ ...inp, width: "100%", boxSizing: "border-box", resize: "vertical" }} value={tForm.notes || ""} onChange={e => setTForm(f => ({ ...f, notes: e.target.value }))} />
                 </div>
-                <div style={{ display: "flex", gap: 8 }}>
+                {/* Trial days & dates — edit the actual days she was in, right here. */}
+                {tForm._editId && (() => {
+                  const rec = trialList.find(x => x._id === tForm._editId);
+                  return rec ? (
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: "#7c3aed", borderTop: "1px solid #ede9fe", paddingTop: 14 }}>🗓 Trial days &amp; dates</div>
+                      {dayEditorPanel(rec, "edit")}
+                    </div>
+                  ) : null;
+                })()}
+                <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
                   <button onClick={submitTrial} style={{ padding: "9px 22px", borderRadius: 9, border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>{tForm._editId ? "💾 Save Changes" : "🧪 Add to " + (trialSubTab === "am" ? "AM Trial" : "Trial Pipeline")}</button>
                   <button onClick={() => setTForm(f => ({ ...f, _open: false, _editId: null }))} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>Cancel</button>
                 </div>
               </div>
+              </div>
             )}
 
-            {/* Pipeline Kanban */}
-            <div style={{ overflowX: "auto", paddingBottom: 8 }}>
-              <div style={{ display: "flex", gap: 16, minWidth: "max-content" }}>
-                {TRIAL_STAGES.map(stage => {
-                  // For nail techs the pipeline is now Induction → Week 1 →
-                  // Week 2, driven by kiosk evaluations. Any legacy records left
-                  // in the old "pending review" statuses fold into the matching
-                  // week column so they stay visible and actionable.
-                  const normStatus = (st) => trialSubTab === "nt"
-                    ? ({ pending_mid_review: "trial_w1", pending_final_review: "trial_w2" }[st] || st)
-                    : st;
-                  const cards = currentList.filter(r => normStatus(r.status) === stage.key);
-                  return (
-                    <div key={stage.key} style={{ width: 240, flexShrink: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-                        <div style={{ background: stage.bg, color: stage.color, borderRadius: 8, padding: "4px 10px", fontSize: 12, fontWeight: 800, letterSpacing: "0.04em" }}>{stage.emoji} {stage.label}</div>
-                        <div style={{ background: stage.color, color: "#fff", borderRadius: 99, width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800 }}>{cards.length}</div>
-                      </div>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                        {cards.length === 0 && (
-                          <div style={{ border: "1.5px dashed #e5e7eb", borderRadius: 10, padding: "16px 10px", textAlign: "center", color: "#9ca3af", fontSize: 12 }}>No candidates</div>
-                        )}
-                        {cards.map(r => {
-                          const ds = daysInStage(r);
-                          const isStale = ds > 10;
-                          return (
-                            <div key={r._id} style={{ background: "#fff", borderRadius: 12, border: `1.5px solid ${isStale ? "#fca5a5" : stage.bg}`, padding: "12px 14px", boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
-                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                                <div style={{ fontWeight: 700, color: "#111827", fontSize: 13, marginBottom: 2 }}>{r.name}</div>
-                                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                                  <button onClick={() => editTrial(r)} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 13, lineHeight: 1, padding: 0 }} title="Edit details & location">✏️</button>
-                                  <button onClick={() => deleteTrial(r._id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#d1d5db", fontSize: 14, lineHeight: 1, padding: 0 }} title="Delete">✕</button>
-                                </div>
-                              </div>
-                              <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 8 }}>📍 {r.branch}</div>
-                              {r.startDate && <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 4 }}>Started: {fmtDate(r.startDate)}</div>}
-                              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
-                                <span style={{ background: isStale ? "#fee2e2" : stage.bg, color: isStale ? "#991b1b" : stage.color, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 99 }}>{isStale ? "⚠ " : ""}{ds}d in stage</span>
-                              </div>
-                              <div style={{ display: "flex", gap: 4, alignItems: "center", marginBottom: 10 }}>
-                                <span style={{ fontSize: 11, color: "#6b7280" }}>Attendance:</span>
-                                {(() => {
-                                  const checkins = r.checkins || {};
-                                  const workedDays = typeof checkins === "object" && !Array.isArray(checkins)
-                                    ? Object.values(checkins).filter(st => st === "on" || st === "late").length
-                                    : 0;
-
-                                  // Week 2 stages get 10 days goal
-                                  const totalRequired = (r.status === "trial_w2" || r.status === "pending_final_review") ? 10 : 5;
-
-                                  const dots = [];
-                                  for (let i = 0; i < totalRequired; i++) {
-                                    dots.push(
-                                      <div key={i} style={{ width: 8, height: 8, borderRadius: "50%", background: i < workedDays ? "#16a34a" : "#e5e7eb" }} />
-                                    );
-                                  }
-                                  return (
-                                    <>
-                                      <div style={{ display: "flex", gap: 3, flexWrap: "wrap", maxWidth: 120 }}>{dots}</div>
-                                      <span style={{ fontSize: 11, color: "#6b7280", marginLeft: 4 }}>{workedDays}/{totalRequired}</span>
-                                    </>
-                                  );
-                                })()}
-                              </div>
-
-                              {/* Toggle Button for Expanded View */}
-                              <div style={{ marginBottom: 10 }}>
-                                <button onClick={() => {
-                                  const next = new Set(expandedTrialCards);
-                                  if (next.has(r._id)) next.delete(r._id);
-                                  else next.add(r._id);
-                                  setExpandedTrialCards(next);
-                                }} style={{ background: "none", border: "none", cursor: "pointer", color: "#be185d", fontSize: 11, fontWeight: 700, padding: 0 }}>
-                                  {expandedTrialCards.has(r._id) ? "Show less" : "Show more"}
-                                </button>
-                              </div>
-
-                              {/* Expanded View: day editor (count + exact dates) */}
-                              {expandedTrialCards.has(r._id) && dayEditorPanel(r, "kb")}
-                              {/* Completed evaluations — the real form the manager
-                                  filled on the kiosk, kept here for HR reference. */}
-                              {(() => {
-                                const evalBox = (ev, label) => {
-                                  if (!ev || !ev.submittedAt) return null;
-                                  const ok = ev.pass;
-                                  return (
-                                    <div key={label} style={{ background: ok ? "#f0fdf4" : "#fff7ed", border: `1px solid ${ok ? "#86efac" : "#fdba74"}`, borderRadius: 8, padding: "8px 10px", marginBottom: 8, fontSize: 11 }}>
-                                      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, color: ok ? "#166534" : "#9a3412" }}>
-                                        <span>📋 {label}</span>
-                                        <button onClick={() => setEvalFullView({ ev, label, name: r.name })} title="See the full evaluation breakdown" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 800, color: ok ? "#166534" : "#9a3412", textDecoration: "underline dotted", textUnderlineOffset: 2 }}>{ev.total}/{ev.max} · {ok ? "PASS" : "BELOW PASS"} 🔍</button>
-                                      </div>
-                                      <div style={{ color: "#6b7280", marginTop: 2 }}>by {ev.submittedBy || "—"}{ev.submittedAt ? " · " + fmtDate(String(ev.submittedAt).slice(0, 10)) : ""}</div>
-                                      {!ev.keyOk && <div style={{ color: "#b45309", marginTop: 2 }}>⚠ A Key Indicator scored below 3.</div>}
-                                      {ev.notes && <div style={{ color: "#6b7280", marginTop: 2, fontStyle: "italic" }}>“{ev.notes}”</div>}
-                                      {ev.heldForHr && <div style={{ color: "#9a3412", marginTop: 3, fontWeight: 700 }}>⏳ Held for your review</div>}
-                                      {ev.hrOverride && <div style={{ color: "#6b7280", marginTop: 2 }}>HR decision: {ev.hrOverride === "pass" ? "passed" : "failed"}</div>}
-                                    </div>
-                                  );
-                                };
-                                return (<>{evalBox(r.midEval, "Week 1 evaluation")}{evalBox(r.finalEval, "Final evaluation")}</>);
-                              })()}
-
-                              {/* Automation hint — nail-tech evaluations auto-send from the kiosk. */}
-                              {trialSubTab === "nt" && (r.status === "trial_w1" || r.status === "trial_w2") && (() => {
-                                const isW1 = r.status === "trial_w1";
-                                const have = isW1 ? (r.midEval && r.midEval.submittedAt) : (r.finalEval && r.finalEval.submittedAt);
-                                if (have) return null;
-                                const need = isW1 ? 5 : 10;
-                                return (
-                                  <div style={{ background: "#f5f3ff", border: "1px dashed #c4b5fd", borderRadius: 8, padding: "7px 10px", marginBottom: 8, fontSize: 11, color: "#6b21a8" }}>
-                                    🤖 {isW1 ? "Week 1" : "Final"} evaluation auto-sends to the {r.branch} kiosk after {need} trial days · worked {workedDaysOf(r)}/{need}
-                                  </div>
-                                );
-                              })()}
-
-                              {/* Documents-to-collect CHECKLIST — opens from the moment the
-                                  in-store trial starts; the signed contract joins it once passed. */}
-                              {trialSubTab === "nt" && ["trial_w1", "trial_w2", "pending_mid_review", "pending_final_review", "passed"].includes(r.status) && (() => {
-                                const done = trialDocsDone(r), total = trialDocsTotal(r);
-                                const open = trialDocsOpen.has(r._id);
-                                return (
-                                  <div style={{ marginBottom: 8 }}>
-                                    <button onClick={() => setTrialDocsOpen(prev => { const n = new Set(prev); n.has(r._id) ? n.delete(r._id) : n.add(r._id); return n; })} style={{ fontSize: 10, fontWeight: 800, border: "1px solid", borderColor: done === total ? "#86efac" : "#fcd34d", background: done === total ? "#f0fdf4" : "#fffbeb", color: done === total ? "#166534" : "#92400e", borderRadius: 99, padding: "3px 10px", cursor: "pointer" }}>
-                                      📄 Documents {done}/{total} {done === total ? "✓" : "⏳"} {open ? "▾" : "▸"}
-                                    </button>
-                                    {open && docsChecklistPanel(r)}
-                                  </div>
-                                );
-                              })()}
-
-                              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                                {/* Induction → in-store trial: HR's one manual advance, sets the start date. */}
-                                {r.status === "induction" && (
-                                  trialStartDraft && trialStartDraft.id === r._id ? (
-                                    <div style={{ display: "flex", gap: 6, width: "100%", flexWrap: "wrap", alignItems: "center" }}>
-                                      <input type="date" value={trialStartDraft.date} onChange={e => setTrialStartDraft({ id: r._id, date: e.target.value })} style={{ flex: 1, minWidth: 120, padding: "6px 8px", borderRadius: 7, border: "1px solid #c4b5fd", fontSize: 11, fontFamily: "inherit" }} />
-                                      <button onClick={() => startInStoreTrial(r._id, trialStartDraft.date)} style={{ padding: "6px 10px", borderRadius: 7, border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>Start ▶</button>
-                                      <button onClick={() => setTrialStartDraft(null)} style={{ padding: "6px 8px", borderRadius: 7, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", cursor: "pointer", fontFamily: "inherit", fontSize: 11 }}>✕</button>
-                                    </div>
-                                  ) : (
-                                    <button onClick={() => setTrialStartDraft({ id: r._id, date: r.startDate || nextMondayStr() })} style={{ flex: 1, padding: "6px 8px", borderRadius: 7, border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>▶ Start in-store trial</button>
-                                  )
-                                )}
-
-                                {/* Held-for-HR evaluation decisions (below-pass scores). */}
-                                {r.midEval && r.midEval.heldForHr && (<>
-                                  <button onClick={() => resolveHeldEval(r._id, "mid", "pass")} style={{ padding: "6px 8px", borderRadius: 7, border: "none", background: "#15803d", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>✅ Pass wk 1</button>
-                                  <button onClick={() => resolveHeldEval(r._id, "mid", "fail")} style={{ padding: "6px 8px", borderRadius: 7, border: "1px solid #fca5a5", background: "#fff", color: "#991b1b", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>❌ Fail</button>
-                                </>)}
-                                {r.finalEval && r.finalEval.heldForHr && (<>
-                                  <button onClick={() => resolveHeldEval(r._id, "final", "pass")} style={{ padding: "6px 8px", borderRadius: 7, border: "none", background: "#15803d", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>✅ Pass final</button>
-                                  <button onClick={() => resolveHeldEval(r._id, "final", "fail")} style={{ padding: "6px 8px", borderRadius: 7, border: "1px solid #fca5a5", background: "#fff", color: "#991b1b", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>❌ Fail</button>
-                                </>)}
-
-                                {/* Assistant-Manager trials keep the manual pipeline buttons. */}
-                                {trialSubTab === "am" && r.status !== "passed" && r.status !== "failed" && (
-                                  <button onClick={() => advanceStage(r._id)} style={{ flex: 1, padding: "6px 8px", borderRadius: 7, border: "none", background: stage.color, color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>Advance →</button>
-                                )}
-                                {trialSubTab === "am" && r.status === "pending_final_review" && (
-                                  <button onClick={() => markPassed(r._id)} style={{ padding: "6px 8px", borderRadius: 7, border: "none", background: "#15803d", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>✅ Pass</button>
-                                )}
-
-                                {/* Manual fail override (not while inducting, and not when an eval is already held). */}
-                                {r.status !== "failed" && r.status !== "induction" && !(r.midEval && r.midEval.heldForHr) && !(r.finalEval && r.finalEval.heldForHr) && (
-                                  <button onClick={() => markFailed(r._id)} style={{ padding: "6px 8px", borderRadius: 7, border: "1px solid #fca5a5", background: "#fff", color: "#991b1b", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>❌ Fail</button>
-                                )}
-                                <button onClick={() => deleteCandidate(r)} title="Delete this candidate (e.g. a duplicate) — cannot be undone" style={{ padding: "6px 8px", borderRadius: 7, border: "1px solid #e5e7eb", background: "#fff", color: "#9ca3af", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>🗑</button>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })}
-
-                {/* Passed column */}
-                <div style={{ width: 240, flexShrink: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-                    <div style={{ background: "#dcfce7", color: "#15803d", borderRadius: 8, padding: "4px 10px", fontSize: 12, fontWeight: 800 }}>✅ Passed</div>
-                    <div style={{ background: "#15803d", color: "#fff", borderRadius: 99, width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800 }}>{passedTrials.length}</div>
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                    {passedTrials.length === 0 && (
-                      <div style={{ border: "1.5px dashed #e5e7eb", borderRadius: 10, padding: "16px 10px", textAlign: "center", color: "#9ca3af", fontSize: 12 }}>No passed candidates yet</div>
-                    )}
-                    {passedTrials.map(r => (
-                      <div key={r._id} style={{ background: "#fff", borderRadius: 12, border: "1.5px solid #bbf7d0", padding: "12px 14px", boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                          <div style={{ fontWeight: 700, color: "#111827", fontSize: 13, marginBottom: 2 }}>{r.name}</div>
-                          <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                            <button onClick={() => editTrial(r)} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 13, lineHeight: 1, padding: 0 }} title="Edit details & location">✏️</button>
-                            <button onClick={() => deleteCandidate(r)} style={{ background: "none", border: "none", cursor: "pointer", color: "#dc2626", fontSize: 13, lineHeight: 1, padding: 0 }} title="Delete this candidate (e.g. a duplicate) — cannot be undone">🗑</button>
-                          </div>
-                        </div>
-                        <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 10 }}>📍 {r.branch}</div>
-                        {/* Documents checklist — now includes the signed contract. */}
-                        {(() => {
-                          const done = trialDocsDone(r), total = trialDocsTotal(r);
-                          const open = trialDocsOpen.has(r._id);
-                          return (
-                            <div style={{ marginBottom: 10 }}>
-                              <button onClick={() => setTrialDocsOpen(prev => { const n = new Set(prev); n.has(r._id) ? n.delete(r._id) : n.add(r._id); return n; })} style={{ fontSize: 10, fontWeight: 800, border: "1px solid", borderColor: done === total ? "#86efac" : "#fcd34d", background: done === total ? "#f0fdf4" : "#fffbeb", color: done === total ? "#166534" : "#92400e", borderRadius: 99, padding: "3px 10px", cursor: "pointer" }}>
-                                📄 Documents {done}/{total} {done === total ? "✓" : "⏳"} {open ? "▾" : "▸"}
-                              </button>
-                              {open && docsChecklistPanel(r)}
-                            </div>
-                          );
-                        })()}
-                        <button
-                          onClick={() => promoteToOnboarding(r)}
-                          style={{ width: "100%", padding: "8px", borderRadius: 8, border: "none", background: "#BE185D", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700 }}
-                        >
-                          🌱 Promote to Onboarding
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
 
             {/* Hired in the last 30 days */}
             {hiredRecent.length > 0 && (
