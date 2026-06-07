@@ -22945,6 +22945,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           unpaid: { lbl: "Unpaid", bg: "#e9d5ff", fg: "#581c87", cat: "unpaid" },
           deduct: { lbl: "Hours Deduction", bg: "#fed7aa", fg: "#7f1d1d", cat: "unpaid_h" },
           trial: { lbl: "Trial Day", bg: "#fde047", fg: "#713f12", cat: "work" },
+          prestart: { lbl: "·", bg: "#f3f4f6", fg: "#cbd5e1", cat: "none" },
           term: { lbl: "TERMINATED", bg: "#dc2626", fg: "#FFFFFF", cat: "none" },
           swap_o: { lbl: "Owes", bg: "#cbd5e1", fg: "#dc2626", cat: "swap" },
           swap_i: { lbl: "Owed", bg: "#86efac", fg: "#14532d", cat: "swap" },
@@ -23320,6 +23321,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         // Helpers
         const mirrorSuppressed = !!(attMeta && attMeta.mirrorSuppressed);
+        // Start-date lookup (ec → YYYY-MM-DD). Onboarding record wins, matching
+        // findStartDate. Used to grey out a person's days before they joined.
+        const startByEc = {};
+        (staff || []).forEach(s => { const e = String(s.ec || "").trim(); if (e && s.startDate) startByEc[e] = s.startDate; });
+        (managers || []).forEach(m => { const e = String(m.ec || "").trim(); if (e && m.startDate) startByEc[e] = m.startDate; });
+        (obList || []).forEach(o => { const e = String(o.ec || "").trim(); if (e && o.startDate) startByEc[e] = o.startDate; });
         const getStatus = (ec, d) => {
           // If the schedule was later corrected to OFF for this day, any
           // stale ROM-recorded reason (sick / absent / FRL / etc.) is
@@ -23427,6 +23434,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }
             return _bareV;
           }
+          // New starter: a day BEFORE their start date with nothing explicitly
+          // recorded is "pre-start" — they hadn't joined yet. Render it greyed
+          // and DON'T count it, so the gaps between carried-over trial days (and
+          // the days just before the start date) don't read as blank/unpaid or,
+          // via a stale schedule "X", as TERMINATED. Trial days themselves carry
+          // an explicit attGrid value and are returned above, so they stay.
+          if (dayObj && startByEc[String(ec).trim()] && dayObj.ymd < startByEc[String(ec).trim()]) return "prestart";
           // After a Total Reset the schedule mirror is suppressed so the
           // grid reads as truly empty until the admin runs Auto-fill.
           if (mirrorSuppressed) return "";
