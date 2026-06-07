@@ -21425,13 +21425,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 || (a.name || "").localeCompare(b.name || ""));
 
               // A milestone circle on the pathway.
-              const Node = ({ icon, iconColor, bg, label, sub, subColor, current }) => (
+              const Node = ({ icon, iconColor, bg, label, sub, subColor, current, onClick }) => (
                 <div style={{ flex: "0 0 86px", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
                   <div style={{ height: 40, display: "flex", alignItems: "center" }}>
-                    <div style={{ width: 38, height: 38, borderRadius: 99, background: bg, color: iconColor, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17, boxShadow: current ? "0 0 0 4px #ede9fe" : "none", border: current ? "2px solid #7c3aed" : "2px solid transparent" }}>{icon}</div>
+                    <div onClick={onClick} title={onClick ? "See the full evaluation" : undefined} style={{ width: 38, height: 38, borderRadius: 99, background: bg, color: iconColor, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17, boxShadow: current ? "0 0 0 4px #ede9fe" : "none", border: current ? "2px solid #7c3aed" : "2px solid transparent", cursor: onClick ? "pointer" : "default" }}>{icon}</div>
                   </div>
                   <div style={{ fontSize: 10.5, fontWeight: 800, color: current ? "#6b21a8" : "#6b7280", textAlign: "center", lineHeight: 1.15 }}>{label}{current ? " ◂" : ""}</div>
-                  <div style={{ fontSize: 9.5, fontWeight: 700, color: subColor || "#9ca3af", textAlign: "center" }}>{sub}</div>
+                  {onClick
+                    ? <button onClick={onClick} title="See the full evaluation" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 9.5, fontWeight: 800, color: subColor || "#9ca3af", textAlign: "center", textDecoration: "underline dotted", textUnderlineOffset: 2 }}>{sub} 🔍</button>
+                    : <div style={{ fontSize: 9.5, fontWeight: 700, color: subColor || "#9ca3af", textAlign: "center" }}>{sub}</div>}
                 </div>
               );
               // A 5-day stretch connecting two milestones; fills green as worked.
@@ -21495,9 +21497,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               <Node icon={inductionDone ? "✓" : "🎓"} iconColor={inductionDone ? "#fff" : "#6b21a8"} bg={inductionDone ? "#16a34a" : "#7c3aed"} label="Induction" sub={inductionDone ? "done" : "in progress"} subColor={inductionDone ? "#16a34a" : "#6b21a8"} current={cur === "induction"} />
                             )}
                             <Conn label="First 5 days" fillPct={(w1 / 5) * 100} count={w1 + "/5"} active={w1 > 0} current={cur === "w1"} />
-                            <Node icon={mid.icon} iconColor={mid.iconColor} bg={mid.bg} label="Week 1 eval" sub={mid.sub} subColor={mid.subColor} current={cur === "wk1eval"} />
+                            <Node icon={mid.icon} iconColor={mid.iconColor} bg={mid.bg} label="Week 1 eval" sub={mid.sub} subColor={mid.subColor} current={cur === "wk1eval"} onClick={(r.midEval && r.midEval.submittedAt) ? () => setEvalFullView({ ev: r.midEval, label: "Week 1 evaluation", name: r.name }) : undefined} />
                             <Conn label="Next 5 days" fillPct={(w2 / 5) * 100} count={w2 + "/5"} active={w2 > 0} current={cur === "w2"} />
-                            <Node icon={fin.icon} iconColor={fin.iconColor} bg={fin.bg} label="Final eval" sub={fin.sub} subColor={fin.subColor} current={cur === "finaleval"} />
+                            <Node icon={fin.icon} iconColor={fin.iconColor} bg={fin.bg} label="Final eval" sub={fin.sub} subColor={fin.subColor} current={cur === "finaleval"} onClick={(r.finalEval && r.finalEval.submittedAt) ? () => setEvalFullView({ ev: r.finalEval, label: "Final evaluation", name: r.name }) : undefined} />
                             <Node icon="🏆" iconColor={st === "passed" ? "#fff" : "#c4b5fd"} bg={st === "passed" ? "#16a34a" : "#f3f4f6"} label="Passed" sub={st === "passed" ? "passed" : "goal"} subColor={st === "passed" ? "#16a34a" : "#9ca3af"} current={cur === "passed"} />
                           </div>
                           {/* Day editor — opened by the ✏️ pencil above. Edit the
