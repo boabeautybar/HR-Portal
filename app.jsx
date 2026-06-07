@@ -13522,6 +13522,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   };
   const [expandedTrialCards, setExpandedTrialCards] = useState(new Set()); // tracking expanded state for trial cards
   const [trialDayEditOpen, setTrialDayEditOpen] = useState(new Set());     // pathway cards whose day editor (✏️) is open
+  const [showTrialWorkflow, setShowTrialWorkflow] = useState(() => { try { return localStorage.getItem("boa_trial_workflow_hidden") !== "1"; } catch (_e) { return true; } });
   const [trialDocsOpen, setTrialDocsOpen] = useState(new Set());           // cards whose documents checklist is open
   const [evalFullView, setEvalFullView] = useState(null);                 // { ev, label, name } — full evaluation breakdown modal
   const [trialStartDraft, setTrialStartDraft] = useState(null); // { id, date } while HR is setting an in-store trial start date
@@ -21443,6 +21444,42 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 ➕ Add Trainee
               </button>
             </div>
+
+            {/* ── Workflow explainer (collapsible) ── */}
+            {(() => {
+              const toggle = () => setShowTrialWorkflow(v => { const nv = !v; try { localStorage.setItem("boa_trial_workflow_hidden", nv ? "0" : "1"); } catch (_e) { } return nv; });
+              const STEPS = [
+                { icon: "🎨", title: "Interview & gel test", bg: "#ede9fe", color: "#7c3aed", desc: "HR books an interview with the candidate and our trainer. She paints white gel polish; the trainer submits photos and decides who goes into induction." },
+                { icon: "🎓", title: "Induction (~4 days)", bg: "#cffafe", color: "#0891b2", desc: "The trainer teaches BOA treatments & procedures and assesses if she's fit for the floor — filtering candidates further. The trainer also checks which stores suit her and confirms availability with recruitment." },
+                { icon: "📦", title: "Kit, uniform & 2-week contract", bg: "#fef3c7", color: "#d97706", desc: "On the last induction day the trainer orders her basket & uniform. She signs the 2-week trial contract and submits ALL paperwork before going into store — usually starting the following Monday." },
+                { icon: "🏪", title: "In-store · Week 1 (5 days)", bg: "#d1fae5", color: "#059669", desc: "She works 5 trial days in the store, then the store completes her Week 1 evaluation on the kiosk." },
+                { icon: "📋", title: "In-store · Week 2 (5 days)", bg: "#fce7f3", color: "#BE185D", desc: "If she passes, another 5 trial days in store, then the store completes the final evaluation." },
+                { icon: "🌱", title: "Onboarding & Fresha", bg: "#dcfce7", color: "#16a34a", desc: "Once she passes the final evaluation, HR completes the onboarding form — which triggers opening her on Fresha." },
+                { icon: "✍️", title: "Permanent contract", bg: "#e0e7ff", color: "#4338ca", desc: "She signs her permanent contract before returning to the store after the trial phase — now a permanent BOA nail tech." }
+              ];
+              return (
+                <div style={{ background: "#fff", borderRadius: 16, border: "1px solid #ede9fe", padding: "16px 18px", marginBottom: 24, boxShadow: "0 2px 10px rgba(124,58,237,0.05)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <div style={{ fontSize: 14, fontWeight: 800, color: "#6b21a8" }}>🗺️ How the nail-tech trial works — interview to permanent</div>
+                    <button onClick={toggle} style={{ background: "#f5f3ff", color: "#6b21a8", border: "1px solid #ddd6fe", borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 12, fontWeight: 800 }}>{showTrialWorkflow ? "Hide ▲" : "Show ▼"}</button>
+                  </div>
+                  {showTrialWorkflow && (
+                    <div style={{ display: "flex", alignItems: "flex-start", overflowX: "auto", marginTop: 16, paddingBottom: 8 }}>
+                      {STEPS.map((s, i) => (
+                        <React.Fragment key={i}>
+                          <div style={{ flex: "0 0 188px", display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", padding: "0 4px" }}>
+                            <div style={{ width: 46, height: 46, borderRadius: 99, background: s.bg, color: s.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 21, border: "2px solid " + s.color, marginBottom: 8 }}>{s.icon}</div>
+                            <div style={{ fontSize: 12.5, fontWeight: 800, color: "#374151", marginBottom: 5, lineHeight: 1.2 }}>{i + 1}. {s.title}</div>
+                            <div style={{ fontSize: 11, color: "#6b7280", lineHeight: 1.5 }}>{s.desc}</div>
+                          </div>
+                          {i < STEPS.length - 1 && <div style={{ flex: "0 0 22px", marginTop: 14, color: "#c4b5fd", fontSize: 20, fontWeight: 800, textAlign: "center" }}>→</div>}
+                        </React.Fragment>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Stats */}
             <div style={{ display: "flex", gap: 10, marginBottom: 24, flexWrap: "wrap" }}>
