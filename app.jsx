@@ -7546,6 +7546,7 @@ const SETTINGS_TABS = [
   { t: "dashMgrAbsences", l: "Manager Absences (Action required)", cat: "Home/Dashboard", icon: "📌" },
   { t: "dashCalledInSick", l: "Called in Sick / Absent (today & tomorrow)", cat: "Home/Dashboard", icon: "🤒" },
   { t: "dashAbscond", l: "Abscond / Absence Warnings", cat: "Home/Dashboard", icon: "🚨" },
+  { t: "trialAmCheckinAlert", l: "AM Trial · missing check-in (trainers)", cat: "Home/Dashboard", icon: "⚠️" },
   { t: "staff", l: "Staff List", cat: "People", icon: "👥" },
   { t: "onboard", l: "Onboarding", cat: "People", icon: "🌱" },
   { t: "offboard", l: "Off-boarding", cat: "People", icon: "👋" },
@@ -21019,6 +21020,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (loc === "ho") dl[date] = "ho"; else delete dl[date];   // store is the default
           persistTrial(trialList.map(x => x._id === r._id ? { ...x, dayLocs: dl, updatedAt: new Date().toISOString() } : x));
         };
+        // Manually add a worked trial day AND its location in one write, so the
+        // status + Store/HO tag are set atomically (chaining the two setters
+        // above would race on stale state). For nail techs, loc is ignored.
+        const addManualTrialDay = (r, date, loc) => {
+          if (!date) return;
+          const ci = { ...(r.checkins || {}) }; ci[date] = "on";
+          const dl = { ...(r.dayLocs || {}) };
+          if (loc === "ho") dl[date] = "ho"; else delete dl[date];
+          persistTrial(trialList.map(x => x._id === r._id ? { ...x, checkins: ci, dayLocs: dl, updatedAt: new Date().toISOString() } : x));
+        };
 
         // Shared day editor — a quick whole-number setter PLUS a per-date editor
         // (tick each planned/off-plan day as Worked / Late / Absent, or add a
@@ -21101,9 +21112,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   );
                 })}
               </div>
-              <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 8 }}>
-                <input type="date" id={addId} style={{ flex: 1, minWidth: 0, padding: "5px 6px", border: "1px solid #e5e7eb", borderRadius: 6, fontSize: 12, fontFamily: "inherit" }} />
-                <button onClick={() => { const el = document.getElementById(addId); const d = el && el.value; if (!d) { alert("Pick a date first."); return; } setCheckinStatus(r, d, "on"); if (el) el.value = ""; }} style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: "#16a34a", color: "#fff", cursor: "pointer", fontWeight: 800, fontSize: 11, whiteSpace: "nowrap" }}>+ Add a day</button>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 8, flexWrap: "wrap" }}>
+                <input type="date" id={addId} style={{ flex: 1, minWidth: 120, padding: "5px 6px", border: "1px solid #e5e7eb", borderRadius: 6, fontSize: 12, fontFamily: "inherit" }} />
+                {(r.role || "nt") === "am" ? (
+                  // Trainers reconstructing past AM days choose the location as they add it.
+                  [["store", "+ Store day", "#16a34a"], ["ho", "+ HO day", "#6b21a8"]].map(([lv, lbl, col]) => (
+                    <button key={lv} onClick={() => { const el = document.getElementById(addId); const d = el && el.value; if (!d) { alert("Pick a date first."); return; } addManualTrialDay(r, d, lv); if (el) el.value = ""; }} style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: col, color: "#fff", cursor: "pointer", fontWeight: 800, fontSize: 11, whiteSpace: "nowrap" }}>{lbl}</button>
+                  ))
+                ) : (
+                  <button onClick={() => { const el = document.getElementById(addId); const d = el && el.value; if (!d) { alert("Pick a date first."); return; } addManualTrialDay(r, d, null); if (el) el.value = ""; }} style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: "#16a34a", color: "#fff", cursor: "pointer", fontWeight: 800, fontSize: 11, whiteSpace: "nowrap" }}>+ Add a day</button>
+                )}
               </div>
             </div>
           );
@@ -21460,6 +21478,51 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 ➕ Add Trainee
               </button>
             </div>
+
+            {/* ── Trainer notification: AM trial days with no check-in ──
+                Flags any Assistant-Manager trial day (Mon–Fri, excl. SA public
+                holidays) that has already passed but has NO check-in recorded —
+                meaning she wasn't clocked in at the store kiosk and wasn't
+                checked in at head office either. Aimed at the trainers (Farieda
+                & Rochelle), who both live on this tab, so they can confirm
+                whether she was in and record the day on her card below.
+                Visibility is managed per-user under Settings → Home/Dashboard. */}
+            {!(new Set(currentUser?.hideTabs || []).has("trialAmCheckinAlert")) && (() => {
+              const _p2 = n => String(n).padStart(2, "0");
+              const _t = new Date(); _t.setHours(0, 0, 0, 0);
+              const todayYmd = _t.getFullYear() + "-" + _p2(_t.getMonth() + 1) + "-" + _p2(_t.getDate());
+              const ACTIVE = ["trial_w1", "trial_w2", "pending_mid_review", "pending_final_review"];
+              const misses = (trialList || []).filter(c => c && (c.role || "nt") === "am" && ACTIVE.includes(c.status) && c.startDate)
+                .map(c => {
+                  const ci = (c.checkins && typeof c.checkins === "object" && !Array.isArray(c.checkins)) ? c.checkins : {};
+                  // A planned trial working day in the past with no recorded
+                  // status at all (store kiosk or head office) is a missed check-in.
+                  const missing = trialWorkingDates(c.startDate, 10).filter(d => d < todayYmd && !ci[d]);
+                  return { c, missing };
+                })
+                .filter(x => x.missing.length > 0)
+                .sort((a, b) => (a.c.name || "").localeCompare(b.c.name || ""));
+              if (!misses.length) return null;
+              const totalDays = misses.reduce((a, x) => a + x.missing.length, 0);
+              return (
+                <div style={{ background: "#fff7ed", border: "2px solid #fed7aa", borderRadius: 16, padding: "16px 18px", marginBottom: 24, boxShadow: "0 4px 16px rgba(234,88,12,0.10)" }}>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
+                    <div style={{ fontSize: 15, fontWeight: 800, color: "#9a3412", letterSpacing: "0.04em", textTransform: "uppercase" }}>⚠️ AM trial check-in missing</div>
+                    <div style={{ fontSize: 12, color: "#c2410c", fontWeight: 700 }}>{totalDays} trial day{totalDays === 1 ? "" : "s"} with no store or head-office check-in · for Farieda &amp; Rochelle</div>
+                  </div>
+                  <div style={{ fontSize: 11, color: "#9a3412", marginBottom: 2, lineHeight: 1.45 }}>These Assistant-Manager trial days (Mon–Fri, excl. public holidays) have passed with no check-in from the store kiosk <i>or</i> head office. Confirm whether she was in and record it on her card below (📅 Set the exact days), tagging Store or HO.</div>
+                  {misses.map(({ c, missing }) => (
+                    <div key={"miss-" + c._id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "1px dashed #fed7aa", flexWrap: "wrap" }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: "#9a3412" }}>{c.name}{c.branch ? <span style={{ fontWeight: 600, color: "#c2410c" }}> · 📍 {c.branch}</span> : null}</div>
+                        <div style={{ fontSize: 11, color: "#c2410c", marginTop: 1 }}>{missing.length} missed · {missing.map(d => fmtDate(d)).join(" · ")}</div>
+                      </div>
+                      {trialSubTab !== "am" && <button onClick={() => setTrialSubTab("am")} style={{ background: "#fff", color: "#9a3412", border: "1px solid #fed7aa", borderRadius: 8, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>View AM trials →</button>}
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
 
             {/* ── Workflow explainer (collapsible) ── */}
             {(() => {
