@@ -21508,7 +21508,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div style={{ background: "#fff7ed", border: "2px solid #fed7aa", borderRadius: 16, padding: "16px 18px", marginBottom: 24, boxShadow: "0 4px 16px rgba(234,88,12,0.10)" }}>
                   <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
                     <div style={{ fontSize: 15, fontWeight: 800, color: "#9a3412", letterSpacing: "0.04em", textTransform: "uppercase" }}>⚠️ AM trial check-in missing</div>
-                    <div style={{ fontSize: 12, color: "#c2410c", fontWeight: 700 }}>{totalDays} trial day{totalDays === 1 ? "" : "s"} with no store or head-office check-in · for Farieda &amp; Rochelle</div>
+                    <div style={{ fontSize: 12, color: "#c2410c", fontWeight: 700 }}>{totalDays} trial day{totalDays === 1 ? "" : "s"} with no store or head-office check-in</div>
                   </div>
                   <div style={{ fontSize: 11, color: "#9a3412", marginBottom: 2, lineHeight: 1.45 }}>These Assistant-Manager trial days (Mon–Fri, excl. public holidays) have passed with no check-in from the store kiosk <i>or</i> head office. Confirm whether she was in and record it on her card below (📅 Set the exact days), tagging Store or HO.</div>
                   {misses.map(({ c, missing }) => (
