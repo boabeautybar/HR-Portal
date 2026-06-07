@@ -21519,9 +21519,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       else if (st === "passed") cur = "passed";
                       const inductionDone = st !== "induction";
                       const evNode = (ev, due, pendingSub) => {
-                        if (ev && ev.submittedAt) return ev.pass
-                          ? { bg: "#16a34a", iconColor: "#fff", icon: "✓", sub: ev.total + "/" + ev.max, subColor: "#16a34a" }
-                          : { bg: "#f59e0b", iconColor: "#fff", icon: "⏳", sub: "held " + ev.total, subColor: "#b45309" };
+                        if (ev && ev.submittedAt) {
+                          // HR's manual call wins over the auto score. A manual PASS
+                          // still shows a ✓, but in teal (not the green auto-pass)
+                          // so it's clear it was an HR decision despite the score.
+                          if (ev.hrOverride === "pass") return { bg: "#0d9488", iconColor: "#fff", icon: "✓", sub: "HR pass · " + ev.total, subColor: "#0f766e" };
+                          if (ev.hrOverride === "fail") return { bg: "#b91c1c", iconColor: "#fff", icon: "✕", sub: "HR fail · " + ev.total, subColor: "#991b1b" };
+                          return ev.pass
+                            ? { bg: "#16a34a", iconColor: "#fff", icon: "✓", sub: ev.total + "/" + ev.max, subColor: "#16a34a" }
+                            : { bg: "#f59e0b", iconColor: "#fff", icon: "⏳", sub: "held " + ev.total, subColor: "#b45309" };
+                        }
                         if (due) return { bg: "#7c3aed", iconColor: "#fff", icon: "📋", sub: "due now", subColor: "#6b21a8" };
                         return { bg: "#f3f4f6", iconColor: "#c4b5fd", icon: "📋", sub: pendingSub, subColor: "#9ca3af" };
                       };
