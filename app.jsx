@@ -13302,6 +13302,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [mgrEarlyLeaveReports, setMgrEarlyLeaveReports] = useState([]);
   const [mgrClockinPhoto, setMgrClockinPhoto] = useState(null);   // {url, name, ts, ...}
   const [mgrClockinSchedCache, setMgrClockinSchedCache] = useState({});  // {branch|ym: grid}
+  const [mgrAttGridCache, setMgrAttGridCache] = useState({});            // {branch|attYm: grid} — payroll attendance sheet, used as the no-show fallback
   // {branch|ym: {ec:name}} — ec→name map saved with each manager schedule, so
   // Coverage can re-home a row to a renamed employee code by matching the name.
   const [mgrSchedNamesCache, setMgrSchedNamesCache] = useState({});
@@ -14952,6 +14953,33 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           setMgrClockinSchedCache(prev => {
             const next = { ...prev };
             pairs.forEach(([k, g]) => { next[k] = g; });
+            return next;
+          });
+        }
+        // Also load the payroll ATTENDANCE sheet for each branch × cycle so the
+        // "Manager reasons to add" scan can use it as a fallback: a manager with
+        // a filled-in attendance cell is accounted for and won't be chased.
+        // Attendance is keyed by END-month ym (payrollYmFor), e.g. 25-May→24-Jun
+        // is "2026-06".
+        const attYmsInRange = new Set();
+        for (let cur = new Date(since); cur <= today; cur.setDate(cur.getDate() + 1)) {
+          const _y = cur.getFullYear(), _m = cur.getMonth() + 1, _d = cur.getDate();
+          attYmsInRange.add(payrollYmFor(_y + "-" + String(_m).padStart(2, "0") + "-" + String(_d).padStart(2, "0")));
+        }
+        const needAtt = [];
+        for (const aym of attYmsInRange) for (const sl of SALONS) {
+          const k = sl.name + "|" + aym;
+          if (!(k in mgrAttGridCache)) needAtt.push({ branch: sl.name, aym, key: k });
+        }
+        if (needAtt.length > 0) {
+          const attPairs = await Promise.all(needAtt.map(async (n) => {
+            try { const a = await window.BOA_DB.loadAttendance(n.branch, n.aym); return [n.key, (a && a.grid) || null]; }
+            catch (_) { return [n.key, null]; }
+          }));
+          if (cancelled) return;
+          setMgrAttGridCache(prev => {
+            const next = { ...prev };
+            attPairs.forEach(([k, g]) => { next[k] = g; });
             return next;
           });
         }
@@ -17688,6 +17716,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const cell = (grid[m.ec]) ? (grid[m.ec][ymd] || grid[m.ec][dom]) : undefined;
                           if (cell !== "W" && cell !== "WL" && cell !== "WE" && cell !== "WM" && cell !== "WB" && cell !== "E") return;
                           if (clockedInByEcDate.has(String(m.ec || "").trim() + "|" + ymd)) return;
+                          // Attendance-sheet fallback: if HR has filled in ANY cell
+                          // for this manager on this day on the payroll attendance
+                          // sheet (present, a reason, leave, anything), they're
+                          // already accounted for — don't chase a reason. This
+                          // covers days the kiosk wasn't recording clock-ins yet,
+                          // where presence was captured on the sheet instead.
+                          const _attYm = payrollYmFor(ymd);
+                          const _attGrid = mgrAttGridCache[(m.branch || "") + "|" + _attYm];
+                          const _attCell = _attGrid && _attGrid[m.ec] && (_attGrid[m.ec][String(dom)] || _attGrid[m.ec][ymd]);
+                          if (_attCell) return;
                           const sid = ecToStaffId[m.ec];
                           if (sid && taggedKeys.has(sid + "|" + ymd)) return;
                           pending.push({ name: m.name, branch: m.branch, ymd });
