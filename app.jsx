@@ -22601,6 +22601,61 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }
           } catch (e) { console.warn("schedule auto-sync (continuing):", e); }
 
+          // 2c. Auto-generate a MANAGER schedule for a newly-onboarded manager
+          // (e.g. an AM coming off trial). Per the agreed rule, copy the branch's
+          // existing manager shift pattern from the official start date onward;
+          // days BEFORE the start date are left blank, so nothing shows on
+          // Manager Coverage until they actually start. Trial days are NOT placed
+          // on the schedule — only this post-onboarding roster.
+          try {
+            if (isMgrPos && obForm.branch && window.BOA_DB.currentSchedYm && window.BOA_DB.periodDays && window.BOA_DB.loadSchedule && window.BOA_DB.saveSchedule) {
+              const ym = window.BOA_DB.currentSchedYm();
+              const days = window.BOA_DB.periodDays(ym) || [];
+              const _pad = n => String(n).padStart(2, "0");
+              const ymdOf = d => d.year + "-" + _pad(d.monthIdx + 1) + "-" + _pad(d.d);
+              const cycleEnd = days.length ? ymdOf(days[days.length - 1]) : null;
+              const start = obForm.startDate;
+              if (cycleEnd && start && start <= cycleEnd) {
+                const mgrSched = await window.BOA_DB.loadSchedule(obForm.branch, ym, true);
+                const grid = (mgrSched && mgrSched.grid) || {};
+                // Pick the branch's most-populated existing manager row as the
+                // pattern to copy (working days + their shift codes WE/WL/W).
+                // Read tolerant of ymd- or dom-keyed grids.
+                const readTpl = (row, d) => row && (row[ymdOf(d)] || row[d.d] || row[String(d.d)]);
+                let tpl = null, tplCount = 0;
+                Object.keys(grid).forEach(k => {
+                  if (k === ec) return;
+                  const row = grid[k] || {};
+                  const cnt = days.filter(d => { const v = readTpl(row, d); return v && v !== "X"; }).length;
+                  if (cnt > tplCount) { tplCount = cnt; tpl = row; }
+                });
+                const hasTpl = !!tpl && tplCount > 0;
+                // Fallback roster when there's no existing manager schedule to
+                // copy: off on the store's fixed closed days, working the rest.
+                const salonCfg = (typeof SALONS !== "undefined" ? SALONS : []).find(s => s.name === obForm.branch) || {};
+                const closedSet = new Set((Array.isArray(salonCfg.closedDow) ? salonCfg.closedDow : []).map(Number));
+                const srcDesc = hasTpl
+                  ? "copying " + obForm.branch + "’s existing manager shift pattern"
+                  : (closedSet.size ? "off on " + obForm.branch + "’s closed days, working the rest" : "a standard manager roster");
+                if (window.confirm("Add " + obForm.name + " to the Manager Coverage schedule (" + ym + ") now?\n\nThey’ll be dropped in from " + start + ", " + srcDesc + ". Days before the start date stay blank. You can fine-tune it on Manager Coverage.")) {
+                  const row = {};
+                  days.forEach(d => {
+                    const dy = ymdOf(d);
+                    if (dy < start) return;                          // before start — leave blank (no shift shown)
+                    if (hasTpl) {
+                      const v = readTpl(tpl, d);
+                      row[d.d] = (v && v !== "X") ? v : "O";         // copy the pattern; off where the template is off/blank
+                    } else {
+                      row[d.d] = closedSet.has(d.dow) ? "O" : "W";
+                    }
+                  });
+                  grid[ec] = row;
+                  await window.BOA_DB.saveSchedule(obForm.branch, ym, grid, true);
+                }
+              }
+            }
+          } catch (e) { console.warn("manager schedule auto-gen (continuing):", e); }
+
           // 3. Add to onboarding history (for the UI grid and historical data)
           const obRecord = {
             _id: Date.now(),

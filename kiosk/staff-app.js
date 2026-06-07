@@ -170,7 +170,8 @@
       var cands = (await window.APP_DATA.listTrialCandidates()) || [];
       cands.forEach(function (c) {
         if (!c || c.branch !== myBranch) return;
-        if (String(c.role || "nt").toLowerCase() !== "nt") return;
+        var role = String(c.role || "nt").toLowerCase();
+        if (role !== "nt" && role !== "am") return;   // nail techs + AM final reviews
         var which = trialEvalDue(c);
         if (which) due.push({ c: c, which: which });
       });
@@ -182,7 +183,7 @@
       var label = d.which === "mid" ? "Week 1 evaluation" : "Final evaluation";
       return '<div class="eval-neon-row">' +
                '<div style="min-width:0">' +
-                 '<div style="font-weight:800;font-size:14px">' + esc(d.c.name || "Trial tech") + '</div>' +
+                 '<div style="font-weight:800;font-size:14px">' + esc(d.c.name || "Trial staff") + '</div>' +
                  '<div style="font-size:11.5px;opacity:0.85">' + esc(label) + ' · ' + worked + '/10 days done</div>' +
                '</div>' +
                '<button class="btn eval-neon-do" data-id="' + esc(d.c._id) + '" data-which="' + d.which + '">📋 Evaluate now →</button>' +
@@ -190,8 +191,8 @@
     }).join("");
     el.innerHTML =
       '<div class="eval-neon" role="alert">' +
-        '<div class="eval-neon-head">🔔 EVALUATION DUE — ' + due.length + ' TRIAL TECH' + (due.length === 1 ? '' : 'S') + '</div>' +
-        '<div class="eval-neon-sub">A trial tech has done enough days and needs her evaluation completed to move forward. Tap <strong>Evaluate now</strong> — it only takes a few minutes.</div>' +
+        '<div class="eval-neon-head">🔔 EVALUATION DUE — ' + due.length + ' TRIAL ' + (due.length === 1 ? 'MEMBER' : 'MEMBERS') + '</div>' +
+        '<div class="eval-neon-sub">A trial team member has done enough days and needs their evaluation completed to move forward. Tap <strong>Evaluate now</strong> — it only takes a few minutes.</div>' +
         '<div style="margin-top:6px">' + rows + '</div>' +
       '</div>';
     Array.prototype.forEach.call(el.querySelectorAll(".eval-neon-do"), function (btn) {
@@ -593,23 +594,77 @@
   var TRIAL_EVAL_PASS = 91;        // 70% of 130
   var TRIAL_EVAL_KEY_MIN = 3;      // every Key Indicator must be ≥ 3/5
 
-  // Score a set of {criterionKey: 1..5} answers. Pass requires BOTH the 70%
-  // total AND a minimum of 3/5 on every Key Indicator.
-  function scoreTrialEval(scores) {
+  // Assistant-Manager evaluation (BOA Manager Evaluation Form) — kept in
+  // lock-step with AM_EVAL_SECTIONS in the HR portal (app.jsx). 27 criteria,
+  // 135 points, 9 Key Indicators. Pass = 70% (95/135) AND every Key Indicator
+  // ≥ 4. Used for the AM FINAL review the store completes on the kiosk (the
+  // Week-1 review is done by the trainers in the HR portal).
+  var TRIAL_EVAL_AM_SECTIONS = [
+    { title: "Customer Service Excellence", max: 50, items: [
+      { k: "greeting_ssco", label: "Client Greeting – SSCO", key: true, desc: "Greets all clients warmly using Stand–Smile–Confirm–Offer." },
+      { k: "booking_conf", label: "Booking Confirmation", desc: "Confirms booking and treatment details before the appointment time." },
+      { k: "proactive", label: "Proactive Service", desc: "Anticipates client needs and ensures comfort." },
+      { k: "recovery", label: "Service Recovery", desc: "Handles complaints effectively, maintains calmness." },
+      { k: "presentation", label: "Professional Presentation", key: true, desc: "Displays neat grooming and welcoming demeanor. Wears full BOA uniform." },
+      { k: "wait_mgmt", label: "Wait Management", desc: "Informs clients of delays courteously." },
+      { k: "product_know", label: "Product Knowledge", desc: "Explains services and retail confidently." },
+      { k: "feedback", label: "Feedback Collection", desc: "Encourages positive Google Reviews." },
+      { k: "upsell", label: "Upselling & Retail", desc: "Suggests appropriate upgrades and aftercare." },
+      { k: "brand_rep", label: "Brand Representation", desc: "Creates a calm, elegant atmosphere in line with BOA." }
+    ] },
+    { title: "Leadership & Team Management", max: 25, items: [
+      { k: "team_comm", label: "Team Communication", desc: "Holds regular briefings and maintains professionalism." },
+      { k: "fairness", label: "Fairness & Discipline", desc: "Applies HR policies consistently and fairly." },
+      { k: "motivation", label: "Motivation & Recognition", desc: "Supports and recognizes team effort." },
+      { k: "scheduling", label: "Scheduling", key: true, desc: "Manages shifts, off-days, and attendance accurately." },
+      { k: "conflict", label: "Conflict Resolution", desc: "Resolves disputes respectfully and promptly." }
+    ] },
+    { title: "Cleanliness & Hygiene Compliance", max: 20, items: [
+      { k: "tool_san", label: "Tool Sanitation Checks", desc: "Verifies clean tools and sends photo proof on Basket Check Day before 10 a.m." },
+      { k: "salon_appear", label: "Salon Appearance", key: true, desc: "Maintains spotless and inviting salon atmosphere." },
+      { k: "product_mgmt", label: "Product Management", desc: "Prevents waste, monitors stock use." },
+      { k: "staff_hygiene", label: "Staff Hygiene", desc: "Ensures uniforms and grooming standards are met." }
+    ] },
+    { title: "Operational & Policy Adherence", max: 25, items: [
+      { k: "hr_policy", label: "HR Policy Compliance", key: true, desc: "Enforces attendance, cellphone and language rules." },
+      { k: "cash_digital", label: "Cash & Digital Handling", key: true, desc: "Enforces only accepted payment methods." },
+      { k: "report_sub", label: "Report Submission", desc: "Submits accurate End-Day-Reports." },
+      { k: "fresha_usage", label: "Fresha Usage", key: true, desc: "Uses Fresha accurately and efficiently." },
+      { k: "stock_takes", label: "Stock Takes", key: true, desc: "Conducts accurate stock takes and places orders timely." }
+    ] },
+    { title: "Brand Ambassadorship & Professionalism", max: 15, items: [
+      { k: "brand_image", label: "Brand Image", key: true, desc: "Acts as the face of BOA in demeanor and attitude." },
+      { k: "community", label: "Community Presence", desc: "Promotes BOA positively in local and online spaces." },
+      { k: "ethical", label: "Ethical Leadership", desc: "Displays honesty, fairness, and discretion." }
+    ] }
+  ];
+  var TRIAL_EVAL_AM_MAX = 135, TRIAL_EVAL_AM_PASS = 95, TRIAL_EVAL_AM_KEY_MIN = 4;
+
+  // Resolve the right evaluation form for a candidate role.
+  function evalFormForRole(role) {
+    return String(role || "nt").toLowerCase() === "am"
+      ? { sections: TRIAL_EVAL_AM_SECTIONS, max: TRIAL_EVAL_AM_MAX, pass: TRIAL_EVAL_AM_PASS, keyMin: TRIAL_EVAL_AM_KEY_MIN }
+      : { sections: TRIAL_EVAL_SECTIONS, max: TRIAL_EVAL_MAX, pass: TRIAL_EVAL_PASS, keyMin: TRIAL_EVAL_KEY_MIN };
+  }
+
+  // Score a set of {criterionKey: 1..5} answers against the role's form. Pass
+  // requires BOTH the 70% total AND the minimum on every Key Indicator.
+  function scoreTrialEval(scores, role) {
+    var form = evalFormForRole(role);
     var total = 0, keyOk = true, answered = 0, count = 0;
-    TRIAL_EVAL_SECTIONS.forEach(function (sec) {
+    form.sections.forEach(function (sec) {
       sec.items.forEach(function (it) {
         count++;
         var v = Number(scores[it.k]);
         if (isFinite(v) && v >= 1) { total += v; answered++; }
-        if (it.key && (!isFinite(v) || v < TRIAL_EVAL_KEY_MIN)) keyOk = false;
+        if (it.key && (!isFinite(v) || v < form.keyMin)) keyOk = false;
       });
     });
     return {
-      total: total, max: TRIAL_EVAL_MAX,
+      total: total, max: form.max,
       complete: answered === count,
       keyOk: keyOk,
-      pass: total >= TRIAL_EVAL_PASS && keyOk
+      pass: total >= form.pass && keyOk
     };
   }
 
@@ -628,7 +683,10 @@
     var worked = trialWorkedDays(c);
     var midDone = !!(c.midEval && c.midEval.submittedAt);
     var finalDone = !!(c.finalEval && c.finalEval.submittedAt);
-    if (c.status === "trial_w1" && worked >= 5 && !midDone) return "mid";
+    var isAm = String(c.role || "nt").toLowerCase() === "am";
+    // AM Week-1 reviews are completed by the trainers in the HR portal, so the
+    // store kiosk only surfaces the AM FINAL review. Nail techs do both here.
+    if (!isAm && c.status === "trial_w1" && worked >= 5 && !midDone) return "mid";
     if (c.status === "trial_w2" && worked >= 10 && !finalDone) return "final";
     return null;
   }
@@ -2373,6 +2431,8 @@
     if (prev) prev.remove();
     var isFinal = which === "final";
     var title = isFinal ? "Final evaluation" : "Week 1 evaluation";
+    var role = String(candidate.role || "nt").toLowerCase();
+    var form = evalFormForRole(role);   // role-aware sections / max / pass / keyMin
     var scores = {};
 
     function sectionHtml(sec) {
@@ -2386,7 +2446,7 @@
         return '<div style="padding:8px 0;border-top:1px solid #f3f4f6">' +
           '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap">' +
             '<span style="font-size:12.5px;font-weight:700;color:#374151">' + esc(it.label) + '</span>' +
-            (it.key ? '<span class="pill" style="background:#fef3c7;color:#92400e">Key · min 3</span>' : '') +
+            (it.key ? '<span class="pill" style="background:#fef3c7;color:#92400e">Key · min ' + form.keyMin + '</span>' : '') +
             (it.desc ? '<button type="button" class="eval-info" data-k="' + it.k + '" title="Tap for what this means" style="display:inline-flex;align-items:center;gap:4px;border:1px solid #c4b5fd;background:#ede9fe;color:#6b21a8;border-radius:99px;padding:2px 9px 2px 6px;font-size:10px;font-weight:800;cursor:pointer;line-height:1.4;flex:0 0 auto">' +
               '<span style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:99px;background:#6b21a8;color:#fff;font-size:9px;font-weight:900;line-height:1">i</span>Details</button>' : '') +
           '</div>' +
@@ -2406,19 +2466,19 @@
     modal.innerHTML =
       '<div class="boa-modal-card" style="max-width:560px;max-height:88vh;overflow-y:auto">' +
         '<h2 class="boa-modal-title">📋 ' + esc(title) + ' — ' + esc(candidate.name || "trial tech") + '</h2>' +
-        '<p class="boa-modal-body">Score each criterion from 1 (poor) to 5 (excellent). A pass needs <strong>' + TRIAL_EVAL_PASS + '/' + TRIAL_EVAL_MAX + '</strong> and at least <strong>3/5 on every Key Indicator</strong>. This form is sent to HR either way.</p>' +
+        '<p class="boa-modal-body">Score each criterion from 1 (poor) to 5 (excellent). A pass needs <strong>' + form.pass + '/' + form.max + '</strong> and at least <strong>' + form.keyMin + '/5 on every Key Indicator</strong>. This form is sent to HR either way.</p>' +
         '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:4px 0 2px">' +
           '<button type="button" id="boa-eval-guide" style="border:1px solid #ddd6fe;background:#f5f3ff;color:#6b21a8;border-radius:8px;padding:6px 11px;font-size:11.5px;font-weight:800;cursor:pointer">ⓘ Show guidance for every point</button>' +
         '</div>' +
         '<div style="background:#f5f3ff;border:1px solid #ede9fe;border-radius:8px;padding:7px 10px;margin:6px 0 2px;font-size:11px;color:#6b21a8;line-height:1.5">' +
           '<strong>Scoring scale:</strong> 1 = well below standard · 2 = needs work · 3 = meets BOA standard (minimum for Key Indicators) · 4 = strong · 5 = excellent.' +
         '</div>' +
-        TRIAL_EVAL_SECTIONS.map(sectionHtml).join("") +
+        form.sections.map(sectionHtml).join("") +
         '<label class="lbl" style="margin-top:14px">Evaluator name</label>' +
         '<input id="boa-eval-by" type="text" class="input" placeholder="Manager full name" autocomplete="name">' +
         '<label class="lbl" style="margin-top:10px">Notes (optional)</label>' +
         '<textarea id="boa-eval-notes" class="input" rows="2" placeholder="Anything HR should know"></textarea>' +
-        '<div id="boa-eval-tally" style="margin-top:12px;font-size:13px;font-weight:800;color:#6b21a8">Total: 0 / ' + TRIAL_EVAL_MAX + '</div>' +
+        '<div id="boa-eval-tally" style="margin-top:12px;font-size:13px;font-weight:800;color:#6b21a8">Total: 0 / ' + form.max + '</div>' +
         '<div id="boa-eval-err" class="err-line"></div>' +
         '<div class="btn-row" style="justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:6px">' +
           '<button type="button" class="link-btn link-btn-dark" id="boa-eval-cancel">Cancel</button>' +
@@ -2438,8 +2498,8 @@
     modal.addEventListener("click", function (e) { if (e.target === modal) close(); });
 
     function refreshTally() {
-      var r = scoreTrialEval(scores);
-      tallyEl.innerHTML = 'Total: ' + r.total + ' / ' + TRIAL_EVAL_MAX +
+      var r = scoreTrialEval(scores, role);
+      tallyEl.innerHTML = 'Total: ' + r.total + ' / ' + form.max +
         (r.complete ? (r.pass ? ' · <span style="color:#03543f">PASS ✓</span>' : ' · <span style="color:#9b1c1c">below pass — will hold for HR</span>') : ' · ' + 'score all criteria');
     }
 
@@ -2480,12 +2540,12 @@
 
     saveBtn.onclick = async function () {
       errEl.textContent = "";
-      var r = scoreTrialEval(scores);
+      var r = scoreTrialEval(scores, role);
       if (!r.complete) { errEl.textContent = "Please score every criterion (1–5) before submitting."; return; }
       if (!(byEl.value || "").trim()) { errEl.textContent = "Please enter the evaluator's name."; return; }
       var confirmMsg = r.pass
-        ? candidate.name + " scored " + r.total + "/" + TRIAL_EVAL_MAX + " — PASS.\n\nSubmit and advance them to the next stage?"
-        : candidate.name + " scored " + r.total + "/" + TRIAL_EVAL_MAX + (r.keyOk ? "" : " (a Key Indicator is below 3)") + " — below the pass mark.\n\nSubmit and send to HR to review? They will NOT be auto-failed.";
+        ? candidate.name + " scored " + r.total + "/" + form.max + " — PASS.\n\nSubmit and advance them to the next stage?"
+        : candidate.name + " scored " + r.total + "/" + form.max + (r.keyOk ? "" : " (a Key Indicator is below " + form.keyMin + ")") + " — below the pass mark.\n\nSubmit and send to HR to review? They will NOT be auto-failed.";
       if (!window.confirm(confirmMsg)) return;
       saveBtn.disabled = true; saveBtn.textContent = "Submitting…";
       var evalObj = {
@@ -2493,7 +2553,7 @@
         submittedBy: byEl.value.trim(),
         which: isFinal ? "final" : "mid",
         scores: scores,
-        total: r.total, max: TRIAL_EVAL_MAX,
+        total: r.total, max: form.max,
         keyOk: r.keyOk, pass: r.pass,
         heldForHr: !r.pass,
         notes: (notesEl.value || "").trim()
