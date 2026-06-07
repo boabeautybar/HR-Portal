@@ -1405,18 +1405,15 @@
     var hereMgrs  = mgrs.filter(function (m) { return m.branch === thisBranch; });
     var otherMgrs = mgrs.filter(function (m) { return m.branch !== thisBranch; });
 
-    // Trial AMs use the same daily-status buttons as the trial check-in
-    // on the nail-tech side. They have no PIN during the trial weeks; once
-    // they pass and get a real employee code they'll appear in the manager
-    // list above with PIN + photo.
+    // Trial AMs use the same three daily-status buttons as the nail-tech
+    // trial check-in and the portal day editor: Worked / Late count as paid
+    // trial days, Absent does not. They have no PIN during the trial weeks;
+    // once they pass and get a real employee code they'll appear in the
+    // manager list above with PIN + photo.
     var trialStatusButtons = [
-      { code: "on",     label: "On Time"     },
-      { code: "late",   label: "Late"        },
-      { code: "sick_n", label: "Sick + note" },
-      { code: "sick",   label: "Sick NO note"},
-      { code: "absent", label: "Absent"      },
-      { code: "no",     label: "NO SHOW"     },
-      { code: "frl",    label: "FRL + proof" }
+      { code: "on",     label: "Worked" },
+      { code: "late",   label: "Late"   },
+      { code: "absent", label: "Absent" }
     ];
     var todayStr = window.APP_DATA.todayStr ? window.APP_DATA.todayStr() : (new Date()).toISOString().slice(0, 10);
     var trialAmHtml = "";
