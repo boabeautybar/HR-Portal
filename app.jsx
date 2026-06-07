@@ -25160,7 +25160,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // solid colour band. Other STAT entries (sick, frl, no-show, …)
                           // keep their unique colour so the divergence is visible.
                           const C_WORK = "#86efac", C_OFF = "#cbd5e1";
-                          const presenceBgFor = (k) => (k === "on" || k === "late" || k === "ext" || k === "swap_i" || k === "trial") ? C_WORK
+                          // Trial days are intentionally NOT in the green "work" group —
+                          // they keep their own yellow (STAT.trial.bg) so paid trial days
+                          // read as trial, not a normal worked day.
+                          const presenceBgFor = (k) => (k === "on" || k === "late" || k === "ext" || k === "swap_i") ? C_WORK
                             : (k === "off" || k === "swap_o") ? C_OFF
                               : null;
                           // Future swap renders as italic grey placeholder (defined above).
