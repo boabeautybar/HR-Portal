@@ -21011,6 +21011,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (status == null) delete ci[date]; else ci[date] = status;
           persistTrial(trialList.map(x => x._id === r._id ? { ...x, checkins: ci, updatedAt: new Date().toISOString() } : x));
         };
+        // For AM trials only: tag a day as "ho" (head office) or "store" (default).
+        // Both count as paid trial days; the tag just distinguishes training days.
+        const setTrialDayLoc = (r, date, loc) => {
+          if (!date) return;
+          const dl = { ...(r.dayLocs || {}) };
+          if (loc === "ho") dl[date] = "ho"; else delete dl[date];   // store is the default
+          persistTrial(trialList.map(x => x._id === r._id ? { ...x, dayLocs: dl, updatedAt: new Date().toISOString() } : x));
+        };
 
         // Shared day editor — a quick whole-number setter PLUS a per-date editor
         // (tick each planned/off-plan day as Worked / Late / Absent, or add a
@@ -21064,7 +21072,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               </div>
               <div style={{ fontSize: 11, fontWeight: 800, color: "#111827", marginBottom: 2 }}>📅 Set the exact days she was in</div>
-              <div style={{ fontSize: 10, color: "#6b7280", marginBottom: 8, lineHeight: 1.45 }}>Tick each day she was actually in store and how — use this when the kiosk didn’t check her in properly. Worked & Late count as paid trial days; Absent does not. Weekends &amp; public holidays are listed too, so a day she worked then can be ticked.</div>
+              <div style={{ fontSize: 10, color: "#6b7280", marginBottom: 8, lineHeight: 1.45 }}>Tick each day she was actually in and how. Worked & Late count as paid trial days; Absent does not. Weekends &amp; public holidays are listed too.{(r.role || "nt") === "am" ? " For each worked day, also tag Store or HO (head-office training) — both are paid." : ""}</div>
               {!r.startDate && <div style={{ fontSize: 11, color: "#b45309", marginBottom: 8 }}>Set a trial start date first (▶ Start in-store trial) to list her trial days.</div>}
               <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid #f3f4f6", borderRadius: 8 }}>
                 {allDates.length === 0 && <div style={{ fontSize: 11, color: "#9ca3af", textAlign: "center", padding: "10px 0" }}>No trial days yet.</div>}
@@ -21079,6 +21087,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const on = cur === st;
                           return <button key={st} onClick={() => setCheckinStatus(r, date, on ? null : st)} title={lbl} style={{ padding: "3px 8px", borderRadius: 5, border: "1px solid " + (on ? col : "#e5e7eb"), background: on ? col : "#fff", color: on ? "#fff" : "#6b7280", cursor: "pointer", fontSize: 10, fontWeight: 800 }}>{lbl}</button>;
                         })}
+                        {/* AM trials split between the store and head office — tag where the day was. */}
+                        {(r.role || "nt") === "am" && (cur === "on" || cur === "late") && (() => {
+                          const loc = (r.dayLocs || {})[date] === "ho" ? "ho" : "store";
+                          return [["store", "Store"], ["ho", "HO"]].map(([lv, lbl]) => {
+                            const on = loc === lv;
+                            return <button key={lv} onClick={() => setTrialDayLoc(r, date, lv)} title={lv === "ho" ? "Head office training day" : "In store"} style={{ marginLeft: lv === "store" ? 4 : 0, padding: "3px 7px", borderRadius: 5, border: "1px solid " + (on ? "#6b21a8" : "#e5e7eb"), background: on ? "#ede9fe" : "#fff", color: on ? "#6b21a8" : "#9ca3af", cursor: "pointer", fontSize: 10, fontWeight: 800 }}>{lbl}</button>;
+                          });
+                        })()}
                         {cur && <button onClick={() => setCheckinStatus(r, date, null)} title="Clear this day" style={{ background: "none", border: "none", color: "#d1d5db", cursor: "pointer", fontSize: 12, lineHeight: 1, padding: "0 2px" }}>✕</button>}
                       </span>
                     </div>
@@ -22266,14 +22282,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // copy them into the attendance grid under her new employee code:
           // worked (on / late) → the yellow "trial" day, absent → "absent".
           // Grids are keyed by the start-month ym (attGridYmFor), day-of-month.
-          if (obForm._fromTrialId && roleType !== "manager") {
+          if (obForm._fromTrialId) {
             try {
               const trialRec = (trialList || []).find(t => t._id === obForm._fromTrialId);
               const ci = (trialRec && trialRec.checkins && typeof trialRec.checkins === "object" && !Array.isArray(trialRec.checkins)) ? trialRec.checkins : {};
+              const locs = (trialRec && trialRec.dayLocs && typeof trialRec.dayLocs === "object") ? trialRec.dayLocs : {};
               const byYm = {};
               Object.keys(ci).forEach(ymd => {
                 if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return;
-                const code = (ci[ymd] === "on" || ci[ymd] === "late") ? "trial" : (ci[ymd] === "absent" ? "absent" : null);
+                // Worked → yellow trial day; a head-office training day → trial_ho.
+                const worked = ci[ymd] === "on" || ci[ymd] === "late";
+                const code = worked ? (locs[ymd] === "ho" ? "trial_ho" : "trial") : (ci[ymd] === "absent" ? "absent" : null);
                 if (!code) return;
                 const aym = attGridYmFor(ymd);
                 const dom = String(parseInt(ymd.slice(8, 10), 10));
@@ -22945,6 +22964,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           unpaid: { lbl: "Unpaid", bg: "#e9d5ff", fg: "#581c87", cat: "unpaid" },
           deduct: { lbl: "Hours Deduction", bg: "#fed7aa", fg: "#7f1d1d", cat: "unpaid_h" },
           trial: { lbl: "Trial Day", bg: "#fde047", fg: "#713f12", cat: "work" },
+          trial_ho: { lbl: "Trial · HO", bg: "#fde047", fg: "#713f12", cat: "work" },
           prestart: { lbl: "Pre-start", bg: "#eef1f4", fg: "#c4cdd6", cat: "none" },
           term: { lbl: "TERMINATED", bg: "#dc2626", fg: "#FFFFFF", cat: "none" },
           swap_o: { lbl: "Owes", bg: "#cbd5e1", fg: "#dc2626", cat: "swap" },
@@ -24426,7 +24446,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             else if (v === "no" || v === "unpaid" || v === "absent") t.unpaid++;
             else if (v === "ext") { t.ext++; if (phOk) t.ph++; }
             else if (v === "late") { t.late++; if (phOk) t.ph++; }
-            else if (v === "trial") t.td++;
+            else if (v === "trial" || v === "trial_ho") t.td++;
             else if (v === "on") { t.worked++; if (phOk) t.ph++; }
             else if (v === "off") t.off++;
             else if (v === "swap_i") { t.worked++; if (phOk) t.ph++; }
@@ -25349,44 +25369,46 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   {(() => {
                     const cycleYmd = new Set(days.map(d => d.ymd));
                     const trialRows = (trialList || []).filter(c =>
-                      c && String(c.role || "nt").toLowerCase() === "nt"
-                      && c.branch === attBranch
+                      c && c.branch === attBranch
                       && c.status !== "hired" && c.status !== "induction"
                       && c.checkins && typeof c.checkins === "object" && !Array.isArray(c.checkins)
                       && Object.keys(c.checkins).some(y => cycleYmd.has(y) && (c.checkins[y] === "on" || c.checkins[y] === "late" || c.checkins[y] === "absent"))
-                    ).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+                    ).sort((a, b) => String(a.role || "nt").localeCompare(String(b.role || "nt")) || (a.name || "").localeCompare(b.name || ""));
                     if (!trialRows.length) return null;
                     const STG = { trial_w1: "Week 1", trial_w2: "Week 2", pending_mid_review: "Week 1", pending_final_review: "Week 2", passed: "Passed", failed: "Failed" };
                     return (
                       <React.Fragment key="trial-att-section">
                         <tr>
                           <td colSpan={days.length + 10} style={{ background: "#fefce8", padding: 0, borderTop: "2px solid #fde68a", borderBottom: "1px solid #fde68a" }}>
-                            <div style={{ position: "sticky", left: 0, padding: "8px 14px", fontSize: 11, fontWeight: 800, color: "#854d0e", letterSpacing: "0.12em", textTransform: "uppercase", background: "#fefce8", width: "max-content" }}>🧪 Trial Techs · paid trial days</div>
+                            <div style={{ position: "sticky", left: 0, padding: "8px 14px", fontSize: 11, fontWeight: 800, color: "#854d0e", letterSpacing: "0.12em", textTransform: "uppercase", background: "#fefce8", width: "max-content" }}>🧪 Trial · paid trial days <span style={{ fontWeight: 600, textTransform: "none", letterSpacing: 0 }}>(T = in store · HO = head office)</span></div>
                           </td>
                         </tr>
                         {trialRows.map(c => {
                           const ci = c.checkins || {};
-                          let paid = 0, absent = 0;
-                          days.forEach(dy => { const s = ci[dy.ymd]; if (s === "on" || s === "late") paid++; else if (s === "absent") absent++; });
+                          const locs = c.dayLocs || {};
+                          const isAm = String(c.role || "nt").toLowerCase() === "am";
+                          let paid = 0, ho = 0, absent = 0;
+                          days.forEach(dy => { const s = ci[dy.ymd]; if (s === "on" || s === "late") { paid++; if (locs[dy.ymd] === "ho") ho++; } else if (s === "absent") absent++; });
                           return (
                             <tr key={"trial-" + c._id} style={{ background: "#fffdf5" }}>
                               <td style={{ position: "sticky", left: 0, background: "#fffdf5", padding: "6px 10px", borderBottom: "1px solid #FCE7F3", borderRight: "2px solid #FBCFE8", zIndex: 2, minWidth: 170 }}>
                                 <div style={{ fontSize: 11, fontWeight: 700, color: "#854d0e", display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
                                   <span>{c.name}</span>
-                                  <span title="In-store trial — paid for trial days worked" style={{ background: "#fef08a", color: "#854d0e", border: "1px solid #fde047", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>🧪 TRIAL</span>
+                                  <span title="Trial — paid for trial days worked" style={{ background: "#fef08a", color: "#854d0e", border: "1px solid #fde047", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>{isAm ? "⭐ AM TRIAL" : "🧪 TRIAL"}</span>
                                 </div>
                                 <div style={{ fontSize: 9, color: "#9ca3af" }}>Trial · {STG[c.status] || c.status}</div>
                               </td>
                               {days.map(dy => {
                                 const s = ci[dy.ymd];
+                                const isHo = locs[dy.ymd] === "ho";
                                 const isWk = dy.dow === 0 || dy.dow === 6;
                                 let bg = isWk ? "#fafafa" : "#fff", fg = "#e5e7eb", txt = "";
-                                if (s === "on" || s === "late") { bg = "#fde047"; fg = "#713f12"; txt = "T"; }
+                                if (s === "on" || s === "late") { bg = "#fde047"; fg = "#713f12"; txt = isHo ? "HO" : "T"; }
                                 else if (s === "absent") { bg = "#fca5a5"; fg = "#7f1d1d"; txt = "A"; }
-                                return <td key={dy.d} title={txt === "T" ? (c.name + " · trial day worked (paid)" + (s === "late" ? " · late" : "")) : (txt === "A" ? (c.name + " · absent (unpaid)") : "")} style={{ padding: 0, textAlign: "center", fontSize: 10, fontWeight: 800, color: fg, background: bg, borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", height: 34 }}>{txt}</td>;
+                                return <td key={dy.d} title={txt === "HO" ? (c.name + " · head-office training day (paid)") : txt === "T" ? (c.name + " · trial day worked (paid)" + (s === "late" ? " · late" : "")) : (txt === "A" ? (c.name + " · absent (unpaid)") : "")} style={{ padding: 0, textAlign: "center", fontSize: txt === "HO" ? 8.5 : 10, fontWeight: 800, color: fg, background: bg, borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", height: 34 }}>{txt}</td>;
                               })}
                               <td colSpan={10} style={{ padding: "6px 10px", fontSize: 11, fontWeight: 800, color: "#854d0e", textAlign: "left", borderBottom: "1px solid #FCE7F3", borderLeft: "3px solid #FBCFE8", background: "#fefce8" }}>
-                                {paid} paid trial day{paid === 1 ? "" : "s"}{absent > 0 ? " · " + absent + " absent" : ""}
+                                {paid} paid trial day{paid === 1 ? "" : "s"}{ho > 0 ? " (" + (paid - ho) + " store · " + ho + " head office)" : ""}{absent > 0 ? " · " + absent + " absent" : ""}
                               </td>
                             </tr>
                           );
