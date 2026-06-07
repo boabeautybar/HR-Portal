@@ -10953,7 +10953,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
 //   • approved nail-tech extra days (open the tech for that single day), and
 //   • trial techs awaiting their Fresha opening (trial window, then the month
 //     once they pass). Tick each one once it's opened on Fresha.
-function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen, trialList, setTrialFresha, leaveRequests, freshaBlocks, markFreshaBlocked, leaveRecs, enriched }) {
+function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen, trialList, setTrialFresha, leaveRequests, freshaBlocks, markFreshaBlocked, leaveRecs, enriched, obList, setObFresha }) {
   const card = { background: "#fff", border: "1px solid #e9d5ff", borderRadius: 12, padding: "12px 14px", marginBottom: 10 };
   const chip = (bg, fg, txt) => <span style={{ background: bg, color: fg, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 800 }}>{txt}</span>;
   const openBtn = (label, onClick) => <button onClick={onClick} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "6px 13px", fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>{label}</button>;
@@ -10969,6 +10969,13 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
   const trialOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened);
   const monthOpen = (trialList || []).filter(c => _nt(c) && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c));
 
+  // Newly-onboarded MANAGERS (e.g. AMs off trial) need a Fresha LOGIN account
+  // created so they can sign in at the store to manage bookings. They are NOT
+  // opened for client bookings like nail techs — creating the account is the
+  // only Fresha step. One-time; drops off once ticked.
+  const mgrFreshaTodos = (obList || []).filter(o => o && ["SSM", "SM", "AM"].includes(o.position) && o.status !== "Failed / Terminated" && !o.freshaAccountCreated)
+    .sort((a, b) => (a.startDate || "").localeCompare(b.startDate || ""));
+
   // Closing side: nail techs who need greying out on Fresha so no client
   // bookings land while they're off — sick / absent (today & tomorrow), plus
   // annual / emergency leave that falls in the current payroll cycle.
@@ -10982,7 +10989,7 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
   const removeTodos = freshaOffboardRemovals(enriched)
     .sort((a, b) => (Number(isBlocked(a.key)) - Number(isBlocked(b.key))) || (a.leftDate || "").localeCompare(b.leftDate || ""));
 
-  const pendingCount = extraTodos.filter(r => !isOpen(r.id)).length + trialOpen.length + monthOpen.length
+  const pendingCount = extraTodos.filter(r => !isOpen(r.id)).length + trialOpen.length + monthOpen.length + mgrFreshaTodos.length
     + blockTodos.filter(r => !isBlocked(r.key)).length + removeTodos.filter(r => !isBlocked(r.key)).length;
   const secHead = (txt) => <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase", color: "#6b21a8", margin: "0 0 2px" }}>{txt}</div>;
 
@@ -10990,7 +10997,7 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
     <div>
       <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#6b21a8", margin: 0 }}>💇‍♀️ Fresha To-Do</h2>
       <p style={{ color: "#9333ea", fontSize: 13.5, margin: "6px 0 18px", maxWidth: 700 }}>
-        Fresha reminders — open approved extra-day cover and trial techs, block techs who are off (sick / absent, or on annual / emergency leave this cycle), and remove off-boarded techs from all future dates. Tick each one once it's done so the team knows.{pendingCount > 0 && <strong> · {pendingCount} to do</strong>}
+        Fresha reminders — open approved extra-day cover and trial techs, create Fresha login accounts for newly-onboarded managers, block techs who are off (sick / absent, or on annual / emergency leave this cycle), and remove off-boarded techs from all future dates. Tick each one once it's done so the team knows.{pendingCount > 0 && <strong> · {pendingCount} to do</strong>}
       </p>
 
       <div style={{ marginBottom: 22 }}>
@@ -11042,6 +11049,24 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
               {c.branch && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {c.branch}</span>}
               {chip("#dcfce7", "#166534", "✅ Passed — open for the month")}
               <span style={{ marginLeft: "auto" }}>{openBtn("Mark month opened", () => setTrialFresha(c._id, "freshaMonthOpened", true))}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ marginTop: 22 }}>
+        {secHead("👔 Manager Fresha logins · " + mgrFreshaTodos.length + " to create")}
+        <div style={{ fontSize: 12, color: "#9333ea", marginBottom: 10 }}>Newly-onboarded managers need a Fresha <strong>login account</strong> created so they can sign in at the store to manage bookings. They are <strong>not</strong> opened for client bookings like nail techs — creating the account is the only Fresha step.</div>
+        {mgrFreshaTodos.length === 0 && <div style={{ ...card, color: "#9d6a82" }}>No manager accounts to create right now.</div>}
+        {mgrFreshaTodos.map(o => (
+          <div key={"mf-" + o._id} style={card}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <strong style={{ color: "#581c87", fontSize: 14 }}>{o.name}</strong>
+              {o.branch && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {o.branch}</span>}
+              {o.position && chip("#e0e7ff", "#3730a3", o.position)}
+              {o.startDate && <span style={{ color: "#374151", fontSize: 12 }}>starts {fmtIncidentDate(o.startDate)}</span>}
+              {o.ec && <span style={{ color: "#9ca3af", fontSize: 12, fontFamily: "monospace" }}>{o.ec}</span>}
+              <span style={{ marginLeft: "auto" }}>{openBtn("Mark Fresha account created", () => setObFresha(o._id, true))}</span>
             </div>
           </div>
         ))}
@@ -13594,6 +13619,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     persistTrialList((trialList || []).map(r => r._id === id
       ? { ...r, [field]: on, [field + "At"]: on ? new Date().toISOString() : null, [field + "By"]: on ? ((currentUser && currentUser.name) || "") : null }
       : r));
+  };
+  // Tick an onboarded manager's one-time Fresha login account as created. Unlike
+  // nail techs, managers are never "opened" for client bookings — creating the
+  // sign-in account (so they can manage bookings in-store) is the only Fresha
+  // step, surfaced on the Fresha To-Do tab once they're onboarded.
+  const setObFresha = (id, on) => {
+    setObList(prev => {
+      const next = (prev || []).map(r => r._id === id
+        ? { ...r, freshaAccountCreated: on, freshaAccountCreatedAt: on ? new Date().toISOString() : null, freshaAccountCreatedBy: on ? ((currentUser && currentUser.name) || "") : null }
+        : r);
+      try { window.BOA_DB.saveOnboarding(next); }
+      catch (e) { console.warn("save onboarding (Fresha account flag):", e); }
+      return next;
+    });
   };
   const [expandedTrialCards, setExpandedTrialCards] = useState(new Set()); // tracking expanded state for trial cards
   const [trialDayEditOpen, setTrialDayEditOpen] = useState(new Set());     // pathway cards whose day editor (✏️) is open
@@ -20340,7 +20379,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         )}
 
         {tab === "freshaTodo" && (
-          <FreshaTodoTab extraDayRequests={extraDayRequests} freshaExtraOpen={freshaExtraOpen} markFreshaExtraOpen={markFreshaExtraOpen} trialList={trialList} setTrialFresha={setTrialFresha} leaveRequests={leaveRequests} freshaBlocks={freshaBlocks} markFreshaBlocked={markFreshaBlocked} leaveRecs={leaveRecs} enriched={enriched} />
+          <FreshaTodoTab extraDayRequests={extraDayRequests} freshaExtraOpen={freshaExtraOpen} markFreshaExtraOpen={markFreshaExtraOpen} trialList={trialList} setTrialFresha={setTrialFresha} leaveRequests={leaveRequests} freshaBlocks={freshaBlocks} markFreshaBlocked={markFreshaBlocked} leaveRecs={leaveRecs} enriched={enriched} obList={obList} setObFresha={setObFresha} />
         )}
 
         {/* ── ALERTS TAB ── */}
