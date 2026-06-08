@@ -24901,7 +24901,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const bareV = v ? (v.charAt(0) === "~" ? v.slice(1) : v) : "";
             const isHol = !!(holidayLookup && holidayLookup[dy.ymd]);
             const phOk = isHol && phEligible(dy, rawV, bareV);
-            if (v === "al") t.al++;
+            if (v === "al") { /* annual leave counted via the run-based pass below (off-days deducted) */ }
             else if (v === "el") t.unpaid++;   // emergency leave = unpaid
             else if (v === "sick") { t.sick++; t.unpaid++; }
             else if (v === "sick_n") t.sickNote++;
@@ -24943,6 +24943,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               t.earlyHours += _earlyH;
               t.unpaidHours += _earlyH;
             }
+          }
+          // Annual leave: the leave overlay stamps EVERY calendar day of a
+          // request (incl. weekends/off-days) as "al", so a 21-day block lands
+          // as 21 cells. Count it the same way leave requests do — deduct ~2
+          // off-days per 7-day run, nothing for runs of 5 days or fewer — so a
+          // 7-day span counts as 5 leave days and a 21-day span as 15. Each
+          // contiguous run is treated as its own span so two separate short
+          // periods (e.g. 3 + 3) keep their full days rather than being merged.
+          {
+            let alRun = 0;
+            const flushAlRun = () => { if (alRun > 0) { t.al += alRun - estimateOffDays(alRun, 2); alRun = 0; } };
+            for (const dy of days) {
+              if (getStatus(ec, dy.d) === "al") alRun++;
+              else flushAlRun();
+            }
+            flushAlRun();
           }
           // Convert deductions to days. Short hours from the kiosk's
           // "Left work early" use 8h/day per business rule (4h = 0.5 day);
@@ -25259,7 +25275,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       );
                     })}
                     {[
-                      { l: "AL", bg: "#eff6ff", c: "#1e40af", t: "Annual Leave" },
+                      { l: "AL", bg: "#eff6ff", c: "#1e40af", t: "Annual Leave (off-days deducted — ~2 per 7-day span; e.g. 7 days = 5, 21 days = 15; runs of 5 days or fewer count in full)" },
                       { l: "SICK", bg: "#fef2f2", c: "#7f1d1d", t: "Sick days — NO note (unpaid)" },
                       { l: "SICK+N", bg: "#f0fdf4", c: "#166534", t: "Sick days WITH a doctor's note (paid)" },
                       { l: "FRL", bg: "#fffbeb", c: "#78350f", t: "Family Responsibility Leave" },
