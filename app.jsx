@@ -111,7 +111,7 @@ function installDemoMode() {
     };
     const noop = async () => { };
     ["saveStaff", "saveMat", "saveManager"].forEach(n => { window.BOA_DB[n] = passthrough; });
-    ["saveSchedule", "saveAttendance", "saveEarlyLeaves", "saveOnboarding", "saveOffboarding",
+    ["saveSchedule", "saveAttendance", "saveAttendanceUndo", "clearAttendanceUndo", "saveEarlyLeaves", "saveOnboarding", "saveOffboarding",
       "saveLeaveRecords", "saveMgrRequests", "saveManagerPins",
       "deleteMat", "deleteManager", "deleteSchedule", "appendActivity"
     ].forEach(n => { window.BOA_DB[n] = noop; });
@@ -128,7 +128,8 @@ function installDemoMode() {
 const READ_ONLY_GUARDED_METHODS = [
   "saveStaff", "saveMat", "saveManager", "saveSchedule", "saveAttendance", "saveEarlyLeaves",
   "saveOnboarding", "saveOffboarding", "saveLeaveRecords", "saveMgrRequests",
-  "saveTechRequests", "saveManagerPins", "saveTrialPeriod", "deleteMat", "deleteManager", "deleteSchedule"
+  "saveTechRequests", "saveManagerPins", "saveTrialPeriod", "deleteMat", "deleteManager", "deleteSchedule",
+  "saveAttendanceUndo", "clearAttendanceUndo"
 ];
 function installReadOnlyGuard() {
   const apply = () => {
@@ -13906,7 +13907,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Cleared whenever the branch or cycle changes so we never restore into
   // the wrong context.
   const [attEditStack, setAttEditStack] = useState([]);
+  // Persisted one-step undo for the attendance sheet, loaded from the DB per
+  // branch + cycle. Unlike attEditStack (in-memory, this session only) this lets
+  // you undo the last change even after a reload or when someone else (e.g. an
+  // admin) made it in a different session. Shape: { grid, meta, label, ts }.
+  const [attPersistUndo, setAttPersistUndo] = useState(null);
   useEffect(() => { setAttEditStack([]); }, [attBranch, attYM]);
+  useEffect(() => {
+    setAttPersistUndo(null);
+    if (tab !== "attendance" || !window.BOA_DB || !window.BOA_DB.loadAttendanceUndo) return;
+    let cancelled = false;
+    window.BOA_DB.loadAttendanceUndo(attBranch, attYM)
+      .then(s => { if (!cancelled) setAttPersistUndo(s && s.grid ? s : null); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [tab, attBranch, attYM]);
   const [attLoading, setAttLoading] = useState(false);
   // Cross-branch payroll overview — lazy-loaded counts of cells needing
   // admin review per branch for the active cycle. Lives at component scope
@@ -24084,10 +24099,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             ts: new Date().toISOString()
           };
           setAttEditStack(prev => [snap, ...(prev || [])].slice(0, 10));
+          // Mirror the snapshot to the DB so the change stays undoable after a
+          // reload or from another user's session (per branch + cycle).
+          setAttPersistUndo(snap);
+          if (window.BOA_DB.saveAttendanceUndo) {
+            try { window.BOA_DB.saveAttendanceUndo(attBranch, attYM, snap).catch(() => {}); } catch (_e) {}
+          }
         };
         const undoLastEdit = async () => {
-          if (!attEditStack || attEditStack.length === 0) return;
-          const [last, ...rest] = attEditStack;
+          // Prefer the in-session stack (multi-step); fall back to the persisted
+          // snapshot so a reload / another session can still undo the last change.
+          const last = (attEditStack && attEditStack[0]) || attPersistUndo;
+          if (!last) return;
+          const rest = (attEditStack || []).slice(1);
           const restoredGrid = last.grid || {};
           const restoredMeta = last.meta || {};
           setAttGrid(restoredGrid);
@@ -24101,6 +24125,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               mirrorSuppressed: !!restoredMeta.mirrorSuppressed
             });
           } catch (e) { alert("Could not undo: " + (e.message || e)); return; }
+          // Re-point the persisted undo at the next older snapshot (or clear it).
+          const nextTop = rest[0] || null;
+          setAttPersistUndo(nextTop);
+          try {
+            if (nextTop && window.BOA_DB.saveAttendanceUndo) await window.BOA_DB.saveAttendanceUndo(attBranch, attYM, nextTop);
+            else if (window.BOA_DB.clearAttendanceUndo) await window.BOA_DB.clearAttendanceUndo(attBranch, attYM);
+          } catch (_e) {}
           logActivity("Undid " + (last.label || "edit"), attBranch + " · " + cycLabel, "Restored to " + new Date(last.ts).toLocaleString("en-ZA"), "Attendance");
         };
 
@@ -25241,13 +25272,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               {attCheckinSnapshot && (
                 <button onClick={undoCheckinsImport} style={{ padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Restore the attendance grid to its state right before the last check-in import">↩ Undo Check-in Import</button>
               )}
-              {attEditStack.length > 0 && (
-                <button onClick={undoLastEdit}
-                  title={"Undo the last manual action: " + attEditStack[0].label + " (" + new Date(attEditStack[0].ts).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }) + ")\n\n" + attEditStack.length + " action" + (attEditStack.length === 1 ? "" : "s") + " in history"}
-                  style={{ padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }}>
-                  ↶ Undo {attEditStack[0].label} ({attEditStack.length})
-                </button>
-              )}
+              {(attEditStack.length > 0 || attPersistUndo) && (() => {
+                const top = attEditStack[0] || attPersistUndo;
+                const persistedOnly = attEditStack.length === 0 && !!attPersistUndo;
+                const when = top && top.ts ? new Date(top.ts).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
+                return (
+                  <button onClick={undoLastEdit}
+                    title={"Undo the last change to " + attBranch + "'s sheet: " + (top.label || "edit") + (when ? " (" + when + ")" : "") + (persistedOnly ? "\n\n(Saved change — undoable even though it was made earlier or by someone else.)" : "\n\n" + attEditStack.length + " action" + (attEditStack.length === 1 ? "" : "s") + " in this session's history")}
+                    style={{ padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }}>
+                    ↶ Undo {top.label || "last change"}{attEditStack.length > 1 ? " (" + attEditStack.length + ")" : ""}
+                  </button>
+                );
+              })()}
               <button onClick={resetCycle} style={{ padding: "7px 14px", background: "#fee2e2", color: "#7f1d1d", border: "1px solid #fca5a5", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Clear every cell for this branch + cycle (with confirmation)">↺ Reset Cycle</button>
               <button onClick={totalResetCycle} style={{ padding: "7px 14px", background: "#7f1d1d", color: "#fff", border: "1px solid #7f1d1d", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }} title="Permanently delete the attendance grid, kiosk audit log, proofs and absence sidecars for this branch + cycle">⚠ Total Reset</button>
             </div>
