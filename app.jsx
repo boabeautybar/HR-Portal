@@ -111,7 +111,7 @@ function installDemoMode() {
     };
     const noop = async () => { };
     ["saveStaff", "saveMat", "saveManager"].forEach(n => { window.BOA_DB[n] = passthrough; });
-    ["saveSchedule", "saveAttendance", "saveEarlyLeaves", "saveOnboarding", "saveOffboarding",
+    ["saveSchedule", "saveAttendance", "saveAttendanceUndo", "clearAttendanceUndo", "saveEarlyLeaves", "saveOnboarding", "saveOffboarding",
       "saveLeaveRecords", "saveMgrRequests", "saveManagerPins",
       "deleteMat", "deleteManager", "deleteSchedule", "appendActivity"
     ].forEach(n => { window.BOA_DB[n] = noop; });
@@ -128,7 +128,8 @@ function installDemoMode() {
 const READ_ONLY_GUARDED_METHODS = [
   "saveStaff", "saveMat", "saveManager", "saveSchedule", "saveAttendance", "saveEarlyLeaves",
   "saveOnboarding", "saveOffboarding", "saveLeaveRecords", "saveMgrRequests",
-  "saveTechRequests", "saveManagerPins", "saveTrialPeriod", "deleteMat", "deleteManager", "deleteSchedule"
+  "saveTechRequests", "saveManagerPins", "saveTrialPeriod", "deleteMat", "deleteManager", "deleteSchedule",
+  "saveAttendanceUndo", "clearAttendanceUndo"
 ];
 function installReadOnlyGuard() {
   const apply = () => {
@@ -3383,6 +3384,12 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   // we couldn't apply without breaking a hard rule (2-off/week is the main
   // one). Surfaced as a warning banner above the grid.
   const [unhonouredRequests, setUnhonouredRequests] = useState([]);
+  // One-level undo for bulk grid actions (Auto-fill / Clear period / Sync
+  // staff). Snapshots the grid right before the action so a misfire can be
+  // rolled back in the editor. Like the actions themselves, the rollback isn't
+  // saved until you click Save. Reset on branch/cycle change so undo only ever
+  // applies to the schedule you're looking at (i.e. per branch + period).
+  const [undoSnap, setUndoSnap] = useState(null);  // { grid, label } | null
 
   async function openHistory() {
     setHistoryOpen(true);
@@ -3417,6 +3424,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
       setSavedAt((d && d.savedAt) || null);
       setDirty(false);
       setUnhonouredRequests([]);
+      setUndoSnap(null);                 // undo only applies to the loaded branch + period
       setLoading(false);
     });
   }, [branch, ym]);
@@ -3597,6 +3605,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   }
   function clearAll() {
     if (!confirm("Clear all entries for this period? Cannot be undone after Save.")) return;
+    setUndoSnap({ grid: JSON.parse(JSON.stringify(grid || {})), label: "Clear period" });
     setGrid({}); setDirty(true);
   }
 
@@ -3612,6 +3621,8 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   //  8. Day-off requests HARD — applied as R, override everything else
   async function autoFill() {
     if (Object.keys(grid).length > 0 && !confirm("Replace existing schedule with auto-generated one? Day-off requests will be honoured. Existing manual entries will be lost.")) return;
+    // Snapshot the pre-fill grid so the whole auto-fill can be rolled back.
+    setUndoSnap({ grid: JSON.parse(JSON.stringify(grid || {})), label: "Auto-fill" });
 
     // Fetch day-off requests for this branch/period
     let dayRequests = [];
@@ -5893,6 +5904,8 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
       "After syncing, click Save to commit."
     )) return;
 
+    // Snapshot the pre-sync grid so the staff sync can be rolled back.
+    setUndoSnap({ grid: JSON.parse(JSON.stringify(grid || {})), label: "Sync staff" });
     const newGrid = JSON.parse(JSON.stringify(grid || {}));
     const allUnh = [];
 
@@ -5970,6 +5983,11 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
         {savedAt && !dirty && <span style={{ fontSize: 11, color: "#15803d", fontStyle: "italic" }}>✓ Saved {new Date(savedAt).toLocaleString()}</span>}
         {dirty && <span style={{ fontSize: 11, color: "#b45309", fontWeight: 600 }}>● Unsaved changes</span>}
         <button onClick={autoFill} style={{ padding: "8px 14px", borderRadius: 9, border: "1px solid #BE185D", background: "#FCE7F3", color: "#831843", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>✨ Auto-fill</button>
+        {undoSnap && (
+          <button onClick={() => { setGrid(undoSnap.grid); setDirty(true); setUndoSnap(null); }}
+            title={"Undo " + undoSnap.label + " — restores the schedule to just before it (click Save to keep the rollback)"}
+            style={{ padding: "8px 14px", borderRadius: 9, border: "1px solid #fbbf24", background: "#fef3c7", color: "#78350f", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>↶ Undo {undoSnap.label}</button>
+        )}
         <button onClick={openHistory} style={{ padding: "8px 14px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#FFFFFF", color: "#BE185D", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 600 }}>🕒 History</button>
         {(() => {
           const canDownload = !!savedAt && !dirty && Object.keys(grid).length > 0;
@@ -14066,7 +14084,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Cleared whenever the branch or cycle changes so we never restore into
   // the wrong context.
   const [attEditStack, setAttEditStack] = useState([]);
+  // Persisted one-step undo for the attendance sheet, loaded from the DB per
+  // branch + cycle. Unlike attEditStack (in-memory, this session only) this lets
+  // you undo the last change even after a reload or when someone else (e.g. an
+  // admin) made it in a different session. Shape: { grid, meta, label, ts }.
+  const [attPersistUndo, setAttPersistUndo] = useState(null);
   useEffect(() => { setAttEditStack([]); }, [attBranch, attYM]);
+  useEffect(() => {
+    setAttPersistUndo(null);
+    if (tab !== "attendance" || !window.BOA_DB || !window.BOA_DB.loadAttendanceUndo) return;
+    let cancelled = false;
+    window.BOA_DB.loadAttendanceUndo(attBranch, attYM)
+      .then(s => { if (!cancelled) setAttPersistUndo(s && s.grid ? s : null); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [tab, attBranch, attYM]);
   const [attLoading, setAttLoading] = useState(false);
   // Cross-branch payroll overview — lazy-loaded counts of cells needing
   // admin review per branch for the active cycle. Lives at component scope
@@ -23633,7 +23665,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           //   early_30 / early:30 / early-30
           // → mins = the trailing number, hours = mins / 60. Same orange
           // unpaid-hours palette as the existing deduct:Nh codes so it
-          // rolls into the NET UNPAID column on the right of the grid.
+          // rolls into the UNPAID column on the right of the grid.
           const leftMatch = bare.match(/^(?:left(?:[_\-:]?early)?|early)[_\-:]?(\d+)$/i);
           if (leftMatch) {
             const mins = parseInt(leftMatch[1], 10) || 0;
@@ -24040,17 +24072,39 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (toBranch) {
             const recvGrid = crossBranchAttGrids[toBranch];
             const recvVal = recvGrid && recvGrid[ec] && recvGrid[ec][d];
-            if (recvVal) return recvVal.indexOf("~") === 0 ? recvVal.slice(1) : recvVal;
+            const _do = days.find(x => x.d === d);
+            const _recvBare = recvVal ? (recvVal.indexOf("~") === 0 ? recvVal.slice(1) : recvVal) : "";
+            const _homeBare = _manualGridV ? (_manualGridV.indexOf("~") === 0 ? _manualGridV.slice(1) : _manualGridV) : "";
+            // Extra-Day stickiness across a borrow. A manager who worked an
+            // EXTRA day and was loaned out the SAME day must still read as
+            // Extra Day at home — otherwise the loan mirror masks it as plain
+            // 'On Time' and payroll never pays the extra. The Extra flag can
+            // live at EITHER branch:
+            //   • home      — a manual 'ext' cell, the boa_extras sidecar, or
+            //                 a schedule 'E' (extra cover)
+            //   • receiving — their grid cell is 'ext', or their kiosk tagged
+            //                 the borrow day as Extra
+            const _kaTo = _do ? ((kioskAbsentByBranch[toBranch] || {})[ec] || {})[_do.ymd] : null;
+            const _loanWasExtra = _homeBare === "ext" || _recvBare === "ext"
+              || _isExtraDay(ec, d) || _schedV === "E" || !!(_kaTo && _kaTo.status === "ext");
+            // The home branch's mirror of the receiving day, when present.
+            if (recvVal) {
+              if (_loanWasExtra && (_recvBare === "on" || _recvBare === "late" || _recvBare === "ext")) return "ext";
+              return _recvBare;
+            }
             // Manager fallback: managers don't have rows in the receiving
             // branch's attendance grid (the kiosk records their workday
-            // straight into the clockins table, not the att sidecar). If
-            // a manager loaned out clocked in on this day at any branch
-            // we render the home cell as 'On Time' so the payroll row
-            // shows a worked day instead of staying blank.
-            const _do = days.find(x => x.d === d);
+            // straight into the clockins table, not the att sidecar). If a
+            // manager loaned out clocked in on this day at any branch we render
+            // the home cell as 'On Time' — or 'Extra Day' when the borrow was
+            // an extra — so the payroll row shows the real worked day.
             if (_do && _mgrEcToStaffId[ec] && _mgrCheckedIn(ec, _do.ymd)) {
-              return "on";
+              return _loanWasExtra ? "ext" : "on";
             }
+            // An explicit Extra-Day cell set at home is an admin override and
+            // wins even without a cached clock-in, rather than reverting to the
+            // bare loan placeholder.
+            if (_homeBare === "ext") return "ext";
             return "loan_out";
           }
 
@@ -24223,10 +24277,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             ts: new Date().toISOString()
           };
           setAttEditStack(prev => [snap, ...(prev || [])].slice(0, 10));
+          // Mirror the snapshot to the DB so the change stays undoable after a
+          // reload or from another user's session (per branch + cycle).
+          setAttPersistUndo(snap);
+          if (window.BOA_DB.saveAttendanceUndo) {
+            try { window.BOA_DB.saveAttendanceUndo(attBranch, attYM, snap).catch(() => {}); } catch (_e) {}
+          }
         };
         const undoLastEdit = async () => {
-          if (!attEditStack || attEditStack.length === 0) return;
-          const [last, ...rest] = attEditStack;
+          // Prefer the in-session stack (multi-step); fall back to the persisted
+          // snapshot so a reload / another session can still undo the last change.
+          const last = (attEditStack && attEditStack[0]) || attPersistUndo;
+          if (!last) return;
+          const rest = (attEditStack || []).slice(1);
           const restoredGrid = last.grid || {};
           const restoredMeta = last.meta || {};
           setAttGrid(restoredGrid);
@@ -24240,6 +24303,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               mirrorSuppressed: !!restoredMeta.mirrorSuppressed
             });
           } catch (e) { alert("Could not undo: " + (e.message || e)); return; }
+          // Re-point the persisted undo at the next older snapshot (or clear it).
+          const nextTop = rest[0] || null;
+          setAttPersistUndo(nextTop);
+          try {
+            if (nextTop && window.BOA_DB.saveAttendanceUndo) await window.BOA_DB.saveAttendanceUndo(attBranch, attYM, nextTop);
+            else if (window.BOA_DB.clearAttendanceUndo) await window.BOA_DB.clearAttendanceUndo(attBranch, attYM);
+          } catch (_e) {}
           logActivity("Undid " + (last.label || "edit"), attBranch + " · " + cycLabel, "Restored to " + new Date(last.ts).toLocaleString("en-ZA"), "Attendance");
         };
 
@@ -25079,7 +25149,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const bareV = v ? (v.charAt(0) === "~" ? v.slice(1) : v) : "";
             const isHol = !!(holidayLookup && holidayLookup[dy.ymd]);
             const phOk = isHol && phEligible(dy, rawV, bareV);
-            if (v === "al") t.al++;
+            if (v === "al") { /* annual leave counted via the run-based pass below (off-days deducted) */ }
             else if (v === "el") t.unpaid++;   // emergency leave = unpaid
             else if (v === "sick") { t.sick++; t.unpaid++; }
             else if (v === "sick_n") t.sickNote++;
@@ -25108,7 +25178,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             //   value[dayKey][ec] = { hours, recordedAt, recordedBy }
             // Tracked separately so the SHORT HRS column can show only
             // these hours; also rolled into the existing unpaidHours so
-            // NET UNPAID picks them up too.
+            // the UNPAID column picks them up too.
             const _esRow = attStaffByEc[String(ec).trim()];
             let _earlyH = 0;
             if (_esRow && _esRow.role !== "NT") {
@@ -25122,6 +25192,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               t.unpaidHours += _earlyH;
             }
           }
+          // Annual leave: the leave overlay stamps EVERY calendar day of a
+          // request (incl. weekends/off-days) as "al", so a 21-day block lands
+          // as 21 cells. Count it the same way leave requests do — deduct ~2
+          // off-days per 7-day run, nothing for runs of 5 days or fewer — so a
+          // 7-day span counts as 5 leave days and a 21-day span as 15. Each
+          // contiguous run is treated as its own span so two separate short
+          // periods (e.g. 3 + 3) keep their full days rather than being merged.
+          {
+            let alRun = 0;
+            const flushAlRun = () => { if (alRun > 0) { t.al += alRun - estimateOffDays(alRun, 2); alRun = 0; } };
+            for (const dy of days) {
+              if (getStatus(ec, dy.d) === "al") alRun++;
+              else flushAlRun();
+            }
+            flushAlRun();
+          }
           // Convert deductions to days. Short hours from the kiosk's
           // "Left work early" use 8h/day per business rule (4h = 0.5 day);
           // any other deduct:Nh cells use the existing 9h/day work-shift
@@ -25132,9 +25218,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           t.earlyDays = t.earlyHours / 8;
           t.unpaidFromHours = deductHoursOnly / 9 + t.earlyDays;
           t.totalUnpaid = t.unpaid + t.unpaidFromHours;
-          t.exdOffsetUnpaid = Math.min(t.ext, t.totalUnpaid);
-          t.unpaidAfterExd = t.totalUnpaid - t.exdOffsetUnpaid;
-          t.exdAfterUnpaid = t.ext - t.exdOffsetUnpaid;
           return t;
         };
 
@@ -25380,13 +25463,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               {attCheckinSnapshot && (
                 <button onClick={undoCheckinsImport} style={{ padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Restore the attendance grid to its state right before the last check-in import">↩ Undo Check-in Import</button>
               )}
-              {attEditStack.length > 0 && (
-                <button onClick={undoLastEdit}
-                  title={"Undo the last manual action: " + attEditStack[0].label + " (" + new Date(attEditStack[0].ts).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }) + ")\n\n" + attEditStack.length + " action" + (attEditStack.length === 1 ? "" : "s") + " in history"}
-                  style={{ padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }}>
-                  ↶ Undo {attEditStack[0].label} ({attEditStack.length})
-                </button>
-              )}
+              {(attEditStack.length > 0 || attPersistUndo) && (() => {
+                const top = attEditStack[0] || attPersistUndo;
+                const persistedOnly = attEditStack.length === 0 && !!attPersistUndo;
+                const when = top && top.ts ? new Date(top.ts).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
+                return (
+                  <button onClick={undoLastEdit}
+                    title={"Undo the last change to " + attBranch + "'s sheet: " + (top.label || "edit") + (when ? " (" + when + ")" : "") + (persistedOnly ? "\n\n(Saved change — undoable even though it was made earlier or by someone else.)" : "\n\n" + attEditStack.length + " action" + (attEditStack.length === 1 ? "" : "s") + " in this session's history")}
+                    style={{ padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }}>
+                    ↶ Undo {top.label || "last change"}{attEditStack.length > 1 ? " (" + attEditStack.length + ")" : ""}
+                  </button>
+                );
+              })()}
               <button onClick={resetCycle} style={{ padding: "7px 14px", background: "#fee2e2", color: "#7f1d1d", border: "1px solid #fca5a5", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Clear every cell for this branch + cycle (with confirmation)">↺ Reset Cycle</button>
               <button onClick={totalResetCycle} style={{ padding: "7px 14px", background: "#7f1d1d", color: "#fff", border: "1px solid #7f1d1d", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }} title="Permanently delete the attendance grid, kiosk audit log, proofs and absence sidecars for this branch + cycle">⚠ Total Reset</button>
             </div>
@@ -25437,24 +25525,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       );
                     })}
                     {[
-                      { l: "AL", bg: "#eff6ff", c: "#1e40af", t: "Annual Leave" },
-                      { l: "SICK", bg: "#fef2f2", c: "#7f1d1d", t: "Sick days" },
+                      { l: "AL", bg: "#eff6ff", c: "#1e40af", t: "Annual Leave (off-days deducted — ~2 per 7-day span; e.g. 7 days = 5, 21 days = 15; runs of 5 days or fewer count in full)" },
+                      { l: "SICK", bg: "#fef2f2", c: "#7f1d1d", t: "Sick days — NO note (unpaid)" },
+                      { l: "SICK+N", bg: "#f0fdf4", c: "#166534", t: "Sick days WITH a doctor's note (paid)" },
                       { l: "FRL", bg: "#fffbeb", c: "#78350f", t: "Family Responsibility Leave" },
                       { l: "PPH", bg: "#f0fdf4", c: "#14532d", t: "Public Holidays" },
-                      { l: "MAT", bg: "#fef3c7", c: "#7c2d12", t: "Maternity" },
                       { l: "LATE", bg: "#fef3c7", c: "#92400e", t: "Late" },
-                      { l: "EXD", bg: "#d1fae5", c: "#064e3b", t: "Extra Days Worked" },
+                      { l: "EXD", bg: "#d1fae5", c: "#064e3b", t: "Extra Days Worked (all extra days — not netted against unpaid)" },
                       { l: "SHORT", bg: "#fef3c7", c: "#7c2d12", t: "Short hours from Left-Early — 8h = 1 day. Counts toward unpaid days." },
-                      { l: "UNPAID", bg: "#fee2e2", c: "#7f1d1d", t: "Unpaid" },
-                      { l: "NET UNPAID", bg: "#f3f4f6", c: "#374151", t: "Unpaid - Extra credit" }
+                      { l: "UNPAID", bg: "#fee2e2", c: "#7f1d1d", t: "Unpaid days (extra days are shown separately in EXD, not deducted here)" }
                     ].map((c, i) => (
-                      <th key={c.l} title={c.t} style={{ padding: "6px 8px", fontSize: 9, fontWeight: 800, color: c.c, textAlign: "center", borderBottom: "2px solid #FBCFE8", borderLeft: i === 0 || i === 9 ? "3px solid #FBCFE8" : "1px solid #FCE7F3", background: c.bg, minWidth: 42 }}>{c.l}</th>
+                      <th key={c.l} title={c.t} style={{ padding: "6px 8px", fontSize: 9, fontWeight: 800, color: c.c, textAlign: "center", borderBottom: "2px solid #FBCFE8", borderLeft: i === 0 || i === 8 ? "3px solid #FBCFE8" : "1px solid #FCE7F3", background: c.bg, minWidth: 42 }}>{c.l}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {attStaff.length === 0 && (
-                    <tr><td colSpan={days.length + 10} style={{ padding: 30, textAlign: "center", color: "#9ca3af", fontStyle: "italic" }}>No active staff at {attBranch}.</td></tr>
+                    <tr><td colSpan={days.length + 9} style={{ padding: 30, textAlign: "center", color: "#9ca3af", fontStyle: "italic" }}>No active staff at {attBranch}.</td></tr>
                   )}
                   {attStaff.map((s, idx) => {
                     const t = totalsFor(s.ec);
@@ -25464,7 +25551,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const showSection = idx === 0 || isMgr !== prevIsMgr;
                     const sectionRow = showSection ? (
                       <tr key={"section-" + (isMgr ? "mgr" : "tech")}>
-                        <td colSpan={days.length + 10} style={{ background: isMgr ? "#FCE7F3" : "#FDEEF5", padding: 0, borderTop: "2px solid #FBCFE8", borderBottom: "1px solid #FBCFE8" }}>
+                        <td colSpan={days.length + 9} style={{ background: isMgr ? "#FCE7F3" : "#FDEEF5", padding: 0, borderTop: "2px solid #FBCFE8", borderBottom: "1px solid #FBCFE8" }}>
                           <div style={{ position: "sticky", left: 0, padding: "8px 14px", fontSize: 11, fontWeight: 800, color: "#831843", letterSpacing: "0.12em", textTransform: "uppercase", background: isMgr ? "#FCE7F3" : "#FDEEF5", width: "max-content" }}>
                             {isMgr ? "👑 Managers" : "💅 Nail Techs"}
                           </div>
@@ -25982,22 +26069,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           );
                         })}
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#1e40af", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "3px solid #FBCFE8", background: "#eff6ff" }}>{t.al}</td>
-                        <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#7f1d1d", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#fef2f2" }} title={t.sickNote + " with note + " + t.sick + " no note"}>{t.sick + t.sickNote}</td>
+                        <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#7f1d1d", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#fef2f2" }} title={t.sick + " sick day" + (t.sick === 1 ? "" : "s") + " with NO note (unpaid)"}>{t.sick}</td>
+                        <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#166534", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#f0fdf4" }} title={t.sickNote + " sick day" + (t.sickNote === 1 ? "" : "s") + " WITH a doctor's note (paid)"}>{t.sickNote}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#78350f", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#fffbeb" }}>{t.frl}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#14532d", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#f0fdf4" }}>{t.ph}</td>
-                        <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#7c2d12", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#fef3c7" }}>{t.mat}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#92400e", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#fef3c7" }}>{t.late}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#064e3b", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#d1fae5" }}
-                          title={t.exdOffsetUnpaid > 0 ? t.ext + " extra day" + (t.ext === 1 ? "" : "s") + " − " + t.exdOffsetUnpaid + " used to cover unpaid day" + (t.exdOffsetUnpaid === 1 ? "" : "s") + " = " + t.exdAfterUnpaid + " net extra" : (t.ext + " extra day" + (t.ext === 1 ? "" : "s"))}>{t.exdAfterUnpaid}</td>
+                          title={t.ext + " extra day" + (t.ext === 1 ? "" : "s") + " worked"}>{t.ext}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: t.earlyHours > 0 ? "#7c2d12" : "#9ca3af", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: t.earlyHours > 0 ? "#fef3c7" : "#fffbeb" }}
                           title={t.earlyHours > 0 ? t.earlyHours + "h short — " + t.earlyDays.toFixed(2) + " unpaid day" + (t.earlyDays === 1 ? "" : "s") + " (8h = 1 day)" : "No short hours"}>
                           {t.earlyHours > 0 ? (t.earlyHours === Math.floor(t.earlyHours) ? t.earlyHours + "h" : t.earlyHours.toFixed(1) + "h") : "0"}
                         </td>
-                        <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: t.totalUnpaid > 0 ? "#7f1d1d" : "#9ca3af", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: t.totalUnpaid > 0 ? "#fee2e2" : "#fef2f2" }} title={t.unpaidHours > 0 ? t.unpaid + " full + " + t.unpaidHours + "h = " + t.totalUnpaid.toFixed(2) + " days" : undefined}>{t.totalUnpaid === Math.floor(t.totalUnpaid) ? t.totalUnpaid : t.totalUnpaid.toFixed(2)}</td>
-                        <td style={{ padding: "6px 8px", fontSize: 12, fontWeight: 800, color: t.unpaidAfterExd > 0 ? "#7f1d1d" : "#16a34a", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "3px solid #FBCFE8", background: t.unpaidAfterExd > 0 ? "#fee2e2" : "#f0fdf4" }} title={t.totalUnpaid.toFixed(2) + " unpaid − " + t.exdOffsetUnpaid + " extras = " + t.unpaidAfterExd.toFixed(2) + " net unpaid" + (t.exdAfterUnpaid > 0 ? " (+" + t.exdAfterUnpaid + " extras after)" : "")}>
-                          {t.unpaidAfterExd === Math.floor(t.unpaidAfterExd) ? t.unpaidAfterExd : t.unpaidAfterExd.toFixed(2)}
-                          {t.exdAfterUnpaid > 0 && <span style={{ fontSize: 8, color: "#16a34a", marginLeft: 3, fontWeight: 700 }}>+{t.exdAfterUnpaid}</span>}
-                        </td>
+                        <td style={{ padding: "6px 8px", fontSize: 12, fontWeight: 800, color: t.totalUnpaid > 0 ? "#7f1d1d" : "#16a34a", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "3px solid #FBCFE8", background: t.totalUnpaid > 0 ? "#fee2e2" : "#f0fdf4" }} title={t.unpaidHours > 0 ? t.unpaid + " full + " + t.unpaidHours + "h = " + t.totalUnpaid.toFixed(2) + " days" : (t.totalUnpaid + " unpaid day" + (t.totalUnpaid === 1 ? "" : "s"))}>{t.totalUnpaid === Math.floor(t.totalUnpaid) ? t.totalUnpaid : t.totalUnpaid.toFixed(2)}</td>
                       </tr>
                     );
                     return <React.Fragment key={s.ec}>{sectionRow}{dataRow}</React.Fragment>;
@@ -26022,7 +26105,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     return (
                       <React.Fragment key="trial-att-section">
                         <tr>
-                          <td colSpan={days.length + 10} style={{ background: "#fefce8", padding: 0, borderTop: "2px solid #fde68a", borderBottom: "1px solid #fde68a" }}>
+                          <td colSpan={days.length + 9} style={{ background: "#fefce8", padding: 0, borderTop: "2px solid #fde68a", borderBottom: "1px solid #fde68a" }}>
                             <div style={{ position: "sticky", left: 0, padding: "8px 14px", fontSize: 11, fontWeight: 800, color: "#854d0e", letterSpacing: "0.12em", textTransform: "uppercase", background: "#fefce8", width: "max-content" }}>🧪 Trial · paid trial days <span style={{ fontWeight: 600, textTransform: "none", letterSpacing: 0 }}>(T = in store · HO = head office)</span></div>
                           </td>
                         </tr>
@@ -26050,7 +26133,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 else if (s === "absent") { bg = "#fca5a5"; fg = "#7f1d1d"; txt = "A"; }
                                 return <td key={dy.d} title={txt === "HO" ? (c.name + " · head-office training day (paid)") : txt === "T" ? (c.name + " · trial day worked (paid)" + (s === "late" ? " · late" : "")) : (txt === "A" ? (c.name + " · absent (unpaid)") : "")} style={{ padding: 0, textAlign: "center", fontSize: txt === "HO" ? 8.5 : 10, fontWeight: 800, color: fg, background: bg, borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", height: 34 }}>{txt}</td>;
                               })}
-                              <td colSpan={10} style={{ padding: "6px 10px", fontSize: 11, fontWeight: 800, color: "#854d0e", textAlign: "left", borderBottom: "1px solid #FCE7F3", borderLeft: "3px solid #FBCFE8", background: "#fefce8" }}>
+                              <td colSpan={9} style={{ padding: "6px 10px", fontSize: 11, fontWeight: 800, color: "#854d0e", textAlign: "left", borderBottom: "1px solid #FCE7F3", borderLeft: "3px solid #FBCFE8", background: "#fefce8" }}>
                                 {paid} paid trial day{paid === 1 ? "" : "s"}{ho > 0 ? " (" + (paid - ho) + " store · " + ho + " head office)" : ""}{absent > 0 ? " · " + absent + " absent" : ""}
                               </td>
                             </tr>
@@ -26828,10 +26911,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const ROLE_GUARD = isTechMode
           ? (s) => /^[BT]/.test(s.ec) && !s.offHidden && !(s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft > 0)
           : (m) => (m.role === "SM" || m.role === "SSM" || m.role === "AM") && !_hasLeft(m.ec);
-        // Active people of the chosen type at this branch — exclude maternity / off-boarded / wrong role
+        // Active people of the chosen type at this branch — exclude maternity / off-boarded / wrong role.
+        // Use the EFFECTIVE home branch (effHomeBranch) rather than the stored
+        // `branch`: once a transfer's date has passed the person belongs to the
+        // destination store, so they (and their ec-keyed leave, which carries no
+        // branch of its own) move onto the new store's planner automatically.
         const sourceArr = isTechMode ? enriched : managers;
         const peopleAtBranch = (sourceArr || [])
-          .filter(p => p.branch === br && !p.onMat && ROLE_GUARD(p))
+          .filter(p => effHomeBranch(p, _todayYmd) === br && !p.onMat && ROLE_GUARD(p))
           .sort((a, b) => (a.ec || "").localeCompare(b.ec || ""));
         // For dropdown — all people of this type across all branches
         const peopleAllBranches = (sourceArr || [])
@@ -26906,7 +26993,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           for (const lv of leaveRecs) {
             if (lv.type !== "Annual leave") continue;
             const p2 = (isTechMode ? enriched : managers).find(x => x.ec === lv.ec);
-            if (!p2 || p2.branch !== br || p2.onMat) continue;
+            if (!p2 || effHomeBranch(p2, _todayYmd) !== br || p2.onMat) continue;
             if (!ROLE_GUARD(p2)) continue;
             if (iso >= lv.startDate && iso <= lv.endDate) ct++;
           }
@@ -26955,8 +27042,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
           const stf = (isTechMode ? enriched : managers).find(p => p.ec === f.ec);
           if (!stf || stf.onMat || !ROLE_GUARD(stf)) { alert("This sub-tab manages annual leave for " + peopleTypePlural + " only."); return; }
-          const stBr = stf.branch;
-          const stPeople = (isTechMode ? enriched : managers).filter(p => p.branch === stBr && !p.onMat && ROLE_GUARD(p));
+          const stBr = effHomeBranch(stf, _todayYmd);
+          const stPeople = (isTechMode ? enriched : managers).filter(p => effHomeBranch(p, _todayYmd) === stBr && !p.onMat && ROLE_GUARD(p));
           const stMx = Math.max(1, Math.floor(stPeople.length * 0.2));
           // Peak season check (1 Oct – 31 Mar). Annual leave is allowed
           // 1 Apr → 30 Sep; blocked the rest of the year except for
@@ -26982,7 +27069,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             for (const lv of leaveRecs) {
               if (lv.type !== "Annual leave") continue;
               const ls = (isTechMode ? enriched : managers).find(p2 => p2.ec === lv.ec);
-              if (!ls || ls.branch !== stBr || ls.onMat || !ROLE_GUARD(ls)) continue;
+              if (!ls || effHomeBranch(ls, _todayYmd) !== stBr || ls.onMat || !ROLE_GUARD(ls)) continue;
               if (ds >= lv.startDate && ds <= lv.endDate) ct++;
             }
             if (ct > stMx) {
@@ -27067,7 +27154,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             if (lv.type !== "Annual leave") return false;
             const p = (isTechMode ? enriched : managers).find(x => x.ec === lv.ec);
             if (!p) return false;
-            if (p.branch !== br) return false;
+            if (effHomeBranch(p, _todayYmd) !== br) return false;
             return ROLE_GUARD(p);
           })
           .slice()
