@@ -23862,17 +23862,39 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (toBranch) {
             const recvGrid = crossBranchAttGrids[toBranch];
             const recvVal = recvGrid && recvGrid[ec] && recvGrid[ec][d];
-            if (recvVal) return recvVal.indexOf("~") === 0 ? recvVal.slice(1) : recvVal;
+            const _do = days.find(x => x.d === d);
+            const _recvBare = recvVal ? (recvVal.indexOf("~") === 0 ? recvVal.slice(1) : recvVal) : "";
+            const _homeBare = _manualGridV ? (_manualGridV.indexOf("~") === 0 ? _manualGridV.slice(1) : _manualGridV) : "";
+            // Extra-Day stickiness across a borrow. A manager who worked an
+            // EXTRA day and was loaned out the SAME day must still read as
+            // Extra Day at home — otherwise the loan mirror masks it as plain
+            // 'On Time' and payroll never pays the extra. The Extra flag can
+            // live at EITHER branch:
+            //   • home      — a manual 'ext' cell, the boa_extras sidecar, or
+            //                 a schedule 'E' (extra cover)
+            //   • receiving — their grid cell is 'ext', or their kiosk tagged
+            //                 the borrow day as Extra
+            const _kaTo = _do ? ((kioskAbsentByBranch[toBranch] || {})[ec] || {})[_do.ymd] : null;
+            const _loanWasExtra = _homeBare === "ext" || _recvBare === "ext"
+              || _isExtraDay(ec, d) || _schedV === "E" || !!(_kaTo && _kaTo.status === "ext");
+            // The home branch's mirror of the receiving day, when present.
+            if (recvVal) {
+              if (_loanWasExtra && (_recvBare === "on" || _recvBare === "late" || _recvBare === "ext")) return "ext";
+              return _recvBare;
+            }
             // Manager fallback: managers don't have rows in the receiving
             // branch's attendance grid (the kiosk records their workday
-            // straight into the clockins table, not the att sidecar). If
-            // a manager loaned out clocked in on this day at any branch
-            // we render the home cell as 'On Time' so the payroll row
-            // shows a worked day instead of staying blank.
-            const _do = days.find(x => x.d === d);
+            // straight into the clockins table, not the att sidecar). If a
+            // manager loaned out clocked in on this day at any branch we render
+            // the home cell as 'On Time' — or 'Extra Day' when the borrow was
+            // an extra — so the payroll row shows the real worked day.
             if (_do && _mgrEcToStaffId[ec] && _mgrCheckedIn(ec, _do.ymd)) {
-              return "on";
+              return _loanWasExtra ? "ext" : "on";
             }
+            // An explicit Extra-Day cell set at home is an admin override and
+            // wins even without a cached clock-in, rather than reverting to the
+            // bare loan placeholder.
+            if (_homeBare === "ext") return "ext";
             return "loan_out";
           }
 
