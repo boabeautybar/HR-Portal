@@ -26650,10 +26650,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const ROLE_GUARD = isTechMode
           ? (s) => /^[BT]/.test(s.ec) && !s.offHidden && !(s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft > 0)
           : (m) => (m.role === "SM" || m.role === "SSM" || m.role === "AM") && !_hasLeft(m.ec);
-        // Active people of the chosen type at this branch — exclude maternity / off-boarded / wrong role
+        // Active people of the chosen type at this branch — exclude maternity / off-boarded / wrong role.
+        // Use the EFFECTIVE home branch (effHomeBranch) rather than the stored
+        // `branch`: once a transfer's date has passed the person belongs to the
+        // destination store, so they (and their ec-keyed leave, which carries no
+        // branch of its own) move onto the new store's planner automatically.
         const sourceArr = isTechMode ? enriched : managers;
         const peopleAtBranch = (sourceArr || [])
-          .filter(p => p.branch === br && !p.onMat && ROLE_GUARD(p))
+          .filter(p => effHomeBranch(p, _todayYmd) === br && !p.onMat && ROLE_GUARD(p))
           .sort((a, b) => (a.ec || "").localeCompare(b.ec || ""));
         // For dropdown — all people of this type across all branches
         const peopleAllBranches = (sourceArr || [])
@@ -26728,7 +26732,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           for (const lv of leaveRecs) {
             if (lv.type !== "Annual leave") continue;
             const p2 = (isTechMode ? enriched : managers).find(x => x.ec === lv.ec);
-            if (!p2 || p2.branch !== br || p2.onMat) continue;
+            if (!p2 || effHomeBranch(p2, _todayYmd) !== br || p2.onMat) continue;
             if (!ROLE_GUARD(p2)) continue;
             if (iso >= lv.startDate && iso <= lv.endDate) ct++;
           }
@@ -26777,8 +26781,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
           const stf = (isTechMode ? enriched : managers).find(p => p.ec === f.ec);
           if (!stf || stf.onMat || !ROLE_GUARD(stf)) { alert("This sub-tab manages annual leave for " + peopleTypePlural + " only."); return; }
-          const stBr = stf.branch;
-          const stPeople = (isTechMode ? enriched : managers).filter(p => p.branch === stBr && !p.onMat && ROLE_GUARD(p));
+          const stBr = effHomeBranch(stf, _todayYmd);
+          const stPeople = (isTechMode ? enriched : managers).filter(p => effHomeBranch(p, _todayYmd) === stBr && !p.onMat && ROLE_GUARD(p));
           const stMx = Math.max(1, Math.floor(stPeople.length * 0.2));
           // Peak season check (1 Oct – 31 Mar). Annual leave is allowed
           // 1 Apr → 30 Sep; blocked the rest of the year except for
@@ -26804,7 +26808,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             for (const lv of leaveRecs) {
               if (lv.type !== "Annual leave") continue;
               const ls = (isTechMode ? enriched : managers).find(p2 => p2.ec === lv.ec);
-              if (!ls || ls.branch !== stBr || ls.onMat || !ROLE_GUARD(ls)) continue;
+              if (!ls || effHomeBranch(ls, _todayYmd) !== stBr || ls.onMat || !ROLE_GUARD(ls)) continue;
               if (ds >= lv.startDate && ds <= lv.endDate) ct++;
             }
             if (ct > stMx) {
@@ -26889,7 +26893,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             if (lv.type !== "Annual leave") return false;
             const p = (isTechMode ? enriched : managers).find(x => x.ec === lv.ec);
             if (!p) return false;
-            if (p.branch !== br) return false;
+            if (effHomeBranch(p, _todayYmd) !== br) return false;
             return ROLE_GUARD(p);
           })
           .slice()
