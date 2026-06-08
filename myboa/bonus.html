@@ -33,6 +33,13 @@ window.BOA_SUPABASE_CONFIG = {
   .sub { text-align:center; color:#9d6a82; font-size:14px; margin:0 0 16px; }
   .card { background:linear-gradient(180deg,#fff,#fffafc); border:1px solid #FBCFE8; border-radius:16px; padding:18px 16px; margin-bottom:16px;
     box-shadow:0 0 0 1px rgba(244,114,182,0.22), 0 0 14px rgba(244,114,182,0.14), 0 6px 18px rgba(190,24,93,0.07); }
+  /* Calculator "display" — the live payout, like a calculator screen. */
+  .calc-display { background:linear-gradient(135deg, var(--deep) 0%, var(--pink) 55%, #F472B6 100%); color:#fff;
+    border-radius:20px; padding:22px 20px; margin-bottom:16px; text-align:center;
+    box-shadow:0 12px 30px rgba(190,24,93,0.30); }
+  .calc-display .cd-label { font-family:"Outfit",sans-serif; font-size:11.5px; font-weight:800; letter-spacing:.16em; text-transform:uppercase; color:rgba(255,255,255,0.85); }
+  .calc-display .cd-amt { font-family:"Outfit",sans-serif; font-weight:900; font-size:46px; line-height:1.05; margin:7px 0 4px; font-variant-numeric:tabular-nums; letter-spacing:-.01em; }
+  .calc-display .cd-sub { font-size:12px; color:rgba(255,255,255,0.82); }
   label.field { display:block; margin-bottom:16px; }
   label.field > span, .flbl { display:block; font-weight:700; font-size:13px; color:var(--deep); margin-bottom:7px; }
   .fblock { margin-bottom:16px; }
@@ -69,6 +76,20 @@ window.BOA_SUPABASE_CONFIG = {
     color:var(--pink); margin:2px 0 12px; }
   .note { background:#fff7fb; border:1px solid #f6c9dd; border-radius:12px; padding:12px 14px; font-size:12.5px; line-height:1.5; color:#83476a; margin-top:14px; }
   .note b { color:#9d174d; }
+  /* Calculator layout — single column on phones; on desktop the calculated
+     portion (display + receipt) sits beside the inputs. */
+  .calc-col > .card:last-child, .calc-col > .calc-display:last-child { margin-bottom: 16px; }
+  @media (min-width: 760px) {
+    .wrap, #root { max-width: 960px; }
+    .calc-grid { display: grid; grid-template-columns: 1.04fr 0.96fr; gap: 18px; align-items: start; }
+    .calc-col > *:last-child { margin-bottom: 0; }
+  }
+  /* Important disclaimer — prominent, must-read. */
+  .disclaimer { background:#FFF7ED; border:1px solid #FED7AA; border-left:5px solid #F59E0B; border-radius:14px;
+    padding:14px 16px; margin:6px 0 14px; box-shadow:0 4px 14px rgba(245,158,11,0.10); }
+  .disclaimer .dc-h { font-family:"Outfit",sans-serif; font-weight:800; font-size:13.5px; color:#9A3412; margin-bottom:5px; letter-spacing:.01em; }
+  .disclaimer .dc-b { font-size:12.5px; line-height:1.55; color:#7c4a1e; }
+  .disclaimer .dc-b b { color:#9A3412; }
   .foot { text-align:center; font-size:11.5px; color:#bf94a5; margin-top:18px; }
 </style>
 </head>

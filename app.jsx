@@ -7450,11 +7450,13 @@ function VoucherAdmin({ currentUser }) {
 // app_state["boa_bonus_config_v1"] (anon-readable), so the calculator picks up
 // changes without a redeploy. Keep this schema in sync with myboa/bonus.js.
 const BONUS_CONFIG_DEFAULT = {
+  basic: 5500,
   commissionBands: [
     { min: 15000, amount: 600 }, { min: 20000, amount: 1200 }, { min: 25000, amount: 1800 },
     { min: 30000, amount: 2400 }, { min: 35000, amount: 3500 }, { min: 40000, amount: 4100 },
     { min: 45000, amount: 4700 }, { min: 50000, amount: 5300 }
   ],
+  commissionExtend: { aboveTurnover: 50000, perStep: 5000, addAmount: 1000 },
   targetBands: [
     { min: 30000, amount: 500 }, { min: 35000, amount: 1000 }, { min: 50000, amount: 3000 }
   ],
@@ -7468,17 +7470,21 @@ function bonusBandAmount(bands, turnover) {
 }
 function bonusCompute(conf, turnover, level, warning, noShow, late) {
   const t = Math.max(0, Math.round(Number(turnover) || 0));
-  const commission = bonusBandAmount(conf.commissionBands, t);
+  const basic = Number(conf.basic) || 0;
+  let commission = bonusBandAmount(conf.commissionBands, t);
+  const ex = conf.commissionExtend;
+  if (ex && ex.perStep > 0 && t > ex.aboveTurnover) {
+    commission += Math.floor((t - ex.aboveTurnover) / ex.perStep) * (Number(ex.addAmount) || 0);
+  }
   const target = bonusBandAmount(conf.targetBands, t);
   const threshold = (conf.skills && conf.skills.threshold) || 0;
   const skills = t >= threshold ? (Number(conf.skills?.byLevel?.[level]) || 0) : 0;
   const gross = target + skills;
-  const halveAt = conf.late?.halveAt ?? 3, zeroAt = conf.late?.zeroAt ?? 7;
-  let mult = 1;
-  if (warning || noShow || late >= zeroAt) mult = 0;
-  else if (late >= halveAt) mult = 0.5;
+  // A warning or a no-show forfeits the bonus; otherwise it's paid in full.
+  // (Lateness no longer factors into the estimate — see the staff disclaimer.)
+  const mult = (warning || noShow) ? 0 : 1;
   const net = Math.round(gross * mult);
-  return { t, commission, target, skills, gross, mult, net, total: commission + net };
+  return { t, basic, commission, target, skills, gross, mult, net, total: basic + commission + net };
 }
 
 function BonusConfig() {
@@ -7496,7 +7502,9 @@ function BonusConfig() {
         const v = window.BOA_DB && window.BOA_DB.loadByKey ? await window.BOA_DB.loadByKey("boa_bonus_config_v1") : null;
         if (v && Array.isArray(v.commissionBands)) {
           setConf({
+            basic: (v.basic != null ? v.basic : BONUS_CONFIG_DEFAULT.basic),
             commissionBands: v.commissionBands || BONUS_CONFIG_DEFAULT.commissionBands,
+            commissionExtend: v.commissionExtend || BONUS_CONFIG_DEFAULT.commissionExtend,
             targetBands: v.targetBands || BONUS_CONFIG_DEFAULT.targetBands,
             skills: v.skills || BONUS_CONFIG_DEFAULT.skills,
             late: v.late || BONUS_CONFIG_DEFAULT.late
@@ -7514,13 +7522,17 @@ function BonusConfig() {
   const setSkill = (lvl, val) => setConf(c => ({ ...c, skills: { ...c.skills, byLevel: { ...c.skills.byLevel, [lvl]: num(val) } } }));
   const setThreshold = (val) => setConf(c => ({ ...c, skills: { ...c.skills, threshold: num(val) } }));
   const setLate = (field, val) => setConf(c => ({ ...c, late: { ...c.late, [field]: num(val) } }));
+  const setBasic = (val) => setConf(c => ({ ...c, basic: num(val) }));
+  const setExtend = (field, val) => setConf(c => ({ ...c, commissionExtend: { ...(c.commissionExtend || {}), [field]: num(val) } }));
 
   const save = async () => {
     if (busy) return;
     setBusy(true); setResult(null);
     try {
       const clean = {
+        basic: num(conf.basic),
         commissionBands: [...conf.commissionBands].sort((a, b) => a.min - b.min),
+        commissionExtend: conf.commissionExtend || BONUS_CONFIG_DEFAULT.commissionExtend,
         targetBands: [...conf.targetBands].sort((a, b) => a.min - b.min),
         skills: conf.skills, late: conf.late
       };
@@ -7563,10 +7575,27 @@ function BonusConfig() {
     <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", color: PINK.ink, maxWidth: 760 }}>
       <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, fontWeight: 700, marginBottom: 2 }}>🧮 Bonus &amp; Commission</div>
       <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 16 }}>
-        These rates drive the staff <strong>Bonus &amp; Commission Calculator</strong> on My BOA. Commission is always paid; bonuses (target + skills) can be halved/lost by lateness, warnings or no-shows. {loaded ? "" : "Loading…"}
+        These rates drive the staff <strong>Bonus &amp; Commission Calculator</strong> on My BOA. Basic &amp; commission are always paid; bonuses (target + skills) are forfeited by a warning or no-show. {loaded ? "" : "Loading…"}
+      </div>
+
+      <div style={card}>
+        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 2, color: PINK.ink }}>Basic salary</div>
+        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 10 }}>Flat monthly basic for everyone — always paid, first line on the payout.</div>
+        <label style={{ fontSize: 12, fontWeight: 700 }}>Basic (R / month)<br /><input type="number" value={conf.basic ?? 0} onChange={e => setBasic(e.target.value)} style={{ ...inp, width: 130, marginTop: 4 }} /></label>
       </div>
 
       {bandTable("commissionBands", "Commission bands", "Turnover ≥ the lowest band's min earns that commission. Highest qualifying band applies (e.g. 34 999 still earns the 30 000 rate).")}
+
+      <div style={card}>
+        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 2, color: PINK.ink }}>Commission above the top band</div>
+        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 10 }}>Above the turnover below, add a fixed amount for every full step of extra turnover (e.g. +R1 000 per R5 000 over R50 000).</div>
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <label style={{ fontSize: 12, fontWeight: 700 }}>Above turnover (R)<br /><input type="number" value={conf.commissionExtend?.aboveTurnover ?? 0} onChange={e => setExtend("aboveTurnover", e.target.value)} style={{ ...inp, width: 120, marginTop: 4 }} /></label>
+          <label style={{ fontSize: 12, fontWeight: 700 }}>Per step (R)<br /><input type="number" value={conf.commissionExtend?.perStep ?? 0} onChange={e => setExtend("perStep", e.target.value)} style={{ ...inp, width: 110, marginTop: 4 }} /></label>
+          <label style={{ fontSize: 12, fontWeight: 700 }}>Add amount (R)<br /><input type="number" value={conf.commissionExtend?.addAmount ?? 0} onChange={e => setExtend("addAmount", e.target.value)} style={{ ...inp, width: 110, marginTop: 4 }} /></label>
+        </div>
+      </div>
+
       {bandTable("targetBands", "Target bonus bands", "A turnover reward, on top of commission. Below the lowest min → no target bonus.")}
 
       <div style={card}>
@@ -7581,12 +7610,9 @@ function BonusConfig() {
       </div>
 
       <div style={card}>
-        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 2, color: PINK.ink }}>Lateness thresholds</div>
-        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 10 }}>Applied to bonuses only (never commission). A signed warning or a no-show forfeits the bonus outright.</div>
-        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
-          <label style={{ fontSize: 12, fontWeight: 700 }}>Halve bonus at (lates ≥)<br /><input type="number" value={conf.late.halveAt} onChange={e => setLate("halveAt", e.target.value)} style={{ ...inp, width: 110, marginTop: 4 }} /></label>
-          <label style={{ fontSize: 12, fontWeight: 700 }}>Lose bonus at (lates ≥)<br /><input type="number" value={conf.late.zeroAt} onChange={e => setLate("zeroAt", e.target.value)} style={{ ...inp, width: 110, marginTop: 4 }} /></label>
-        </div>
+        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 2, color: PINK.ink }}>Bonus deductions</div>
+        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 10 }}>A signed <strong>warning</strong> or a <strong>no-show</strong> forfeits the bonus outright (commission is never affected). The calculator doesn't ask about lateness — the threshold below is shown to staff as a reminder in the disclaimer.</div>
+        <label style={{ fontSize: 12, fontWeight: 700 }}>Bonus forfeited at (lates ≥)<br /><input type="number" value={conf.late?.zeroAt ?? 7} onChange={e => setLate("zeroAt", e.target.value)} style={{ ...inp, width: 130, marginTop: 4 }} /></label>
       </div>
 
       <div style={{ ...card, background: PINK.softer }}>
@@ -7598,7 +7624,7 @@ function BonusConfig() {
           </label>
         </div>
         <div style={{ fontSize: 13, color: PINK.ink, lineHeight: 1.7 }}>
-          Commission <strong>{rand(pv.commission)}</strong> · Target <strong>{rand(pv.target)}</strong> · Skills <strong>{rand(pv.skills)}</strong> →
+          Basic <strong>{rand(pv.basic)}</strong> · Commission <strong>{rand(pv.commission)}</strong> · Target <strong>{rand(pv.target)}</strong> · Skills <strong>{rand(pv.skills)}</strong> →
           <strong style={{ fontSize: 16, color: PINK.accent }}> Total {rand(pv.total)}</strong>
         </div>
       </div>

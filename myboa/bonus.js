@@ -9,12 +9,14 @@
    Nothing is written. Falls back to bundled defaults if the row is missing.
 
    Rules (confirmed with the business):
-     • Commission = turnover band lookup. ALWAYS paid; never reduced.
+     • Basic salary — flat for everyone, always paid.
+     • Commission = turnover band lookup (+ a fixed amount per step above the
+       top band). ALWAYS paid; never reduced.
      • Bonuses = Target bonus (turnover band) + Skills bonus (by level,
        unlocked at a turnover threshold).
-     • Deductions hit the BONUSES only (worst-wins):
-         signed a warning OR a no-show OR late ≥ zeroAt  → bonuses ×0
-         else late ≥ halveAt                              → bonuses ×0.5
+     • A warning OR a no-show forfeits the BONUSES (commission untouched).
+       Lateness isn't an input here — the late≥N → forfeit rule is in the
+       disclaimer only.
    ============================================================ */
 (function () {
   var cfg = window.BOA_SUPABASE_CONFIG || {};
@@ -25,11 +27,14 @@
 
   // Bundled defaults — used until the Owner saves a config in the portal.
   var DEFAULT_CONFIG = {
+    basic: 5500,                 // flat monthly basic salary for everyone
     commissionBands: [
       { min: 15000, amount: 600 }, { min: 20000, amount: 1200 }, { min: 25000, amount: 1800 },
       { min: 30000, amount: 2400 }, { min: 35000, amount: 3500 }, { min: 40000, amount: 4100 },
       { min: 45000, amount: 4700 }, { min: 50000, amount: 5300 }
     ],
+    // Above aboveTurnover, add addAmount for every full perStep of turnover.
+    commissionExtend: { aboveTurnover: 50000, perStep: 5000, addAmount: 1000 },
     targetBands: [
       { min: 30000, amount: 500 }, { min: 35000, amount: 1000 }, { min: 50000, amount: 3000 }
     ],
@@ -38,7 +43,7 @@
   };
 
   var CONF = DEFAULT_CONFIG;
-  var state = { level: "1", turnover: "", warning: false, noShow: false, late: 0 };
+  var state = { level: "1", turnover: "", warning: false, noShow: false };
 
   // ── Calc helpers ────────────────────────────────────────────
   function bandAmount(bands, turnover) {
@@ -50,34 +55,36 @@
   }
   function compute() {
     var t = Math.max(0, Math.round(Number(state.turnover) || 0));
+    var basic = Number(CONF.basic) || 0;
     var commission = bandAmount(CONF.commissionBands, t);
+    // Above the cap, add a fixed amount for every full step of extra turnover.
+    var ex = CONF.commissionExtend, commissionExtended = false;
+    if (ex && ex.perStep > 0 && t > ex.aboveTurnover) {
+      var extra = Math.floor((t - ex.aboveTurnover) / ex.perStep) * (Number(ex.addAmount) || 0);
+      if (extra > 0) { commission += extra; commissionExtended = true; }
+    }
     var target = bandAmount(CONF.targetBands, t);
     var skillsByLevel = (CONF.skills && CONF.skills.byLevel) || {};
     var threshold = (CONF.skills && CONF.skills.threshold) || 0;
     var skills = (t >= threshold) ? (Number(skillsByLevel[state.level]) || 0) : 0;
     var bonusGross = target + skills;
 
-    var halveAt = (CONF.late && CONF.late.halveAt) || 3;
-    var zeroAt = (CONF.late && CONF.late.zeroAt) || 7;
-    var mult = 1;
-    if (state.warning || state.noShow || state.late >= zeroAt) mult = 0;
-    else if (state.late >= halveAt) mult = 0.5;
+    // A warning OR a no-show forfeits the whole bonus; otherwise it's paid in full.
+    var mult = (state.warning || state.noShow) ? 0 : 1;
     var bonusNet = Math.round(bonusGross * mult);
 
-    // Plain-language explanation with the from → to amounts baked in.
     var reason = "";
     if (mult !== 1) {
       var fromTo = "from " + rand(bonusGross) + " to " + rand(bonusNet);
       if (state.warning) reason = "Warning signed this pay period — bonus forfeited (" + fromTo + ").";
-      else if (state.noShow) reason = "No-show this pay period — bonus forfeited (" + fromTo + ").";
-      else if (state.late >= zeroAt) reason = "Late " + state.late + " times (" + zeroAt + " or more) — bonus lost " + fromTo + ".";
-      else reason = "Late " + state.late + " times (" + halveAt + " or more) — bonus halved " + fromTo + ".";
+      else reason = "No-show this pay period — bonus forfeited (" + fromTo + ").";
     }
     return {
-      turnover: t, commission: commission, target: target, skills: skills,
+      turnover: t, basic: basic, commission: commission, commissionExtended: commissionExtended,
+      target: target, skills: skills,
       bonusGross: bonusGross, mult: mult, reason: reason,
       belowSkills: t < threshold, threshold: threshold,
-      bonusNet: bonusNet, total: commission + bonusNet
+      bonusNet: bonusNet, total: basic + commission + bonusNet
     };
   }
 
@@ -85,74 +92,89 @@
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
 
   // ── Render ──────────────────────────────────────────────────
-  function lateOptions() {
-    var out = "";
-    for (var i = 0; i <= 25; i++) out += '<option value="' + i + '"' + (state.late === i ? " selected" : "") + ">" + i + "</option>";
-    return out;
+  // Reactive vibe line under the big number: 🤑 making bank, 👀 side-eye when an
+  // incident forfeits the bonus.
+  function moodSub(r) {
+    if (r.mult === 0 && r.bonusGross > 0) return "👀 Bonus forfeited — basic + commission only";
+    if (r.bonusGross > 0) return "🤑 Making bank · this pay period";
+    return "Basic + commission · this pay period";
+  }
+  function displayCard(r) {
+    return '<div class="calc-display">' +
+      '<div class="cd-label">Estimated payout</div>' +
+      '<div class="cd-amt" id="bonus-display-amount">' + rand(r.total) + '</div>' +
+      '<div class="cd-sub" id="bonus-display-sub">' + moodSub(r) + '</div>' +
+    '</div>';
+  }
+  function inputsCard() {
+    return '<div class="card">' +
+      '<div class="fblock">' +
+        '<span class="flbl">Your level</span>' +
+        '<div class="seg" id="seg-level">' +
+          ['1', '2', '3'].map(function (l) { return '<button type="button" data-level="' + l + '" class="' + (state.level === l ? "on" : "") + '">Level ' + l + '</button>'; }).join('') +
+        '</div>' +
+      '</div>' +
+      '<div class="fblock">' +
+        '<span class="flbl">Turnover this pay period</span>' +
+        '<div class="turn"><span class="cur">R</span>' +
+          '<input id="turnover" inputmode="numeric" autocomplete="off" placeholder="e.g. 30000" value="' + esc(state.turnover) + '" /></div>' +
+        '<div class="hint">Your total turnover for the 25th → 24th pay cycle.</div>' +
+      '</div>' +
+      '<div class="fblock">' +
+        '<span class="flbl">Did you sign a warning this pay period?</span>' +
+        '<div class="seg yn" id="seg-warning">' +
+          '<button type="button" data-v="0" class="' + (!state.warning ? "on no" : "") + '">No</button>' +
+          '<button type="button" data-v="1" class="' + (state.warning ? "on" : "") + '">Yes</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="fblock" style="margin-bottom:0">' +
+        '<span class="flbl">Did you have a no-show this pay period?</span>' +
+        '<div class="seg yn" id="seg-noshow">' +
+          '<button type="button" data-v="0" class="' + (!state.noShow ? "on no" : "") + '">No</button>' +
+          '<button type="button" data-v="1" class="' + (state.noShow ? "on" : "") + '">Yes</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+  function disclaimerCard() {
+    var zeroAt = (CONF.late && CONF.late.zeroAt) || 7;
+    return '<div class="disclaimer">' +
+      '<div class="dc-h">⚠️ Please read — this is just an estimate</div>' +
+      '<div class="dc-b">This is <b>not</b> your final take-home pay. Your real pay also depends on ' +
+      '<b>tips</b>, <b>PAYE</b> &amp; <b>UIF</b> deductions, <b>missed days</b>, <b>sick days</b>, ' +
+      '<b>extra days worked</b> and <b>public-holiday pay</b>. And if you\'re <b>late ' + zeroAt + '+ times</b> ' +
+      'this pay period, your <b>bonus is forfeited</b>. Commission is always paid — only your bonus is ' +
+      'affected by a warning or no-show. Your final pay is confirmed by HR.</div>' +
+    '</div>';
   }
   function render() {
     var r = compute();
-    var hasTurnover = String(state.turnover).trim() !== "" && r.turnover > 0;
-
     root.innerHTML =
       '<div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>' +
       '<h1>Bonus &amp; Commission</h1>' +
       '<p class="sub">Pop in your turnover to see what you\'d earn this pay period.</p>' +
 
-      '<div class="card">' +
-        '<div class="fblock">' +
-          '<span class="flbl">Your level</span>' +
-          '<div class="seg" id="seg-level">' +
-            ['1', '2', '3'].map(function (l) { return '<button type="button" data-level="' + l + '" class="' + (state.level === l ? "on" : "") + '">Level ' + l + '</button>'; }).join('') +
-          '</div>' +
-        '</div>' +
-
-        '<div class="fblock">' +
-          '<span class="flbl">Turnover this pay period</span>' +
-          '<div class="turn"><span class="cur">R</span>' +
-            '<input id="turnover" inputmode="numeric" autocomplete="off" placeholder="e.g. 30000" value="' + esc(state.turnover) + '" /></div>' +
-          '<div class="hint">Your total turnover for the 25th → 24th pay cycle.</div>' +
-        '</div>' +
-
-        '<div class="fblock">' +
-          '<span class="flbl">Did you sign a warning this pay period?</span>' +
-          '<div class="seg yn" id="seg-warning">' +
-            '<button type="button" data-v="0" class="' + (!state.warning ? "on no" : "") + '">No</button>' +
-            '<button type="button" data-v="1" class="' + (state.warning ? "on" : "") + '">Yes</button>' +
-          '</div>' +
-        '</div>' +
-
-        '<div class="fblock">' +
-          '<span class="flbl">Did you have a no-show this pay period?</span>' +
-          '<div class="seg yn" id="seg-noshow">' +
-            '<button type="button" data-v="0" class="' + (!state.noShow ? "on no" : "") + '">No</button>' +
-            '<button type="button" data-v="1" class="' + (state.noShow ? "on" : "") + '">Yes</button>' +
-          '</div>' +
-        '</div>' +
-
-        '<div class="fblock" style="margin-bottom:0">' +
-          '<span class="flbl">How many times were you late this pay period?</span>' +
-          '<select id="late">' + lateOptions() + '</select>' +
-        '</div>' +
+      '<div class="calc-grid">' +
+        '<div class="calc-col">' + inputsCard() + '</div>' +
+        '<div class="calc-col">' + displayCard(r) + receiptCard(r) + '</div>' +
       '</div>' +
 
-      (hasTurnover ? resultCard(r) : '<div class="card" style="text-align:center;color:#9d6a82;font-size:14px">Enter your turnover above to see your estimate.</div>') +
-
-      '<div class="note"><b>Estimate only.</b> Final pay is confirmed by HR. <b>Commission is never affected</b> by warnings, no-shows or lateness — only your bonuses are.</div>' +
+      disclaimerCard() +
       '<p class="foot">My BOA · for BOA team members</p>';
 
     wire();
   }
 
-  function resultCard(r) {
+  function receiptCard(r) {
     var dedAmt = Math.max(0, r.bonusGross - r.bonusNet); // amount removed from the bonus
     var hasDed = r.mult !== 1 && r.bonusGross > 0;
     var dedClass = r.mult === 1 ? "ok" : "";
-    var dedIcon = r.mult === 1 ? "✅" : (r.mult === 0 ? "🚫" : "½");
-    var dedText = r.mult === 1 ? "No bonus deductions — nice one!" : r.reason;
-    return '<div class="card">' +
+    var dedIcon = r.mult === 1 ? "🤑" : "👀";
+    var dedText = r.mult === 1 ? "No deductions — making bank!" : r.reason;
+    return '<div class="card" id="bonus-receipt">' +
       '<div class="sech">Your estimate · Level ' + esc(state.level) + '</div>' +
-      row("Commission", "always paid", rand(r.commission), false) +
+      row("Basic salary", "everyone", rand(r.basic), false) +
+      row("Commission", r.commissionExtended ? "incl. R50k+ bonus" : "always paid", rand(r.commission), false) +
       row("Target bonus", null, rand(r.target), false) +
       row("Skills bonus", r.belowSkills ? ("unlocks at " + rand(r.threshold) + " turnover") : ("Level " + state.level), rand(r.skills), r.belowSkills && r.skills === 0) +
       (r.bonusGross > 0 ? row("Bonus subtotal", null, rand(r.bonusGross), false) : "") +
@@ -184,22 +206,21 @@
     if (segN) segN.querySelectorAll("button").forEach(function (b) {
       b.onclick = function () { state.noShow = b.getAttribute("data-v") === "1"; render(); };
     });
-    var late = document.getElementById("late");
-    if (late) late.onchange = function () { state.late = parseInt(late.value, 10) || 0; render(); };
   }
 
-  // Re-render results without rebuilding the whole form (keeps the turnover
-  // field focused while typing).
+  // Refresh the live display + receipt without rebuilding the inputs (keeps the
+  // turnover field focused while typing).
   function liveUpdate() {
     var r = compute();
-    var hasTurnover = String(state.turnover).trim() !== "" && r.turnover > 0;
-    var cards = root.querySelectorAll(".card");
-    var resultEl = cards[cards.length - 1]; // last card = results / prompt
-    if (!resultEl) { render(); return; }
-    var html = hasTurnover ? resultCard(r) : '<div class="card" style="text-align:center;color:#9d6a82;font-size:14px">Enter your turnover above to see your estimate.</div>';
+    var amtEl = document.getElementById("bonus-display-amount");
+    if (amtEl) amtEl.textContent = rand(r.total);
+    var subEl = document.getElementById("bonus-display-sub");
+    if (subEl) subEl.textContent = moodSub(r);
+    var rc = document.getElementById("bonus-receipt");
+    if (!rc) { render(); return; }
     var tmp = document.createElement("div");
-    tmp.innerHTML = html;
-    resultEl.replaceWith(tmp.firstChild);
+    tmp.innerHTML = receiptCard(r);
+    rc.replaceWith(tmp.firstChild);
   }
 
   // ── Boot: load config, then render ──────────────────────────
@@ -211,7 +232,9 @@
         var v = res && res.data && res.data.value;
         if (v && typeof v === "object" && Array.isArray(v.commissionBands)) {
           CONF = {
+            basic: (v.basic != null ? v.basic : DEFAULT_CONFIG.basic),
             commissionBands: v.commissionBands || DEFAULT_CONFIG.commissionBands,
+            commissionExtend: v.commissionExtend || DEFAULT_CONFIG.commissionExtend,
             targetBands: v.targetBands || DEFAULT_CONFIG.targetBands,
             skills: v.skills || DEFAULT_CONFIG.skills,
             late: v.late || DEFAULT_CONFIG.late
