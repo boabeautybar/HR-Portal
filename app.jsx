@@ -25392,7 +25392,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       { l: "EXD", bg: "#d1fae5", c: "#064e3b", t: "Extra Days Worked (all extra days — not netted against unpaid)" },
                       { l: "UNPAID", bg: "#fee2e2", c: "#7f1d1d", t: "Unpaid days — no-shows, absent, sick (no note), maternity, emergency leave, explicit Unpaid marks, terminated days, and left-early short hours (8h = 1 day)." }
                     ].map((c, i) => (
-                      <th key={c.l} title={c.t} style={{ padding: "6px 8px", fontSize: 9, fontWeight: 800, color: c.c, textAlign: "center", borderBottom: "2px solid #FBCFE8", borderLeft: i === 0 || i === 5 ? "3px solid #FBCFE8" : "1px solid #FCE7F3", background: c.bg, minWidth: 42 }}>{c.l}</th>
+                      <th key={c.l} title={c.t} style={{ padding: "6px 8px", fontSize: 9, fontWeight: 800, color: c.c, textAlign: "center", borderBottom: "2px solid #FBCFE8", borderLeft: i === 0 ? "3px solid #FBCFE8" : "1px solid #FCE7F3", background: c.bg, minWidth: 42 }}>{c.l}</th>
                     ))}
                   </tr>
                 </thead>
@@ -25932,7 +25932,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#14532d", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#f0fdf4" }}>{t.ph}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#064e3b", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#d1fae5" }}
                           title={t.ext + " extra day" + (t.ext === 1 ? "" : "s") + " worked"}>{t.ext}</td>
-                        <td style={{ padding: "6px 8px", fontSize: 12, fontWeight: 800, color: t.totalUnpaid > 0 ? "#7f1d1d" : "#16a34a", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "3px solid #FBCFE8", background: t.totalUnpaid > 0 ? "#fee2e2" : "#f0fdf4" }} title={t.unpaidHours > 0 ? t.unpaid + " full day" + (t.unpaid === 1 ? "" : "s") + " + " + t.unpaidHours + "h short (left early) = " + t.totalUnpaid.toFixed(2) + " days" : (t.totalUnpaid + " unpaid day" + (t.totalUnpaid === 1 ? "" : "s"))}>{t.totalUnpaid === Math.floor(t.totalUnpaid) ? t.totalUnpaid : t.totalUnpaid.toFixed(2)}</td>
+                        <td style={{ padding: "6px 8px", fontSize: 12, fontWeight: 800, color: t.totalUnpaid > 0 ? "#7f1d1d" : "#16a34a", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: t.totalUnpaid > 0 ? "#fee2e2" : "#f0fdf4" }} title={t.unpaidHours > 0 ? t.unpaid + " full day" + (t.unpaid === 1 ? "" : "s") + " + " + t.unpaidHours + "h short (left early) = " + t.totalUnpaid.toFixed(2) + " days" : (t.totalUnpaid + " unpaid day" + (t.totalUnpaid === 1 ? "" : "s"))}>{t.totalUnpaid === Math.floor(t.totalUnpaid) ? t.totalUnpaid : t.totalUnpaid.toFixed(2)}</td>
                       </tr>
                     );
                     return <React.Fragment key={s.ec}>{sectionRow}{dataRow}</React.Fragment>;
