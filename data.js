@@ -1149,14 +1149,19 @@
     if (wr.error) { console.error("addManualKioskCheckin write:", wr.error); throw wr.error; }
     // Also stamp the attendance grid (boa_att_<branch>_<cycleYm>) so it shows
     // on the Attendance sheet straight away — mirroring what the kiosk does
-    // when a manager tags a status. Schedule cycles run the 25th → 24th, so a
-    // day after the 24th belongs to the NEXT calendar month's cycle. The grid
+    // when a manager tags a status. The grid is keyed under the cycle's
+    // START-month (same convention as currentAttYm()/loadAttendance): the
+    // 25th→24th cycle means days 1..24 of month M belong to the cycle that
+    // STARTED on the 25th of month M-1, so they key under month M-1; only days
+    // 25..31 stay in month M. (The old code shifted the wrong way — +1 instead
+    // of -1 — so e.g. a 6 June check-in landed in the 25 Jun→24 Jul grid at
+    // day-of-month 6 and rendered as a phantom "On Time" on 6 July.) The grid
     // is keyed by ec → day-of-month. Best-effort: a failure here never blocks
     // the check-in (it still shows in the feed and is importable).
     try {
       var p = String(ymd).split("-").map(Number);
       var ay = p[0], am = p[1];
-      if (p[2] > 24) { am = p[1] + 1; if (am > 12) { am = 1; ay = p[0] + 1; } }
+      if (p[2] <= 24) { am = p[1] - 1; if (am < 1) { am = 12; ay = p[0] - 1; } }
       var attYm = ay + "-" + String(am).padStart(2, "0");
       var att = await loadAttendance(branch, attYm);
       var grid = (att && att.grid && typeof att.grid === "object") ? JSON.parse(JSON.stringify(att.grid)) : {};
