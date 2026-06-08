@@ -25096,6 +25096,41 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           setAttYM(y + "-" + p2(m));
         };
 
+        // Download the per-staff summary totals (the right-hand columns) as a CSV:
+        // employee code, full name, role, new-starter start date, every count
+        // (annual leave, sick + note, FRL, PPH, extra days, unpaid, no-shows,
+        // lates) and whether the attendance bonus is lost (with the reason).
+        const downloadAttendanceCsv = () => {
+          const head = ["Employee Code", "Full Name", "Role", "Start Date (new starters)",
+            "Annual Leave", "Sick (with note)", "FRL", "Public Holidays", "Extra Days",
+            "Unpaid", "No-shows", "Lates", "Bonus Lost", "Bonus Loss Reason"];
+          const lines = [head.map(_csvEscape).join(",")];
+          attStaff.forEach(s => {
+            const t = totalsFor(s.ec);
+            const reasons = bonusLossReasons(t);
+            const sd = startByEc[String(s.ec).trim()];
+            const isNew = sd && days.length && sd >= days[0].ymd;
+            const row = [
+              s.ec || "",
+              s.name || "",
+              s.smTrial ? "SM (trial)" : (s.role || ""),
+              isNew ? sd : "",
+              t.al,
+              t.sickNote,
+              t.frl,
+              t.ph,
+              t.ext,
+              (t.totalUnpaid === Math.floor(t.totalUnpaid) ? t.totalUnpaid : t.totalUnpaid.toFixed(2)),
+              t.noShow,
+              t.late,
+              reasons.length ? "Yes" : "No",
+              reasons.join("; ")
+            ];
+            lines.push(row.map(_csvEscape).join(","));
+          });
+          _triggerDownload(_safeFile("attendance_totals_" + attBranch + "_" + attYM) + ".csv", lines.join("\r\n"), "text/csv");
+        };
+
         // Count warning cells in the current grid view so the dashboard
         // strip can show "X cells need review · Y resolved · Z open" and
         // surface how much of the cycle is still pending an admin decision.
@@ -25305,6 +25340,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ flex: 1 }} />
               {attLoading && <span style={{ fontSize: 11, color: "#9ca3af", fontStyle: "italic" }}>Loading…</span>}
               <button onClick={autoFill} style={{ padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Fill empty cells from schedule (faded, still unconfirmed)">✓ Auto-fill from Schedule</button>
+              <button onClick={downloadAttendanceCsv} style={{ padding: "7px 14px", background: "#FFFFFF", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Download a CSV of the side totals — employee code, name, role, new-starter start date, all day counts (incl. sick + note, unpaid) and whether the bonus is lost">⬇ CSV totals</button>
               <button onClick={importFresha} style={{ padding: "7px 14px", background: "#dbeafe", color: "#1e3a8a", border: "1px solid #93c5fd", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Upload a Fresha appointments CSV — every nail tech with a completed appointment that day is marked On Time">📤 Import Fresha CSV</button>
               <button onClick={importCheckins} style={{ padding: "7px 14px", background: "#dcfce7", color: "#14532d", border: "1px solid #86efac", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Pull every clock-in from the staff check-in app and stamp those days as On Time (or Extra Day if scheduled off). Confirmed cells are preserved. Use ↩ Undo to roll the import back.">✓ Import Check-ins</button>
               {attCheckinSnapshot && (
