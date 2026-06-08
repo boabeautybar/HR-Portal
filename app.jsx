@@ -8159,7 +8159,7 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
           title="🧮 Leave — payroll / balance check"
           blurb="Your payroll officer checks the leave balance on Sage, records how many days the person has, and ticks it off. Once both this and the operational check are done, the request is auto-approved and added to the Leave Planner. Owners can always do this; grant others below."
           cfg={leavePayrollCfg} onSave={onLeavePayrollCfgSave} users={users}
-          roleOpts={[{ key: "payroll", label: "Payroll / wages / finance roles" }, { key: "hr", label: "HR roles" }]}
+          roleOpts={[{ key: "national", label: "National Ops Managers" }, { key: "payroll", label: "Payroll / wages / finance roles" }, { key: "hr", label: "HR roles" }]}
           accent="#0f766e" accentBg="#f0fdfa" border="#99f6e4"
         />
       )}
