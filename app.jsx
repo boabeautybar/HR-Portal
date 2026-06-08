@@ -1649,6 +1649,40 @@ function mgrSched(branchName, cycleStartYmd, allManagers, leaveRecs, requests, p
   return { managers: fAll, dates, grid, conflicts, dayTotals, branch: branchName, cycleStart: cycleStartYmd, cycleEnd, weekOrder: wkOrder, weeksMap: wkMap };
 }
 
+// Manager grids are canonically keyed by YYYY-MM-DD (see mgrSched). A couple
+// of writers historically saved day-of-month numeric keys instead, which the
+// Schedule-tab overview can't read — it looks every cell up by YYYY-MM-DD, so
+// a numeric-keyed row rendered as all-working with no off-days. Re-key any bare
+// day-of-month keys to the matching YYYY-MM-DD inside the cycle (25th of the
+// start month → 24th of the next), healing those rows on load. YYYY-MM-DD keys
+// already present are kept as-is (and win over any duplicate numeric key).
+function rekeyMgrGridToYmd(grid, cycleStartYmd) {
+  if (!grid || !cycleStartYmd) return grid || {};
+  const parts = cycleStartYmd.split("-").map(Number);
+  const sy = parts[0], sm = parts[1];                 // start year, start month (1-12)
+  if (!sy || !sm) return grid;
+  const p2 = n => String(n).padStart(2, "0");
+  const out = {};
+  for (const ec in grid) {
+    const row = grid[ec] || {};
+    const conv = {};
+    for (const k in row) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(k)) { conv[k] = row[k]; continue; }
+      const dom = parseInt(k, 10);
+      if (!isNaN(dom) && dom >= 1 && dom <= 31 && String(dom) === String(k).trim()) {
+        let y = sy, mo = sm;                           // days 25..31 → start month; 1..24 → next month
+        if (dom <= 24) { mo = sm + 1; if (mo > 12) { mo = 1; y = sy + 1; } }
+        const ymdKey = y + "-" + p2(mo) + "-" + p2(dom);
+        if (!(ymdKey in conv)) conv[ymdKey] = row[k];
+      } else {
+        conv[k] = row[k];
+      }
+    }
+    out[ec] = conv;
+  }
+  return out;
+}
+
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────────
 // Each salon carries a `region` key — used by the Locations tab filter and
@@ -10953,7 +10987,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
 //   • approved nail-tech extra days (open the tech for that single day), and
 //   • trial techs awaiting their Fresha opening (trial window, then the month
 //     once they pass). Tick each one once it's opened on Fresha.
-function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen, trialList, setTrialFresha, leaveRequests, freshaBlocks, markFreshaBlocked, leaveRecs, enriched }) {
+function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen, trialList, setTrialFresha, leaveRequests, freshaBlocks, markFreshaBlocked, leaveRecs, enriched, obList, markFreshaMgrProfile }) {
   const card = { background: "#fff", border: "1px solid #e9d5ff", borderRadius: 12, padding: "12px 14px", marginBottom: 10 };
   const chip = (bg, fg, txt) => <span style={{ background: bg, color: fg, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 800 }}>{txt}</span>;
   const openBtn = (label, onClick) => <button onClick={onClick} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "6px 13px", fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>{label}</button>;
@@ -10969,6 +11003,13 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
   const trialOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened);
   const monthOpen = (trialList || []).filter(c => _nt(c) && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c));
 
+  // Manager profiles to create: a newly-onboarded manager (SSM/SM/AM) needs a
+  // Fresha profile set up. Tracked on the onboarding record itself. Limited to
+  // recent joiners so historical onboarding history doesn't flood the list.
+  const _MGR_POS = new Set(["SSM", "SM", "AM"]);
+  const _recentOb = (o) => { const t = Date.parse(o.startDate || o.addedAt || ""); return !isNaN(t) && (Date.now() - t) < 60 * 86400000; };
+  const profileTodos = (obList || []).filter(o => o && _MGR_POS.has(o.position) && !o.freshaProfileCreated && _recentOb(o));
+
   // Closing side: nail techs who need greying out on Fresha so no client
   // bookings land while they're off — sick / absent (today & tomorrow), plus
   // annual / emergency leave that falls in the current payroll cycle.
@@ -10982,128 +11023,187 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
   const removeTodos = freshaOffboardRemovals(enriched)
     .sort((a, b) => (Number(isBlocked(a.key)) - Number(isBlocked(b.key))) || (a.leftDate || "").localeCompare(b.leftDate || ""));
 
-  const pendingCount = extraTodos.filter(r => !isOpen(r.id)).length + trialOpen.length + monthOpen.length
-    + blockTodos.filter(r => !isBlocked(r.key)).length + removeTodos.filter(r => !isBlocked(r.key)).length;
   const secHead = (txt) => <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase", color: "#6b21a8", margin: "0 0 2px" }}>{txt}</div>;
+  const secNote = (txt) => <div style={{ fontSize: 12, color: "#9333ea", marginBottom: 10 }}>{txt}</div>;
+
+  // ── Per-item renderers ─────────────────────────────────────────────────
+  // Shared by the pending sections (top of the page) and the collapsed "Done"
+  // area at the bottom, so a completed card looks the same wherever it lives.
+  const extraCard = (r) => {
+    const dw = dowInfo(r.work_date);
+    const open = isOpen(r.id);
+    const meta = (freshaExtraOpen && freshaExtraOpen[r.id]) || {};
+    return (
+      <div key={"e-" + r.id} style={{ ...card, opacity: open ? 0.7 : 1 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
+          <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(r.work_date)}</span>
+          {dw.name && chip(dw.busy ? "#ffedd5" : "#f3f4f6", dw.busy ? "#9a3412" : "#6b7280", (dw.busy ? "🔥 " : "") + dw.name)}
+          {r.store && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {r.store}</span>}
+          {r.ec && <span style={{ color: "#9ca3af", fontSize: 12, fontFamily: "monospace" }}>{r.ec}</span>}
+          <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+            {open
+              ? <>{chip("#dcfce7", "#166534", "✓ Opened" + (meta.by ? " · " + meta.by : ""))}{undo(() => markFreshaExtraOpen(r.id, false))}</>
+              : openBtn("Mark opened on Fresha", () => markFreshaExtraOpen(r.id, true))}
+          </span>
+        </div>
+        <div style={{ fontSize: 11, color: "#9d6a82", marginTop: 5 }}>Extra cover{r.decided_by ? " · approved by " + r.decided_by : ""}{r.decided_at ? " · " + fmtIncidentTime(r.decided_at) : ""}</div>
+      </div>
+    );
+  };
+  const blockCard = (r) => {
+    const blocked = isBlocked(r.key);
+    const meta = (freshaBlocks && freshaBlocks[r.key]) || {};
+    const awayLbl = fmtIncidentDate(r.start_date) + (r.end_date !== r.start_date ? " → " + fmtIncidentDate(r.end_date) : "");
+    return (
+      <div key={"b-" + r.key} style={{ ...card, opacity: blocked ? 0.7 : 1 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
+          {chip(r.leave_type === "Sick" ? "#fef3c7" : "#ede9fe", r.leave_type === "Sick" ? "#b45309" : "#6b21a8", LEAVE_TYPE[r.leave_type] || r.leave_type)}
+          {r.emergency && chip("#fee2e2", "#b91c1c", "🚨 Emergency")}
+          <span style={{ color: "#374151", fontSize: 13 }}>{awayLbl}</span>
+          {r.store && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {r.store}</span>}
+          {r.ec && <span style={{ color: "#9ca3af", fontSize: 12, fontFamily: "monospace" }}>{r.ec}</span>}
+          <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+            {blocked
+              ? <>{chip("#dcfce7", "#166534", "✓ Blocked" + (meta.by ? " · " + meta.by : ""))}{undo(() => markFreshaBlocked(r.key, false))}</>
+              : openBtn("Mark blocked on Fresha", () => markFreshaBlocked(r.key, true))}
+          </span>
+        </div>
+        {r.ref_code && <div style={{ fontSize: 11, color: "#9d6a82", marginTop: 5 }}>Ref {r.ref_code}</div>}
+      </div>
+    );
+  };
+  const removeCard = (r) => {
+    const removed = isBlocked(r.key);
+    const meta = (freshaBlocks && freshaBlocks[r.key]) || {};
+    const todayYmd = new Date().toISOString().slice(0, 10);
+    const lbl = r.leftDate ? ((r.leftDate <= todayYmd ? "Left " : "Leaving ") + fmtIncidentDate(r.leftDate)) : "Last day not set";
+    return (
+      <div key={"o-" + r.key} style={{ ...card, opacity: removed ? 0.7 : 1 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
+          {chip("#fee2e2", "#b91c1c", "👋 Off-boarded")}
+          <span style={{ color: "#374151", fontSize: 13 }}>{lbl}</span>
+          {r.store && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {r.store}</span>}
+          {r.ec && <span style={{ color: "#9ca3af", fontSize: 12, fontFamily: "monospace" }}>{r.ec}</span>}
+          <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+            {removed
+              ? <>{chip("#dcfce7", "#166534", "✓ Removed" + (meta.by ? " · " + meta.by : ""))}{undo(() => markFreshaBlocked(r.key, false))}</>
+              : openBtn("Mark removed from Fresha", () => markFreshaBlocked(r.key, true))}
+          </span>
+        </div>
+        <div style={{ fontSize: 11, color: "#9d6a82", marginTop: 5 }}>Remove from all future dates on the Fresha calendar.</div>
+      </div>
+    );
+  };
+  const profileCard = (o) => (
+    <div key={"p-" + o._id} style={card}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <strong style={{ color: "#581c87", fontSize: 14 }}>{o.name}</strong>
+        {o.branch && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {o.branch}</span>}
+        {o.position && chip("#ede9fe", "#6b21a8", o.position)}
+        {chip("#fef9c3", "#854d0e", "🆕 Create Fresha profile")}
+        {o.startDate && <span style={{ color: "#374151", fontSize: 13 }}>starts {fmtIncidentDate(o.startDate)}</span>}
+        {o.ec && <span style={{ color: "#9ca3af", fontSize: 12, fontFamily: "monospace" }}>{o.ec}</span>}
+        <span style={{ marginLeft: "auto" }}>{openBtn("Mark profile created", () => markFreshaMgrProfile(o._id, true))}</span>
+      </div>
+    </div>
+  );
+
+  // Split each category into pending (shown up top) and done (collapsed at the
+  // bottom). Trial, month and profile to-dos vanish once ticked — they have no
+  // "done" card to keep around — so only extra/block/remove feed the Done area.
+  const extraPending = extraTodos.filter(r => !isOpen(r.id));
+  const extraDone = extraTodos.filter(r => isOpen(r.id));
+  const blockPending = blockTodos.filter(r => !isBlocked(r.key));
+  const blockDone = blockTodos.filter(r => isBlocked(r.key));
+  const removePending = removeTodos.filter(r => !isBlocked(r.key));
+  const removeDone = removeTodos.filter(r => isBlocked(r.key));
+  const doneCount = extraDone.length + blockDone.length + removeDone.length;
+  const pendingCount = extraPending.length + trialOpen.length + monthOpen.length
+    + blockPending.length + removePending.length + profileTodos.length;
 
   return (
     <div>
       <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#6b21a8", margin: 0 }}>💇‍♀️ Fresha To-Do</h2>
       <p style={{ color: "#9333ea", fontSize: 13.5, margin: "6px 0 18px", maxWidth: 700 }}>
-        Fresha reminders — open approved extra-day cover and trial techs, block techs who are off (sick / absent, or on annual / emergency leave this cycle), and remove off-boarded techs from all future dates. Tick each one once it's done so the team knows.{pendingCount > 0 && <strong> · {pendingCount} to do</strong>}
+        Fresha reminders — create profiles for new managers, open approved extra-day cover and trial techs, block techs who are off (sick / absent, or on annual / emergency leave this cycle), and remove off-boarded techs from all future dates. Outstanding items are listed first; completed ones tuck into Done at the bottom.{pendingCount > 0 && <strong> · {pendingCount} to do</strong>}
       </p>
 
-      <div style={{ marginBottom: 22 }}>
-        {secHead("💰 Extra-day cover · " + extraTodos.filter(r => !isOpen(r.id)).length + " to open")}
-        <div style={{ fontSize: 12, color: "#9333ea", marginBottom: 10 }}>Each approved extra day means opening that nail tech on Fresha for that single day so she can take bookings.</div>
-        {extraTodos.length === 0 && <div style={{ ...card, color: "#9d6a82" }}>No approved extra days right now.</div>}
-        {extraTodos.map(r => {
-          const dw = dowInfo(r.work_date);
-          const open = isOpen(r.id);
-          const meta = (freshaExtraOpen && freshaExtraOpen[r.id]) || {};
-          return (
-            <div key={r.id} style={{ ...card, opacity: open ? 0.7 : 1 }}>
-              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
-                <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(r.work_date)}</span>
-                {dw.name && chip(dw.busy ? "#ffedd5" : "#f3f4f6", dw.busy ? "#9a3412" : "#6b7280", (dw.busy ? "🔥 " : "") + dw.name)}
-                {r.store && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {r.store}</span>}
-                {r.ec && <span style={{ color: "#9ca3af", fontSize: 12, fontFamily: "monospace" }}>{r.ec}</span>}
-                <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
-                  {open
-                    ? <>{chip("#dcfce7", "#166534", "✓ Opened" + (meta.by ? " · " + meta.by : ""))}{undo(() => markFreshaExtraOpen(r.id, false))}</>
-                    : openBtn("Mark opened on Fresha", () => markFreshaExtraOpen(r.id, true))}
-                </span>
-              </div>
-              <div style={{ fontSize: 11, color: "#9d6a82", marginTop: 5 }}>Extra cover{r.decided_by ? " · approved by " + r.decided_by : ""}{r.decided_at ? " · " + fmtIncidentTime(r.decided_at) : ""}</div>
-            </div>
-          );
-        })}
-      </div>
+      {pendingCount === 0 && (
+        <div style={{ ...card, color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", fontWeight: 700 }}>✅ All caught up — nothing to do on Fresha right now.</div>
+      )}
 
-      <div>
-        {secHead("🧪 Trial techs · " + (trialOpen.length + monthOpen.length) + " to open")}
-        <div style={{ fontSize: 12, color: "#9333ea", marginBottom: 10 }}>Open trial techs on Fresha for their trial window, and again for the month once they pass.</div>
-        {trialOpen.length === 0 && monthOpen.length === 0 && <div style={{ ...card, color: "#9d6a82" }}>No trial openings pending.</div>}
-        {trialOpen.map(c => (
-          <div key={"t-" + c._id} style={card}>
-            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <strong style={{ color: "#581c87", fontSize: 14 }}>{c.name}</strong>
-              {c.branch && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {c.branch}</span>}
-              {chip("#ede9fe", "#6b21a8", "Trial opening")}
-              <span style={{ marginLeft: "auto" }}>{openBtn("Mark opened on Fresha", () => setTrialFresha(c._id, "freshaTrialOpened", true))}</span>
+      {profileTodos.length > 0 && (
+        <div style={{ marginBottom: 22 }}>
+          {secHead("🆕 New manager profiles · " + profileTodos.length + " to create")}
+          {secNote("A newly-onboarded manager needs their own Fresha profile so they can be booked and manage the calendar. Tick it once the profile exists.")}
+          {profileTodos.map(profileCard)}
+        </div>
+      )}
+
+      {extraPending.length > 0 && (
+        <div style={{ marginBottom: 22 }}>
+          {secHead("💰 Extra-day cover · " + extraPending.length + " to open")}
+          {secNote("Each approved extra day means opening that nail tech on Fresha for that single day so she can take bookings.")}
+          {extraPending.map(extraCard)}
+        </div>
+      )}
+
+      {(trialOpen.length > 0 || monthOpen.length > 0) && (
+        <div style={{ marginBottom: 22 }}>
+          {secHead("🧪 Trial techs · " + (trialOpen.length + monthOpen.length) + " to open")}
+          {secNote("Open trial techs on Fresha for their trial window, and again for the month once they pass.")}
+          {trialOpen.map(c => (
+            <div key={"t-" + c._id} style={card}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <strong style={{ color: "#581c87", fontSize: 14 }}>{c.name}</strong>
+                {c.branch && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {c.branch}</span>}
+                {chip("#ede9fe", "#6b21a8", "Trial opening")}
+                <span style={{ marginLeft: "auto" }}>{openBtn("Mark opened on Fresha", () => setTrialFresha(c._id, "freshaTrialOpened", true))}</span>
+              </div>
             </div>
+          ))}
+          {monthOpen.map(c => (
+            <div key={"m-" + c._id} style={card}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <strong style={{ color: "#581c87", fontSize: 14 }}>{c.name}</strong>
+                {c.branch && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {c.branch}</span>}
+                {chip("#dcfce7", "#166534", "✅ Passed — open for the month")}
+                <span style={{ marginLeft: "auto" }}>{openBtn("Mark month opened", () => setTrialFresha(c._id, "freshaMonthOpened", true))}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {blockPending.length > 0 && (
+        <div style={{ marginBottom: 22 }}>
+          {secHead("🚫 Block on Fresha · " + blockPending.length + " to block")}
+          {secNote("Nail techs who are off — called in sick / absent today or tomorrow, or on annual / emergency leave in this payroll cycle. Grey them out on Fresha so no new client bookings land while they're away.")}
+          {blockPending.map(blockCard)}
+        </div>
+      )}
+
+      {removePending.length > 0 && (
+        <div style={{ marginBottom: 22 }}>
+          {secHead("👋 Remove from Fresha · " + removePending.length + " to remove")}
+          {secNote("Nail techs who've been off-boarded — remove them from Fresha from their last day so no client bookings land on any future date.")}
+          {removePending.map(removeCard)}
+        </div>
+      )}
+
+      {doneCount > 0 && (
+        <details style={{ marginTop: 26 }}>
+          <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase", color: "#6b7280" }}>✓ Done · {doneCount}</summary>
+          <div style={{ marginTop: 12 }}>
+            {extraDone.map(extraCard)}
+            {blockDone.map(blockCard)}
+            {removeDone.map(removeCard)}
           </div>
-        ))}
-        {monthOpen.map(c => (
-          <div key={"m-" + c._id} style={card}>
-            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <strong style={{ color: "#581c87", fontSize: 14 }}>{c.name}</strong>
-              {c.branch && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {c.branch}</span>}
-              {chip("#dcfce7", "#166534", "✅ Passed — open for the month")}
-              <span style={{ marginLeft: "auto" }}>{openBtn("Mark month opened", () => setTrialFresha(c._id, "freshaMonthOpened", true))}</span>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div style={{ marginTop: 22 }}>
-        {secHead("🚫 Block on Fresha · " + blockTodos.filter(r => !isBlocked(r.key)).length + " to block")}
-        <div style={{ fontSize: 12, color: "#9333ea", marginBottom: 10 }}>Nail techs who are off — called in sick / absent today or tomorrow, or on annual / emergency leave in this payroll cycle. Grey them out on Fresha so no new client bookings land while they're away.</div>
-        {blockTodos.length === 0 && <div style={{ ...card, color: "#9d6a82" }}>No nail techs to block right now.</div>}
-        {blockTodos.map(r => {
-          const blocked = isBlocked(r.key);
-          const meta = (freshaBlocks && freshaBlocks[r.key]) || {};
-          const awayLbl = fmtIncidentDate(r.start_date) + (r.end_date !== r.start_date ? " → " + fmtIncidentDate(r.end_date) : "");
-          return (
-            <div key={"b-" + r.key} style={{ ...card, opacity: blocked ? 0.7 : 1 }}>
-              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
-                {chip(r.leave_type === "Sick" ? "#fef3c7" : "#ede9fe", r.leave_type === "Sick" ? "#b45309" : "#6b21a8", LEAVE_TYPE[r.leave_type] || r.leave_type)}
-                {r.emergency && chip("#fee2e2", "#b91c1c", "🚨 Emergency")}
-                <span style={{ color: "#374151", fontSize: 13 }}>{awayLbl}</span>
-                {r.store && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {r.store}</span>}
-                {r.ec && <span style={{ color: "#9ca3af", fontSize: 12, fontFamily: "monospace" }}>{r.ec}</span>}
-                <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
-                  {blocked
-                    ? <>{chip("#dcfce7", "#166534", "✓ Blocked" + (meta.by ? " · " + meta.by : ""))}{undo(() => markFreshaBlocked(r.key, false))}</>
-                    : openBtn("Mark blocked on Fresha", () => markFreshaBlocked(r.key, true))}
-                </span>
-              </div>
-              {r.ref_code && <div style={{ fontSize: 11, color: "#9d6a82", marginTop: 5 }}>Ref {r.ref_code}</div>}
-            </div>
-          );
-        })}
-      </div>
-
-      <div style={{ marginTop: 22 }}>
-        {secHead("👋 Remove from Fresha · " + removeTodos.filter(r => !isBlocked(r.key)).length + " to remove")}
-        <div style={{ fontSize: 12, color: "#9333ea", marginBottom: 10 }}>Nail techs who've been off-boarded — remove them from Fresha from their last day so no client bookings land on any future date.</div>
-        {removeTodos.length === 0 && <div style={{ ...card, color: "#9d6a82" }}>No off-boarded nail techs to remove right now.</div>}
-        {removeTodos.map(r => {
-          const removed = isBlocked(r.key);
-          const meta = (freshaBlocks && freshaBlocks[r.key]) || {};
-          const todayYmd = new Date().toISOString().slice(0, 10);
-          const lbl = r.leftDate ? ((r.leftDate <= todayYmd ? "Left " : "Leaving ") + fmtIncidentDate(r.leftDate)) : "Last day not set";
-          return (
-            <div key={"o-" + r.key} style={{ ...card, opacity: removed ? 0.7 : 1 }}>
-              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
-                {chip("#fee2e2", "#b91c1c", "👋 Off-boarded")}
-                <span style={{ color: "#374151", fontSize: 13 }}>{lbl}</span>
-                {r.store && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {r.store}</span>}
-                {r.ec && <span style={{ color: "#9ca3af", fontSize: 12, fontFamily: "monospace" }}>{r.ec}</span>}
-                <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
-                  {removed
-                    ? <>{chip("#dcfce7", "#166534", "✓ Removed" + (meta.by ? " · " + meta.by : ""))}{undo(() => markFreshaBlocked(r.key, false))}</>
-                    : openBtn("Mark removed from Fresha", () => markFreshaBlocked(r.key, true))}
-                </span>
-              </div>
-              <div style={{ fontSize: 11, color: "#9d6a82", marginTop: 5 }}>Remove from all future dates on the Fresha calendar.</div>
-            </div>
-          );
-        })}
-      </div>
+        </details>
+      )}
     </div>
   );
 }
@@ -13666,6 +13766,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     try { if (window.BOA_DB.saveFreshaBlocks) await window.BOA_DB.saveFreshaBlocks(next); }
     catch (e) { window.alert("Could not save Fresha to-do: " + (e.message || e)); }
   };
+  // Fresha To-Do (manager profiles): a newly-onboarded manager needs a Fresha
+  // profile created. The done-state lives on the onboarding record itself
+  // (freshaProfileCreated) so it survives reloads alongside the joiner data.
+  const markFreshaMgrProfile = async (id, on) => {
+    const next = (obList || []).map(r => r && r._id === id
+      ? { ...r, freshaProfileCreated: on, freshaProfileCreatedAt: on ? new Date().toISOString() : null, freshaProfileCreatedBy: on ? ((currentUser && currentUser.name) || "") : null }
+      : r);
+    setObList(next);
+    try { await window.BOA_DB.saveOnboarding(next); }
+    catch (e) { window.alert("Could not save Fresha to-do: " + (e.message || e)); }
+  };
   const [overtimeShortCache, setOvertimeShortCache] = useState({});    // { ec|cycleYm: hours } from early-leave sidecar
   const [overtimeShortLoading, setOvertimeShortLoading] = useState(false);
   const [otForm, setOtForm] = useState({ ec: "", date: "", hours: "", reason: "" });
@@ -14795,9 +14906,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     window.BOA_DB.loadSchedule(mgrSchedBranch, ymKey, true)
       .then((s) => {
         if (cancelled) return;
-        const hasGrid = s && s.grid && Object.keys(s.grid).length > 0;
-        setMgrSchedSaved(hasGrid ? s.grid : null);
-        setMgrSchedDraft(hasGrid ? s.grid : null);
+        // Heal any legacy day-of-month-keyed rows (e.g. an onboarded manager
+        // saved by an older auto-gen) so the overview can read their off-days.
+        const healed = (s && s.grid) ? rekeyMgrGridToYmd(s.grid, mgrSchedCycle) : null;
+        const hasGrid = healed && Object.keys(healed).length > 0;
+        setMgrSchedSaved(hasGrid ? healed : null);
+        setMgrSchedDraft(hasGrid ? healed : null);
         setMgrSchedSavedAt((s && s.savedAt) || null);
         setMgrSchedDirty(false);
         setMgrSchedLoaded(true);
@@ -16377,7 +16491,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const sickBlk = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec)).map(r => ({ key: r.id, ec: r.ec, name: r.name, start_date: r.start_date, end_date: r.end_date, leave_type: r.leave_type }));
                     const toBlock = dedupeBlockTodos([...sickBlk, ...freshaLeaveBlocks(leaveRecs, enriched)], isBlocked).filter(r => !isBlocked(r.key)).length;
                     const toRemove = freshaOffboardRemovals(enriched).filter(r => !isBlocked(r.key)).length;
-                    const n = extraToOpen + trialToOpen + monthToOpen + toBlock + toRemove;
+                    const _mgrPos = new Set(["SSM", "SM", "AM"]);
+                    const _recentOb = (o) => { const t = Date.parse(o.startDate || o.addedAt || ""); return !isNaN(t) && (Date.now() - t) < 60 * 86400000; };
+                    const profilesToCreate = (obList || []).filter(o => o && _mgrPos.has(o.position) && !o.freshaProfileCreated && _recentOb(o)).length;
+                    const n = extraToOpen + trialToOpen + monthToOpen + toBlock + toRemove + profilesToCreate;
                     return { t: "freshaTodo", l: "💇‍♀️ Fresha To-Do" + (n ? "  (" + n + ")" : "") };
                   })(),
                   { t: "storeOpenings", l: "🔓 Store Openings" },
@@ -17107,8 +17224,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   .map(r => ({ ...r, _d: r.leftDate ? daysUntil(r.leftDate) : 0 }))
                   .filter(r => r._d < URGENT)
                   .sort((a, b) => (a._d ?? 0) - (b._d ?? 0));
+                // CREATE — newly-onboarded managers whose start date is within 3
+                // days (or already here) and who still need a Fresha profile.
+                const _mgrPos = new Set(["SSM", "SM", "AM"]);
+                const urgentProfiles = (obList || []).filter(o => o && _mgrPos.has(o.position) && !o.freshaProfileCreated)
+                  .map(o => ({ ...o, _d: o.startDate ? daysUntil(o.startDate) : 0 }))
+                  .filter(o => o._d !== null && o._d < URGENT)
+                  .sort((a, b) => (a._d ?? 0) - (b._d ?? 0));
 
-                const total = urgentExtra.length + urgentTrial.length + urgentBlock.length + urgentRemove.length;
+                const total = urgentExtra.length + urgentTrial.length + urgentBlock.length + urgentRemove.length + urgentProfiles.length;
                 if (total === 0) return null;
 
                 const dl = (d) => d <= 0 ? "today" : (d === 1 ? "tomorrow" : "in " + d + " days");
@@ -17127,7 +17251,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <div style={{ background: "#fef2f2", border: "2px solid #fecaca", borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: "0 4px 16px rgba(220,38,38,0.10)" }}>
                     <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
                       <div style={{ fontSize: 15, fontWeight: 800, color: "#7f1d1d", letterSpacing: "0.04em", textTransform: "uppercase" }}>⚠️ Fresha · due soon</div>
-                      <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700 }}>{total} {total === 1 ? "tech" : "techs"} to action on Fresha within 3 days</div>
+                      <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700 }}>{total} {total === 1 ? "item" : "items"} to action on Fresha within 3 days</div>
                       <div style={{ flex: 1 }} />
                       <button onClick={() => tryChangeTab("freshaTodo")} style={{ background: "#fff", color: "#7f1d1d", border: "1px solid #fecaca", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>Open Fresha To-Do →</button>
                     </div>
@@ -17135,6 +17259,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     {urgentTrial.map(c => row("ut-" + c._id, c.name, "🧪 Open for trial start · " + fmtIncidentDate(c.startDate) + (c.branch ? " · 📍 " + c.branch : ""), "open " + dl(c._d)))}
                     {urgentBlock.map(r => row("ub-" + r.key, r.name, "🚫 Block — " + (r.emergency ? "Emergency leave" : (LEAVE_TYPE[r.leave_type] || r.leave_type)) + " · " + fmtIncidentDate(r.start_date) + (r.store ? " · 📍 " + r.store : ""), "close " + dl(Math.max(0, r._d ?? 0))))}
                     {urgentRemove.map(r => row("ur-" + r.key, r.name, "👋 Remove from Fresha — off-boarded" + (r.leftDate ? " · " + fmtIncidentDate(r.leftDate) : "") + (r.store ? " · 📍 " + r.store : ""), "remove " + dl(Math.max(0, r._d ?? 0))))}
+                    {urgentProfiles.map(o => row("up-" + o._id, o.name, "🆕 Create Fresha profile — new " + (o.position || "manager") + (o.startDate ? " · starts " + fmtIncidentDate(o.startDate) : "") + (o.branch ? " · 📍 " + o.branch : ""), "create " + dl(Math.max(0, o._d ?? 0))))}
                   </div>
                 );
               })()}
@@ -20340,7 +20465,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         )}
 
         {tab === "freshaTodo" && (
-          <FreshaTodoTab extraDayRequests={extraDayRequests} freshaExtraOpen={freshaExtraOpen} markFreshaExtraOpen={markFreshaExtraOpen} trialList={trialList} setTrialFresha={setTrialFresha} leaveRequests={leaveRequests} freshaBlocks={freshaBlocks} markFreshaBlocked={markFreshaBlocked} leaveRecs={leaveRecs} enriched={enriched} />
+          <FreshaTodoTab extraDayRequests={extraDayRequests} freshaExtraOpen={freshaExtraOpen} markFreshaExtraOpen={markFreshaExtraOpen} trialList={trialList} setTrialFresha={setTrialFresha} leaveRequests={leaveRequests} freshaBlocks={freshaBlocks} markFreshaBlocked={markFreshaBlocked} leaveRecs={leaveRecs} enriched={enriched} obList={obList} markFreshaMgrProfile={markFreshaMgrProfile} />
         )}
 
         {/* ── ALERTS TAB ── */}
@@ -22647,16 +22772,63 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   : (closedSet.size ? "off on " + obForm.branch + "’s closed days, working the rest" : "a standard manager roster");
                 if (window.confirm("Add " + obForm.name + " to the Manager Coverage schedule (" + ym + ") now?\n\nThey’ll be dropped in from " + start + ", " + srcDesc + ". Days before the start date stay blank. You can fine-tune it on Manager Coverage.")) {
                   const row = {};
+                  // Manager grids are canonically keyed by YYYY-MM-DD — mgrSched,
+                  // Manager Coverage and the Schedule-tab overview all read cells
+                  // by that key. (My BOA reads numeric-first, then falls back to
+                  // YYYY-MM-DD.) The old code keyed by day-of-month, which the
+                  // overview couldn't read: every cell came back undefined and
+                  // rendered as a working day — the "all W, no off days" bug.
                   days.forEach(d => {
                     const dy = ymdOf(d);
                     if (dy < start) return;                          // before start — leave blank (no shift shown)
                     if (hasTpl) {
                       const v = readTpl(tpl, d);
-                      row[d.d] = (v && v !== "X") ? v : "O";         // copy the pattern; off where the template is off/blank
+                      row[dy] = (v && v !== "X") ? v : "O";          // copy the pattern; off where the template is off/blank
                     } else {
-                      row[d.d] = closedSet.has(d.dow) ? "O" : "W";
+                      row[dy] = closedSet.has(d.dow) ? "O" : "W";
                     }
                   });
+                  // Onboarding-week off-day top-up. A manager who starts mid-week
+                  // (e.g. a trial day on Monday, onboarded from Tuesday) still
+                  // works the whole Mon–Sun labour week — the trial days count as
+                  // worked — so that week must still carry its 2 off-days. Any
+                  // template off-days that fell BEFORE the start date were skipped
+                  // above, so back-fill the shortfall onto post-start working days
+                  // (mid-week first, never Fri/Sat or a store closed day).
+                  (() => {
+                    const isoKey = (d) => {
+                      const x = new Date(d.year, d.monthIdx, d.d);
+                      const dn = (x.getDay() + 6) % 7;               // 0=Mon..6=Sun
+                      x.setDate(x.getDate() - dn + 3);
+                      const ff = new Date(x.getFullYear(), 0, 4);
+                      const fdn = (ff.getDay() + 6) % 7;
+                      ff.setDate(ff.getDate() - fdn + 3);
+                      const wk = 1 + Math.round((x - ff) / (7 * 86400000));
+                      return x.getFullYear() + "-W" + String(wk).padStart(2, "0");
+                    };
+                    const startDay = days.find(d => ymdOf(d) >= start);
+                    if (!startDay) return;
+                    const startWk = isoKey(startDay);
+                    const weekDays = days.filter(d => isoKey(d) === startWk);
+                    if (!weekDays.some(d => ymdOf(d) < start)) return;   // full week — template count already right
+                    const isOff = (v) => v === "O" || v === "L" || v === "R" || v === "E";
+                    const postDays = weekDays.filter(d => ymdOf(d) >= start);
+                    let offCount = postDays.filter(d => isOff(row[ymdOf(d)])).length;
+                    const TARGET = 2;
+                    const dowOrd = { 0: 3, 1: 6, 2: 5, 3: 4, 4: 1, 5: 0, 6: 0 }; // Mon>Tue>Wed>Sun>Thu, never Fri/Sat
+                    const fillable = postDays
+                      .filter(d => {
+                        const v = row[ymdOf(d)];
+                        const working = v === "W" || v === "WE" || v === "WL" || v === "WB" || v === "WM";
+                        return working && d.dow !== 5 && d.dow !== 6 && !closedSet.has(d.dow);
+                      })
+                      .sort((a, b) => (dowOrd[b.dow] || 0) - (dowOrd[a.dow] || 0));
+                    for (const d of fillable) {
+                      if (offCount >= TARGET) break;
+                      row[ymdOf(d)] = "O";
+                      offCount++;
+                    }
+                  })();
                   grid[ec] = row;
                   await window.BOA_DB.saveSchedule(obForm.branch, mgrYm, grid, true);
                 }
