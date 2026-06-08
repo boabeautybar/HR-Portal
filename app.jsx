@@ -29834,11 +29834,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               staff: { name: sRec ? sRec.name : "(unknown)", employee_code: r.ec, branch: r.branch }
             };
           });
+          // Off-boarded techs: off-boarding writes a leftDate to boa_offboard_v1
+          // but doesn't deactivate the staff row, so a stale or self-logged
+          // check-in dated AFTER someone's last day would still surface here as
+          // a normal "ON TIME". Drop any row whose tech had already left before
+          // the day being viewed (their last day itself still shows).
+          const _offLeftByEc = {};
+          (offList || []).forEach(o => { if (o && o.ec && o.leftDate) _offLeftByEc[String(o.ec).toUpperCase().trim()] = o.leftDate; });
+          const _leftBeforeDay = (ec) => { const ld = _offLeftByEc[String(ec || "").toUpperCase().trim()]; return !!(ld && ld < checkinDay); };
           // Merge clockins rows + attendance-grid rows, newest first. Drop any
           // row belonging to a manager (their early-clock-out leaks in as a
           // "left_early" kiosk-log entry) — keep orphan rows for diagnostics.
           const filtered = clockinFiltered.concat(attShaped)
             .filter(r => !mgrEcSet.has(String((r.staff && r.staff.employee_code) || "").trim()))
+            .filter(r => !_leftBeforeDay(r.staff && r.staff.employee_code))
             .sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
           // Per-branch tally of every row fetched in the load window — independent
           // of the viewer's branch/range filters above. Lets us see at a glance

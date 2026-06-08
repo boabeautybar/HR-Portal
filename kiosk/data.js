@@ -1759,13 +1759,35 @@
     // Project only the columns the Manager Clock-in screen needs. The
     // staff table carries photo blobs + several other heavy fields that
     // we don't use here, so `select("*")` was loading 100s of KB per call
-    // and dominating the kiosk's screen-render time.
+    // and dominating the kiosk's screen-render time. left_date is needed so
+    // we can drop managers who have left (see off-board merge below).
     var res = await c.from("staff")
-      .select("id,name,employee_code,role,role_type,branch,active")
+      .select("id,name,employee_code,role,role_type,branch,active,left_date")
       .eq("active", true)
       .order("name", { ascending: true });
     if (res.error) { console.error("listAllManagers:", res.error); return []; }
-    return (res.data || []).filter(isManagerRow);
+    // Off-boarding via the HR portal writes leftDate into boa_offboard_v1 and
+    // does NOT flip the staff row's `active` column (see loadOffboarding), so
+    // an off-boarded manager still comes back as active here — which left them
+    // showing on the Manager Check-in list and the "not clocked in yet" nag.
+    // Merge the off-board list and drop anyone whose effective last day is in
+    // the past; keep last-day-today and future leavers so they can still clock
+    // in until they actually leave.
+    var offByEc = {};
+    try {
+      var offList = await loadOffboarding();
+      (offList || []).forEach(function (o) { if (o && o.ec) offByEc[String(o.ec).trim()] = o; });
+    } catch (_) {}
+    var _p = function (n) { return String(n).padStart(2, "0"); };
+    var _now = new Date();
+    var todayIso = _now.getFullYear() + "-" + _p(_now.getMonth() + 1) + "-" + _p(_now.getDate());
+    return (res.data || []).filter(isManagerRow).filter(function (m) {
+      var ec = m && m.employee_code && String(m.employee_code).trim();
+      var off = ec ? offByEc[ec] : null;
+      var eff = (off && off.leftDate) || m.left_date || null;
+      if (!eff) return true;            // not leaving
+      return eff >= todayIso;           // keep last-day + future, drop past leavers
+    });
   }
   async function listTodayManagerClockins() {
     var c = client(); if (!c) return [];
