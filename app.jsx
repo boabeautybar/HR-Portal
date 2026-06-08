@@ -9655,11 +9655,14 @@ async function finalizeLeaveIfReady(r, deps) {
 function isManagerEc(ec) { return /M$/i.test(String(ec || "").trim()); }
 // Estimated off-days inside a stretch of `calDays` calendar days when there is
 // no saved roster to read the real off-days from. Short requests (1–5 days) are
-// assumed to land entirely on working days, so nothing is deducted. Longer
+// assumed to land entirely on working days, so nothing is deducted; a 6-day
+// span includes a single rest day (1 off-day → 5 real leave days). Longer
 // stretches lose ~2 off-days for every 7-day week (always 2 off-days/week), e.g.
-// 7→2, 14→4, 21→6 — so 21 consecutive days counts as 15 leave days.
+// 6→1, 7→2, 14→4, 21→6 — so a week of leave counts as 5 days and 21 consecutive
+// days counts as 15.
 function estimateOffDays(calDays, perWeek) {
   if (calDays <= 5) return 0;
+  if (calDays === 6) return 1;   // 6 calendar days = 1 rest day → 5 real leave days
   return Math.round((calDays / 7) * perWeek);
 }
 // Split a date range into calendar days vs actual leave days. When a saved
@@ -25385,7 +25388,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       );
                     })}
                     {[
-                      { l: "AL", bg: "#eff6ff", c: "#1e40af", t: "Annual Leave (off-days deducted — ~2 per 7-day span; e.g. 7 days = 5, 21 days = 15; runs of 5 days or fewer count in full)" },
+                      { l: "AL", bg: "#eff6ff", c: "#1e40af", t: "Annual Leave (off-days deducted — ~2 per 7-day span; e.g. 6 days = 5, 7 days = 5, 21 days = 15; runs of 5 days or fewer count in full)" },
                       { l: "SICK+N", bg: "#f0fdf4", c: "#166534", t: "Sick days WITH a doctor's note (paid). Sick without a note is unpaid and counted in UNPAID." },
                       { l: "FRL", bg: "#fffbeb", c: "#78350f", t: "Family Responsibility Leave" },
                       { l: "PPH", bg: "#f0fdf4", c: "#14532d", t: "Public Holidays" },
