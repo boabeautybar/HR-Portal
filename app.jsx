@@ -3383,6 +3383,12 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   // we couldn't apply without breaking a hard rule (2-off/week is the main
   // one). Surfaced as a warning banner above the grid.
   const [unhonouredRequests, setUnhonouredRequests] = useState([]);
+  // One-level undo for bulk grid actions (Auto-fill / Clear period / Sync
+  // staff). Snapshots the grid right before the action so a misfire can be
+  // rolled back in the editor. Like the actions themselves, the rollback isn't
+  // saved until you click Save. Reset on branch/cycle change so undo only ever
+  // applies to the schedule you're looking at (i.e. per branch + period).
+  const [undoSnap, setUndoSnap] = useState(null);  // { grid, label } | null
 
   async function openHistory() {
     setHistoryOpen(true);
@@ -3417,6 +3423,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
       setSavedAt((d && d.savedAt) || null);
       setDirty(false);
       setUnhonouredRequests([]);
+      setUndoSnap(null);                 // undo only applies to the loaded branch + period
       setLoading(false);
     });
   }, [branch, ym]);
@@ -3597,6 +3604,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   }
   function clearAll() {
     if (!confirm("Clear all entries for this period? Cannot be undone after Save.")) return;
+    setUndoSnap({ grid: JSON.parse(JSON.stringify(grid || {})), label: "Clear period" });
     setGrid({}); setDirty(true);
   }
 
@@ -3612,6 +3620,8 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   //  8. Day-off requests HARD — applied as R, override everything else
   async function autoFill() {
     if (Object.keys(grid).length > 0 && !confirm("Replace existing schedule with auto-generated one? Day-off requests will be honoured. Existing manual entries will be lost.")) return;
+    // Snapshot the pre-fill grid so the whole auto-fill can be rolled back.
+    setUndoSnap({ grid: JSON.parse(JSON.stringify(grid || {})), label: "Auto-fill" });
 
     // Fetch day-off requests for this branch/period
     let dayRequests = [];
@@ -5893,6 +5903,8 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
       "After syncing, click Save to commit."
     )) return;
 
+    // Snapshot the pre-sync grid so the staff sync can be rolled back.
+    setUndoSnap({ grid: JSON.parse(JSON.stringify(grid || {})), label: "Sync staff" });
     const newGrid = JSON.parse(JSON.stringify(grid || {}));
     const allUnh = [];
 
@@ -5970,6 +5982,11 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
         {savedAt && !dirty && <span style={{ fontSize: 11, color: "#15803d", fontStyle: "italic" }}>✓ Saved {new Date(savedAt).toLocaleString()}</span>}
         {dirty && <span style={{ fontSize: 11, color: "#b45309", fontWeight: 600 }}>● Unsaved changes</span>}
         <button onClick={autoFill} style={{ padding: "8px 14px", borderRadius: 9, border: "1px solid #BE185D", background: "#FCE7F3", color: "#831843", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>✨ Auto-fill</button>
+        {undoSnap && (
+          <button onClick={() => { setGrid(undoSnap.grid); setDirty(true); setUndoSnap(null); }}
+            title={"Undo " + undoSnap.label + " — restores the schedule to just before it (click Save to keep the rollback)"}
+            style={{ padding: "8px 14px", borderRadius: 9, border: "1px solid #fbbf24", background: "#fef3c7", color: "#78350f", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>↶ Undo {undoSnap.label}</button>
+        )}
         <button onClick={openHistory} style={{ padding: "8px 14px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#FFFFFF", color: "#BE185D", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 600 }}>🕒 History</button>
         {(() => {
           const canDownload = !!savedAt && !dirty && Object.keys(grid).length > 0;
