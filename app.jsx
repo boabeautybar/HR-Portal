@@ -25101,10 +25101,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // (annual leave, sick + note, FRL, PPH, extra days, unpaid, no-shows,
         // lates) and whether the attendance bonus is lost (with the reason).
         const downloadAttendanceCsv = () => {
+          // The cycle runs 25th → 24th and is named after its END month — e.g.
+          // 25 May → 24 Jun is the JUNE payroll — so label the file by the
+          // payroll month (cycle end), not attYM (the start month).
+          const payYm = cycEnd.getFullYear() + "-" + p2(cycEnd.getMonth() + 1);
+          const payLabel = moShort[cycEnd.getMonth()] + " " + cycEnd.getFullYear() + " payroll";
           const head = ["Employee Code", "Full Name", "Role", "Start Date (new starters)",
             "Annual Leave", "Sick (with note)", "FRL", "Public Holidays", "Extra Days",
             "Unpaid", "No-shows", "Lates", "Bonus Lost", "Bonus Loss Reason"];
-          const lines = [head.map(_csvEscape).join(",")];
+          const lines = [
+            _csvEscape("Attendance totals · " + attBranch + " · Pay cycle " + cycLabel + " (" + payLabel + ")"),
+            "",
+            head.map(_csvEscape).join(",")
+          ];
           attStaff.forEach(s => {
             const t = totalsFor(s.ec);
             const reasons = bonusLossReasons(t);
@@ -25128,7 +25137,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             ];
             lines.push(row.map(_csvEscape).join(","));
           });
-          _triggerDownload(_safeFile("attendance_totals_" + attBranch + "_" + attYM) + ".csv", lines.join("\r\n"), "text/csv");
+          _triggerDownload(_safeFile("attendance_totals_" + attBranch + "_" + payYm + "_payroll") + ".csv", lines.join("\r\n"), "text/csv");
         };
 
         // Count warning cells in the current grid view so the dashboard
