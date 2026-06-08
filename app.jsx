@@ -24956,7 +24956,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         // Per-staff totals
         const totalsFor = (ec) => {
-          const t = { al: 0, sick: 0, sickNote: 0, frl: 0, ph: 0, mat: 0, unpaid: 0, ext: 0, late: 0, td: 0, worked: 0, off: 0, term: 0, unpaidHours: 0, earlyHours: 0 };
+          const t = { al: 0, sick: 0, sickNote: 0, frl: 0, ph: 0, mat: 0, unpaid: 0, noShow: 0, ext: 0, late: 0, td: 0, worked: 0, off: 0, term: 0, unpaidHours: 0, earlyHours: 0 };
           const reviewedMapL = (attMeta && attMeta.reviewedWarnings) || {};
           // PH credit only when payroll can trust the day:
           //  (a) Schedule × Kiosk × Fresha all agree the tech worked, or
@@ -24990,7 +24990,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             else if (v === "frl") t.frl++;
             else if (v === "ph") t.ph++;        // explicit PH always counts
             else if (v === "mat") { t.mat++; t.unpaid++; }
-            else if (v === "no" || v === "unpaid" || v === "absent") t.unpaid++;
+            else if (v === "no") { t.unpaid++; t.noShow++; }   // no-show → unpaid AND forfeits the attendance bonus
+            else if (v === "unpaid" || v === "absent") t.unpaid++;
             else if (v === "ext") { t.ext++; if (phOk) t.ph++; }
             else if (v === "late") { t.late++; if (phOk) t.ph++; }
             else if (v === "trial" || v === "trial_ho") t.td++;
@@ -25342,6 +25343,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               ))}
             </div>
 
+            {(() => {
+              // Bonus rule: a single no-show this cycle forfeits the attendance bonus.
+              const lost = attStaff
+                .map(s => ({ s, n: totalsFor(s.ec).noShow }))
+                .filter(x => x.n > 0);
+              if (lost.length === 0) return null;
+              return (
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 8, flexWrap: "wrap", marginBottom: 14, padding: "10px 14px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8 }}>
+                  <span style={{ fontWeight: 800, color: "#991b1b", fontSize: 12, whiteSpace: "nowrap" }}>🚫 Bonus lost ({lost.length}):</span>
+                  <span style={{ fontSize: 11.5, color: "#7f1d1d" }}>
+                    No-show this cycle forfeits the attendance bonus — {lost.map(x => x.s.name + (x.n > 1 ? " (" + x.n + ")" : "")).join(", ")}.
+                  </span>
+                </div>
+              );
+            })()}
+
             <div style={{ background: "#FFFFFF", borderRadius: 13, border: "1px solid #FBCFE8", overflowX: "auto", overflowY: "visible" }}>
               <table style={{ borderCollapse: "separate", borderSpacing: 0, minWidth: "100%", fontSize: 11 }}>
                 <thead>
@@ -25410,6 +25427,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             })()}
                             {s.smTrial && <span title="On a Store-Manager trial (SM Trials tab) — works SM shifts" style={{ background: "#FFEDD5", color: "#9A3412", border: "1px solid #FED7AA", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>⭐ SM TRIAL</span>}
                             {s.movedFrom && <span title={"Transferred from " + s.movedFrom + (s.movedOn ? " on " + new Date(s.movedOn + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : "") + " — earlier cells in this cycle are from " + s.movedFrom} style={{ background: "#dbeafe", color: "#1e40af", border: "1px solid #93c5fd", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>🔄 FROM {s.movedFrom}{s.movedOn ? " · " + new Date(s.movedOn + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
+                            {t.noShow > 0 && <span title={"Bonus forfeited — " + t.noShow + " no-show" + (t.noShow === 1 ? "" : "s") + " this cycle"} style={{ background: "#fee2e2", color: "#991b1b", border: "1px solid #fca5a5", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>🚫 NO BONUS</span>}
                           </div>
                           <div style={{ fontSize: 9, color: "#9ca3af" }}>{s.ec} · {s.smTrial ? "SM · on trial" : s.role}</div>
                         </td>
