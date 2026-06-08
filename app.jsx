@@ -25260,10 +25260,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     })}
                     {[
                       { l: "AL", bg: "#eff6ff", c: "#1e40af", t: "Annual Leave" },
-                      { l: "SICK", bg: "#fef2f2", c: "#7f1d1d", t: "Sick days" },
+                      { l: "SICK", bg: "#fef2f2", c: "#7f1d1d", t: "Sick days — NO note (unpaid)" },
+                      { l: "SICK+N", bg: "#f0fdf4", c: "#166534", t: "Sick days WITH a doctor's note (paid)" },
                       { l: "FRL", bg: "#fffbeb", c: "#78350f", t: "Family Responsibility Leave" },
                       { l: "PPH", bg: "#f0fdf4", c: "#14532d", t: "Public Holidays" },
-                      { l: "MAT", bg: "#fef3c7", c: "#7c2d12", t: "Maternity" },
                       { l: "LATE", bg: "#fef3c7", c: "#92400e", t: "Late" },
                       { l: "EXD", bg: "#d1fae5", c: "#064e3b", t: "Extra Days Worked" },
                       { l: "SHORT", bg: "#fef3c7", c: "#7c2d12", t: "Short hours from Left-Early — 8h = 1 day. Counts toward unpaid days." },
@@ -25804,10 +25804,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           );
                         })}
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#1e40af", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "3px solid #FBCFE8", background: "#eff6ff" }}>{t.al}</td>
-                        <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#7f1d1d", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#fef2f2" }} title={t.sickNote + " with note + " + t.sick + " no note"}>{t.sick + t.sickNote}</td>
+                        <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#7f1d1d", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#fef2f2" }} title={t.sick + " sick day" + (t.sick === 1 ? "" : "s") + " with NO note (unpaid)"}>{t.sick}</td>
+                        <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#166534", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#f0fdf4" }} title={t.sickNote + " sick day" + (t.sickNote === 1 ? "" : "s") + " WITH a doctor's note (paid)"}>{t.sickNote}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#78350f", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#fffbeb" }}>{t.frl}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#14532d", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#f0fdf4" }}>{t.ph}</td>
-                        <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#7c2d12", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#fef3c7" }}>{t.mat}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#92400e", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#fef3c7" }}>{t.late}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#064e3b", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#d1fae5" }}
                           title={t.exdOffsetUnpaid > 0 ? t.ext + " extra day" + (t.ext === 1 ? "" : "s") + " − " + t.exdOffsetUnpaid + " used to cover unpaid day" + (t.exdOffsetUnpaid === 1 ? "" : "s") + " = " + t.exdAfterUnpaid + " net extra" : (t.ext + " extra day" + (t.ext === 1 ? "" : "s"))}>{t.exdAfterUnpaid}</td>
