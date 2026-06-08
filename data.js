@@ -1806,8 +1806,30 @@
     return v;
   }
 
-  // ---------- Activity log (boa_activity_log_v1) ----------
-  // Single row holding an array of recent actions (newest-first), capped at
+  // ---------- Attendance undo (boa_attundo_<branch>_<ym>) ----------
+  // A single persisted "previous state" snapshot per branch + cycle so the
+  // Attendance sheet's Undo survives a page reload and works across users —
+  // e.g. someone can roll back the last change even if an admin made it in a
+  // different session. The portal writes the pre-action grid here whenever it
+  // takes an undo snapshot; Undo restores it (and re-points it at the next
+  // older snapshot, or clears it).
+  function attUndoKey(branch, ym) { return "boa_attundo_" + branch + "_" + ym; }
+  async function saveAttendanceUndo(branch, ym, snap) {
+    var res = await sb.from("app_state").upsert({ key: attUndoKey(branch, ym), value: snap || {} });
+    if (res.error) throw res.error;
+    return snap;
+  }
+  async function loadAttendanceUndo(branch, ym) {
+    var res = await sb.from("app_state").select("value").eq("key", attUndoKey(branch, ym)).maybeSingle();
+    if (res.error) { console.error("loadAttendanceUndo:", res.error); return null; }
+    var v = res.data && res.data.value;
+    return (v && v.grid) ? v : null;
+  }
+  async function clearAttendanceUndo(branch, ym) {
+    var res = await sb.from("app_state").delete().eq("key", attUndoKey(branch, ym));
+    if (res.error) console.warn("clearAttendanceUndo:", res.error);
+  }
+
   // ACTIVITY_LIMIT entries. Each entry:
   //   { id, when (ISO), who, role, action, target, details }
   var ACTIVITY_KEY = "boa_activity_log_v1";
@@ -2045,6 +2067,9 @@
     // Attendance
     loadAttendance: loadAttendance,
     saveAttendance: saveAttendance,
+    saveAttendanceUndo: saveAttendanceUndo,
+    loadAttendanceUndo: loadAttendanceUndo,
+    clearAttendanceUndo: clearAttendanceUndo,
 
     // Leave Planner
     loadLeaveRecords: loadLeaveRecords,
