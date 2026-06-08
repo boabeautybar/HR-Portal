@@ -9831,11 +9831,14 @@ async function finalizeLeaveIfReady(r, deps) {
 function isManagerEc(ec) { return /M$/i.test(String(ec || "").trim()); }
 // Estimated off-days inside a stretch of `calDays` calendar days when there is
 // no saved roster to read the real off-days from. Short requests (1–5 days) are
-// assumed to land entirely on working days, so nothing is deducted. Longer
+// assumed to land entirely on working days, so nothing is deducted; a 6-day
+// span includes a single rest day (1 off-day → 5 real leave days). Longer
 // stretches lose ~2 off-days for every 7-day week (always 2 off-days/week), e.g.
-// 7→2, 14→4, 21→6 — so 21 consecutive days counts as 15 leave days.
+// 6→1, 7→2, 14→4, 21→6 — so a week of leave counts as 5 days and 21 consecutive
+// days counts as 15.
 function estimateOffDays(calDays, perWeek) {
   if (calDays <= 5) return 0;
+  if (calDays === 6) return 1;   // 6 calendar days = 1 rest day → 5 real leave days
   return Math.round((calDays / 7) * perWeek);
 }
 // Split a date range into calendar days vs actual leave days. When a saved
@@ -23735,6 +23738,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // then fires for managers too and the cell stops rendering blank.
         const _mgrLoansInCycle = (mgrLoanRows || []).filter(l => l && l.date && l.date >= cycStartYmd && l.date <= cycEndYmd);
         const outgoingLoanMap = {};
+        // ec -> { day -> true } when that loaned-out day is flagged as an EXTRA
+        // on the loan record itself (manager marked 'E' + loaned in one move on
+        // Manager Coverage). The home cell stays 'loan_out' so coverage still
+        // reads her as away, but the extra rides on the loan so payroll still
+        // sees it.
+        const _loanExtraByEcD = {};
         const _mgrLoanedOutSet = new Set();    // "ec|d" pairs — managers loaned OUT this cycle
         // Incoming mid-cycle transfers (arriving at this branch). Their
         // pre-transfer loan-outs were made from their OLD branch, so carry them
@@ -23776,7 +23785,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const inc = _incomingByEc[l.ec];
             if (inc && l.fromBranch === inc.movedFrom && l.toBranch && l.date < inc.transferDate) toB = l.toBranch;
           }
-          if (toB) (outgoingLoanMap[l.ec] = outgoingLoanMap[l.ec] || {})[dy.d] = toB;
+          if (toB) {
+            (outgoingLoanMap[l.ec] = outgoingLoanMap[l.ec] || {})[dy.d] = toB;
+            if (l.extra) (_loanExtraByEcD[l.ec] = _loanExtraByEcD[l.ec] || {})[dy.d] = true;
+          }
         });
         _mgrLoansInCycle.forEach(l => {
           if (!l.ec || !l.fromBranch || l.fromBranch !== attBranch) return;
@@ -24084,9 +24096,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             //                 a schedule 'E' (extra cover)
             //   • receiving — their grid cell is 'ext', or their kiosk tagged
             //                 the borrow day as Extra
+            //   • the loan record itself — marked 'E' + loaned in one move on
+            //                 Manager Coverage (home cell stays 'loan_out').
             const _kaTo = _do ? ((kioskAbsentByBranch[toBranch] || {})[ec] || {})[_do.ymd] : null;
+            const _loanFlaggedExtra = !!(_loanExtraByEcD[ec] && _loanExtraByEcD[ec][d]);
             const _loanWasExtra = _homeBare === "ext" || _recvBare === "ext"
-              || _isExtraDay(ec, d) || _schedV === "E" || !!(_kaTo && _kaTo.status === "ext");
+              || _isExtraDay(ec, d) || _schedV === "E" || !!(_kaTo && _kaTo.status === "ext") || _loanFlaggedExtra;
             // The home branch's mirror of the receiving day, when present.
             if (recvVal) {
               if (_loanWasExtra && (_recvBare === "on" || _recvBare === "late" || _recvBare === "ext")) return "ext";
@@ -25122,7 +25137,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         // Per-staff totals
         const totalsFor = (ec) => {
-          const t = { al: 0, sick: 0, sickNote: 0, frl: 0, ph: 0, mat: 0, unpaid: 0, ext: 0, late: 0, td: 0, worked: 0, off: 0, term: 0, unpaidHours: 0, earlyHours: 0 };
+          const t = { al: 0, sick: 0, sickNote: 0, frl: 0, ph: 0, mat: 0, unpaid: 0, noShow: 0, ext: 0, late: 0, td: 0, worked: 0, off: 0, term: 0, unpaidHours: 0, earlyHours: 0 };
           const reviewedMapL = (attMeta && attMeta.reviewedWarnings) || {};
           // PH credit only when payroll can trust the day:
           //  (a) Schedule × Kiosk × Fresha all agree the tech worked, or
@@ -25151,12 +25166,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const phOk = isHol && phEligible(dy, rawV, bareV);
             if (v === "al") { /* annual leave counted via the run-based pass below (off-days deducted) */ }
             else if (v === "el") t.unpaid++;   // emergency leave = unpaid
-            else if (v === "sick") { t.sick++; t.unpaid++; }
+            else if (v === "sick") t.unpaid++;   // sick (no note) is unpaid — counted in UNPAID (no separate column)
             else if (v === "sick_n") t.sickNote++;
             else if (v === "frl") t.frl++;
             else if (v === "ph") t.ph++;        // explicit PH always counts
             else if (v === "mat") { t.mat++; t.unpaid++; }
-            else if (v === "no" || v === "unpaid" || v === "absent") t.unpaid++;
+            else if (v === "no") { t.unpaid++; t.noShow++; }   // no-show → unpaid AND forfeits the attendance bonus
+            else if (v === "unpaid" || v === "absent") t.unpaid++;
             else if (v === "ext") { t.ext++; if (phOk) t.ph++; }
             else if (v === "late") { t.late++; if (phOk) t.ph++; }
             else if (v === "trial" || v === "trial_ho") t.td++;
@@ -25221,6 +25237,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           return t;
         };
 
+        // Attendance bonus is forfeited by any no-show, or by more than 7
+        // lates in the cycle. Returns the reason(s) for display; empty = keeps bonus.
+        const bonusLossReasons = (t) => {
+          const r = [];
+          if (t.noShow > 0) r.push(t.noShow + " no-show" + (t.noShow === 1 ? "" : "s"));
+          if (t.late > 7) r.push(t.late + " lates");
+          return r;
+        };
+
         const moShort = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
         const cycLabel = cycStart.getDate() + " " + moShort[cycStart.getMonth()] + " → " + cycEnd.getDate() + " " + moShort[cycEnd.getMonth()] + " " + cycEnd.getFullYear();
         // Effective Fresha "covered through" date — explicit value from the most
@@ -25247,6 +25272,50 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           while (m < 1) { m += 12; y--; }
           while (m > 12) { m -= 12; y++; }
           setAttYM(y + "-" + p2(m));
+        };
+
+        // Download the per-staff summary totals (the right-hand columns) as a CSV:
+        // employee code, full name, role, new-starter start date, every count
+        // (annual leave, sick + note, FRL, PPH, extra days, unpaid, no-shows,
+        // lates) and whether the attendance bonus is lost (with the reason).
+        const downloadAttendanceCsv = () => {
+          // The cycle runs 25th → 24th and is named after its END month — e.g.
+          // 25 May → 24 Jun is the JUNE payroll — so label the file by the
+          // payroll month (cycle end), not attYM (the start month).
+          const payYm = cycEnd.getFullYear() + "-" + p2(cycEnd.getMonth() + 1);
+          const payLabel = moShort[cycEnd.getMonth()] + " " + cycEnd.getFullYear() + " payroll";
+          const head = ["Employee Code", "Full Name", "Role", "Start Date (new starters)",
+            "Annual Leave", "Sick (with note)", "FRL", "Public Holidays", "Extra Days",
+            "Unpaid", "No-shows", "Lates", "Bonus Lost", "Bonus Loss Reason"];
+          const lines = [
+            _csvEscape("Attendance totals · " + attBranch + " · Pay cycle " + cycLabel + " (" + payLabel + ")"),
+            "",
+            head.map(_csvEscape).join(",")
+          ];
+          attStaff.forEach(s => {
+            const t = totalsFor(s.ec);
+            const reasons = bonusLossReasons(t);
+            const sd = startByEc[String(s.ec).trim()];
+            const isNew = sd && days.length && sd >= days[0].ymd;
+            const row = [
+              s.ec || "",
+              s.name || "",
+              s.smTrial ? "SM (trial)" : (s.role || ""),
+              isNew ? sd : "",
+              t.al,
+              t.sickNote,
+              t.frl,
+              t.ph,
+              t.ext,
+              (t.totalUnpaid === Math.floor(t.totalUnpaid) ? t.totalUnpaid : t.totalUnpaid.toFixed(2)),
+              t.noShow,
+              t.late,
+              reasons.length ? "Yes" : "No",
+              reasons.join("; ")
+            ];
+            lines.push(row.map(_csvEscape).join(","));
+          });
+          _triggerDownload(_safeFile("attendance_totals_" + attBranch + "_" + payYm + "_payroll") + ".csv", lines.join("\r\n"), "text/csv");
         };
 
         // Count warning cells in the current grid view so the dashboard
@@ -25458,6 +25527,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ flex: 1 }} />
               {attLoading && <span style={{ fontSize: 11, color: "#9ca3af", fontStyle: "italic" }}>Loading…</span>}
               <button onClick={autoFill} style={{ padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Fill empty cells from schedule (faded, still unconfirmed)">✓ Auto-fill from Schedule</button>
+              <button onClick={downloadAttendanceCsv} style={{ padding: "7px 14px", background: "#FFFFFF", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Download a CSV of the side totals — employee code, name, role, new-starter start date, all day counts (incl. sick + note, unpaid) and whether the bonus is lost">⬇ CSV totals</button>
               <button onClick={importFresha} style={{ padding: "7px 14px", background: "#dbeafe", color: "#1e3a8a", border: "1px solid #93c5fd", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Upload a Fresha appointments CSV — every nail tech with a completed appointment that day is marked On Time">📤 Import Fresha CSV</button>
               <button onClick={importCheckins} style={{ padding: "7px 14px", background: "#dcfce7", color: "#14532d", border: "1px solid #86efac", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Pull every clock-in from the staff check-in app and stamp those days as On Time (or Extra Day if scheduled off). Confirmed cells are preserved. Use ↩ Undo to roll the import back.">✓ Import Check-ins</button>
               {attCheckinSnapshot && (
@@ -25508,6 +25578,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               ))}
             </div>
 
+            {(() => {
+              // Bonus rule: a no-show, or more than 7 lates this cycle, forfeits the attendance bonus.
+              const lost = attStaff
+                .map(s => ({ s, r: bonusLossReasons(totalsFor(s.ec)) }))
+                .filter(x => x.r.length > 0);
+              if (lost.length === 0) return null;
+              return (
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 8, flexWrap: "wrap", marginBottom: 14, padding: "10px 14px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8 }}>
+                  <span style={{ fontWeight: 800, color: "#991b1b", fontSize: 12, whiteSpace: "nowrap" }}>🚫 Bonus lost ({lost.length}):</span>
+                  <span style={{ fontSize: 11.5, color: "#7f1d1d" }}>
+                    No-show, or more than 7 lates, this cycle forfeits the attendance bonus — {lost.map(x => x.s.name + " (" + x.r.join(", ") + ")").join(", ")}.
+                  </span>
+                </div>
+              );
+            })()}
+
             <div style={{ background: "#FFFFFF", borderRadius: 13, border: "1px solid #FBCFE8", overflowX: "auto", overflowY: "visible" }}>
               <table style={{ borderCollapse: "separate", borderSpacing: 0, minWidth: "100%", fontSize: 11 }}>
                 <thead>
@@ -25525,23 +25611,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       );
                     })}
                     {[
-                      { l: "AL", bg: "#eff6ff", c: "#1e40af", t: "Annual Leave (off-days deducted — ~2 per 7-day span; e.g. 7 days = 5, 21 days = 15; runs of 5 days or fewer count in full)" },
-                      { l: "SICK", bg: "#fef2f2", c: "#7f1d1d", t: "Sick days — NO note (unpaid)" },
-                      { l: "SICK+N", bg: "#f0fdf4", c: "#166534", t: "Sick days WITH a doctor's note (paid)" },
+                      { l: "AL", bg: "#eff6ff", c: "#1e40af", t: "Annual Leave (off-days deducted — ~2 per 7-day span; e.g. 6 days = 5, 7 days = 5, 21 days = 15; runs of 5 days or fewer count in full)" },
+                      { l: "SICK+N", bg: "#f0fdf4", c: "#166534", t: "Sick days WITH a doctor's note (paid). Sick without a note is unpaid and counted in UNPAID." },
                       { l: "FRL", bg: "#fffbeb", c: "#78350f", t: "Family Responsibility Leave" },
                       { l: "PPH", bg: "#f0fdf4", c: "#14532d", t: "Public Holidays" },
-                      { l: "LATE", bg: "#fef3c7", c: "#92400e", t: "Late" },
                       { l: "EXD", bg: "#d1fae5", c: "#064e3b", t: "Extra Days Worked (all extra days — not netted against unpaid)" },
-                      { l: "SHORT", bg: "#fef3c7", c: "#7c2d12", t: "Short hours from Left-Early — 8h = 1 day. Counts toward unpaid days." },
-                      { l: "UNPAID", bg: "#fee2e2", c: "#7f1d1d", t: "Unpaid days (extra days are shown separately in EXD, not deducted here)" }
+                      { l: "UNPAID", bg: "#fee2e2", c: "#7f1d1d", t: "Unpaid days — no-shows, absent, sick (no note), maternity, emergency leave, explicit Unpaid marks, terminated days, and left-early short hours (8h = 1 day)." }
                     ].map((c, i) => (
-                      <th key={c.l} title={c.t} style={{ padding: "6px 8px", fontSize: 9, fontWeight: 800, color: c.c, textAlign: "center", borderBottom: "2px solid #FBCFE8", borderLeft: i === 0 || i === 8 ? "3px solid #FBCFE8" : "1px solid #FCE7F3", background: c.bg, minWidth: 42 }}>{c.l}</th>
+                      <th key={c.l} title={c.t} style={{ padding: "6px 8px", fontSize: 9, fontWeight: 800, color: c.c, textAlign: "center", borderBottom: "2px solid #FBCFE8", borderLeft: i === 0 ? "3px solid #FBCFE8" : "1px solid #FCE7F3", background: c.bg, minWidth: 42 }}>{c.l}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {attStaff.length === 0 && (
-                    <tr><td colSpan={days.length + 9} style={{ padding: 30, textAlign: "center", color: "#9ca3af", fontStyle: "italic" }}>No active staff at {attBranch}.</td></tr>
+                    <tr><td colSpan={days.length + 6} style={{ padding: 30, textAlign: "center", color: "#9ca3af", fontStyle: "italic" }}>No active staff at {attBranch}.</td></tr>
                   )}
                   {attStaff.map((s, idx) => {
                     const t = totalsFor(s.ec);
@@ -25551,7 +25634,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const showSection = idx === 0 || isMgr !== prevIsMgr;
                     const sectionRow = showSection ? (
                       <tr key={"section-" + (isMgr ? "mgr" : "tech")}>
-                        <td colSpan={days.length + 9} style={{ background: isMgr ? "#FCE7F3" : "#FDEEF5", padding: 0, borderTop: "2px solid #FBCFE8", borderBottom: "1px solid #FBCFE8" }}>
+                        <td colSpan={days.length + 6} style={{ background: isMgr ? "#FCE7F3" : "#FDEEF5", padding: 0, borderTop: "2px solid #FBCFE8", borderBottom: "1px solid #FBCFE8" }}>
                           <div style={{ position: "sticky", left: 0, padding: "8px 14px", fontSize: 11, fontWeight: 800, color: "#831843", letterSpacing: "0.12em", textTransform: "uppercase", background: isMgr ? "#FCE7F3" : "#FDEEF5", width: "max-content" }}>
                             {isMgr ? "👑 Managers" : "💅 Nail Techs"}
                           </div>
@@ -25578,6 +25661,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             })()}
                             {s.smTrial && <span title="On a Store-Manager trial (SM Trials tab) — works SM shifts" style={{ background: "#FFEDD5", color: "#9A3412", border: "1px solid #FED7AA", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>⭐ SM TRIAL</span>}
                             {s.movedFrom && <span title={"Transferred from " + s.movedFrom + (s.movedOn ? " on " + new Date(s.movedOn + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : "") + " — earlier cells in this cycle are from " + s.movedFrom} style={{ background: "#dbeafe", color: "#1e40af", border: "1px solid #93c5fd", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>🔄 FROM {s.movedFrom}{s.movedOn ? " · " + new Date(s.movedOn + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
+                            {(() => { const _br = bonusLossReasons(t); return _br.length > 0 ? <span title={"Bonus forfeited — " + _br.join(" · ") + " this cycle"} style={{ background: "#fee2e2", color: "#991b1b", border: "1px solid #fca5a5", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>🚫 NO BONUS</span> : null; })()}
                           </div>
                           <div style={{ fontSize: 9, color: "#9ca3af" }}>{s.ec} · {s.smTrial ? "SM · on trial" : s.role}</div>
                         </td>
@@ -26069,18 +26153,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           );
                         })}
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#1e40af", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "3px solid #FBCFE8", background: "#eff6ff" }}>{t.al}</td>
-                        <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#7f1d1d", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#fef2f2" }} title={t.sick + " sick day" + (t.sick === 1 ? "" : "s") + " with NO note (unpaid)"}>{t.sick}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#166534", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#f0fdf4" }} title={t.sickNote + " sick day" + (t.sickNote === 1 ? "" : "s") + " WITH a doctor's note (paid)"}>{t.sickNote}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#78350f", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#fffbeb" }}>{t.frl}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#14532d", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#f0fdf4" }}>{t.ph}</td>
-                        <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#92400e", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#fef3c7" }}>{t.late}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#064e3b", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#d1fae5" }}
                           title={t.ext + " extra day" + (t.ext === 1 ? "" : "s") + " worked"}>{t.ext}</td>
-                        <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: t.earlyHours > 0 ? "#7c2d12" : "#9ca3af", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: t.earlyHours > 0 ? "#fef3c7" : "#fffbeb" }}
-                          title={t.earlyHours > 0 ? t.earlyHours + "h short — " + t.earlyDays.toFixed(2) + " unpaid day" + (t.earlyDays === 1 ? "" : "s") + " (8h = 1 day)" : "No short hours"}>
-                          {t.earlyHours > 0 ? (t.earlyHours === Math.floor(t.earlyHours) ? t.earlyHours + "h" : t.earlyHours.toFixed(1) + "h") : "0"}
-                        </td>
-                        <td style={{ padding: "6px 8px", fontSize: 12, fontWeight: 800, color: t.totalUnpaid > 0 ? "#7f1d1d" : "#16a34a", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "3px solid #FBCFE8", background: t.totalUnpaid > 0 ? "#fee2e2" : "#f0fdf4" }} title={t.unpaidHours > 0 ? t.unpaid + " full + " + t.unpaidHours + "h = " + t.totalUnpaid.toFixed(2) + " days" : (t.totalUnpaid + " unpaid day" + (t.totalUnpaid === 1 ? "" : "s"))}>{t.totalUnpaid === Math.floor(t.totalUnpaid) ? t.totalUnpaid : t.totalUnpaid.toFixed(2)}</td>
+                        <td style={{ padding: "6px 8px", fontSize: 12, fontWeight: 800, color: t.totalUnpaid > 0 ? "#7f1d1d" : "#16a34a", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: t.totalUnpaid > 0 ? "#fee2e2" : "#f0fdf4" }} title={t.unpaidHours > 0 ? t.unpaid + " full day" + (t.unpaid === 1 ? "" : "s") + " + " + t.unpaidHours + "h short (left early) = " + t.totalUnpaid.toFixed(2) + " days" : (t.totalUnpaid + " unpaid day" + (t.totalUnpaid === 1 ? "" : "s"))}>{t.totalUnpaid === Math.floor(t.totalUnpaid) ? t.totalUnpaid : t.totalUnpaid.toFixed(2)}</td>
                       </tr>
                     );
                     return <React.Fragment key={s.ec}>{sectionRow}{dataRow}</React.Fragment>;
@@ -26105,7 +26183,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     return (
                       <React.Fragment key="trial-att-section">
                         <tr>
-                          <td colSpan={days.length + 9} style={{ background: "#fefce8", padding: 0, borderTop: "2px solid #fde68a", borderBottom: "1px solid #fde68a" }}>
+                          <td colSpan={days.length + 6} style={{ background: "#fefce8", padding: 0, borderTop: "2px solid #fde68a", borderBottom: "1px solid #fde68a" }}>
                             <div style={{ position: "sticky", left: 0, padding: "8px 14px", fontSize: 11, fontWeight: 800, color: "#854d0e", letterSpacing: "0.12em", textTransform: "uppercase", background: "#fefce8", width: "max-content" }}>🧪 Trial · paid trial days <span style={{ fontWeight: 600, textTransform: "none", letterSpacing: 0 }}>(T = in store · HO = head office)</span></div>
                           </td>
                         </tr>
@@ -26133,7 +26211,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 else if (s === "absent") { bg = "#fca5a5"; fg = "#7f1d1d"; txt = "A"; }
                                 return <td key={dy.d} title={txt === "HO" ? (c.name + " · head-office training day (paid)") : txt === "T" ? (c.name + " · trial day worked (paid)" + (s === "late" ? " · late" : "")) : (txt === "A" ? (c.name + " · absent (unpaid)") : "")} style={{ padding: 0, textAlign: "center", fontSize: txt === "HO" ? 8.5 : 10, fontWeight: 800, color: fg, background: bg, borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", height: 34 }}>{txt}</td>;
                               })}
-                              <td colSpan={9} style={{ padding: "6px 10px", fontSize: 11, fontWeight: 800, color: "#854d0e", textAlign: "left", borderBottom: "1px solid #FCE7F3", borderLeft: "3px solid #FBCFE8", background: "#fefce8" }}>
+                              <td colSpan={6} style={{ padding: "6px 10px", fontSize: 11, fontWeight: 800, color: "#854d0e", textAlign: "left", borderBottom: "1px solid #FCE7F3", borderLeft: "3px solid #FBCFE8", background: "#fefce8" }}>
                                 {paid} paid trial day{paid === 1 ? "" : "s"}{ho > 0 ? " (" + (paid - ho) + " store · " + ho + " head office)" : ""}{absent > 0 ? " · " + absent + " absent" : ""}
                               </td>
                             </tr>
@@ -29335,7 +29413,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             style={{ padding: "4px 0", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: isMon ? "3px solid #E84B9B" : "1px solid #FCE7F3", background: bg, color: fg, fontSize: 10, fontWeight: 700, cursor: draggable ? "grab" : "default", userSelect: "none" }}>
                             {xferEdge === "out" ? <span style={{ fontSize: 9, fontWeight: 800 }}>→{xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0, 4)}</span>
                               : xferEdge === "in" ? <span style={{ fontSize: 9, fontWeight: 800 }}>←{xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0, 4)}</span>
-                                : isLoanOut ? <span style={{ fontSize: 9, fontWeight: 800 }}>→{loanToBranch === "Green Point" ? "GP" : (loanToBranch || "").slice(0, 4)}</span>
+                                : isLoanOut ? <span style={{ fontSize: 9, fontWeight: 800 }}>→{loanToBranch === "Green Point" ? "GP" : (loanToBranch || "").slice(0, 4)}{_loanRec && _loanRec.extra ? <span style={{ color: "#047857" }} title="Extra Day — home pays the extra"> ·E</span> : null}</span>
                                 : txt}
                           </td>
                         );
@@ -31737,6 +31815,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   ec: dl.ec, name: dl.name || "", date: dl.date,
                   fromBranch: dl.fromBranch, toBranch: dl.toBranch,
                   note: dl.note || "",
+                  extra: !!dl.extra,        // 'E' + loaned in one move — keeps the extra for home payroll
                   createdBy: (currentUser && currentUser.name) || "",
                   createdAt: idx >= 0 ? existing[idx].createdAt : new Date().toISOString()
                 };
@@ -31931,12 +32010,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const lo = _loansByEcYmd[String(ec).trim() + "|" + ymd];
             const draftLo = (mgrCoverageDraftLoans || []).find(l => String(l.ec).trim() === String(ec).trim() && l.date === ymd && l._op !== "remove");
             const destLbl = (draftLo && draftLo.toBranch) || (lo && lo.toBranch) || "Other store";
+            const _loanExtra = !!((draftLo && draftLo.extra) || (lo && lo.extra));
             return (
-              <td key={key} {..._dh} onClick={onCellClick} title={"Not covering " + branchName + " — on loan to " + destLbl + " this day"} style={{ ...tdStyle, textAlign: "center" }}>
+              <td key={key} {..._dh} onClick={onCellClick} title={"Not covering " + branchName + " — on loan to " + destLbl + " this day" + (_loanExtra ? " (Extra Day — home pays the extra)" : "")} style={{ ...tdStyle, textAlign: "center" }}>
                 <div style={{
                   background: "repeating-linear-gradient(135deg, #f3f4f6, #f3f4f6 5px, #e5e7eb 5px, #e5e7eb 10px)",
                   color: "#1e3a8a",
-                  border: "1px dashed #93c5fd",
+                  border: _loanExtra ? "1px dashed #34d399" : "1px dashed #93c5fd",
                   borderRadius: 6,
                   padding: "6px 6px",
                   lineHeight: 1.15,
@@ -31948,7 +32028,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 }}>
                   <div style={{ fontSize: 9, fontWeight: 800, color: "#6b7280", letterSpacing: "0.08em" }}>AWAY</div>
                   <div style={{ fontSize: 11, fontWeight: 800, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>↪ {destLbl}</div>
-                  <div style={{ fontSize: 8, fontWeight: 700, color: "#6b7280", marginTop: 1, letterSpacing: "0.04em" }}>on loan</div>
+                  {_loanExtra
+                    ? <div style={{ fontSize: 8, fontWeight: 800, color: "#047857", marginTop: 1, letterSpacing: "0.04em" }}>EXTRA · on loan</div>
+                    : <div style={{ fontSize: 8, fontWeight: 700, color: "#6b7280", marginTop: 1, letterSpacing: "0.04em" }}>on loan</div>}
                 </div>
               </td>
             );
@@ -33129,7 +33211,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (dest && dest !== homeBranch) {
             setMgrCoverageDraftLoans(prev => [
               ...prev.filter(l => !(String(l.ec).trim() === ec && l.date === ymd)),
-              { _op: "upsert", ec, name: E.name || "", date: ymd, fromBranch: homeBranch, toBranch: dest, note: E._draftNote || "" }
+              { _op: "upsert", ec, name: E.name || "", date: ymd, fromBranch: homeBranch, toBranch: dest, note: E._draftNote || "", extra: draftCode === "E" }
             ]);
           } else {
             // Cleared destination — drop any pending draft loan for the
