@@ -7392,6 +7392,181 @@ function VoucherAdmin({ currentUser }) {
   );
 }
 
+// ─── BONUS & COMMISSION CONFIG (Owner / Master Admin) ───────────────────────
+// Owner-editable rate tables that drive the staff "Bonus & Commission
+// Calculator" on the My BOA site (myboa/bonus.js). Stored in
+// app_state["boa_bonus_config_v1"] (anon-readable), so the calculator picks up
+// changes without a redeploy. Keep this schema in sync with myboa/bonus.js.
+const BONUS_CONFIG_DEFAULT = {
+  commissionBands: [
+    { min: 15000, amount: 600 }, { min: 20000, amount: 1200 }, { min: 25000, amount: 1800 },
+    { min: 30000, amount: 2400 }, { min: 35000, amount: 3500 }, { min: 40000, amount: 4100 },
+    { min: 45000, amount: 4700 }, { min: 50000, amount: 5300 }
+  ],
+  targetBands: [
+    { min: 30000, amount: 500 }, { min: 35000, amount: 1000 }, { min: 50000, amount: 3000 }
+  ],
+  skills: { threshold: 25000, byLevel: { "1": 0, "2": 1000, "3": 2000 } },
+  late: { halveAt: 3, zeroAt: 7 }
+};
+function bonusBandAmount(bands, turnover) {
+  let best = null;
+  (bands || []).forEach(b => { if (turnover >= b.min && (!best || b.min > best.min)) best = b; });
+  return best ? best.amount : 0;
+}
+function bonusCompute(conf, turnover, level, warning, noShow, late) {
+  const t = Math.max(0, Math.round(Number(turnover) || 0));
+  const commission = bonusBandAmount(conf.commissionBands, t);
+  const target = bonusBandAmount(conf.targetBands, t);
+  const threshold = (conf.skills && conf.skills.threshold) || 0;
+  const skills = t >= threshold ? (Number(conf.skills?.byLevel?.[level]) || 0) : 0;
+  const gross = target + skills;
+  const halveAt = conf.late?.halveAt ?? 3, zeroAt = conf.late?.zeroAt ?? 7;
+  let mult = 1;
+  if (warning || noShow || late >= zeroAt) mult = 0;
+  else if (late >= halveAt) mult = 0.5;
+  const net = Math.round(gross * mult);
+  return { t, commission, target, skills, gross, mult, net, total: commission + net };
+}
+
+function BonusConfig() {
+  const PINK = { ink: "#831843", accent: "#BE185D", soft: "#FBCFE8", softer: "#FCE7F3" };
+  const [conf, setConf] = React.useState(BONUS_CONFIG_DEFAULT);
+  const [loaded, setLoaded] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+  const [result, setResult] = React.useState(null);
+  const [pvTurn, setPvTurn] = React.useState("30000");
+  const [pvLevel, setPvLevel] = React.useState("2");
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const v = window.BOA_DB && window.BOA_DB.loadByKey ? await window.BOA_DB.loadByKey("boa_bonus_config_v1") : null;
+        if (v && Array.isArray(v.commissionBands)) {
+          setConf({
+            commissionBands: v.commissionBands || BONUS_CONFIG_DEFAULT.commissionBands,
+            targetBands: v.targetBands || BONUS_CONFIG_DEFAULT.targetBands,
+            skills: v.skills || BONUS_CONFIG_DEFAULT.skills,
+            late: v.late || BONUS_CONFIG_DEFAULT.late
+          });
+        }
+      } catch (_e) { /* keep defaults */ }
+      finally { setLoaded(true); }
+    })();
+  }, []);
+
+  const num = (v) => Math.max(0, Math.round(Number(v) || 0));
+  const updateBand = (key, i, field, val) => setConf(c => ({ ...c, [key]: c[key].map((b, idx) => idx === i ? { ...b, [field]: num(val) } : b) }));
+  const removeBand = (key, i) => setConf(c => ({ ...c, [key]: c[key].filter((_b, idx) => idx !== i) }));
+  const addBand = (key) => setConf(c => ({ ...c, [key]: c[key].concat({ min: 0, amount: 0 }) }));
+  const setSkill = (lvl, val) => setConf(c => ({ ...c, skills: { ...c.skills, byLevel: { ...c.skills.byLevel, [lvl]: num(val) } } }));
+  const setThreshold = (val) => setConf(c => ({ ...c, skills: { ...c.skills, threshold: num(val) } }));
+  const setLate = (field, val) => setConf(c => ({ ...c, late: { ...c.late, [field]: num(val) } }));
+
+  const save = async () => {
+    if (busy) return;
+    setBusy(true); setResult(null);
+    try {
+      const clean = {
+        commissionBands: [...conf.commissionBands].sort((a, b) => a.min - b.min),
+        targetBands: [...conf.targetBands].sort((a, b) => a.min - b.min),
+        skills: conf.skills, late: conf.late
+      };
+      await window.BOA_DB.sb.from("app_state").upsert({ key: "boa_bonus_config_v1", value: clean });
+      setConf(clean);
+      if (window.BOA_LOG_ACTIVITY) window.BOA_LOG_ACTIVITY("Updated bonus & commission rates", "", "Payroll", "Admin");
+      setResult({ ok: true, msg: "Saved — the staff calculator will use these rates immediately." });
+    } catch (e) {
+      setResult({ ok: false, msg: "Could not save: " + ((e && e.message) || e) });
+    } finally { setBusy(false); }
+  };
+
+  const card = { background: "#fff", border: `1px solid ${PINK.soft}`, borderRadius: 14, padding: "16px 18px", marginBottom: 16 };
+  const inp = { width: "100%", padding: "7px 9px", fontSize: 13, border: `1px solid ${PINK.soft}`, borderRadius: 7, fontFamily: "inherit", color: PINK.ink, boxSizing: "border-box" };
+  const th = { textAlign: "left", fontSize: 10, fontWeight: 800, color: PINK.ink, textTransform: "uppercase", letterSpacing: "0.05em", padding: "4px 6px" };
+  const rand = (n) => "R" + (Number(n) || 0).toLocaleString("en-ZA");
+  const pv = bonusCompute(conf, pvTurn, pvLevel, false, false, 0);
+
+  const bandTable = (key, label, hint) => (
+    <div style={card}>
+      <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 2, color: PINK.ink }}>{label}</div>
+      <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 10 }}>{hint}</div>
+      <table style={{ borderCollapse: "collapse" }}>
+        <thead><tr><th style={th}>Min turnover (R ≥)</th><th style={th}>Amount (R)</th><th style={th}></th></tr></thead>
+        <tbody>
+          {conf[key].map((b, i) => (
+            <tr key={i}>
+              <td style={{ padding: "3px 6px" }}><input type="number" value={b.min} onChange={e => updateBand(key, i, "min", e.target.value)} style={{ ...inp, width: 130 }} /></td>
+              <td style={{ padding: "3px 6px" }}><input type="number" value={b.amount} onChange={e => updateBand(key, i, "amount", e.target.value)} style={{ ...inp, width: 110 }} /></td>
+              <td style={{ padding: "3px 6px" }}><button onClick={() => removeBand(key, i)} style={{ background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 6, padding: "5px 9px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>×</button></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <button onClick={() => addBand(key)} style={{ marginTop: 8, background: PINK.softer, color: PINK.ink, border: `1px solid ${PINK.soft}`, borderRadius: 7, padding: "6px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>+ Add band</button>
+    </div>
+  );
+
+  return (
+    <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", color: PINK.ink, maxWidth: 760 }}>
+      <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, fontWeight: 700, marginBottom: 2 }}>🧮 Bonus &amp; Commission</div>
+      <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 16 }}>
+        These rates drive the staff <strong>Bonus &amp; Commission Calculator</strong> on My BOA. Commission is always paid; bonuses (target + skills) can be halved/lost by lateness, warnings or no-shows. {loaded ? "" : "Loading…"}
+      </div>
+
+      {bandTable("commissionBands", "Commission bands", "Turnover ≥ the lowest band's min earns that commission. Highest qualifying band applies (e.g. 34 999 still earns the 30 000 rate).")}
+      {bandTable("targetBands", "Target bonus bands", "A turnover reward, on top of commission. Below the lowest min → no target bonus.")}
+
+      <div style={card}>
+        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 2, color: PINK.ink }}>Skills bonus (by level)</div>
+        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 10 }}>Paid only once turnover reaches the threshold below.</div>
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <label style={{ fontSize: 12, fontWeight: 700 }}>Unlocks at turnover (R ≥)<br /><input type="number" value={conf.skills.threshold} onChange={e => setThreshold(e.target.value)} style={{ ...inp, width: 130, marginTop: 4 }} /></label>
+          {["1", "2", "3"].map(l => (
+            <label key={l} style={{ fontSize: 12, fontWeight: 700 }}>Level {l} (R)<br /><input type="number" value={conf.skills.byLevel[l] ?? 0} onChange={e => setSkill(l, e.target.value)} style={{ ...inp, width: 100, marginTop: 4 }} /></label>
+          ))}
+        </div>
+      </div>
+
+      <div style={card}>
+        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 2, color: PINK.ink }}>Lateness thresholds</div>
+        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 10 }}>Applied to bonuses only (never commission). A signed warning or a no-show forfeits the bonus outright.</div>
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <label style={{ fontSize: 12, fontWeight: 700 }}>Halve bonus at (lates ≥)<br /><input type="number" value={conf.late.halveAt} onChange={e => setLate("halveAt", e.target.value)} style={{ ...inp, width: 110, marginTop: 4 }} /></label>
+          <label style={{ fontSize: 12, fontWeight: 700 }}>Lose bonus at (lates ≥)<br /><input type="number" value={conf.late.zeroAt} onChange={e => setLate("zeroAt", e.target.value)} style={{ ...inp, width: 110, marginTop: 4 }} /></label>
+        </div>
+      </div>
+
+      <div style={{ ...card, background: PINK.softer }}>
+        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 10, color: PINK.ink }}>Live preview (no incidents)</div>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 12 }}>
+          <label style={{ fontSize: 12, fontWeight: 700 }}>Turnover (R)<br /><input type="number" value={pvTurn} onChange={e => setPvTurn(e.target.value)} style={{ ...inp, width: 130, marginTop: 4 }} /></label>
+          <label style={{ fontSize: 12, fontWeight: 700 }}>Level<br />
+            <select value={pvLevel} onChange={e => setPvLevel(e.target.value)} style={{ ...inp, width: 90, marginTop: 4 }}><option value="1">1</option><option value="2">2</option><option value="3">3</option></select>
+          </label>
+        </div>
+        <div style={{ fontSize: 13, color: PINK.ink, lineHeight: 1.7 }}>
+          Commission <strong>{rand(pv.commission)}</strong> · Target <strong>{rand(pv.target)}</strong> · Skills <strong>{rand(pv.skills)}</strong> →
+          <strong style={{ fontSize: 16, color: PINK.accent }}> Total {rand(pv.total)}</strong>
+        </div>
+      </div>
+
+      <button onClick={save} disabled={busy}
+        style={{ background: busy ? PINK.soft : PINK.accent, color: "#fff", border: "none", borderRadius: 9, padding: "11px 22px", cursor: busy ? "not-allowed" : "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit" }}>
+        {busy ? "Saving…" : "Save rates"}
+      </button>
+
+      {result && (
+        <div style={{ marginTop: 14, padding: "11px 14px", borderRadius: 9, fontSize: 13, fontWeight: 600,
+          background: result.ok ? "#dcfce7" : "#fef2f2", border: "1px solid " + (result.ok ? "#86efac" : "#fecaca"),
+          color: result.ok ? "#14532d" : "#991b1b" }}>
+          {result.ok ? "✓ " : "⚠️ "}{result.msg}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 // ─── APP GATE ─────────────────────────────────────────────────────────────────
 // Mounts the PIN sign-in screen until a valid user is set. Once unlocked, the
@@ -7649,6 +7824,7 @@ const SETTINGS_TABS = [
   { t: "payrollProgress", l: "Payroll Progress", cat: "Payroll", icon: "📊" },
   { t: "payrollReports", l: "Reports", cat: "Payroll", icon: "📈" },
   { t: "overtime", l: "Overtime", cat: "Payroll", icon: "⏱️" },
+  { t: "bonusConfig", l: "Bonus & Commission", cat: "Payroll", icon: "🧮" },
   // NOTE: Payroll Inbox is intentionally NOT in this per-user permission grid.
   // Access to it is governed solely by the "Leave — payroll / balance check"
   // access list (Settings), so it shows for anyone granted there regardless of
@@ -13350,7 +13526,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll", payrollInbox: "Payroll", leaveBalances: "Payroll", frl: "Payroll",
     leaveRequests: "Operations", calledInSick: "Operations", extraDayRequests: "Operations",
     alerts: "Insights", activity: "Insights", storeReports: "Insights",
-    settings: "Admin", voucherAdmin: "Admin"
+    settings: "Admin", voucherAdmin: "Admin",
+    bonusConfig: "Payroll"
   };
   useEffect(() => {
     // Manager Planner is a virtual tab that lives at recruitment+mgrRecruit+planner
@@ -16407,7 +16584,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     return { t: "payrollInbox", l: "📥 Payroll Inbox" + (n ? "  (" + n + ")" : ""), forceShow: true };
                   })()] : []),
                   ...(accessAllows(currentUser, leaveBalancesCfg) ? [{ t: "leaveBalances", l: "🧾 Leave Balances", forceShow: true }] : []),
-                  ...(accessAllows(currentUser, leaveBalancesCfg) ? [{ t: "frl", l: "👪 Family Responsibility", forceShow: true }] : [])
+                  ...(accessAllows(currentUser, leaveBalancesCfg) ? [{ t: "frl", l: "👪 Family Responsibility", forceShow: true }] : []),
+                  ...((currentUser?.isOwner || currentUser?.role === "Master Admin") ? [{ t: "bonusConfig", l: "🧮 Bonus & Commission" }] : [])
                 ]
               },
               {
@@ -32473,6 +32651,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
       {tab === "voucherAdmin" && (currentUser?.isOwner || currentUser?.role === "Master Admin") && (
         <div style={{ padding: "0 24px" }}><VoucherAdmin currentUser={currentUser} /></div>
+      )}
+
+      {tab === "bonusConfig" && (currentUser?.isOwner || currentUser?.role === "Master Admin") && (
+        <div style={{ padding: "0 24px" }}><BonusConfig /></div>
       )}
 
       {tab === "dailyTasks" && (
