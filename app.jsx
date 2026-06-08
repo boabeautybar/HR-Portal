@@ -23763,8 +23763,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (sv === "L") return "al";
           if (sv === "ML") return "mat";
           if (sv === "X") return "term";
-          if (sv === "E") return "ext";
-          if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL") return "on";
+          // Future days haven't happened yet — never PROJECT a scheduled shift
+          // as a worked day ("On Time" / Extra) ahead of time. Otherwise next
+          // month's sheet (and the rest of the current cycle) fills with phantom
+          // check-ins for days nobody has worked. Planned leave still shows (the
+          // Leave-Planner overlay above + the 'L' schedule code here), and OFF
+          // days stay greyed; only the worked status waits until the day itself
+          // (or earlier), when a real kiosk clock-in / reason can actually exist.
+          const _isFutureDay = !!(dayObj && dayObj.ymd > _todayYmdAtt);
+          if (!_isFutureDay) {
+            if (sv === "E") return "ext";
+            if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL") return "on";
+          }
           // A manager clock-in on a day they were NOT scheduled to work is
           // deliberately NOT auto-resolved to 'On Time' here — random extra
           // days must be reviewed first. The cell render flags those days for
