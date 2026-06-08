@@ -23557,6 +23557,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // then fires for managers too and the cell stops rendering blank.
         const _mgrLoansInCycle = (mgrLoanRows || []).filter(l => l && l.date && l.date >= cycStartYmd && l.date <= cycEndYmd);
         const outgoingLoanMap = {};
+        // ec -> { day -> true } when that loaned-out day is flagged as an EXTRA
+        // on the loan record itself (manager marked 'E' + loaned in one move on
+        // Manager Coverage). The home cell stays 'loan_out' so coverage still
+        // reads her as away, but the extra rides on the loan so payroll still
+        // sees it.
+        const _loanExtraByEcD = {};
         const _mgrLoanedOutSet = new Set();    // "ec|d" pairs — managers loaned OUT this cycle
         // Incoming mid-cycle transfers (arriving at this branch). Their
         // pre-transfer loan-outs were made from their OLD branch, so carry them
@@ -23598,7 +23604,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const inc = _incomingByEc[l.ec];
             if (inc && l.fromBranch === inc.movedFrom && l.toBranch && l.date < inc.transferDate) toB = l.toBranch;
           }
-          if (toB) (outgoingLoanMap[l.ec] = outgoingLoanMap[l.ec] || {})[dy.d] = toB;
+          if (toB) {
+            (outgoingLoanMap[l.ec] = outgoingLoanMap[l.ec] || {})[dy.d] = toB;
+            if (l.extra) (_loanExtraByEcD[l.ec] = _loanExtraByEcD[l.ec] || {})[dy.d] = true;
+          }
         });
         _mgrLoansInCycle.forEach(l => {
           if (!l.ec || !l.fromBranch || l.fromBranch !== attBranch) return;
@@ -23906,9 +23915,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             //                 a schedule 'E' (extra cover)
             //   • receiving — their grid cell is 'ext', or their kiosk tagged
             //                 the borrow day as Extra
+            //   • the loan record itself — marked 'E' + loaned in one move on
+            //                 Manager Coverage (home cell stays 'loan_out').
             const _kaTo = _do ? ((kioskAbsentByBranch[toBranch] || {})[ec] || {})[_do.ymd] : null;
+            const _loanFlaggedExtra = !!(_loanExtraByEcD[ec] && _loanExtraByEcD[ec][d]);
             const _loanWasExtra = _homeBare === "ext" || _recvBare === "ext"
-              || _isExtraDay(ec, d) || _schedV === "E" || !!(_kaTo && _kaTo.status === "ext");
+              || _isExtraDay(ec, d) || _schedV === "E" || !!(_kaTo && _kaTo.status === "ext") || _loanFlaggedExtra;
             // The home branch's mirror of the receiving day, when present.
             if (recvVal) {
               if (_loanWasExtra && (_recvBare === "on" || _recvBare === "late" || _recvBare === "ext")) return "ext";
@@ -29157,7 +29169,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             style={{ padding: "4px 0", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: isMon ? "3px solid #E84B9B" : "1px solid #FCE7F3", background: bg, color: fg, fontSize: 10, fontWeight: 700, cursor: draggable ? "grab" : "default", userSelect: "none" }}>
                             {xferEdge === "out" ? <span style={{ fontSize: 9, fontWeight: 800 }}>→{xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0, 4)}</span>
                               : xferEdge === "in" ? <span style={{ fontSize: 9, fontWeight: 800 }}>←{xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0, 4)}</span>
-                                : isLoanOut ? <span style={{ fontSize: 9, fontWeight: 800 }}>→{loanToBranch === "Green Point" ? "GP" : (loanToBranch || "").slice(0, 4)}</span>
+                                : isLoanOut ? <span style={{ fontSize: 9, fontWeight: 800 }}>→{loanToBranch === "Green Point" ? "GP" : (loanToBranch || "").slice(0, 4)}{_loanRec && _loanRec.extra ? <span style={{ color: "#047857" }} title="Extra Day — home pays the extra"> ·E</span> : null}</span>
                                 : txt}
                           </td>
                         );
@@ -31559,6 +31571,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   ec: dl.ec, name: dl.name || "", date: dl.date,
                   fromBranch: dl.fromBranch, toBranch: dl.toBranch,
                   note: dl.note || "",
+                  extra: !!dl.extra,        // 'E' + loaned in one move — keeps the extra for home payroll
                   createdBy: (currentUser && currentUser.name) || "",
                   createdAt: idx >= 0 ? existing[idx].createdAt : new Date().toISOString()
                 };
@@ -31753,12 +31766,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const lo = _loansByEcYmd[String(ec).trim() + "|" + ymd];
             const draftLo = (mgrCoverageDraftLoans || []).find(l => String(l.ec).trim() === String(ec).trim() && l.date === ymd && l._op !== "remove");
             const destLbl = (draftLo && draftLo.toBranch) || (lo && lo.toBranch) || "Other store";
+            const _loanExtra = !!((draftLo && draftLo.extra) || (lo && lo.extra));
             return (
-              <td key={key} {..._dh} onClick={onCellClick} title={"Not covering " + branchName + " — on loan to " + destLbl + " this day"} style={{ ...tdStyle, textAlign: "center" }}>
+              <td key={key} {..._dh} onClick={onCellClick} title={"Not covering " + branchName + " — on loan to " + destLbl + " this day" + (_loanExtra ? " (Extra Day — home pays the extra)" : "")} style={{ ...tdStyle, textAlign: "center" }}>
                 <div style={{
                   background: "repeating-linear-gradient(135deg, #f3f4f6, #f3f4f6 5px, #e5e7eb 5px, #e5e7eb 10px)",
                   color: "#1e3a8a",
-                  border: "1px dashed #93c5fd",
+                  border: _loanExtra ? "1px dashed #34d399" : "1px dashed #93c5fd",
                   borderRadius: 6,
                   padding: "6px 6px",
                   lineHeight: 1.15,
@@ -31770,7 +31784,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 }}>
                   <div style={{ fontSize: 9, fontWeight: 800, color: "#6b7280", letterSpacing: "0.08em" }}>AWAY</div>
                   <div style={{ fontSize: 11, fontWeight: 800, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>↪ {destLbl}</div>
-                  <div style={{ fontSize: 8, fontWeight: 700, color: "#6b7280", marginTop: 1, letterSpacing: "0.04em" }}>on loan</div>
+                  {_loanExtra
+                    ? <div style={{ fontSize: 8, fontWeight: 800, color: "#047857", marginTop: 1, letterSpacing: "0.04em" }}>EXTRA · on loan</div>
+                    : <div style={{ fontSize: 8, fontWeight: 700, color: "#6b7280", marginTop: 1, letterSpacing: "0.04em" }}>on loan</div>}
                 </div>
               </td>
             );
@@ -32947,7 +32963,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (dest && dest !== homeBranch) {
             setMgrCoverageDraftLoans(prev => [
               ...prev.filter(l => !(String(l.ec).trim() === ec && l.date === ymd)),
-              { _op: "upsert", ec, name: E.name || "", date: ymd, fromBranch: homeBranch, toBranch: dest, note: E._draftNote || "" }
+              { _op: "upsert", ec, name: E.name || "", date: ymd, fromBranch: homeBranch, toBranch: dest, note: E._draftNote || "", extra: draftCode === "E" }
             ]);
           } else {
             // Cleared destination — drop any pending draft loan for the
