@@ -13889,6 +13889,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Used by getStatus to mirror the receiving branch's recorded status into
   // the home branch's loan_out cell ('Esther was On Time at Bree today').
   const [crossBranchAttGrids, setCrossBranchAttGrids] = useState({});
+  // Extras (Extra-Day) sidecars from the branches we loan people OUT to this
+  // cycle. An Extra Day approved at the RECEIVING branch lives in its own
+  // boa_extras sidecar (keyed by day-of-month), which the home view doesn't
+  // otherwise load — so a borrowed manager's extra would be invisible at home.
+  const [crossBranchExtras, setCrossBranchExtras] = useState({});
   // Snapshot of attGrid taken right before a check-in import — drives the
   // "Undo Check-in Import" button on the attendance toolbar. Null when there
   // is nothing to undo. Cleared when the branch or cycle changes so we never
@@ -14501,18 +14506,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         if (inc && l.fromBranch === inc.branch && l.date < inc.transferDate) targets.add(l.toBranch);
       });
     }
-    if (targets.size === 0) { setCrossBranchAttGrids({}); return; }
+    if (targets.size === 0) { setCrossBranchAttGrids({}); setCrossBranchExtras({}); return; }
     let cancelled = false;
     Promise.all([...targets].map(async (br) => {
       try {
-        const att = await window.BOA_DB.loadAttendance(br, attYM);
-        return [br, (att && att.grid) || {}];
-      } catch (_) { return [br, {}]; }
-    })).then(pairs => {
+        const [att, extras] = await Promise.all([
+          window.BOA_DB.loadAttendance(br, attYM),
+          window.BOA_DB.loadExtras ? window.BOA_DB.loadExtras(br, attYM).catch(() => ({})) : Promise.resolve({})
+        ]);
+        return [br, (att && att.grid) || {}, extras || {}];
+      } catch (_) { return [br, {}, {}]; }
+    })).then(rows => {
       if (cancelled) return;
-      const next = {};
-      for (const [br, g] of pairs) next[br] = g;
-      setCrossBranchAttGrids(next);
+      const grids = {}, extras = {};
+      for (const [br, g, ex] of rows) { grids[br] = g; extras[br] = ex; }
+      setCrossBranchAttGrids(grids);
+      setCrossBranchExtras(extras);
     });
     return () => { cancelled = true; };
   }, [tab, attBranch, attYM, techLoans, mgrLoanRows, staff]);
@@ -23907,8 +23916,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             //   • receiving — their grid cell is 'ext', or their kiosk tagged
             //                 the borrow day as Extra
             const _kaTo = _do ? ((kioskAbsentByBranch[toBranch] || {})[ec] || {})[_do.ymd] : null;
+            // Receiving branch's Extra-Day sidecar (boa_extras), keyed by
+            // day-of-month. This is the canonical record when the borrow day was
+            // approved as Extra at the OTHER store (e.g. "+ Mark Extra Day" on
+            // Mushroom Farm's kiosk) — and, being day-of-month keyed, it's
+            // immune to the audit-log's date quirks.
+            const _exTo = crossBranchExtras[toBranch] && crossBranchExtras[toBranch][String(d)];
+            const _ecT = String(ec).trim();
+            const _extraAtRecv = !!(_exTo && (_exTo[ec] || _exTo[_ecT]));
             const _loanWasExtra = _homeBare === "ext" || _recvBare === "ext"
-              || _isExtraDay(ec, d) || _schedV === "E" || !!(_kaTo && _kaTo.status === "ext");
+              || _isExtraDay(ec, d) || _schedV === "E" || !!(_kaTo && _kaTo.status === "ext") || _extraAtRecv;
             // The home branch's mirror of the receiving day, when present.
             if (recvVal) {
               if (_loanWasExtra && (_recvBare === "on" || _recvBare === "late" || _recvBare === "ext")) return "ext";

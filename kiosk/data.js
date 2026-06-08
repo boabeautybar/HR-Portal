@@ -874,13 +874,19 @@
     // Push an audit-log entry directly — setAttendanceStatus used to do
     // this for us as a side-effect, but we've broken that linkage.
     try {
-      var logKey = "boa_kiosk_log_" + branch() + "_" + ym;
+      // The audit log is keyed (and dated) by the cycle's START-month, exactly
+      // like setAttendanceStatus — NOT the raw end-month `ym`. attKey(ym) already
+      // does that end->start conversion, so reuse its suffix. Using `ym` directly
+      // here stamped extra-day rows a month off (a 7 June extra logged as 7 July)
+      // and into the wrong log document.
+      var startYm = attKey(ym).split("_").pop();
+      var logKey = "boa_kiosk_log_" + branch() + "_" + startYm;
       var prior  = await c.from("app_state").select("value").eq("key", logKey).maybeSingle();
       var log    = (prior.data && Array.isArray(prior.data.value)) ? prior.data.value : [];
       // ymd derivation mirrors setAttendanceStatus's calendar math: days
-      // 25..31 belong to the previous month of the payroll cycle, 1..24
-      // belong to the current month.
-      var cycP = ym.split("-");
+      // 25..31 belong to the START month of the payroll cycle, 1..24
+      // belong to the next month.
+      var cycP = startYm.split("-");
       var cycY = +cycP[0], cycM = +cycP[1];
       var dayN = parseInt(dayKey, 10);
       var dt;
