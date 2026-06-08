@@ -10987,7 +10987,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
 //   • approved nail-tech extra days (open the tech for that single day), and
 //   • trial techs awaiting their Fresha opening (trial window, then the month
 //     once they pass). Tick each one once it's opened on Fresha.
-function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen, trialList, setTrialFresha, leaveRequests, freshaBlocks, markFreshaBlocked, leaveRecs, enriched, obList, markFreshaMgrProfile }) {
+function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen, trialList, setTrialFresha, leaveRequests, freshaBlocks, markFreshaBlocked, leaveRecs, enriched, obList, markFreshaMgrProfile, managers }) {
   const card = { background: "#fff", border: "1px solid #e9d5ff", borderRadius: 12, padding: "12px 14px", marginBottom: 10 };
   const chip = (bg, fg, txt) => <span style={{ background: bg, color: fg, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 800 }}>{txt}</span>;
   const openBtn = (label, onClick) => <button onClick={onClick} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "6px 13px", fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>{label}</button>;
@@ -11005,10 +11005,14 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
 
   // Manager profiles to create: a newly-onboarded manager (SSM/SM/AM) needs a
   // Fresha profile set up. Tracked on the onboarding record itself. Limited to
-  // recent joiners so historical onboarding history doesn't flood the list.
+  // recent joiners so historical onboarding history doesn't flood the list, and
+  // gated on the manager still existing in the live roster — a deleted person
+  // (e.g. a test AM that was removed) drops off the list instead of lingering.
   const _MGR_POS = new Set(["SSM", "SM", "AM"]);
   const _recentOb = (o) => { const t = Date.parse(o.startDate || o.addedAt || ""); return !isNaN(t) && (Date.now() - t) < 60 * 86400000; };
-  const profileTodos = (obList || []).filter(o => o && _MGR_POS.has(o.position) && !o.freshaProfileCreated && _recentOb(o));
+  const _liveMgrEcs = new Set((managers || []).filter(m => m && m.ec).map(m => String(m.ec).toUpperCase().trim()));
+  const profileTodos = (obList || []).filter(o => o && _MGR_POS.has(o.position) && !o.freshaProfileCreated && _recentOb(o)
+    && _liveMgrEcs.has(String(o.ec || "").toUpperCase().trim()));
 
   // Closing side: nail techs who need greying out on Fresha so no client
   // bookings land while they're off — sick / absent (today & tomorrow), plus
@@ -16493,7 +16497,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const toRemove = freshaOffboardRemovals(enriched).filter(r => !isBlocked(r.key)).length;
                     const _mgrPos = new Set(["SSM", "SM", "AM"]);
                     const _recentOb = (o) => { const t = Date.parse(o.startDate || o.addedAt || ""); return !isNaN(t) && (Date.now() - t) < 60 * 86400000; };
-                    const profilesToCreate = (obList || []).filter(o => o && _mgrPos.has(o.position) && !o.freshaProfileCreated && _recentOb(o)).length;
+                    const _liveMgrEcs = new Set((managers || []).filter(m => m && m.ec).map(m => String(m.ec).toUpperCase().trim()));
+                    const profilesToCreate = (obList || []).filter(o => o && _mgrPos.has(o.position) && !o.freshaProfileCreated && _recentOb(o) && _liveMgrEcs.has(String(o.ec || "").toUpperCase().trim())).length;
                     const n = extraToOpen + trialToOpen + monthToOpen + toBlock + toRemove + profilesToCreate;
                     return { t: "freshaTodo", l: "💇‍♀️ Fresha To-Do" + (n ? "  (" + n + ")" : "") };
                   })(),
@@ -17227,7 +17232,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 // CREATE — newly-onboarded managers whose start date is within 3
                 // days (or already here) and who still need a Fresha profile.
                 const _mgrPos = new Set(["SSM", "SM", "AM"]);
-                const urgentProfiles = (obList || []).filter(o => o && _mgrPos.has(o.position) && !o.freshaProfileCreated)
+                const _liveMgrEcs = new Set((managers || []).filter(m => m && m.ec).map(m => String(m.ec).toUpperCase().trim()));
+                const urgentProfiles = (obList || []).filter(o => o && _mgrPos.has(o.position) && !o.freshaProfileCreated && _liveMgrEcs.has(String(o.ec || "").toUpperCase().trim()))
                   .map(o => ({ ...o, _d: o.startDate ? daysUntil(o.startDate) : 0 }))
                   .filter(o => o._d !== null && o._d < URGENT)
                   .sort((a, b) => (a._d ?? 0) - (b._d ?? 0));
@@ -20465,7 +20471,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         )}
 
         {tab === "freshaTodo" && (
-          <FreshaTodoTab extraDayRequests={extraDayRequests} freshaExtraOpen={freshaExtraOpen} markFreshaExtraOpen={markFreshaExtraOpen} trialList={trialList} setTrialFresha={setTrialFresha} leaveRequests={leaveRequests} freshaBlocks={freshaBlocks} markFreshaBlocked={markFreshaBlocked} leaveRecs={leaveRecs} enriched={enriched} obList={obList} markFreshaMgrProfile={markFreshaMgrProfile} />
+          <FreshaTodoTab extraDayRequests={extraDayRequests} freshaExtraOpen={freshaExtraOpen} markFreshaExtraOpen={markFreshaExtraOpen} trialList={trialList} setTrialFresha={setTrialFresha} leaveRequests={leaveRequests} freshaBlocks={freshaBlocks} markFreshaBlocked={markFreshaBlocked} leaveRecs={leaveRecs} enriched={enriched} obList={obList} markFreshaMgrProfile={markFreshaMgrProfile} managers={managers} />
         )}
 
         {/* ── ALERTS TAB ── */}
