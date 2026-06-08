@@ -628,6 +628,59 @@
     return new Date(+p[0], +p[1] - 1, 24);
   }
 
+  // ── Family Responsibility Leave (FRL) balance guard ──────────────────────
+  // Mirrors the HR portal: 3 paid days per employment year, only after 4
+  // months' service, reset each work anniversary. The current balance is held
+  // in app_state boa_frl_v1 and topped-up by FRL already marked in attendance.
+  var FRL_DAYS = 3, FRL_QUALIFY_MONTHS = 4;
+  function _normEc(ec) { return String(ec == null ? "" : ec).toUpperCase().replace(/[^A-Z0-9]/g, ""); }
+  function _normYmd(s) { return s ? String(s).replace(/\//g, "-").slice(0, 10) : ""; }
+  function _ymdStr(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+  function _monthsBetween(f, t) { var a = new Date(_normYmd(f) + "T00:00:00"), b = new Date(_normYmd(t) + "T00:00:00"); if (isNaN(a.getTime()) || isNaN(b.getTime()) || b < a) return 0; var m = (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth()); if (b.getDate() < a.getDate()) m--; return Math.max(0, m); }
+  function _frlCycle(startYmd, toYmd) { var s = _normYmd(startYmd); if (!s) return null; var a = new Date(s + "T00:00:00"), b = new Date(_normYmd(toYmd) + "T00:00:00"); if (isNaN(a.getTime()) || isNaN(b.getTime())) return null; var years = b.getFullYear() - a.getFullYear(); var anniv = new Date(a.getFullYear() + years, a.getMonth(), a.getDate()); if (anniv > b) years--; var st = new Date(a.getFullYear() + years, a.getMonth(), a.getDate()); var en = new Date(a.getFullYear() + years + 1, a.getMonth(), a.getDate()); en.setDate(en.getDate() - 1); return { start: _ymdStr(st), end: _ymdStr(en) }; }
+  function _ymdToAttYm(ymd) { var p = _normYmd(ymd).split("-").map(Number); var yy = p[0], mm = p[1]; if (p[2] < 25) { mm--; if (mm < 1) { mm = 12; yy--; } } return yy + "-" + String(mm).padStart(2, "0"); }
+  function _attCellYmd(attYm, dk) { var p = String(attYm).split("-").map(Number); var day = Number(dk); if (!day || day < 1 || day > 31) return ""; var Y = p[0], M = p[1]; if (day < 25) { M++; if (M > 12) { M = 1; Y++; } } return Y + "-" + String(M).padStart(2, "0") + "-" + String(day).padStart(2, "0"); }
+  function _listAttYms(f, t) { var out = [], ym = _ymdToAttYm(f), end = _ymdToAttYm(t), g = 0; while (g++ < 24) { out.push(ym); if (ym === end) break; var q = ym.split("-").map(Number); var M = q[1] + 1, Y = q[0]; if (M > 12) { M = 1; Y++; } ym = Y + "-" + String(M).padStart(2, "0"); } return out; }
+  async function loadFRL() {
+    var c = client(); if (!c) return null;
+    var res = await c.from("app_state").select("value").eq("key", "boa_frl_v1").maybeSingle();
+    if (res.error) { console.error("loadFRL:", res.error); throw res.error; }
+    return (res.data && res.data.value) || null;
+  }
+  // Returns { block, available, message }. Blocks FRL when the person isn't
+  // eligible, has no days left this cycle, or the balance can't be determined.
+  async function frlMarkGuard(ec, startDate, ym, dayKey) {
+    var today = todayStr();
+    var dateBeingMarked = _attCellYmd(ym, dayKey);
+    var start = _normYmd(startDate);
+    if (!start) return { block: true, message: "No start date on file, so FRL days can't be confirmed. Use Unpaid instead." };
+    var cyc = _frlCycle(start, today); if (!cyc) return { block: true, message: "Couldn't work out the FRL cycle. Use Unpaid instead." };
+    if (_monthsBetween(start, today) < FRL_QUALIFY_MONTHS) return { block: true, message: "Not eligible for paid FRL yet (it starts after 4 months' service). Use Unpaid instead." };
+    var frl; try { frl = await loadFRL(); } catch (e) { return { block: true, message: "Couldn't load the FRL balance to check remaining days. Please try again, or use Unpaid." }; }
+    var norm = _normEc(ec);
+    var entry = frl && frl.entries && frl.entries[norm];
+    var recorded = !!(entry && entry.cycleStart === cyc.start);
+    var base = FRL_DAYS;
+    if (recorded) base = entry.remaining != null ? Number(entry.remaining) : (entry.used != null ? FRL_DAYS - Number(entry.used) : FRL_DAYS);
+    base = Math.max(0, Math.min(FRL_DAYS, base));
+    var since = cyc.start;
+    if (recorded) since = entry.asOf || (frl && frl.asOf) || since;
+    else if (frl && frl.asOf && frl.asOf > cyc.start) since = frl.asOf;
+    var days = {};
+    try {
+      var yms = _listAttYms(since, today);
+      for (var i = 0; i < yms.length; i++) {
+        var a = await getAttendance(yms[i]); var grid = (a && a.grid) || {};
+        var rowg = grid[ec] || grid[String(ec).toUpperCase()] || {};
+        for (var dk in rowg) { if (String(rowg[dk] == null ? "" : rowg[dk]).replace(/^~/, "") === "frl") days[_attCellYmd(yms[i], dk)] = 1; }
+      }
+    } catch (e) { return { block: true, message: "Couldn't check recent FRL for this person. Please try again, or use Unpaid." }; }
+    var taken = 0; for (var d in days) { if (d !== dateBeingMarked && d > since && d >= cyc.start && d <= cyc.end && d <= today) taken++; }
+    var available = Math.max(0, base - taken);
+    if (available < 1) return { block: true, available: available, message: "No Family Responsibility Leave days left this cycle (" + available + " of " + FRL_DAYS + " remaining). Use Unpaid instead." };
+    return { block: false, available: available };
+  }
+
   async function getAttendance(ym) {
     var c = client(); if (!c) return { grid: {}, branch: branch(), ym: ym };
     var res = await c.from("app_state").select("value").eq("key", attKey(ym)).maybeSingle();
@@ -1411,7 +1464,33 @@
     
     var up = await c.from("app_state").upsert({ key: "boa_trial_period_v1", value: list });
     if (up.error) throw up.error;
-    
+
+    return candidate;
+  }
+
+  // Persist a completed trial evaluation (week-1 "mid" or week-2 "final") onto
+  // the candidate's record and, in the SAME write, advance their trial status
+  // when they pass. This is what makes the trial self-driving from the store:
+  // the manager fills the form on the kiosk, and the HR portal simply reflects
+  // the new status the next time it loads.
+  //   evalKey   — "midEval" | "finalEval"
+  //   evalObj   — { submittedAt, submittedBy, scores, total, max, pass, keyOk, heldForHr, notes }
+  //   newStatus — the status to move the candidate to (or null to leave as-is;
+  //               used when an evaluation falls below the pass mark and must be
+  //               held for an HR decision instead of auto-advancing).
+  async function saveTrialEvaluation(candidateId, evalKey, evalObj, newStatus) {
+    var c = client(); if (!c) throw new Error("Supabase not configured");
+    var res = await c.from("app_state").select("value").eq("key", "boa_trial_period_v1").maybeSingle();
+    if (res.error) throw res.error;
+    var v = res.data && res.data.value;
+    var list = Array.isArray(v) ? v : [];
+    var candidate = list.find(function (item) { return String(item._id) === String(candidateId); });
+    if (!candidate) throw new Error("Candidate not found");
+    candidate[evalKey] = evalObj;
+    if (newStatus) candidate.status = newStatus;
+    candidate.updatedAt = new Date().toISOString();
+    var up = await c.from("app_state").upsert({ key: "boa_trial_period_v1", value: list });
+    if (up.error) throw up.error;
     return candidate;
   }
 
@@ -1426,6 +1505,7 @@
     listKioskReminders: listKioskReminders,
     listTrialCandidates: listTrialCandidates,
     recordTrialCheckin: recordTrialCheckin,
+    saveTrialEvaluation: saveTrialEvaluation,
     markKioskReminderDone: markKioskReminderDone,
     markKioskReminderUndone: markKioskReminderUndone,
     categorizeStaff: categorizeStaff, addStaff: addStaff, updateStaff: updateStaff,
@@ -1435,6 +1515,7 @@
     currentSchedYm: currentSchedYm, periodLabel: periodLabel, periodDays: periodDays, getSchedule: getSchedule, getSchedulesForBranches: getSchedulesForBranches, getMgrTimes: getMgrTimes,
     ymForDate: ymForDate, endOfSchedulePeriod: endOfSchedulePeriod,
     getAttendance: getAttendance, setAttendanceStatus: setAttendanceStatus,
+    loadFRL: loadFRL, frlMarkGuard: frlMarkGuard,
     getSwaps: getSwaps, recordSwap: recordSwap, undoSwap: undoSwap,
     getExtras: getExtras, recordExtraDay: recordExtraDay,
     getAbsences: getAbsences, recordAbsence: recordAbsence, clearAbsence: clearAbsence,
