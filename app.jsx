@@ -14531,6 +14531,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           ]);
           const bGrid = (att && att.grid) || {};
           const bReview = (att && att.reviewedWarnings) || {};
+          // A Total Reset (mirrorSuppressed) hides the kiosk / Fresha signals on
+          // the grid, so the per-cell ⚠ logic ignores them too — mirror that here
+          // or this branch's roll-up over-counts after a reset.
+          const bMirror = !!(att && att.mirrorSuppressed);
           const bFW = (att && att.freshaWorked) || {};
           let bFThru = (att && att.freshaCoverage && att.freshaCoverage.through) || null;
           // Same fallback as the per-branch dashboard: infer the Fresha-
@@ -14578,7 +14582,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           let total = 0, reviewed = 0;
           for (const s of bStaff) {
             for (const dy of daysX) {
-              if (dy.ymd > t0YmdLocal) continue;
+              // Mirror the grid's per-cell ⚠ logic so this cross-branch roll-up
+              // matches the triangles on the attendance sheet. bStaff is techs
+              // only, so the render's role gates collapse to true here; the gates
+              // that DO matter are mirrorSuppressed (kiosk / Fresha hidden after a
+              // Total Reset) and the per-term isPastOrToday handling — future
+              // cells manually marked absent / sick / proof-pending still show a
+              // ⚠, so we no longer blanket-skip them.
+              const isPastOrToday = dy.ymd <= t0YmdLocal;
               const rawV = (bGrid[s.ec] && bGrid[s.ec][dy.d]) || null;
               const bareV = rawV ? (rawV.charAt(0) === "~" ? rawV.slice(1) : rawV) : "";
               const override = !!rawV && rawV.indexOf("~") !== 0;
@@ -14586,28 +14597,28 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const scheduleSaysWork = hint === "on" || hint === "ext";
               const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i";
               const isLate = bareV === "late";
-              const kioskAbs = ((kioskAbsentByBranch[branch] || {})[s.ec] || {})[dy.ymd] || null;
-              const checkin = ((checkInsByBranch[branch] || {})[s.ec] || {})[dy.ymd] || null;
+              const kioskAbs = (isPastOrToday && !bMirror) ? (((kioskAbsentByBranch[branch] || {})[s.ec] || {})[dy.ymd] || null) : null;
+              const checkin = (isPastOrToday && !bMirror) ? (((checkInsByBranch[branch] || {})[s.ec] || {})[dy.ymd] || null) : null;
               const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
               const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
-              const freshaWorkedCell = !!((bFW[s.ec] || {})[dy.d]);
-              const freshaCoversThisDay = !!bFThru && dy.ymd <= bFThru;
+              const freshaWorkedCell = !bMirror && !!((bFW[s.ec] || {})[dy.d]);
+              const freshaCoversThisDay = !bMirror && !!bFThru && dy.ymd <= bFThru;
               const kioskMarkedAbsent = !!kioskAbs && kioskAbs.status !== "ext" && kioskAbs.status !== "trial" && kioskAbs.status !== "swap_o" && !/^[^a-z]*(?:left|early)/i.test(kioskAbs.status || "");
               const cellShowsAbsent = kioskMarkedAbsent || (override && !!bareV && !isWorking && !isLate);
               const extDayRecorded = (override && bareV === "ext") || (!!kioskAbs && kioskAbs.status === "ext");
-              const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
               // Comprehensive mismatch detection. A cell CORRESPONDS when:
               //   (scheduled work + presence + Fresha) OR (scheduled off + no
               //   presence + no Fresha). Anything else flags a ⚠.
               const cellSaysPresent = isWorking || isLate || checkinHasIn;
               const scheduleSaysOff = hint === "off" || hint === "al" || hint === "el" || hint === "ph" || hint === "mat";
               const isExtraDayCell = bareV === "ext";
+              const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
               const presentNoApptWarn = cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
-              const workedOnOffDay = scheduleSaysOff && cellSaysPresent && !cellShowsAbsent && !isExtraDayCell;
-              const unaccountedScheduledDay = scheduleSaysWork && !cellSaysPresent && !cellShowsAbsent && !freshaWorkedCell && freshaCoversThisDay && !bareV;
-              const offButFreshaWorked = scheduleSaysOff && !cellSaysPresent && freshaWorkedCell;
+              const workedOnOffDay = scheduleSaysOff && cellSaysPresent && !cellShowsAbsent && !isExtraDayCell && isPastOrToday;
+              const unaccountedScheduledDay = scheduleSaysWork && !cellSaysPresent && !cellShowsAbsent && !freshaWorkedCell && freshaCoversThisDay && !bareV && isPastOrToday;
+              const offButFreshaWorked = scheduleSaysOff && !cellSaysPresent && freshaWorkedCell && isPastOrToday;
               const extDayNoApptWarn = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
-              const missingCheckin = !checkinHasIn && freshaWorkedCell && scheduleSaysWork;
+              const missingCheckin = !checkinHasIn && freshaWorkedCell && scheduleSaysWork && isPastOrToday;
               const proofPending = (bareV === "sick_n" || bareV === "frl");
               const trustedAbsence = (bareV === "sick" || bareV === "no") && scheduleSaysWork && kioskMarkedAbsent && !freshaWorkedCell;
               const absentNeedsReview = ((bareV === "sick" || bareV === "no") && !trustedAbsence) || bareV === "absent";
