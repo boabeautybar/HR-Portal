@@ -7962,6 +7962,7 @@ const SETTINGS_TABS = [
   { t: "alerts", l: "Alerts", cat: "Insights", icon: "🔔" },
   { t: "activity", l: "Activity Log", cat: "Insights", icon: "📜" },
   { t: "storeReports", l: "Store Reports", cat: "Insights", icon: "🏆" },
+  { t: "staffingReport", l: "Staffing & Shifts", cat: "Insights", icon: "📅" },
   { t: "kioskPins", l: "Kiosk PINs", cat: "Admin", icon: "🔑" },
   { t: "managerPins", l: "Manager PINs", cat: "Admin", icon: "🆔" },
   { t: "storeAllocation", l: "Store Allocation", cat: "Admin", icon: "🏬" },
@@ -13728,7 +13729,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", freshaTodo: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
     attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll", payrollInbox: "Payroll", leaveBalances: "Payroll", frl: "Payroll",
     leaveRequests: "Operations", calledInSick: "Operations", extraDayRequests: "Operations",
-    alerts: "Insights", activity: "Insights", storeReports: "Insights",
+    alerts: "Insights", activity: "Insights", storeReports: "Insights", staffingReport: "Insights",
     settings: "Admin", voucherAdmin: "Admin",
     bonusConfig: "Payroll"
   };
@@ -14193,6 +14194,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // admin review per branch for the active cycle. Lives at component scope
   // so it can be triggered from the dedicated Payroll Progress tab.
   const [payrollOverview, setPayrollOverview] = useState(null);   // null | { loading, ym, byBranch }
+
+  // ── Staffing & Shifts (Insights) ───────────────────────────────────
+  // Forward-looking: how many nail techs are scheduled to work on each of the
+  // next 7 days. Backward-looking: for the current pay cycle, how many tech
+  // shifts were scheduled vs actually worked (so revenue ÷ worked shifts gives
+  // a true earn-per-shift). Loaded on demand when the tab opens.
+  const [staffingData, setStaffingData] = useState(null);   // null | { loading } | { …computed }
 
   // ── Attendance / Absenteeism Reports (Payroll → Reports) ───────────
   // Cross-branch overview of who is missing the most work, who attends
@@ -15121,6 +15129,143 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     }
     return () => { cancelled = true; };
   }, [tab, staff, managers, techLoans, leaveRecs]);
+
+  // ── Staffing & Shifts loader (Insights → Staffing & Shifts) ────────
+  // Builds two views from the live tech schedules + attendance grids:
+  //   • next 7 days — how many techs are scheduled to work each day
+  //   • current pay cycle — tech shifts scheduled vs actually worked
+  // Reuses the dashboard's definitions of "working" (schedule code) and
+  // "present" (attendance status) so the numbers line up with the tiles.
+  useEffect(() => {
+    if (tab !== "staffingReport") return;
+    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
+    let cancelled = false;
+    setStaffingData({ loading: true });
+    const pad = (n) => String(n).padStart(2, "0");
+    const ymdOf = (dt) => dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate());
+    // END-month ym (tech-schedule convention) for the cycle a date sits in.
+    const schedYmOf = (dt) => { let y = dt.getFullYear(), m = dt.getMonth() + 1; if (dt.getDate() > 24) { m += 1; if (m > 12) { m = 1; y += 1; } } return y + "-" + pad(m); };
+    // START-month ym (attendance convention) for the same cycle.
+    const attYmOf = (dt) => { let y = dt.getFullYear(), m = dt.getMonth() + 1; if (dt.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y -= 1; } } return y + "-" + pad(m); };
+    const isWorking = (v) => v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E";
+    const PRESENT = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1, swap_o: 0 };
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const todayYmd = ymdOf(today);
+    const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    // Next 7 days (today + 6).
+    const next7Dates = [];
+    for (let i = 0; i < 7; i++) { const d = new Date(today); d.setDate(d.getDate() + i); next7Dates.push(d); }
+    // Current pay cycle (the one containing today) — END-month ym for the grid,
+    // its periodDays gives every calendar day in the cycle.
+    const cycSchedYm = schedYmOf(today);
+    const cycAttYm = attYmOf(today);
+    const cycleDays = window.BOA_DB.periodDays(cycSchedYm);   // [{ d, monthIdx, year, dow }]
+    // All schedule cycles we must load (current cycle + any the next 7 touch).
+    const schedYms = Array.from(new Set([cycSchedYm, ...next7Dates.map(schedYmOf)]));
+    // All attendance cycles for the "worked" tally (current cycle + any the
+    // next-7 worked column touches — only today contributes a worked value,
+    // but a 7-day window can straddle the 25th).
+    const attYms = Array.from(new Set([cycAttYm, ...next7Dates.filter(d => ymdOf(d) <= todayYmd).map(attYmOf)]));
+    const scoped = SALONS.filter(sl => scopedSalonNames.has(sl.name));
+    const safe = (p) => (p && p.catch ? p.catch(() => null) : Promise.resolve(null));
+    // Re-key a grid by upper-cased EC so lookups match enriched ECs regardless
+    // of how the saved grid happened to case them.
+    const normGrid = (g) => { const o = {}; for (const k in (g || {})) o[String(k).toUpperCase().trim()] = g[k]; return o; };
+    Promise.all(scoped.map(async (sl) => {
+      const schedByYm = {}, attByYm = {};
+      await Promise.all([
+        ...schedYms.map(async (ym) => { const r = await safe(window.BOA_DB.loadSchedule(sl.name, ym, false)); schedByYm[ym] = normGrid(r && r.grid); }),
+        ...attYms.map(async (ym) => { const r = await safe(window.BOA_DB.loadAttendance(sl.name, ym)); attByYm[ym] = normGrid(r && r.grid); })
+      ]);
+      return { name: sl.name, schedByYm, attByYm };
+    })).then((branchData) => {
+      if (cancelled) return;
+      // Active techs per branch (by EC) — exclude maternity / unpaid-legal /
+      // off-boarded. Start/leave dates are checked per-day below so a tech is
+      // only counted on days they're actually employed.
+      const techsByBranch = {};
+      for (const s of (enriched || [])) {
+        if (!s || !s.ec || !s.branch) continue;
+        if (s.onMat || s.onUnpaidLegal || s.offboarded) continue;
+        if (!scopedSalonNames.has(s.branch)) continue;
+        (techsByBranch[s.branch] = techsByBranch[s.branch] || []).push({
+          ec: String(s.ec).toUpperCase().trim(), name: s.name || s.ec,
+          startDate: s.startDate || null, leftDate: s.leftDate || null
+        });
+      }
+      // Leave (annual / emergency) coverage by EC → quick per-day check.
+      const leaveByEc = {};
+      (leaveRecs || []).forEach(lv => {
+        if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return;
+        (leaveByEc[String(lv.ec).toUpperCase().trim()] = leaveByEc[String(lv.ec).toUpperCase().trim()] || []).push([lv.startDate, lv.endDate]);
+      });
+      const onLeave = (ecU, ymd) => (leaveByEc[ecU] || []).some(([a, b]) => ymd >= a && ymd <= b);
+      const employedOn = (t, ymd) => (!t.startDate || ymd >= t.startDate) && (!t.leftDate || ymd <= t.leftDate);
+      // Count scheduled techs across all in-scope branches for one calendar date.
+      const scheduledFor = (dt) => {
+        const ym = schedYmOf(dt), dayNum = dt.getDate(), ymd = ymdOf(dt);
+        let n = 0;
+        for (const bd of branchData) {
+          const grid = bd.schedByYm[ym] || {};
+          for (const t of (techsByBranch[bd.name] || [])) {
+            if (!employedOn(t, ymd) || onLeave(t.ec, ymd)) continue;
+            const v = (grid[t.ec] || grid[t.ec.toLowerCase()] || {})[dayNum];
+            if (isWorking(v)) n++;
+          }
+        }
+        return n;
+      };
+      // Worked + absent tallies for a past/today date (uses attendance grid).
+      const attnFor = (dt) => {
+        const aym = attYmOf(dt), dayNum = dt.getDate(), ymd = ymdOf(dt);
+        let worked = 0, absent = 0;
+        for (const bd of branchData) {
+          const grid = bd.attByYm[aym] || {};
+          for (const t of (techsByBranch[bd.name] || [])) {
+            if (!employedOn(t, ymd) || onLeave(t.ec, ymd)) continue;
+            let st = (grid[t.ec] || grid[t.ec.toLowerCase()] || {})[dayNum];
+            if (st && st.charAt(0) === "~") st = st.slice(1);   // unconfirmed mirror still counts as worked
+            if (!st) continue;
+            if (PRESENT[st]) worked++;
+            else if (st === "absent" || st === "no" || st === "sick" || st === "sick_n" || st === "frl") absent++;
+          }
+        }
+        return { worked, absent };
+      };
+      // Next 7 days.
+      const next7 = next7Dates.map((dt) => {
+        const ymd = ymdOf(dt);
+        const scheduled = scheduledFor(dt);
+        const row = { ymd, dow: DOW[dt.getDay()], dayNum: dt.getDate(), monthShort: MON[dt.getMonth()], scheduled, isToday: ymd === todayYmd, checkedIn: null, absent: null };
+        if (ymd <= todayYmd) { const a = attnFor(dt); row.checkedIn = a.worked; row.absent = a.absent; }
+        return row;
+      });
+      // Current cycle, per day.
+      const days = cycleDays.map((cd) => {
+        const dt = new Date(cd.year, cd.monthIdx, cd.d); dt.setHours(0, 0, 0, 0);
+        const ymd = ymdOf(dt);
+        const isFuture = ymd > todayYmd;
+        const scheduled = scheduledFor(dt);
+        const worked = isFuture ? null : attnFor(dt).worked;
+        return { ymd, d: cd.d, dow: DOW[dt.getDay()], monthShort: MON[dt.getMonth()], scheduled, worked, isFuture, isToday: ymd === todayYmd };
+      });
+      const totalScheduled = days.reduce((a, r) => a + r.scheduled, 0);
+      const toDate = days.filter(r => !r.isFuture);
+      const totalScheduledToDate = toDate.reduce((a, r) => a + r.scheduled, 0);
+      const totalWorked = toDate.reduce((a, r) => a + (r.worked || 0), 0);
+      const attendanceRate = totalScheduledToDate > 0 ? Math.round((totalWorked / totalScheduledToDate) * 100) : null;
+      setStaffingData({
+        loading: false,
+        scopeLabel: _hasStoreScope ? (dashScope === "mine" ? "My stores" : dashScope === "other" ? "Other stores" : "All stores") : "All stores",
+        branchCount: scoped.length,
+        next7,
+        cycle: { ym: cycSchedYm, label: window.BOA_DB.periodLabel ? window.BOA_DB.periodLabel(cycSchedYm) : cycSchedYm, days, totalScheduled, totalScheduledToDate, totalWorked, attendanceRate }
+      });
+    }).catch((err) => { if (!cancelled) setStaffingData({ loading: false, error: (err && err.message) || String(err) }); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, staff, managers, leaveRecs, scopedSalonNames, dashScope]);
 
   // ── Upcoming-cycle schedule check ── flags branches whose tech / manager
   // schedule for the coming month hasn't been saved. Deadline is the 15th.
@@ -16956,6 +17101,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 color: { bg: "#EDE9FE", bgActive: "#DDD6FE", ink: "#5B21B6" },
                 items: [
                   { t: "alerts", l: "🔔 Alerts" },
+                  { t: "staffingReport", l: "📅 Staffing & Shifts" },
                   { t: "storeReports", l: "🏆 Store Reports" },
                   { t: "activity", l: "📜 Activity Log" }
                 ]
@@ -26655,6 +26801,116 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 );
               })()}
             </div>
+          </div>
+        );
+      })()}
+
+      {/* ── STAFFING & SHIFTS TAB (Insights) ── */}
+      {tab === "staffingReport" && (currentUser.hideCategories || []).includes("Insights") && (
+        <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 14, padding: "30px 26px", textAlign: "center", color: "#831843" }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>🔒</div>
+          <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 14, fontWeight: 700 }}>Insights are not available for your account.</div>
+        </div>
+      )}
+      {tab === "staffingReport" && !((currentUser.hideCategories || []).includes("Insights")) && (() => {
+        const sd = staffingData;
+        const card = { background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 14, padding: "20px 22px" };
+        return (
+          <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+              <div>
+                <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, fontWeight: 700, color: "#831843" }}>📅 Staffing &amp; Shifts</div>
+                <div style={{ fontSize: 13, color: "#9d6a82", marginTop: 2 }}>Techs scheduled over the next 7 days, and scheduled-vs-worked shifts for this pay cycle.</div>
+              </div>
+              {renderScopeBar && renderScopeBar({})}
+            </div>
+
+            {(!sd || sd.loading) && (
+              <div style={{ ...card, textAlign: "center", color: "#9ca3af", fontStyle: "italic", padding: "40px 22px" }}>Loading staffing data…</div>
+            )}
+            {sd && !sd.loading && sd.error && (
+              <div style={{ ...card, borderColor: "#fecaca", background: "#fef2f2", color: "#7f1d1d" }}>Couldn't load staffing data: {sd.error}</div>
+            )}
+
+            {sd && !sd.loading && !sd.error && (() => {
+              const c = sd.cycle;
+              return (
+                <>
+                  {/* ── Next 7 days ── */}
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: "#831843", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>Next 7 days &middot; nail techs scheduled to work</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 10 }}>
+                      {sd.next7.map(d => (
+                        <div key={d.ymd} style={{ ...card, padding: "14px 14px", textAlign: "center", background: d.isToday ? "#e0f2fe" : "#FFFFFF", borderColor: d.isToday ? "#7dd3fc" : "#FBCFE8" }}>
+                          <div style={{ fontSize: 11, fontWeight: 800, color: d.isToday ? "#0c4a6e" : "#9d6a82", textTransform: "uppercase", letterSpacing: "0.04em" }}>{d.isToday ? "Today" : d.dow}</div>
+                          <div style={{ fontSize: 11, color: "#9d6a82", marginBottom: 6 }}>{d.dayNum} {d.monthShort}</div>
+                          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 34, fontWeight: 800, color: d.isToday ? "#0c4a6e" : "#831843", lineHeight: 1 }}>{d.scheduled}</div>
+                          <div style={{ fontSize: 10.5, color: "#9d6a82", marginTop: 4 }}>scheduled</div>
+                          {d.checkedIn != null && (
+                            <div style={{ marginTop: 6, fontSize: 11, fontWeight: 700, color: "#166534" }}>✓ {d.checkedIn} worked{d.absent ? <span style={{ color: "#b91c1c", fontWeight: 700 }}> &middot; {d.absent} absent</span> : null}</div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* ── This pay cycle: scheduled vs worked ── */}
+                  <div style={{ ...card }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: "#831843", textTransform: "uppercase", letterSpacing: "0.05em" }}>This pay cycle &middot; shifts scheduled vs worked</div>
+                    <div style={{ fontSize: 12, color: "#9d6a82", marginTop: 2, marginBottom: 14 }}>{c.label}</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 16 }}>
+                      <div style={{ background: "#FDEEF5", borderRadius: 10, padding: "14px 16px" }}>
+                        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 30, fontWeight: 800, color: "#831843", lineHeight: 1 }}>{c.totalScheduled}</div>
+                        <div style={{ fontSize: 11.5, color: "#9d6a82", marginTop: 4 }}>shifts scheduled (whole cycle)</div>
+                      </div>
+                      <div style={{ background: "#dcfce7", borderRadius: 10, padding: "14px 16px" }}>
+                        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 30, fontWeight: 800, color: "#166534", lineHeight: 1 }}>{c.totalWorked}</div>
+                        <div style={{ fontSize: 11.5, color: "#3f6212", marginTop: 4 }}>shifts worked so far (to date)</div>
+                      </div>
+                      <div style={{ background: "#fef9c3", borderRadius: 10, padding: "14px 16px" }}>
+                        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 30, fontWeight: 800, color: "#854d0e", lineHeight: 1 }}>{c.totalScheduledToDate}</div>
+                        <div style={{ fontSize: 11.5, color: "#854d0e", marginTop: 4 }}>scheduled to date</div>
+                      </div>
+                      <div style={{ background: "#e0f2fe", borderRadius: 10, padding: "14px 16px" }}>
+                        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 30, fontWeight: 800, color: "#0c4a6e", lineHeight: 1 }}>{c.attendanceRate == null ? "—" : c.attendanceRate + "%"}</div>
+                        <div style={{ fontSize: 11.5, color: "#0c4a6e", marginTop: 4 }}>worked ÷ scheduled to date</div>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 12, color: "#6b7280", background: "#f9fafb", border: "1px solid #f3f4f6", borderRadius: 8, padding: "10px 12px", marginBottom: 16 }}>
+                      💡 <b>Revenue per shift:</b> divide this cycle's revenue by <b>{c.totalWorked}</b> shifts worked to date.
+                    </div>
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                        <thead>
+                          <tr style={{ background: "#FDEEF5", color: "#831843" }}>
+                            <th style={{ padding: "7px 10px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Day</th>
+                            <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Scheduled</th>
+                            <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Worked</th>
+                            <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Rate</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {c.days.map(r => {
+                            const rate = (!r.isFuture && r.scheduled > 0) ? Math.round((r.worked / r.scheduled) * 100) : null;
+                            return (
+                              <tr key={r.ymd} style={{ background: r.isToday ? "#e0f2fe" : "transparent" }}>
+                                <td style={{ padding: "6px 10px", borderBottom: "1px solid #FDEEF5", color: "#831843", fontWeight: r.isToday ? 800 : 500 }}>{r.dow} {r.d} {r.monthShort}{r.isToday ? " · today" : ""}</td>
+                                <td style={{ padding: "6px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: "#831843", fontWeight: 600 }}>{r.scheduled}</td>
+                                <td style={{ padding: "6px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: r.isFuture ? "#cbd5e1" : "#166534", fontWeight: 600 }}>{r.isFuture ? "—" : r.worked}</td>
+                                <td style={{ padding: "6px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: rate == null ? "#cbd5e1" : (rate >= 90 ? "#166534" : rate >= 75 ? "#854d0e" : "#b91c1c"), fontWeight: 600 }}>{rate == null ? "—" : rate + "%"}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div style={{ marginTop: 12, fontSize: 11.5, color: "#9d6a82" }}>
+                      “Scheduled” counts active nail techs rostered to work (excludes leave, maternity, and not-yet-started / departed staff). “Worked” counts techs marked present on the attendance sheet (on time, late, extra, trial). Future days show scheduled only. Covers {sd.branchCount} branch{sd.branchCount === 1 ? "" : "es"} · {sd.scopeLabel}.
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         );
       })()}
