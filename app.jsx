@@ -25553,49 +25553,58 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const reviewedMap = (attMeta && attMeta.reviewedWarnings) || {};
           for (const s of attStaff) {
             for (const dy of days) {
+              // Don't blanket-skip future days: the grid still draws a ⚠ on a
+              // future cell that's been manually marked absent / sick / proof-
+              // pending, so the mismatch terms below carry their own isPastOrToday
+              // gates (matching the render) instead.
               const isPastOrToday = dy.ymd <= t0Ymd;
-              if (!isPastOrToday) continue;        // future days never warn
               const v = getStatus(s.ec, dy.d);
               const bareV = v ? (v.charAt(0) === "~" ? v.slice(1) : v) : "";
               const hint = schedHint(s.ec, dy.d);
+              const override = hasOverride(s.ec, dy.d);
               const scheduleSaysWork = hint === "on" || hint === "ext";
+              // Wider "shouldn't be here today" set — matches the grid render's
+              // scheduleOffish (off / annual / emergency / public-holiday / mat).
+              const scheduleOffish = hint === "off" || hint === "al" || hint === "el" || hint === "ph" || hint === "mat";
               const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i";
               const isLate = bareV === "late";
-              // Kiosk audit log + check-ins are tech-only signals — managers
-              // have their own clock-in source (handled via the mgr-overlay
-              // upstream). Skip the lookups for them so we never mix tech
-              // kiosk hits into a manager warning.
-              const kioskAbs = s.role === "NT" ? _kaFor(s.ec, dy.ymd) : null;
-              const checkin = s.role === "NT" ? _ciFor(s.ec, dy.ymd) : null;
+              const isExtraDayCell = bareV === "ext";
+              // This tally MUST equal the ⚠ triangles drawn on the grid, so every
+              // term below mirrors the per-cell render verbatim — including the
+              // mirrorSuppressed gates (a Total Reset hides kiosk / Fresha signals),
+              // the s.role === "NT" gates on tech-only mismatches, and the manager
+              // mgrClockedInUnscheduled warning. Diverging here is exactly what made
+              // the "cells need review" count disagree with the visible triangles.
+              const kioskAbs = (s.role === "NT" && !mirrorSuppressed) ? _kaFor(s.ec, dy.ymd) : null;
+              const checkin = (s.role === "NT" && !mirrorSuppressed) ? _ciFor(s.ec, dy.ymd) : null;
               const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
               const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
-              const freshaWorkedCell = _freshaWorkedFor(s.ec, dy.d);
-              const freshaCoversThisDay = !!effectiveFreshaThrough && dy.ymd <= effectiveFreshaThrough;
-              const override = hasOverride(s.ec, dy.d);
+              const freshaWorkedCell = !mirrorSuppressed && _freshaWorkedFor(s.ec, dy.d);
+              const freshaCoversThisDay = !mirrorSuppressed && !!effectiveFreshaThrough && dy.ymd <= effectiveFreshaThrough;
               const kioskMarkedAbsent = !!kioskAbs && kioskAbs.status !== "ext" && kioskAbs.status !== "trial" && kioskAbs.status !== "swap_o" && !/^[^a-z]*(?:left|early)/i.test(kioskAbs.status || "");
               const cellShowsAbsent = kioskMarkedAbsent || (override && !!bareV && !isWorking && !isLate);
               const extDayRecorded = (override && bareV === "ext") || (!!kioskAbs && kioskAbs.status === "ext");
-              const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
-              // Comprehensive mismatch detection — match the payroll tally
-              // above. Cell CORRESPONDS only when scheduled-work + presence
-              // + Fresha agree, or scheduled-off + no presence + no Fresha.
               const cellSaysPresent = isWorking || isLate || checkinHasIn;
-              const scheduleSaysOff = hint === "off" || hint === "al" || hint === "el" || hint === "ph" || hint === "mat";
-              const isExtraDayCell = bareV === "ext";
-              const presentNoApptWarn = cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
-              const workedOnOffDay = scheduleSaysOff && cellSaysPresent && !cellShowsAbsent && !isExtraDayCell;
-              const unaccountedScheduledDay = scheduleSaysWork && !cellSaysPresent && !cellShowsAbsent && !freshaWorkedCell && freshaCoversThisDay && !bareV;
-              const offButFreshaWorked = scheduleSaysOff && !cellSaysPresent && freshaWorkedCell;
-              const extDayNoApptWarn = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
-              const missingCheckin = !checkinHasIn && freshaWorkedCell && scheduleSaysWork;
-              const proofPending = (bareV === "sick_n" || bareV === "frl");
+              const apptVsKioskAbsentWarn = s.role === "NT" && cellShowsAbsent && freshaWorkedCell;
+              const presentNoApptWarn = s.role === "NT" && cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
+              const workedOnOffDay = s.role === "NT" && scheduleOffish && cellSaysPresent && !cellShowsAbsent && !isExtraDayCell && isPastOrToday;
+              const unaccountedScheduledDay = s.role === "NT" && scheduleSaysWork && !cellSaysPresent && !cellShowsAbsent && !freshaWorkedCell && freshaCoversThisDay && !bareV && isPastOrToday;
+              const offButFreshaWorked = s.role === "NT" && scheduleOffish && !cellSaysPresent && freshaWorkedCell && isPastOrToday;
+              const extDayNoApptWarn = s.role === "NT" && extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
+              const missingCheckin = !checkinHasIn && freshaWorkedCell && isPastOrToday && scheduleSaysWork;
               // Sick NO note / NO SHOW only need review when something disagrees —
               // if the schedule said work + kiosk recorded the absence + Fresha
               // shows no appointment, all three sources line up and the manager
               // has nothing left to verify. Absent always needs review.
               const trustedAbsence = (bareV === "sick" || bareV === "no") && scheduleSaysWork && kioskMarkedAbsent && !freshaWorkedCell;
               const absentNeedsReview = ((bareV === "sick" || bareV === "no") && !trustedAbsence) || bareV === "absent";
-              if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending || missingCheckin || absentNeedsReview || workedOnOffDay || unaccountedScheduledDay || offButFreshaWorked) {
+              // Manager clocked in on an unscheduled day — grid flags this with a ⚠.
+              const mgrClockedInUnscheduled = s.role !== "NT" && _mgrEcToStaffId[s.ec] && _mgrCheckedIn(s.ec, dy.ymd) && hint !== "on" && hint !== "ext" && isPastOrToday && !override;
+              // Sick+note / FRL+proof cells show a ⚠ until the proof is reviewed —
+              // same as isProofStatus in the render (applies to techs AND managers).
+              const isProofStatus = bareV === "sick_n" || bareV === "frl";
+              const warning = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || missingCheckin || absentNeedsReview || workedOnOffDay || unaccountedScheduledDay || offButFreshaWorked || mgrClockedInUnscheduled;
+              if (isProofStatus || warning) {
                 total++;
                 const review = (reviewedMap[s.ec] || {})[dy.d];
                 if (review && review.valueAtReview === (v || "")) reviewed++;
