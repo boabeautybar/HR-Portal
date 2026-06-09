@@ -13838,6 +13838,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // defined later, so it can't go in a dependency array without a TDZ error.
   const [clockinVer, setClockinVer] = useState(0);
   const [checkinFilterBranch, setCheckinFilterBranch] = useState("All");
+  // Hide rows for techs who weren't scheduled to work anyway (off / leave /
+  // maternity / public holiday) — they stay in the data (the attendance sheet
+  // reads from here), just decluttered from this view. On by default.
+  const [checkinHideOff, setCheckinHideOff] = useState(true);
+  // The per-branch "fetched" diagnostics panel is collapsed by default — useful
+  // for debugging a missing branch, but noise day to day.
+  const [checkinShowDiag, setCheckinShowDiag] = useState(false);
   const [checkinDay, setCheckinDay] = useState(() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); });   // viewer day (one day at a time)
   const [proofModal, setProofModal] = useState(null); // { loading, dataUrl, name, ymd, status }
 
@@ -31006,9 +31013,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             if (ba !== bb) return ba.localeCompare(bb);
             return String(b.ts || "").localeCompare(String(a.ts || ""));
           });
+          // Hide "not scheduled to work" rows from the view when the toggle is on.
+          // Only applies to attendance-status rows; actual clock-in (in/out) rows
+          // always stay. Records are NOT deleted — just filtered visually.
+          const NONWORK = { off: 1, swap_o: 1, al: 1, el: 1, ph: 1, mat: 1, term: 1, unpaid: 1 };
+          const _isNonWork = (r) => {
+            if (r.type !== "att") return false;
+            const s = r.status ? (r.status.charAt(0) === "~" ? r.status.slice(1) : r.status) : "";
+            return !!NONWORK[s];
+          };
+          const _hiddenCount = checkinHideOff ? groupedRows.filter(_isNonWork).length : 0;
+          const visibleRows = checkinHideOff ? groupedRows.filter(r => !_isNonWork(r)) : groupedRows;
           const _countByBranch = {};
           const _signedOffByBranch = {};
-          groupedRows.forEach(r => { const b = _branchOf(r); _countByBranch[b] = (_countByBranch[b] || 0) + 1; if (r.signedOff) _signedOffByBranch[b] = true; });
+          visibleRows.forEach(r => { const b = _branchOf(r); _countByBranch[b] = (_countByBranch[b] || 0) + 1; if (r.signedOff) _signedOffByBranch[b] = true; });
 
           return (
             <div style={{ padding: "0 24px" }}>
@@ -31053,12 +31071,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: "0.03em", alignSelf: "flex-end" }}>
                   ➕ Add check-in
                 </button>
-                <div style={{ fontSize: 12, color: "#831843", textAlign: "right" }}><div style={{ fontWeight: 700 }}>{dayLabel(checkinDay)}</div><strong>{filtered.length}</strong> record{filtered.length !== 1 ? "s" : ""}</div>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#831843", fontWeight: 600, cursor: "pointer", alignSelf: "flex-end", userSelect: "none" }} title="Hide techs who weren't scheduled to work (off / annual leave / maternity / public holiday). The records are kept — this only changes what's shown.">
+                  <input type="checkbox" checked={checkinHideOff} onChange={e => setCheckinHideOff(e.target.checked)} style={{ width: 15, height: 15, accentColor: "#BE185D", cursor: "pointer" }} />
+                  Hide off / leave
+                </label>
+                <div style={{ fontSize: 12, color: "#831843", textAlign: "right" }}><div style={{ fontWeight: 700 }}>{dayLabel(checkinDay)}</div><strong>{visibleRows.length}</strong> record{visibleRows.length !== 1 ? "s" : ""}{_hiddenCount > 0 ? <span style={{ color: "#9d6a82", fontWeight: 500 }}> · {_hiddenCount} hidden</span> : null}</div>
               </div>
 
               {/* ── Diagnostics: per-branch counts of rows actually fetched from Supabase ── */}
               {/* Independent of the viewer's branch/range filters. If a branch is missing
-                  here, the records never reached the clockins table for the load window. */}
+                  here, the records never reached the clockins table for the load window.
+                  Collapsed by default — it's a debugging aid, not day-to-day info. */}
+              <div style={{ marginBottom: checkinShowDiag ? 8 : 14 }}>
+                <button onClick={() => setCheckinShowDiag(v => !v)} style={{ background: "transparent", border: "none", color: "#9d6a82", fontSize: 11.5, fontWeight: 600, cursor: "pointer", padding: 0 }}>
+                  {checkinShowDiag ? "▾ Hide fetch diagnostics" : "▸ Fetch diagnostics"}
+                </button>
+              </div>
+              {checkinShowDiag && (
               <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "10px 14px", border: "1px solid #FBCFE8", marginBottom: 14, fontSize: 12 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, gap: 10 }}>
                   <div style={{ fontWeight: 700, color: "#831843" }}>
@@ -31094,6 +31123,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   )}
                 </div>
               </div>
+              )}
 
               <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 13, overflow: "hidden" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
@@ -31105,13 +31135,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {groupedRows.length === 0 && (
-                      <tr><td colSpan={5} style={{ textAlign: "center", padding: 30, color: "#9ca3af", fontStyle: "italic" }}>No check-ins on this day.</td></tr>
+                    {visibleRows.length === 0 && (
+                      <tr><td colSpan={5} style={{ textAlign: "center", padding: 30, color: "#9ca3af", fontStyle: "italic" }}>{groupedRows.length === 0 ? "No check-ins on this day." : "All " + groupedRows.length + " record" + (groupedRows.length === 1 ? "" : "s") + " on this day are off / leave / maternity — toggle “Show off / leave” to see them."}</td></tr>
                     )}
                     {(() => {
                       const rowsOut = [];
                       let _lastBranch = null;
-                      groupedRows.forEach(r => {
+                      visibleRows.forEach(r => {
                       const _b = _branchOf(r);
                       if (_b !== _lastBranch) {
                         _lastBranch = _b;
