@@ -24256,7 +24256,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (sv === "O" || sv === "R") return "off";
           if (sv === "L") return "al";
           if (sv === "ML") return "mat";
-          if (sv === "X") return "term";
+          if (sv === "X") {
+            // "X" is overloaded: the off-board cascade fills it for leavers, but
+            // it's also the pre-start / not-yet-on-payroll marker for new and
+            // trial techs. Only call it TERMINATED when they actually left;
+            // otherwise it's pre-start — so a trial tech's days (and any day
+            // before a starter's start date) don't read as TERMINATED on the
+            // schedule strip / hover tooltip.
+            const _xdo = days.find(x => x.d === d);
+            if (_xdo && isPostLeftDate(ec, _xdo.ymd)) return "term";
+            return "prestart";
+          }
           if (sv === "E") return "ext";
           if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL") return "on";
           // A manager clock-in on a day they were NOT scheduled to work is
@@ -24324,7 +24334,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (sv === "O" || sv === "R") return "off";
           if (sv === "L") return "al";
           if (sv === "ML") return "mat";
-          if (sv === "X") return "term";
+          if (sv === "X") {
+            // "X" is overloaded: the off-board cascade fills it for leavers, but
+            // it's also the pre-start / not-yet-on-payroll marker for new and
+            // trial techs. Only call it TERMINATED when they actually left;
+            // otherwise it's pre-start — so a trial tech's days (and any day
+            // before a starter's start date) don't read as TERMINATED on the
+            // schedule strip / hover tooltip.
+            const _xdo = days.find(x => x.d === d);
+            if (_xdo && isPostLeftDate(ec, _xdo.ymd)) return "term";
+            return "prestart";
+          }
           if (sv === "E") return "ext";
           // Manager loaned to another store — she IS scheduled to work, just
           // not at this branch. Render the schedule banner green so the row
