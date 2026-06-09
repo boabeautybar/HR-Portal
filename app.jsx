@@ -33390,7 +33390,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           </td>
                           <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.yoco_link)}</td>
                           <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.cash)}</td>
-                          <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.card_tips)}</td>
+                          <td style={{ ...cellNum, ...strikeIfArchived }}>
+                            {(() => {
+                              // Flag a tip that's almost certainly a typo (e.g. R28 000) so it's
+                              // caught in review: more than half the day's takings and over R1 000.
+                              const _tip = Number(r.card_tips) || 0;
+                              const _turn = Number(r.total) || 0;
+                              const _suspect = !r.archived_at && _tip > 1000 && _tip > _turn * 0.5;
+                              return _suspect
+                                ? <span style={{ color: "#b91c1c", fontWeight: 800 }} title={"⚠ This tip (" + _fmtMoney(_tip) + ") is more than half the day's takings (" + _fmtMoney(_turn) + ") — likely a typo. Reopen the day to fix it."}>⚠ {_fmtMoney(_tip)}</span>
+                                : _fmtMoney(_tip);
+                            })()}
+                          </td>
                           <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.vouchers)}</td>
                           <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.gift_card)}</td>
                           <td style={{ ...cellNum, ...strikeIfArchived }} title={r.manual_discount_reason || ""}>{_fmtMoney(r.manual_discounts)}{r.manual_discount_reason ? " ⓘ" : ""}</td>
