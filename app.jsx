@@ -24055,8 +24055,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const _onMatDay = (ec, ymd) => {
           if (!onMatEcs.has(ec)) return false;
           const ms = matStartByEc[String(ec).trim()];
-          if (!ms) return true;            // no start date on file → whole row is maternity
-          return !ymd || ymd >= ms;        // otherwise only days on/after the start date
+          if (ms) return !ymd || ymd >= ms;   // start date known → only on/after it
+          // No start date on file. Don't blanket-paint maternity over days the
+          // schedule shows as actual WORKED shifts — she worked before going on
+          // leave (the Scheduling tab shows those), and painting them 'mat'
+          // overwrote real work and tripped 'worked on an off day' warnings.
+          // Off / leave / blank days still read as maternity, so legacy
+          // 'L'-coded maternity rows keep rendering as Maternity.
+          const d = ymd ? (days.find(x => x.ymd === ymd) || {}).d : null;
+          const sv = (d != null && attSched[ec]) ? attSched[ec][d] : null;
+          const worked = sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL" || sv === "E";
+          return !worked;
         };
         // ROM-managed absence reasons. Build an ec → ymd → status code
         // lookup so getStatus() can overlay a manager's day with the ROM's
