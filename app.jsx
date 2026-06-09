@@ -15181,12 +15181,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         if (!scopedSalonNames.has(s.branch)) continue;
         (techsByBranch[s.branch] = techsByBranch[s.branch] || []).push({
           ec: String(s.ec).toUpperCase().trim(), name: s.name || s.ec, branch: s.branch,
-          leftDate: s.leftDate || null,
-          // Transfer fields so a mid-cycle transfer is handled exactly like the
-          // dashboard: once the transfer date has passed, the tech's stale work
-          // cells at the OLD branch are ignored (the dashboard drops them too).
-          transferring: !!s.transferring, transferTo: s.transferTo || null,
-          transferDate: s.transferDate ? String(s.transferDate).replace(/\//g, "-") : null
+          leftDate: s.leftDate || null
         });
       }
       // Leave (annual / emergency) coverage by EC → quick per-day check.
@@ -15196,12 +15191,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         (leaveByEc[String(lv.ec).toUpperCase().trim()] = leaveByEc[String(lv.ec).toUpperCase().trim()] || []).push([lv.startDate, lv.endDate]);
       });
       const onLeave = (ecU, ymd) => (leaveByEc[ecU] || []).some(([a, b]) => ymd >= a && ymd <= b);
-      // Active on a date (mirrors the dashboard loader's active-tech filter):
-      // departed once past leftDate; transferred away once the transfer date
-      // passes (the dashboard ignores the old branch's stale cells then too).
-      const activeOn = (t, ymd) =>
-        (!t.leftDate || ymd <= t.leftDate) &&
-        !(t.transferring && t.transferTo && t.transferDate && ymd >= t.transferDate && t.transferTo !== t.branch);
+      // Active on a date: only excluded once past their leftDate. We do NOT
+      // drop mid-transfer techs here — they're still working their roster, and
+      // dropping them is exactly what was under-counting the dashboard.
+      const activeOn = (t, ymd) => (!t.leftDate || ymd <= t.leftDate);
       // Count scheduled techs across all in-scope branches for one calendar date.
       // techsByBranch holds one entry per tech (at their home branch), so this is
       // already deduped to one count per person.
@@ -16165,7 +16158,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     for (const lv of (leaveRecs || [])) {
       if (lv && lv.ec && lv.startDate && lv.endDate && _todayYmd >= lv.startDate && _todayYmd <= lv.endDate) onLeaveEcs.add(lv.ec.trim());
     }
-    const branchSet = new Set(Object.keys(dtbb));
     const isOffToday = (er, ecKey) =>
       (!!(er && er.leftDate && _todayYmd > er.leftDate)) ||
       (!!(er && (er.onMat || er.onUnpaidLegal))) ||
@@ -16176,7 +16168,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       return er.branch || null;
     };
     const rank = { in: 2, absent: 1, pending: 0 };
-    const byEc = {};
+    // Collect every per-branch entry for each EC, then pick exactly ONE.
+    // Prefer the entry at the tech's effective (post-transfer) branch so a
+    // settled move counts once at the new store and the stale old-branch cell
+    // is ignored. BUT if there's no entry at the effective branch — a transfer
+    // date has passed yet the move hasn't settled, so the tech is still really
+    // working their old branch's roster — keep the best entry we DO have rather
+    // than dropping the person. Unconditionally skipping the old-branch entry
+    // was making mid-transfer techs vanish from the count entirely (≈11 techs:
+    // 220 scheduled read as 209, 210 worked as 199).
+    const candByEc = {};
     for (const b in dtbb) {
       if (_hasStoreScope && !scopedSalonNames.has(b)) continue;
       const tb = (dtbb[b] || {}).techByEc || {};
@@ -16185,12 +16186,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const er = enrichedByEc[ecKey];
         if (!er) continue;
         if (isOffToday(er, ecKey)) continue;
-        const eff = effBranchOf(er);
-        if (eff && branchSet.has(eff) && b !== eff) continue;
-        const status = tb[ec];
-        const cur = byEc[ec];
-        if (!cur || rank[status] > rank[cur.status]) byEc[ec] = { status, branch: eff || b };
+        (candByEc[ec] = candByEc[ec] || []).push({ b, status: tb[ec], eff: effBranchOf(er) });
       }
+    }
+    const byEc = {};
+    for (const ec in candByEc) {
+      const cands = candByEc[ec];
+      const eff = cands[0].eff;   // same staff record → same effective branch
+      // Use the effective-branch entry if it exists; otherwise the best-ranked
+      // entry anywhere (real check-in > absent > pending) so nobody is dropped.
+      let chosen = eff ? cands.find(c => c.b === eff) : null;
+      if (!chosen) chosen = cands.reduce((best, c) => (rank[c.status] > rank[best.status] ? c : best), cands[0]);
+      byEc[ec] = { status: chosen.status, branch: eff || chosen.b };
     }
     const a = { scheduled: 0, checkedIn: 0, notCheckedIn: 0, absent: 0, notCheckedInList: [], byBranch: {} };
     for (const ec in byEc) {
