@@ -15189,7 +15189,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     // START-month ym (attendance convention) for the same cycle.
     const attYmOf = (dt) => { let y = dt.getFullYear(), m = dt.getMonth() + 1; if (dt.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y -= 1; } } return y + "-" + pad(m); };
     const isWorking = (v) => v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E";
-    const PRESENT = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1, swap_o: 0 };
+    const PRESENT = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1 };
+    const ABSENTM = { absent: 1, no: 1, sick: 1, sick_n: 1, frl: 1 };
+    // Attendance statuses that override the roster to "not working today".
+    const OFF_OVERRIDE = { off: 1, swap_o: 1, al: 1, el: 1, ph: 1, mat: 1, term: 1, unpaid: 1 };
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const todayYmd = ymdOf(today);
     const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -15233,25 +15236,39 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       // Total cash-up takings per day across in-scope branches. Mirrors the
       // Cash Ups tab: sum the generated `total` (turnover, excludes tips) of
       // non-archived rows (reopened/superseded rows carry archived_at).
+      // Per-cashup turnover. Prefer the generated `total` column, but fall back
+      // to summing the components (some rows don't carry a populated `total`),
+      // matching the Cash Ups tab's own live-total formula (excludes tips).
+      const cashTotalOf = (r) => {
+        const t = Number(r.total);
+        if (Number.isFinite(t) && t > 0) return t;
+        return (Number(r.yoco) || 0) + (Number(r.yoco_link) || 0) + (Number(r.cash) || 0)
+          + (Number(r.vouchers) || 0) + (Number(r.gift_card) || 0) - (Number(r.manual_discounts) || 0);
+      };
       const cashByYmd = {};
       (cashRows || []).forEach(r => {
         if (!r || !r.date || r.archived_at) return;
         if (!scopedSalonNames.has(r.branch)) return;
-        cashByYmd[r.date] = (cashByYmd[r.date] || 0) + (Number(r.total) || 0);
+        const key = String(r.date).slice(0, 10);   // normalise to YYYY-MM-DD
+        cashByYmd[key] = (cashByYmd[key] || 0) + cashTotalOf(r);
       });
-      // Active techs per branch (by EC) — exclude maternity / unpaid-legal /
-      // off-boarded. Start/leave dates are checked per-day below so a tech is
-      // only counted on days they're actually employed.
-      const techsByBranch = {};
+      // One entry per active tech (exclude maternity / unpaid-legal / off-boarded).
+      // Keep transfer info so each tech is evaluated at their EFFECTIVE branch
+      // per day — once a transfer date passes they're read at the destination's
+      // roster + attendance, not the stale cells left in the old branch's grid.
+      const branchMap = {}; branchData.forEach(bd => { branchMap[bd.name] = bd; });
+      const allTechs = [];
       for (const s of (enriched || [])) {
         if (!s || !s.ec || !s.branch) continue;
         if (s.onMat || s.onUnpaidLegal || s.offboarded) continue;
-        if (!scopedSalonNames.has(s.branch)) continue;
-        (techsByBranch[s.branch] = techsByBranch[s.branch] || []).push({
+        allTechs.push({
           ec: String(s.ec).toUpperCase().trim(), name: s.name || s.ec, branch: s.branch,
-          leftDate: s.leftDate || null
+          leftDate: s.leftDate || null,
+          transferring: !!s.transferring, transferTo: s.transferTo || null,
+          transferDate: s.transferDate ? String(s.transferDate).replace(/\//g, "-") : null
         });
       }
+      const effBranchFor = (t, ymd) => (t.transferring && t.transferTo && t.transferDate && ymd >= t.transferDate) ? t.transferTo : t.branch;
       // Leave (annual / emergency) coverage by EC → quick per-day check.
       const leaveByEc = {};
       (leaveRecs || []).forEach(lv => {
@@ -15259,73 +15276,68 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         (leaveByEc[String(lv.ec).toUpperCase().trim()] = leaveByEc[String(lv.ec).toUpperCase().trim()] || []).push([lv.startDate, lv.endDate]);
       });
       const onLeave = (ecU, ymd) => (leaveByEc[ecU] || []).some(([a, b]) => ymd >= a && ymd <= b);
-      // Active on a date: only excluded once past their leftDate. We do NOT
-      // drop mid-transfer techs here — they're still working their roster, and
-      // dropping them is exactly what was under-counting the dashboard.
       const activeOn = (t, ymd) => (!t.leftDate || ymd <= t.leftDate);
-      // Count scheduled techs across all in-scope branches for one calendar date.
-      // techsByBranch holds one entry per tech (at their home branch), so this is
-      // already deduped to one count per person.
-      const scheduledFor = (dt) => {
-        const ym = schedYmOf(dt), dayNum = dt.getDate(), ymd = ymdOf(dt);
-        let n = 0;
-        for (const bd of branchData) {
-          const grid = bd.schedByYm[ym] || {};
-          for (const t of (techsByBranch[bd.name] || [])) {
-            if (!activeOn(t, ymd) || onLeave(t.ec, ymd)) continue;
-            const v = (grid[t.ec] || {})[dayNum];
-            if (isWorking(v)) n++;
+      // Per-day tally over all in-scope techs (deduped one-per-person). Counts:
+      //   scheduled        — rostered to work (work cell, not overridden OFF)
+      //   worked           — actually present (incl. extra/cover shifts)
+      //   presentScheduled — rostered AND present (for a ≤100% attendance rate)
+      //   absent           — rostered but marked sick / no-show / absent
+      const dayStats = (dt, withAttn) => {
+        const sym = schedYmOf(dt), aym = attYmOf(dt), dayNum = dt.getDate(), ymd = ymdOf(dt);
+        let scheduled = 0, worked = 0, presentScheduled = 0, absent = 0;
+        for (const t of allTechs) {
+          if (!activeOn(t, ymd) || onLeave(t.ec, ymd)) continue;
+          const eb = effBranchFor(t, ymd);
+          if (!scopedSalonNames.has(eb)) continue;
+          const bd = branchMap[eb];
+          if (!bd) continue;
+          let st = ((bd.attByYm[aym] || {})[t.ec] || {})[dayNum];
+          if (st && st.charAt(0) === "~") st = st.slice(1);
+          const off = st && OFF_OVERRIDE[st];
+          const rostered = isWorking(((bd.schedByYm[sym] || {})[t.ec] || {})[dayNum]) && !off;
+          if (rostered) scheduled++;
+          if (withAttn && st) {
+            if (PRESENT[st]) { worked++; if (rostered) presentScheduled++; }
+            else if (ABSENTM[st] && rostered) absent++;
           }
         }
-        return n;
-      };
-      // Worked + absent tallies for a past/today date (uses attendance grid).
-      const attnFor = (dt) => {
-        const aym = attYmOf(dt), dayNum = dt.getDate(), ymd = ymdOf(dt);
-        let worked = 0, absent = 0;
-        for (const bd of branchData) {
-          const grid = bd.attByYm[aym] || {};
-          for (const t of (techsByBranch[bd.name] || [])) {
-            if (!activeOn(t, ymd) || onLeave(t.ec, ymd)) continue;
-            let st = (grid[t.ec] || {})[dayNum];
-            if (st && st.charAt(0) === "~") st = st.slice(1);   // unconfirmed mirror still counts as worked
-            if (!st) continue;
-            if (PRESENT[st]) worked++;
-            else if (st === "absent" || st === "no" || st === "sick" || st === "sick_n" || st === "frl") absent++;
-          }
-        }
-        return { worked, absent };
+        return { scheduled, worked, presentScheduled, absent };
       };
       // Next 7 days.
       const next7 = next7Dates.map((dt) => {
         const ymd = ymdOf(dt);
-        const scheduled = scheduledFor(dt);
-        const row = { ymd, dow: DOW[dt.getDay()], dayNum: dt.getDate(), monthShort: MON[dt.getMonth()], scheduled, isToday: ymd === todayYmd, checkedIn: null, absent: null };
-        if (ymd <= todayYmd) { const a = attnFor(dt); row.checkedIn = a.worked; row.absent = a.absent; }
-        return row;
+        const past = ymd <= todayYmd;
+        const s = dayStats(dt, past);
+        return { ymd, dow: DOW[dt.getDay()], dayNum: dt.getDate(), monthShort: MON[dt.getMonth()], scheduled: s.scheduled, isToday: ymd === todayYmd, checkedIn: past ? s.worked : null, absent: past ? s.absent : null };
       });
       // Current cycle, per day.
       const days = cycleDays.map((cd) => {
         const dt = new Date(cd.year, cd.monthIdx, cd.d); dt.setHours(0, 0, 0, 0);
         const ymd = ymdOf(dt);
         const isFuture = ymd > todayYmd;
-        const scheduled = scheduledFor(dt);
-        const worked = isFuture ? null : attnFor(dt).worked;
-        const cashTotal = isFuture ? null : (cashByYmd[ymd] || 0);
-        return { ymd, d: cd.d, dow: DOW[dt.getDay()], monthShort: MON[dt.getMonth()], scheduled, worked, cashTotal, isFuture, isToday: ymd === todayYmd };
+        const s = dayStats(dt, !isFuture);
+        return {
+          ymd, d: cd.d, dow: DOW[dt.getDay()], monthShort: MON[dt.getMonth()],
+          scheduled: s.scheduled,
+          worked: isFuture ? null : s.worked,
+          presentScheduled: isFuture ? null : s.presentScheduled,
+          cashTotal: isFuture ? null : (cashByYmd[ymd] || 0),
+          isFuture, isToday: ymd === todayYmd
+        };
       });
       const totalScheduled = days.reduce((a, r) => a + r.scheduled, 0);
       const toDate = days.filter(r => !r.isFuture);
       const totalScheduledToDate = toDate.reduce((a, r) => a + r.scheduled, 0);
       const totalWorked = toDate.reduce((a, r) => a + (r.worked || 0), 0);
+      const totalPresentScheduled = toDate.reduce((a, r) => a + (r.presentScheduled || 0), 0);
       const totalCash = toDate.reduce((a, r) => a + (r.cashTotal || 0), 0);
-      const attendanceRate = totalScheduledToDate > 0 ? Math.round((totalWorked / totalScheduledToDate) * 100) : null;
+      const attendanceRate = totalScheduledToDate > 0 ? Math.round((totalPresentScheduled / totalScheduledToDate) * 100) : null;
       setStaffingData({
         loading: false,
         scopeLabel: _hasStoreScope ? (dashScope === "mine" ? "My stores" : dashScope === "other" ? "Other stores" : "All stores") : "All stores",
         branchCount: scoped.length,
         next7,
-        cycle: { ym: cycSchedYm, label: window.BOA_DB.periodLabel ? window.BOA_DB.periodLabel(cycSchedYm) : cycSchedYm, days, totalScheduled, totalScheduledToDate, totalWorked, totalCash, attendanceRate }
+        cycle: { ym: cycSchedYm, label: window.BOA_DB.periodLabel ? window.BOA_DB.periodLabel(cycSchedYm) : cycSchedYm, days, totalScheduled, totalScheduledToDate, totalWorked, totalPresentScheduled, totalCash, attendanceRate }
       });
     }).catch((err) => { if (!cancelled) setStaffingData({ loading: false, error: (err && err.message) || String(err) }); });
     return () => { cancelled = true; };
@@ -26919,15 +26931,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 ? { ...d, scheduled: tt.scheduled, checkedIn: tt.checkedIn, absent: tt.absent }
                 : d);
               const days = sd.cycle.days.map(r => (r.isToday && tt)
-                ? { ...r, scheduled: tt.scheduled, worked: tt.checkedIn }
+                ? { ...r, scheduled: tt.scheduled, worked: tt.checkedIn, presentScheduled: tt.checkedIn }
                 : r);
               const toDate = days.filter(r => !r.isFuture);
               const totalScheduled = days.reduce((a, r) => a + r.scheduled, 0);
               const totalScheduledToDate = toDate.reduce((a, r) => a + r.scheduled, 0);
               const totalWorked = toDate.reduce((a, r) => a + (r.worked || 0), 0);
+              const totalPresentScheduled = toDate.reduce((a, r) => a + (r.presentScheduled || 0), 0);
               const totalCash = toDate.reduce((a, r) => a + (r.cashTotal || 0), 0);
-              const attendanceRate = totalScheduledToDate > 0 ? Math.round((totalWorked / totalScheduledToDate) * 100) : null;
-              const c = { ...sd.cycle, days, totalScheduled, totalScheduledToDate, totalWorked, totalCash, attendanceRate };
+              const attendanceRate = totalScheduledToDate > 0 ? Math.round((totalPresentScheduled / totalScheduledToDate) * 100) : null;
+              const c = { ...sd.cycle, days, totalScheduled, totalScheduledToDate, totalWorked, totalPresentScheduled, totalCash, attendanceRate };
               // Whole rand, no cents — cash-up figures are large.
               const fmtR = (n) => "R" + Math.round(Number(n) || 0).toLocaleString("en-ZA");
               return (
@@ -26969,7 +26982,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       </div>
                       <div style={{ background: "#e0f2fe", borderRadius: 10, padding: "14px 16px" }}>
                         <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 30, fontWeight: 800, color: "#0c4a6e", lineHeight: 1 }}>{c.attendanceRate == null ? "—" : c.attendanceRate + "%"}</div>
-                        <div style={{ fontSize: 11.5, color: "#0c4a6e", marginTop: 4 }}>worked ÷ scheduled to date</div>
+                        <div style={{ fontSize: 11.5, color: "#0c4a6e", marginTop: 4 }}>attendance (rostered who worked)</div>
                       </div>
                       <div style={{ background: "#ede9fe", borderRadius: 10, padding: "14px 16px" }}>
                         <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 30, fontWeight: 800, color: "#5b21b6", lineHeight: 1 }}>{fmtR(c.totalCash)}</div>
@@ -26990,14 +27003,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             <th style={{ padding: "7px 10px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Day</th>
                             <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Scheduled</th>
                             <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Worked</th>
-                            <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Rate</th>
+                            <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }} title="Of the techs rostered, how many actually worked">Attendance</th>
                             <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Cash-ups</th>
                             <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Avg / tech</th>
                           </tr>
                         </thead>
                         <tbody>
                           {c.days.map(r => {
-                            const rate = (!r.isFuture && r.scheduled > 0) ? Math.round((r.worked / r.scheduled) * 100) : null;
+                            const rate = (!r.isFuture && r.scheduled > 0) ? Math.round(((r.presentScheduled || 0) / r.scheduled) * 100) : null;
                             const avgPerTech = (!r.isFuture && r.worked > 0) ? (r.cashTotal / r.worked) : null;
                             return (
                               <tr key={r.ymd} style={{ background: r.isToday ? "#e0f2fe" : "transparent" }}>
@@ -27014,7 +27027,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       </table>
                     </div>
                     <div style={{ marginTop: 12, fontSize: 11.5, color: "#9d6a82" }}>
-                      “Scheduled” counts active nail techs rostered to work (excludes leave, maternity, transferred-away and departed staff). “Worked” counts techs marked present on the attendance sheet (on time, late, extra, trial). <b>Today’s numbers mirror the Dashboard tiles exactly</b> (same kiosk sign-off + clock-in resolution); future days show scheduled only. “Cash-ups” is the day’s total takings from the Cash Ups tab (turnover, excludes tips; superseded entries ignored) summed across the in-scope branches, and “Avg / tech” splits that evenly across the techs who worked that day. Covers {sd.branchCount} branch{sd.branchCount === 1 ? "" : "es"} · {sd.scopeLabel}.
+                      “Scheduled” counts active nail techs rostered to work that day (excludes leave, maternity, off / rest days, and departed staff), read at the branch each tech actually works — so a mid-cycle transfer is counted at their new store. “Worked” counts everyone marked present (on time, late, extra, trial, swap-in), so it can exceed scheduled on days with extra/cover shifts. “Attendance” is how many of the <i>rostered</i> techs worked (capped at 100%). <b>Today’s numbers mirror the Dashboard tiles exactly.</b> “Cash-ups” is the day’s total takings from the Cash Ups tab (turnover, excludes tips; superseded entries ignored) summed across the in-scope branches, and “Avg / tech” splits that across the techs who worked that day. Covers {sd.branchCount} branch{sd.branchCount === 1 ? "" : "es"} · {sd.scopeLabel}.
                     </div>
                   </div>
                 </>
