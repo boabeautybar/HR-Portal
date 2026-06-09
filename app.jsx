@@ -13832,6 +13832,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // attendance grid can overlay check-in markers without a per-cell fetch.
   const [techClockinRows, setTechClockinRows] = useState([]);
   const [techClockinDays, setTechClockinDays] = useState(60);          // load window
+  // Bumped whenever kiosk clock-in / check-in data finishes loading. Declared
+  // here (before the Staffing report effect) so that effect can depend on it to
+  // recompute once the clock-in audit log arrives — checkInsByBranch itself is
+  // defined later, so it can't go in a dependency array without a TDZ error.
+  const [clockinVer, setClockinVer] = useState(0);
   const [checkinFilterBranch, setCheckinFilterBranch] = useState("All");
   const [checkinDay, setCheckinDay] = useState(() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); });   // viewer day (one day at a time)
   const [proofModal, setProofModal] = useState(null); // { loading, dataUrl, name, ymd, status }
@@ -15296,9 +15301,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const off = st && OFF_OVERRIDE[st];
           const rostered = isWorking(((bd.schedByYm[sym] || {})[t.ec] || {})[dayNum]) && !off;
           if (rostered) scheduled++;
-          if (withAttn && st) {
-            if (PRESENT[st]) { worked++; if (rostered) presentScheduled++; }
-            else if (ABSENTM[st] && rostered) absent++;
+          if (withAttn) {
+            // Count a kiosk clock-in as worked even when it never made it onto the
+            // saved attendance grid — historically some check-ins weren't tapped
+            // into the sheet, so the grid alone under-counts. This mirrors what
+            // the attendance sheet shows (the green ✓ comes from the same source).
+            const ci = ((checkInsByBranch[eb] || {})[t.ec] || {})[ymd];
+            const hasIn = !!(ci && ci.hasIn) && st !== "swap_o";
+            const present = (st && PRESENT[st]) || hasIn;
+            if (present) { worked++; if (rostered) presentScheduled++; }
+            else if (rostered && st && ABSENTM[st]) absent++;
           }
         }
         return { scheduled, worked, presentScheduled, absent };
@@ -15342,7 +15354,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     }).catch((err) => { if (!cancelled) setStaffingData({ loading: false, error: (err && err.message) || String(err) }); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, staff, managers, leaveRecs, scopedSalonNames, dashScope]);
+  }, [tab, staff, managers, leaveRecs, scopedSalonNames, dashScope, clockinVer]);
 
   // ── Upcoming-cycle schedule check ── flags branches whose tech / manager
   // schedule for the coming month hasn't been saved. Deadline is the 15th.
@@ -15959,14 +15971,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Attendance tab opens. The Attendance grid uses these to overlay check-in
   // markers on each cell and to flag discrepancies vs. the Fresha import.
   useEffect(() => {
-    if (tab !== "checkins" && tab !== "attendance" && tab !== "payrollProgress") return;
+    if (tab !== "checkins" && tab !== "attendance" && tab !== "payrollProgress" && tab !== "staffingReport") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     if (!window.BOA_DB.listRecentTechClockins) return; // older deploys
     let cancelled = false;
     (async () => {
       try {
         const rows = await window.BOA_DB.listRecentTechClockins(techClockinDays);
-        if (!cancelled) setTechClockinRows(rows || []);
+        if (!cancelled) { setTechClockinRows(rows || []); setClockinVer(v => v + 1); }
       } catch (e) { console.error("tech clockins load:", e); }
     })();
     return () => { cancelled = true; };
@@ -15984,14 +15996,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [reopenModal, setReopenModal] = useState(null);  // null | { branch, ymd, _saving, _err }
   const [notCheckedInModal, setNotCheckedInModal] = useState(null);  // null | [{ ec, name, branch }] — techs scheduled today who haven't checked in
   useEffect(() => {
-    if (tab !== "checkins" && tab !== "attendance" && tab !== "payrollProgress") return;
+    if (tab !== "checkins" && tab !== "attendance" && tab !== "payrollProgress" && tab !== "staffingReport") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     if (!window.BOA_DB.listRecentKioskCheckins) return; // older deploy
     let cancelled = false;
     (async () => {
       try {
         const rows = await window.BOA_DB.listRecentKioskCheckins(techClockinDays, SALONS.map(s => s.name));
-        if (!cancelled) setAttCheckinRows(rows || []);
+        if (!cancelled) { setAttCheckinRows(rows || []); setClockinVer(v => v + 1); }
       } catch (e) { console.error("kiosk check-ins load:", e); }
     })();
     return () => { cancelled = true; };
@@ -27027,7 +27039,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       </table>
                     </div>
                     <div style={{ marginTop: 12, fontSize: 11.5, color: "#9d6a82" }}>
-                      “Scheduled” counts active nail techs rostered to work that day (excludes leave, maternity, off / rest days, and departed staff), read at the branch each tech actually works — so a mid-cycle transfer is counted at their new store. “Worked” counts everyone marked present (on time, late, extra, trial, swap-in), so it can exceed scheduled on days with extra/cover shifts. “Attendance” is how many of the <i>rostered</i> techs worked (capped at 100%). <b>Today’s numbers mirror the Dashboard tiles exactly.</b> “Cash-ups” is the day’s total takings from the Cash Ups tab (turnover, excludes tips; superseded entries ignored) summed across the in-scope branches, and “Avg / tech” splits that across the techs who worked that day. Covers {sd.branchCount} branch{sd.branchCount === 1 ? "" : "es"} · {sd.scopeLabel}.
+                      “Scheduled” counts active nail techs rostered to work that day (excludes leave, maternity, off / rest days, and departed staff), read at the branch each tech actually works — so a mid-cycle transfer is counted at their new store. “Worked” counts everyone present — marked on the sheet (on time, late, extra, trial, swap-in) <i>or</i> with a kiosk clock-in for that day (even older ones that never got tapped onto the sheet) — so it can exceed scheduled on days with extra/cover shifts. “Attendance” is how many of the <i>rostered</i> techs worked (capped at 100%). <b>Today’s numbers mirror the Dashboard tiles exactly.</b> “Cash-ups” is the day’s total takings from the Cash Ups tab (turnover, excludes tips; superseded entries ignored) summed across the in-scope branches, and “Avg / tech” splits that across the techs who worked that day. Covers {sd.branchCount} branch{sd.branchCount === 1 ? "" : "es"} · {sd.scopeLabel}.
                     </div>
                   </div>
                 </>
