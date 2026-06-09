@@ -23814,12 +23814,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             _incomingByEc[s.ec] = { movedFrom: s.branch, transferDate: s.transferDate };
           }
         });
-        // Check-ins are indexed by the staff record's branch. A transferred
-        // tech's record still points at the OLD branch, so ALL their clock-ins
-        // (before AND after the move) live under it — look check-ins up there
-        // for incoming techs so their worked days show and genuine missed days
-        // can be told apart from worked-but-unstamped ones.
-        const _cinBranchFor = (ec) => (_incomingByEc[ec] && _incomingByEc[ec].movedFrom) || attBranch;
+        // An incoming transfer's check-in data is split across two branches:
+        // pre-transfer days (and any clock-in still indexed by the stale
+        // staff.branch) sit under the OLD branch (movedFrom), while post-transfer
+        // kiosk-tile check-ins are logged under the NEW branch (attBranch). The
+        // old single-branch lookup (_cinBranchFor → movedFrom) therefore missed
+        // every post-transfer day. Look up BOTH branches, preferring whichever
+        // has data for the day, so a transferred tech's worked days resolve
+        // wherever the kiosk actually recorded them. Non-transferred techs are
+        // unaffected (no _incomingByEc entry → attBranch only).
+        const _lookupAcrossTransfer = (map, ec, ymd) => {
+          const here = ((map[attBranch] || {})[ec] || {})[ymd];
+          if (here) return here;
+          const inc = _incomingByEc[ec];
+          if (inc && inc.movedFrom && inc.movedFrom !== attBranch) {
+            return ((map[inc.movedFrom] || {})[ec] || {})[ymd] || null;
+          }
+          return here || null;
+        };
+        const _ciFor = (ec, ymd) => _lookupAcrossTransfer(checkInsByBranch, ec, ymd);
+        const _kaFor = (ec, ymd) => _lookupAcrossTransfer(kioskAbsentByBranch, ec, ymd);
         // Post-transfer fallback for an incoming tech. On/after the transfer
         // date the day belongs to the NEW branch. If she isn't on the new
         // branch's saved schedule and the day carries no explicit mark, resolve
@@ -23830,7 +23844,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (!inc || !dayObj || dayObj.ymd < inc.transferDate || dayObj.ymd > _todayYmdR) return null;
           if (attSched[ec] && attSched[ec][dayObj.d]) return null;     // on the new branch's schedule
           if (attGrid[ec] && attGrid[ec][dayObj.d]) return null;       // explicitly marked
-          const ci = ((checkInsByBranch[_cinBranchFor(ec)] || {})[ec] || {})[dayObj.ymd];
+          const ci = _ciFor(ec, dayObj.ymd);
           return (ci && ci.hasIn) ? "on" : "off";
         };
         _loansInCycle.concat(_mgrLoansInCycle).forEach(l => {
@@ -24238,7 +24252,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               if (_isExtraDay(ec, d)) return "ext";
               // Path 1: kiosk audit log marked the day as Extra.
               const _dayObjExt = days.find(x => x.d === d);
-              const _ka = _dayObjExt ? ((kioskAbsentByBranch[_cinBranchFor(ec)] || {})[ec] || {})[_dayObjExt.ymd] : null;
+              const _ka = _dayObjExt ? _kaFor(ec, _dayObjExt.ymd) : null;
               if (_ka && _ka.status === "ext") return "ext";
               // Path 2: the SCHEDULE code itself is "E" (extra cover) for
               // this day. When the manager taps On Time / Late later, the
@@ -25254,8 +25268,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const hint = schedHint(ec, dy.d);
             const scheduleSaysWork = hint === "on" || hint === "ext";
             const freshaWorkedCell = !!((((attMeta || {}).freshaWorked || {})[ec] || {})[dy.d]);
-            const checkin = ((checkInsByBranch[_cinBranchFor(ec)] || {})[ec] || {})[dy.ymd] || null;
-            const kioskAbs = ((kioskAbsentByBranch[_cinBranchFor(ec)] || {})[ec] || {})[dy.ymd] || null;
+            const checkin = _ciFor(ec, dy.ymd);
+            const kioskAbs = _kaFor(ec, dy.ymd);
             const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
             const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
             const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i" || bareV === "late";
@@ -25444,8 +25458,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // have their own clock-in source (handled via the mgr-overlay
               // upstream). Skip the lookups for them so we never mix tech
               // kiosk hits into a manager warning.
-              const kioskAbs = s.role === "NT" ? (((kioskAbsentByBranch[_cinBranchFor(s.ec)] || {})[s.ec] || {})[dy.ymd] || null) : null;
-              const checkin = s.role === "NT" ? (((checkInsByBranch[_cinBranchFor(s.ec)] || {})[s.ec] || {})[dy.ymd] || null) : null;
+              const kioskAbs = s.role === "NT" ? _kaFor(s.ec, dy.ymd) : null;
+              const checkin = s.role === "NT" ? _ciFor(s.ec, dy.ymd) : null;
               const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
               const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
               const freshaWorkedCell = !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
@@ -25796,7 +25810,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // entries are advance planning, not actual check-ins, so ignore
                           // them here.
                           const checkin = (s.role === "NT" && isPastOrToday && !mirrorSuppressed)
-                            ? ((checkInsByBranch[_cinBranchFor(s.ec)] || {})[s.ec] || {})[dy.ymd] || null
+                            ? _ciFor(s.ec, dy.ymd)
                             : null;
                           // Discrepancy logic:
                           //  - Tech checked in but attendance marks them OFF / Annual /
@@ -25817,7 +25831,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // so they don't trigger "checked in" / mismatch signals on days
                           // that haven't happened yet.
                           const kioskAbs = (s.role === "NT" && isPastOrToday && !mirrorSuppressed)
-                            ? ((kioskAbsentByBranch[_cinBranchFor(s.ec)] || {})[s.ec] || {})[dy.ymd] || null
+                            ? _kaFor(s.ec, dy.ymd)
                             : null;
                           // swap_o explicitly means "took today off, owes a day back" — the
                           // tech was NOT present, even if a PIN-clockin record happened to
