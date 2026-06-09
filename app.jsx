@@ -24294,10 +24294,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const _do = days.find(x => x.d === d);
             const _lc = _do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd];
             if (_lc) {
-              // Admin-edited cell still wins (e.g. "Sick + note" on top of a
-              // pre-approved leave day shouldn't get reverted).
+              // Defer to a genuine admin status (e.g. "Sick + note" recorded on
+              // top of a pre-approved leave day) — but NOT to a plain leave code.
+              // Auto-fill mirrors the schedule's generic "L" into the grid as a
+              // (usually faded) 'al', which must not mask the leave record's own
+              // classification: an emergency (unpaid) day would otherwise show as
+              // paid Annual. So 'al'/'el' cells are overridden by the record.
               const _gv = attGrid[ec] && attGrid[ec][d];
-              if (!_gv) return _lc;   // 'el' (emergency, unpaid) or 'al' (annual)
+              const _gvBare = _gv ? (_gv.indexOf("~") === 0 ? _gv.slice(1) : _gv) : "";
+              if (!_gvBare || _gvBare === "al" || _gvBare === "el") return _lc;   // 'el' (emergency, unpaid) or 'al' (annual)
             }
           }
           // Unpaid legal-status leave overlay (Compliance). Like the leave
@@ -24307,7 +24312,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const _do = days.find(x => x.d === d);
             if (_do && _onUnpaidLegal(ec, _do.ymd)) {
               const _gv = attGrid[ec] && attGrid[ec][d];
-              if (!_gv) return "el";
+              const _gvBare = _gv ? (_gv.indexOf("~") === 0 ? _gv.slice(1) : _gv) : "";
+              if (!_gvBare || _gvBare === "al" || _gvBare === "el") return "el";
             }
           }
           // Tech-loan override: the home branch's loaned-out cell mirrors
