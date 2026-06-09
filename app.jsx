@@ -15193,15 +15193,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     // Re-key a grid by upper-cased EC so lookups match enriched ECs regardless
     // of how the saved grid happened to case them.
     const normGrid = (g) => { const o = {}; for (const k in (g || {})) o[String(k).toUpperCase().trim()] = g[k]; return o; };
-    Promise.all(scoped.map(async (sl) => {
-      const schedByYm = {}, attByYm = {};
-      await Promise.all([
-        ...schedYms.map(async (ym) => { const r = await safe(window.BOA_DB.loadSchedule(sl.name, ym, false)); schedByYm[ym] = normGrid(r && r.grid); }),
-        ...attYms.map(async (ym) => { const r = await safe(window.BOA_DB.loadAttendance(sl.name, ym)); attByYm[ym] = normGrid(r && r.grid); })
-      ]);
-      return { name: sl.name, schedByYm, attByYm };
-    })).then((branchData) => {
+    // Cash-ups for the whole cycle (one query, all branches). 40 days back
+    // safely spans the 25th→24th cycle wherever today sits inside it.
+    const cashLoad = (window.BOA_DB.listRecentCashups
+      ? safe(window.BOA_DB.listRecentCashups(40))
+      : Promise.resolve([]));
+    Promise.all([
+      Promise.all(scoped.map(async (sl) => {
+        const schedByYm = {}, attByYm = {};
+        await Promise.all([
+          ...schedYms.map(async (ym) => { const r = await safe(window.BOA_DB.loadSchedule(sl.name, ym, false)); schedByYm[ym] = normGrid(r && r.grid); }),
+          ...attYms.map(async (ym) => { const r = await safe(window.BOA_DB.loadAttendance(sl.name, ym)); attByYm[ym] = normGrid(r && r.grid); })
+        ]);
+        return { name: sl.name, schedByYm, attByYm };
+      })),
+      cashLoad
+    ]).then(([branchData, cashRows]) => {
       if (cancelled) return;
+      // Total cash-up takings per day across in-scope branches. Mirrors the
+      // Cash Ups tab: sum the generated `total` (turnover, excludes tips) of
+      // non-archived rows (reopened/superseded rows carry archived_at).
+      const cashByYmd = {};
+      (cashRows || []).forEach(r => {
+        if (!r || !r.date || r.archived_at) return;
+        if (!scopedSalonNames.has(r.branch)) return;
+        cashByYmd[r.date] = (cashByYmd[r.date] || 0) + (Number(r.total) || 0);
+      });
       // Active techs per branch (by EC) — exclude maternity / unpaid-legal /
       // off-boarded. Start/leave dates are checked per-day below so a tech is
       // only counted on days they're actually employed.
@@ -15274,19 +15291,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const isFuture = ymd > todayYmd;
         const scheduled = scheduledFor(dt);
         const worked = isFuture ? null : attnFor(dt).worked;
-        return { ymd, d: cd.d, dow: DOW[dt.getDay()], monthShort: MON[dt.getMonth()], scheduled, worked, isFuture, isToday: ymd === todayYmd };
+        const cashTotal = isFuture ? null : (cashByYmd[ymd] || 0);
+        return { ymd, d: cd.d, dow: DOW[dt.getDay()], monthShort: MON[dt.getMonth()], scheduled, worked, cashTotal, isFuture, isToday: ymd === todayYmd };
       });
       const totalScheduled = days.reduce((a, r) => a + r.scheduled, 0);
       const toDate = days.filter(r => !r.isFuture);
       const totalScheduledToDate = toDate.reduce((a, r) => a + r.scheduled, 0);
       const totalWorked = toDate.reduce((a, r) => a + (r.worked || 0), 0);
+      const totalCash = toDate.reduce((a, r) => a + (r.cashTotal || 0), 0);
       const attendanceRate = totalScheduledToDate > 0 ? Math.round((totalWorked / totalScheduledToDate) * 100) : null;
       setStaffingData({
         loading: false,
         scopeLabel: _hasStoreScope ? (dashScope === "mine" ? "My stores" : dashScope === "other" ? "Other stores" : "All stores") : "All stores",
         branchCount: scoped.length,
         next7,
-        cycle: { ym: cycSchedYm, label: window.BOA_DB.periodLabel ? window.BOA_DB.periodLabel(cycSchedYm) : cycSchedYm, days, totalScheduled, totalScheduledToDate, totalWorked, attendanceRate }
+        cycle: { ym: cycSchedYm, label: window.BOA_DB.periodLabel ? window.BOA_DB.periodLabel(cycSchedYm) : cycSchedYm, days, totalScheduled, totalScheduledToDate, totalWorked, totalCash, attendanceRate }
       });
     }).catch((err) => { if (!cancelled) setStaffingData({ loading: false, error: (err && err.message) || String(err) }); });
     return () => { cancelled = true; };
@@ -26886,8 +26905,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const totalScheduled = days.reduce((a, r) => a + r.scheduled, 0);
               const totalScheduledToDate = toDate.reduce((a, r) => a + r.scheduled, 0);
               const totalWorked = toDate.reduce((a, r) => a + (r.worked || 0), 0);
+              const totalCash = toDate.reduce((a, r) => a + (r.cashTotal || 0), 0);
               const attendanceRate = totalScheduledToDate > 0 ? Math.round((totalWorked / totalScheduledToDate) * 100) : null;
-              const c = { ...sd.cycle, days, totalScheduled, totalScheduledToDate, totalWorked, attendanceRate };
+              const c = { ...sd.cycle, days, totalScheduled, totalScheduledToDate, totalWorked, totalCash, attendanceRate };
+              // Whole rand, no cents — cash-up figures are large.
+              const fmtR = (n) => "R" + Math.round(Number(n) || 0).toLocaleString("en-ZA");
               return (
                 <>
                   {/* ── Next 7 days ── */}
@@ -26929,9 +26951,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 30, fontWeight: 800, color: "#0c4a6e", lineHeight: 1 }}>{c.attendanceRate == null ? "—" : c.attendanceRate + "%"}</div>
                         <div style={{ fontSize: 11.5, color: "#0c4a6e", marginTop: 4 }}>worked ÷ scheduled to date</div>
                       </div>
+                      <div style={{ background: "#ede9fe", borderRadius: 10, padding: "14px 16px" }}>
+                        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 30, fontWeight: 800, color: "#5b21b6", lineHeight: 1 }}>{fmtR(c.totalCash)}</div>
+                        <div style={{ fontSize: 11.5, color: "#5b21b6", marginTop: 4 }}>cash-ups total (to date)</div>
+                      </div>
+                      <div style={{ background: "#fae8ff", borderRadius: 10, padding: "14px 16px" }}>
+                        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 30, fontWeight: 800, color: "#a21caf", lineHeight: 1 }}>{c.totalWorked > 0 ? fmtR(c.totalCash / c.totalWorked) : "—"}</div>
+                        <div style={{ fontSize: 11.5, color: "#a21caf", marginTop: 4 }}>avg cash-up per tech-shift</div>
+                      </div>
                     </div>
                     <div style={{ fontSize: 12, color: "#6b7280", background: "#f9fafb", border: "1px solid #f3f4f6", borderRadius: 8, padding: "10px 12px", marginBottom: 16 }}>
-                      💡 <b>Revenue per shift:</b> divide this cycle's revenue by <b>{c.totalWorked}</b> shifts worked to date.
+                      💡 <b>Average per nail tech per shift:</b> {fmtR(c.totalCash)} of cash-ups ÷ {c.totalWorked} shifts worked = <b>{c.totalWorked > 0 ? fmtR(c.totalCash / c.totalWorked) : "—"}</b> per tech worked, this cycle to date. The table below breaks it down per day.
                     </div>
                     <div style={{ overflowX: "auto" }}>
                       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
@@ -26941,17 +26971,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Scheduled</th>
                             <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Worked</th>
                             <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Rate</th>
+                            <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Cash-ups</th>
+                            <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Avg / tech</th>
                           </tr>
                         </thead>
                         <tbody>
                           {c.days.map(r => {
                             const rate = (!r.isFuture && r.scheduled > 0) ? Math.round((r.worked / r.scheduled) * 100) : null;
+                            const avgPerTech = (!r.isFuture && r.worked > 0) ? (r.cashTotal / r.worked) : null;
                             return (
                               <tr key={r.ymd} style={{ background: r.isToday ? "#e0f2fe" : "transparent" }}>
                                 <td style={{ padding: "6px 10px", borderBottom: "1px solid #FDEEF5", color: "#831843", fontWeight: r.isToday ? 800 : 500 }}>{r.dow} {r.d} {r.monthShort}{r.isToday ? " · today" : ""}</td>
                                 <td style={{ padding: "6px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: "#831843", fontWeight: 600 }}>{r.scheduled}</td>
                                 <td style={{ padding: "6px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: r.isFuture ? "#cbd5e1" : "#166534", fontWeight: 600 }}>{r.isFuture ? "—" : r.worked}</td>
                                 <td style={{ padding: "6px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: rate == null ? "#cbd5e1" : (rate >= 90 ? "#166534" : rate >= 75 ? "#854d0e" : "#b91c1c"), fontWeight: 600 }}>{rate == null ? "—" : rate + "%"}</td>
+                                <td style={{ padding: "6px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: r.isFuture ? "#cbd5e1" : "#5b21b6", fontWeight: 600 }}>{r.isFuture ? "—" : (r.cashTotal ? fmtR(r.cashTotal) : "—")}</td>
+                                <td style={{ padding: "6px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: avgPerTech == null ? "#cbd5e1" : "#a21caf", fontWeight: 700 }}>{avgPerTech == null ? "—" : fmtR(avgPerTech)}</td>
                               </tr>
                             );
                           })}
@@ -26959,7 +26994,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       </table>
                     </div>
                     <div style={{ marginTop: 12, fontSize: 11.5, color: "#9d6a82" }}>
-                      “Scheduled” counts active nail techs rostered to work (excludes leave, maternity, transferred-away and departed staff). “Worked” counts techs marked present on the attendance sheet (on time, late, extra, trial). <b>Today’s numbers mirror the Dashboard tiles exactly</b> (same kiosk sign-off + clock-in resolution); future days show scheduled only. Covers {sd.branchCount} branch{sd.branchCount === 1 ? "" : "es"} · {sd.scopeLabel}.
+                      “Scheduled” counts active nail techs rostered to work (excludes leave, maternity, transferred-away and departed staff). “Worked” counts techs marked present on the attendance sheet (on time, late, extra, trial). <b>Today’s numbers mirror the Dashboard tiles exactly</b> (same kiosk sign-off + clock-in resolution); future days show scheduled only. “Cash-ups” is the day’s total takings from the Cash Ups tab (turnover, excludes tips; superseded entries ignored) summed across the in-scope branches, and “Avg / tech” splits that evenly across the techs who worked that day. Covers {sd.branchCount} branch{sd.branchCount === 1 ? "" : "es"} · {sd.scopeLabel}.
                     </div>
                   </div>
                 </>
