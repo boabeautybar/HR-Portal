@@ -14122,6 +14122,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   useEffect(() => { setAttCheckinSnapshot(null); }, [attBranch, attYM]);
   const [attSched, setAttSched] = useState({});      // schedule grid for the same period (for mirror hints)
   const [attMeta, setAttMeta] = useState({});      // sidecar metadata e.g. { freshaCoverage:{through:"YYYY-MM-DD"} }
+  // Branch-agnostic Fresha index. A Fresha appointment belongs to the TECH, not
+  // a branch (the importer files it under her staff.branch), so we union every
+  // branch's freshaWorked for the cycle into one normalized ec→day map. The
+  // attendance cell reads worked-status from here, so a transferred or borrowed
+  // tech's appointments show wherever her row is rendered — same spirit as
+  // day-borrows resolving attendance cross-branch. Coverage stays per-branch.
+  const [freshaWorkedAll, setFreshaWorkedAll] = useState({});  // { NORMEC: { dayNum: true } }
+  const [freshaAllTick, setFreshaAllTick] = useState(0);       // bump to re-pull after an import / reset
   // Kiosk's "Left work early" sidecar (boa_early_<branch>_<ym>) — separate
   // from the attendance grid because the tech still checked in, only their
   // shift ended early. Shape: { [dayKey]: { [ec]: { hours, recordedAt, recordedBy } } }
@@ -14690,8 +14698,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       .finally(() => setAttLoading(false));
   }, [tab, attBranch, attYM, staff]);
 
-  // Load attendance from every other branch we have a loan going out to
-  // during this cycle, so the home-branch cells can mirror what the
+  // Build the branch-agnostic Fresha index: union every branch's freshaWorked
+  // for the active cycle into one normalized ec→day map. Keyed by cycle only
+  // (not attBranch), so it's the same regardless of which branch is on screen —
+  // a tech's appointments resolve wherever her row appears. Re-pulled after an
+  // import / reset via freshaAllTick.
+  useEffect(() => {
+    if (tab !== "attendance" && tab !== "checkins" && tab !== "payrollProgress") return;
+    if (!window.BOA_DB || !window.BOA_DB.isReady || !window.BOA_DB.loadAttendance) return;
+    let cancelled = false;
+    (async () => {
+      const safe = (p) => (p && p.catch ? p.catch(() => null) : Promise.resolve(null));
+      const recs = await Promise.all(SALONS.map(sl => safe(window.BOA_DB.loadAttendance(sl.name, attYM))));
+      if (cancelled) return;
+      const out = {};
+      for (const rec of recs) {
+        const fw = (rec && rec.freshaWorked) || {};
+        for (const ec in fw) {
+          const key = String(ec).trim().toUpperCase();
+          if (!key) continue;
+          const row = fw[ec] || {};
+          const dst = out[key] || (out[key] = {});
+          for (const day in row) { if (row[day]) dst[day] = true; }
+        }
+      }
+      setFreshaWorkedAll(out);
+    })();
+    return () => { cancelled = true; };
+  }, [tab, attYM, freshaAllTick]);
+
   // receiving branches recorded. Re-runs when the viewed cycle, the
   // current branch, or the techLoans list changes.
   useEffect(() => {
@@ -23834,6 +23869,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         };
         const _ciFor = (ec, ymd) => _lookupAcrossTransfer(checkInsByBranch, ec, ymd);
         const _kaFor = (ec, ymd) => _lookupAcrossTransfer(kioskAbsentByBranch, ec, ymd);
+        // Branch-agnostic Fresha worked-flag — looks the tech up in the global
+        // cross-branch index so her appointments show no matter which branch
+        // filed them (transfers, borrows, …). Coverage is still per-branch.
+        const _freshaWorkedFor = (ec, dayNum) => {
+          const row = freshaWorkedAll[String(ec).trim().toUpperCase()];
+          return !!(row && row[dayNum]);
+        };
         // Post-transfer fallback for an incoming tech. On/after the transfer
         // date the day belongs to the NEW branch. If she isn't on the new
         // branch's saved schedule and the day carries no explicit mark, resolve
@@ -25007,6 +25049,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   mirrorSuppressed: false
                 });
               }
+              setFreshaAllTick(t => t + 1);   // refresh the branch-agnostic Fresha index
               logActivity("Imported Fresha CSV", cycLabel,
                 "Marked " + marked + " · cancelled " + cancelled + " · no-show " + noShow + " · out-of-cycle " + outOfCycle + branchSummary, "Fresha");
               alert(
@@ -25089,6 +25132,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             try { await window.BOA_DB.deleteEarlyLeaves(attBranch, attYM); }
             catch (e) { _resetErrors.push("early-leaves: " + (e.message || e)); }
           }
+          setFreshaAllTick(t => t + 1);   // refresh the branch-agnostic Fresha index after clearing this branch
           logActivity("Total reset (cycle display)", attBranch + " · " + cycLabel, "Grid + sidecars + left-early cleared, mirror suppressed; schedule + clockins + kiosk log preserved" + (_resetErrors.length ? " (errors: " + _resetErrors.join(", ") + ")" : ""), "Bulk");
           if (_resetErrors.length) {
             alert("✓ Reset done — with one small issue:\n\n" + _resetErrors.join("\n") + "\n\nGrid is cleared and your raw data (schedule, clock-ins, kiosk log) is safe.");
@@ -25267,7 +25311,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // b) all-3-agree (mirrors the allMatchWork logic on the cell)
             const hint = schedHint(ec, dy.d);
             const scheduleSaysWork = hint === "on" || hint === "ext";
-            const freshaWorkedCell = !!((((attMeta || {}).freshaWorked || {})[ec] || {})[dy.d]);
+            const freshaWorkedCell = _freshaWorkedFor(ec, dy.d);
             const checkin = _ciFor(ec, dy.ymd);
             const kioskAbs = _kaFor(ec, dy.ymd);
             const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
@@ -25462,7 +25506,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const checkin = s.role === "NT" ? _ciFor(s.ec, dy.ymd) : null;
               const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
               const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
-              const freshaWorkedCell = !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
+              const freshaWorkedCell = _freshaWorkedFor(s.ec, dy.d);
               const freshaCoversThisDay = !!effectiveFreshaThrough && dy.ymd <= effectiveFreshaThrough;
               const override = hasOverride(s.ec, dy.d);
               const kioskMarkedAbsent = !!kioskAbs && kioskAbs.status !== "ext" && kioskAbs.status !== "trial" && kioskAbs.status !== "swap_o" && !/^[^a-z]*(?:left|early)/i.test(kioskAbs.status || "");
@@ -25845,7 +25889,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // populated by importFresha — NOT from the cell value, since the
                           // kiosk overwrites the grid (e.g. sick / no-show) and we don't want
                           // that to erase the Fresha appointment signal.
-                          const freshaWorkedCell = !mirrorSuppressed && !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
+                          const freshaWorkedCell = !mirrorSuppressed && _freshaWorkedFor(s.ec, dy.d);
                           const scheduleSaysWork = hint === "on" || hint === "ext";
                           const missingCheckin = !checkinHasIn && freshaWorkedCell && isPastOrToday && scheduleSaysWork; // Fresha confirmed work but no check-in
                           const kioskAbsentScheduled = !!kioskAbs && scheduleSaysWork && !/^[^a-z]*(?:left|early)/i.test(kioskAbs.status || "");
