@@ -3573,6 +3573,24 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     return out;
   }, [techRequests, branch, days]);
 
+  // Emergency (unpaid) leave days for the visible staff. The saved grid stores a
+  // generic "L" for ALL leave, so we cross-reference the Leave Planner records to
+  // paint emergency leave distinctly (orange "EL") instead of the same grey "L"
+  // used for paid annual leave. Render-only — the grid still stores "L".
+  const emergencyLeaveSet = useMemo(() => {
+    const set = new Set();
+    (leaveRecs || []).forEach(lv => {
+      if (!lv || !lv.emergency || !lv.ec || !lv.startDate || !lv.endDate) return;
+      const sd = new Date(lv.startDate + "T00:00:00"), ed = new Date(lv.endDate + "T00:00:00");
+      if (isNaN(sd.getTime()) || isNaN(ed.getTime())) return;
+      for (let cur = new Date(sd); cur <= ed; cur.setDate(cur.getDate() + 1)) {
+        const ymd = cur.getFullYear() + "-" + String(cur.getMonth() + 1).padStart(2, "0") + "-" + String(cur.getDate()).padStart(2, "0");
+        set.add(String(lv.ec).trim() + "|" + ymd);
+      }
+    });
+    return set;
+  }, [leaveRecs]);
+
   const cycle = ["W", "WE", "WL", "O", "R", "L", "E", "X", "trial", ""];
   const cellStyle = (z) => {
     if (z === "W") return { background: "#dcfce7", color: "#14532d" };
@@ -6603,6 +6621,10 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         // the schedule without waiting for an auto-fill or
                         // sync pass to stamp X.
                         const dYmd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
+                        // Emergency (unpaid) leave: the grid stores a generic "L"
+                        // for all leave, so flag days inside an emergency Leave
+                        // Planner record to paint them orange "EL" (vs grey "L").
+                        const isEmergLeave = v === "L" && emergencyLeaveSet.has(String(s.ec).trim() + "|" + dYmd);
                         const isPastLeft = isLeaving && dYmd > s.leftDate;
                         // Pre-start: a tech only appears on the schedule from
                         // their start date. Days before it render as a locked
@@ -6653,7 +6675,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                               ? { background: "#fef3c7", color: "#92400e" }   // amber — moving out
                               : transferEdge === "in"
                                 ? { background: "#dbeafe", color: "#1e40af" }   // blue — coming in
-                                : _loanCell || cellStyle(v);
+                                : _loanCell || (isEmergLeave ? { background: "#fed7aa", color: "#9a3412", fontWeight: 700 } : cellStyle(v));
                         // Drag-drop visual states
                         const isSrc = dragSource && dragSource.ec === s.ec && dragSource.day === d.d;
                         const isValidDrop = !cellLocked && isValidDropTarget(s.ec, d.d);
@@ -6674,7 +6696,9 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                                 ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · arriving from ${transferOtherBranch} on ${_xferDate} — pre-transfer days are still on the source schedule`
                                 : _loanCell
                                   ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · working at ${_outgoingLoan.toBranch} (cross-store)`
-                                  : `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · click to cycle, drag to swap within the week${requested ? ' · 📝 day-off requested' + (requestUnapplied ? ' (not yet on grid)' : '') : ''}`;
+                                  : isEmergLeave
+                                    ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · Emergency leave (unpaid)`
+                                    : `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · click to cycle, drag to swap within the week${requested ? ' · 📝 day-off requested' + (requestUnapplied ? ' (not yet on grid)' : '') : ''}`;
                         return (
                           <td key={s.ec + '-' + d.d}
                             draggable={!cellLocked && !!v}
@@ -6702,7 +6726,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                                         →{_outgoingLoan.toBranch === "Green Point" ? "GP" : _outgoingLoan.toBranch.slice(0, 4)}
                                       </span>
                                     )
-                                      : v}
+                                      : isEmergLeave ? "EL" : v}
                             {requestUnapplied && !cellLocked && (
                               <span style={{ position: "absolute", top: 1, right: 2, fontSize: 8, lineHeight: 1, color: "#BE185D", pointerEvents: "none" }}>📝</span>
                             )}
