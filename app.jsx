@@ -15039,9 +15039,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // manager guard below. Without this the raw grid also counts techs who
         // have LEFT, guest/loan rows from other stores, and stale codes, which
         // badly inflates the "scheduled today" numbers.
+        // Evaluate each tech at their EFFECTIVE branch — once a transfer date has
+        // passed, the tech belongs to the destination, so we read the
+        // destination's roster + attendance (not the stale cells still sitting
+        // in the old branch's grid). Without this a tech who moved branches and
+        // is OFF at the new store still reads as scheduled-to-work from the old
+        // store's leftover cell (e.g. Tariro: moved Sea Point→Green Point on the
+        // 25th, off at Green Point today, yet shown "not checked in").
+        const _effBranch = (s) => (s.transferring && s.transferTo && s.transferDate && ymd >= String(s.transferDate).replace(/\//g, "-")) ? s.transferTo : s.branch;
         const _branchTechEcs = new Set(
           (enriched || [])
-            .filter(s => s && s.branch === name && !s.onMat && !s.onUnpaidLegal && !s.offboarded && !(s.leftDate && ymd > s.leftDate))
+            .filter(s => s && _effBranch(s) === name && !s.onMat && !s.onUnpaidLegal && !s.offboarded && !(s.leftDate && ymd > s.leftDate))
             .map(s => String(s.ec || "").toUpperCase().trim())
             .filter(Boolean)
         );
