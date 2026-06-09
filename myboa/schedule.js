@@ -31,6 +31,9 @@
     view: "soon",            // soon | week | month
     monthYm: null,
     cache: {},               // ym -> grid object (for state.store + isManager)
+    mgrRoles: {},            // EC(upper/trim) -> role, for split-store shift labelling
+    smTrialEcs: {},          // EC(upper/trim) -> 1 for AMs on an active SM trial
+    covLabels: {},           // ym -> re-derived WE/WM/WL grid (mirrors Manager Coverage)
     busy: false
   };
 
@@ -235,6 +238,220 @@
     return row[code] || row.W || "";             // "" = store defined but this combo isn't
   }
 
+  // ── PER-STORE MANAGER SHIFT LABELLING (mirrors the portal) ───
+  // The saved manager grid stores a plain "W" or a possibly-stale label; the
+  // portal's schedule tab + Manager Coverage re-derive WE/WM/WL at render time
+  // from WHO is working each day (applyBranchShiftRules), so the shift TIME a
+  // manager sees can differ from the raw saved cell. We replicate that here so
+  // the viewer shows the same hours Coverage shows. Ported verbatim from
+  // app.jsx (applyMgrShiftSplit / applyRiverlandsShifts / applyBallitoShifts /
+  // applyFourwaysShifts) — all re-run-safe: working cells reset to "W" first,
+  // then re-assign purely from the work/off pattern + roles.
+  var SPLIT_SHIFT_STORES = { "Sandown": 1, "Table Bay": 1, "Riverlands": 1, "Ballito": 1, "Mall of the South": 1, "Fourways": 1 };
+  function _isSMrole(m) { return /^(SSM|SM)$/i.test((m && m.role) || ""); }
+  function _pickLowest(list, counter) {
+    var sorted = list.slice().sort(function (a, b) {
+      return ((counter[a.ec] || 0) - (counter[b.ec] || 0)) || String(a.ec || "").localeCompare(String(b.ec || ""));
+    });
+    var w = sorted[0];
+    counter[w.ec] = (counter[w.ec] || 0) + 1;
+    return w;
+  }
+  function _workersOn(grid, managers, dy, withWB) {
+    return (managers || []).filter(function (m) {
+      if (!(m && m.ec && grid[m.ec])) return false;
+      var v = grid[m.ec][dy.d];
+      return v === "W" || v === "WE" || v === "WM" || v === "WL" || (withWB && v === "WB");
+    });
+  }
+  // Sandown (Mon–Fri WM) / Table Bay (Mon–Sat WM). wmDows = { dow: 1 }.
+  function applyMgrShiftSplit(grid, dates, managers, wmDows) {
+    if (!grid) return;
+    var earlyCount = {}, middleCount = {};
+    (managers || []).forEach(function (m) { earlyCount[m.ec] = 0; middleCount[m.ec] = 0; });
+    (dates || []).forEach(function (dy) {
+      var workers = _workersOn(grid, managers, dy, false);
+      if (workers.length === 0) return;
+      workers.forEach(function (m) { grid[m.ec][dy.d] = "W"; });
+      var wmAllowedToday = wmDows && wmDows[dy.dow];
+      var sm = null; for (var i = 0; i < workers.length; i++) { if (_isSMrole(workers[i])) { sm = workers[i]; break; } }
+      var ams = workers.filter(function (m) { return !_isSMrole(m); });
+      if (sm) {
+        grid[sm.ec][dy.d] = "WE";
+        if (wmAllowedToday && ams.length >= 2) {
+          var mid = _pickLowest(ams, middleCount);
+          grid[mid.ec][dy.d] = "WM";
+          ams.filter(function (m) { return m.ec !== mid.ec; }).forEach(function (m) { grid[m.ec][dy.d] = "WL"; });
+        } else {
+          ams.forEach(function (m) { grid[m.ec][dy.d] = "WL"; });
+        }
+      } else if (ams.length > 0) {
+        var opener = _pickLowest(ams, earlyCount);
+        grid[opener.ec][dy.d] = "WE";
+        var rest = ams.filter(function (m) { return m.ec !== opener.ec; });
+        if (wmAllowedToday && rest.length >= 2) {
+          var mid2 = _pickLowest(rest, middleCount);
+          grid[mid2.ec][dy.d] = "WM";
+          rest.filter(function (m) { return m.ec !== mid2.ec; }).forEach(function (m) { grid[m.ec][dy.d] = "WL"; });
+        } else {
+          rest.forEach(function (m) { grid[m.ec][dy.d] = "WL"; });
+        }
+      }
+    });
+  }
+  // Riverlands — Mon–Fri WE/WL split with a 4+ "WB" bonus-early; Sat/Sun single WE.
+  function applyRiverlandsShifts(grid, dates, managers) {
+    if (!grid) return;
+    var earlyCount = {}, extraEarlyCount = {};
+    (managers || []).forEach(function (m) { earlyCount[m.ec] = 0; extraEarlyCount[m.ec] = 0; });
+    (dates || []).forEach(function (dy) {
+      var workers = _workersOn(grid, managers, dy, true);
+      if (workers.length === 0) return;
+      workers.forEach(function (m) { grid[m.ec][dy.d] = "W"; });
+      var isMonFri = dy.dow >= 1 && dy.dow <= 5;
+      if (!isMonFri) { workers.forEach(function (m) { grid[m.ec][dy.d] = "WE"; }); return; }
+      var ams = workers;   // Riverlands labels by lineup regardless of role
+      var opener = _pickLowest(ams, earlyCount);
+      grid[opener.ec][dy.d] = "WE";
+      var rest = ams.filter(function (m) { return m.ec !== opener.ec; });
+      if (workers.length >= 4 && rest.length >= 1) {
+        var extra = _pickLowest(rest, extraEarlyCount);
+        grid[extra.ec][dy.d] = "WB";
+        rest.filter(function (m) { return m.ec !== extra.ec; }).forEach(function (m) { grid[m.ec][dy.d] = "WL"; });
+      } else {
+        rest.forEach(function (m) { grid[m.ec][dy.d] = "WL"; });
+      }
+    });
+  }
+  // Ballito / Mall of the South — Mon–Sat: SM=WE, else WM(opener)+WL; Sunday single WE.
+  function applyBallitoShifts(grid, dates, managers) {
+    if (!grid) return;
+    var middleCount = {};
+    (managers || []).forEach(function (m) { middleCount[m.ec] = 0; });
+    (dates || []).forEach(function (dy) {
+      var workers = _workersOn(grid, managers, dy, true);
+      if (workers.length === 0) return;
+      workers.forEach(function (m) { grid[m.ec][dy.d] = "W"; });
+      var isMonSat = dy.dow >= 1 && dy.dow <= 6;
+      if (!isMonSat) { workers.forEach(function (m) { grid[m.ec][dy.d] = "WE"; }); return; }
+      var sm = null; for (var i = 0; i < workers.length; i++) { if (_isSMrole(workers[i])) { sm = workers[i]; break; } }
+      var ams = workers.filter(function (m) { return !_isSMrole(m); });
+      if (sm) {
+        grid[sm.ec][dy.d] = "WE";
+        if (ams.length >= 2) {
+          var mid = _pickLowest(ams, middleCount);
+          grid[mid.ec][dy.d] = "WM";
+          ams.filter(function (m) { return m.ec !== mid.ec; }).forEach(function (m) { grid[m.ec][dy.d] = "WL"; });
+        } else {
+          ams.forEach(function (m) { grid[m.ec][dy.d] = "WL"; });
+        }
+      } else if (ams.length === 1) {
+        grid[ams[0].ec][dy.d] = "WL";
+      } else if (ams.length > 0) {
+        var mid2 = _pickLowest(ams, middleCount);
+        grid[mid2.ec][dy.d] = "WM";
+        ams.filter(function (m) { return m.ec !== mid2.ec; }).forEach(function (m) { grid[m.ec][dy.d] = "WL"; });
+      }
+    });
+  }
+  // Fourways — SM always WE; no-SM Mon–Sat gives a WE opener + WL; Sunday WE+WL.
+  function applyFourwaysShifts(grid, dates, managers) {
+    if (!grid) return;
+    var middleCount = {}, earlyCount = {};
+    (managers || []).forEach(function (m) { middleCount[m.ec] = 0; earlyCount[m.ec] = 0; });
+    (dates || []).forEach(function (dy) {
+      var workers = _workersOn(grid, managers, dy, true);
+      if (workers.length === 0) return;
+      workers.forEach(function (m) { grid[m.ec][dy.d] = "W"; });
+      var sms = workers.filter(_isSMrole);
+      var ams = workers.filter(function (m) { return !_isSMrole(m); });
+      sms.forEach(function (m) { grid[m.ec][dy.d] = "WE"; });
+      var isSun = dy.dow === 0;
+      if (isSun) {
+        if (sms.length >= 1) {
+          ams.forEach(function (m) { grid[m.ec][dy.d] = "WL"; });
+        } else if (ams.length === 1) {
+          grid[ams[0].ec][dy.d] = "WE";
+        } else if (ams.length > 0) {
+          var opener0 = _pickLowest(ams, earlyCount);
+          grid[opener0.ec][dy.d] = "WE";
+          ams.filter(function (m) { return m.ec !== opener0.ec; }).forEach(function (m) { grid[m.ec][dy.d] = "WL"; });
+        }
+        return;
+      }
+      if (ams.length === 0) {
+        // pure SM day — already handled
+      } else if (sms.length >= 1) {
+        if (ams.length >= 2) {
+          var mid = _pickLowest(ams, middleCount);
+          grid[mid.ec][dy.d] = "WM";
+          ams.filter(function (m) { return m.ec !== mid.ec; }).forEach(function (m) { grid[m.ec][dy.d] = "WL"; });
+        } else {
+          ams.forEach(function (m) { grid[m.ec][dy.d] = "WL"; });
+        }
+      } else if (ams.length === 1) {
+        grid[ams[0].ec][dy.d] = "WE";
+      } else {
+        var opener = _pickLowest(ams, earlyCount);
+        grid[opener.ec][dy.d] = "WE";
+        ams.filter(function (m) { return m.ec !== opener.ec; }).forEach(function (m) { grid[m.ec][dy.d] = "WL"; });
+      }
+    });
+  }
+  function applyBranchShiftRules(grid, dates, managers, branch) {
+    if (!grid) return;
+    if (branch === "Sandown") return applyMgrShiftSplit(grid, dates, managers, { 1: 1, 2: 1, 3: 1, 4: 1, 5: 1 });
+    if (branch === "Table Bay") return applyMgrShiftSplit(grid, dates, managers, { 1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1 });
+    if (branch === "Riverlands") return applyRiverlandsShifts(grid, dates, managers);
+    if (branch === "Ballito") return applyBallitoShifts(grid, dates, managers);
+    if (branch === "Mall of the South") return applyBallitoShifts(grid, dates, managers);
+    if (branch === "Fourways") return applyFourwaysShifts(grid, dates, managers);
+  }
+
+  // Effective role for any EC (AM on an active SM trial counts as SM — matches
+  // the portal's _effectiveRole, which Coverage feeds into the labellers).
+  function effRoleFor(ec) {
+    var up = String(ec).toUpperCase().trim();
+    var role = state.mgrRoles[up] || "";
+    if (role === "AM" && state.smTrialEcs[up]) return "SM";
+    return role;
+  }
+  // Re-derive the cycle's manager shift labels (cached per cycle). Returns an
+  // ec -> { ymd: code } grid, or null when not a split store / grid not loaded.
+  function buildMgrLabels(ymEnd) {
+    if (!state.isManager || !SPLIT_SHIFT_STORES[state.store]) return null;
+    if (state.covLabels[ymEnd]) return state.covLabels[ymEnd];
+    var src = state.cache[ymEnd];
+    if (!src) return null;                       // grid not loaded yet — caller falls back to raw
+    var mgrs = [];
+    for (var ec in src) { if (Object.prototype.hasOwnProperty.call(src, ec)) mgrs.push({ ec: ec, role: effRoleFor(ec) }); }
+    var days = periodDays(ymEnd);
+    var dates = [];
+    var g2 = {};
+    for (var i = 0; i < days.length; i++) {
+      var dt = days[i].date, ymd = ymdStr(dt);
+      dates.push({ d: ymd, dow: dt.getDay() });
+      for (var j = 0; j < mgrs.length; j++) {
+        var mec = mgrs[j].ec;
+        if (!g2[mec]) g2[mec] = {};
+        var raw = getCell(src[mec], dt);
+        g2[mec][ymd] = (raw == null ? "" : String(raw).toUpperCase());
+      }
+    }
+    applyBranchShiftRules(g2, dates, mgrs, state.store);
+    state.covLabels[ymEnd] = g2;
+    return g2;
+  }
+  // The re-derived shift code for THIS person on a date (or null to use raw).
+  function derivedMgrCode(dt) {
+    var g = buildMgrLabels(ymForDate(dt));
+    if (!g) return null;
+    var row = g[state.ec];
+    if (!row) return null;
+    var ymd = ymdStr(dt);
+    return Object.prototype.hasOwnProperty.call(row, ymd) ? row[ymd] : null;
+  }
+
   // Status for one date — matches Manager Coverage exactly: per-day custom hours
   // (boa_mgr_times_v1) win, else shiftTimes using the EFFECTIVE role (an AM on an
   // active SM trial is treated as an SM). A blank cell counts as a working day
@@ -316,7 +533,17 @@
     // Working (incl. Extra / Pre-start). Public holidays pay double — same hours
     // as whatever weekday they fall on, flagged with 💰💰 and the holiday name.
     var hol = holidayName(dt);
-    var time = (c === "X" || c === "P") ? "" : workSub(c, dt);
+    // Split-store managers: show the shift TIME for the label Manager Coverage
+    // re-derives (WE/WM/WL) rather than the raw saved cell, which can be stale
+    // (e.g. a saved WL that Coverage relabels to WM). A per-day custom-hours
+    // override is the ROM's explicit choice, so it wins inside workSub anyway and
+    // we don't relabel it — mirroring Coverage's _covCell.
+    var timeCode = c;
+    if (working && state.isManager && SPLIT_SHIFT_STORES[state.store] && !(state.custom && state.custom[ymdStr(dt)])) {
+      var dc = derivedMgrCode(dt);
+      if (dc) timeCode = dc;
+    }
+    var time = (c === "X" || c === "P") ? "" : workSub(timeCode, dt);
     if (hol) {
       var what = c === "E" ? "Extra day" : (c === "X" || c === "P") ? "Pre-start" : "Work";
       return { kind: "holiday", label: "💰💰 " + what, sub: hol + " · pays double" + (time ? " · " + time : "") };
@@ -450,6 +677,9 @@
       state.matStart = null;
       state.custom = {};
       state.cache = {};
+      state.mgrRoles = {};
+      state.smTrialEcs = {};
+      state.covLabels = {};
       state.monthYm = found.ym || ymEnd;
       state.view = "soon";
 
@@ -479,6 +709,7 @@
           state.name = (row.name || "").trim().split(" ")[0] || "";
           state.role = row.role || "";
           if (row.role_type === "manager") state.isManager = true;
+          if (state.role) state.mgrRoles[ecUp] = state.role;   // self always known for the lineup
         }
         // SM trial: an active trial makes an AM count as an SM for hours.
         var trials = rr[1] && rr[1].data && rr[1].data.value;
@@ -486,6 +717,10 @@
           return t && t.status === "active" && t.ec && String(t.ec).toUpperCase().trim() === ecUp;
         });
         state.effRole = (state.role === "AM" && onSmTrial) ? "SM" : state.role;
+        // Every active SM trial (for re-deriving OTHER managers' labels too).
+        if (Array.isArray(trials)) trials.forEach(function (t) {
+          if (t && t.status === "active" && t.ec) state.smTrialEcs[String(t.ec).toUpperCase().trim()] = 1;
+        });
         // Per-day custom hours map[ec][ymd].
         var times = rr[2] && rr[2].data && rr[2].data.value;
         if (times && typeof times === "object") {
@@ -500,6 +735,21 @@
           state.matStart = matRow.mat_start || null;
         }
       } catch (_e) {}
+
+      // Split-shift stores re-derive WE/WM/WL labels from who's working each day
+      // (matching Manager Coverage), which needs EVERY manager's role — fetch the
+      // company's manager roles once and match by trimmed/upper code. Only managers
+      // at these stores hit this; techs and plain stores skip it.
+      if (state.isManager && SPLIT_SHIFT_STORES[state.store]) {
+        try {
+          var mr = await sb.from("staff").select("employee_code,role,role_type").eq("role_type", "manager").limit(2000);
+          var mrows = (mr && mr.data) || [];
+          mrows.forEach(function (x) {
+            var up = String(x.employee_code || "").toUpperCase().trim();
+            if (up) state.mgrRoles[up] = x.role || "";
+          });
+        } catch (_e) { state.mgrRoles = {}; }
+      }
 
       // Cross-store day-loans for this person (Manager Coverage / Movements).
       // Without these a borrowed day would wrongly read as "Off".
