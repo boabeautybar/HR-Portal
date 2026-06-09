@@ -14925,7 +14925,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     try { await window.BOA_DB.saveAbscondActions(next); } catch (e) { window.alert("Couldn't update: " + ((e && e.message) || e)); }
   };
   useEffect(() => {
-    if (tab !== "dashboard") return;
+    // Also runs for the Staffing & Shifts report so its "today" figures can
+    // reuse the dashboard's authoritative tech tally (computeTechDayStats).
+    if (tab !== "dashboard" && tab !== "staffingReport") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     let cancelled = false;
     setDashScheduledToday(null);
@@ -15178,8 +15180,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         if (s.onMat || s.onUnpaidLegal || s.offboarded) continue;
         if (!scopedSalonNames.has(s.branch)) continue;
         (techsByBranch[s.branch] = techsByBranch[s.branch] || []).push({
-          ec: String(s.ec).toUpperCase().trim(), name: s.name || s.ec,
-          startDate: s.startDate || null, leftDate: s.leftDate || null
+          ec: String(s.ec).toUpperCase().trim(), name: s.name || s.ec, branch: s.branch,
+          leftDate: s.leftDate || null,
+          // Transfer fields so a mid-cycle transfer is handled exactly like the
+          // dashboard: once the transfer date has passed, the tech's stale work
+          // cells at the OLD branch are ignored (the dashboard drops them too).
+          transferring: !!s.transferring, transferTo: s.transferTo || null,
+          transferDate: s.transferDate ? String(s.transferDate).replace(/\//g, "-") : null
         });
       }
       // Leave (annual / emergency) coverage by EC → quick per-day check.
@@ -15189,16 +15196,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         (leaveByEc[String(lv.ec).toUpperCase().trim()] = leaveByEc[String(lv.ec).toUpperCase().trim()] || []).push([lv.startDate, lv.endDate]);
       });
       const onLeave = (ecU, ymd) => (leaveByEc[ecU] || []).some(([a, b]) => ymd >= a && ymd <= b);
-      const employedOn = (t, ymd) => (!t.startDate || ymd >= t.startDate) && (!t.leftDate || ymd <= t.leftDate);
+      // Active on a date (mirrors the dashboard loader's active-tech filter):
+      // departed once past leftDate; transferred away once the transfer date
+      // passes (the dashboard ignores the old branch's stale cells then too).
+      const activeOn = (t, ymd) =>
+        (!t.leftDate || ymd <= t.leftDate) &&
+        !(t.transferring && t.transferTo && t.transferDate && ymd >= t.transferDate && t.transferTo !== t.branch);
       // Count scheduled techs across all in-scope branches for one calendar date.
+      // techsByBranch holds one entry per tech (at their home branch), so this is
+      // already deduped to one count per person.
       const scheduledFor = (dt) => {
         const ym = schedYmOf(dt), dayNum = dt.getDate(), ymd = ymdOf(dt);
         let n = 0;
         for (const bd of branchData) {
           const grid = bd.schedByYm[ym] || {};
           for (const t of (techsByBranch[bd.name] || [])) {
-            if (!employedOn(t, ymd) || onLeave(t.ec, ymd)) continue;
-            const v = (grid[t.ec] || grid[t.ec.toLowerCase()] || {})[dayNum];
+            if (!activeOn(t, ymd) || onLeave(t.ec, ymd)) continue;
+            const v = (grid[t.ec] || {})[dayNum];
             if (isWorking(v)) n++;
           }
         }
@@ -15211,8 +15225,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         for (const bd of branchData) {
           const grid = bd.attByYm[aym] || {};
           for (const t of (techsByBranch[bd.name] || [])) {
-            if (!employedOn(t, ymd) || onLeave(t.ec, ymd)) continue;
-            let st = (grid[t.ec] || grid[t.ec.toLowerCase()] || {})[dayNum];
+            if (!activeOn(t, ymd) || onLeave(t.ec, ymd)) continue;
+            let st = (grid[t.ec] || {})[dayNum];
             if (st && st.charAt(0) === "~") st = st.slice(1);   // unconfirmed mirror still counts as worked
             if (!st) continue;
             if (PRESENT[st]) worked++;
@@ -16133,6 +16147,67 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       };
     });
   }, [staff, findMatRec, onUnpaidLegalEcs, unpaidLegalRecs, offboardedMap]);
+
+  // Authoritative "nail techs working today" tally, derived from the dashboard
+  // loader's per-branch techByEc map (which already applies kiosk daily sign-off
+  // gating, loan resolution and present/absent classification). Collapses to one
+  // row per EC — dropping leavers / maternity / on-leave and stale wrong-branch
+  // entries after a transfer — so a tech counts exactly once. Shared by the
+  // Dashboard tiles and the Insights → Staffing & Shifts "today" figures so the
+  // two never disagree. Returns null until the loader has populated dtbb.
+  const computeTechDayStats = (dtbb) => {
+    if (!dtbb) return null;
+    const _t = new Date();
+    const _todayYmd = _t.getFullYear() + "-" + String(_t.getMonth() + 1).padStart(2, "0") + "-" + String(_t.getDate()).padStart(2, "0");
+    const enrichedByEc = {};
+    for (const s of (enriched || [])) if (s && s.ec) enrichedByEc[s.ec.trim()] = s;
+    const onLeaveEcs = new Set();
+    for (const lv of (leaveRecs || [])) {
+      if (lv && lv.ec && lv.startDate && lv.endDate && _todayYmd >= lv.startDate && _todayYmd <= lv.endDate) onLeaveEcs.add(lv.ec.trim());
+    }
+    const branchSet = new Set(Object.keys(dtbb));
+    const isOffToday = (er, ecKey) =>
+      (!!(er && er.leftDate && _todayYmd > er.leftDate)) ||
+      (!!(er && (er.onMat || er.onUnpaidLegal))) ||
+      onLeaveEcs.has(ecKey);
+    const effBranchOf = (er) => {
+      if (!er) return null;
+      if (er.transferring && er.transferTo && er.transferDate && _todayYmd >= String(er.transferDate).replace(/\//g, "-")) return er.transferTo;
+      return er.branch || null;
+    };
+    const rank = { in: 2, absent: 1, pending: 0 };
+    const byEc = {};
+    for (const b in dtbb) {
+      if (_hasStoreScope && !scopedSalonNames.has(b)) continue;
+      const tb = (dtbb[b] || {}).techByEc || {};
+      for (const ec in tb) {
+        const ecKey = (ec || "").trim();
+        const er = enrichedByEc[ecKey];
+        if (!er) continue;
+        if (isOffToday(er, ecKey)) continue;
+        const eff = effBranchOf(er);
+        if (eff && branchSet.has(eff) && b !== eff) continue;
+        const status = tb[ec];
+        const cur = byEc[ec];
+        if (!cur || rank[status] > rank[cur.status]) byEc[ec] = { status, branch: eff || b };
+      }
+    }
+    const a = { scheduled: 0, checkedIn: 0, notCheckedIn: 0, absent: 0, notCheckedInList: [], byBranch: {} };
+    for (const ec in byEc) {
+      const { status, branch } = byEc[ec];
+      a.scheduled++;
+      if (branch) a.byBranch[branch] = (a.byBranch[branch] || 0) + 1;
+      if (status === "in") a.checkedIn++;
+      else if (status === "absent") a.absent++;
+      else {
+        a.notCheckedIn++;
+        const er = enrichedByEc[(ec || "").trim()];
+        a.notCheckedInList.push({ ec, name: (er && er.name) || ec, branch });
+      }
+    }
+    a.notCheckedInList.sort((x, y) => (x.branch || "").localeCompare(y.branch || "") || (x.name || "").localeCompare(y.name || ""));
+    return a;
+  };
 
   // Managers don't go through enriched - their state is a flat array loaded
   // from Supabase. To keep the rest of the UI honest about maternity, expose
@@ -17463,72 +17538,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // in-scope branches: how many must work, how many checked in, how
           // many haven't, and how many were marked absent (incl. no-show /
           // sick / FRL).
-          const techToday = (() => {
-            if (!dashTechByBranch) return null;
-            const _t = new Date();
-            const _todayYmd = _t.getFullYear() + "-" + String(_t.getMonth() + 1).padStart(2, "0") + "-" + String(_t.getDate()).padStart(2, "0");
-            const enrichedByEc = {};
-            for (const s of (enriched || [])) if (s && s.ec) enrichedByEc[s.ec.trim()] = s;
-            // ECs whose leave record covers today — the live schedule shows these
-            // as L even when the stored grid the dashboard reads still has a work code.
-            const onLeaveEcs = new Set();
-            for (const lv of (leaveRecs || [])) {
-              if (lv && lv.ec && lv.startDate && lv.endDate && _todayYmd >= lv.startDate && _todayYmd <= lv.endDate) onLeaveEcs.add(lv.ec.trim());
-            }
-            const branchSet = new Set(Object.keys(dashTechByBranch));
-            // A tech isn't really working today — whatever a stale stored grid says
-            // — if they've left, are on maternity / unpaid-legal leave, or have an
-            // annual-leave record over today.
-            const isOffToday = (er, ecKey) =>
-              (!!(er && er.leftDate && _todayYmd > er.leftDate)) ||   // departed (today past last working day)
-              (!!(er && (er.onMat || er.onUnpaidLegal))) ||           // maternity / unpaid-legal leave
-              onLeaveEcs.has(ecKey);                                  // annual leave covering today
-            // Effective home branch today — follows a transfer once its date has
-            // passed. Lets us ignore stale work codes lingering in a branch the
-            // tech no longer (or doesn't yet) work at.
-            const effBranchOf = (er) => {
-              if (!er) return null;
-              if (er.transferring && er.transferTo && er.transferDate && _todayYmd >= String(er.transferDate).replace(/\//g, "-")) return er.transferTo;
-              return er.branch || null;
-            };
-            // Collapse to one row per EC. A real check-in / absent mark outranks a
-            // pending slot, so a transferred tech who checked in at their new
-            // branch isn't flagged "not checked in" at the old one.
-            const rank = { in: 2, absent: 1, pending: 0 };
-            const byEc = {};   // ec -> { status, branch }
-            for (const b in dashTechByBranch) {
-              if (_hasStoreScope && !scopedBranchSet.has(b)) continue;
-              const tb = (dashTechByBranch[b] || {}).techByEc || {};
-              for (const ec in tb) {
-                const ecKey = (ec || "").trim();
-                const er = enrichedByEc[ecKey];
-                if (!er) continue;   // no current staff record — deleted/unknown, skip stale grid key
-                if (isOffToday(er, ecKey)) continue;
-                const eff = effBranchOf(er);
-                if (eff && branchSet.has(eff) && b !== eff) continue;   // stale / wrong-branch grid entry
-                const status = tb[ec];
-                const cur = byEc[ec];
-                if (!cur || rank[status] > rank[cur.status]) byEc[ec] = { status, branch: eff || b };
-              }
-            }
-            const a = { scheduled: 0, checkedIn: 0, notCheckedIn: 0, absent: 0, notCheckedInList: [], byBranch: {} };
-            for (const ec in byEc) {
-              const { status, branch } = byEc[ec];
-              a.scheduled++;
-              if (branch) a.byBranch[branch] = (a.byBranch[branch] || 0) + 1;   // per-branch breakdown sums to a.scheduled
-              if (status === "in") a.checkedIn++;
-              else if (status === "absent") a.absent++;
-              else {
-                a.notCheckedIn++;
-                const er = enrichedByEc[(ec || "").trim()];
-                a.notCheckedInList.push({ ec, name: (er && er.name) || ec, branch });
-              }
-            }
-            a.notCheckedInList.sort((x, y) =>
-              (x.branch || "").localeCompare(y.branch || "") || (x.name || "").localeCompare(y.name || "")
-            );
-            return a;
-          })();
+          const techToday = computeTechDayStats(dashTechByBranch);
 
           // Today's store-openings snapshot (loaded by the useEffect above).
           // null while the first load is in flight; show "…" until data lands.
@@ -26803,14 +26813,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             )}
 
             {sd && !sd.loading && !sd.error && (() => {
-              const c = sd.cycle;
+              // Make TODAY identical to the Dashboard tiles by reusing the same
+              // authoritative tally (computeTechDayStats over the dashboard
+              // loader's data — kiosk sign-off gated, loan-resolved). The
+              // forward/whole-cycle figures keep the report's schedule-based
+              // counts, which now use the same active-tech / transfer / leave
+              // rules as the dashboard so today lines up across the board.
+              const tt = computeTechDayStats(dashTechByBranch);
+              const next7 = sd.next7.map(d => (d.isToday && tt)
+                ? { ...d, scheduled: tt.scheduled, checkedIn: tt.checkedIn, absent: tt.absent }
+                : d);
+              const days = sd.cycle.days.map(r => (r.isToday && tt)
+                ? { ...r, scheduled: tt.scheduled, worked: tt.checkedIn }
+                : r);
+              const toDate = days.filter(r => !r.isFuture);
+              const totalScheduled = days.reduce((a, r) => a + r.scheduled, 0);
+              const totalScheduledToDate = toDate.reduce((a, r) => a + r.scheduled, 0);
+              const totalWorked = toDate.reduce((a, r) => a + (r.worked || 0), 0);
+              const attendanceRate = totalScheduledToDate > 0 ? Math.round((totalWorked / totalScheduledToDate) * 100) : null;
+              const c = { ...sd.cycle, days, totalScheduled, totalScheduledToDate, totalWorked, attendanceRate };
               return (
                 <>
                   {/* ── Next 7 days ── */}
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 800, color: "#831843", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>Next 7 days &middot; nail techs scheduled to work</div>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 10 }}>
-                      {sd.next7.map(d => (
+                      {next7.map(d => (
                         <div key={d.ymd} style={{ ...card, padding: "14px 14px", textAlign: "center", background: d.isToday ? "#e0f2fe" : "#FFFFFF", borderColor: d.isToday ? "#7dd3fc" : "#FBCFE8" }}>
                           <div style={{ fontSize: 11, fontWeight: 800, color: d.isToday ? "#0c4a6e" : "#9d6a82", textTransform: "uppercase", letterSpacing: "0.04em" }}>{d.isToday ? "Today" : d.dow}</div>
                           <div style={{ fontSize: 11, color: "#9d6a82", marginBottom: 6 }}>{d.dayNum} {d.monthShort}</div>
@@ -26875,7 +26903,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       </table>
                     </div>
                     <div style={{ marginTop: 12, fontSize: 11.5, color: "#9d6a82" }}>
-                      “Scheduled” counts active nail techs rostered to work (excludes leave, maternity, and not-yet-started / departed staff). “Worked” counts techs marked present on the attendance sheet (on time, late, extra, trial). Future days show scheduled only. Covers {sd.branchCount} branch{sd.branchCount === 1 ? "" : "es"} · {sd.scopeLabel}.
+                      “Scheduled” counts active nail techs rostered to work (excludes leave, maternity, transferred-away and departed staff). “Worked” counts techs marked present on the attendance sheet (on time, late, extra, trial). <b>Today’s numbers mirror the Dashboard tiles exactly</b> (same kiosk sign-off + clock-in resolution); future days show scheduled only. Covers {sd.branchCount} branch{sd.branchCount === 1 ? "" : "es"} · {sd.scopeLabel}.
                     </div>
                   </div>
                 </>
