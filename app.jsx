@@ -14520,6 +14520,46 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       (offList || []).forEach(o => { if (o.ec && o.leftDate) offByEcX[o.ec] = o.leftDate; });
       const stillInCycleX = (ec) => { const ld = offByEcX[ec]; return !ld || ld >= cycStartYmd; };
       const safe = (p) => p && p.catch ? p.catch(() => null) : Promise.resolve(null);
+      // Leave / unpaid-legal / maternity overlays — the SAME ones schedHint
+      // applies on the attendance sheet. Without these the roll-up's getHint
+      // reads a leave day whose raw schedule cell still says "W" as scheduled
+      // work, then flags it as an unattended scheduled day (no clock-in / no
+      // Fresha) — inflating the "cells need review" count well above the
+      // triangles actually on the sheet. Build them once (they're ec-keyed and
+      // branch-independent) and consult them before the raw schedule mapping.
+      const _onLeaveByEcYmdOv = {};
+      (leaveRecs || []).forEach(lv => {
+        if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return;
+        const ec = String(lv.ec).trim();
+        const _code = lv.emergency ? "el" : "al";
+        for (let cur = new Date(lv.startDate + "T00:00:00"); cur <= new Date(lv.endDate + "T00:00:00"); cur.setDate(cur.getDate() + 1)) {
+          const ymd = cur.getFullYear() + "-" + p2x(cur.getMonth() + 1) + "-" + p2x(cur.getDate());
+          const _bucket = (_onLeaveByEcYmdOv[ec] = _onLeaveByEcYmdOv[ec] || {});
+          if (_bucket[ymd] !== "el") _bucket[ymd] = _code;   // emergency wins
+        }
+      });
+      const _unpaidLegalRangesOv = {};
+      (unpaidLegalRecs || []).forEach(r => {
+        if (!r || !r.ec || r.status !== "on_leave") return;
+        (_unpaidLegalRangesOv[String(r.ec).trim()] = _unpaidLegalRangesOv[String(r.ec).trim()] || []).push({ start: r.startDate || null, end: r.endDate || null });
+      });
+      const _onUnpaidLegalOv = (ec, ymd) => {
+        const ranges = _unpaidLegalRangesOv[String(ec).trim()];
+        if (!ranges || !ymd) return false;
+        return ranges.some(rg => (!rg.start || ymd >= rg.start) && (!rg.end || ymd <= rg.end));
+      };
+      const matStartByEcOv = {};
+      (matRecs || []).forEach(r => {
+        if (!r || !r.ec) return;
+        if (r.matStatus === "on_mat" || r.matStatus === "dates_tbc") matStartByEcOv[String(r.ec).trim()] = r.matStart || null;
+      });
+      const _onMatDayOv = (ec, ymd) => {
+        const ecT = String(ec).trim();
+        if (!onMatEcs.has(ecT)) return false;
+        const ms = matStartByEcOv[ecT];
+        if (!ms) return true;            // no start date on file → whole row is maternity
+        return !ymd || ymd >= ms;        // otherwise only days on/after the start date
+      };
       const results = {};
       await Promise.all(SALONS.map(async (sl) => {
         const branch = sl.name;
@@ -14568,7 +14608,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           };
           const bSched = { ...((sch && sch.grid) || {}), ...reKey((mgrSch && mgrSch.grid) || {}) };
           const bStaff = staff.filter(p => p.branch === branch && stillInCycleX(p.ec));
-          const getHint = (ec, d) => {
+          const getHint = (ec, dy) => {
+            const ecT = String(ec).trim();
+            // Overlays first — mirror schedHint so leave / unpaid-legal /
+            // maternity days don't read as scheduled work.
+            if (_onMatDayOv(ecT, dy.ymd)) return "mat";
+            const _lc = (_onLeaveByEcYmdOv[ecT] || {})[dy.ymd];
+            if (_lc) return _lc;                          // 'al' (annual) or 'el' (emergency)
+            if (_onUnpaidLegalOv(ecT, dy.ymd)) return "el";
+            const d = dy.d;
             const sv = bSched[ec] && bSched[ec][d];
             if (!sv) return null;
             if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL") return "on";
@@ -14593,7 +14641,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const rawV = (bGrid[s.ec] && bGrid[s.ec][dy.d]) || null;
               const bareV = rawV ? (rawV.charAt(0) === "~" ? rawV.slice(1) : rawV) : "";
               const override = !!rawV && rawV.indexOf("~") !== 0;
-              const hint = getHint(s.ec, dy.d);
+              const hint = getHint(s.ec, dy);
               const scheduleSaysWork = hint === "on" || hint === "ext";
               const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i";
               const isLate = bareV === "late";
