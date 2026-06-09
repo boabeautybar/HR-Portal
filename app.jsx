@@ -3573,6 +3573,24 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     return out;
   }, [techRequests, branch, days]);
 
+  // Emergency (unpaid) leave days for the visible staff. The saved grid stores a
+  // generic "L" for ALL leave, so we cross-reference the Leave Planner records to
+  // paint emergency leave distinctly (orange "EL") instead of the same grey "L"
+  // used for paid annual leave. Render-only — the grid still stores "L".
+  const emergencyLeaveSet = useMemo(() => {
+    const set = new Set();
+    (leaveRecs || []).forEach(lv => {
+      if (!lv || !lv.emergency || !lv.ec || !lv.startDate || !lv.endDate) return;
+      const sd = new Date(lv.startDate + "T00:00:00"), ed = new Date(lv.endDate + "T00:00:00");
+      if (isNaN(sd.getTime()) || isNaN(ed.getTime())) return;
+      for (let cur = new Date(sd); cur <= ed; cur.setDate(cur.getDate() + 1)) {
+        const ymd = cur.getFullYear() + "-" + String(cur.getMonth() + 1).padStart(2, "0") + "-" + String(cur.getDate()).padStart(2, "0");
+        set.add(String(lv.ec).trim() + "|" + ymd);
+      }
+    });
+    return set;
+  }, [leaveRecs]);
+
   const cycle = ["W", "WE", "WL", "O", "R", "L", "E", "X", "trial", ""];
   const cellStyle = (z) => {
     if (z === "W") return { background: "#dcfce7", color: "#14532d" };
@@ -6603,6 +6621,10 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         // the schedule without waiting for an auto-fill or
                         // sync pass to stamp X.
                         const dYmd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
+                        // Emergency (unpaid) leave: the grid stores a generic "L"
+                        // for all leave, so flag days inside an emergency Leave
+                        // Planner record to paint them orange "EL" (vs grey "L").
+                        const isEmergLeave = v === "L" && emergencyLeaveSet.has(String(s.ec).trim() + "|" + dYmd);
                         const isPastLeft = isLeaving && dYmd > s.leftDate;
                         // Pre-start: a tech only appears on the schedule from
                         // their start date. Days before it render as a locked
@@ -6653,7 +6675,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                               ? { background: "#fef3c7", color: "#92400e" }   // amber — moving out
                               : transferEdge === "in"
                                 ? { background: "#dbeafe", color: "#1e40af" }   // blue — coming in
-                                : _loanCell || cellStyle(v);
+                                : _loanCell || (isEmergLeave ? { background: "#fed7aa", color: "#9a3412", fontWeight: 700 } : cellStyle(v));
                         // Drag-drop visual states
                         const isSrc = dragSource && dragSource.ec === s.ec && dragSource.day === d.d;
                         const isValidDrop = !cellLocked && isValidDropTarget(s.ec, d.d);
@@ -6674,7 +6696,9 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                                 ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · arriving from ${transferOtherBranch} on ${_xferDate} — pre-transfer days are still on the source schedule`
                                 : _loanCell
                                   ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · working at ${_outgoingLoan.toBranch} (cross-store)`
-                                  : `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · click to cycle, drag to swap within the week${requested ? ' · 📝 day-off requested' + (requestUnapplied ? ' (not yet on grid)' : '') : ''}`;
+                                  : isEmergLeave
+                                    ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · Emergency leave (unpaid)`
+                                    : `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · click to cycle, drag to swap within the week${requested ? ' · 📝 day-off requested' + (requestUnapplied ? ' (not yet on grid)' : '') : ''}`;
                         return (
                           <td key={s.ec + '-' + d.d}
                             draggable={!cellLocked && !!v}
@@ -6702,7 +6726,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                                         →{_outgoingLoan.toBranch === "Green Point" ? "GP" : _outgoingLoan.toBranch.slice(0, 4)}
                                       </span>
                                     )
-                                      : v}
+                                      : isEmergLeave ? "EL" : v}
                             {requestUnapplied && !cellLocked && (
                               <span style={{ position: "absolute", top: 1, right: 2, fontSize: 8, lineHeight: 1, color: "#BE185D", pointerEvents: "none" }}>📝</span>
                             )}
@@ -24134,6 +24158,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
         });
 
+        // Unpaid legal-status leave (Compliance → Unpaid Leave (Legal)): permit /
+        // asylum / passport expired, so the tech can't work and isn't paid. These
+        // records live in their OWN store (boa_unpaid_legal_v1), NOT the Leave
+        // Planner — so they produce no leaveRecs entry and the day falls through
+        // to the schedule's generic "L", rendering as paid Annual. Surface the
+        // leave window (status on_leave, startDate..endDate) so it shows as unpaid
+        // emergency leave (el) on the sheet and counts as unpaid in payroll.
+        const _unpaidLegalRanges = {};
+        (unpaidLegalRecs || []).forEach(r => {
+          if (!r || !r.ec || r.status !== "on_leave") return;
+          const ec = String(r.ec).trim();
+          (_unpaidLegalRanges[ec] = _unpaidLegalRanges[ec] || []).push({ start: r.startDate || null, end: r.endDate || null });
+        });
+        const _onUnpaidLegal = (ec, ymd) => {
+          const ranges = _unpaidLegalRanges[String(ec).trim()];
+          if (!ranges || !ymd) return false;
+          return ranges.some(rg => (!rg.start || ymd >= rg.start) && (!rg.end || ymd <= rg.end));
+        };
+
         // Extra-Day overlay. The kiosk records Extra Day approvals only in the
         // boa_extras sidecar, keyed dayKey → ec where dayKey is the DAY-OF-MONTH
         // string (same keying as attGrid/attSched), independent of the tech's
@@ -24219,6 +24262,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // pre-approved leave day shouldn't get reverted).
               const _gv = attGrid[ec] && attGrid[ec][d];
               if (!_gv) return _lc;   // 'el' (emergency, unpaid) or 'al' (annual)
+            }
+          }
+          // Unpaid legal-status leave overlay (Compliance). Like the leave
+          // overlay above it wins over the schedule's generic "L"/Annual but
+          // defers to an admin-edited cell. Rendered as unpaid emergency leave.
+          {
+            const _do = days.find(x => x.d === d);
+            if (_do && _onUnpaidLegal(ec, _do.ymd)) {
+              const _gv = attGrid[ec] && attGrid[ec][d];
+              if (!_gv) return "el";
             }
           }
           // Tech-loan override: the home branch's loaned-out cell mirrors
@@ -24386,6 +24439,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const _hoSchedWork = _hoSched === "W" || _hoSched === "WE" || _hoSched === "WL" || _hoSched === "WM" || _hoSched === "WB" || _hoSched === "E";
           if (dayObj && _mgrEcToStaffId[ec] && _hoSchedWork && _mgrCheckedIn(ec, dayObj.ymd)) return true;
           if (dayObj && (_onLeaveByEcYmd[String(ec).trim()] || {})[dayObj.ymd] && !(attGrid[ec] && attGrid[ec][d])) return true;
+          if (dayObj && _onUnpaidLegal(ec, dayObj.ymd) && !(attGrid[ec] && attGrid[ec][d])) return true;
           if (_isMgrPhantomPresence(ec, d)) return false;     // unbacked manager 'On Time' — not a real override
           const v = attGrid[ec] && attGrid[ec][d];
           return !!v && v.indexOf("~") !== 0;
@@ -24400,6 +24454,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const _do = days.find(x => x.d === d);
             const _lc = _do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd];
             if (_lc) return _lc;   // 'el' (emergency, unpaid) or 'al' (annual)
+            if (_do && _onUnpaidLegal(ec, _do.ymd)) return "el";   // unpaid legal-status leave
           }
           const sv = attSched[ec] && attSched[ec][d];
           if (!sv) {
