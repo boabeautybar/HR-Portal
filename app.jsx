@@ -14680,8 +14680,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const ymd = cur.getFullYear() + "-" + pp(cur.getMonth() + 1) + "-" + pp(cur.getDate());
             if (ymd >= s.transferDate) continue;                 // only pre-transfer days
             const dom = cur.getDate();
-            if (gRow[dom] == null && srcRow[dom] != null) gRow[dom] = srcRow[dom];
-            if (sRow[dom] == null && srcSchRow[dom] != null) sRow[dom] = srcSchRow[dom];
+            // Pre-transfer days belong to the OLD branch — it's authoritative.
+            // The tech wasn't at the new branch yet, so any cell the new branch
+            // happens to carry for these days is stray and must NOT win: a
+            // full-row "W" stamped on the new branch was overriding her real
+            // old-branch off-day, making it read as On Time. Let the old branch's
+            // schedule/attendance override where it has a value. (We don't clear
+            // when the old branch is blank, since tech working days are often a
+            // blank that defaults to "W" — clearing would hide a real shift.)
+            if (srcRow[dom] != null) gRow[dom] = srcRow[dom];
+            if (srcSchRow[dom] != null) sRow[dom] = srcSchRow[dom];
             if (fRow[dom] == null && srcFwRow[dom] != null) fRow[dom] = srcFwRow[dom];
           }
           mergedGrid[ec] = gRow;
