@@ -23994,6 +23994,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // in the saved schedule grid (which may still have legacy 'L'
         // codes for them).
         const onMatEcs = new Set(attStaff.filter(s => s.onMat).map(s => s.ec));
+        // Maternity START date per ec (from the joined maternity record). The
+        // schedule already schedules these techs normally up to matStart and only
+        // shows 'ML' from it (see resolveMatStatus) — but the attendance sheet was
+        // painting the WHOLE row 'mat'. Honour matStart here too: a day is only
+        // maternity on/after the start date. When no start date is on record
+        // (dates_tbc / null) we keep the old full-row behaviour.
+        const matStartByEc = {};
+        attStaff.filter(s => s.onMat).forEach(s => {
+          matStartByEc[String(s.ec).trim()] = (s.matRec && s.matRec.matStart) || s.matStart || null;
+        });
+        const _onMatDay = (ec, ymd) => {
+          if (!onMatEcs.has(ec)) return false;
+          const ms = matStartByEc[String(ec).trim()];
+          if (!ms) return true;            // no start date on file → whole row is maternity
+          return !ymd || ymd >= ms;        // otherwise only days on/after the start date
+        };
         // ROM-managed absence reasons. Build an ec → ymd → status code
         // lookup so getStatus() can overlay a manager's day with the ROM's
         // recorded reason (sick_n / sick / frl / al / absent / no / off).
@@ -24278,10 +24294,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const _do = days.find(x => x.d === d);
             const _lc = _do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd];
             if (_lc) {
-              // Admin-edited cell still wins (e.g. "Sick + note" on top of a
-              // pre-approved leave day shouldn't get reverted).
+              // Defer to a genuine admin status (e.g. "Sick + note" recorded on
+              // top of a pre-approved leave day) — but NOT to a plain leave code.
+              // Auto-fill mirrors the schedule's generic "L" into the grid as a
+              // (usually faded) 'al', which must not mask the leave record's own
+              // classification: an emergency (unpaid) day would otherwise show as
+              // paid Annual. So 'al'/'el' cells are overridden by the record.
               const _gv = attGrid[ec] && attGrid[ec][d];
-              if (!_gv) return _lc;   // 'el' (emergency, unpaid) or 'al' (annual)
+              const _gvBare = _gv ? (_gv.indexOf("~") === 0 ? _gv.slice(1) : _gv) : "";
+              if (!_gvBare || _gvBare === "al" || _gvBare === "el") return _lc;   // 'el' (emergency, unpaid) or 'al' (annual)
             }
           }
           // Unpaid legal-status leave overlay (Compliance). Like the leave
@@ -24291,7 +24312,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const _do = days.find(x => x.d === d);
             if (_do && _onUnpaidLegal(ec, _do.ymd)) {
               const _gv = attGrid[ec] && attGrid[ec][d];
-              if (!_gv) return "el";
+              const _gvBare = _gv ? (_gv.indexOf("~") === 0 ? _gv.slice(1) : _gv) : "";
+              if (!_gvBare || _gvBare === "al" || _gvBare === "el") return "el";
             }
           }
           // Tech-loan override: the home branch's loaned-out cell mirrors
@@ -24354,8 +24376,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // 'L'/'al' for them before maternity was tracked separately —
           // those stale values must NOT bleed through as 'Annual'.
           // Checked before attGrid so any pre-mat overrides are ignored
-          // once the staff record is flagged onMat.
-          if (onMatEcs.has(ec)) return "mat";
+          // once the staff record is flagged onMat — but only from matStart
+          // onward, so days she actually worked before going on leave are kept.
+          if (_onMatDay(ec, dayObj && dayObj.ymd)) return "mat";
 
           const v = attGrid[ec] && attGrid[ec][d];
           if (v && !_isMgrPhantomPresence(ec, d)) {
@@ -24466,7 +24489,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         };
         const schedHint = (ec, d) => {
           if (mirrorSuppressed) return null;        // hide schedule signal after a Total Reset
-          if (onMatEcs.has(ec)) return "mat";       // maternity row — every day mirrors as 'mat'
+          if (_onMatDay(ec, (days.find(x => x.d === d) || {}).ymd)) return "mat";  // maternity — only from matStart onward
           // Leave Planner overlay — same idea as in getStatus. A leave day
           // granted via the planner reads as 'al' on the schedule strip even
           // if the saved schedule grid still has W/WL/WE for that day.
@@ -25236,7 +25259,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // is the explicit "rebuild from schedule" action so we read the
           // schedule directly here, bypassing the suppressed schedHint.
           const rawHintFor = (ec, d) => {
-            if (onMatEcs.has(ec)) return "mat";
+            if (_onMatDay(ec, (days.find(x => x.d === d) || {}).ymd)) return "mat";
             const sv = attSched[ec] && attSched[ec][d];
             if (!sv) return null;
             if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL") return "on";
