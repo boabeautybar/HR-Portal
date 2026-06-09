@@ -15069,6 +15069,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               if (destSt) st = destSt;
             }
           }
+          // Cross-branch check-in fallback (covers transfers, not just formal
+          // loans). A recently-transferred tech often clocks in at the branch
+          // they actually work now while their record still points here — so
+          // their home grid shows no status and they read as "not checked in"
+          // even though they're present. If we still have nothing, look for a
+          // real status under this EC at any OTHER signed-off branch. ECs are
+          // unique per person, so a present/absent mark elsewhere is genuinely
+          // theirs.
+          if (!st) {
+            const ecVariants = [ec, ecT, ecT.toLowerCase()];
+            for (const _b in attByBranch) {
+              if (_b === name || !signedOffSet.has(_b)) continue;
+              const g = attByBranch[_b] || {};
+              let oSt = null;
+              for (const k of ecVariants) { if (g[k] && g[k][todayDay]) { oSt = g[k][todayDay]; break; } }
+              if (oSt && oSt.indexOf("~") === 0) oSt = "";
+              if (oSt && (PRESENT[oSt] || ABSENT[oSt])) { st = oSt; break; }
+            }
+          }
           if (st && PRESENT[st]) { tCheckedIn++; techByEc[ec] = "in"; }
           else if (st && ABSENT[st]) { tAbsent++; techByEc[ec] = "absent"; }
           else { techByEc[ec] = "pending"; }
