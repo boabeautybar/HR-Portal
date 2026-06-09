@@ -24134,6 +24134,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
         });
 
+        // Unpaid legal-status leave (Compliance → Unpaid Leave (Legal)): permit /
+        // asylum / passport expired, so the tech can't work and isn't paid. These
+        // records live in their OWN store (boa_unpaid_legal_v1), NOT the Leave
+        // Planner — so they produce no leaveRecs entry and the day falls through
+        // to the schedule's generic "L", rendering as paid Annual. Surface the
+        // leave window (status on_leave, startDate..endDate) so it shows as unpaid
+        // emergency leave (el) on the sheet and counts as unpaid in payroll.
+        const _unpaidLegalRanges = {};
+        (unpaidLegalRecs || []).forEach(r => {
+          if (!r || !r.ec || r.status !== "on_leave") return;
+          const ec = String(r.ec).trim();
+          (_unpaidLegalRanges[ec] = _unpaidLegalRanges[ec] || []).push({ start: r.startDate || null, end: r.endDate || null });
+        });
+        const _onUnpaidLegal = (ec, ymd) => {
+          const ranges = _unpaidLegalRanges[String(ec).trim()];
+          if (!ranges || !ymd) return false;
+          return ranges.some(rg => (!rg.start || ymd >= rg.start) && (!rg.end || ymd <= rg.end));
+        };
+
         // Extra-Day overlay. The kiosk records Extra Day approvals only in the
         // boa_extras sidecar, keyed dayKey → ec where dayKey is the DAY-OF-MONTH
         // string (same keying as attGrid/attSched), independent of the tech's
@@ -24219,6 +24238,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // pre-approved leave day shouldn't get reverted).
               const _gv = attGrid[ec] && attGrid[ec][d];
               if (!_gv) return _lc;   // 'el' (emergency, unpaid) or 'al' (annual)
+            }
+          }
+          // Unpaid legal-status leave overlay (Compliance). Like the leave
+          // overlay above it wins over the schedule's generic "L"/Annual but
+          // defers to an admin-edited cell. Rendered as unpaid emergency leave.
+          {
+            const _do = days.find(x => x.d === d);
+            if (_do && _onUnpaidLegal(ec, _do.ymd)) {
+              const _gv = attGrid[ec] && attGrid[ec][d];
+              if (!_gv) return "el";
             }
           }
           // Tech-loan override: the home branch's loaned-out cell mirrors
@@ -24386,6 +24415,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const _hoSchedWork = _hoSched === "W" || _hoSched === "WE" || _hoSched === "WL" || _hoSched === "WM" || _hoSched === "WB" || _hoSched === "E";
           if (dayObj && _mgrEcToStaffId[ec] && _hoSchedWork && _mgrCheckedIn(ec, dayObj.ymd)) return true;
           if (dayObj && (_onLeaveByEcYmd[String(ec).trim()] || {})[dayObj.ymd] && !(attGrid[ec] && attGrid[ec][d])) return true;
+          if (dayObj && _onUnpaidLegal(ec, dayObj.ymd) && !(attGrid[ec] && attGrid[ec][d])) return true;
           if (_isMgrPhantomPresence(ec, d)) return false;     // unbacked manager 'On Time' — not a real override
           const v = attGrid[ec] && attGrid[ec][d];
           return !!v && v.indexOf("~") !== 0;
@@ -24400,6 +24430,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const _do = days.find(x => x.d === d);
             const _lc = _do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd];
             if (_lc) return _lc;   // 'el' (emergency, unpaid) or 'al' (annual)
+            if (_do && _onUnpaidLegal(ec, _do.ymd)) return "el";   // unpaid legal-status leave
           }
           const sv = attSched[ec] && attSched[ec][d];
           if (!sv) {
