@@ -7756,6 +7756,24 @@ function AppGate() {
             if (!st.includes("trialPeriod")) u.showTabs = [...st, "trialPeriod"];
           }
         });
+        // V3c migration: Rochelle (3030) & Farida (4040) don't just VIEW the
+        // Trial Period tab — they run the trials, so they must be able to EDIT
+        // it (set start dates, mark the trial days). The earlier grant only
+        // made it visible; if the tab is stuck view-only (in readOnlyTabs) or
+        // hidden (in hideTabs) for them, the day editor's saves are silently
+        // blocked by the read-only guard. Force full edit access. Runs once each.
+        Object.keys(dynamic).forEach(pin => {
+          const u = dynamic[pin];
+          if (u._trialEditMigrated) return;
+          u._trialEditMigrated = true;
+          dashMigrated = true;
+          if (pin === "3030" || pin === "4040") {
+            if (Array.isArray(u.readOnlyTabs)) u.readOnlyTabs = u.readOnlyTabs.filter(t => t !== "trialPeriod");
+            if (Array.isArray(u.hideTabs)) u.hideTabs = u.hideTabs.filter(t => t !== "trialPeriod");
+            const st = Array.isArray(u.showTabs) ? u.showTabs : [];
+            if (!st.includes("trialPeriod")) u.showTabs = [...st, "trialPeriod"];
+          }
+        });
         if (dashMigrated) { try { await saveAppUsersToDb(dynamic); } catch (_) { } }
       }
       if (cancelled) return;
