@@ -24061,6 +24061,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         (staff || []).forEach(s => { const e = String(s.ec || "").trim(); if (e && s.startDate) startByEc[e] = s.startDate; });
         (managers || []).forEach(m => { const e = String(m.ec || "").trim(); if (e && m.startDate) startByEc[e] = m.startDate; });
         (obList || []).forEach(o => { const e = String(o.ec || "").trim(); if (e && o.startDate) startByEc[e] = o.startDate; });
+        // Phantom-manager-presence guard. A manager 'On Time'/'Late' baked into
+        // the attendance grid with NO backing kiosk clock-in for that date AND
+        // no scheduled shift is a stale artifact: a clock-in mis-filed one
+        // payroll cycle forward (start-month vs end-month keying) surfaces as a
+        // phantom 'On Time' on the SAME day-of-month of the NEXT cycle (e.g. a
+        // 9 June clock-in showing again on 9 July). A manager's real worked day
+        // always carries a clock-in (or at least a rostered shift), so an
+        // unbacked cell is ignored here — this clears it from the cell, tooltip,
+        // solid styling AND the payroll totals (all flow through getStatus).
+        // Scoped to the loaded clock-in window so distant historical cells we
+        // can't verify against a clock-in are left untouched.
+        const _isMgrPhantomPresence = (ec, d) => {
+          if (!_mgrEcToStaffId[ec]) return false;            // managers only
+          const cell = attGrid[ec] && attGrid[ec][d];
+          if (!cell) return false;
+          const bare = cell.indexOf("~") === 0 ? cell.slice(1) : cell;
+          if (bare !== "on" && bare !== "late") return false; // only presence cells can be phantoms
+          const sv = attSched[ec] && attSched[ec][d];
+          if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL" || sv === "E") return false; // genuinely rostered
+          const dayObj = days.find(x => x.d === d);
+          if (!dayObj) return false;
+          if (dayObj.ymd < _mgrCheckinFromYmd) return false;  // outside loaded clock-in window — can't verify, leave as-is
+          return !_mgrCheckedIn(ec, dayObj.ymd);              // phantom only when there's no real clock-in
+        };
         const getStatus = (ec, d) => {
           // If the schedule was later corrected to OFF for this day, any
           // stale ROM-recorded reason (sick / absent / FRL / etc.) is
@@ -24165,7 +24189,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (onMatEcs.has(ec)) return "mat";
 
           const v = attGrid[ec] && attGrid[ec][d];
-          if (v) {
+          if (v && !_isMgrPhantomPresence(ec, d)) {
             const _bareV = v.indexOf("~") === 0 ? v.slice(1) : v;
             // Extra-day stickiness: when the kiosk recorded an Extra Day
             // for this tech (kioskAbs.status === "ext"), an on/late status
@@ -24256,6 +24280,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const _hoSchedWork = _hoSched === "W" || _hoSched === "WE" || _hoSched === "WL" || _hoSched === "WM" || _hoSched === "WB" || _hoSched === "E";
           if (dayObj && _mgrEcToStaffId[ec] && _hoSchedWork && _mgrCheckedIn(ec, dayObj.ymd)) return true;
           if (dayObj && (_onLeaveByEcYmd[String(ec).trim()] || {})[dayObj.ymd] && !(attGrid[ec] && attGrid[ec][d])) return true;
+          if (_isMgrPhantomPresence(ec, d)) return false;     // unbacked manager 'On Time' — not a real override
           const v = attGrid[ec] && attGrid[ec][d];
           return !!v && v.indexOf("~") !== 0;
         };
