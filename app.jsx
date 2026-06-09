@@ -15010,6 +15010,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const isWorking = (v) => v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E";
       const PRESENT = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1 };
       const ABSENT = { absent: 1, no: 1, sick: 1, sick_n: 1, frl: 1 };
+      // Attendance-sheet statuses that mean "not working today" — they override
+      // a roster work cell (a swapped-out shift, a day off, public holiday,
+      // leave or a termination keyed straight onto the sheet). A tech marked
+      // like this isn't scheduled today and must not be flagged "not checked in".
+      const OFF_OVERRIDE = { off: 1, swap_o: 1, al: 1, el: 1, ph: 1, mat: 1, term: 1, unpaid: 1 };
       // Branch → attGrid lookup so the per-branch compute below can
       // peek at a loaned-out tech's status at the destination branch.
       const attByBranch = {};
@@ -15054,6 +15059,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (_onLeaveToday.has(ecT)) continue;       // on annual / emergency leave today
           const v = techGrid[ec][todayDay];
           if (!isWorking(v)) continue;
+          // Respect an attendance-sheet OFF override (swap-out / day off / PH /
+          // leave / term) the same way the sheet does — the tech isn't working
+          // today, so don't count them as scheduled or "not checked in". Read it
+          // UNGATED by daily sign-off: an off mark isn't a kiosk check-in.
+          let _offChk = attGrid[ec] && attGrid[ec][todayDay];
+          if (_offChk && _offChk.charAt(0) === "~") _offChk = _offChk.slice(1);
+          if (_offChk && OFF_OVERRIDE[_offChk]) continue;
           count++; tScheduled++;
           let st = _branchSubmitted ? (attGrid[ec] && attGrid[ec][todayDay]) : null;
           if (st && st.indexOf("~") === 0) st = "";   // unconfirmed mirror ≠ a real check-in
