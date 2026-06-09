@@ -751,6 +751,65 @@
     return newValue;
   }
 
+  // Make "Confirm and submit attendance" actually submit a complete record.
+  // A kiosk-log entry is only written when a status is actively TAPPED (in
+  // setAttendanceStatus). A status that was already showing on the tile — a
+  // pre-filled grid value, or one whose original log-write failed (the log
+  // push above is non-fatal) — leaves NO log entry, even though the day reads
+  // as confirmed. The HR portal's Nail Tech Check-ins tab and the attendance
+  // tooltip read only this log, so such a tech shows "no check-in recorded"
+  // despite the kiosk/cell showing them present. At sign-off we reconcile:
+  // for every tech with a status in the attendance grid for this day that the
+  // log doesn't already reflect, append an entry so the log is complete.
+  async function backfillCheckinLog(ym, dayKey) {
+    var c = client(); if (!c) return 0;
+    try {
+      var cycSuffix = attKey(ym).split("_").pop();           // "YYYY-MM"
+      var cycP = cycSuffix.split("-");
+      var cycY = +cycP[0], cycM = +cycP[1];
+      var dayN = parseInt(dayKey, 10);
+      var dt;
+      if (dayN >= 25) { dt = new Date(cycY, cycM - 1, dayN); }
+      else { var nm = cycM + 1, ny = cycY; if (nm > 12) { nm = 1; ny += 1; } dt = new Date(ny, nm - 1, dayN); }
+      var ymd = dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
+
+      var att = await getAttendance(ym);
+      var grid = (att && att.grid) || {};
+      var logKey = "boa_kiosk_log_" + branch() + "_" + cycSuffix;
+      var lr = await c.from("app_state").select("value").eq("key", logKey).maybeSingle();
+      var log = (lr.data && Array.isArray(lr.data.value)) ? lr.data.value : [];
+
+      // Latest log status per ec for THIS day (so we don't duplicate or
+      // resurrect a deliberately-cleared mark).
+      var latestByEc = {};
+      for (var i = 0; i < log.length; i++) {
+        var e = log[i];
+        if (!e || e.ymd !== ymd || !e.ec) continue;
+        var prev = latestByEc[e.ec];
+        if (!prev || String(e.ts) > String(prev.ts)) latestByEc[e.ec] = e;
+      }
+
+      var now = new Date().toISOString(), added = 0;
+      Object.keys(grid).forEach(function (ec) {
+        var raw = grid[ec] && grid[ec][dayKey];
+        if (!raw) return;
+        var bare = String(raw).charAt(0) === "~" ? String(raw).slice(1) : String(raw);
+        var latest = latestByEc[ec];
+        // Already reflected, or the manager explicitly cleared it — leave alone.
+        if (latest && (latest.status === bare || latest.status === "(cleared)")) return;
+        log.push({ ec: ec, dayKey: String(dayKey), ymd: ymd, status: bare, note: null, hasProof: false, proofKey: null, ts: now, _backfill: true });
+        added++;
+      });
+
+      if (added > 0) {
+        if (log.length > 5000) log = log.slice(-5000);
+        var up = await c.from("app_state").upsert({ key: logKey, value: log });
+        if (up.error) console.warn("backfillCheckinLog upsert:", up.error);
+      }
+      return added;
+    } catch (e) { console.warn("backfillCheckinLog (non-fatal):", e); return 0; }
+  }
+
   // ---------- Swap registry ----------
   async function getSwaps(ym) {
     var c = client(); if (!c) return [];
@@ -1514,7 +1573,7 @@
     todaysCashup: todaysCashup, cashupForDate: cashupForDate, outstandingCashupDates: outstandingCashupDates, addCashup: addCashup, listRecentCashups: listRecentCashups,
     currentSchedYm: currentSchedYm, periodLabel: periodLabel, periodDays: periodDays, getSchedule: getSchedule, getSchedulesForBranches: getSchedulesForBranches, getMgrTimes: getMgrTimes,
     ymForDate: ymForDate, endOfSchedulePeriod: endOfSchedulePeriod,
-    getAttendance: getAttendance, setAttendanceStatus: setAttendanceStatus,
+    getAttendance: getAttendance, setAttendanceStatus: setAttendanceStatus, backfillCheckinLog: backfillCheckinLog,
     loadFRL: loadFRL, frlMarkGuard: frlMarkGuard,
     getSwaps: getSwaps, recordSwap: recordSwap, undoSwap: undoSwap,
     getExtras: getExtras, recordExtraDay: recordExtraDay,

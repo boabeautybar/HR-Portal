@@ -2304,6 +2304,10 @@
         if (!ok) return;
         subBtn.disabled = true;
         try {
+          // Submit a COMPLETE record: ensure every confirmed tech has a kiosk-log
+          // entry (it's otherwise only written when a status is actively tapped),
+          // so the HR portal's Check-ins tab + attendance tooltip match the day.
+          try { await window.APP_DATA.backfillCheckinLog(ym, dayKey); } catch (_e) {}
           await window.APP_DATA.saveDailyRecord(date, nameEl.value, roleEl.value, total);
           await renderDay();
         } catch (e) {
