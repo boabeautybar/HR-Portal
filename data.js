@@ -1806,6 +1806,25 @@
     return v;
   }
 
+  // Persist the attendance sheet's own warning tally ({ total, reviewed, open })
+  // so the Payroll Progress roll-up can show the SAME numbers the sheet shows.
+  // The roll-up otherwise re-derives the count from the raw saved grid and
+  // drifts from the sheet's resolved view (getStatus/schedHint overlays,
+  // auto-fill, reviews), which is what made e.g. Sea Point read 31 when the
+  // sheet showed 7. We only annotate an EXISTING attendance record — never
+  // create an empty one — and merge so no sidecar field is clobbered.
+  async function saveAttWarningCounts(branch, ym, counts) {
+    var key = "boa_att_" + branch + "_" + ym;
+    var prior = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
+    if (prior.error) { console.error("saveAttWarningCounts:", prior.error); return null; }
+    var priorVal = prior.data && prior.data.value;
+    if (!priorVal) return null;     // no attendance record yet for this cycle → nothing to annotate
+    priorVal.warningCounts = counts || null;
+    var res = await sb.from("app_state").upsert({ key: key, value: priorVal });
+    if (res.error) throw res.error;
+    return priorVal;
+  }
+
   // ---------- Attendance undo (boa_attundo_<branch>_<ym>) ----------
   // A single persisted "previous state" snapshot per branch + cycle so the
   // Attendance sheet's Undo survives a page reload and works across users —
@@ -2067,6 +2086,7 @@
     // Attendance
     loadAttendance: loadAttendance,
     saveAttendance: saveAttendance,
+    saveAttWarningCounts: saveAttWarningCounts,
     saveAttendanceUndo: saveAttendanceUndo,
     loadAttendanceUndo: loadAttendanceUndo,
     clearAttendanceUndo: clearAttendanceUndo,

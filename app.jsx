@@ -14677,7 +14677,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               }
             }
           }
-          results[branch] = { total, reviewed, open: total - reviewed };
+          // Prefer the attendance sheet's OWN tally when it has published one
+          // for this cycle (att.warningCounts) — that's the source of truth and
+          // matches the ⚠ triangles exactly. The raw-grid re-derivation above
+          // only resolves leave/maternity overlays, not the sheet's full
+          // getStatus view, so it drifts; we fall back to it (flagged approx)
+          // only for branches whose sheet hasn't been opened this cycle yet.
+          const pc = att && att.warningCounts;
+          if (pc && typeof pc.total === "number") {
+            const rv = (typeof pc.reviewed === "number") ? pc.reviewed : 0;
+            results[branch] = { total: pc.total, reviewed: rv, open: (typeof pc.open === "number") ? pc.open : (pc.total - rv) };
+          } else {
+            results[branch] = { total, reviewed, open: total - reviewed, approx: true };
+          }
         } catch (e) { results[branch] = { error: (e && e.message) || String(e), total: 0, reviewed: 0, open: 0 }; }
       }));
       const totalCount = Object.values(results).reduce((a, r) => a + ((r && r.total) || 0), 0);
@@ -25705,6 +25717,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           return { total, reviewed, open: total - reviewed };
         })();
 
+        // Publish this sheet's authoritative tally so the Payroll Progress
+        // roll-up shows the SAME numbers instead of re-deriving them from the
+        // raw grid (which drifts — e.g. it counted 31 for Sea Point when the
+        // sheet shows 7). Fire-and-forget, deferred out of render, and guarded
+        // by a signature cache so it writes only when the count actually
+        // changes (no save loop). Skip while loading so we never persist a
+        // half-built grid's count.
+        if (!attLoading && window.BOA_DB && window.BOA_DB.saveAttWarningCounts) {
+          const _wcKey = attBranch + "|" + attYM;
+          const _wcSig = warningCounts.total + ":" + warningCounts.reviewed + ":" + warningCounts.open;
+          window.__boaWcSaved = window.__boaWcSaved || {};
+          if (window.__boaWcSaved[_wcKey] !== _wcSig) {
+            window.__boaWcSaved[_wcKey] = _wcSig;
+            Promise.resolve().then(() => window.BOA_DB.saveAttWarningCounts(attBranch, attYM, {
+              total: warningCounts.total, reviewed: warningCounts.reviewed, open: warningCounts.open, at: Date.now()
+            }).catch(() => { delete window.__boaWcSaved[_wcKey]; }));   // let a later render retry on failure
+          }
+        }
 
         // BCEA eligibility checks for sick_n + frl
         const findStartDate = (ec) => {
@@ -26607,7 +26637,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         {sorted.map(e => (
                           <tr key={e.branch} style={{ background: e.open > 0 ? "#fef2f2" : (e.total > 0 ? "#f0fdf4" : "transparent"), cursor: "pointer" }}
                             onClick={() => { setAttBranch(e.branch); setTab("attendance"); }}>
-                            <td style={{ padding: "8px 12px", borderBottom: "1px solid #FDEEF5", color: "#831843", fontWeight: 600 }}>{e.branch}</td>
+                            <td style={{ padding: "8px 12px", borderBottom: "1px solid #FDEEF5", color: "#831843", fontWeight: 600 }}>{e.branch}{e.approx ? <span title="Estimated — open this branch's attendance sheet once so it can publish its exact count." style={{ marginLeft: 6, fontSize: 10, color: "#b45309", fontWeight: 700 }}>~ est.</span> : null}</td>
                             <td style={{ padding: "8px 12px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: e.open > 0 ? "#7f1d1d" : "#9ca3af", fontWeight: 700 }}>{e.open}</td>
                             <td style={{ padding: "8px 12px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: "#166534", fontWeight: 600 }}>{e.reviewed}</td>
                             <td style={{ padding: "8px 12px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: "#831843", fontWeight: 600 }}>{e.total}</td>
@@ -26619,7 +26649,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       </tbody>
                     </table>
                     <div style={{ marginTop: 14, fontSize: 12, color: "#831843", opacity: 0.7 }}>
-                      Only counts cells with at least one warning (Schedule × Kiosk × Fresha disagree). Cells where all three sources match are skipped — no admin investigation needed.
+                      Only counts cells with at least one warning (Schedule × Kiosk × Fresha disagree). Cells where all three sources match are skipped — no admin investigation needed. Counts are published by each branch's attendance sheet so they match its ⚠ triangles exactly; a “~ est.” branch hasn't been opened this cycle yet — open it once to lock in the precise number.
                     </div>
                   </div>
                 );
