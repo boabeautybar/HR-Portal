@@ -3090,6 +3090,7 @@
   function _shiftTimes(role, code, branchName, dow) {
     var r = (role || "").toUpperCase();
     var isSM = r === "SM" || r === "SSM";
+    var isAM = r === "AM";
     var b = branchName || "";
 
     if (b === "Sandown" || b === "Table Bay") {
@@ -3116,7 +3117,7 @@
     }
     if (b === "Ballito" || b === "Mall of the South") {
       if (isSM) return "08:00 - 17:00";
-      if (dow === 0) return "08:00 - 17:00";
+      if (dow === 0) return isAM ? "08:30 - 17:00" : "08:00 - 17:00";
       if (code === "WE") return "08:00 - 17:00";
       if (code === "WM") return "09:00 - 18:00";
       return "10:00 - 19:00";
