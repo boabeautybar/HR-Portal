@@ -23994,6 +23994,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // in the saved schedule grid (which may still have legacy 'L'
         // codes for them).
         const onMatEcs = new Set(attStaff.filter(s => s.onMat).map(s => s.ec));
+        // Maternity START date per ec (from the joined maternity record). The
+        // schedule already schedules these techs normally up to matStart and only
+        // shows 'ML' from it (see resolveMatStatus) — but the attendance sheet was
+        // painting the WHOLE row 'mat'. Honour matStart here too: a day is only
+        // maternity on/after the start date. When no start date is on record
+        // (dates_tbc / null) we keep the old full-row behaviour.
+        const matStartByEc = {};
+        attStaff.filter(s => s.onMat).forEach(s => {
+          matStartByEc[String(s.ec).trim()] = (s.matRec && s.matRec.matStart) || s.matStart || null;
+        });
+        const _onMatDay = (ec, ymd) => {
+          if (!onMatEcs.has(ec)) return false;
+          const ms = matStartByEc[String(ec).trim()];
+          if (!ms) return true;            // no start date on file → whole row is maternity
+          return !ymd || ymd >= ms;        // otherwise only days on/after the start date
+        };
         // ROM-managed absence reasons. Build an ec → ymd → status code
         // lookup so getStatus() can overlay a manager's day with the ROM's
         // recorded reason (sick_n / sick / frl / al / absent / no / off).
@@ -24354,8 +24370,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // 'L'/'al' for them before maternity was tracked separately —
           // those stale values must NOT bleed through as 'Annual'.
           // Checked before attGrid so any pre-mat overrides are ignored
-          // once the staff record is flagged onMat.
-          if (onMatEcs.has(ec)) return "mat";
+          // once the staff record is flagged onMat — but only from matStart
+          // onward, so days she actually worked before going on leave are kept.
+          if (_onMatDay(ec, dayObj && dayObj.ymd)) return "mat";
 
           const v = attGrid[ec] && attGrid[ec][d];
           if (v && !_isMgrPhantomPresence(ec, d)) {
@@ -24466,7 +24483,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         };
         const schedHint = (ec, d) => {
           if (mirrorSuppressed) return null;        // hide schedule signal after a Total Reset
-          if (onMatEcs.has(ec)) return "mat";       // maternity row — every day mirrors as 'mat'
+          if (_onMatDay(ec, (days.find(x => x.d === d) || {}).ymd)) return "mat";  // maternity — only from matStart onward
           // Leave Planner overlay — same idea as in getStatus. A leave day
           // granted via the planner reads as 'al' on the schedule strip even
           // if the saved schedule grid still has W/WL/WE for that day.
@@ -25236,7 +25253,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // is the explicit "rebuild from schedule" action so we read the
           // schedule directly here, bypassing the suppressed schedHint.
           const rawHintFor = (ec, d) => {
-            if (onMatEcs.has(ec)) return "mat";
+            if (_onMatDay(ec, (days.find(x => x.d === d) || {}).ymd)) return "mat";
             const sv = attSched[ec] && attSched[ec][d];
             if (!sv) return null;
             if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL") return "on";
