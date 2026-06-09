@@ -3475,23 +3475,32 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     if (loading) return;
     if (!leaveRecs || leaveRecs.length === 0) return;
     if (!days || days.length === 0) return;
-    const branchEcs = new Set(allStaff.filter(s => s.branch === branch).map(s => s.ec));
+    // Match leave records to staff by TRIMMED ec (the attendance overlay does
+    // the same) and stamp the "L" under the staff row's exact ec key — the
+    // render reads grid[s.ec], so a leave record whose ec carries stray
+    // whitespace / a different format must resolve back to that row's key.
+    // Previously we gated on (and keyed by) the raw leaveRec ec, so such a
+    // record was skipped or written under a key no row reads, leaving the
+    // tech's whole row blank on the schedule.
+    const ecByTrim = {};
+    allStaff.filter(s => s.branch === branch).forEach(s => { ecByTrim[String(s.ec).trim()] = s.ec; });
     let changed = false;
     const next = JSON.parse(JSON.stringify(grid || {}));
     for (const lv of leaveRecs) {
       if (!lv || !lv.ec || !lv.startDate || !lv.endDate) continue;
-      if (!branchEcs.has(lv.ec)) continue;
+      const ec = ecByTrim[String(lv.ec).trim()];
+      if (!ec) continue;
       const sd = new Date(lv.startDate + "T00:00:00");
       const ed = new Date(lv.endDate + "T00:00:00");
       if (isNaN(sd.getTime()) || isNaN(ed.getTime())) continue;
       for (const d of days) {
         const dt = new Date(d.year, d.monthIdx, d.d);
         if (dt < sd || dt > ed) continue;
-        if (!next[lv.ec]) next[lv.ec] = {};
-        const cur = next[lv.ec][d.d];
+        if (!next[ec]) next[ec] = {};
+        const cur = next[ec][d.d];
         if (cur === "X") continue;                  // preserve ghost cells
         if (cur === "L") continue;                  // already on leave
-        next[lv.ec][d.d] = "L";
+        next[ec][d.d] = "L";
         changed = true;
       }
     }
