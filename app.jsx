@@ -1834,6 +1834,7 @@ const KIOSK_DEFAULT_PINS = {
 function shiftTimes(role, code, branch, dow) {
   const r = (role || "").toUpperCase();
   const isSM = r === "SM" || r === "SSM";
+  const isAM = r === "AM";
   const _b = branch || "";
 
   // Sandown / Table Bay share the same Mon-Fri split (and
@@ -1872,7 +1873,7 @@ function shiftTimes(role, code, branch, dow) {
   // Ballito / Mall of the South — SM-only WE opener, AM closers.
   if (_b === "Ballito" || _b === "Mall of the South") {
     if (isSM) return "08:00 - 17:00";
-    if (dow === 0) return "08:00 - 17:00";          // Sunday single WE
+    if (dow === 0) return isAM ? "08:30 - 17:00" : "08:00 - 17:00"; // Sunday: AM opens 08:30, others 08:00
     if (code === "WE") return "08:00 - 17:00";
     if (code === "WM") return "09:00 - 18:00";
     if (code === "WL") return "10:00 - 19:00";
