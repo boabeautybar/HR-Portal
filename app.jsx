@@ -24022,9 +24022,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const _movedAwayThisCycle = (s) => s.transferring && s.transferTo && s.transferTo !== attBranch && s.transferDate && s.transferDate <= _todayYmdR;
         const _arrivingHereThisCycle = (s) => s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= _todayYmdR && s.branch && s.branch !== attBranch;
         const attStaff = [
-          ...enriched.filter(s => s.branch === attBranch && stillInCycle(s.ec) && !_movedAwayThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat })),
-          ...enriched.filter(s => stillInCycle(s.ec) && _arrivingHereThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat, movedFrom: s.branch, movedOn: s.transferDate })),
-          ...managers.filter(m => m.branch === attBranch && stillInCycle(m.ec)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", onMat: !!m.onMat, smTrial: _smTrialEcSet.has(String(m.ec).trim()) }))
+          ...enriched.filter(s => s.branch === attBranch && stillInCycle(s.ec) && !_movedAwayThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat, matStart: (s.matRec && s.matRec.matStart) || s.matStart || null })),
+          ...enriched.filter(s => stillInCycle(s.ec) && _arrivingHereThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat, matStart: (s.matRec && s.matRec.matStart) || s.matStart || null, movedFrom: s.branch, movedOn: s.transferDate })),
+          ...managers.filter(m => m.branch === attBranch && stillInCycle(m.ec)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", onMat: !!m.onMat, matStart: (m.matRec && m.matRec.matStart) || m.matStart || null, smTrial: _smTrialEcSet.has(String(m.ec).trim()) }))
         ].sort((a, b) => {
           // Maternity-leave staff go to the very bottom of the grid so the
           // active roster stays at the top. Within each group, sort by
