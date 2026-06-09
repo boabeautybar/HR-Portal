@@ -15688,6 +15688,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         out[br][ec][ymd] = { status: r.status, note: r.note || null, ts: dt, hasProof: !!r.hasProof, proofKey: r.proofKey || null, markedBy: r.markedBy || null };
       }
     }
+    // A "(cleared)" entry is the kiosk logging that a mark was REMOVED — it means
+    // there's no active status for that day. We keep it in the latest-wins pass
+    // above (so a real absence logged AFTER a clear still wins), then drop any
+    // day whose most-recent kiosk action was the clear. Otherwise a leftover
+    // "(cleared)" would mask the real clock-in in the attendance tooltip and
+    // trip a false "kiosk marked absent" warning. Mirrors the Nail Tech
+    // Check-ins tab, which already skips "(cleared)" rows.
+    for (const br in out) {
+      for (const ec in out[br]) {
+        for (const ymd in out[br][ec]) {
+          if (out[br][ec][ymd] && out[br][ec][ymd].status === "(cleared)") delete out[br][ec][ymd];
+        }
+      }
+    }
     return out;
   }, [attCheckinRows]);
 
