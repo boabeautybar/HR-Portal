@@ -1813,8 +1813,10 @@
   // grid on every cell edit is exactly how manually added cells kept
   // "vanishing the next day": another open session's whole-grid save
   // overwrote them.) Patches look like { ec: { dayKey: value } }; a null /
-  // empty value clears the entry.
-  async function updateAttendanceCells(branch, ym, cellPatch, reviewPatch) {
+  // empty value clears the entry. overridePatch maintains adminOverrides —
+  // per-cell { status, by, at } records of manual portal edits, which the
+  // attendance sheet treats as the final truth for display + payroll.
+  async function updateAttendanceCells(branch, ym, cellPatch, reviewPatch, overridePatch) {
     var key = "boa_att_" + branch + "_" + ym;
     var prior = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
     if (prior.error) throw prior.error;
@@ -1843,7 +1845,19 @@
         if (Object.keys(row).length) rw[ec] = row; else delete rw[ec];
       });
     }
-    var next = Object.assign({}, v, { grid: grid, reviewedWarnings: rw, branch: branch, ym: ym, savedAt: new Date().toISOString() });
+    var ov = Object.assign({}, v.adminOverrides || {});
+    if (overridePatch) {
+      Object.keys(overridePatch).forEach(function (ec) {
+        var row = Object.assign({}, ov[ec] || {});
+        Object.keys(overridePatch[ec] || {}).forEach(function (d) {
+          var rec = overridePatch[ec][d];
+          if (rec == null) delete row[d];
+          else row[d] = rec;
+        });
+        if (Object.keys(row).length) ov[ec] = row; else delete ov[ec];
+      });
+    }
+    var next = Object.assign({}, v, { grid: grid, reviewedWarnings: rw, adminOverrides: ov, branch: branch, ym: ym, savedAt: new Date().toISOString() });
     var res = await sb.from("app_state").upsert({ key: key, value: next });
     if (res.error) throw res.error;
     return next;
