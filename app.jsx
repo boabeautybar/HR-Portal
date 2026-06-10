@@ -13826,6 +13826,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // value in the draft means "clear this override on apply".
   const [mgrCustomTimes, setMgrCustomTimes] = useState({});
   const [mgrCustomTimesDraft, setMgrCustomTimesDraft] = useState({});
+  // When the first pending coverage change was staged. Drafts are a pure
+  // browser-tab preview — Manager Coverage shows them, but the kiosk / myboa /
+  // Scheduling keep the saved state, so a draft left unapplied for hours makes
+  // every other screen look "wrong" (this is exactly what happened with
+  // Nicole's Riverlands shifts). Used to escalate the Apply banner and to warn
+  // before the tab closes (closing silently discards the draft).
+  const [mgrCoverageDraftSince, setMgrCoverageDraftSince] = useState(null);
+  const _covDraftDirty = Object.keys(mgrCoverageDraft).length > 0 || mgrCoverageDraftLoans.length > 0 || Object.keys(mgrCustomTimesDraft).length > 0;
+  useEffect(() => {
+    if (_covDraftDirty && !mgrCoverageDraftSince) setMgrCoverageDraftSince(Date.now());
+    else if (!_covDraftDirty && mgrCoverageDraftSince) setMgrCoverageDraftSince(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [_covDraftDirty]);
+  useEffect(() => {
+    if (!_covDraftDirty) return;
+    const warn = (e) => { e.preventDefault(); e.returnValue = "You have unapplied shift changes on Manager Coverage — they will be lost."; return e.returnValue; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [_covDraftDirty]);
 
   // ── Daily Check-ins (nail tech) state ──────────────────────────────
   // Loaded once when the Check-ins tab or the Attendance tab opens, so the
@@ -32955,17 +32974,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 Until then nothing is written to BOA_DB.saveSchedule /
                 saveMgrLoans, so the kiosk and Scheduling tab keep showing
                 the live state. */}
-            {(_draftChangeCount > 0 || mgrCoverageDraftLoans.length > 0) && (
-              <div style={{ background: "#FFFBEB", border: "1px solid #FCD34D", borderRadius: 11, padding: "10px 14px", marginBottom: 14, display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+            {(_draftChangeCount > 0 || mgrCoverageDraftLoans.length > 0) && (() => {
+              // Sticky + age-escalating so an unapplied draft can't sit
+              // unnoticed in a long-lived tab while the kiosk / myboa show the
+              // (different) saved roster.
+              const _draftAgeMin = mgrCoverageDraftSince ? Math.floor((Date.now() - mgrCoverageDraftSince) / 60000) : 0;
+              const _draftStale = _draftAgeMin >= 60;
+              const _ageLbl = _draftAgeMin >= 60 ? Math.floor(_draftAgeMin / 60) + "h " + (_draftAgeMin % 60) + "m" : _draftAgeMin + " min";
+              return (
+              <div style={{ position: "sticky", top: 0, zIndex: 40, background: _draftStale ? "#FEF2F2" : "#FFFBEB", border: _draftStale ? "2px solid #F87171" : "1px solid #FCD34D", borderRadius: 11, padding: "10px 14px", marginBottom: 14, display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", boxShadow: "0 4px 10px rgba(0,0,0,0.07)" }}>
                 <div style={{ flex: 1, minWidth: 220 }}>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: "#92400E" }}>
-                    📝 {_draftChangeCount} pending shift change{_draftChangeCount === 1 ? "" : "s"}
+                  <div style={{ fontSize: 13, fontWeight: 800, color: _draftStale ? "#7F1D1D" : "#92400E" }}>
+                    {_draftStale ? "⚠" : "📝"} {_draftChangeCount} pending shift change{_draftChangeCount === 1 ? "" : "s"}
                     {mgrCoverageDraftLoans.filter(l => l._op !== "remove").length > 0 ? (
                       <> · {mgrCoverageDraftLoans.filter(l => l._op !== "remove").length} cross-store loan{mgrCoverageDraftLoans.filter(l => l._op !== "remove").length === 1 ? "" : "s"}</>
                     ) : null}
+                    {mgrCoverageDraftSince ? <> · unapplied for {_ageLbl}</> : null}
                   </div>
-                  <div style={{ fontSize: 11, color: "#92400E", marginTop: 2, opacity: 0.85 }}>
-                    Showing as a preview. Nothing is saved to the kiosk or Scheduling tab yet — click "Apply to live" to commit, or "Discard" to revert.
+                  <div style={{ fontSize: 11, color: _draftStale ? "#7F1D1D" : "#92400E", marginTop: 2, opacity: 0.9 }}>
+                    {_draftStale
+                      ? "These changes are ONLY visible here — the kiosk, myboa and Scheduling are still showing the old roster. Click \"Apply to live\" to publish them."
+                      : "Showing as a preview. Nothing is saved to the kiosk or Scheduling tab yet — click \"Apply to live\" to commit, or \"Discard\" to revert."}
                   </div>
                 </div>
                 <button onClick={_discardDraft} disabled={mgrCoverageDraftApplying}
@@ -32977,7 +33006,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   {mgrCoverageDraftApplying ? "Applying…" : "✓ Apply to live"}
                 </button>
               </div>
-            )}
+              );
+            })()}
 
             {mgrCoverageView === "byBranch" ? (
               <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 13, overflow: "auto" }}>
