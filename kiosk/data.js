@@ -1219,13 +1219,37 @@
           combined[ec] = grid[ec];
           return;
         }
-        // Re-key manager rows: { "2026-05-22": "W" } → { 22: "W" }
+        // Re-key manager rows: { "2026-05-22": "W" } → { 22: "W" } — but
+        // CYCLE-AWARE. Manager grids can carry the same day under two key
+        // styles (a bare day number and a full date), and may also hold stray
+        // full-date keys from OTHER months. The old blind collapse threw the
+        // month away, so e.g. "2026-05-10" landed on day 10 and could
+        // overwrite the real 10 June cell depending on key order — which is
+        // why the kiosk could show a different shift than the HR portal
+        // (whose readers resolve by exact date). Mirror the portal's
+        // precedence instead: an in-cycle full-date key always wins over a
+        // bare day number; out-of-cycle full-date keys are dropped.
         var row2 = grid[ec] || {};
         var conv = {};
+        var fromYmd = {};   // day-of-month → true when set from an in-cycle full date
+        // Cycle window for the END-month ym: 25th of prev month → 24th of ym.
+        var ymP = String(ym).split("-");
+        var cEy = parseInt(ymP[0], 10), cEm = parseInt(ymP[1], 10);
+        var cSy = cEm === 1 ? cEy - 1 : cEy, cSm = cEm === 1 ? 12 : cEm - 1;
+        var cycStart = cSy + "-" + String(cSm).padStart(2, "0") + "-25";
+        var cycEnd   = cEy + "-" + String(cEm).padStart(2, "0") + "-24";
         Object.keys(row2).forEach(function (k) {
-          var m = /^\d{4}-\d{2}-(\d{2})$/.exec(k);
-          if (m) conv[parseInt(m[1], 10)] = row2[k];
-          else conv[k] = row2[k];
+          var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(k);
+          if (m) {
+            if (k < cycStart || k > cycEnd) return;        // stray date from another cycle — ignore
+            conv[parseInt(m[3], 10)] = row2[k];
+            fromYmd[parseInt(m[3], 10)] = true;
+          } else {
+            var dn = parseInt(k, 10);
+            var bare = String(dn) === String(k).trim() && dn >= 1 && dn <= 31;
+            if (bare) { if (!fromYmd[dn]) conv[dn] = row2[k]; }
+            else conv[k] = row2[k];
+          }
         });
         combined[ec] = conv;
       });
