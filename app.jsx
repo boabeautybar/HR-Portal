@@ -1834,6 +1834,7 @@ const KIOSK_DEFAULT_PINS = {
 function shiftTimes(role, code, branch, dow) {
   const r = (role || "").toUpperCase();
   const isSM = r === "SM" || r === "SSM";
+  const isAM = r === "AM";
   const _b = branch || "";
 
   // Sandown / Table Bay share the same Mon-Fri split (and
@@ -1872,7 +1873,7 @@ function shiftTimes(role, code, branch, dow) {
   // Ballito / Mall of the South — SM-only WE opener, AM closers.
   if (_b === "Ballito" || _b === "Mall of the South") {
     if (isSM) return "08:00 - 17:00";
-    if (dow === 0) return "08:00 - 17:00";          // Sunday single WE
+    if (dow === 0) return isAM ? "08:30 - 17:00" : "08:00 - 17:00"; // Sunday: AM opens 08:30, others 08:00
     if (code === "WE") return "08:00 - 17:00";
     if (code === "WM") return "09:00 - 18:00";
     if (code === "WL") return "10:00 - 19:00";
@@ -3474,23 +3475,32 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     if (loading) return;
     if (!leaveRecs || leaveRecs.length === 0) return;
     if (!days || days.length === 0) return;
-    const branchEcs = new Set(allStaff.filter(s => s.branch === branch).map(s => s.ec));
+    // Match leave records to staff by TRIMMED ec (the attendance overlay does
+    // the same) and stamp the "L" under the staff row's exact ec key — the
+    // render reads grid[s.ec], so a leave record whose ec carries stray
+    // whitespace / a different format must resolve back to that row's key.
+    // Previously we gated on (and keyed by) the raw leaveRec ec, so such a
+    // record was skipped or written under a key no row reads, leaving the
+    // tech's whole row blank on the schedule.
+    const ecByTrim = {};
+    allStaff.filter(s => s.branch === branch).forEach(s => { ecByTrim[String(s.ec).trim()] = s.ec; });
     let changed = false;
     const next = JSON.parse(JSON.stringify(grid || {}));
     for (const lv of leaveRecs) {
       if (!lv || !lv.ec || !lv.startDate || !lv.endDate) continue;
-      if (!branchEcs.has(lv.ec)) continue;
+      const ec = ecByTrim[String(lv.ec).trim()];
+      if (!ec) continue;
       const sd = new Date(lv.startDate + "T00:00:00");
       const ed = new Date(lv.endDate + "T00:00:00");
       if (isNaN(sd.getTime()) || isNaN(ed.getTime())) continue;
       for (const d of days) {
         const dt = new Date(d.year, d.monthIdx, d.d);
         if (dt < sd || dt > ed) continue;
-        if (!next[lv.ec]) next[lv.ec] = {};
-        const cur = next[lv.ec][d.d];
+        if (!next[ec]) next[ec] = {};
+        const cur = next[ec][d.d];
         if (cur === "X") continue;                  // preserve ghost cells
         if (cur === "L") continue;                  // already on leave
-        next[lv.ec][d.d] = "L";
+        next[ec][d.d] = "L";
         changed = true;
       }
     }
@@ -3571,6 +3581,24 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     }
     return out;
   }, [techRequests, branch, days]);
+
+  // Emergency (unpaid) leave days for the visible staff. The saved grid stores a
+  // generic "L" for ALL leave, so we cross-reference the Leave Planner records to
+  // paint emergency leave distinctly (orange "EL") instead of the same grey "L"
+  // used for paid annual leave. Render-only — the grid still stores "L".
+  const emergencyLeaveSet = useMemo(() => {
+    const set = new Set();
+    (leaveRecs || []).forEach(lv => {
+      if (!lv || !lv.emergency || !lv.ec || !lv.startDate || !lv.endDate) return;
+      const sd = new Date(lv.startDate + "T00:00:00"), ed = new Date(lv.endDate + "T00:00:00");
+      if (isNaN(sd.getTime()) || isNaN(ed.getTime())) return;
+      for (let cur = new Date(sd); cur <= ed; cur.setDate(cur.getDate() + 1)) {
+        const ymd = cur.getFullYear() + "-" + String(cur.getMonth() + 1).padStart(2, "0") + "-" + String(cur.getDate()).padStart(2, "0");
+        set.add(String(lv.ec).trim() + "|" + ymd);
+      }
+    });
+    return set;
+  }, [leaveRecs]);
 
   const cycle = ["W", "WE", "WL", "O", "R", "L", "E", "X", "trial", ""];
   const cellStyle = (z) => {
@@ -6602,6 +6630,10 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         // the schedule without waiting for an auto-fill or
                         // sync pass to stamp X.
                         const dYmd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
+                        // Emergency (unpaid) leave: the grid stores a generic "L"
+                        // for all leave, so flag days inside an emergency Leave
+                        // Planner record to paint them orange "EL" (vs grey "L").
+                        const isEmergLeave = v === "L" && emergencyLeaveSet.has(String(s.ec).trim() + "|" + dYmd);
                         const isPastLeft = isLeaving && dYmd > s.leftDate;
                         // Pre-start: a tech only appears on the schedule from
                         // their start date. Days before it render as a locked
@@ -6652,7 +6684,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                               ? { background: "#fef3c7", color: "#92400e" }   // amber — moving out
                               : transferEdge === "in"
                                 ? { background: "#dbeafe", color: "#1e40af" }   // blue — coming in
-                                : _loanCell || cellStyle(v);
+                                : _loanCell || (isEmergLeave ? { background: "#fed7aa", color: "#9a3412", fontWeight: 700 } : cellStyle(v));
                         // Drag-drop visual states
                         const isSrc = dragSource && dragSource.ec === s.ec && dragSource.day === d.d;
                         const isValidDrop = !cellLocked && isValidDropTarget(s.ec, d.d);
@@ -6673,7 +6705,9 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                                 ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · arriving from ${transferOtherBranch} on ${_xferDate} — pre-transfer days are still on the source schedule`
                                 : _loanCell
                                   ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · working at ${_outgoingLoan.toBranch} (cross-store)`
-                                  : `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · click to cycle, drag to swap within the week${requested ? ' · 📝 day-off requested' + (requestUnapplied ? ' (not yet on grid)' : '') : ''}`;
+                                  : isEmergLeave
+                                    ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · Emergency leave (unpaid)`
+                                    : `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · click to cycle, drag to swap within the week${requested ? ' · 📝 day-off requested' + (requestUnapplied ? ' (not yet on grid)' : '') : ''}`;
                         return (
                           <td key={s.ec + '-' + d.d}
                             draggable={!cellLocked && !!v}
@@ -6701,7 +6735,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                                         →{_outgoingLoan.toBranch === "Green Point" ? "GP" : _outgoingLoan.toBranch.slice(0, 4)}
                                       </span>
                                     )
-                                      : v}
+                                      : isEmergLeave ? "EL" : v}
                             {requestUnapplied && !cellLocked && (
                               <span style={{ position: "absolute", top: 1, right: 2, fontSize: 8, lineHeight: 1, color: "#BE185D", pointerEvents: "none" }}>📝</span>
                             )}
@@ -7755,6 +7789,24 @@ function AppGate() {
             if (!st.includes("trialPeriod")) u.showTabs = [...st, "trialPeriod"];
           }
         });
+        // V3c migration: Rochelle (3030) & Farida (4040) don't just VIEW the
+        // Trial Period tab — they run the trials, so they must be able to EDIT
+        // it (set start dates, mark the trial days). The earlier grant only
+        // made it visible; if the tab is stuck view-only (in readOnlyTabs) or
+        // hidden (in hideTabs) for them, the day editor's saves are silently
+        // blocked by the read-only guard. Force full edit access. Runs once each.
+        Object.keys(dynamic).forEach(pin => {
+          const u = dynamic[pin];
+          if (u._trialEditMigrated) return;
+          u._trialEditMigrated = true;
+          dashMigrated = true;
+          if (pin === "3030" || pin === "4040") {
+            if (Array.isArray(u.readOnlyTabs)) u.readOnlyTabs = u.readOnlyTabs.filter(t => t !== "trialPeriod");
+            if (Array.isArray(u.hideTabs)) u.hideTabs = u.hideTabs.filter(t => t !== "trialPeriod");
+            const st = Array.isArray(u.showTabs) ? u.showTabs : [];
+            if (!st.includes("trialPeriod")) u.showTabs = [...st, "trialPeriod"];
+          }
+        });
         if (dashMigrated) { try { await saveAppUsersToDb(dynamic); } catch (_) { } }
       }
       if (cancelled) return;
@@ -7910,6 +7962,7 @@ const SETTINGS_TABS = [
   { t: "alerts", l: "Alerts", cat: "Insights", icon: "🔔" },
   { t: "activity", l: "Activity Log", cat: "Insights", icon: "📜" },
   { t: "storeReports", l: "Store Reports", cat: "Insights", icon: "🏆" },
+  { t: "staffingReport", l: "Staffing & Shifts", cat: "Insights", icon: "📅" },
   { t: "kioskPins", l: "Kiosk PINs", cat: "Admin", icon: "🔑" },
   { t: "managerPins", l: "Manager PINs", cat: "Admin", icon: "🆔" },
   { t: "storeAllocation", l: "Store Allocation", cat: "Admin", icon: "🏬" },
@@ -13676,7 +13729,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", freshaTodo: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
     attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll", payrollInbox: "Payroll", leaveBalances: "Payroll", frl: "Payroll",
     leaveRequests: "Operations", calledInSick: "Operations", extraDayRequests: "Operations",
-    alerts: "Insights", activity: "Insights", storeReports: "Insights",
+    alerts: "Insights", activity: "Insights", storeReports: "Insights", staffingReport: "Insights",
     settings: "Admin", voucherAdmin: "Admin",
     bonusConfig: "Payroll"
   };
@@ -13779,7 +13832,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // attendance grid can overlay check-in markers without a per-cell fetch.
   const [techClockinRows, setTechClockinRows] = useState([]);
   const [techClockinDays, setTechClockinDays] = useState(60);          // load window
+  // Bumped whenever kiosk clock-in / check-in data finishes loading. Declared
+  // here (before the Staffing report effect) so that effect can depend on it to
+  // recompute once the clock-in audit log arrives — checkInsByBranch itself is
+  // defined later, so it can't go in a dependency array without a TDZ error.
+  const [clockinVer, setClockinVer] = useState(0);
   const [checkinFilterBranch, setCheckinFilterBranch] = useState("All");
+  // Hide rows for techs who weren't scheduled to work anyway (off / leave /
+  // maternity / public holiday) — they stay in the data (the attendance sheet
+  // reads from here), just decluttered from this view. On by default.
+  const [checkinHideOff, setCheckinHideOff] = useState(true);
+  // The per-branch "fetched" diagnostics panel is collapsed by default — useful
+  // for debugging a missing branch, but noise day to day.
+  const [checkinShowDiag, setCheckinShowDiag] = useState(false);
   const [checkinDay, setCheckinDay] = useState(() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); });   // viewer day (one day at a time)
   const [proofModal, setProofModal] = useState(null); // { loading, dataUrl, name, ymd, status }
 
@@ -14103,6 +14168,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   useEffect(() => { setAttCheckinSnapshot(null); }, [attBranch, attYM]);
   const [attSched, setAttSched] = useState({});      // schedule grid for the same period (for mirror hints)
   const [attMeta, setAttMeta] = useState({});      // sidecar metadata e.g. { freshaCoverage:{through:"YYYY-MM-DD"} }
+  // Branch-agnostic Fresha index. A Fresha appointment belongs to the TECH, not
+  // a branch (the importer files it under her staff.branch), so we union every
+  // branch's freshaWorked for the cycle into one normalized ec→day map. The
+  // attendance cell reads worked-status from here, so a transferred or borrowed
+  // tech's appointments show wherever her row is rendered — same spirit as
+  // day-borrows resolving attendance cross-branch. Coverage stays per-branch.
+  const [freshaWorkedAll, setFreshaWorkedAll] = useState({});  // { NORMEC: { dayNum: true } }
+  const [freshaAllTick, setFreshaAllTick] = useState(0);       // bump to re-pull after an import / reset
   // Kiosk's "Left work early" sidecar (boa_early_<branch>_<ym>) — separate
   // from the attendance grid because the tech still checked in, only their
   // shift ended early. Shape: { [dayKey]: { [ec]: { hours, recordedAt, recordedBy } } }
@@ -14133,6 +14206,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // admin review per branch for the active cycle. Lives at component scope
   // so it can be triggered from the dedicated Payroll Progress tab.
   const [payrollOverview, setPayrollOverview] = useState(null);   // null | { loading, ym, byBranch }
+
+  // ── Staffing & Shifts (Insights) ───────────────────────────────────
+  // Forward-looking: how many nail techs are scheduled to work on each of the
+  // next 7 days. Backward-looking: for the current pay cycle, how many tech
+  // shifts were scheduled vs actually worked (so revenue ÷ worked shifts gives
+  // a true earn-per-shift). Loaded on demand when the tab opens.
+  const [staffingData, setStaffingData] = useState(null);   // null | { loading } | { …computed }
 
   // ── Attendance / Absenteeism Reports (Payroll → Reports) ───────────
   // Cross-branch overview of who is missing the most work, who attends
@@ -14460,6 +14540,46 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       (offList || []).forEach(o => { if (o.ec && o.leftDate) offByEcX[o.ec] = o.leftDate; });
       const stillInCycleX = (ec) => { const ld = offByEcX[ec]; return !ld || ld >= cycStartYmd; };
       const safe = (p) => p && p.catch ? p.catch(() => null) : Promise.resolve(null);
+      // Leave / unpaid-legal / maternity overlays — the SAME ones schedHint
+      // applies on the attendance sheet. Without these the roll-up's getHint
+      // reads a leave day whose raw schedule cell still says "W" as scheduled
+      // work, then flags it as an unattended scheduled day (no clock-in / no
+      // Fresha) — inflating the "cells need review" count well above the
+      // triangles actually on the sheet. Build them once (they're ec-keyed and
+      // branch-independent) and consult them before the raw schedule mapping.
+      const _onLeaveByEcYmdOv = {};
+      (leaveRecs || []).forEach(lv => {
+        if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return;
+        const ec = String(lv.ec).trim();
+        const _code = lv.emergency ? "el" : "al";
+        for (let cur = new Date(lv.startDate + "T00:00:00"); cur <= new Date(lv.endDate + "T00:00:00"); cur.setDate(cur.getDate() + 1)) {
+          const ymd = cur.getFullYear() + "-" + p2x(cur.getMonth() + 1) + "-" + p2x(cur.getDate());
+          const _bucket = (_onLeaveByEcYmdOv[ec] = _onLeaveByEcYmdOv[ec] || {});
+          if (_bucket[ymd] !== "el") _bucket[ymd] = _code;   // emergency wins
+        }
+      });
+      const _unpaidLegalRangesOv = {};
+      (unpaidLegalRecs || []).forEach(r => {
+        if (!r || !r.ec || r.status !== "on_leave") return;
+        (_unpaidLegalRangesOv[String(r.ec).trim()] = _unpaidLegalRangesOv[String(r.ec).trim()] || []).push({ start: r.startDate || null, end: r.endDate || null });
+      });
+      const _onUnpaidLegalOv = (ec, ymd) => {
+        const ranges = _unpaidLegalRangesOv[String(ec).trim()];
+        if (!ranges || !ymd) return false;
+        return ranges.some(rg => (!rg.start || ymd >= rg.start) && (!rg.end || ymd <= rg.end));
+      };
+      const matStartByEcOv = {};
+      (matRecs || []).forEach(r => {
+        if (!r || !r.ec) return;
+        if (r.matStatus === "on_mat" || r.matStatus === "dates_tbc") matStartByEcOv[String(r.ec).trim()] = r.matStart || null;
+      });
+      const _onMatDayOv = (ec, ymd) => {
+        const ecT = String(ec).trim();
+        if (!onMatEcs.has(ecT)) return false;
+        const ms = matStartByEcOv[ecT];
+        if (!ms) return true;            // no start date on file → whole row is maternity
+        return !ymd || ymd >= ms;        // otherwise only days on/after the start date
+      };
       const results = {};
       await Promise.all(SALONS.map(async (sl) => {
         const branch = sl.name;
@@ -14471,6 +14591,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           ]);
           const bGrid = (att && att.grid) || {};
           const bReview = (att && att.reviewedWarnings) || {};
+          // A Total Reset (mirrorSuppressed) hides the kiosk / Fresha signals on
+          // the grid, so the per-cell ⚠ logic ignores them too — mirror that here
+          // or this branch's roll-up over-counts after a reset.
+          const bMirror = !!(att && att.mirrorSuppressed);
           const bFW = (att && att.freshaWorked) || {};
           let bFThru = (att && att.freshaCoverage && att.freshaCoverage.through) || null;
           // Same fallback as the per-branch dashboard: infer the Fresha-
@@ -14504,7 +14628,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           };
           const bSched = { ...((sch && sch.grid) || {}), ...reKey((mgrSch && mgrSch.grid) || {}) };
           const bStaff = staff.filter(p => p.branch === branch && stillInCycleX(p.ec));
-          const getHint = (ec, d) => {
+          const getHint = (ec, dy) => {
+            const ecT = String(ec).trim();
+            // Overlays first — mirror schedHint so leave / unpaid-legal /
+            // maternity days don't read as scheduled work.
+            if (_onMatDayOv(ecT, dy.ymd)) return "mat";
+            const _lc = (_onLeaveByEcYmdOv[ecT] || {})[dy.ymd];
+            if (_lc) return _lc;                          // 'al' (annual) or 'el' (emergency)
+            if (_onUnpaidLegalOv(ecT, dy.ymd)) return "el";
+            const d = dy.d;
             const sv = bSched[ec] && bSched[ec][d];
             if (!sv) return null;
             if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL") return "on";
@@ -14518,36 +14650,43 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           let total = 0, reviewed = 0;
           for (const s of bStaff) {
             for (const dy of daysX) {
-              if (dy.ymd > t0YmdLocal) continue;
+              // Mirror the grid's per-cell ⚠ logic so this cross-branch roll-up
+              // matches the triangles on the attendance sheet. bStaff is techs
+              // only, so the render's role gates collapse to true here; the gates
+              // that DO matter are mirrorSuppressed (kiosk / Fresha hidden after a
+              // Total Reset) and the per-term isPastOrToday handling — future
+              // cells manually marked absent / sick / proof-pending still show a
+              // ⚠, so we no longer blanket-skip them.
+              const isPastOrToday = dy.ymd <= t0YmdLocal;
               const rawV = (bGrid[s.ec] && bGrid[s.ec][dy.d]) || null;
               const bareV = rawV ? (rawV.charAt(0) === "~" ? rawV.slice(1) : rawV) : "";
               const override = !!rawV && rawV.indexOf("~") !== 0;
-              const hint = getHint(s.ec, dy.d);
+              const hint = getHint(s.ec, dy);
               const scheduleSaysWork = hint === "on" || hint === "ext";
               const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i";
               const isLate = bareV === "late";
-              const kioskAbs = ((kioskAbsentByBranch[branch] || {})[s.ec] || {})[dy.ymd] || null;
-              const checkin = ((checkInsByBranch[branch] || {})[s.ec] || {})[dy.ymd] || null;
+              const kioskAbs = (isPastOrToday && !bMirror) ? (((kioskAbsentByBranch[branch] || {})[s.ec] || {})[dy.ymd] || null) : null;
+              const checkin = (isPastOrToday && !bMirror) ? (((checkInsByBranch[branch] || {})[s.ec] || {})[dy.ymd] || null) : null;
               const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
               const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
-              const freshaWorkedCell = !!((bFW[s.ec] || {})[dy.d]);
-              const freshaCoversThisDay = !!bFThru && dy.ymd <= bFThru;
+              const freshaWorkedCell = !bMirror && !!((bFW[s.ec] || {})[dy.d]);
+              const freshaCoversThisDay = !bMirror && !!bFThru && dy.ymd <= bFThru;
               const kioskMarkedAbsent = !!kioskAbs && kioskAbs.status !== "ext" && kioskAbs.status !== "trial" && kioskAbs.status !== "swap_o" && !/^[^a-z]*(?:left|early)/i.test(kioskAbs.status || "");
               const cellShowsAbsent = kioskMarkedAbsent || (override && !!bareV && !isWorking && !isLate);
               const extDayRecorded = (override && bareV === "ext") || (!!kioskAbs && kioskAbs.status === "ext");
-              const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
               // Comprehensive mismatch detection. A cell CORRESPONDS when:
               //   (scheduled work + presence + Fresha) OR (scheduled off + no
               //   presence + no Fresha). Anything else flags a ⚠.
               const cellSaysPresent = isWorking || isLate || checkinHasIn;
               const scheduleSaysOff = hint === "off" || hint === "al" || hint === "el" || hint === "ph" || hint === "mat";
               const isExtraDayCell = bareV === "ext";
+              const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
               const presentNoApptWarn = cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
-              const workedOnOffDay = scheduleSaysOff && cellSaysPresent && !cellShowsAbsent && !isExtraDayCell;
-              const unaccountedScheduledDay = scheduleSaysWork && !cellSaysPresent && !cellShowsAbsent && !freshaWorkedCell && freshaCoversThisDay && !bareV;
-              const offButFreshaWorked = scheduleSaysOff && !cellSaysPresent && freshaWorkedCell;
+              const workedOnOffDay = scheduleSaysOff && cellSaysPresent && !cellShowsAbsent && !isExtraDayCell && isPastOrToday;
+              const unaccountedScheduledDay = scheduleSaysWork && !cellSaysPresent && !cellShowsAbsent && !freshaWorkedCell && freshaCoversThisDay && !bareV && isPastOrToday;
+              const offButFreshaWorked = scheduleSaysOff && !cellSaysPresent && freshaWorkedCell && isPastOrToday;
               const extDayNoApptWarn = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
-              const missingCheckin = !checkinHasIn && freshaWorkedCell && scheduleSaysWork;
+              const missingCheckin = !checkinHasIn && freshaWorkedCell && scheduleSaysWork && isPastOrToday;
               const proofPending = (bareV === "sick_n" || bareV === "frl");
               const trustedAbsence = (bareV === "sick" || bareV === "no") && scheduleSaysWork && kioskMarkedAbsent && !freshaWorkedCell;
               const absentNeedsReview = ((bareV === "sick" || bareV === "no") && !trustedAbsence) || bareV === "absent";
@@ -14558,7 +14697,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               }
             }
           }
-          results[branch] = { total, reviewed, open: total - reviewed };
+          // Prefer the attendance sheet's OWN tally when it has published one
+          // for this cycle (att.warningCounts) — that's the source of truth and
+          // matches the ⚠ triangles exactly. The raw-grid re-derivation above
+          // only resolves leave/maternity overlays, not the sheet's full
+          // getStatus view, so it drifts; we fall back to it (flagged approx)
+          // only for branches whose sheet hasn't been opened this cycle yet.
+          const pc = att && att.warningCounts;
+          if (pc && typeof pc.total === "number") {
+            const rv = (typeof pc.reviewed === "number") ? pc.reviewed : 0;
+            results[branch] = { total: pc.total, reviewed: rv, open: (typeof pc.open === "number") ? pc.open : (pc.total - rv) };
+          } else {
+            results[branch] = { total, reviewed, open: total - reviewed, approx: true };
+          }
         } catch (e) { results[branch] = { error: (e && e.message) || String(e), total: 0, reviewed: 0, open: 0 }; }
       }));
       const totalCount = Object.values(results).reduce((a, r) => a + ((r && r.total) || 0), 0);
@@ -14653,8 +14804,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const ymd = cur.getFullYear() + "-" + pp(cur.getMonth() + 1) + "-" + pp(cur.getDate());
             if (ymd >= s.transferDate) continue;                 // only pre-transfer days
             const dom = cur.getDate();
-            if (gRow[dom] == null && srcRow[dom] != null) gRow[dom] = srcRow[dom];
-            if (sRow[dom] == null && srcSchRow[dom] != null) sRow[dom] = srcSchRow[dom];
+            // Pre-transfer days belong to the OLD branch — it's authoritative.
+            // The tech wasn't at the new branch yet, so any cell the new branch
+            // happens to carry for these days is stray and must NOT win: a
+            // full-row "W" stamped on the new branch was overriding her real
+            // old-branch off-day, making it read as On Time. Let the old branch's
+            // schedule/attendance override where it has a value. (We don't clear
+            // when the old branch is blank, since tech working days are often a
+            // blank that defaults to "W" — clearing would hide a real shift.)
+            if (srcRow[dom] != null) gRow[dom] = srcRow[dom];
+            if (srcSchRow[dom] != null) sRow[dom] = srcSchRow[dom];
             if (fRow[dom] == null && srcFwRow[dom] != null) fRow[dom] = srcFwRow[dom];
           }
           mergedGrid[ec] = gRow;
@@ -14671,8 +14830,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       .finally(() => setAttLoading(false));
   }, [tab, attBranch, attYM, staff]);
 
-  // Load attendance from every other branch we have a loan going out to
-  // during this cycle, so the home-branch cells can mirror what the
+  // Build the branch-agnostic Fresha index: union every branch's freshaWorked
+  // for the active cycle into one normalized ec→day map. Keyed by cycle only
+  // (not attBranch), so it's the same regardless of which branch is on screen —
+  // a tech's appointments resolve wherever her row appears. Re-pulled after an
+  // import / reset via freshaAllTick.
+  useEffect(() => {
+    if (tab !== "attendance" && tab !== "checkins" && tab !== "payrollProgress") return;
+    if (!window.BOA_DB || !window.BOA_DB.isReady || !window.BOA_DB.loadAttendance) return;
+    let cancelled = false;
+    (async () => {
+      const safe = (p) => (p && p.catch ? p.catch(() => null) : Promise.resolve(null));
+      const recs = await Promise.all(SALONS.map(sl => safe(window.BOA_DB.loadAttendance(sl.name, attYM))));
+      if (cancelled) return;
+      const out = {};
+      for (const rec of recs) {
+        const fw = (rec && rec.freshaWorked) || {};
+        for (const ec in fw) {
+          const key = String(ec).trim().toUpperCase();
+          if (!key) continue;
+          const row = fw[ec] || {};
+          const dst = out[key] || (out[key] = {});
+          for (const day in row) { if (row[day]) dst[day] = true; }
+        }
+      }
+      setFreshaWorkedAll(out);
+    })();
+    return () => { cancelled = true; };
+  }, [tab, attYM, freshaAllTick]);
+
   // receiving branches recorded. Re-runs when the viewed cycle, the
   // current branch, or the techLoans list changes.
   useEffect(() => {
@@ -14763,7 +14949,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     try { await window.BOA_DB.saveAbscondActions(next); } catch (e) { window.alert("Couldn't update: " + ((e && e.message) || e)); }
   };
   useEffect(() => {
-    if (tab !== "dashboard") return;
+    // Also runs for the Staffing & Shifts report so its "today" figures can
+    // reuse the dashboard's authoritative tech tally (computeTechDayStats).
+    if (tab !== "dashboard" && tab !== "staffingReport") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     let cancelled = false;
     setDashScheduledToday(null);
@@ -14834,6 +15022,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const isWorking = (v) => v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E";
       const PRESENT = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1 };
       const ABSENT = { absent: 1, no: 1, sick: 1, sick_n: 1, frl: 1 };
+      // Attendance-sheet statuses that mean "not working today" — they override
+      // a roster work cell (a swapped-out shift, a day off, public holiday,
+      // leave or a termination keyed straight onto the sheet). A tech marked
+      // like this isn't scheduled today and must not be flagged "not checked in".
+      const OFF_OVERRIDE = { off: 1, swap_o: 1, al: 1, el: 1, ph: 1, mat: 1, term: 1, unpaid: 1 };
       // Branch → attGrid lookup so the per-branch compute below can
       // peek at a loaned-out tech's status at the destination branch.
       const attByBranch = {};
@@ -14858,9 +15051,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // manager guard below. Without this the raw grid also counts techs who
         // have LEFT, guest/loan rows from other stores, and stale codes, which
         // badly inflates the "scheduled today" numbers.
+        // Evaluate each tech at their EFFECTIVE branch — once a transfer date has
+        // passed, the tech belongs to the destination, so we read the
+        // destination's roster + attendance (not the stale cells still sitting
+        // in the old branch's grid). Without this a tech who moved branches and
+        // is OFF at the new store still reads as scheduled-to-work from the old
+        // store's leftover cell (e.g. Tariro: moved Sea Point→Green Point on the
+        // 25th, off at Green Point today, yet shown "not checked in").
+        const _effBranch = (s) => (s.transferring && s.transferTo && s.transferDate && ymd >= String(s.transferDate).replace(/\//g, "-")) ? s.transferTo : s.branch;
         const _branchTechEcs = new Set(
           (enriched || [])
-            .filter(s => s && s.branch === name && !s.onMat && !s.onUnpaidLegal && !s.offboarded && !(s.leftDate && ymd > s.leftDate))
+            .filter(s => s && _effBranch(s) === name && !s.onMat && !s.onUnpaidLegal && !s.offboarded && !(s.leftDate && ymd > s.leftDate))
             .map(s => String(s.ec || "").toUpperCase().trim())
             .filter(Boolean)
         );
@@ -14878,6 +15079,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (_onLeaveToday.has(ecT)) continue;       // on annual / emergency leave today
           const v = techGrid[ec][todayDay];
           if (!isWorking(v)) continue;
+          // Respect an attendance-sheet OFF override (swap-out / day off / PH /
+          // leave / term) the same way the sheet does — the tech isn't working
+          // today, so don't count them as scheduled or "not checked in". Read it
+          // UNGATED by daily sign-off: an off mark isn't a kiosk check-in.
+          let _offChk = attGrid[ec] && attGrid[ec][todayDay];
+          if (_offChk && _offChk.charAt(0) === "~") _offChk = _offChk.slice(1);
+          if (_offChk && OFF_OVERRIDE[_offChk]) continue;
           count++; tScheduled++;
           let st = _branchSubmitted ? (attGrid[ec] && attGrid[ec][todayDay]) : null;
           if (st && st.indexOf("~") === 0) st = "";   // unconfirmed mirror ≠ a real check-in
@@ -14891,6 +15099,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               let destSt = destGrid[ec] && destGrid[ec][todayDay];
               if (destSt && destSt.indexOf("~") === 0) destSt = "";
               if (destSt) st = destSt;
+            }
+          }
+          // Cross-branch check-in fallback (covers transfers, not just formal
+          // loans). A recently-transferred tech often clocks in at the branch
+          // they actually work now while their record still points here — so
+          // their home grid shows no status and they read as "not checked in"
+          // even though they're present. If we still have nothing, look for a
+          // real status under this EC at any OTHER signed-off branch. ECs are
+          // unique per person, so a present/absent mark elsewhere is genuinely
+          // theirs.
+          if (!st) {
+            const ecVariants = [ec, ecT, ecT.toLowerCase()];
+            for (const _b in attByBranch) {
+              if (_b === name || !signedOffSet.has(_b)) continue;
+              const g = attByBranch[_b] || {};
+              let oSt = null;
+              for (const k of ecVariants) { if (g[k] && g[k][todayDay]) { oSt = g[k][todayDay]; break; } }
+              if (oSt && oSt.indexOf("~") === 0) oSt = "";
+              if (oSt && (PRESENT[oSt] || ABSENT[oSt])) { st = oSt; break; }
             }
           }
           if (st && PRESENT[st]) { tCheckedIn++; techByEc[ec] = "in"; }
@@ -14955,6 +15182,186 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     }
     return () => { cancelled = true; };
   }, [tab, staff, managers, techLoans, leaveRecs]);
+
+  // ── Staffing & Shifts loader (Insights → Staffing & Shifts) ────────
+  // Builds two views from the live tech schedules + attendance grids:
+  //   • next 7 days — how many techs are scheduled to work each day
+  //   • current pay cycle — tech shifts scheduled vs actually worked
+  // Reuses the dashboard's definitions of "working" (schedule code) and
+  // "present" (attendance status) so the numbers line up with the tiles.
+  useEffect(() => {
+    if (tab !== "staffingReport") return;
+    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
+    let cancelled = false;
+    setStaffingData({ loading: true });
+    const pad = (n) => String(n).padStart(2, "0");
+    const ymdOf = (dt) => dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate());
+    // END-month ym (tech-schedule convention) for the cycle a date sits in.
+    const schedYmOf = (dt) => { let y = dt.getFullYear(), m = dt.getMonth() + 1; if (dt.getDate() > 24) { m += 1; if (m > 12) { m = 1; y += 1; } } return y + "-" + pad(m); };
+    // START-month ym (attendance convention) for the same cycle.
+    const attYmOf = (dt) => { let y = dt.getFullYear(), m = dt.getMonth() + 1; if (dt.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y -= 1; } } return y + "-" + pad(m); };
+    const isWorking = (v) => v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E";
+    const PRESENT = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1 };
+    const ABSENTM = { absent: 1, no: 1, sick: 1, sick_n: 1, frl: 1 };
+    // Attendance statuses that override the roster to "not working today".
+    const OFF_OVERRIDE = { off: 1, swap_o: 1, al: 1, el: 1, ph: 1, mat: 1, term: 1, unpaid: 1 };
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const todayYmd = ymdOf(today);
+    const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    // Next 7 days (today + 6).
+    const next7Dates = [];
+    for (let i = 0; i < 7; i++) { const d = new Date(today); d.setDate(d.getDate() + i); next7Dates.push(d); }
+    // Current pay cycle (the one containing today) — END-month ym for the grid,
+    // its periodDays gives every calendar day in the cycle.
+    const cycSchedYm = schedYmOf(today);
+    const cycAttYm = attYmOf(today);
+    const cycleDays = window.BOA_DB.periodDays(cycSchedYm);   // [{ d, monthIdx, year, dow }]
+    // All schedule cycles we must load (current cycle + any the next 7 touch).
+    const schedYms = Array.from(new Set([cycSchedYm, ...next7Dates.map(schedYmOf)]));
+    // All attendance cycles for the "worked" tally (current cycle + any the
+    // next-7 worked column touches — only today contributes a worked value,
+    // but a 7-day window can straddle the 25th).
+    const attYms = Array.from(new Set([cycAttYm, ...next7Dates.filter(d => ymdOf(d) <= todayYmd).map(attYmOf)]));
+    const scoped = SALONS.filter(sl => scopedSalonNames.has(sl.name));
+    const safe = (p) => (p && p.catch ? p.catch(() => null) : Promise.resolve(null));
+    // Re-key a grid by upper-cased EC so lookups match enriched ECs regardless
+    // of how the saved grid happened to case them.
+    const normGrid = (g) => { const o = {}; for (const k in (g || {})) o[String(k).toUpperCase().trim()] = g[k]; return o; };
+    // Cash-ups for the whole cycle (one query, all branches). 40 days back
+    // safely spans the 25th→24th cycle wherever today sits inside it.
+    const cashLoad = (window.BOA_DB.listRecentCashups
+      ? safe(window.BOA_DB.listRecentCashups(40))
+      : Promise.resolve([]));
+    Promise.all([
+      Promise.all(scoped.map(async (sl) => {
+        const schedByYm = {}, attByYm = {};
+        await Promise.all([
+          ...schedYms.map(async (ym) => { const r = await safe(window.BOA_DB.loadSchedule(sl.name, ym, false)); schedByYm[ym] = normGrid(r && r.grid); }),
+          ...attYms.map(async (ym) => { const r = await safe(window.BOA_DB.loadAttendance(sl.name, ym)); attByYm[ym] = normGrid(r && r.grid); })
+        ]);
+        return { name: sl.name, schedByYm, attByYm };
+      })),
+      cashLoad
+    ]).then(([branchData, cashRows]) => {
+      if (cancelled) return;
+      // Total cash-up takings per day across in-scope branches. Mirrors the
+      // Cash Ups tab: sum the generated `total` (turnover, excludes tips) of
+      // non-archived rows (reopened/superseded rows carry archived_at).
+      // Per-cashup turnover. Prefer the generated `total` column, but fall back
+      // to summing the components (some rows don't carry a populated `total`),
+      // matching the Cash Ups tab's own live-total formula (excludes tips).
+      const cashTotalOf = (r) => {
+        const t = Number(r.total);
+        if (Number.isFinite(t) && t > 0) return t;
+        return (Number(r.yoco) || 0) + (Number(r.yoco_link) || 0) + (Number(r.cash) || 0)
+          + (Number(r.vouchers) || 0) + (Number(r.gift_card) || 0) - (Number(r.manual_discounts) || 0);
+      };
+      const cashByYmd = {};
+      (cashRows || []).forEach(r => {
+        if (!r || !r.date || r.archived_at) return;
+        if (!scopedSalonNames.has(r.branch)) return;
+        const key = String(r.date).slice(0, 10);   // normalise to YYYY-MM-DD
+        cashByYmd[key] = (cashByYmd[key] || 0) + cashTotalOf(r);
+      });
+      // One entry per active tech (exclude maternity / unpaid-legal / off-boarded).
+      // Keep transfer info so each tech is evaluated at their EFFECTIVE branch
+      // per day — once a transfer date passes they're read at the destination's
+      // roster + attendance, not the stale cells left in the old branch's grid.
+      const branchMap = {}; branchData.forEach(bd => { branchMap[bd.name] = bd; });
+      const allTechs = [];
+      for (const s of (enriched || [])) {
+        if (!s || !s.ec || !s.branch) continue;
+        if (s.onMat || s.onUnpaidLegal || s.offboarded) continue;
+        allTechs.push({
+          ec: String(s.ec).toUpperCase().trim(), name: s.name || s.ec, branch: s.branch,
+          leftDate: s.leftDate || null,
+          transferring: !!s.transferring, transferTo: s.transferTo || null,
+          transferDate: s.transferDate ? String(s.transferDate).replace(/\//g, "-") : null
+        });
+      }
+      const effBranchFor = (t, ymd) => (t.transferring && t.transferTo && t.transferDate && ymd >= t.transferDate) ? t.transferTo : t.branch;
+      // Leave (annual / emergency) coverage by EC → quick per-day check.
+      const leaveByEc = {};
+      (leaveRecs || []).forEach(lv => {
+        if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return;
+        (leaveByEc[String(lv.ec).toUpperCase().trim()] = leaveByEc[String(lv.ec).toUpperCase().trim()] || []).push([lv.startDate, lv.endDate]);
+      });
+      const onLeave = (ecU, ymd) => (leaveByEc[ecU] || []).some(([a, b]) => ymd >= a && ymd <= b);
+      const activeOn = (t, ymd) => (!t.leftDate || ymd <= t.leftDate);
+      // Per-day tally over all in-scope techs (deduped one-per-person). Counts:
+      //   scheduled        — rostered to work (work cell, not overridden OFF)
+      //   worked           — actually present (incl. extra/cover shifts)
+      //   presentScheduled — rostered AND present (for a ≤100% attendance rate)
+      //   absent           — rostered but marked sick / no-show / absent
+      const dayStats = (dt, withAttn) => {
+        const sym = schedYmOf(dt), aym = attYmOf(dt), dayNum = dt.getDate(), ymd = ymdOf(dt);
+        let scheduled = 0, worked = 0, presentScheduled = 0, absent = 0;
+        for (const t of allTechs) {
+          if (!activeOn(t, ymd) || onLeave(t.ec, ymd)) continue;
+          const eb = effBranchFor(t, ymd);
+          if (!scopedSalonNames.has(eb)) continue;
+          const bd = branchMap[eb];
+          if (!bd) continue;
+          let st = ((bd.attByYm[aym] || {})[t.ec] || {})[dayNum];
+          if (st && st.charAt(0) === "~") st = st.slice(1);
+          const off = st && OFF_OVERRIDE[st];
+          const rostered = isWorking(((bd.schedByYm[sym] || {})[t.ec] || {})[dayNum]) && !off;
+          if (rostered) scheduled++;
+          if (withAttn) {
+            // Count a kiosk clock-in as worked even when it never made it onto the
+            // saved attendance grid — historically some check-ins weren't tapped
+            // into the sheet, so the grid alone under-counts. This mirrors what
+            // the attendance sheet shows (the green ✓ comes from the same source).
+            const ci = ((checkInsByBranch[eb] || {})[t.ec] || {})[ymd];
+            const hasIn = !!(ci && ci.hasIn) && st !== "swap_o";
+            const present = (st && PRESENT[st]) || hasIn;
+            if (present) { worked++; if (rostered) presentScheduled++; }
+            else if (rostered && st && ABSENTM[st]) absent++;
+          }
+        }
+        return { scheduled, worked, presentScheduled, absent };
+      };
+      // Next 7 days.
+      const next7 = next7Dates.map((dt) => {
+        const ymd = ymdOf(dt);
+        const past = ymd <= todayYmd;
+        const s = dayStats(dt, past);
+        return { ymd, dow: DOW[dt.getDay()], dayNum: dt.getDate(), monthShort: MON[dt.getMonth()], scheduled: s.scheduled, isToday: ymd === todayYmd, checkedIn: past ? s.worked : null, absent: past ? s.absent : null };
+      });
+      // Current cycle, per day.
+      const days = cycleDays.map((cd) => {
+        const dt = new Date(cd.year, cd.monthIdx, cd.d); dt.setHours(0, 0, 0, 0);
+        const ymd = ymdOf(dt);
+        const isFuture = ymd > todayYmd;
+        const s = dayStats(dt, !isFuture);
+        return {
+          ymd, d: cd.d, dow: DOW[dt.getDay()], monthShort: MON[dt.getMonth()],
+          scheduled: s.scheduled,
+          worked: isFuture ? null : s.worked,
+          presentScheduled: isFuture ? null : s.presentScheduled,
+          cashTotal: isFuture ? null : (cashByYmd[ymd] || 0),
+          isFuture, isToday: ymd === todayYmd
+        };
+      });
+      const totalScheduled = days.reduce((a, r) => a + r.scheduled, 0);
+      const toDate = days.filter(r => !r.isFuture);
+      const totalScheduledToDate = toDate.reduce((a, r) => a + r.scheduled, 0);
+      const totalWorked = toDate.reduce((a, r) => a + (r.worked || 0), 0);
+      const totalPresentScheduled = toDate.reduce((a, r) => a + (r.presentScheduled || 0), 0);
+      const totalCash = toDate.reduce((a, r) => a + (r.cashTotal || 0), 0);
+      const attendanceRate = totalScheduledToDate > 0 ? Math.round((totalPresentScheduled / totalScheduledToDate) * 100) : null;
+      setStaffingData({
+        loading: false,
+        scopeLabel: _hasStoreScope ? (dashScope === "mine" ? "My stores" : dashScope === "other" ? "Other stores" : "All stores") : "All stores",
+        branchCount: scoped.length,
+        next7,
+        cycle: { ym: cycSchedYm, label: window.BOA_DB.periodLabel ? window.BOA_DB.periodLabel(cycSchedYm) : cycSchedYm, days, totalScheduled, totalScheduledToDate, totalWorked, totalPresentScheduled, totalCash, attendanceRate }
+      });
+    }).catch((err) => { if (!cancelled) setStaffingData({ loading: false, error: (err && err.message) || String(err) }); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, staff, managers, leaveRecs, scopedSalonNames, dashScope, clockinVer]);
 
   // ── Upcoming-cycle schedule check ── flags branches whose tech / manager
   // schedule for the coming month hasn't been saved. Deadline is the 15th.
@@ -15571,14 +15978,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Attendance tab opens. The Attendance grid uses these to overlay check-in
   // markers on each cell and to flag discrepancies vs. the Fresha import.
   useEffect(() => {
-    if (tab !== "checkins" && tab !== "attendance" && tab !== "payrollProgress") return;
+    if (tab !== "checkins" && tab !== "attendance" && tab !== "payrollProgress" && tab !== "staffingReport") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     if (!window.BOA_DB.listRecentTechClockins) return; // older deploys
     let cancelled = false;
     (async () => {
       try {
         const rows = await window.BOA_DB.listRecentTechClockins(techClockinDays);
-        if (!cancelled) setTechClockinRows(rows || []);
+        if (!cancelled) { setTechClockinRows(rows || []); setClockinVer(v => v + 1); }
       } catch (e) { console.error("tech clockins load:", e); }
     })();
     return () => { cancelled = true; };
@@ -15596,14 +16003,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [reopenModal, setReopenModal] = useState(null);  // null | { branch, ymd, _saving, _err }
   const [notCheckedInModal, setNotCheckedInModal] = useState(null);  // null | [{ ec, name, branch }] — techs scheduled today who haven't checked in
   useEffect(() => {
-    if (tab !== "checkins" && tab !== "attendance" && tab !== "payrollProgress") return;
+    if (tab !== "checkins" && tab !== "attendance" && tab !== "payrollProgress" && tab !== "staffingReport") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     if (!window.BOA_DB.listRecentKioskCheckins) return; // older deploy
     let cancelled = false;
     (async () => {
       try {
         const rows = await window.BOA_DB.listRecentKioskCheckins(techClockinDays, SALONS.map(s => s.name));
-        if (!cancelled) setAttCheckinRows(rows || []);
+        if (!cancelled) { setAttCheckinRows(rows || []); setClockinVer(v => v + 1); }
       } catch (e) { console.error("kiosk check-ins load:", e); }
     })();
     return () => { cancelled = true; };
@@ -15667,6 +16074,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const dt = new Date(r.ts);
       if (!prior || (prior.ts && dt > prior.ts) || !prior.ts) {
         out[br][ec][ymd] = { status: r.status, note: r.note || null, ts: dt, hasProof: !!r.hasProof, proofKey: r.proofKey || null, markedBy: r.markedBy || null };
+      }
+    }
+    // A "(cleared)" entry is the kiosk logging that a mark was REMOVED — it means
+    // there's no active status for that day. We keep it in the latest-wins pass
+    // above (so a real absence logged AFTER a clear still wins), then drop any
+    // day whose most-recent kiosk action was the clear. Otherwise a leftover
+    // "(cleared)" would mask the real clock-in in the attendance tooltip and
+    // trip a false "kiosk marked absent" warning. Mirrors the Nail Tech
+    // Check-ins tab, which already skips "(cleared)" rows.
+    for (const br in out) {
+      for (const ec in out[br]) {
+        for (const ymd in out[br][ec]) {
+          if (out[br][ec][ymd] && out[br][ec][ymd].status === "(cleared)") delete out[br][ec][ymd];
+        }
       }
     }
     return out;
@@ -15820,6 +16241,81 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       };
     });
   }, [staff, findMatRec, onUnpaidLegalEcs, unpaidLegalRecs, offboardedMap]);
+
+  // Authoritative "nail techs working today" tally, derived from the dashboard
+  // loader's per-branch techByEc map (which already applies kiosk daily sign-off
+  // gating, loan resolution and present/absent classification). Collapses to one
+  // row per EC — dropping leavers / maternity / on-leave and stale wrong-branch
+  // entries after a transfer — so a tech counts exactly once. Shared by the
+  // Dashboard tiles and the Insights → Staffing & Shifts "today" figures so the
+  // two never disagree. Returns null until the loader has populated dtbb.
+  const computeTechDayStats = (dtbb) => {
+    if (!dtbb) return null;
+    const _t = new Date();
+    const _todayYmd = _t.getFullYear() + "-" + String(_t.getMonth() + 1).padStart(2, "0") + "-" + String(_t.getDate()).padStart(2, "0");
+    const enrichedByEc = {};
+    for (const s of (enriched || [])) if (s && s.ec) enrichedByEc[s.ec.trim()] = s;
+    const onLeaveEcs = new Set();
+    for (const lv of (leaveRecs || [])) {
+      if (lv && lv.ec && lv.startDate && lv.endDate && _todayYmd >= lv.startDate && _todayYmd <= lv.endDate) onLeaveEcs.add(lv.ec.trim());
+    }
+    const isOffToday = (er, ecKey) =>
+      (!!(er && er.leftDate && _todayYmd > er.leftDate)) ||
+      (!!(er && (er.onMat || er.onUnpaidLegal))) ||
+      onLeaveEcs.has(ecKey);
+    const effBranchOf = (er) => {
+      if (!er) return null;
+      if (er.transferring && er.transferTo && er.transferDate && _todayYmd >= String(er.transferDate).replace(/\//g, "-")) return er.transferTo;
+      return er.branch || null;
+    };
+    const rank = { in: 2, absent: 1, pending: 0 };
+    // Collect every per-branch entry for each EC, then pick exactly ONE.
+    // Prefer the entry at the tech's effective (post-transfer) branch so a
+    // settled move counts once at the new store and the stale old-branch cell
+    // is ignored. BUT if there's no entry at the effective branch — a transfer
+    // date has passed yet the move hasn't settled, so the tech is still really
+    // working their old branch's roster — keep the best entry we DO have rather
+    // than dropping the person. Unconditionally skipping the old-branch entry
+    // was making mid-transfer techs vanish from the count entirely (≈11 techs:
+    // 220 scheduled read as 209, 210 worked as 199).
+    const candByEc = {};
+    for (const b in dtbb) {
+      if (_hasStoreScope && !scopedSalonNames.has(b)) continue;
+      const tb = (dtbb[b] || {}).techByEc || {};
+      for (const ec in tb) {
+        const ecKey = (ec || "").trim();
+        const er = enrichedByEc[ecKey];
+        if (!er) continue;
+        if (isOffToday(er, ecKey)) continue;
+        (candByEc[ec] = candByEc[ec] || []).push({ b, status: tb[ec], eff: effBranchOf(er) });
+      }
+    }
+    const byEc = {};
+    for (const ec in candByEc) {
+      const cands = candByEc[ec];
+      const eff = cands[0].eff;   // same staff record → same effective branch
+      // Use the effective-branch entry if it exists; otherwise the best-ranked
+      // entry anywhere (real check-in > absent > pending) so nobody is dropped.
+      let chosen = eff ? cands.find(c => c.b === eff) : null;
+      if (!chosen) chosen = cands.reduce((best, c) => (rank[c.status] > rank[best.status] ? c : best), cands[0]);
+      byEc[ec] = { status: chosen.status, branch: eff || chosen.b };
+    }
+    const a = { scheduled: 0, checkedIn: 0, notCheckedIn: 0, absent: 0, notCheckedInList: [], byBranch: {} };
+    for (const ec in byEc) {
+      const { status, branch } = byEc[ec];
+      a.scheduled++;
+      if (branch) a.byBranch[branch] = (a.byBranch[branch] || 0) + 1;
+      if (status === "in") a.checkedIn++;
+      else if (status === "absent") a.absent++;
+      else {
+        a.notCheckedIn++;
+        const er = enrichedByEc[(ec || "").trim()];
+        a.notCheckedInList.push({ ec, name: (er && er.name) || ec, branch });
+      }
+    }
+    a.notCheckedInList.sort((x, y) => (x.branch || "").localeCompare(y.branch || "") || (x.name || "").localeCompare(y.name || ""));
+    return a;
+  };
 
   // Managers don't go through enriched - their state is a flat array loaded
   // from Supabase. To keep the rest of the UI honest about maternity, expose
@@ -16776,6 +17272,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 color: { bg: "#EDE9FE", bgActive: "#DDD6FE", ink: "#5B21B6" },
                 items: [
                   { t: "alerts", l: "🔔 Alerts" },
+                  { t: "staffingReport", l: "📅 Staffing & Shifts" },
                   { t: "storeReports", l: "🏆 Store Reports" },
                   { t: "activity", l: "📜 Activity Log" }
                 ]
@@ -17149,72 +17646,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // in-scope branches: how many must work, how many checked in, how
           // many haven't, and how many were marked absent (incl. no-show /
           // sick / FRL).
-          const techToday = (() => {
-            if (!dashTechByBranch) return null;
-            const _t = new Date();
-            const _todayYmd = _t.getFullYear() + "-" + String(_t.getMonth() + 1).padStart(2, "0") + "-" + String(_t.getDate()).padStart(2, "0");
-            const enrichedByEc = {};
-            for (const s of (enriched || [])) if (s && s.ec) enrichedByEc[s.ec.trim()] = s;
-            // ECs whose leave record covers today — the live schedule shows these
-            // as L even when the stored grid the dashboard reads still has a work code.
-            const onLeaveEcs = new Set();
-            for (const lv of (leaveRecs || [])) {
-              if (lv && lv.ec && lv.startDate && lv.endDate && _todayYmd >= lv.startDate && _todayYmd <= lv.endDate) onLeaveEcs.add(lv.ec.trim());
-            }
-            const branchSet = new Set(Object.keys(dashTechByBranch));
-            // A tech isn't really working today — whatever a stale stored grid says
-            // — if they've left, are on maternity / unpaid-legal leave, or have an
-            // annual-leave record over today.
-            const isOffToday = (er, ecKey) =>
-              (!!(er && er.leftDate && _todayYmd > er.leftDate)) ||   // departed (today past last working day)
-              (!!(er && (er.onMat || er.onUnpaidLegal))) ||           // maternity / unpaid-legal leave
-              onLeaveEcs.has(ecKey);                                  // annual leave covering today
-            // Effective home branch today — follows a transfer once its date has
-            // passed. Lets us ignore stale work codes lingering in a branch the
-            // tech no longer (or doesn't yet) work at.
-            const effBranchOf = (er) => {
-              if (!er) return null;
-              if (er.transferring && er.transferTo && er.transferDate && _todayYmd >= String(er.transferDate).replace(/\//g, "-")) return er.transferTo;
-              return er.branch || null;
-            };
-            // Collapse to one row per EC. A real check-in / absent mark outranks a
-            // pending slot, so a transferred tech who checked in at their new
-            // branch isn't flagged "not checked in" at the old one.
-            const rank = { in: 2, absent: 1, pending: 0 };
-            const byEc = {};   // ec -> { status, branch }
-            for (const b in dashTechByBranch) {
-              if (_hasStoreScope && !scopedBranchSet.has(b)) continue;
-              const tb = (dashTechByBranch[b] || {}).techByEc || {};
-              for (const ec in tb) {
-                const ecKey = (ec || "").trim();
-                const er = enrichedByEc[ecKey];
-                if (!er) continue;   // no current staff record — deleted/unknown, skip stale grid key
-                if (isOffToday(er, ecKey)) continue;
-                const eff = effBranchOf(er);
-                if (eff && branchSet.has(eff) && b !== eff) continue;   // stale / wrong-branch grid entry
-                const status = tb[ec];
-                const cur = byEc[ec];
-                if (!cur || rank[status] > rank[cur.status]) byEc[ec] = { status, branch: eff || b };
-              }
-            }
-            const a = { scheduled: 0, checkedIn: 0, notCheckedIn: 0, absent: 0, notCheckedInList: [], byBranch: {} };
-            for (const ec in byEc) {
-              const { status, branch } = byEc[ec];
-              a.scheduled++;
-              if (branch) a.byBranch[branch] = (a.byBranch[branch] || 0) + 1;   // per-branch breakdown sums to a.scheduled
-              if (status === "in") a.checkedIn++;
-              else if (status === "absent") a.absent++;
-              else {
-                a.notCheckedIn++;
-                const er = enrichedByEc[(ec || "").trim()];
-                a.notCheckedInList.push({ ec, name: (er && er.name) || ec, branch });
-              }
-            }
-            a.notCheckedInList.sort((x, y) =>
-              (x.branch || "").localeCompare(y.branch || "") || (x.name || "").localeCompare(y.name || "")
-            );
-            return a;
-          })();
+          const techToday = computeTechDayStats(dashTechByBranch);
 
           // Today's store-openings snapshot (loaded by the useEffect above).
           // null while the first load is in flight; show "…" until data lands.
@@ -23781,12 +24213,33 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             _incomingByEc[s.ec] = { movedFrom: s.branch, transferDate: s.transferDate };
           }
         });
-        // Check-ins are indexed by the staff record's branch. A transferred
-        // tech's record still points at the OLD branch, so ALL their clock-ins
-        // (before AND after the move) live under it — look check-ins up there
-        // for incoming techs so their worked days show and genuine missed days
-        // can be told apart from worked-but-unstamped ones.
-        const _cinBranchFor = (ec) => (_incomingByEc[ec] && _incomingByEc[ec].movedFrom) || attBranch;
+        // An incoming transfer's check-in data is split across two branches:
+        // pre-transfer days (and any clock-in still indexed by the stale
+        // staff.branch) sit under the OLD branch (movedFrom), while post-transfer
+        // kiosk-tile check-ins are logged under the NEW branch (attBranch). The
+        // old single-branch lookup (_cinBranchFor → movedFrom) therefore missed
+        // every post-transfer day. Look up BOTH branches, preferring whichever
+        // has data for the day, so a transferred tech's worked days resolve
+        // wherever the kiosk actually recorded them. Non-transferred techs are
+        // unaffected (no _incomingByEc entry → attBranch only).
+        const _lookupAcrossTransfer = (map, ec, ymd) => {
+          const here = ((map[attBranch] || {})[ec] || {})[ymd];
+          if (here) return here;
+          const inc = _incomingByEc[ec];
+          if (inc && inc.movedFrom && inc.movedFrom !== attBranch) {
+            return ((map[inc.movedFrom] || {})[ec] || {})[ymd] || null;
+          }
+          return here || null;
+        };
+        const _ciFor = (ec, ymd) => _lookupAcrossTransfer(checkInsByBranch, ec, ymd);
+        const _kaFor = (ec, ymd) => _lookupAcrossTransfer(kioskAbsentByBranch, ec, ymd);
+        // Branch-agnostic Fresha worked-flag — looks the tech up in the global
+        // cross-branch index so her appointments show no matter which branch
+        // filed them (transfers, borrows, …). Coverage is still per-branch.
+        const _freshaWorkedFor = (ec, dayNum) => {
+          const row = freshaWorkedAll[String(ec).trim().toUpperCase()];
+          return !!(row && row[dayNum]);
+        };
         // Post-transfer fallback for an incoming tech. On/after the transfer
         // date the day belongs to the NEW branch. If she isn't on the new
         // branch's saved schedule and the day carries no explicit mark, resolve
@@ -23797,7 +24250,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (!inc || !dayObj || dayObj.ymd < inc.transferDate || dayObj.ymd > _todayYmdR) return null;
           if (attSched[ec] && attSched[ec][dayObj.d]) return null;     // on the new branch's schedule
           if (attGrid[ec] && attGrid[ec][dayObj.d]) return null;       // explicitly marked
-          const ci = ((checkInsByBranch[_cinBranchFor(ec)] || {})[ec] || {})[dayObj.ymd];
+          const ci = _ciFor(ec, dayObj.ymd);
           return (ci && ci.hasIn) ? "on" : "off";
         };
         _loansInCycle.concat(_mgrLoansInCycle).forEach(l => {
@@ -23833,9 +24286,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const _movedAwayThisCycle = (s) => s.transferring && s.transferTo && s.transferTo !== attBranch && s.transferDate && s.transferDate <= _todayYmdR;
         const _arrivingHereThisCycle = (s) => s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= _todayYmdR && s.branch && s.branch !== attBranch;
         const attStaff = [
-          ...enriched.filter(s => s.branch === attBranch && stillInCycle(s.ec) && !_movedAwayThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat })),
-          ...enriched.filter(s => stillInCycle(s.ec) && _arrivingHereThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat, movedFrom: s.branch, movedOn: s.transferDate })),
-          ...managers.filter(m => m.branch === attBranch && stillInCycle(m.ec)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", onMat: !!m.onMat, smTrial: _smTrialEcSet.has(String(m.ec).trim()) }))
+          ...enriched.filter(s => s.branch === attBranch && stillInCycle(s.ec) && !_movedAwayThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat, matStart: (s.matRec && s.matRec.matStart) || s.matStart || null })),
+          ...enriched.filter(s => stillInCycle(s.ec) && _arrivingHereThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat, matStart: (s.matRec && s.matRec.matStart) || s.matStart || null, movedFrom: s.branch, movedOn: s.transferDate })),
+          ...managers.filter(m => m.branch === attBranch && stillInCycle(m.ec)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", onMat: !!m.onMat, matStart: (m.matRec && m.matRec.matStart) || m.matStart || null, smTrial: _smTrialEcSet.has(String(m.ec).trim()) }))
         ].sort((a, b) => {
           // Maternity-leave staff go to the very bottom of the grid so the
           // active roster stays at the top. Within each group, sort by
@@ -23853,6 +24306,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // in the saved schedule grid (which may still have legacy 'L'
         // codes for them).
         const onMatEcs = new Set(attStaff.filter(s => s.onMat).map(s => s.ec));
+        // Maternity START date per ec (from the joined maternity record). The
+        // schedule already schedules these techs normally up to matStart and only
+        // shows 'ML' from it (see resolveMatStatus) — but the attendance sheet was
+        // painting the WHOLE row 'mat'. Honour matStart here too: a day is only
+        // maternity on/after the start date. When no start date is on record
+        // (dates_tbc / null) we keep the old full-row behaviour.
+        const matStartByEc = {};
+        attStaff.filter(s => s.onMat).forEach(s => {
+          matStartByEc[String(s.ec).trim()] = (s.matRec && s.matRec.matStart) || s.matStart || null;
+        });
+        const _onMatDay = (ec, ymd) => {
+          if (!onMatEcs.has(ec)) return false;
+          const ms = matStartByEc[String(ec).trim()];
+          if (!ms) return true;            // no start date on file → whole row is maternity
+          return !ymd || ymd >= ms;        // otherwise only days on/after the start date
+        };
         // ROM-managed absence reasons. Build an ec → ymd → status code
         // lookup so getStatus() can overlay a manager's day with the ROM's
         // recorded reason (sick_n / sick / frl / al / absent / no / off).
@@ -24037,6 +24506,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
         });
 
+        // Unpaid legal-status leave (Compliance → Unpaid Leave (Legal)): permit /
+        // asylum / passport expired, so the tech can't work and isn't paid. These
+        // records live in their OWN store (boa_unpaid_legal_v1), NOT the Leave
+        // Planner — so they produce no leaveRecs entry and the day falls through
+        // to the schedule's generic "L", rendering as paid Annual. Surface the
+        // leave window (status on_leave, startDate..endDate) so it shows as unpaid
+        // emergency leave (el) on the sheet and counts as unpaid in payroll.
+        const _unpaidLegalRanges = {};
+        (unpaidLegalRecs || []).forEach(r => {
+          if (!r || !r.ec || r.status !== "on_leave") return;
+          const ec = String(r.ec).trim();
+          (_unpaidLegalRanges[ec] = _unpaidLegalRanges[ec] || []).push({ start: r.startDate || null, end: r.endDate || null });
+        });
+        const _onUnpaidLegal = (ec, ymd) => {
+          const ranges = _unpaidLegalRanges[String(ec).trim()];
+          if (!ranges || !ymd) return false;
+          return ranges.some(rg => (!rg.start || ymd >= rg.start) && (!rg.end || ymd <= rg.end));
+        };
+
         // Extra-Day overlay. The kiosk records Extra Day approvals only in the
         // boa_extras sidecar, keyed dayKey → ec where dayKey is the DAY-OF-MONTH
         // string (same keying as attGrid/attSched), independent of the tech's
@@ -24060,6 +24548,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         (staff || []).forEach(s => { const e = String(s.ec || "").trim(); if (e && s.startDate) startByEc[e] = s.startDate; });
         (managers || []).forEach(m => { const e = String(m.ec || "").trim(); if (e && m.startDate) startByEc[e] = m.startDate; });
         (obList || []).forEach(o => { const e = String(o.ec || "").trim(); if (e && o.startDate) startByEc[e] = o.startDate; });
+        // Phantom-manager-presence guard. A manager 'On Time'/'Late' baked into
+        // the attendance grid with NO backing kiosk clock-in for that date AND
+        // no scheduled shift is a stale artifact: a clock-in mis-filed one
+        // payroll cycle forward (start-month vs end-month keying) surfaces as a
+        // phantom 'On Time' on the SAME day-of-month of the NEXT cycle (e.g. a
+        // 9 June clock-in showing again on 9 July). A manager's real worked day
+        // always carries a clock-in (or at least a rostered shift), so an
+        // unbacked cell is ignored here — this clears it from the cell, tooltip,
+        // solid styling AND the payroll totals (all flow through getStatus).
+        // Scoped to the loaded clock-in window so distant historical cells we
+        // can't verify against a clock-in are left untouched.
+        const _isMgrPhantomPresence = (ec, d) => {
+          if (!_mgrEcToStaffId[ec]) return false;            // managers only
+          const cell = attGrid[ec] && attGrid[ec][d];
+          if (!cell) return false;
+          const bare = cell.indexOf("~") === 0 ? cell.slice(1) : cell;
+          if (bare !== "on" && bare !== "late") return false; // only presence cells can be phantoms
+          const sv = attSched[ec] && attSched[ec][d];
+          if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL" || sv === "E") return false; // genuinely rostered
+          const dayObj = days.find(x => x.d === d);
+          if (!dayObj) return false;
+          if (dayObj.ymd < _mgrCheckinFromYmd) return false;  // outside loaded clock-in window — can't verify, leave as-is
+          return !_mgrCheckedIn(ec, dayObj.ymd);              // phantom only when there's no real clock-in
+        };
         const getStatus = (ec, d) => {
           // If the schedule was later corrected to OFF for this day, any
           // stale ROM-recorded reason (sick / absent / FRL / etc.) is
@@ -24094,10 +24606,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const _do = days.find(x => x.d === d);
             const _lc = _do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd];
             if (_lc) {
-              // Admin-edited cell still wins (e.g. "Sick + note" on top of a
-              // pre-approved leave day shouldn't get reverted).
+              // Defer to a genuine admin status (e.g. "Sick + note" recorded on
+              // top of a pre-approved leave day) — but NOT to a plain leave code.
+              // Auto-fill mirrors the schedule's generic "L" into the grid as a
+              // (usually faded) 'al', which must not mask the leave record's own
+              // classification: an emergency (unpaid) day would otherwise show as
+              // paid Annual. So 'al'/'el' cells are overridden by the record.
               const _gv = attGrid[ec] && attGrid[ec][d];
-              if (!_gv) return _lc;   // 'el' (emergency, unpaid) or 'al' (annual)
+              const _gvBare = _gv ? (_gv.indexOf("~") === 0 ? _gv.slice(1) : _gv) : "";
+              if (!_gvBare || _gvBare === "al" || _gvBare === "el") return _lc;   // 'el' (emergency, unpaid) or 'al' (annual)
+            }
+          }
+          // Unpaid legal-status leave overlay (Compliance). Like the leave
+          // overlay above it wins over the schedule's generic "L"/Annual but
+          // defers to an admin-edited cell. Rendered as unpaid emergency leave.
+          {
+            const _do = days.find(x => x.d === d);
+            if (_do && _onUnpaidLegal(ec, _do.ymd)) {
+              const _gv = attGrid[ec] && attGrid[ec][d];
+              const _gvBare = _gv ? (_gv.indexOf("~") === 0 ? _gv.slice(1) : _gv) : "";
+              if (!_gvBare || _gvBare === "al" || _gvBare === "el") return "el";
             }
           }
           // Tech-loan override: the home branch's loaned-out cell mirrors
@@ -24160,11 +24688,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // 'L'/'al' for them before maternity was tracked separately —
           // those stale values must NOT bleed through as 'Annual'.
           // Checked before attGrid so any pre-mat overrides are ignored
-          // once the staff record is flagged onMat.
-          if (onMatEcs.has(ec)) return "mat";
+          // once the staff record is flagged onMat — but only from matStart
+          // onward, so days she actually worked before going on leave are kept.
+          if (_onMatDay(ec, dayObj && dayObj.ymd)) return "mat";
 
           const v = attGrid[ec] && attGrid[ec][d];
-          if (v) {
+          if (v && !_isMgrPhantomPresence(ec, d)) {
             const _bareV = v.indexOf("~") === 0 ? v.slice(1) : v;
             // Extra-day stickiness: when the kiosk recorded an Extra Day
             // for this tech (kioskAbs.status === "ext"), an on/late status
@@ -24181,7 +24710,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               if (_isExtraDay(ec, d)) return "ext";
               // Path 1: kiosk audit log marked the day as Extra.
               const _dayObjExt = days.find(x => x.d === d);
-              const _ka = _dayObjExt ? ((kioskAbsentByBranch[_cinBranchFor(ec)] || {})[ec] || {})[_dayObjExt.ymd] : null;
+              const _ka = _dayObjExt ? _kaFor(ec, _dayObjExt.ymd) : null;
               if (_ka && _ka.status === "ext") return "ext";
               // Path 2: the SCHEDULE code itself is "E" (extra cover) for
               // this day. When the manager taps On Time / Late later, the
@@ -24213,7 +24742,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (sv === "O" || sv === "R") return "off";
           if (sv === "L") return "al";
           if (sv === "ML") return "mat";
-          if (sv === "X") return "term";
+          if (sv === "X") {
+            // "X" is overloaded: the off-board cascade fills it for leavers, but
+            // it's also the pre-start / not-yet-on-payroll marker for new and
+            // trial techs. Only call it TERMINATED when they actually left;
+            // otherwise it's pre-start — so a trial tech's days (and any day
+            // before a starter's start date) don't read as TERMINATED on the
+            // schedule strip / hover tooltip.
+            const _xdo = days.find(x => x.d === d);
+            if (_xdo && isPostLeftDate(ec, _xdo.ymd)) return "term";
+            return "prestart";
+          }
           if (sv === "E") return "ext";
           if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL") return "on";
           // A manager clock-in on a day they were NOT scheduled to work is
@@ -24255,12 +24794,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const _hoSchedWork = _hoSched === "W" || _hoSched === "WE" || _hoSched === "WL" || _hoSched === "WM" || _hoSched === "WB" || _hoSched === "E";
           if (dayObj && _mgrEcToStaffId[ec] && _hoSchedWork && _mgrCheckedIn(ec, dayObj.ymd)) return true;
           if (dayObj && (_onLeaveByEcYmd[String(ec).trim()] || {})[dayObj.ymd] && !(attGrid[ec] && attGrid[ec][d])) return true;
+          if (dayObj && _onUnpaidLegal(ec, dayObj.ymd) && !(attGrid[ec] && attGrid[ec][d])) return true;
+          if (_isMgrPhantomPresence(ec, d)) return false;     // unbacked manager 'On Time' — not a real override
           const v = attGrid[ec] && attGrid[ec][d];
           return !!v && v.indexOf("~") !== 0;
         };
         const schedHint = (ec, d) => {
           if (mirrorSuppressed) return null;        // hide schedule signal after a Total Reset
-          if (onMatEcs.has(ec)) return "mat";       // maternity row — every day mirrors as 'mat'
+          if (_onMatDay(ec, (days.find(x => x.d === d) || {}).ymd)) return "mat";  // maternity — only from matStart onward
           // Leave Planner overlay — same idea as in getStatus. A leave day
           // granted via the planner reads as 'al' on the schedule strip even
           // if the saved schedule grid still has W/WL/WE for that day.
@@ -24268,6 +24809,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const _do = days.find(x => x.d === d);
             const _lc = _do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd];
             if (_lc) return _lc;   // 'el' (emergency, unpaid) or 'al' (annual)
+            if (_do && _onUnpaidLegal(ec, _do.ymd)) return "el";   // unpaid legal-status leave
           }
           const sv = attSched[ec] && attSched[ec][d];
           if (!sv) {
@@ -24280,7 +24822,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (sv === "O" || sv === "R") return "off";
           if (sv === "L") return "al";
           if (sv === "ML") return "mat";
-          if (sv === "X") return "term";
+          if (sv === "X") {
+            // "X" is overloaded: the off-board cascade fills it for leavers, but
+            // it's also the pre-start / not-yet-on-payroll marker for new and
+            // trial techs. Only call it TERMINATED when they actually left;
+            // otherwise it's pre-start — so a trial tech's days (and any day
+            // before a starter's start date) don't read as TERMINATED on the
+            // schedule strip / hover tooltip.
+            const _xdo = days.find(x => x.d === d);
+            if (_xdo && isPostLeftDate(ec, _xdo.ymd)) return "term";
+            return "prestart";
+          }
           if (sv === "E") return "ext";
           // Manager loaned to another store — she IS scheduled to work, just
           // not at this branch. Render the schedule banner green so the row
@@ -24915,6 +25467,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   mirrorSuppressed: false
                 });
               }
+              setFreshaAllTick(t => t + 1);   // refresh the branch-agnostic Fresha index
               logActivity("Imported Fresha CSV", cycLabel,
                 "Marked " + marked + " · cancelled " + cancelled + " · no-show " + noShow + " · out-of-cycle " + outOfCycle + branchSummary, "Fresha");
               alert(
@@ -24997,6 +25550,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             try { await window.BOA_DB.deleteEarlyLeaves(attBranch, attYM); }
             catch (e) { _resetErrors.push("early-leaves: " + (e.message || e)); }
           }
+          setFreshaAllTick(t => t + 1);   // refresh the branch-agnostic Fresha index after clearing this branch
           logActivity("Total reset (cycle display)", attBranch + " · " + cycLabel, "Grid + sidecars + left-early cleared, mirror suppressed; schedule + clockins + kiosk log preserved" + (_resetErrors.length ? " (errors: " + _resetErrors.join(", ") + ")" : ""), "Bulk");
           if (_resetErrors.length) {
             alert("✓ Reset done — with one small issue:\n\n" + _resetErrors.join("\n") + "\n\nGrid is cleared and your raw data (schedule, clock-ins, kiosk log) is safe.");
@@ -25017,7 +25571,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // is the explicit "rebuild from schedule" action so we read the
           // schedule directly here, bypassing the suppressed schedHint.
           const rawHintFor = (ec, d) => {
-            if (onMatEcs.has(ec)) return "mat";
+            if (_onMatDay(ec, (days.find(x => x.d === d) || {}).ymd)) return "mat";
             const sv = attSched[ec] && attSched[ec][d];
             if (!sv) return null;
             if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL") return "on";
@@ -25175,9 +25729,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // b) all-3-agree (mirrors the allMatchWork logic on the cell)
             const hint = schedHint(ec, dy.d);
             const scheduleSaysWork = hint === "on" || hint === "ext";
-            const freshaWorkedCell = !!((((attMeta || {}).freshaWorked || {})[ec] || {})[dy.d]);
-            const checkin = ((checkInsByBranch[_cinBranchFor(ec)] || {})[ec] || {})[dy.ymd] || null;
-            const kioskAbs = ((kioskAbsentByBranch[_cinBranchFor(ec)] || {})[ec] || {})[dy.ymd] || null;
+            const freshaWorkedCell = _freshaWorkedFor(ec, dy.d);
+            const checkin = _ciFor(ec, dy.ymd);
+            const kioskAbs = _kaFor(ec, dy.ymd);
             const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
             const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
             const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i" || bareV === "late";
@@ -25354,49 +25908,58 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const reviewedMap = (attMeta && attMeta.reviewedWarnings) || {};
           for (const s of attStaff) {
             for (const dy of days) {
+              // Don't blanket-skip future days: the grid still draws a ⚠ on a
+              // future cell that's been manually marked absent / sick / proof-
+              // pending, so the mismatch terms below carry their own isPastOrToday
+              // gates (matching the render) instead.
               const isPastOrToday = dy.ymd <= t0Ymd;
-              if (!isPastOrToday) continue;        // future days never warn
               const v = getStatus(s.ec, dy.d);
               const bareV = v ? (v.charAt(0) === "~" ? v.slice(1) : v) : "";
               const hint = schedHint(s.ec, dy.d);
+              const override = hasOverride(s.ec, dy.d);
               const scheduleSaysWork = hint === "on" || hint === "ext";
+              // Wider "shouldn't be here today" set — matches the grid render's
+              // scheduleOffish (off / annual / emergency / public-holiday / mat).
+              const scheduleOffish = hint === "off" || hint === "al" || hint === "el" || hint === "ph" || hint === "mat";
               const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i";
               const isLate = bareV === "late";
-              // Kiosk audit log + check-ins are tech-only signals — managers
-              // have their own clock-in source (handled via the mgr-overlay
-              // upstream). Skip the lookups for them so we never mix tech
-              // kiosk hits into a manager warning.
-              const kioskAbs = s.role === "NT" ? (((kioskAbsentByBranch[_cinBranchFor(s.ec)] || {})[s.ec] || {})[dy.ymd] || null) : null;
-              const checkin = s.role === "NT" ? (((checkInsByBranch[_cinBranchFor(s.ec)] || {})[s.ec] || {})[dy.ymd] || null) : null;
+              const isExtraDayCell = bareV === "ext";
+              // This tally MUST equal the ⚠ triangles drawn on the grid, so every
+              // term below mirrors the per-cell render verbatim — including the
+              // mirrorSuppressed gates (a Total Reset hides kiosk / Fresha signals),
+              // the s.role === "NT" gates on tech-only mismatches, and the manager
+              // mgrClockedInUnscheduled warning. Diverging here is exactly what made
+              // the "cells need review" count disagree with the visible triangles.
+              const kioskAbs = (s.role === "NT" && !mirrorSuppressed) ? _kaFor(s.ec, dy.ymd) : null;
+              const checkin = (s.role === "NT" && !mirrorSuppressed) ? _ciFor(s.ec, dy.ymd) : null;
               const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
               const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
-              const freshaWorkedCell = !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
-              const freshaCoversThisDay = !!effectiveFreshaThrough && dy.ymd <= effectiveFreshaThrough;
-              const override = hasOverride(s.ec, dy.d);
+              const freshaWorkedCell = !mirrorSuppressed && _freshaWorkedFor(s.ec, dy.d);
+              const freshaCoversThisDay = !mirrorSuppressed && !!effectiveFreshaThrough && dy.ymd <= effectiveFreshaThrough;
               const kioskMarkedAbsent = !!kioskAbs && kioskAbs.status !== "ext" && kioskAbs.status !== "trial" && kioskAbs.status !== "swap_o" && !/^[^a-z]*(?:left|early)/i.test(kioskAbs.status || "");
               const cellShowsAbsent = kioskMarkedAbsent || (override && !!bareV && !isWorking && !isLate);
               const extDayRecorded = (override && bareV === "ext") || (!!kioskAbs && kioskAbs.status === "ext");
-              const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
-              // Comprehensive mismatch detection — match the payroll tally
-              // above. Cell CORRESPONDS only when scheduled-work + presence
-              // + Fresha agree, or scheduled-off + no presence + no Fresha.
               const cellSaysPresent = isWorking || isLate || checkinHasIn;
-              const scheduleSaysOff = hint === "off" || hint === "al" || hint === "el" || hint === "ph" || hint === "mat";
-              const isExtraDayCell = bareV === "ext";
-              const presentNoApptWarn = cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
-              const workedOnOffDay = scheduleSaysOff && cellSaysPresent && !cellShowsAbsent && !isExtraDayCell;
-              const unaccountedScheduledDay = scheduleSaysWork && !cellSaysPresent && !cellShowsAbsent && !freshaWorkedCell && freshaCoversThisDay && !bareV;
-              const offButFreshaWorked = scheduleSaysOff && !cellSaysPresent && freshaWorkedCell;
-              const extDayNoApptWarn = extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
-              const missingCheckin = !checkinHasIn && freshaWorkedCell && scheduleSaysWork;
-              const proofPending = (bareV === "sick_n" || bareV === "frl");
+              const apptVsKioskAbsentWarn = s.role === "NT" && cellShowsAbsent && freshaWorkedCell;
+              const presentNoApptWarn = s.role === "NT" && cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
+              const workedOnOffDay = s.role === "NT" && scheduleOffish && cellSaysPresent && !cellShowsAbsent && !isExtraDayCell && isPastOrToday;
+              const unaccountedScheduledDay = s.role === "NT" && scheduleSaysWork && !cellSaysPresent && !cellShowsAbsent && !freshaWorkedCell && freshaCoversThisDay && !bareV && isPastOrToday;
+              const offButFreshaWorked = s.role === "NT" && scheduleOffish && !cellSaysPresent && freshaWorkedCell && isPastOrToday;
+              const extDayNoApptWarn = s.role === "NT" && extDayRecorded && !freshaWorkedCell && freshaCoversThisDay;
+              const missingCheckin = !checkinHasIn && freshaWorkedCell && isPastOrToday && scheduleSaysWork;
               // Sick NO note / NO SHOW only need review when something disagrees —
               // if the schedule said work + kiosk recorded the absence + Fresha
               // shows no appointment, all three sources line up and the manager
               // has nothing left to verify. Absent always needs review.
               const trustedAbsence = (bareV === "sick" || bareV === "no") && scheduleSaysWork && kioskMarkedAbsent && !freshaWorkedCell;
               const absentNeedsReview = ((bareV === "sick" || bareV === "no") && !trustedAbsence) || bareV === "absent";
-              if (apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || proofPending || missingCheckin || absentNeedsReview || workedOnOffDay || unaccountedScheduledDay || offButFreshaWorked) {
+              // Manager clocked in on an unscheduled day — grid flags this with a ⚠.
+              const mgrClockedInUnscheduled = s.role !== "NT" && _mgrEcToStaffId[s.ec] && _mgrCheckedIn(s.ec, dy.ymd) && hint !== "on" && hint !== "ext" && isPastOrToday && !override;
+              // Sick+note / FRL+proof cells show a ⚠ until the proof is reviewed —
+              // same as isProofStatus in the render (applies to techs AND managers).
+              const isProofStatus = bareV === "sick_n" || bareV === "frl";
+              const warning = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || missingCheckin || absentNeedsReview || workedOnOffDay || unaccountedScheduledDay || offButFreshaWorked || mgrClockedInUnscheduled;
+              if (isProofStatus || warning) {
                 total++;
                 const review = (reviewedMap[s.ec] || {})[dy.d];
                 if (review && review.valueAtReview === (v || "")) reviewed++;
@@ -25406,6 +25969,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           return { total, reviewed, open: total - reviewed };
         })();
 
+        // Publish this sheet's authoritative tally so the Payroll Progress
+        // roll-up shows the SAME numbers instead of re-deriving them from the
+        // raw grid (which drifts — e.g. it counted 31 for Sea Point when the
+        // sheet shows 7). Fire-and-forget, deferred out of render, and guarded
+        // by a signature cache so it writes only when the count actually
+        // changes (no save loop). Skip while loading so we never persist a
+        // half-built grid's count.
+        if (!attLoading && window.BOA_DB && window.BOA_DB.saveAttWarningCounts) {
+          const _wcKey = attBranch + "|" + attYM;
+          const _wcSig = warningCounts.total + ":" + warningCounts.reviewed + ":" + warningCounts.open;
+          window.__boaWcSaved = window.__boaWcSaved || {};
+          if (window.__boaWcSaved[_wcKey] !== _wcSig) {
+            window.__boaWcSaved[_wcKey] = _wcSig;
+            Promise.resolve().then(() => window.BOA_DB.saveAttWarningCounts(attBranch, attYM, {
+              total: warningCounts.total, reviewed: warningCounts.reviewed, open: warningCounts.open, at: Date.now()
+            }).catch(() => { delete window.__boaWcSaved[_wcKey]; }));   // let a later render retry on failure
+          }
+        }
 
         // BCEA eligibility checks for sick_n + frl
         const findStartDate = (ec) => {
@@ -25718,7 +26299,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // entries are advance planning, not actual check-ins, so ignore
                           // them here.
                           const checkin = (s.role === "NT" && isPastOrToday && !mirrorSuppressed)
-                            ? ((checkInsByBranch[_cinBranchFor(s.ec)] || {})[s.ec] || {})[dy.ymd] || null
+                            ? _ciFor(s.ec, dy.ymd)
                             : null;
                           // Discrepancy logic:
                           //  - Tech checked in but attendance marks them OFF / Annual /
@@ -25739,7 +26320,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // so they don't trigger "checked in" / mismatch signals on days
                           // that haven't happened yet.
                           const kioskAbs = (s.role === "NT" && isPastOrToday && !mirrorSuppressed)
-                            ? ((kioskAbsentByBranch[_cinBranchFor(s.ec)] || {})[s.ec] || {})[dy.ymd] || null
+                            ? _kaFor(s.ec, dy.ymd)
                             : null;
                           // swap_o explicitly means "took today off, owes a day back" — the
                           // tech was NOT present, even if a PIN-clockin record happened to
@@ -25753,7 +26334,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // populated by importFresha — NOT from the cell value, since the
                           // kiosk overwrites the grid (e.g. sick / no-show) and we don't want
                           // that to erase the Fresha appointment signal.
-                          const freshaWorkedCell = !mirrorSuppressed && !!((((attMeta || {}).freshaWorked || {})[s.ec] || {})[dy.d]);
+                          const freshaWorkedCell = !mirrorSuppressed && _freshaWorkedFor(s.ec, dy.d);
                           const scheduleSaysWork = hint === "on" || hint === "ext";
                           const missingCheckin = !checkinHasIn && freshaWorkedCell && isPastOrToday && scheduleSaysWork; // Fresha confirmed work but no check-in
                           const kioskAbsentScheduled = !!kioskAbs && scheduleSaysWork && !/^[^a-z]*(?:left|early)/i.test(kioskAbs.status || "");
@@ -26308,7 +26889,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         {sorted.map(e => (
                           <tr key={e.branch} style={{ background: e.open > 0 ? "#fef2f2" : (e.total > 0 ? "#f0fdf4" : "transparent"), cursor: "pointer" }}
                             onClick={() => { setAttBranch(e.branch); setTab("attendance"); }}>
-                            <td style={{ padding: "8px 12px", borderBottom: "1px solid #FDEEF5", color: "#831843", fontWeight: 600 }}>{e.branch}</td>
+                            <td style={{ padding: "8px 12px", borderBottom: "1px solid #FDEEF5", color: "#831843", fontWeight: 600 }}>{e.branch}{e.approx ? <span title="Estimated — open this branch's attendance sheet once so it can publish its exact count." style={{ marginLeft: 6, fontSize: 10, color: "#b45309", fontWeight: 700 }}>~ est.</span> : null}</td>
                             <td style={{ padding: "8px 12px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: e.open > 0 ? "#7f1d1d" : "#9ca3af", fontWeight: 700 }}>{e.open}</td>
                             <td style={{ padding: "8px 12px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: "#166534", fontWeight: 600 }}>{e.reviewed}</td>
                             <td style={{ padding: "8px 12px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: "#831843", fontWeight: 600 }}>{e.total}</td>
@@ -26320,12 +26901,157 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       </tbody>
                     </table>
                     <div style={{ marginTop: 14, fontSize: 12, color: "#831843", opacity: 0.7 }}>
-                      Only counts cells with at least one warning (Schedule × Kiosk × Fresha disagree). Cells where all three sources match are skipped — no admin investigation needed.
+                      Only counts cells with at least one warning (Schedule × Kiosk × Fresha disagree). Cells where all three sources match are skipped — no admin investigation needed. Counts are published by each branch's attendance sheet so they match its ⚠ triangles exactly; a “~ est.” branch hasn't been opened this cycle yet — open it once to lock in the precise number.
                     </div>
                   </div>
                 );
               })()}
             </div>
+          </div>
+        );
+      })()}
+
+      {/* ── STAFFING & SHIFTS TAB (Insights) ── */}
+      {tab === "staffingReport" && (currentUser.hideCategories || []).includes("Insights") && (
+        <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 14, padding: "30px 26px", textAlign: "center", color: "#831843" }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>🔒</div>
+          <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 14, fontWeight: 700 }}>Insights are not available for your account.</div>
+        </div>
+      )}
+      {tab === "staffingReport" && !((currentUser.hideCategories || []).includes("Insights")) && (() => {
+        const sd = staffingData;
+        const card = { background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 14, padding: "20px 22px" };
+        return (
+          <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+              <div>
+                <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, fontWeight: 700, color: "#831843" }}>📅 Staffing &amp; Shifts</div>
+                <div style={{ fontSize: 13, color: "#9d6a82", marginTop: 2 }}>Techs scheduled over the next 7 days, and scheduled-vs-worked shifts for this pay cycle.</div>
+              </div>
+              {renderScopeBar && renderScopeBar({})}
+            </div>
+
+            {(!sd || sd.loading) && (
+              <div style={{ ...card, textAlign: "center", color: "#9ca3af", fontStyle: "italic", padding: "40px 22px" }}>Loading staffing data…</div>
+            )}
+            {sd && !sd.loading && sd.error && (
+              <div style={{ ...card, borderColor: "#fecaca", background: "#fef2f2", color: "#7f1d1d" }}>Couldn't load staffing data: {sd.error}</div>
+            )}
+
+            {sd && !sd.loading && !sd.error && (() => {
+              // Make TODAY identical to the Dashboard tiles by reusing the same
+              // authoritative tally (computeTechDayStats over the dashboard
+              // loader's data — kiosk sign-off gated, loan-resolved). The
+              // forward/whole-cycle figures keep the report's schedule-based
+              // counts, which now use the same active-tech / transfer / leave
+              // rules as the dashboard so today lines up across the board.
+              const tt = computeTechDayStats(dashTechByBranch);
+              const next7 = sd.next7.map(d => (d.isToday && tt)
+                ? { ...d, scheduled: tt.scheduled, checkedIn: tt.checkedIn, absent: tt.absent }
+                : d);
+              const days = sd.cycle.days.map(r => (r.isToday && tt)
+                ? { ...r, scheduled: tt.scheduled, worked: tt.checkedIn, presentScheduled: tt.checkedIn }
+                : r);
+              const toDate = days.filter(r => !r.isFuture);
+              const totalScheduled = days.reduce((a, r) => a + r.scheduled, 0);
+              const totalScheduledToDate = toDate.reduce((a, r) => a + r.scheduled, 0);
+              const totalWorked = toDate.reduce((a, r) => a + (r.worked || 0), 0);
+              const totalPresentScheduled = toDate.reduce((a, r) => a + (r.presentScheduled || 0), 0);
+              const totalCash = toDate.reduce((a, r) => a + (r.cashTotal || 0), 0);
+              const attendanceRate = totalScheduledToDate > 0 ? Math.round((totalPresentScheduled / totalScheduledToDate) * 100) : null;
+              const c = { ...sd.cycle, days, totalScheduled, totalScheduledToDate, totalWorked, totalPresentScheduled, totalCash, attendanceRate };
+              // Whole rand, no cents — cash-up figures are large.
+              const fmtR = (n) => "R" + Math.round(Number(n) || 0).toLocaleString("en-ZA");
+              return (
+                <>
+                  {/* ── Next 7 days ── */}
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: "#831843", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>Next 7 days &middot; nail techs scheduled to work</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 10 }}>
+                      {next7.map(d => (
+                        <div key={d.ymd} style={{ ...card, padding: "14px 14px", textAlign: "center", background: d.isToday ? "#e0f2fe" : "#FFFFFF", borderColor: d.isToday ? "#7dd3fc" : "#FBCFE8" }}>
+                          <div style={{ fontSize: 11, fontWeight: 800, color: d.isToday ? "#0c4a6e" : "#9d6a82", textTransform: "uppercase", letterSpacing: "0.04em" }}>{d.isToday ? "Today" : d.dow}</div>
+                          <div style={{ fontSize: 11, color: "#9d6a82", marginBottom: 6 }}>{d.dayNum} {d.monthShort}</div>
+                          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 34, fontWeight: 800, color: d.isToday ? "#0c4a6e" : "#831843", lineHeight: 1 }}>{d.scheduled}</div>
+                          <div style={{ fontSize: 10.5, color: "#9d6a82", marginTop: 4 }}>scheduled</div>
+                          {d.checkedIn != null && (
+                            <div style={{ marginTop: 6, fontSize: 11, fontWeight: 700, color: "#166534" }}>✓ {d.checkedIn} worked{d.absent ? <span style={{ color: "#b91c1c", fontWeight: 700 }}> &middot; {d.absent} absent</span> : null}</div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* ── This pay cycle: scheduled vs worked ── */}
+                  <div style={{ ...card }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: "#831843", textTransform: "uppercase", letterSpacing: "0.05em" }}>This pay cycle &middot; shifts scheduled vs worked</div>
+                    <div style={{ fontSize: 12, color: "#9d6a82", marginTop: 2, marginBottom: 14 }}>{c.label}</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 16 }}>
+                      <div style={{ background: "#FDEEF5", borderRadius: 10, padding: "14px 16px" }}>
+                        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 30, fontWeight: 800, color: "#831843", lineHeight: 1 }}>{c.totalScheduled}</div>
+                        <div style={{ fontSize: 11.5, color: "#9d6a82", marginTop: 4 }}>shifts scheduled (whole cycle)</div>
+                      </div>
+                      <div style={{ background: "#dcfce7", borderRadius: 10, padding: "14px 16px" }}>
+                        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 30, fontWeight: 800, color: "#166534", lineHeight: 1 }}>{c.totalWorked}</div>
+                        <div style={{ fontSize: 11.5, color: "#3f6212", marginTop: 4 }}>shifts worked so far (to date)</div>
+                      </div>
+                      <div style={{ background: "#fef9c3", borderRadius: 10, padding: "14px 16px" }}>
+                        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 30, fontWeight: 800, color: "#854d0e", lineHeight: 1 }}>{c.totalScheduledToDate}</div>
+                        <div style={{ fontSize: 11.5, color: "#854d0e", marginTop: 4 }}>scheduled to date</div>
+                      </div>
+                      <div style={{ background: "#e0f2fe", borderRadius: 10, padding: "14px 16px" }}>
+                        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 30, fontWeight: 800, color: "#0c4a6e", lineHeight: 1 }}>{c.attendanceRate == null ? "—" : c.attendanceRate + "%"}</div>
+                        <div style={{ fontSize: 11.5, color: "#0c4a6e", marginTop: 4 }}>attendance (rostered who worked)</div>
+                      </div>
+                      <div style={{ background: "#ede9fe", borderRadius: 10, padding: "14px 16px" }}>
+                        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 30, fontWeight: 800, color: "#5b21b6", lineHeight: 1 }}>{fmtR(c.totalCash)}</div>
+                        <div style={{ fontSize: 11.5, color: "#5b21b6", marginTop: 4 }}>cash-ups total (to date)</div>
+                      </div>
+                      <div style={{ background: "#fae8ff", borderRadius: 10, padding: "14px 16px" }}>
+                        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 30, fontWeight: 800, color: "#a21caf", lineHeight: 1 }}>{c.totalWorked > 0 ? fmtR(c.totalCash / c.totalWorked) : "—"}</div>
+                        <div style={{ fontSize: 11.5, color: "#a21caf", marginTop: 4 }}>avg cash-up per tech-shift</div>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 12, color: "#6b7280", background: "#f9fafb", border: "1px solid #f3f4f6", borderRadius: 8, padding: "10px 12px", marginBottom: 16 }}>
+                      💡 <b>Average per nail tech per shift:</b> {fmtR(c.totalCash)} of cash-ups ÷ {c.totalWorked} shifts worked = <b>{c.totalWorked > 0 ? fmtR(c.totalCash / c.totalWorked) : "—"}</b> per tech worked, this cycle to date. The table below breaks it down per day.
+                    </div>
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                        <thead>
+                          <tr style={{ background: "#FDEEF5", color: "#831843" }}>
+                            <th style={{ padding: "7px 10px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Day</th>
+                            <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Scheduled</th>
+                            <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Worked</th>
+                            <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }} title="Of the techs rostered, how many actually worked">Attendance</th>
+                            <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Cash-ups</th>
+                            <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Avg / tech</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {c.days.map(r => {
+                            const rate = (!r.isFuture && r.scheduled > 0) ? Math.round(((r.presentScheduled || 0) / r.scheduled) * 100) : null;
+                            const avgPerTech = (!r.isFuture && r.worked > 0) ? (r.cashTotal / r.worked) : null;
+                            return (
+                              <tr key={r.ymd} style={{ background: r.isToday ? "#e0f2fe" : "transparent" }}>
+                                <td style={{ padding: "6px 10px", borderBottom: "1px solid #FDEEF5", color: "#831843", fontWeight: r.isToday ? 800 : 500 }}>{r.dow} {r.d} {r.monthShort}{r.isToday ? " · today" : ""}</td>
+                                <td style={{ padding: "6px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: "#831843", fontWeight: 600 }}>{r.scheduled}</td>
+                                <td style={{ padding: "6px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: r.isFuture ? "#cbd5e1" : "#166534", fontWeight: 600 }}>{r.isFuture ? "—" : r.worked}</td>
+                                <td style={{ padding: "6px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: rate == null ? "#cbd5e1" : (rate >= 90 ? "#166534" : rate >= 75 ? "#854d0e" : "#b91c1c"), fontWeight: 600 }}>{rate == null ? "—" : rate + "%"}</td>
+                                <td style={{ padding: "6px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: r.isFuture ? "#cbd5e1" : "#5b21b6", fontWeight: 600 }}>{r.isFuture ? "—" : (r.cashTotal ? fmtR(r.cashTotal) : "—")}</td>
+                                <td style={{ padding: "6px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: avgPerTech == null ? "#cbd5e1" : "#a21caf", fontWeight: 700 }}>{avgPerTech == null ? "—" : fmtR(avgPerTech)}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div style={{ marginTop: 12, fontSize: 11.5, color: "#9d6a82" }}>
+                      “Scheduled” counts active nail techs rostered to work that day (excludes leave, maternity, off / rest days, and departed staff), read at the branch each tech actually works — so a mid-cycle transfer is counted at their new store. “Worked” counts everyone present — marked on the sheet (on time, late, extra, trial, swap-in) <i>or</i> with a kiosk clock-in for that day (even older ones that never got tapped onto the sheet) — so it can exceed scheduled on days with extra/cover shifts. “Attendance” is how many of the <i>rostered</i> techs worked (capped at 100%). <b>Today’s numbers mirror the Dashboard tiles exactly.</b> “Cash-ups” is the day’s total takings from the Cash Ups tab (turnover, excludes tips; superseded entries ignored) summed across the in-scope branches, and “Avg / tech” splits that across the techs who worked that day. Covers {sd.branchCount} branch{sd.branchCount === 1 ? "" : "es"} · {sd.scopeLabel}.
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         );
       })()}
@@ -30287,9 +31013,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             if (ba !== bb) return ba.localeCompare(bb);
             return String(b.ts || "").localeCompare(String(a.ts || ""));
           });
+          // Hide "not scheduled to work" rows from the view when the toggle is on.
+          // Only applies to attendance-status rows; actual clock-in (in/out) rows
+          // always stay. Records are NOT deleted — just filtered visually.
+          const NONWORK = { off: 1, swap_o: 1, al: 1, el: 1, ph: 1, mat: 1, term: 1, unpaid: 1 };
+          const _isNonWork = (r) => {
+            if (r.type !== "att") return false;
+            const s = r.status ? (r.status.charAt(0) === "~" ? r.status.slice(1) : r.status) : "";
+            return !!NONWORK[s];
+          };
+          const _hiddenCount = checkinHideOff ? groupedRows.filter(_isNonWork).length : 0;
+          const visibleRows = checkinHideOff ? groupedRows.filter(r => !_isNonWork(r)) : groupedRows;
           const _countByBranch = {};
           const _signedOffByBranch = {};
-          groupedRows.forEach(r => { const b = _branchOf(r); _countByBranch[b] = (_countByBranch[b] || 0) + 1; if (r.signedOff) _signedOffByBranch[b] = true; });
+          visibleRows.forEach(r => { const b = _branchOf(r); _countByBranch[b] = (_countByBranch[b] || 0) + 1; if (r.signedOff) _signedOffByBranch[b] = true; });
 
           return (
             <div style={{ padding: "0 24px" }}>
@@ -30334,12 +31071,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: "0.03em", alignSelf: "flex-end" }}>
                   ➕ Add check-in
                 </button>
-                <div style={{ fontSize: 12, color: "#831843", textAlign: "right" }}><div style={{ fontWeight: 700 }}>{dayLabel(checkinDay)}</div><strong>{filtered.length}</strong> record{filtered.length !== 1 ? "s" : ""}</div>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#831843", fontWeight: 600, cursor: "pointer", alignSelf: "flex-end", userSelect: "none" }} title="Hide techs who weren't scheduled to work (off / annual leave / maternity / public holiday). The records are kept — this only changes what's shown.">
+                  <input type="checkbox" checked={checkinHideOff} onChange={e => setCheckinHideOff(e.target.checked)} style={{ width: 15, height: 15, accentColor: "#BE185D", cursor: "pointer" }} />
+                  Hide off / leave
+                </label>
+                <div style={{ fontSize: 12, color: "#831843", textAlign: "right" }}><div style={{ fontWeight: 700 }}>{dayLabel(checkinDay)}</div><strong>{visibleRows.length}</strong> record{visibleRows.length !== 1 ? "s" : ""}{_hiddenCount > 0 ? <span style={{ color: "#9d6a82", fontWeight: 500 }}> · {_hiddenCount} hidden</span> : null}</div>
               </div>
 
               {/* ── Diagnostics: per-branch counts of rows actually fetched from Supabase ── */}
               {/* Independent of the viewer's branch/range filters. If a branch is missing
-                  here, the records never reached the clockins table for the load window. */}
+                  here, the records never reached the clockins table for the load window.
+                  Collapsed by default — it's a debugging aid, not day-to-day info. */}
+              <div style={{ marginBottom: checkinShowDiag ? 8 : 14 }}>
+                <button onClick={() => setCheckinShowDiag(v => !v)} style={{ background: "transparent", border: "none", color: "#9d6a82", fontSize: 11.5, fontWeight: 600, cursor: "pointer", padding: 0 }}>
+                  {checkinShowDiag ? "▾ Hide fetch diagnostics" : "▸ Fetch diagnostics"}
+                </button>
+              </div>
+              {checkinShowDiag && (
               <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "10px 14px", border: "1px solid #FBCFE8", marginBottom: 14, fontSize: 12 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, gap: 10 }}>
                   <div style={{ fontWeight: 700, color: "#831843" }}>
@@ -30375,6 +31123,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   )}
                 </div>
               </div>
+              )}
 
               <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 13, overflow: "hidden" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
@@ -30386,13 +31135,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {groupedRows.length === 0 && (
-                      <tr><td colSpan={5} style={{ textAlign: "center", padding: 30, color: "#9ca3af", fontStyle: "italic" }}>No check-ins on this day.</td></tr>
+                    {visibleRows.length === 0 && (
+                      <tr><td colSpan={5} style={{ textAlign: "center", padding: 30, color: "#9ca3af", fontStyle: "italic" }}>{groupedRows.length === 0 ? "No check-ins on this day." : "All " + groupedRows.length + " record" + (groupedRows.length === 1 ? "" : "s") + " on this day are off / leave / maternity — toggle “Show off / leave” to see them."}</td></tr>
                     )}
                     {(() => {
                       const rowsOut = [];
                       let _lastBranch = null;
-                      groupedRows.forEach(r => {
+                      visibleRows.forEach(r => {
                       const _b = _branchOf(r);
                       if (_b !== _lastBranch) {
                         _lastBranch = _b;
@@ -32683,7 +33432,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           </td>
                           <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.yoco_link)}</td>
                           <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.cash)}</td>
-                          <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.card_tips)}</td>
+                          <td style={{ ...cellNum, ...strikeIfArchived }}>
+                            {(() => {
+                              // Flag a tip that's almost certainly a typo (e.g. R28 000) so it's
+                              // caught in review: more than half the day's takings and over R1 000.
+                              const _tip = Number(r.card_tips) || 0;
+                              const _turn = Number(r.total) || 0;
+                              const _suspect = !r.archived_at && _tip > 1000 && _tip > _turn * 0.5;
+                              return _suspect
+                                ? <span style={{ color: "#b91c1c", fontWeight: 800 }} title={"⚠ This tip (" + _fmtMoney(_tip) + ") is more than half the day's takings (" + _fmtMoney(_turn) + ") — likely a typo. Reopen the day to fix it."}>⚠ {_fmtMoney(_tip)}</span>
+                                : _fmtMoney(_tip);
+                            })()}
+                          </td>
                           <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.vouchers)}</td>
                           <td style={{ ...cellNum, ...strikeIfArchived }}>{_fmtMoney(r.gift_card)}</td>
                           <td style={{ ...cellNum, ...strikeIfArchived }} title={r.manual_discount_reason || ""}>{_fmtMoney(r.manual_discounts)}{r.manual_discount_reason ? " ⓘ" : ""}</td>

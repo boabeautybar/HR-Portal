@@ -2304,6 +2304,10 @@
         if (!ok) return;
         subBtn.disabled = true;
         try {
+          // Submit a COMPLETE record: ensure every confirmed tech has a kiosk-log
+          // entry (it's otherwise only written when a status is actively tapped),
+          // so the HR portal's Check-ins tab + attendance tooltip match the day.
+          try { await window.APP_DATA.backfillCheckinLog(ym, dayKey); } catch (_e) {}
           await window.APP_DATA.saveDailyRecord(date, nameEl.value, roleEl.value, total);
           await renderDay();
         } catch (e) {
@@ -2857,6 +2861,7 @@
           '<div class="cashup-breakdown" id="cu-brk">Enter amounts above</div></div>' +
           '<div class="cashup-total" id="cu-total">R 0.00</div>' +
         '</div>' +
+        '<div id="cu-tips-warn" style="display:none;margin-top:8px;padding:8px 10px;border-radius:8px;background:#fef3c7;border:1px solid #fde68a;color:#92400e;font-size:0.85em;font-weight:600"></div>' +
 
         '<div id="cu-banking" class="cashup-banking" style="display:none;margin-top:14px;padding:12px;border:1px solid var(--pink-100);border-radius:10px;background:#fff7fb">' +
           '<div class="lbl" style="margin-bottom:8px">🏦 Banking Information <span style="color:#b53">required</span></div>' +
@@ -2952,6 +2957,26 @@
     document.getElementById("cu-submit").onclick = async function () {
       var btn = this; btn.disabled = true;
       var resEl = document.getElementById("cu-result");
+      // Sanity check the figures before saving — catches fat-finger mistakes
+      // like a R28 000 tip (an extra zero or wrong field) before they land in
+      // payroll/finance. Soft guard: warn and let the manager confirm, so a
+      // genuinely big-but-correct day still goes through.
+      var _y = val("yoco"), _yl = val("yoco_link"), _c = val("cash"), _ct = val("card_tips"),
+          _v = val("vouchers"), _gc = val("gift_card"), _md = val("manual_discounts");
+      var _turnover = Math.max(0, _y + _yl + _c + _v + _gc - _md);
+      var _warn = [];
+      // Tips are normally a small slice of takings. More than half the day's
+      // turnover (and over R1 000) is almost always a typo.
+      if (_ct > 1000 && _ct > _turnover * 0.5) {
+        _warn.push("Card Tips of " + fmtMoney(_ct) + " is more than half the day's takings (" + fmtMoney(_turnover) + "). Tips are usually small — did you maybe mean " + fmtMoney(_ct / 100) + "?");
+      }
+      // Any single line of R100 000+ is worth a second look (likely an extra 0).
+      [["Yoco", _y], ["Yoco Link", _yl], ["Cash", _c], ["Card Tips", _ct], ["Vouchers", _v], ["Gift card", _gc]].forEach(function (p) {
+        if (p[1] >= 100000) _warn.push(p[0] + " of " + fmtMoney(p[1]) + " looks very high — please double-check.");
+      });
+      if (_warn.length && !window.confirm("⚠ Please double-check before submitting:\n\n• " + _warn.join("\n\n• ") + "\n\nSubmit these figures anyway?")) {
+        btn.disabled = false; return;
+      }
       var cashBankedYes = document.getElementById("cu-banked-yes").checked;
       var cashBankedNo  = document.getElementById("cu-banked-no").checked;
       var cashBanked    = cashBankedYes ? true : (cashBankedNo ? false : null);
@@ -3012,6 +3037,16 @@
     if (gc) parts.push("Gift card "  + fmtMoney(gc));
     if (md) parts.push("− Manual "   + fmtMoney(md));
     document.getElementById("cu-brk").textContent = parts.length ? parts.join(" · ") : "Enter amounts above";
+    // Live heads-up if a figure looks like a typo (e.g. a tip bigger than the
+    // takings) so it's caught while typing, not after submit.
+    var warnEl = document.getElementById("cu-tips-warn");
+    if (warnEl) {
+      var w = "";
+      if (ct > 1000 && ct > t * 0.5) w = "⚠ Card Tips (" + fmtMoney(ct) + ") is more than half the takings — please double-check it's not a typo.";
+      else if (Math.max(y, yl, c, ct, v, gc) >= 100000) w = "⚠ One of these amounts is very high — please double-check before submitting.";
+      warnEl.textContent = w;
+      warnEl.style.display = w ? "" : "none";
+    }
     var hasAmt = (y > 0 || yl > 0 || c > 0 || v > 0 || gc > 0);
     var name   = document.getElementById("cu-name").value.trim();
 
@@ -3090,6 +3125,7 @@
   function _shiftTimes(role, code, branchName, dow) {
     var r = (role || "").toUpperCase();
     var isSM = r === "SM" || r === "SSM";
+    var isAM = r === "AM";
     var b = branchName || "";
 
     if (b === "Sandown" || b === "Table Bay") {
@@ -3116,7 +3152,7 @@
     }
     if (b === "Ballito" || b === "Mall of the South") {
       if (isSM) return "08:00 - 17:00";
-      if (dow === 0) return "08:00 - 17:00";
+      if (dow === 0) return isAM ? "08:30 - 17:00" : "08:00 - 17:00";
       if (code === "WE") return "08:00 - 17:00";
       if (code === "WM") return "09:00 - 18:00";
       return "10:00 - 19:00";
