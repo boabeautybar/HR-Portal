@@ -24591,7 +24591,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (dayObj.ymd < _mgrCheckinFromYmd) return false;  // outside loaded clock-in window — can't verify, leave as-is
           return !_mgrCheckedIn(ec, dayObj.ymd);              // phantom only when there's no real clock-in
         };
-        const getStatus = (ec, d) => {
+        const _statusBeforeExtraRemoval = (ec, d) => {
           // If the schedule was later corrected to OFF for this day, any
           // stale ROM-recorded reason (sick / absent / FRL / etc.) is
           // irrelevant — the manager isn't supposed to work that day. The
@@ -24783,6 +24783,62 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const _incPost = _incPostFallback(ec, dayObj);
           if (_incPost) return _incPost;
           return "";
+        };
+        // ── Extra-day removal rule ─────────────────────────────────────
+        // An approved extra day only pays if it was actually worked. When
+        // the tech never came in, the extra day is REMOVED from the sheet
+        // (the cell reads OFF) instead of being marked unpaid: an extra day
+        // sits on top of the normal roster and pays more than a normal day,
+        // so deducting an unpaid day at the normal rate wouldn't cancel the
+        // extra amount — it would wrongly eat into the base salary instead.
+        // Removal fires when:
+        //   • the day resolves to an absence (no / absent / unpaid), or
+        //   • the day is in the past, still reads "ext", and NO source shows
+        //     presence (confirmed grid cell, kiosk check-in / audit entry,
+        //     Fresha appointment, manager clock-in, or the receiving
+        //     branch's record on a loaned day).
+        // Today and future days are left alone — the tech can still show up.
+        const _isApprovedExtraDay = (ec, d) =>
+          _isExtraDay(ec, d) || (attSched[ec] && attSched[ec][d]) === "E";
+        const _extraTodayYmd = (() => { const t = new Date(); return t.getFullYear() + "-" + p2(t.getMonth() + 1) + "-" + p2(t.getDate()); })();
+        const _extraDayWorkEvidence = (ec, d, ymd) => {
+          const gv = attGrid[ec] && attGrid[ec][d];
+          const gvBare = gv ? (gv.indexOf("~") === 0 ? gv.slice(1) : gv) : "";
+          // A confirmed (non-mirrored) presence cell — kiosk sync or admin.
+          if (gv && gv.indexOf("~") !== 0 && (gvBare === "on" || gvBare === "late" || gvBare === "ext")) return true;
+          if (_freshaWorkedFor(ec, d)) return true;
+          if (ymd) {
+            const ci = _ciFor(ec, ymd);
+            if (ci && ci.hasIn) return true;
+            const ka = _kaFor(ec, ymd);
+            if (ka && (ka.status === "on" || ka.status === "late" || ka.status === "ext")) return true;
+            if (_mgrEcToStaffId[ec] && _mgrCheckedIn(ec, ymd)) return true;
+          }
+          // Loaned out that day — presence recorded at the receiving branch.
+          const toBranch = outgoingLoanMap[ec] && outgoingLoanMap[ec][d];
+          if (toBranch) {
+            const rg = crossBranchAttGrids[toBranch];
+            const rv = rg && rg[ec] && rg[ec][d];
+            const rb = rv ? (rv.indexOf("~") === 0 ? rv.slice(1) : rv) : "";
+            if (rb === "on" || rb === "late" || rb === "ext") return true;
+            const ka2 = ymd ? ((kioskAbsentByBranch[toBranch] || {})[ec] || {})[ymd] : null;
+            if (ka2 && (ka2.status === "on" || ka2.status === "late" || ka2.status === "ext")) return true;
+          }
+          return false;
+        };
+        const _extraDayRemovedBase = (ec, d, base) => {
+          if (!_isApprovedExtraDay(ec, d)) return false;
+          if (base === "no" || base === "absent" || base === "unpaid") return true;
+          if (base !== "ext") return false;
+          const dayObj = days.find(x => x.d === d);
+          if (!dayObj || dayObj.ymd >= _extraTodayYmd) return false;
+          return !_extraDayWorkEvidence(ec, d, dayObj.ymd);
+        };
+        // Render helper — lets the cell tooltip explain WHY the day reads OFF.
+        const _extraDayRemoved = (ec, d) => _extraDayRemovedBase(ec, d, _statusBeforeExtraRemoval(ec, d));
+        const getStatus = (ec, d) => {
+          const base = _statusBeforeExtraRemoval(ec, d);
+          return _extraDayRemovedBase(ec, d, base) ? "off" : base;
         };
         const hasOverride = (ec, d) => {
           // Treat the auto-derived TERMINATED as a confirmed override so it
@@ -26593,6 +26649,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           if (loanTo) tipLines.push("🔀 Loaned out to " + loanTo + (v === "loan_out" ? " (receiving branch hasn't recorded a status yet)" : ""));
                           if (bareV === "swap_o") tipLines.push("💡 Owes — tech took today off because she worked on a previous off day for a colleague.");
                           if (bareV === "swap_i") tipLines.push("💡 Owed — tech came in today because she took off on a previous day when a colleague filled in for her.");
+                          if (_extraDayRemoved(s.ec, dy.d)) tipLines.push("➖ Approved extra day removed — not worked, so it isn't paid and no unpaid day is deducted.");
                           if (earlyHrs > 0) tipLines.push("🏃 Left work early — " + earlyHrs + "h (" + (earlyHrs / 8).toFixed(2) + " unpaid day" + (earlyHrs / 8 === 1 ? "" : "s") + ")");
                           // Verdict line(s) — same priority the ⚠ uses.
                           tipLines.push("");
