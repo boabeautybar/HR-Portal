@@ -723,7 +723,7 @@
             '<span class="sched-cycle-sub">' + esc(window.APP_DATA.periodLabel(nextYm)) + '</span>' +
           '</button>' +
         '</div>' +
-        '<div class="sched-period">' + esc(window.APP_DATA.periodLabel(ym)) + ' · View only · last approved version</div>' +
+        '<div class="sched-period">' + esc(window.APP_DATA.periodLabel(ym)) + ' · View only · live schedule</div>' +
         '<div id="sched-body">Loading schedule…</div>' +
       '</div>'
     );
@@ -758,6 +758,33 @@
     }
     var sched = await window.APP_DATA.getSchedule(ym, kind);
     var grid  = (sched && sched.grid) || {};
+    // Canonicalise grid rows onto each person's CURRENT employee code — mirrors
+    // the HR portal's Manager Coverage view. An employee-code change (or a
+    // "B872 " vs "B872" variant) leaves a duplicate/legacy row in the saved
+    // grid; without this the kiosk reads the stale row and shows the wrong
+    // shift while the portal (which canonicalises) shows the right one. Current
+    // code wins for overlapping days; a legacy row only fills the gaps.
+    (function () {
+      var _normCode = function (s) { return String(s == null ? "" : s).replace(/[^A-Za-z0-9]/g, "").toUpperCase(); };
+      var _normNm   = function (s) { return String(s == null ? "" : s).toLowerCase().replace(/\s+/g, " ").trim(); };
+      var codeByNorm = {}, codeByName = {};
+      staff.filter(function (s) { return isMgr ? isManagerStaff(s) : !isManagerStaff(s); }).forEach(function (s) {
+        var c = String(s.employee_code || "").trim(); if (!c) return;
+        var n = _normCode(c); if (!(n in codeByNorm)) codeByNorm[n] = c;
+        var nm = _normNm(s.name); if (nm && !(nm in codeByName)) codeByName[nm] = c;
+      });
+      var savedNames = (sched && sched.names) || {};
+      var canon = {}, changed = false;
+      Object.keys(grid).forEach(function (k) {
+        var c = codeByNorm[_normCode(k)];
+        if (!c && savedNames[k]) { var byName = codeByName[_normNm(savedNames[k])]; if (byName) c = byName; }
+        c = c || k;
+        if (c !== k) changed = true;
+        if (k === c) canon[c] = Object.assign({}, canon[c] || {}, grid[k]);   // current key wins overlaps
+        else        canon[c] = Object.assign({}, grid[k], canon[c] || {});    // legacy fills gaps only
+      });
+      if (changed) grid = canon;
+    })();
     // Per-manager custom shift hours (set in the HR portal coverage view),
     // layered over the computed times on the Manager Schedule view.
     var customTimes = (isMgr && window.APP_DATA.getMgrTimes) ? ((await window.APP_DATA.getMgrTimes()) || {}) : {};
