@@ -24895,6 +24895,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const v = attGrid[ec] && attGrid[ec][d];
           return !!v && v.indexOf("~") !== 0;
         };
+        // A review sticks while the admin's confirmed code still matches the
+        // cell — either the RESOLVED status (what payroll counts) or the RAW
+        // grid value (what the admin actually set). The resolver legitimately
+        // transforms stored codes (e.g. 'no' on an unworked extra day reads
+        // OFF, 'on' on a schedule-E day reads EXT); comparing only against
+        // the resolved status made the ✓ flip straight back to ⚠ the moment
+        // such a cell was reviewed. The review still expires when the raw
+        // cell value genuinely changes (kiosk import, admin edit).
+        const reviewMatchesCell = (rec, ec, d, v) => {
+          if (!rec) return false;
+          const want = rec.valueAtReview || "";
+          if (want === (v || "")) return true;
+          const raw = (attGrid[ec] && attGrid[ec][d]) || "";
+          const rawBare = raw.charAt(0) === "~" ? raw.slice(1) : raw;
+          return want === rawBare;
+        };
         const schedHint = (ec, d) => {
           if (mirrorSuppressed) return null;        // hide schedule signal after a Total Reset
           if (_onMatDay(ec, (days.find(x => x.d === d) || {}).ymd)) return "mat";  // maternity — only from matStart onward
@@ -25010,7 +25026,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (v === "" || v == null) delete next[ec][d];
           else next[ec][d] = v;
           setAttGrid(next);
-          try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
+          // Save ONLY this cell with a read-merge-write, never the whole
+          // in-memory grid — a whole-grid save from a tab loaded hours ago
+          // silently wiped every cell anyone else (kiosk, trigger, another
+          // admin) had written since, which is how manually added days kept
+          // vanishing overnight.
+          try {
+            if (window.BOA_DB.updateAttendanceCells) await window.BOA_DB.updateAttendanceCells(attBranch, attYM, { [ec]: { [d]: (v === "" || v == null) ? null : v } });
+            else await window.BOA_DB.saveAttendance(attBranch, attYM, next);
+          }
           catch (e) { alert("Could not save: " + (e.message || e)); }
           // Managers carry their payroll status in the manager_day_status store,
           // which OVERRIDES the attendance grid on the sheet (see getStatus). So
@@ -25067,7 +25091,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const nextRW = { ...((attMeta && attMeta.reviewedWarnings) || {}), [ec]: nextEc };
           const nextMeta = { ...(attMeta || {}), reviewedWarnings: nextRW };
           setAttMeta(nextMeta);
-          try { await window.BOA_DB.saveAttendance(attBranch, attYM, gridAtSave || attGrid, { reviewedWarnings: nextRW }); }
+          // Merge ONLY this review record into the stored map — replacing the
+          // whole reviewedWarnings (or grid) from a possibly-stale tab wipes
+          // reviews/cells recorded elsewhere since the tab loaded.
+          try {
+            if (window.BOA_DB.updateAttendanceCells) await window.BOA_DB.updateAttendanceCells(attBranch, attYM, null, { [ec]: { [d]: record } });
+            else await window.BOA_DB.saveAttendance(attBranch, attYM, gridAtSave || attGrid, { reviewedWarnings: nextRW });
+          }
           catch (e) { alert("Could not save review: " + (e.message || e)); }
           const staffName = (attStaff.find(s => s.ec === ec) || {}).name || ec;
           const dayObj = days.find(x => x.d === d);
@@ -25087,14 +25117,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const already = existing[d];
           const reviewer = (currentUser && (currentUser.name || currentUser.email)) || "admin";
           // Already reviewed for the current value → offer to clear the mark.
-          if (already && already.valueAtReview === (currentValue || "")) {
+          if (already && reviewMatchesCell(already, ec, d, currentValue)) {
             if (!confirm("Clear the reviewed mark on this cell?")) return;
             const nextEc = { ...(existing) }; delete nextEc[d];
             const nextRW = { ...((attMeta && attMeta.reviewedWarnings) || {}) };
             if (Object.keys(nextEc).length) nextRW[ec] = nextEc; else delete nextRW[ec];
             const nextMeta = { ...(attMeta || {}), reviewedWarnings: nextRW };
             setAttMeta(nextMeta);
-            try { await window.BOA_DB.saveAttendance(attBranch, attYM, attGrid, { reviewedWarnings: nextRW }); }
+            try {
+              if (window.BOA_DB.updateAttendanceCells) await window.BOA_DB.updateAttendanceCells(attBranch, attYM, null, { [ec]: { [d]: null } });
+              else await window.BOA_DB.saveAttendance(attBranch, attYM, attGrid, { reviewedWarnings: nextRW });
+            }
             catch (e) { alert("Could not save: " + (e.message || e)); }
             return;
           }
@@ -25123,8 +25156,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const nextRW = { ...((attMeta && attMeta.reviewedWarnings) || {}), [ec]: nextEc };
           const nextMeta = { ...(attMeta || {}), reviewedWarnings: nextRW };
           setAttMeta(nextMeta);
-          // Single save with both grid + extras so they can't drift.
-          try { await window.BOA_DB.saveAttendance(attBranch, attYM, nextGrid, { reviewedWarnings: nextRW }); }
+          // Single save with both the cell and its review record, merged into
+          // the freshest stored state so neither can clobber other sessions.
+          try {
+            if (window.BOA_DB.updateAttendanceCells) await window.BOA_DB.updateAttendanceCells(attBranch, attYM, { [ec]: { [d]: cleaned || null } }, { [ec]: { [d]: record } });
+            else await window.BOA_DB.saveAttendance(attBranch, attYM, nextGrid, { reviewedWarnings: nextRW });
+          }
           catch (e) { alert("Could not save: " + (e.message || e)); }
           const staffName = (attStaff.find(s => s.ec === ec) || {}).name || ec;
           const dayObj2 = days.find(x => x.d === d);
@@ -26064,7 +26101,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               if (isProofStatus || warning) {
                 total++;
                 const review = (reviewedMap[s.ec] || {})[dy.d];
-                if (review && review.valueAtReview === (v || "")) reviewed++;
+                if (reviewMatchesCell(review, s.ec, dy.d, v)) reviewed++;
               }
             }
           }
@@ -26462,7 +26499,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // cells on a holiday get promoted to PH styling so the grid reads
                           // the same way payroll counts.
                           const cellReviewRec = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
-                          const cellReviewed = !!cellReviewRec && cellReviewRec.valueAtReview === (v || "");
+                          const cellReviewed = reviewMatchesCell(cellReviewRec, s.ec, dy.d, v);
                           const workedOnHol = isHol && (bareV === "on" || bareV === "late" || bareV === "ext" || bareV === "swap_i");
                           const phAuto = workedOnHol && (allMatchWork || cellReviewed);
                           if (phAuto && STAT.ph) { st = STAT.ph; }
@@ -26596,7 +26633,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const mgrClockedInUnscheduled = s.role !== "NT" && _mgrEcToStaffId[s.ec] && _mgrCheckedIn(s.ec, dy.ymd) && hint !== "on" && hint !== "ext" && isPastOrToday && !override;
                           const warning = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || missingCheckin || absentNeedsReview || workedOnOffDay || unaccountedScheduledDay || offButFreshaWorked || mgrClockedInUnscheduled;
                           const reviewRec = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
-                          const reviewed = !!reviewRec && reviewRec.valueAtReview === (v || "");
+                          const reviewed = reviewMatchesCell(reviewRec, s.ec, dy.d, v);
                           // Plain English description of the single primary mismatch
                           // (same priority order the ⚠ uses below). The verdict block
                           // at the bottom of the tooltip shows this so the user can

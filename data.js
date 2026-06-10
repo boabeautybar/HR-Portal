@@ -1806,6 +1806,49 @@
     return v;
   }
 
+  // Single-cell / single-review writes from the attendance sheet. Reads the
+  // freshest stored record and merges ONLY the given cells into it, so an
+  // edit made from a tab whose in-memory grid is stale can never wipe other
+  // days / people saved since that tab loaded. (Saving the whole in-memory
+  // grid on every cell edit is exactly how manually added cells kept
+  // "vanishing the next day": another open session's whole-grid save
+  // overwrote them.) Patches look like { ec: { dayKey: value } }; a null /
+  // empty value clears the entry.
+  async function updateAttendanceCells(branch, ym, cellPatch, reviewPatch) {
+    var key = "boa_att_" + branch + "_" + ym;
+    var prior = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
+    if (prior.error) throw prior.error;
+    var v = (prior.data && prior.data.value) || {};
+    var grid = Object.assign({}, v.grid || {});
+    if (cellPatch) {
+      Object.keys(cellPatch).forEach(function (ec) {
+        var row = Object.assign({}, grid[ec] || {});
+        Object.keys(cellPatch[ec] || {}).forEach(function (d) {
+          var val = cellPatch[ec][d];
+          if (val === null || val === undefined || val === "") delete row[d];
+          else row[d] = val;
+        });
+        if (Object.keys(row).length) grid[ec] = row; else delete grid[ec];
+      });
+    }
+    var rw = Object.assign({}, v.reviewedWarnings || {});
+    if (reviewPatch) {
+      Object.keys(reviewPatch).forEach(function (ec) {
+        var row = Object.assign({}, rw[ec] || {});
+        Object.keys(reviewPatch[ec] || {}).forEach(function (d) {
+          var rec = reviewPatch[ec][d];
+          if (rec == null) delete row[d];
+          else row[d] = rec;
+        });
+        if (Object.keys(row).length) rw[ec] = row; else delete rw[ec];
+      });
+    }
+    var next = Object.assign({}, v, { grid: grid, reviewedWarnings: rw, branch: branch, ym: ym, savedAt: new Date().toISOString() });
+    var res = await sb.from("app_state").upsert({ key: key, value: next });
+    if (res.error) throw res.error;
+    return next;
+  }
+
   // Persist the attendance sheet's own warning tally ({ total, reviewed, open })
   // so the Payroll Progress roll-up can show the SAME numbers the sheet shows.
   // The roll-up otherwise re-derives the count from the raw saved grid and
@@ -2086,6 +2129,7 @@
     // Attendance
     loadAttendance: loadAttendance,
     saveAttendance: saveAttendance,
+    updateAttendanceCells: updateAttendanceCells,
     saveAttWarningCounts: saveAttWarningCounts,
     saveAttendanceUndo: saveAttendanceUndo,
     loadAttendanceUndo: loadAttendanceUndo,
