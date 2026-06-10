@@ -676,6 +676,11 @@
       '<div class="tile-label">Voucher Code</div>' +
       '<div class="tile-hint">SHOPIFY → FRESHA</div>' +
       '</button>' +
+      '<button class="tile tile-big" id="tile-guide" type="button">' +
+      '<div class="tile-icon">📖</div>' +
+      '<div class="tile-label">How Check-ins Work</div>' +
+      '<div class="tile-hint">RULES · READ ME FIRST</div>' +
+      '</button>' +
       '</div>'
     );
     loadKioskRemindersIntoPanel();
@@ -692,6 +697,128 @@
       if (window.BOA_FLOWS) window.BOA_FLOWS.renderOffRequests();
     };
     document.getElementById("tile-voucher").onclick = function () { renderVoucherLookup(); };
+    document.getElementById("tile-guide").onclick = function () { renderCheckinGuide(); };
+  }
+
+  // ---------------- How Check-ins Work (manager guide) ----------------
+  // A plain-language rulebook for store managers covering the Nail Tech
+  // Check-in and the Manager Check-in. Written deliberately simple and
+  // visual — short sentences, exact button names, one rule per box — so
+  // there is zero room for interpretation. Pure static content.
+  function renderCheckinGuide() {
+    setSublabel("HOW CHECK-INS WORK");
+
+    // Small builders so every section reads the same.
+    function box(border, bg, titleColor, title, bodyHtml) {
+      return '<div style="border:2px solid ' + border + ';background:' + bg + ';border-radius:14px;padding:16px 18px;margin-top:14px">' +
+        '<div style="font-size:15px;font-weight:800;color:' + titleColor + ';letter-spacing:0.02em">' + title + '</div>' +
+        '<div style="font-size:14px;color:#1f2937;line-height:1.65;margin-top:8px">' + bodyHtml + '</div>' +
+        '</div>';
+    }
+    function step(n, html) {
+      return '<div style="display:flex;gap:12px;align-items:flex-start;margin-top:12px">' +
+        '<div style="flex:0 0 auto;width:30px;height:30px;border-radius:50%;background:#BE185D;color:#fff;font-weight:800;font-size:15px;display:flex;align-items:center;justify-content:center">' + n + '</div>' +
+        '<div style="font-size:14px;color:#1f2937;line-height:1.6;padding-top:4px">' + html + '</div>' +
+        '</div>';
+    }
+    function row(situation, action) {
+      return '<tr>' +
+        '<td style="padding:9px 10px;border-bottom:1px solid #FCE7F3;font-size:13px;color:#1f2937;line-height:1.5">' + situation + '</td>' +
+        '<td style="padding:9px 10px;border-bottom:1px solid #FCE7F3;font-size:13px;font-weight:800;color:#831843;line-height:1.5;white-space:nowrap">' + action + '</td>' +
+        '</tr>';
+    }
+
+    var goldenRule =
+      box("#fca5a5", "#fef2f2", "#991b1b", "🛑 THE GOLDEN RULE",
+        '<strong>Only mark a tech On Time or Late if she is INSIDE the store right now.</strong><br><br>' +
+        'Ask yourself one question: <strong>“Can I see her in the store?”</strong><br>' +
+        '✔️ YES → she is <strong>On Time</strong> (or <strong>Late</strong> if she arrived late).<br>' +
+        '❌ NO → she is <strong>Absent</strong>. Full stop.<br><br>' +
+        '“She is almost there”, “she is parking”, “she is 5 minutes away”, “she just messaged me” — ' +
+        'she is <strong>NOT in the store</strong>, so she is <strong>Absent</strong>. <strong>NEVER mark her Late.</strong><br><br>' +
+        'If she is still on her way: mark her <strong>Absent</strong> now. When she actually arrives, ' +
+        'phone your <strong>regional manager</strong> and ask them to <strong>reopen the check-in</strong> — then you can mark her Late.');
+
+    var steps =
+      '<div style="margin-top:18px">' +
+      '<div style="font-size:16px;font-weight:800;color:#831843">✍️ Submitting the Nail Tech Check-in — step by step</div>' +
+      step(1, 'On the home screen, tap <strong>✍️ Nail Tech Check-in</strong>.') +
+      step(2, 'Walk through the store and <strong>look</strong>. For each tech, tap the button that is true <strong>right now</strong>:<br>' +
+        '<strong>On Time</strong> — she is in the store and started on time.<br>' +
+        '<strong>Late</strong> — she is in the store but arrived late.<br>' +
+        '<strong>Sick + note</strong> / <strong>Sick NO note</strong> / <strong>FRL + proof</strong> / <strong>Absent</strong> / <strong>NO SHOW</strong> — she is not working today.') +
+      step(3, '<strong>Not in the store = Absent.</strong> No exceptions. It does not matter what she said on the phone.') +
+      step(4, '<strong>Do not rush to submit.</strong> The moment you tap a status, the exact time of your tap is saved — even before you submit. ' +
+        'Head office can see you tapped “On Time” at 09:00 even if you only submit at 10:15. Take your time and get it right.') +
+      step(5, 'When every tech has a status, tap <strong>Confirm and submit attendance</strong>.<br>' +
+        '⏰ Submit by <strong>10:30</strong> at the latest. Stores with a late shift working: by <strong>11:30</strong>.') +
+      '</div>';
+
+    var afterSubmit =
+      box("#fdba74", "#fff7ed", "#9a3412", "🏃 A tech leaves work early",
+        'Open <strong>Nail Tech Check-in</strong> and tap the <strong style="color:#9a3412">ORANGE “Mark left early”</strong> button on her row, then enter how early she left.<br>' +
+        '✅ You can do this <strong>after</strong> you have already submitted the check-in.') +
+      box("#fde047", "#fefce8", "#854d0e", "📎 A sick note arrives later",
+        'She was marked <strong>Sick NO note</strong>, and a few days later she brings a doctor’s note?<br>' +
+        'Open <strong>Nail Tech Check-in</strong>, go to <strong>the day she was sick</strong>, and tap the <strong style="color:#854d0e">YELLOW “Add sick note”</strong> button to upload the note.<br>' +
+        '✅ That day then becomes <strong>Sick + note</strong> (a paid sick day).') +
+      box("#93c5fd", "#eff6ff", "#1e40af", "🔓 She arrives after you marked her Absent (or after you submitted)",
+        'You cannot change it yourself. Phone your <strong>regional manager</strong> and ask them to <strong>reopen the check-in</strong> for today.<br>' +
+        'The statuses you already tapped are kept — you only update the tech who arrived, and submit again.');
+
+    var mgrCheckin =
+      box("#f9a8d4", "#fdf2f8", "#831843", "🕐 Manager Check-in — this one is for YOU",
+        'The Nail Tech Check-in does <strong>not</strong> clock you in.<br>' +
+        'Tap <strong>🕐 Manager Check-in</strong> and clock <strong>in</strong> (PIN + selfie) when you arrive, and clock <strong>out</strong> when you leave. ' +
+        'Your own attendance and pay come from these clock-ins — every day, no exceptions.');
+
+    var responsibility =
+      box("#831843", "#fdf2f8", "#831843", "✍️ When you submit, you sign for it",
+        'By tapping <strong>Confirm and submit attendance</strong> you take <strong>full personal responsibility</strong> that every tech marked ' +
+        '<strong>On Time</strong> or <strong>Late</strong> is actually standing in the store.<br><br>' +
+        'Head office compares your check-ins against the schedule, the tap times and the Fresha appointments. ' +
+        'Marking someone present who is not there is a <strong>serious offence</strong>.');
+
+    var cheatSheet =
+      '<div style="margin-top:18px">' +
+      '<div style="font-size:16px;font-weight:800;color:#831843">📋 Quick reference — what do I press?</div>' +
+      '<div style="overflow-x:auto;margin-top:10px;border:1px solid #FCE7F3;border-radius:12px">' +
+      '<table style="width:100%;border-collapse:collapse;background:#fff">' +
+      '<thead><tr>' +
+      '<th style="text-align:left;padding:9px 10px;font-size:11px;letter-spacing:0.08em;color:#9d174d;background:#fdf2f8;text-transform:uppercase">Situation</th>' +
+      '<th style="text-align:left;padding:9px 10px;font-size:11px;letter-spacing:0.08em;color:#9d174d;background:#fdf2f8;text-transform:uppercase">What you press</th>' +
+      '</tr></thead><tbody>' +
+      row('In the store, started on time', 'On Time') +
+      row('In the store, but arrived late', 'Late') +
+      row('NOT in the store — even if she says she is on her way', 'Absent') +
+      row('Off sick, doctor’s note received', 'Sick + note') +
+      row('Off sick, no doctor’s note', 'Sick NO note') +
+      row('Family emergency, proof received', 'FRL + proof') +
+      row('No call, no message, simply never came', 'NO SHOW') +
+      row('Left work before the end of her shift', '🏃 Mark left early (orange)') +
+      row('Sick note arrives days later', '📎 Add sick note (yellow), on her sick day') +
+      row('Arrived after Absent / after submitting', 'Phone your regional → reopen check-in') +
+      '</tbody></table></div></div>';
+
+    setMain(
+      '<section class="panel">' +
+      '<div class="panel-head">' +
+      '<h2>📖 How Check-ins Work</h2>' +
+      '<button class="link-btn link-btn-dark" id="back-home">← Back</button>' +
+      '</div>' +
+      '<div style="font-size:13px;color:#6b7280;line-height:1.5">The rules every manager must follow for the daily Nail Tech Check-in and your own Manager Check-in. Read it once a week until you know it by heart.</div>' +
+      goldenRule +
+      steps +
+      '<div style="font-size:16px;font-weight:800;color:#831843;margin-top:22px">🔧 After submitting — fixing things the right way</div>' +
+      afterSubmit +
+      '<div style="font-size:16px;font-weight:800;color:#831843;margin-top:22px">🕐 Your own check-in</div>' +
+      mgrCheckin +
+      '<div style="font-size:16px;font-weight:800;color:#831843;margin-top:22px">⚖️ Your responsibility</div>' +
+      responsibility +
+      cheatSheet +
+      '</section>'
+    );
+    document.getElementById("back-home").onclick = renderManagerLanding;
   }
 
   // ---------------- Voucher code lookup (Shopify → Fresha) ----------------
