@@ -25956,8 +25956,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         // Download the per-staff summary totals (the right-hand columns) as a CSV:
         // employee code, full name, role, new-starter start date, every count
-        // (annual leave, sick + note, FRL, PPH, extra days, unpaid, no-shows,
-        // lates) and whether the attendance bonus is lost (with the reason).
+        // (annual leave, sick + note, FRL, PPH, extra days, unpaid, lates) and
+        // whether the attendance bonus is lost (with the reason). No-show days
+        // are already counted inside Unpaid — a separate No-shows column made
+        // payroll deduct those days twice, so it's deliberately NOT exported;
+        // the no-shows still surface in the Bonus Loss Reason column.
         const downloadAttendanceCsv = () => {
           // The cycle runs 25th → 24th and is named after its END month — e.g.
           // 25 May → 24 Jun is the JUNE payroll — so label the file by the
@@ -25966,7 +25969,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const payLabel = moShort[cycEnd.getMonth()] + " " + cycEnd.getFullYear() + " payroll";
           const head = ["Employee Code", "Full Name", "Role", "Start Date (new starters)",
             "Annual Leave", "Sick (with note)", "FRL", "Public Holidays", "Extra Days",
-            "Unpaid", "No-shows", "Lates", "Bonus Lost", "Bonus Loss Reason"];
+            "Unpaid", "Lates", "Bonus Lost", "Bonus Loss Reason"];
           const lines = [
             _csvEscape("Attendance totals · " + attBranch + " · Pay cycle " + cycLabel + " (" + payLabel + ")"),
             "",
@@ -25988,7 +25991,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               t.ph,
               t.ext,
               (t.totalUnpaid === Math.floor(t.totalUnpaid) ? t.totalUnpaid : t.totalUnpaid.toFixed(2)),
-              t.noShow,
               t.late,
               reasons.length ? "Yes" : "No",
               reasons.join("; ")
