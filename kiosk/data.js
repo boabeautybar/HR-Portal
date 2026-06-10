@@ -1208,8 +1208,11 @@
     var res = await c.from("app_state").select("key,value").in("key", keys);
     if (res.error) { console.error("getSchedule:", res.error); return { grid: {}, ym: ym, kind: kind || "combined" }; }
     var combined = {};
+    var names = {};   // ec → name saved alongside the grid (used to re-home legacy code rows)
     (res.data || []).forEach(function (row) {
       var grid = (row.value && row.value.grid) || {};
+      var nm   = (row.value && row.value.names) || {};
+      Object.keys(nm).forEach(function (ec) { if (names[ec] == null) names[ec] = nm[ec]; });
       var isMgr = row.key === mgrKey;
       Object.keys(grid).forEach(function (ec) {
         if (!isMgr) {
@@ -1227,7 +1230,7 @@
         combined[ec] = conv;
       });
     });
-    return { grid: combined, ym: ym, kind: kind || "combined" };
+    return { grid: combined, names: names, ym: ym, kind: kind || "combined" };
   }
   // Per-manager custom shift hours set in the HR portal coverage view.
   // Shared global key, keyed { [ec]: { "YYYY-MM-DD": "HH:MM - HH:MM" } }.
