@@ -12498,6 +12498,51 @@ function useIsMobile(bp) {
 // Attendance comes from the kiosk audit log (signed-off days only); openings
 // from the explicit store-open records, falling back to the earliest manager
 // clock-in; extras from approved extra-day requests.
+// Who has completed the kiosk check-in practice tour (recorded by the kiosk
+// when a manager finishes it and types their name). Collapsible card shown
+// on the Nail Tech Check-ins tab.
+function TourCompletionsCard() {
+  const [entries, setEntries] = React.useState(null);
+  const [open, setOpen] = React.useState(false);
+  React.useEffect(() => {
+    let dead = false;
+    if (window.BOA_DB && window.BOA_DB.loadTourCompletions) {
+      window.BOA_DB.loadTourCompletions()
+        .then(v => { if (!dead) setEntries((v && v.entries) || []); })
+        .catch(() => { if (!dead) setEntries([]); });
+    } else setEntries([]);
+    return () => { dead = true; };
+  }, []);
+  const list = (entries || []).slice().sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+  const fmtAt = (iso) => { try { return new Date(iso).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); } catch (_) { return iso || ""; } };
+  return (
+    <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "12px 14px", border: "1px solid #FBCFE8", marginBottom: 14 }}>
+      <div onClick={() => setOpen(o => !o)} style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>🎓 Kiosk practice tour</span>
+        <span style={{ fontSize: 12, color: "#9d174d" }}>
+          {entries == null ? "loading…" : list.length === 0 ? "no manager has recorded a completion yet" : list.length + " completion" + (list.length === 1 ? "" : "s") + " recorded"}
+        </span>
+        <div style={{ flex: 1 }} />
+        <span style={{ fontSize: 11, color: "#F472B6", fontWeight: 700 }}>{open ? "▲ hide" : "▼ show"}</span>
+      </div>
+      {open && list.length > 0 && (
+        <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
+          {list.map((e, i) => (
+            <div key={i} style={{ display: "flex", gap: 10, fontSize: 12, color: "#1f2937", borderTop: i === 0 ? "none" : "1px solid #FCE7F3", paddingTop: i === 0 ? 0 : 4 }}>
+              <span style={{ fontWeight: 700, minWidth: 160 }}>{e.name || "(no name)"}</span>
+              <span style={{ color: "#6b7280", minWidth: 110 }}>{e.branch || ""}</span>
+              <span style={{ color: "#9ca3af" }}>{fmtAt(e.at)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {open && list.length === 0 && entries != null && (
+        <div style={{ marginTop: 8, fontSize: 12, color: "#9ca3af" }}>Managers record their name when they finish the 🎓 practice tour on the kiosk (📖 How Check-ins Work → Take the 2-minute practice tour).</div>
+      )}
+    </div>
+  );
+}
+
 function StoreReportsTab({ extraDayRequests, managers }) {
   const [days, setDays] = React.useState(30);
   const [loading, setLoading] = React.useState(true);
@@ -14624,10 +14669,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       await Promise.all(SALONS.map(async (sl) => {
         const branch = sl.name;
         try {
-          const [att, sch, mgrSch] = await Promise.all([
+          const [att, sch, mgrSch, wcOwn] = await Promise.all([
             safe(window.BOA_DB.loadAttendance(branch, ym)),
             safe(window.BOA_DB.loadSchedule(branch, techYmCross, false)),
-            safe(window.BOA_DB.loadSchedule(branch, ym, true))
+            safe(window.BOA_DB.loadSchedule(branch, ym, true)),
+            window.BOA_DB.loadAttWarningCounts ? safe(window.BOA_DB.loadAttWarningCounts(branch, ym)) : Promise.resolve(null)
           ]);
           const bGrid = (att && att.grid) || {};
           const bReview = (att && att.reviewedWarnings) || {};
@@ -14743,7 +14789,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // only resolves leave/maternity overlays, not the sheet's full
           // getStatus view, so it drifts; we fall back to it (flagged approx)
           // only for branches whose sheet hasn't been opened this cycle yet.
-          const pc = att && att.warningCounts;
+          const pc = wcOwn || (att && att.warningCounts);   // own key first; legacy embedded value as fallback
           if (pc && typeof pc.total === "number") {
             const rv = (typeof pc.reviewed === "number") ? pc.reviewed : 0;
             results[branch] = { total: pc.total, reviewed: rv, open: (typeof pc.open === "number") ? pc.open : (pc.total - rv) };
@@ -26727,6 +26773,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             tipLines.push("⚠ " + (bareV === "sick_n" ? "Sick note" : "FRL proof") + " uploaded — click the ⚠ icon to review the proof and confirm for payroll.");
                           } else if (warning && !reviewed) {
                             tipLines.push("⚠ Mismatch — " + mismatchReason);
+                            // A review exists but no longer matches the cell — say so, with
+                            // what was confirmed and by whom, so a returning ⚠ is never a
+                            // mystery (the cell changed since the review, or another session
+                            // overwrote it).
+                            if (reviewRec) tipLines.push("⚠ Earlier review by " + (reviewRec.reviewer || "admin") + " expired — they confirmed \"" + (statLabel(reviewRec.valueAtReview) || "blank") + "\" but the cell has changed since.");
                             tipLines.push("(Click the ⚠ icon to mark as reviewed for payroll.)");
                           } else if (reviewed && reviewRec) {
                             tipLines.push("✓ Reviewed by " + (reviewRec.reviewer || "admin") + " · " + new Date(reviewRec.ts).toLocaleString("en-ZA"));
@@ -31176,6 +31227,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
 
               {renderScopeBar({ marginBottom: 12 })}
+
+              <TourCompletionsCard />
 
               <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "12px 14px", border: "1px solid #FBCFE8", marginBottom: 14, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>

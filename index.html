@@ -130,5 +130,11 @@ window.BOA_GOOGLE_CONFIG = {
 <!-- The actual React app (compiled by Babel at runtime so we don't need a build step) -->
 <script type="text/babel" data-presets="react" src="app.jsx"></script>
 
+<!-- Keeps long-open portal tabs on the latest code. A tab still running old
+     code keeps saving data the old way and can silently undo what newer
+     sessions wrote (attendance edits / review checkmarks). Reloads only when
+     the tab is idle and nothing is being typed. -->
+<script src="portal-refresh.js"></script>
+
 </body>
 </html>

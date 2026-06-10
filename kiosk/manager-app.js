@@ -984,6 +984,26 @@
     var idx = 0;
     var solved = {};   // step index -> true once its practice question was answered correctly
 
+    // Finishing the tour records the manager's name to boa_tour_done_v1 so
+    // head office can see who has completed it (HR portal → Nail Tech
+    // Check-ins). Recording is best-effort — skipping the name still exits.
+    function finishTour() {
+      var name = window.prompt(
+        "🎓 Tour complete!\n\nType YOUR name so head office can see you've done it:", "");
+      var clean = (name || "").trim();
+      if (clean.length >= 2 && window.APP_DATA && window.APP_DATA.saveTourCompletion) {
+        window.APP_DATA.saveTourCompletion(clean).then(function () {
+          alert("✓ Recorded — thank you, " + clean + "!");
+          renderCheckinGuide();
+        }).catch(function () {
+          alert("Could not save right now — please tell your regional manager you finished the tour.");
+          renderCheckinGuide();
+        });
+      } else {
+        renderCheckinGuide();
+      }
+    }
+
     function show() {
       var st = steps[idx];
       var isQuiz = !!st.quiz && !solved[idx];
@@ -1012,7 +1032,7 @@
       var nextBtn = document.getElementById("tour-next");
       nextBtn.onclick = function () {
         if (nextBtn.disabled) return;
-        if (idx === steps.length - 1) { renderCheckinGuide(); return; }
+        if (idx === steps.length - 1) { finishTour(); return; }
         idx++; show();
       };
       var fb = document.getElementById("tour-feedback");

@@ -1849,6 +1849,15 @@
     return next;
   }
 
+  // ---------- Practice-tour completions (boa_tour_done_v1) ----------
+  // Written by the kiosk when a manager finishes the check-in practice tour
+  // (kiosk/manager-app.js). Shape: { entries: [{ name, branch, at }] }.
+  async function loadTourCompletions() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_tour_done_v1").maybeSingle();
+    if (res.error) { console.error("loadTourCompletions:", res.error); return { entries: [] }; }
+    return (res.data && res.data.value) || { entries: [] };
+  }
+
   // Persist the attendance sheet's own warning tally ({ total, reviewed, open })
   // so the Payroll Progress roll-up can show the SAME numbers the sheet shows.
   // The roll-up otherwise re-derives the count from the raw saved grid and
@@ -1857,15 +1866,21 @@
   // sheet showed 7. We only annotate an EXISTING attendance record — never
   // create an empty one — and merge so no sidecar field is clobbered.
   async function saveAttWarningCounts(branch, ym, counts) {
-    var key = "boa_att_" + branch + "_" + ym;
-    var prior = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
-    if (prior.error) { console.error("saveAttWarningCounts:", prior.error); return null; }
-    var priorVal = prior.data && prior.data.value;
-    if (!priorVal) return null;     // no attendance record yet for this cycle → nothing to annotate
-    priorVal.warningCounts = counts || null;
-    var res = await sb.from("app_state").upsert({ key: key, value: priorVal });
+    // The tally lives under its OWN key, never on the boa_att row. This
+    // publisher fires automatically whenever the sheet's count changes, and
+    // its old read-modify-write of the whole attendance row raced the cell /
+    // review saves happening on the same render: the tally's write landed
+    // last carrying the PRE-edit row, silently wiping the admin's fresh edit
+    // or review checkmark.
+    var key = "boa_attwarn_" + branch + "_" + ym;
+    var res = await sb.from("app_state").upsert({ key: key, value: counts || null });
     if (res.error) throw res.error;
-    return priorVal;
+    return counts;
+  }
+  async function loadAttWarningCounts(branch, ym) {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_attwarn_" + branch + "_" + ym).maybeSingle();
+    if (res.error) { console.error("loadAttWarningCounts:", res.error); return null; }
+    return (res.data && res.data.value) || null;
   }
 
   // ---------- Attendance undo (boa_attundo_<branch>_<ym>) ----------
@@ -2130,7 +2145,9 @@
     loadAttendance: loadAttendance,
     saveAttendance: saveAttendance,
     updateAttendanceCells: updateAttendanceCells,
+    loadTourCompletions: loadTourCompletions,
     saveAttWarningCounts: saveAttWarningCounts,
+    loadAttWarningCounts: loadAttWarningCounts,
     saveAttendanceUndo: saveAttendanceUndo,
     loadAttendanceUndo: loadAttendanceUndo,
     clearAttendanceUndo: clearAttendanceUndo,
