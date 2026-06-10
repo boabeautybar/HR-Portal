@@ -701,7 +701,12 @@
       if (!newGrid[ec]) newGrid[ec] = {};
       newGrid[ec][dayKey] = status;
     }
-    var newValue = { grid: newGrid, branch: branch(), ym: ym, savedAt: new Date().toISOString() };
+    // Preserve sidecar fields the portal layers onto this record (freshaWorked,
+    // freshaCoverage, reviewedWarnings, mirrorSuppressed, names, …). Rebuilding
+    // the value as only { grid, … } here wiped them on every kiosk write — e.g.
+    // it erased the Fresha appointments import the day after it was done.
+    // Mirrors data.js saveAttendance, which already merges.
+    var newValue = Object.assign({}, existing, { grid: newGrid, branch: branch(), ym: ym, savedAt: new Date().toISOString() });
     var res = await c.from("app_state").upsert({ key: attKey(ym), value: newValue });
     if (res.error) throw res.error;
 
