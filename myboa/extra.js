@@ -193,7 +193,7 @@
           '</select></label>',
         '<label class="field"><span>Note <em style="font-weight:400;color:#a07487">(optional)</em></span>',
           '<textarea id="note" placeholder="Anything your manager should know — e.g. available from 10am."></textarea></label>',
-        '<div class="note">Please note: once approved, an extra day is a <b>committed shift</b>. If you don\'t show up for an approved extra day, it will be recorded as a <b>no-show</b>.</div>',
+        '<div class="note">Please note: once approved, an extra day is a <b>committed shift</b>. If you don\'t come in on an approved extra day, the day is <b>removed from your attendance</b> and won\'t be paid.</div>',
         '<button type="button" id="submit" class="submit">Send to regional manager</button>',
         '<p class="err" id="err"></p>',
         '<p style="text-align:center;margin:10px 0 0"><a href="#" id="reset" style="color:#9d6a82;font-size:13px;font-weight:600">‹ Use a different code</a></p>',
@@ -209,7 +209,7 @@
     var day = val("day");
     setErr("");
     if (!day) { setErr("Please pick the off day you're offering."); return; }
-    if (!window.confirm("Once approved, this is a committed shift. If you don't show up for an approved extra day, it will be recorded as a no-show.\n\nSend this offer to your regional manager?")) return;
+    if (!window.confirm("Once approved, this is a committed shift. If you don't come in on an approved extra day, the day is removed from your attendance and won't be paid.\n\nSend this offer to your regional manager?")) return;
     var payload = {
       p_store: state.store,
       p_ec: state.ec || null,

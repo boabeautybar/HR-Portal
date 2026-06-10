@@ -12584,9 +12584,19 @@ function StoreReportsTab({ extraDayRequests, managers }) {
       })).sort((a, b) => a.avg - b.avg || a.branch.localeCompare(b.branch));
 
       // ── 3. Extras — approved extra days per person, within the window ──
+      // "Worked" means worked: an approved extra day only counts once the
+      // kiosk shows the person actually came in that day (on/late/ext/trial/
+      // swap_i check-in entry). Unworked approved extras are removed from
+      // attendance and must not inflate this leaderboard either.
+      const workedSet = new Set();
+      (checkins || []).forEach(e => {
+        if (!e || !e.ec || !e.ymd) return;
+        if (e.status === "on" || e.status === "late" || e.status === "ext" || e.status === "trial" || e.status === "swap_i") workedSet.add(String(e.ec).trim() + "|" + e.ymd);
+      });
       const eByEc = {};
       (extrasRaw || []).forEach(r => {
         if (!r || r.status !== "approved" || !r.work_date || r.work_date < sinceYmd) return;
+        if (!r.ec || !workedSet.has(String(r.ec).trim() + "|" + r.work_date)) return;
         const k = r.ec || r.name || r.id;
         const e = eByEc[k] || (eByEc[k] = { ec: r.ec, name: r.name, store: r.store, count: 0 });
         e.count++; if (r.store) e.store = r.store;
@@ -12736,7 +12746,7 @@ function StoreReportsTab({ extraDayRequests, managers }) {
         {/* 3. Extras */}
         <div style={card}>
           <div style={cardHead}>💪 Most extra days worked</div>
-          <div style={cardSub}>Approved extra days per person in the window, across all stores.</div>
+          <div style={cardSub}>Approved extra days actually worked per person in the window, across all stores.</div>
           {data.extras.length === 0 ? <div style={{ fontSize: 12, color: "#9ca3af" }}>No approved extra days in this window.</div> : (
             <div>
               <div style={{ ...rowS(true), gridTemplateColumns: "34px 1fr 1fr 90px" }}>
@@ -14399,7 +14409,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const v = (g[ec] || g[ecT] || {})[dom];
           const bare = v ? (v.charAt(0) === "~" ? v.slice(1) : v) : "";
           if (bare && MISSEDSET[bare]) { classify(rec, bare, ymd); return; }   // a recorded absence wins over an extra flag
-          if (isExtraDay(k, ec, ecT, ymd, dom, bare)) { rec.extra++; rec.worked++; return; }
+          // An approved extra day only counts when she actually worked it —
+          // a presence cell (kiosk sync / admin) or a kiosk-log extra entry.
+          // An unworked approved extra is simply removed: no extra, no miss.
+          if (isExtraDay(k, ec, ecT, ymd, dom, bare)) {
+            if (bare === "on" || bare === "late" || bare === "ext" || extraKioskSet.has(ecT + "|" + ymd)) { rec.extra++; rec.worked++; }
+            return;
+          }
           if (bare) classify(rec, bare, ymd);
         });
         if (rec.worked + rec.missed > 0) techRecs.push(finish(rec));
@@ -14421,7 +14437,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const g = gridByKey[k] || {};
           const gv = (g[ec] || g[ecT] || {})[dom];
           const gBare = gv ? (gv.charAt(0) === "~" ? gv.slice(1) : gv) : "";
-          if (isExtraDay(k, ec, ecT, ymd, dom, gBare)) { rec.extra++; rec.worked++; return; }
+          // Same rule as techs: an approved extra day counts only when the
+          // manager actually worked it (presence cell, kiosk-log extra, or
+          // a clock-in that day). Unworked extras are removed, not counted.
+          if (isExtraDay(k, ec, ecT, ymd, dom, gBare)) {
+            if (gBare === "on" || gBare === "late" || gBare === "ext" || extraKioskSet.has(ecT + "|" + ymd) || (mgrClockByIdYmd[sid] || {})[ymd]) { rec.extra++; rec.worked++; return; }
+          }
           if (st) { classify(rec, st, ymd); return; }
           if ((mgrClockByIdYmd[sid] || {})[ymd]) rec.worked++;
         });
@@ -24591,7 +24612,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (dayObj.ymd < _mgrCheckinFromYmd) return false;  // outside loaded clock-in window — can't verify, leave as-is
           return !_mgrCheckedIn(ec, dayObj.ymd);              // phantom only when there's no real clock-in
         };
-        const getStatus = (ec, d) => {
+        const _statusBeforeExtraRemoval = (ec, d) => {
           // If the schedule was later corrected to OFF for this day, any
           // stale ROM-recorded reason (sick / absent / FRL / etc.) is
           // irrelevant — the manager isn't supposed to work that day. The
@@ -24783,6 +24804,62 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const _incPost = _incPostFallback(ec, dayObj);
           if (_incPost) return _incPost;
           return "";
+        };
+        // ── Extra-day removal rule ─────────────────────────────────────
+        // An approved extra day only pays if it was actually worked. When
+        // the tech never came in, the extra day is REMOVED from the sheet
+        // (the cell reads OFF) instead of being marked unpaid: an extra day
+        // sits on top of the normal roster and pays more than a normal day,
+        // so deducting an unpaid day at the normal rate wouldn't cancel the
+        // extra amount — it would wrongly eat into the base salary instead.
+        // Removal fires when:
+        //   • the day resolves to an absence (no / absent / unpaid), or
+        //   • the day is in the past, still reads "ext", and NO source shows
+        //     presence (confirmed grid cell, kiosk check-in / audit entry,
+        //     Fresha appointment, manager clock-in, or the receiving
+        //     branch's record on a loaned day).
+        // Today and future days are left alone — the tech can still show up.
+        const _isApprovedExtraDay = (ec, d) =>
+          _isExtraDay(ec, d) || (attSched[ec] && attSched[ec][d]) === "E";
+        const _extraTodayYmd = (() => { const t = new Date(); return t.getFullYear() + "-" + p2(t.getMonth() + 1) + "-" + p2(t.getDate()); })();
+        const _extraDayWorkEvidence = (ec, d, ymd) => {
+          const gv = attGrid[ec] && attGrid[ec][d];
+          const gvBare = gv ? (gv.indexOf("~") === 0 ? gv.slice(1) : gv) : "";
+          // A confirmed (non-mirrored) presence cell — kiosk sync or admin.
+          if (gv && gv.indexOf("~") !== 0 && (gvBare === "on" || gvBare === "late" || gvBare === "ext")) return true;
+          if (_freshaWorkedFor(ec, d)) return true;
+          if (ymd) {
+            const ci = _ciFor(ec, ymd);
+            if (ci && ci.hasIn) return true;
+            const ka = _kaFor(ec, ymd);
+            if (ka && (ka.status === "on" || ka.status === "late" || ka.status === "ext")) return true;
+            if (_mgrEcToStaffId[ec] && _mgrCheckedIn(ec, ymd)) return true;
+          }
+          // Loaned out that day — presence recorded at the receiving branch.
+          const toBranch = outgoingLoanMap[ec] && outgoingLoanMap[ec][d];
+          if (toBranch) {
+            const rg = crossBranchAttGrids[toBranch];
+            const rv = rg && rg[ec] && rg[ec][d];
+            const rb = rv ? (rv.indexOf("~") === 0 ? rv.slice(1) : rv) : "";
+            if (rb === "on" || rb === "late" || rb === "ext") return true;
+            const ka2 = ymd ? ((kioskAbsentByBranch[toBranch] || {})[ec] || {})[ymd] : null;
+            if (ka2 && (ka2.status === "on" || ka2.status === "late" || ka2.status === "ext")) return true;
+          }
+          return false;
+        };
+        const _extraDayRemovedBase = (ec, d, base) => {
+          if (!_isApprovedExtraDay(ec, d)) return false;
+          if (base === "no" || base === "absent" || base === "unpaid") return true;
+          if (base !== "ext") return false;
+          const dayObj = days.find(x => x.d === d);
+          if (!dayObj || dayObj.ymd >= _extraTodayYmd) return false;
+          return !_extraDayWorkEvidence(ec, d, dayObj.ymd);
+        };
+        // Render helper — lets the cell tooltip explain WHY the day reads OFF.
+        const _extraDayRemoved = (ec, d) => _extraDayRemovedBase(ec, d, _statusBeforeExtraRemoval(ec, d));
+        const getStatus = (ec, d) => {
+          const base = _statusBeforeExtraRemoval(ec, d);
+          return _extraDayRemovedBase(ec, d, base) ? "off" : base;
         };
         const hasOverride = (ec, d) => {
           // Treat the auto-derived TERMINATED as a confirmed override so it
@@ -25772,7 +25849,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             else if (v === "mat") { t.mat++; t.unpaid++; }
             else if (v === "no") { t.unpaid++; t.noShow++; }   // no-show → unpaid AND forfeits the attendance bonus
             else if (v === "unpaid" || v === "absent") t.unpaid++;
-            else if (v === "ext") { t.ext++; if (phOk) t.ph++; }
+            // EXT counts only extra days ACTUALLY worked. An approved extra
+            // day still reads "ext" while it's today/future (she can still
+            // show up), but it must not hit the EXT total — and the extra
+            // pay — until some source shows she actually came in.
+            else if (v === "ext") { if (_extraDayWorkEvidence(ec, dy.d, dy.ymd)) { t.ext++; if (phOk) t.ph++; } }
             else if (v === "late") { t.late++; if (phOk) t.ph++; }
             else if (v === "trial" || v === "trial_ho") t.td++;
             else if (v === "on") { t.worked++; if (phOk) t.ph++; }
@@ -25875,8 +25956,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         // Download the per-staff summary totals (the right-hand columns) as a CSV:
         // employee code, full name, role, new-starter start date, every count
-        // (annual leave, sick + note, FRL, PPH, extra days, unpaid, no-shows,
-        // lates) and whether the attendance bonus is lost (with the reason).
+        // (annual leave, sick + note, FRL, PPH, extra days, unpaid, lates) and
+        // whether the attendance bonus is lost (with the reason). No-show days
+        // are already counted inside Unpaid — a separate No-shows column made
+        // payroll deduct those days twice, so it's deliberately NOT exported;
+        // the no-shows still surface in the Bonus Loss Reason column.
         const downloadAttendanceCsv = () => {
           // The cycle runs 25th → 24th and is named after its END month — e.g.
           // 25 May → 24 Jun is the JUNE payroll — so label the file by the
@@ -25885,7 +25969,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const payLabel = moShort[cycEnd.getMonth()] + " " + cycEnd.getFullYear() + " payroll";
           const head = ["Employee Code", "Full Name", "Role", "Start Date (new starters)",
             "Annual Leave", "Sick (with note)", "FRL", "Public Holidays", "Extra Days",
-            "Unpaid", "No-shows", "Lates", "Bonus Lost", "Bonus Loss Reason"];
+            "Unpaid", "Lates", "Bonus Lost", "Bonus Loss Reason"];
           const lines = [
             _csvEscape("Attendance totals · " + attBranch + " · Pay cycle " + cycLabel + " (" + payLabel + ")"),
             "",
@@ -25907,7 +25991,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               t.ph,
               t.ext,
               (t.totalUnpaid === Math.floor(t.totalUnpaid) ? t.totalUnpaid : t.totalUnpaid.toFixed(2)),
-              t.noShow,
               t.late,
               reasons.length ? "Yes" : "No",
               reasons.join("; ")
@@ -26593,6 +26676,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           if (loanTo) tipLines.push("🔀 Loaned out to " + loanTo + (v === "loan_out" ? " (receiving branch hasn't recorded a status yet)" : ""));
                           if (bareV === "swap_o") tipLines.push("💡 Owes — tech took today off because she worked on a previous off day for a colleague.");
                           if (bareV === "swap_i") tipLines.push("💡 Owed — tech came in today because she took off on a previous day when a colleague filled in for her.");
+                          if (_extraDayRemoved(s.ec, dy.d)) tipLines.push("➖ Approved extra day removed — not worked, so it isn't paid and no unpaid day is deducted.");
                           if (earlyHrs > 0) tipLines.push("🏃 Left work early — " + earlyHrs + "h (" + (earlyHrs / 8).toFixed(2) + " unpaid day" + (earlyHrs / 8 === 1 ? "" : "s") + ")");
                           // Verdict line(s) — same priority the ⚠ uses.
                           tipLines.push("");
