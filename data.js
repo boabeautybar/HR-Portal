@@ -1866,15 +1866,21 @@
   // sheet showed 7. We only annotate an EXISTING attendance record — never
   // create an empty one — and merge so no sidecar field is clobbered.
   async function saveAttWarningCounts(branch, ym, counts) {
-    var key = "boa_att_" + branch + "_" + ym;
-    var prior = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
-    if (prior.error) { console.error("saveAttWarningCounts:", prior.error); return null; }
-    var priorVal = prior.data && prior.data.value;
-    if (!priorVal) return null;     // no attendance record yet for this cycle → nothing to annotate
-    priorVal.warningCounts = counts || null;
-    var res = await sb.from("app_state").upsert({ key: key, value: priorVal });
+    // The tally lives under its OWN key, never on the boa_att row. This
+    // publisher fires automatically whenever the sheet's count changes, and
+    // its old read-modify-write of the whole attendance row raced the cell /
+    // review saves happening on the same render: the tally's write landed
+    // last carrying the PRE-edit row, silently wiping the admin's fresh edit
+    // or review checkmark.
+    var key = "boa_attwarn_" + branch + "_" + ym;
+    var res = await sb.from("app_state").upsert({ key: key, value: counts || null });
     if (res.error) throw res.error;
-    return priorVal;
+    return counts;
+  }
+  async function loadAttWarningCounts(branch, ym) {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_attwarn_" + branch + "_" + ym).maybeSingle();
+    if (res.error) { console.error("loadAttWarningCounts:", res.error); return null; }
+    return (res.data && res.data.value) || null;
   }
 
   // ---------- Attendance undo (boa_attundo_<branch>_<ym>) ----------
@@ -2141,6 +2147,7 @@
     updateAttendanceCells: updateAttendanceCells,
     loadTourCompletions: loadTourCompletions,
     saveAttWarningCounts: saveAttWarningCounts,
+    loadAttWarningCounts: loadAttWarningCounts,
     saveAttendanceUndo: saveAttendanceUndo,
     loadAttendanceUndo: loadAttendanceUndo,
     clearAttendanceUndo: clearAttendanceUndo,

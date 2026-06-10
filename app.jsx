@@ -14669,10 +14669,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       await Promise.all(SALONS.map(async (sl) => {
         const branch = sl.name;
         try {
-          const [att, sch, mgrSch] = await Promise.all([
+          const [att, sch, mgrSch, wcOwn] = await Promise.all([
             safe(window.BOA_DB.loadAttendance(branch, ym)),
             safe(window.BOA_DB.loadSchedule(branch, techYmCross, false)),
-            safe(window.BOA_DB.loadSchedule(branch, ym, true))
+            safe(window.BOA_DB.loadSchedule(branch, ym, true)),
+            window.BOA_DB.loadAttWarningCounts ? safe(window.BOA_DB.loadAttWarningCounts(branch, ym)) : Promise.resolve(null)
           ]);
           const bGrid = (att && att.grid) || {};
           const bReview = (att && att.reviewedWarnings) || {};
@@ -14788,7 +14789,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // only resolves leave/maternity overlays, not the sheet's full
           // getStatus view, so it drifts; we fall back to it (flagged approx)
           // only for branches whose sheet hasn't been opened this cycle yet.
-          const pc = att && att.warningCounts;
+          const pc = wcOwn || (att && att.warningCounts);   // own key first; legacy embedded value as fallback
           if (pc && typeof pc.total === "number") {
             const rv = (typeof pc.reviewed === "number") ? pc.reviewed : 0;
             results[branch] = { total: pc.total, reviewed: rv, open: (typeof pc.open === "number") ? pc.open : (pc.total - rv) };
