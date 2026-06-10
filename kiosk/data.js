@@ -1194,6 +1194,38 @@
     if (m < 1) { m = 12; y -= 1; }
     return y + "-" + String(m).padStart(2, "0");
   }
+  // Collapse a manager row's keys to day-of-month, CYCLE-AWARE. Manager grids
+  // can carry the same day under two key styles (a bare day number and a full
+  // date), and may also hold stray full-date keys from OTHER months. A blind
+  // collapse throws the month away, so e.g. "2026-05-10" lands on day 10 and
+  // can overwrite the real 10 June cell depending on key order — which is why
+  // the kiosk could show a different shift than the HR portal (whose readers
+  // resolve by exact date). Mirror the portal's precedence instead: an
+  // in-cycle full-date key always wins over a bare day number; out-of-cycle
+  // full-date keys are dropped. `ym` is the cycle's END-month.
+  function _collapseMgrRow(row2, ym) {
+    var conv = {};
+    var fromYmd = {};   // day-of-month → true when set from an in-cycle full date
+    var ymP = String(ym).split("-");
+    var cEy = parseInt(ymP[0], 10), cEm = parseInt(ymP[1], 10);
+    var cSy = cEm === 1 ? cEy - 1 : cEy, cSm = cEm === 1 ? 12 : cEm - 1;
+    var cycStart = cSy + "-" + String(cSm).padStart(2, "0") + "-25";
+    var cycEnd   = cEy + "-" + String(cEm).padStart(2, "0") + "-24";
+    Object.keys(row2 || {}).forEach(function (k) {
+      var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(k);
+      if (m) {
+        if (k < cycStart || k > cycEnd) return;        // stray date from another cycle — ignore
+        conv[parseInt(m[3], 10)] = row2[k];
+        fromYmd[parseInt(m[3], 10)] = true;
+      } else {
+        var dn = parseInt(k, 10);
+        var bare = String(dn) === String(k).trim() && dn >= 1 && dn <= 31;
+        if (bare) { if (!fromYmd[dn]) conv[dn] = row2[k]; }
+        else conv[k] = row2[k];
+      }
+    });
+    return conv;
+  }
   async function getSchedule(ym, kind) {
     var c = client(); if (!c) return { grid: {}, ym: ym, kind: kind || "combined" };
     var br = branch();
@@ -1215,46 +1247,30 @@
       Object.keys(nm).forEach(function (ec) { if (names[ec] == null) names[ec] = nm[ec]; });
       var isMgr = row.key === mgrKey;
       Object.keys(grid).forEach(function (ec) {
-        if (!isMgr) {
-          combined[ec] = grid[ec];
-          return;
-        }
-        // Re-key manager rows: { "2026-05-22": "W" } → { 22: "W" } — but
-        // CYCLE-AWARE. Manager grids can carry the same day under two key
-        // styles (a bare day number and a full date), and may also hold stray
-        // full-date keys from OTHER months. The old blind collapse threw the
-        // month away, so e.g. "2026-05-10" landed on day 10 and could
-        // overwrite the real 10 June cell depending on key order — which is
-        // why the kiosk could show a different shift than the HR portal
-        // (whose readers resolve by exact date). Mirror the portal's
-        // precedence instead: an in-cycle full-date key always wins over a
-        // bare day number; out-of-cycle full-date keys are dropped.
-        var row2 = grid[ec] || {};
-        var conv = {};
-        var fromYmd = {};   // day-of-month → true when set from an in-cycle full date
-        // Cycle window for the END-month ym: 25th of prev month → 24th of ym.
-        var ymP = String(ym).split("-");
-        var cEy = parseInt(ymP[0], 10), cEm = parseInt(ymP[1], 10);
-        var cSy = cEm === 1 ? cEy - 1 : cEy, cSm = cEm === 1 ? 12 : cEm - 1;
-        var cycStart = cSy + "-" + String(cSm).padStart(2, "0") + "-25";
-        var cycEnd   = cEy + "-" + String(cEm).padStart(2, "0") + "-24";
-        Object.keys(row2).forEach(function (k) {
-          var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(k);
-          if (m) {
-            if (k < cycStart || k > cycEnd) return;        // stray date from another cycle — ignore
-            conv[parseInt(m[3], 10)] = row2[k];
-            fromYmd[parseInt(m[3], 10)] = true;
-          } else {
-            var dn = parseInt(k, 10);
-            var bare = String(dn) === String(k).trim() && dn >= 1 && dn <= 31;
-            if (bare) { if (!fromYmd[dn]) conv[dn] = row2[k]; }
-            else conv[k] = row2[k];
-          }
-        });
-        combined[ec] = conv;
+        combined[ec] = isMgr ? _collapseMgrRow(grid[ec], ym) : grid[ec];
       });
     });
     return { grid: combined, names: names, ym: ym, kind: kind || "combined" };
+  }
+  // Most recent APPROVED schedule snapshot for this branch + cycle, collapsed
+  // the same way as getSchedule. The HR portal's Manager Coverage view falls
+  // back to this per cell when the live grid has no value for a manager+day —
+  // the kiosk mirrors that so both always show the same shift.
+  async function getApprovedSchedule(ym, kind) {
+    var c = client(); if (!c) return { grid: {}, names: {}, ym: ym };
+    var br = branch();
+    var isMgr = kind === "mgr";
+    var key = (isMgr ? "boa_mgrschedapproved_" : "boa_schedapproved_") + br + "_" + (isMgr ? _toStartMonthYm(ym) : ym);
+    var res = await c.from("app_state").select("value").eq("key", key).maybeSingle();
+    if (res.error) { console.error("getApprovedSchedule:", res.error); return { grid: {}, names: {}, ym: ym }; }
+    var list = res.data && res.data.value;
+    var top = (Array.isArray(list) && list.length > 0) ? list[0] : null;   // newest first
+    var grid = (top && top.grid) || {};
+    var out = {};
+    Object.keys(grid).forEach(function (ec) {
+      out[ec] = isMgr ? _collapseMgrRow(grid[ec], ym) : grid[ec];
+    });
+    return { grid: out, names: (top && top.names) || {}, ym: ym };
   }
   // Per-manager custom shift hours set in the HR portal coverage view.
   // Shared global key, keyed { [ec]: { "YYYY-MM-DD": "HH:MM - HH:MM" } }.
@@ -1598,7 +1614,7 @@
     deactivateStaff: deactivateStaff,
     lastClockinToday: lastClockinToday, addClockin: addClockin, listTodayClockins: listTodayClockins,
     todaysCashup: todaysCashup, cashupForDate: cashupForDate, outstandingCashupDates: outstandingCashupDates, addCashup: addCashup, listRecentCashups: listRecentCashups,
-    currentSchedYm: currentSchedYm, periodLabel: periodLabel, periodDays: periodDays, getSchedule: getSchedule, getSchedulesForBranches: getSchedulesForBranches, getMgrTimes: getMgrTimes,
+    currentSchedYm: currentSchedYm, periodLabel: periodLabel, periodDays: periodDays, getSchedule: getSchedule, getApprovedSchedule: getApprovedSchedule, getSchedulesForBranches: getSchedulesForBranches, getMgrTimes: getMgrTimes,
     ymForDate: ymForDate, endOfSchedulePeriod: endOfSchedulePeriod,
     getAttendance: getAttendance, setAttendanceStatus: setAttendanceStatus, backfillCheckinLog: backfillCheckinLog,
     loadFRL: loadFRL, frlMarkGuard: frlMarkGuard,
