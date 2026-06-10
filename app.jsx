@@ -25154,80 +25154,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const dayDesc = dayObj ? new Date(dayObj.ymd + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ("day " + d);
           logActivity("Confirmed " + statLabel(finalValue), staffName + " · " + dayDesc + " · " + attBranch, cycLabel, "Review");
         };
-        // Resolve a warning cell via explicit click. The admin's pick is the
-        // FINAL status for that day — the cell value is set (override=true)
-        // AND a review record is stored in attMeta.reviewedWarnings, so the
-        // green ✓ + reviewer + note stick for payroll's audit trail. If the
-        // underlying value later changes, the review expires (handled at
-        // render time by comparing to valueAtReview).
-        const VALID_STAT_CODES = ["on", "late", "off", "sick", "sick_n", "frl", "no", "absent", "al", "el", "ph", "mat", "ext", "trial", "swap_o", "swap_i", "unpaid", "term"];
+        // Clicking the green ✓ on a reviewed cell offers to clear the mark.
+        // (Warnings themselves are resolved through the cell's dropdown —
+        // any admin pick auto-records the review — so the old prompt-for-a-
+        // status-code flow is gone.)
         const markCellReviewed = async (ec, d, currentValue) => {
-          pushUndo("warning resolution");
           const existing = ((attMeta && attMeta.reviewedWarnings) || {})[ec] || {};
           const already = existing[d];
-          const reviewer = (currentUser && (currentUser.name || currentUser.email)) || "admin";
-          // Already reviewed for the current value → offer to clear the mark.
-          if (already && reviewMatchesCell(already, ec, d, currentValue)) {
-            if (!confirm("Clear the reviewed mark on this cell?")) return;
-            const nextEc = { ...(existing) }; delete nextEc[d];
-            const nextRW = { ...((attMeta && attMeta.reviewedWarnings) || {}) };
-            if (Object.keys(nextEc).length) nextRW[ec] = nextEc; else delete nextRW[ec];
-            const nextMeta = { ...(attMeta || {}), reviewedWarnings: nextRW };
-            setAttMeta(nextMeta);
-            try {
-              if (window.BOA_DB.updateAttendanceCells) await window.BOA_DB.updateAttendanceCells(attBranch, attYM, null, { [ec]: { [d]: null } });
-              else await window.BOA_DB.saveAttendance(attBranch, attYM, attGrid, { reviewedWarnings: nextRW });
-            }
-            catch (e) { alert("Could not save: " + (e.message || e)); }
-            return;
-          }
-          // Otherwise ask the admin to pick the FINAL status for payroll.
-          const finalStatus = window.prompt(
-            "Set the FINAL status for payroll on this day.\n\n" +
-            "Valid codes: " + VALID_STAT_CODES.join(", ") + "\n\n" +
-            "Leave blank to clear the cell.",
-            currentValue || ""
-          );
-          if (finalStatus === null) return;                                            // Cancel
-          const cleaned = (finalStatus || "").trim();
-          if (cleaned && !VALID_STAT_CODES.includes(cleaned)) {
-            alert("Unknown status code: " + cleaned + "\n\nPlease use one of: " + VALID_STAT_CODES.join(", "));
-            return;
-          }
-          const note = window.prompt("Optional note (why is this OK for payroll?)", "");
-          if (note === null) return;
-          // Build the next grid (set / clear the cell).
-          const nextGrid = { ...attGrid, [ec]: { ...(attGrid[ec] || {}) } };
-          if (cleaned) nextGrid[ec][d] = cleaned; else delete nextGrid[ec][d];
-          setAttGrid(nextGrid);
-          // Build the next reviewed-warnings map.
-          const record = { reviewer, ts: new Date().toISOString(), note: (note || "").trim() || null, valueAtReview: cleaned };
-          const nextEc = { ...existing, [d]: record };
-          const nextRW = { ...((attMeta && attMeta.reviewedWarnings) || {}), [ec]: nextEc };
-          // The admin's FINAL status is also an admin override — the truth
-          // for payroll, stamped with who set it (cleared if they blanked it).
-          const ovRec = cleaned ? { status: cleaned, by: reviewer, at: new Date().toISOString() } : null;
-          const prevOv = (attMeta && attMeta.adminOverrides) || {};
-          const ovEc = { ...(prevOv[ec] || {}) };
-          if (ovRec) ovEc[d] = ovRec; else delete ovEc[d];
-          const nextOv = { ...prevOv };
-          if (Object.keys(ovEc).length) nextOv[ec] = ovEc; else delete nextOv[ec];
-          const nextMeta = { ...(attMeta || {}), reviewedWarnings: nextRW, adminOverrides: nextOv };
+          if (!(already && reviewMatchesCell(already, ec, d, currentValue))) return;
+          if (!confirm("Clear the reviewed mark on this cell?")) return;
+          pushUndo("warning resolution");
+          const nextEc = { ...(existing) }; delete nextEc[d];
+          const nextRW = { ...((attMeta && attMeta.reviewedWarnings) || {}) };
+          if (Object.keys(nextEc).length) nextRW[ec] = nextEc; else delete nextRW[ec];
+          const nextMeta = { ...(attMeta || {}), reviewedWarnings: nextRW };
           setAttMeta(nextMeta);
-          // Single save with the cell, its review record AND the override,
-          // merged into the freshest stored state so nothing clobbers other
-          // sessions.
           try {
-            if (window.BOA_DB.updateAttendanceCells) await window.BOA_DB.updateAttendanceCells(attBranch, attYM, { [ec]: { [d]: cleaned || null } }, { [ec]: { [d]: record } }, { [ec]: { [d]: ovRec } });
-            else await window.BOA_DB.saveAttendance(attBranch, attYM, nextGrid, { reviewedWarnings: nextRW });
+            if (window.BOA_DB.updateAttendanceCells) await window.BOA_DB.updateAttendanceCells(attBranch, attYM, null, { [ec]: { [d]: null } });
+            else await window.BOA_DB.saveAttendance(attBranch, attYM, attGrid, { reviewedWarnings: nextRW });
           }
           catch (e) { alert("Could not save: " + (e.message || e)); }
-          const staffName = (attStaff.find(s => s.ec === ec) || {}).name || ec;
-          const dayObj2 = days.find(x => x.d === d);
-          const dayDesc2 = dayObj2 ? new Date(dayObj2.ymd + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ("day " + d);
-          const reviewNote = (note || "").trim();
-          logActivity("Resolved warning → " + statLabel(cleaned), staffName + " · " + dayDesc2 + " · " + attBranch,
-            cycLabel + (reviewNote ? " · note: " + reviewNote : ""), "Review");
         };
 
         // ── Import check-ins from the kiosk audit log ── every kiosk submission
@@ -26365,7 +26311,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             {warningCounts.total > 0 && (
               <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", fontSize: 12, color: warningCounts.open > 0 ? "#7f1d1d" : "#166534", marginBottom: 8, padding: "10px 14px", background: warningCounts.open > 0 ? "#fef2f2" : "#f0fdf4", border: warningCounts.open > 0 ? "1px solid #fecaca" : "1px solid #bbf7d0", borderRadius: 8, fontWeight: 700 }}>
                 {warningCounts.open > 0
-                  ? (<><span style={{ fontSize: 14 }}>⚠</span> <span>{warningCounts.open} cell{warningCounts.open === 1 ? "" : "s"} need review for payroll</span><span style={{ fontWeight: 500, opacity: 0.7 }}>· {warningCounts.reviewed} of {warningCounts.total} resolved · click any ⚠ to set the final status</span></>)
+                  ? (<><span style={{ fontSize: 14 }}>⚠</span> <span>{warningCounts.open} cell{warningCounts.open === 1 ? "" : "s"} need review for payroll</span><span style={{ fontWeight: 500, opacity: 0.7 }}>· {warningCounts.reviewed} of {warningCounts.total} resolved · click a ⚠ cell and pick its final status from the dropdown</span></>)
                   : (<><span style={{ fontSize: 14 }}>✓</span> <span>All {warningCounts.total} warning{warningCounts.total === 1 ? "" : "s"} reviewed for this cycle</span></>)}
               </div>
             )}
@@ -26804,7 +26750,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             // mystery (the cell changed since the review, or another session
                             // overwrote it).
                             if (reviewRec) tipLines.push("⚠ Earlier review by " + (reviewRec.reviewer || "admin") + " expired — they confirmed \"" + (statLabel(reviewRec.valueAtReview) || "blank") + "\" but the cell has changed since.");
-                            tipLines.push("(Click the ⚠ icon to mark as reviewed for payroll.)");
+                            tipLines.push("(Click the cell and pick the final status from the dropdown — re-pick the current one to confirm it for payroll.)");
                           } else if (reviewed && reviewRec) {
                             tipLines.push("✓ Reviewed by " + (reviewRec.reviewer || "admin") + " · " + new Date(reviewRec.ts).toLocaleString("en-ZA"));
                             if (reviewRec.note) tipLines.push("   \"" + reviewRec.note + "\"");
@@ -26916,12 +26862,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                         style={{ position: "absolute", top: 6, right: 1, fontSize: 12, lineHeight: 1, color: "#dc2626", fontWeight: 900, cursor: "pointer", textShadow: "0 0 2px white, 0 0 2px white", zIndex: 1 }}>⚠</span>
                                     );
                                   }
-                                  // Cell with active warning + not yet reviewed → red ⚠
+                                  // Cell with active warning + not yet reviewed → red ⚠.
+                                  // Click-through (pointerEvents none): clicking the ⚠ opens
+                                  // the cell's own dropdown, and picking a status — even the
+                                  // same one — auto-records the review. The old prompt-for-a-
+                                  // status-code window was removed; the dropdown is the only
+                                  // way to resolve a warning. Hover info comes from the
+                                  // select underneath, which carries the same tooltip.
                                   if (warning && !reviewed) {
                                     return (
-                                      <span title={cellTooltip}
-                                        onClick={(e) => { e.stopPropagation(); markCellReviewed(s.ec, dy.d, v); }}
-                                        style={{ position: "absolute", top: 6, right: 1, fontSize: 12, lineHeight: 1, color: "#dc2626", fontWeight: 900, cursor: "pointer", textShadow: "0 0 2px white, 0 0 2px white", zIndex: 1 }}>⚠</span>
+                                      <span
+                                        style={{ position: "absolute", top: 6, right: 1, fontSize: 12, lineHeight: 1, color: "#dc2626", fontWeight: 900, pointerEvents: "none", textShadow: "0 0 2px white, 0 0 2px white", zIndex: 1 }}>⚠</span>
                                     );
                                   }
                                   // Reviewed cell (warning resolved OR a plain admin-entered value) → small green ✓
