@@ -12584,9 +12584,19 @@ function StoreReportsTab({ extraDayRequests, managers }) {
       })).sort((a, b) => a.avg - b.avg || a.branch.localeCompare(b.branch));
 
       // ── 3. Extras — approved extra days per person, within the window ──
+      // "Worked" means worked: an approved extra day only counts once the
+      // kiosk shows the person actually came in that day (on/late/ext/trial/
+      // swap_i check-in entry). Unworked approved extras are removed from
+      // attendance and must not inflate this leaderboard either.
+      const workedSet = new Set();
+      (checkins || []).forEach(e => {
+        if (!e || !e.ec || !e.ymd) return;
+        if (e.status === "on" || e.status === "late" || e.status === "ext" || e.status === "trial" || e.status === "swap_i") workedSet.add(String(e.ec).trim() + "|" + e.ymd);
+      });
       const eByEc = {};
       (extrasRaw || []).forEach(r => {
         if (!r || r.status !== "approved" || !r.work_date || r.work_date < sinceYmd) return;
+        if (!r.ec || !workedSet.has(String(r.ec).trim() + "|" + r.work_date)) return;
         const k = r.ec || r.name || r.id;
         const e = eByEc[k] || (eByEc[k] = { ec: r.ec, name: r.name, store: r.store, count: 0 });
         e.count++; if (r.store) e.store = r.store;
@@ -12736,7 +12746,7 @@ function StoreReportsTab({ extraDayRequests, managers }) {
         {/* 3. Extras */}
         <div style={card}>
           <div style={cardHead}>💪 Most extra days worked</div>
-          <div style={cardSub}>Approved extra days per person in the window, across all stores.</div>
+          <div style={cardSub}>Approved extra days actually worked per person in the window, across all stores.</div>
           {data.extras.length === 0 ? <div style={{ fontSize: 12, color: "#9ca3af" }}>No approved extra days in this window.</div> : (
             <div>
               <div style={{ ...rowS(true), gridTemplateColumns: "34px 1fr 1fr 90px" }}>
@@ -14399,7 +14409,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const v = (g[ec] || g[ecT] || {})[dom];
           const bare = v ? (v.charAt(0) === "~" ? v.slice(1) : v) : "";
           if (bare && MISSEDSET[bare]) { classify(rec, bare, ymd); return; }   // a recorded absence wins over an extra flag
-          if (isExtraDay(k, ec, ecT, ymd, dom, bare)) { rec.extra++; rec.worked++; return; }
+          // An approved extra day only counts when she actually worked it —
+          // a presence cell (kiosk sync / admin) or a kiosk-log extra entry.
+          // An unworked approved extra is simply removed: no extra, no miss.
+          if (isExtraDay(k, ec, ecT, ymd, dom, bare)) {
+            if (bare === "on" || bare === "late" || bare === "ext" || extraKioskSet.has(ecT + "|" + ymd)) { rec.extra++; rec.worked++; }
+            return;
+          }
           if (bare) classify(rec, bare, ymd);
         });
         if (rec.worked + rec.missed > 0) techRecs.push(finish(rec));
@@ -14421,7 +14437,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const g = gridByKey[k] || {};
           const gv = (g[ec] || g[ecT] || {})[dom];
           const gBare = gv ? (gv.charAt(0) === "~" ? gv.slice(1) : gv) : "";
-          if (isExtraDay(k, ec, ecT, ymd, dom, gBare)) { rec.extra++; rec.worked++; return; }
+          // Same rule as techs: an approved extra day counts only when the
+          // manager actually worked it (presence cell, kiosk-log extra, or
+          // a clock-in that day). Unworked extras are removed, not counted.
+          if (isExtraDay(k, ec, ecT, ymd, dom, gBare)) {
+            if (gBare === "on" || gBare === "late" || gBare === "ext" || extraKioskSet.has(ecT + "|" + ymd) || (mgrClockByIdYmd[sid] || {})[ymd]) { rec.extra++; rec.worked++; return; }
+          }
           if (st) { classify(rec, st, ymd); return; }
           if ((mgrClockByIdYmd[sid] || {})[ymd]) rec.worked++;
         });
@@ -25828,7 +25849,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             else if (v === "mat") { t.mat++; t.unpaid++; }
             else if (v === "no") { t.unpaid++; t.noShow++; }   // no-show → unpaid AND forfeits the attendance bonus
             else if (v === "unpaid" || v === "absent") t.unpaid++;
-            else if (v === "ext") { t.ext++; if (phOk) t.ph++; }
+            // EXT counts only extra days ACTUALLY worked. An approved extra
+            // day still reads "ext" while it's today/future (she can still
+            // show up), but it must not hit the EXT total — and the extra
+            // pay — until some source shows she actually came in.
+            else if (v === "ext") { if (_extraDayWorkEvidence(ec, dy.d, dy.ymd)) { t.ext++; if (phOk) t.ph++; } }
             else if (v === "late") { t.late++; if (phOk) t.ph++; }
             else if (v === "trial" || v === "trial_ho") t.td++;
             else if (v === "on") { t.worked++; if (phOk) t.ph++; }
