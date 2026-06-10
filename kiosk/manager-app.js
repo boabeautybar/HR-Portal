@@ -902,7 +902,7 @@
       },
       {
         title: "Practice 2 — THE GOLDEN RULE",
-        html: infoCard('It is 09:10. Thandi is <strong>not in the store</strong>. She phoned: <em>“I\'m almost there! 5 minutes away, promise!”</em><br><strong>Tap the right button on her row:</strong>') +
+        html: infoCard('It is 10:20. Thandi is <strong>not in the store</strong>. She phoned: <em>“I\'m almost there! 5 minutes away, promise!”</em><br><strong>Tap the right button on her row:</strong>') +
           mockRow("Thandi K.", "B456 · NT", "📱 “Almost there, 5 minutes away!”", statusRow(null, false)),
         quiz: {
           correct: "absent",
