@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>BOA · Schedule diagnostic</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 20px; background: #FFF7FB; color: #3b2730; }
+  h1 { font-size: 20px; color: #831843; }
+  .hint { font-size: 13px; color: #9d6a82; margin-bottom: 16px; }
+  .bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 18px; }
+  select, button { font: inherit; padding: 7px 12px; border-radius: 8px; border: 1px solid #FBCFE8; background: #fff; }
+  button { background: #BE185D; color: #fff; border: none; cursor: pointer; font-weight: 700; }
+  .mgr { background: #fff; border: 1px solid #FBCFE8; border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; }
+  .mgr h2 { font-size: 15px; margin: 0 0 4px; color: #831843; }
+  .src { font-size: 11px; font-weight: 700; letter-spacing: .05em; color: #9d6a82; text-transform: uppercase; margin: 10px 0 4px; }
+  .kv { font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1.7; word-break: break-all; }
+  .kv b { color: #9F1239; }
+  .kv .today { background: #FEF3C7; padding: 1px 4px; border-radius: 4px; }
+  .resolve { margin-top: 10px; font-size: 13px; background: #F0FDF4; border: 1px solid #BBF7D0; border-radius: 8px; padding: 8px 10px; }
+  .resolve b { font-family: ui-monospace, monospace; }
+  .warn { background: #FEF2F2; border-color: #FECACA; }
+  .err { color: #B91C1C; font-weight: 700; }
+</style>
+</head>
+<body>
+<h1>🔎 Manager schedule — raw data diagnostic</h1>
+<div class="hint">Read-only. Shows exactly what is saved for this cycle's manager schedule (live + newest approved snapshot), every raw key/value per manager, and how each app resolves <b>today's</b> cell. Screenshot the block for the person in question.</div>
+<div class="bar">
+  <label>Branch <select id="branch"></select></label>
+  <button id="go">Load</button>
+  <span id="status"></span>
+</div>
+<div id="out"></div>
+<script>
+(function () {
+  // Same public client config the portal/kiosk ship with (index.html).
+  var SUPA = "https://kcinqpwkwpzbosxtkwyl.supabase.co";
+  var KEY  = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtjaW5xcHdrd3B6Ym9zeHRrd3lsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc3MjIwMTYsImV4cCI6MjA5MzI5ODAxNn0.AGL2hXQ5N3uQikqSbWFsZ1uxBlWZUm9o1ipMFlAFjBg";
+  var BRANCHES = ["Ballito","Betty","Bree","Cape Gate","Claremont","Durbanville","Eastgate","Fourways","Green Point","Kloof","Kuils River","Mall of the South","Mushroom Farm","Plumstead","Riverlands","Rondebosch","Sandown","Sea Point","Somerset West","Table Bay","Verdi","Westlake","Winelands"];
+  var selB = document.getElementById("branch");
+  BRANCHES.forEach(function (b) { var o = document.createElement("option"); o.textContent = b; if (b === "Riverlands") o.selected = true; selB.appendChild(o); });
+
+  function pad(n) { return String(n).padStart(2, "0"); }
+  function todayYmd() { var d = new Date(); return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
+  // Cycle ids for the cycle containing today: start-month (manager keys).
+  function startYm() { var d = new Date(), y = d.getFullYear(), m = d.getMonth() + 1; if (d.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y -= 1; } } return y + "-" + pad(m); }
+
+  async function fetchRows(keys) {
+    var url = SUPA + "/rest/v1/app_state?select=key,value&key=in.(" + keys.map(encodeURIComponent).join(",") + ")";
+    var r = await fetch(url, { headers: { apikey: KEY, Authorization: "Bearer " + KEY } });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  }
+
+  // How each app reads today's cell from a raw row.
+  function resolveToday(row, ymd, dom) {
+    if (!row) return { coverage: "(no row)", kiosk: "(no row)", myboa: "(no row)" };
+    var byYmd = row[ymd], byDomN = row[dom], byDomS = row[String(dom)];
+    var domVal = (byDomN != null ? byDomN : byDomS);
+    return {
+      coverage: (byYmd || domVal || "(empty)"),                          // readCell: ymd → dom
+      kiosk:    (byYmd != null ? (byYmd || "(empty)") : (domVal || "(empty)")),  // in-cycle ymd wins, even if ""
+      myboa:    (domVal != null ? domVal : (byYmd || "(empty)"))         // getCell: dom → ymd
+    };
+  }
+
+  document.getElementById("go").onclick = load;
+  async function load() {
+    var br = selB.value, sYm = startYm(), ymd = todayYmd(), dom = new Date().getDate();
+    var st = document.getElementById("status"), out = document.getElementById("out");
+    st.textContent = "Loading…"; out.innerHTML = "";
+    try {
+      var liveKey = "boa_mgrsched_" + br + "_" + sYm;
+      var apKey   = "boa_mgrschedapproved_" + br + "_" + sYm;
+      var rows = await fetchRows([liveKey, apKey]);
+      var live = null, ap = null;
+      rows.forEach(function (r) { if (r.key === liveKey) live = r.value; if (r.key === apKey) ap = r.value; });
+      var liveGrid = (live && live.grid) || {};
+      var liveNames = (live && live.names) || {};
+      var apTop = (Array.isArray(ap) && ap.length) ? ap[0] : null;
+      var apGrid = (apTop && apTop.grid) || {};
+      st.textContent = "Live: " + (live ? Object.keys(liveGrid).length + " row(s), saved " + (live.savedAt || "?") : "MISSING") +
+        " · Approved: " + (apTop ? Object.keys(apGrid).length + " row(s), “" + (apTop.name || "?") + "” " + (apTop.savedAt || "") : "none");
+      var ecs = {};
+      Object.keys(liveGrid).forEach(function (ec) { ecs[ec] = 1; });
+      Object.keys(apGrid).forEach(function (ec) { ecs[ec] = 1; });
+      if (Object.keys(ecs).length === 0) { out.innerHTML = '<div class="err">No manager rows found under ' + liveKey + " / " + apKey + "</div>"; return; }
+      Object.keys(ecs).sort().forEach(function (ec) {
+        var card = document.createElement("div"); card.className = "mgr";
+        var nm = liveNames[ec] || (apTop && apTop.names && apTop.names[ec]) || "";
+        var h = "<h2>" + ec + (nm ? " · " + nm : "") + "</h2>";
+        [["LIVE row (" + liveKey + ")", liveGrid[ec]], ["APPROVED row (newest snapshot)", apGrid[ec]]].forEach(function (p) {
+          h += '<div class="src">' + p[0] + "</div>";
+          var row = p[1];
+          if (!row) { h += '<div class="kv">(no row for this code)</div>'; return; }
+          var keys = Object.keys(row).sort(function (a, b) {
+            var na = parseInt(a, 10), nb = parseInt(b, 10);
+            var ia = String(na) === a, ib = String(nb) === b;
+            if (ia && ib) return na - nb;
+            if (ia) return -1; if (ib) return 1;
+            return a < b ? -1 : 1;
+          });
+          h += '<div class="kv">' + keys.map(function (k) {
+            var hit = (k === ymd || String(k) === String(dom));
+            return (hit ? '<span class="today">' : "") + k + ": <b>" + String(row[k]) + "</b>" + (hit ? "</span>" : "");
+          }).join(" · ") + "</div>";
+        });
+        var rl = resolveToday(liveGrid[ec], ymd, dom);
+        var ra = resolveToday(apGrid[ec], ymd, dom);
+        var disagree = !(rl.coverage === rl.kiosk && rl.kiosk === rl.myboa);
+        h += '<div class="resolve' + (disagree ? " warn" : "") + '">Today (' + ymd + ", day " + dom + ") resolves to → " +
+          "portal/coverage: <b>" + rl.coverage + "</b> · kiosk: <b>" + rl.kiosk + "</b> · myboa: <b>" + rl.myboa + "</b>" +
+          " &nbsp;|&nbsp; approved snapshot reads: <b>" + ra.coverage + "</b>" + (disagree ? " — ⚠ apps disagree, this row is the problem" : "") + "</div>";
+        card.innerHTML = h;
+        out.appendChild(card);
+      });
+    } catch (e) { st.innerHTML = '<span class="err">Failed: ' + (e && e.message || e) + "</span>"; }
+  }
+  load();
+})();
+</script>
+</body>
+</html>

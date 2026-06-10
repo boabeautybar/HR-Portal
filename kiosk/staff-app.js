@@ -723,7 +723,7 @@
             '<span class="sched-cycle-sub">' + esc(window.APP_DATA.periodLabel(nextYm)) + '</span>' +
           '</button>' +
         '</div>' +
-        '<div class="sched-period">' + esc(window.APP_DATA.periodLabel(ym)) + ' · View only · last approved version</div>' +
+        '<div class="sched-period">' + esc(window.APP_DATA.periodLabel(ym)) + ' · View only · live schedule</div>' +
         '<div id="sched-body">Loading schedule…</div>' +
       '</div>'
     );
@@ -758,6 +758,68 @@
     }
     var sched = await window.APP_DATA.getSchedule(ym, kind);
     var grid  = (sched && sched.grid) || {};
+    // Mirror the HR portal's Manager Coverage resolution exactly, so the kiosk
+    // can never disagree with it:
+    //   1. canonicalise rows onto each person's CURRENT employee code
+    //   2. Leave-Planner overlay (leave wins over the saved grid)
+    //   3. live grid cell
+    //   4. fall back to the newest APPROVED snapshot when the live cell is empty
+    var approvedGrid = {};
+    var approvedNames = {};
+    if (isMgr && window.APP_DATA.getApprovedSchedule) {
+      try {
+        var _ap = await window.APP_DATA.getApprovedSchedule(ym, "mgr");
+        approvedGrid = (_ap && _ap.grid) || {};
+        approvedNames = (_ap && _ap.names) || {};
+      } catch (_apErr) { /* fallback only — never block the live view */ }
+    }
+    // Leave-Planner overlay: ec → { ymd: true } for every covered leave day
+    // (same construction as the portal's coverage view).
+    var leaveByEcYmd = {};
+    if (isMgr && window.APP_DATA.listLeaveRecords) {
+      try {
+        var _lvs = (await window.APP_DATA.listLeaveRecords()) || [];
+        _lvs.forEach(function (lv) {
+          if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return;
+          var lec = String(lv.ec).trim();
+          for (var cur = new Date(lv.startDate + "T00:00:00"); cur <= new Date(lv.endDate + "T00:00:00"); cur.setDate(cur.getDate() + 1)) {
+            var lymd = cur.getFullYear() + "-" + String(cur.getMonth() + 1).padStart(2, "0") + "-" + String(cur.getDate()).padStart(2, "0");
+            (leaveByEcYmd[lec] = leaveByEcYmd[lec] || {})[lymd] = true;
+          }
+        });
+      } catch (_lvErr) { /* overlay only */ }
+    }
+    // Canonicalise grid rows onto each person's CURRENT employee code — an
+    // employee-code change (or a "B872 " vs "B872" variant) leaves a
+    // duplicate/legacy row in the saved grid; without this the kiosk reads the
+    // stale row while the portal (which canonicalises) reads the right one.
+    // Current code wins for overlapping days; a legacy row only fills gaps.
+    // Code maps are built from ALL staff (not role-filtered) so a role
+    // mis-classification can't break the mapping; codes are unique per person.
+    var _canonGrid = (function () {
+      var _normCode = function (s) { return String(s == null ? "" : s).replace(/[^A-Za-z0-9]/g, "").toUpperCase(); };
+      var _normNm   = function (s) { return String(s == null ? "" : s).toLowerCase().replace(/\s+/g, " ").trim(); };
+      var codeByNorm = {}, codeByName = {};
+      staff.forEach(function (s) {
+        var c = String(s.employee_code || "").trim(); if (!c) return;
+        var n = _normCode(c); if (!(n in codeByNorm)) codeByNorm[n] = c;
+        var nm = _normNm(s.name); if (nm && !(nm in codeByName)) codeByName[nm] = c;
+      });
+      return function (g, savedNames) {
+        var canon = {}, changed = false;
+        Object.keys(g || {}).forEach(function (k) {
+          var c = codeByNorm[_normCode(k)];
+          if (!c && savedNames && savedNames[k]) { var byName = codeByName[_normNm(savedNames[k])]; if (byName) c = byName; }
+          c = c || k;
+          if (c !== k) changed = true;
+          if (k === c) canon[c] = Object.assign({}, canon[c] || {}, g[k]);   // current key wins overlaps
+          else        canon[c] = Object.assign({}, g[k], canon[c] || {});    // legacy fills gaps only
+        });
+        return changed ? canon : (g || {});
+      };
+    })();
+    grid = _canonGrid(grid, (sched && sched.names) || {});
+    approvedGrid = _canonGrid(approvedGrid, approvedNames);
     // Per-manager custom shift hours (set in the HR portal coverage view),
     // layered over the computed times on the Manager Schedule view.
     var customTimes = (isMgr && window.APP_DATA.getMgrTimes) ? ((await window.APP_DATA.getMgrTimes()) || {}) : {};
@@ -775,7 +837,8 @@
     // an outgoing tech gone before the cycle starts, or an incoming tech who
     // only arrives after it ends.
     var rows = staff.filter(function (s) {
-      if (!s.employee_code || !grid[s.employee_code]) return false;
+      if (!s.employee_code) return false;
+      if (!grid[s.employee_code] && !approvedGrid[s.employee_code]) return false;
       if (isMgr ? !isManagerStaff(s) : isManagerStaff(s)) return false;
       var xfer = (s.transferring && s.transfer_date) ? s.transfer_date : null;
       if (xfer) {
@@ -860,7 +923,16 @@
       days.forEach(function (d, i) {
         var _ymd = _ymdOf(d);
         var blanked = (_outgoing && _ymd >= _xfer) || (_incoming && _ymd < _xfer);
-        var cell = !blanked && grid[s.employee_code] && grid[s.employee_code][d.day];
+        // Same precedence as the portal's Manager Coverage readWithFallback:
+        // Leave-Planner overlay wins, then the live grid, then the newest
+        // approved snapshot for any day the live grid leaves empty.
+        var cell = false;
+        if (!blanked) {
+          var _ecT = String(s.employee_code || "").trim();
+          if (leaveByEcYmd[_ecT] && leaveByEcYmd[_ecT][_ymd]) cell = "L";
+          else cell = (grid[s.employee_code] && grid[s.employee_code][d.day])
+                   || (approvedGrid[s.employee_code] && approvedGrid[s.employee_code][d.day]);
+        }
         var classes = '';
         if (d.isToday) classes += ' sched-today';
         if (weekStartAt(d, i)) classes += ' sched-week-start';
