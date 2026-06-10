@@ -26057,8 +26057,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         };
 
         // Download the per-staff summary totals (the right-hand columns) as a CSV:
-        // employee code, full name, role, new-starter start date, every count
-        // (annual leave, sick + note, FRL, PPH, extra days, unpaid, lates) and
+        // employee code, full name, role, new-starter start date + paid trial
+        // days, every count (annual leave, sick + note, FRL, PPH, extra days,
+        // unpaid, lates) and
         // whether the attendance bonus is lost (with the reason). No-show days
         // are already counted inside Unpaid — a separate No-shows column made
         // payroll deduct those days twice, so it's deliberately NOT exported;
@@ -26069,7 +26070,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // payroll month (cycle end), not attYM (the start month).
           const payYm = cycEnd.getFullYear() + "-" + p2(cycEnd.getMonth() + 1);
           const payLabel = moShort[cycEnd.getMonth()] + " " + cycEnd.getFullYear() + " payroll";
-          const head = ["Employee Code", "Full Name", "Role", "Start Date (new starters)",
+          const head = ["Employee Code", "Full Name", "Role", "Start Date (new starters)", "Trial Days (new starters)",
             "Annual Leave", "Sick (with note)", "FRL", "Public Holidays", "Extra Days",
             "Unpaid", "Lates", "Bonus Lost", "Bonus Loss Reason"];
           const lines = [
@@ -26087,6 +26088,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               s.name || "",
               s.smTrial ? "SM (trial)" : (s.role || ""),
               isNew ? sd : "",
+              t.td,
               t.al,
               t.sickNote,
               t.frl,
@@ -26422,6 +26424,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       );
                     })}
                     {[
+                      { l: "TRIAL", bg: "#fefce8", c: "#854d0e", t: "Paid trial days (new starters) — the yellow T / HO trial days a hired new starter worked this cycle. Matches the CSV's Trial Days column." },
                       { l: "AL", bg: "#eff6ff", c: "#1e40af", t: "Annual Leave (off-days deducted — ~2 per 7-day span; e.g. 6 days = 5, 7 days = 5, 21 days = 15; runs of 5 days or fewer count in full)" },
                       { l: "SICK+N", bg: "#f0fdf4", c: "#166534", t: "Sick days WITH a doctor's note (paid). Sick without a note is unpaid and counted in UNPAID." },
                       { l: "FRL", bg: "#fffbeb", c: "#78350f", t: "Family Responsibility Leave" },
@@ -26435,7 +26438,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </thead>
                 <tbody>
                   {attStaff.length === 0 && (
-                    <tr><td colSpan={days.length + 6} style={{ padding: 30, textAlign: "center", color: "#9ca3af", fontStyle: "italic" }}>No active staff at {attBranch}.</td></tr>
+                    <tr><td colSpan={days.length + 7} style={{ padding: 30, textAlign: "center", color: "#9ca3af", fontStyle: "italic" }}>No active staff at {attBranch}.</td></tr>
                   )}
                   {attStaff.map((s, idx) => {
                     const t = totalsFor(s.ec);
@@ -26445,7 +26448,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const showSection = idx === 0 || isMgr !== prevIsMgr;
                     const sectionRow = showSection ? (
                       <tr key={"section-" + (isMgr ? "mgr" : "tech")}>
-                        <td colSpan={days.length + 6} style={{ background: isMgr ? "#FCE7F3" : "#FDEEF5", padding: 0, borderTop: "2px solid #FBCFE8", borderBottom: "1px solid #FBCFE8" }}>
+                        <td colSpan={days.length + 7} style={{ background: isMgr ? "#FCE7F3" : "#FDEEF5", padding: 0, borderTop: "2px solid #FBCFE8", borderBottom: "1px solid #FBCFE8" }}>
                           <div style={{ position: "sticky", left: 0, padding: "8px 14px", fontSize: 11, fontWeight: 800, color: "#831843", letterSpacing: "0.12em", textTransform: "uppercase", background: isMgr ? "#FCE7F3" : "#FDEEF5", width: "max-content" }}>
                             {isMgr ? "👑 Managers" : "💅 Nail Techs"}
                           </div>
@@ -26973,7 +26976,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             </td>
                           );
                         })}
-                        <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#1e40af", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "3px solid #FBCFE8", background: "#eff6ff" }}>{t.al}</td>
+                        <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: t.td > 0 ? "#854d0e" : "#cbb1bd", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "3px solid #FBCFE8", background: "#fefce8" }} title={t.td + " paid trial day" + (t.td === 1 ? "" : "s") + " (new starter)"}>{t.td}</td>
+                        <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#1e40af", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#eff6ff" }}>{t.al}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#166534", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#f0fdf4" }} title={t.sickNote + " sick day" + (t.sickNote === 1 ? "" : "s") + " WITH a doctor's note (paid)"}>{t.sickNote}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#78350f", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#fffbeb" }}>{t.frl}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#14532d", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#f0fdf4" }}>{t.ph}</td>
@@ -27004,7 +27008,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     return (
                       <React.Fragment key="trial-att-section">
                         <tr>
-                          <td colSpan={days.length + 6} style={{ background: "#fefce8", padding: 0, borderTop: "2px solid #fde68a", borderBottom: "1px solid #fde68a" }}>
+                          <td colSpan={days.length + 7} style={{ background: "#fefce8", padding: 0, borderTop: "2px solid #fde68a", borderBottom: "1px solid #fde68a" }}>
                             <div style={{ position: "sticky", left: 0, padding: "8px 14px", fontSize: 11, fontWeight: 800, color: "#854d0e", letterSpacing: "0.12em", textTransform: "uppercase", background: "#fefce8", width: "max-content" }}>🧪 Trial · paid trial days <span style={{ fontWeight: 600, textTransform: "none", letterSpacing: 0 }}>(T = in store · HO = head office)</span></div>
                           </td>
                         </tr>
@@ -27032,7 +27036,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 else if (s === "absent") { bg = "#fca5a5"; fg = "#7f1d1d"; txt = "A"; }
                                 return <td key={dy.d} title={txt === "HO" ? (c.name + " · head-office training day (paid)") : txt === "T" ? (c.name + " · trial day worked (paid)" + (s === "late" ? " · late" : "")) : (txt === "A" ? (c.name + " · absent (unpaid)") : "")} style={{ padding: 0, textAlign: "center", fontSize: txt === "HO" ? 8.5 : 10, fontWeight: 800, color: fg, background: bg, borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", height: 34 }}>{txt}</td>;
                               })}
-                              <td colSpan={6} style={{ padding: "6px 10px", fontSize: 11, fontWeight: 800, color: "#854d0e", textAlign: "left", borderBottom: "1px solid #FCE7F3", borderLeft: "3px solid #FBCFE8", background: "#fefce8" }}>
+                              <td colSpan={7} style={{ padding: "6px 10px", fontSize: 11, fontWeight: 800, color: "#854d0e", textAlign: "left", borderBottom: "1px solid #FCE7F3", borderLeft: "3px solid #FBCFE8", background: "#fefce8" }}>
                                 {paid} paid trial day{paid === 1 ? "" : "s"}{ho > 0 ? " (" + (paid - ho) + " store · " + ho + " head office)" : ""}{absent > 0 ? " · " + absent + " absent" : ""}
                               </td>
                             </tr>
