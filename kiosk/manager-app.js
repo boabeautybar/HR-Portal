@@ -757,7 +757,8 @@
     var afterSubmit =
       box("#fdba74", "#fff7ed", "#9a3412", "🏃 A tech leaves work early",
         'Open <strong>Nail Tech Check-in</strong> and tap the <strong style="color:#9a3412">ORANGE “Mark left early”</strong> button on her row, then enter how early she left.<br>' +
-        '✅ You can do this <strong>after</strong> you have already submitted the check-in.') +
+        '✅ You can do this <strong>after</strong> you have already submitted the check-in.<br>' +
+        '⚠️ But it must be done <strong>on the same day she leaves</strong> (before 20:00). You <strong>cannot</strong> mark someone “left early” a day later — the button is gone the next day.') +
       box("#fde047", "#fefce8", "#854d0e", "📎 A sick note arrives later",
         'She was marked <strong>Sick NO note</strong>, and a few days later she brings a doctor’s note?<br>' +
         'Open <strong>Nail Tech Check-in</strong>, go to <strong>the day she was sick</strong>, and tap the <strong style="color:#854d0e">YELLOW “Add sick note”</strong> button to upload the note.<br>' +
@@ -942,7 +943,7 @@
             '</div><div class="dly-early-row" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">' + earlyBtn()),
         quiz: {
           correct: "early",
-          right: "✅ Correct. The ORANGE “Mark left early” button works even after you submitted. Enter how early she left and you're done.",
+          right: "✅ Correct. The ORANGE “Mark left early” button works even after you submitted — but only on the SAME DAY she leaves (before 20:00). You cannot mark someone left early a day later.",
           fallback: "Those are locked after submitting — look for the button that is still orange and active."
         }
       },
