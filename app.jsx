@@ -26057,8 +26057,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         };
 
         // Download the per-staff summary totals (the right-hand columns) as a CSV:
-        // employee code, full name, role, new-starter start date, every count
-        // (annual leave, sick + note, FRL, PPH, extra days, unpaid, lates) and
+        // employee code, full name, role, new-starter start date + paid trial
+        // days, every count (annual leave, sick + note, FRL, PPH, extra days,
+        // unpaid, lates) and
         // whether the attendance bonus is lost (with the reason). No-show days
         // are already counted inside Unpaid — a separate No-shows column made
         // payroll deduct those days twice, so it's deliberately NOT exported;
@@ -26069,7 +26070,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // payroll month (cycle end), not attYM (the start month).
           const payYm = cycEnd.getFullYear() + "-" + p2(cycEnd.getMonth() + 1);
           const payLabel = moShort[cycEnd.getMonth()] + " " + cycEnd.getFullYear() + " payroll";
-          const head = ["Employee Code", "Full Name", "Role", "Start Date (new starters)",
+          const head = ["Employee Code", "Full Name", "Role", "Start Date (new starters)", "Trial Days (new starters)",
             "Annual Leave", "Sick (with note)", "FRL", "Public Holidays", "Extra Days",
             "Unpaid", "Lates", "Bonus Lost", "Bonus Loss Reason"];
           const lines = [
@@ -26087,6 +26088,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               s.name || "",
               s.smTrial ? "SM (trial)" : (s.role || ""),
               isNew ? sd : "",
+              t.td,
               t.al,
               t.sickNote,
               t.frl,
