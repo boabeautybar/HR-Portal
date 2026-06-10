@@ -681,6 +681,23 @@
     return { block: false, available: available };
   }
 
+  // ---------- Practice-tour completions (boa_tour_done_v1) ----------
+  // Managers record their name when they finish the check-in practice tour
+  // (manager-app.js renderCheckinTour). One shared list across branches so
+  // the HR portal can show who has done it. Read-merge-write append.
+  var TOUR_DONE_KEY = "boa_tour_done_v1";
+  async function saveTourCompletion(name) {
+    var c = client(); if (!c) throw new Error("Supabase not configured");
+    var res = await c.from("app_state").select("value").eq("key", TOUR_DONE_KEY).maybeSingle();
+    if (res.error) throw res.error;
+    var v = (res.data && res.data.value) || {};
+    var entries = Array.isArray(v.entries) ? v.entries.slice() : [];
+    entries.push({ name: String(name || "").trim(), branch: branch(), at: new Date().toISOString() });
+    var up = await c.from("app_state").upsert({ key: TOUR_DONE_KEY, value: { entries: entries } });
+    if (up.error) throw up.error;
+    return entries.length;
+  }
+
   async function getAttendance(ym) {
     var c = client(); if (!c) return { grid: {}, branch: branch(), ym: ym };
     var res = await c.from("app_state").select("value").eq("key", attKey(ym)).maybeSingle();
@@ -1622,6 +1639,7 @@
     currentSchedYm: currentSchedYm, periodLabel: periodLabel, periodDays: periodDays, getSchedule: getSchedule, getApprovedSchedule: getApprovedSchedule, getSchedulesForBranches: getSchedulesForBranches, getMgrTimes: getMgrTimes,
     ymForDate: ymForDate, endOfSchedulePeriod: endOfSchedulePeriod,
     getAttendance: getAttendance, setAttendanceStatus: setAttendanceStatus, backfillCheckinLog: backfillCheckinLog,
+    saveTourCompletion: saveTourCompletion,
     loadFRL: loadFRL, frlMarkGuard: frlMarkGuard,
     getSwaps: getSwaps, recordSwap: recordSwap, undoSwap: undoSwap,
     getExtras: getExtras, recordExtraDay: recordExtraDay,

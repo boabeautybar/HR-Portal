@@ -1849,6 +1849,15 @@
     return next;
   }
 
+  // ---------- Practice-tour completions (boa_tour_done_v1) ----------
+  // Written by the kiosk when a manager finishes the check-in practice tour
+  // (kiosk/manager-app.js). Shape: { entries: [{ name, branch, at }] }.
+  async function loadTourCompletions() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_tour_done_v1").maybeSingle();
+    if (res.error) { console.error("loadTourCompletions:", res.error); return { entries: [] }; }
+    return (res.data && res.data.value) || { entries: [] };
+  }
+
   // Persist the attendance sheet's own warning tally ({ total, reviewed, open })
   // so the Payroll Progress roll-up can show the SAME numbers the sheet shows.
   // The roll-up otherwise re-derives the count from the raw saved grid and
@@ -2130,6 +2139,7 @@
     loadAttendance: loadAttendance,
     saveAttendance: saveAttendance,
     updateAttendanceCells: updateAttendanceCells,
+    loadTourCompletions: loadTourCompletions,
     saveAttWarningCounts: saveAttWarningCounts,
     saveAttendanceUndo: saveAttendanceUndo,
     loadAttendanceUndo: loadAttendanceUndo,
