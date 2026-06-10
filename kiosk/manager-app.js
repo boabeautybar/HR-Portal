@@ -807,6 +807,7 @@
       '<button class="link-btn link-btn-dark" id="back-home">← Back</button>' +
       '</div>' +
       '<div style="font-size:13px;color:#6b7280;line-height:1.5">The rules every manager must follow for the daily Nail Tech Check-in and your own Manager Check-in. Read it once a week until you know it by heart.</div>' +
+      '<button type="button" id="start-tour" class="btn btn-primary" style="margin-top:14px;width:100%;font-size:15px;padding:14px">🎓 Take the 2-minute practice tour</button>' +
       goldenRule +
       steps +
       '<div style="font-size:16px;font-weight:800;color:#831843;margin-top:22px">🔧 After submitting — fixing things the right way</div>' +
@@ -819,6 +820,229 @@
       '</section>'
     );
     document.getElementById("back-home").onclick = renderManagerLanding;
+    document.getElementById("start-tour").onclick = renderCheckinTour;
+  }
+
+  // ---------------- Check-in practice tour (interactive wizard) ----------------
+  // A slide-by-slide walkthrough of the Nail Tech Check-in with PRACTICE
+  // questions on realistic mock rows (the same .dly-act buttons as the real
+  // screen). Nothing tapped in the tour is saved anywhere. Practice slides
+  // lock the Next button until the manager taps the RIGHT answer, so the
+  // golden rule (not in store = Absent, never Late) is actually rehearsed,
+  // not just read.
+  function renderCheckinTour() {
+    setSublabel("PRACTICE TOUR");
+
+    var STATUS_BTNS = [
+      ["on", "On Time"], ["late", "Late"], ["sick_n", "Sick + note"],
+      ["sick", "Sick NO note"], ["absent", "Absent"], ["no", "NO SHOW"], ["frl", "FRL + proof"]
+    ];
+    function statusRow(activeCode, locked) {
+      return STATUS_BTNS.map(function (b) {
+        return '<button type="button" class="dly-act dly-act-' + b[0] +
+          (activeCode === b[0] ? ' dly-act-active' : '') + '"' +
+          (locked ? ' disabled style="opacity:0.45;cursor:not-allowed"' : '') +
+          ' data-pick="' + b[0] + '">' + b[1] + '</button>';
+      }).join("");
+    }
+    function earlyBtn() {
+      return '<button type="button" class="dly-act" data-pick="early" ' +
+        'style="background:#FFEDD5;color:#9A3412;border:1px solid #FB923C;font-weight:700">🏃 Mark left early</button>';
+    }
+    function sickNoteBtn() {
+      return '<button type="button" class="dly-act" data-pick="note" ' +
+        'style="background:#fef3c7;color:#78350f;border:1px solid #fbbf24">📎 Add sick note → Sick + note</button>';
+    }
+    function mockRow(name, code, note, actionsHtml) {
+      return '<div style="background:#fff;border:1px solid #FBCFE8;border-radius:12px;padding:12px 14px;margin-top:12px;text-align:left">' +
+        '<div style="font-weight:700;color:#831843;font-size:14px">' + name + '</div>' +
+        '<div style="font-size:11px;color:#9ca3af">' + code + '</div>' +
+        (note ? '<div style="font-size:12px;color:#6b7280;margin-top:5px;line-height:1.5">' + note + '</div>' : '') +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">' + actionsHtml + '</div>' +
+        '</div>';
+    }
+    function infoCard(html) {
+      return '<div style="font-size:14px;color:#1f2937;line-height:1.7;text-align:left;margin-top:12px">' + html + '</div>';
+    }
+
+    // Each step: { title, html, quiz }. quiz = { correct, right, wrong:{pick:msg}, fallback }.
+    // Steps with a quiz keep Next locked until the correct button is tapped.
+    var steps = [
+      {
+        title: "🎓 Welcome to the check-in practice tour",
+        html: infoCard(
+          'This tour shows you, step by step, how to do the daily <strong>Nail Tech Check-in</strong> — with practice questions on real-looking buttons.<br><br>' +
+          '✅ Nothing you tap in this tour is saved.<br>' +
+          '✅ It takes about 2 minutes.<br>' +
+          '✅ On the practice slides, the <strong>Next</strong> button only unlocks when you tap the right answer.')
+      },
+      {
+        title: "This is a tech's row on the check-in screen",
+        html: infoCard(
+          'Every tech working today gets a row like this. You tap <strong>one status</strong> per tech — exactly what is true <strong>right now</strong>:') +
+          mockRow("Zanele M.", "B123 · NT", "", statusRow(null, false)) +
+          infoCard('<strong>On Time</strong> / <strong>Late</strong> = she is IN the store.<br>' +
+            'All the other buttons = she is NOT working in the store today.<br>' +
+            '<em>(These example buttons do nothing — practice starts on the next slide.)</em>')
+      },
+      {
+        title: "Practice 1 — the easy one",
+        html: infoCard('It is 09:05. <strong>Zanele is standing at her station.</strong> She arrived at 08:55, before her shift started.<br><strong>Tap the right button on her row:</strong>') +
+          mockRow("Zanele M.", "B123 · NT", "", statusRow(null, false)),
+        quiz: {
+          correct: "on",
+          right: "✅ Correct. She is in the store and she was on time → On Time.",
+          wrong: {
+            late: "❌ No — she arrived at 08:55, before her shift. That is not Late.",
+            absent: "❌ No — she is standing right there in the store. Absent is only for techs who are NOT in the store."
+          },
+          fallback: "❌ Not this one. She is in the store and arrived on time. Try again."
+        }
+      },
+      {
+        title: "Practice 2 — THE GOLDEN RULE",
+        html: infoCard('It is 09:10. Thandi is <strong>not in the store</strong>. She phoned: <em>“I\'m almost there! 5 minutes away, promise!”</em><br><strong>Tap the right button on her row:</strong>') +
+          mockRow("Thandi K.", "B456 · NT", "📱 “Almost there, 5 minutes away!”", statusRow(null, false)),
+        quiz: {
+          correct: "absent",
+          right: "✅ Correct. Not in the store = Absent. It does not matter what she said on the phone.",
+          wrong: {
+            late: "🛑 NO! This is the mistake we must stop. “Almost there” is NOT in the store. NEVER mark someone Late who you cannot see in the store. She is Absent.",
+            on: "🛑 NO! You cannot see her in the store. She is Absent — never On Time."
+          },
+          fallback: "❌ Not this one. She is not in the store right now. So what is she? Try again."
+        }
+      },
+      {
+        title: "But what if Thandi really arrives later?",
+        html: infoCard(
+          'You marked her <strong>Absent</strong> — that was correct.<br><br>' +
+          'If she then truly walks in:<br>' +
+          '1️⃣ Phone your <strong>regional manager</strong>.<br>' +
+          '2️⃣ Ask them to <strong>🔓 reopen the check-in</strong> for today.<br>' +
+          '3️⃣ Now you can change her to <strong>Late</strong> and submit again.<br><br>' +
+          '<strong>You never mark her Late “in advance” because she promised to come.</strong> First she arrives, then her status changes.')
+      },
+      {
+        title: "Take your time — we see every tap",
+        html: infoCard(
+          'The moment you tap a status, the <strong>exact time of your tap is saved</strong> — even before you press submit.<br><br>' +
+          'So if you tap “On Time” at 09:00 and only submit at 10:15, head office still sees the 09:00 tap. <strong>No need to rush. Get it right.</strong><br><br>' +
+          '⏰ Submit by <strong>10:30</strong> at the latest.<br>' +
+          '⏰ Stores with a <strong>late shift</strong> working: by <strong>11:30</strong>.<br><br>' +
+          'When every tech has a status, you press:') +
+          '<div style="margin-top:10px"><button type="button" class="btn btn-primary" style="pointer-events:none">Confirm and submit attendance</button></div>' +
+          infoCard('<em>By pressing it you confirm every tech marked On Time or Late is really in the store — more on that at the end.</em>')
+      },
+      {
+        title: "Practice 3 — a tech leaves early",
+        html: infoCard('You submitted at 10:20. ✔️ At 15:00 <strong>Amahle goes home early</strong> (her shift ends at 17:00).<br>' +
+          'Her statuses are now locked (greyed out) — but one button still works. <strong>Tap it:</strong>') +
+          mockRow("Amahle P.", "B789 · NT", "Submitted ✓ — statuses locked", statusRow("on", true) +
+            '</div><div class="dly-early-row" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">' + earlyBtn()),
+        quiz: {
+          correct: "early",
+          right: "✅ Correct. The ORANGE “Mark left early” button works even after you submitted. Enter how early she left and you're done.",
+          fallback: "Those are locked after submitting — look for the button that is still orange and active."
+        }
+      },
+      {
+        title: "Practice 4 — the sick note arrives later",
+        html: infoCard('On Monday, Naledi was sick with <strong>no doctor\'s note</strong> → you marked “Sick NO note”. ✔️<br>' +
+          'On Wednesday she brings a <strong>doctor\'s note</strong> for Monday.<br>' +
+          'Open <strong>Nail Tech Check-in</strong>, go back to <strong>Monday</strong>, and… <strong>tap the right button:</strong>') +
+          mockRow("Naledi S.", "B321 · NT", "Monday · marked Sick NO note", statusRow("sick", true) +
+            '</div><div class="dly-convert-row" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">' + sickNoteBtn() + earlyBtn()),
+        quiz: {
+          correct: "note",
+          right: "✅ Correct. The YELLOW “Add sick note” button uploads her note and Monday becomes Sick + note (a paid sick day).",
+          wrong: {
+            early: "❌ No — she didn't leave early. She brought a doctor's note for her sick day. Look for the yellow button."
+          },
+          fallback: "❌ Not this one. She brought a doctor's note — look for the yellow button."
+        }
+      },
+      {
+        title: "🕐 Don't forget YOUR OWN check-in",
+        html: infoCard(
+          'The Nail Tech Check-in does <strong>not</strong> clock you in.<br><br>' +
+          'Every day, on the home screen, tap <strong>🕐 Manager Check-in</strong>:<br>' +
+          '✔️ Clock <strong>in</strong> with your PIN + selfie when you arrive.<br>' +
+          '✔️ Clock <strong>out</strong> when you leave.<br><br>' +
+          'Your own attendance and pay come from these clock-ins.')
+      },
+      {
+        title: "⚖️ You sign for it",
+        html: infoCard(
+          'When you press <strong>Confirm and submit attendance</strong>, you take <strong>full personal responsibility</strong> that every tech marked <strong>On Time</strong> or <strong>Late</strong> is actually in the store.<br><br>' +
+          'Head office compares your check-ins with the schedule, your tap times and the Fresha appointments. Marking someone present who is not there is a <strong>serious offence</strong>.<br><br>' +
+          '🎓 <strong>That\'s it — you\'re ready.</strong> You can retake this tour any time from the 📖 How Check-ins Work tile.')
+      }
+    ];
+
+    var idx = 0;
+    var solved = {};   // step index -> true once its practice question was answered correctly
+
+    function show() {
+      var st = steps[idx];
+      var isQuiz = !!st.quiz && !solved[idx];
+      var dots = steps.map(function (_s, i) {
+        return '<span style="display:inline-block;width:9px;height:9px;border-radius:50%;margin:0 3px;background:' + (i === idx ? '#BE185D' : '#FBCFE8') + '"></span>';
+      }).join("");
+      setMain(
+        '<section class="panel" style="max-width:680px;margin:0 auto">' +
+        '<div class="panel-head">' +
+        '<h2 style="font-size:18px">' + st.title + '</h2>' +
+        '<button class="link-btn link-btn-dark" id="tour-exit">✕ Exit tour</button>' +
+        '</div>' +
+        '<div style="font-size:11px;font-weight:700;letter-spacing:0.08em;color:#9d174d;text-transform:uppercase">Step ' + (idx + 1) + ' of ' + steps.length + (st.quiz ? ' · PRACTICE' : '') + '</div>' +
+        st.html +
+        '<div id="tour-feedback" style="display:none;margin-top:12px;border-radius:10px;padding:12px 14px;font-size:14px;font-weight:700;line-height:1.5"></div>' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:20px">' +
+        '<button type="button" class="btn" id="tour-back"' + (idx === 0 ? ' disabled style="opacity:0.4"' : '') + '>← Back</button>' +
+        '<div>' + dots + '</div>' +
+        '<button type="button" class="btn btn-primary" id="tour-next"' + (isQuiz ? ' disabled style="opacity:0.4"' : '') + '>' +
+        (idx === steps.length - 1 ? 'Finish ✓' : (isQuiz ? 'Tap the right answer…' : 'Next →')) + '</button>' +
+        '</div>' +
+        '</section>'
+      );
+      document.getElementById("tour-exit").onclick = renderCheckinGuide;
+      document.getElementById("tour-back").onclick = function () { if (idx > 0) { idx--; show(); } };
+      var nextBtn = document.getElementById("tour-next");
+      nextBtn.onclick = function () {
+        if (nextBtn.disabled) return;
+        if (idx === steps.length - 1) { renderCheckinGuide(); return; }
+        idx++; show();
+      };
+      var fb = document.getElementById("tour-feedback");
+      function feedback(ok, msg) {
+        fb.style.display = "block";
+        fb.style.background = ok ? "#dcfce7" : "#fee2e2";
+        fb.style.border = "1px solid " + (ok ? "#86efac" : "#fca5a5");
+        fb.style.color = ok ? "#166534" : "#991b1b";
+        fb.textContent = msg;
+      }
+      if (st.quiz) {
+        var main = document.getElementById("staff-main") || document;
+        Array.prototype.forEach.call(main.querySelectorAll("[data-pick]"), function (btn) {
+          btn.onclick = function () {
+            var pick = btn.getAttribute("data-pick");
+            if (pick === st.quiz.correct) {
+              // Highlight the chosen button like the real screen does.
+              btn.classList.add("dly-act-active");
+              feedback(true, st.quiz.right);
+              solved[idx] = true;
+              nextBtn.disabled = false;
+              nextBtn.style.opacity = "1";
+              nextBtn.textContent = (idx === steps.length - 1 ? 'Finish ✓' : 'Next →');
+            } else {
+              feedback(false, (st.quiz.wrong && st.quiz.wrong[pick]) || st.quiz.fallback || "❌ Not this one — try again.");
+            }
+          };
+        });
+      }
+    }
+    show();
   }
 
   // ---------------- Voucher code lookup (Shopify → Fresha) ----------------
