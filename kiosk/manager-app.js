@@ -887,7 +887,7 @@
       },
       {
         title: "Practice 1 — the easy one",
-        html: infoCard('It is 09:05. <strong>Zanele is standing at her station.</strong> She arrived at 08:55, before her shift started.<br><strong>Tap the right button on her row:</strong>') +
+        html: infoCard('It is 09:05. <strong>Zanele is inside the store, sitting at her manicure table and working on a client.</strong> She arrived at 08:55, before her shift started.<br><strong>Tap the right button on her row:</strong>') +
           mockRow("Zanele M.", "B123 · NT", "", statusRow(null, false)),
         quiz: {
           correct: "on",
