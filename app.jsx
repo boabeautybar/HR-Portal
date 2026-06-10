@@ -12498,6 +12498,51 @@ function useIsMobile(bp) {
 // Attendance comes from the kiosk audit log (signed-off days only); openings
 // from the explicit store-open records, falling back to the earliest manager
 // clock-in; extras from approved extra-day requests.
+// Who has completed the kiosk check-in practice tour (recorded by the kiosk
+// when a manager finishes it and types their name). Collapsible card shown
+// on the Nail Tech Check-ins tab.
+function TourCompletionsCard() {
+  const [entries, setEntries] = React.useState(null);
+  const [open, setOpen] = React.useState(false);
+  React.useEffect(() => {
+    let dead = false;
+    if (window.BOA_DB && window.BOA_DB.loadTourCompletions) {
+      window.BOA_DB.loadTourCompletions()
+        .then(v => { if (!dead) setEntries((v && v.entries) || []); })
+        .catch(() => { if (!dead) setEntries([]); });
+    } else setEntries([]);
+    return () => { dead = true; };
+  }, []);
+  const list = (entries || []).slice().sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+  const fmtAt = (iso) => { try { return new Date(iso).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); } catch (_) { return iso || ""; } };
+  return (
+    <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "12px 14px", border: "1px solid #FBCFE8", marginBottom: 14 }}>
+      <div onClick={() => setOpen(o => !o)} style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>🎓 Kiosk practice tour</span>
+        <span style={{ fontSize: 12, color: "#9d174d" }}>
+          {entries == null ? "loading…" : list.length === 0 ? "no manager has recorded a completion yet" : list.length + " completion" + (list.length === 1 ? "" : "s") + " recorded"}
+        </span>
+        <div style={{ flex: 1 }} />
+        <span style={{ fontSize: 11, color: "#F472B6", fontWeight: 700 }}>{open ? "▲ hide" : "▼ show"}</span>
+      </div>
+      {open && list.length > 0 && (
+        <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
+          {list.map((e, i) => (
+            <div key={i} style={{ display: "flex", gap: 10, fontSize: 12, color: "#1f2937", borderTop: i === 0 ? "none" : "1px solid #FCE7F3", paddingTop: i === 0 ? 0 : 4 }}>
+              <span style={{ fontWeight: 700, minWidth: 160 }}>{e.name || "(no name)"}</span>
+              <span style={{ color: "#6b7280", minWidth: 110 }}>{e.branch || ""}</span>
+              <span style={{ color: "#9ca3af" }}>{fmtAt(e.at)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {open && list.length === 0 && entries != null && (
+        <div style={{ marginTop: 8, fontSize: 12, color: "#9ca3af" }}>Managers record their name when they finish the 🎓 practice tour on the kiosk (📖 How Check-ins Work → Take the 2-minute practice tour).</div>
+      )}
+    </div>
+  );
+}
+
 function StoreReportsTab({ extraDayRequests, managers }) {
   const [days, setDays] = React.useState(30);
   const [loading, setLoading] = React.useState(true);
@@ -14624,10 +14669,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       await Promise.all(SALONS.map(async (sl) => {
         const branch = sl.name;
         try {
-          const [att, sch, mgrSch] = await Promise.all([
+          const [att, sch, mgrSch, wcOwn] = await Promise.all([
             safe(window.BOA_DB.loadAttendance(branch, ym)),
             safe(window.BOA_DB.loadSchedule(branch, techYmCross, false)),
-            safe(window.BOA_DB.loadSchedule(branch, ym, true))
+            safe(window.BOA_DB.loadSchedule(branch, ym, true)),
+            window.BOA_DB.loadAttWarningCounts ? safe(window.BOA_DB.loadAttWarningCounts(branch, ym)) : Promise.resolve(null)
           ]);
           const bGrid = (att && att.grid) || {};
           const bReview = (att && att.reviewedWarnings) || {};
@@ -14743,7 +14789,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // only resolves leave/maternity overlays, not the sheet's full
           // getStatus view, so it drifts; we fall back to it (flagged approx)
           // only for branches whose sheet hasn't been opened this cycle yet.
-          const pc = att && att.warningCounts;
+          const pc = wcOwn || (att && att.warningCounts);   // own key first; legacy embedded value as fallback
           if (pc && typeof pc.total === "number") {
             const rv = (typeof pc.reviewed === "number") ? pc.reviewed : 0;
             results[branch] = { total: pc.total, reviewed: rv, open: (typeof pc.open === "number") ? pc.open : (pc.total - rv) };
@@ -14862,7 +14908,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         });
       }
       setAttGrid(mergedGrid);
-      setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null, freshaWorked: mergedFresha, reviewedWarnings: att.reviewedWarnings || {}, mirrorSuppressed: !!att.mirrorSuppressed } : { freshaWorked: mergedFresha, reviewedWarnings: {}, mirrorSuppressed: false });
+      setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null, freshaWorked: mergedFresha, reviewedWarnings: att.reviewedWarnings || {}, adminOverrides: att.adminOverrides || {}, mirrorSuppressed: !!att.mirrorSuppressed } : { freshaWorked: mergedFresha, reviewedWarnings: {}, adminOverrides: {}, mirrorSuppressed: false });
       setAttSched(mergedSched);
       setAttEarly(early || {});
       setAttExtras(extras || {});
@@ -24855,13 +24901,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (!dayObj || dayObj.ymd >= _extraTodayYmd) return false;
           return !_extraDayWorkEvidence(ec, d, dayObj.ymd);
         };
+        // ── Admin manual override — the TOP of the priority chain ──────
+        // A status the admin (or their admin) picks on the attendance sheet
+        // is the final truth for display and payroll: it wins over kiosk
+        // data, the ROM's manager-status records, leave/maternity overlays
+        // and every resolver transform (extra-day promotion/removal, …).
+        // It does NOT modify the underlying kiosk or ROM records — those
+        // stay as the historical record; only the sheet's reading changes.
+        // Stored per cell as { status, by, at } so the tooltip can show who
+        // set it.
+        const _adminOv = (ec, d) => ((((attMeta || {}).adminOverrides) || {})[ec] || {})[d] || null;
         // Render helper — lets the cell tooltip explain WHY the day reads OFF.
-        const _extraDayRemoved = (ec, d) => _extraDayRemovedBase(ec, d, _statusBeforeExtraRemoval(ec, d));
+        const _extraDayRemoved = (ec, d) => !_adminOv(ec, d) && _extraDayRemovedBase(ec, d, _statusBeforeExtraRemoval(ec, d));
         const getStatus = (ec, d) => {
+          const ov = _adminOv(ec, d);
+          if (ov && ov.status) return ov.status;
           const base = _statusBeforeExtraRemoval(ec, d);
           return _extraDayRemovedBase(ec, d, base) ? "off" : base;
         };
         const hasOverride = (ec, d) => {
+          // Admin manual override — always renders solid.
+          if (_adminOv(ec, d)) return true;
           // Treat the auto-derived TERMINATED as a confirmed override so it
           // displays in bold red rather than faded/italic.
           const dayObj = days.find(x => x.d === d);
@@ -24894,6 +24954,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (_isMgrPhantomPresence(ec, d)) return false;     // unbacked manager 'On Time' — not a real override
           const v = attGrid[ec] && attGrid[ec][d];
           return !!v && v.indexOf("~") !== 0;
+        };
+        // A review sticks while the admin's confirmed code still matches the
+        // cell — either the RESOLVED status (what payroll counts) or the RAW
+        // grid value (what the admin actually set). The resolver legitimately
+        // transforms stored codes (e.g. 'no' on an unworked extra day reads
+        // OFF, 'on' on a schedule-E day reads EXT); comparing only against
+        // the resolved status made the ✓ flip straight back to ⚠ the moment
+        // such a cell was reviewed. The review still expires when the raw
+        // cell value genuinely changes (kiosk import, admin edit).
+        const reviewMatchesCell = (rec, ec, d, v) => {
+          if (!rec) return false;
+          const want = rec.valueAtReview || "";
+          if (want === (v || "")) return true;
+          const raw = (attGrid[ec] && attGrid[ec][d]) || "";
+          const rawBare = raw.charAt(0) === "~" ? raw.slice(1) : raw;
+          return want === rawBare;
         };
         const schedHint = (ec, d) => {
           if (mirrorSuppressed) return null;        // hide schedule signal after a Total Reset
@@ -24989,6 +25065,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               freshaWorked: restoredMeta.freshaWorked || {},
               freshaCoverage: restoredMeta.freshaCoverage || null,
               reviewedWarnings: restoredMeta.reviewedWarnings || {},
+              adminOverrides: restoredMeta.adminOverrides || {},
               mirrorSuppressed: !!restoredMeta.mirrorSuppressed
             });
           } catch (e) { alert("Could not undo: " + (e.message || e)); return; }
@@ -25010,40 +25087,37 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (v === "" || v == null) delete next[ec][d];
           else next[ec][d] = v;
           setAttGrid(next);
-          try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
-          catch (e) { alert("Could not save: " + (e.message || e)); }
-          // Managers carry their payroll status in the manager_day_status store,
-          // which OVERRIDES the attendance grid on the sheet (see getStatus). So
-          // an attGrid-only edit never sticks for a manager — e.g. changing
-          // Sick+note → FRL would silently revert. Mirror the edit into that
-          // store so the override actually updates: absence/leave reasons are
-          // upserted; present/off codes (and clearing) remove the override so
-          // the day reverts to the clock-in / schedule reading.
-          const _mgrStaffId = _mgrEcToStaffId[ec] != null ? _mgrEcToStaffId[ec] : _mgrEcToStaffId[String(ec || "").trim()];
-          if (_mgrStaffId) {
-            const _do = days.find(x => x.d === d);
-            const _ymd = _do && _do.ymd;
-            if (_ymd) {
-              const _bare = (v && v.indexOf("~") === 0) ? v.slice(1) : (v || "");
-              // Codes that mean "present / legitimately off" — these don't
-              // belong in the absence-reason store, so they clear it instead.
-              const _present = new Set(["on", "late", "off", "ph", "ext", "swap_o", "swap_i"]);
-              const _recorder = (currentUser && (currentUser.name || currentUser.email)) || "admin";
-              try {
-                if (!_bare || _present.has(_bare)) {
-                  if (window.BOA_DB.deleteManagerDayStatus) await window.BOA_DB.deleteManagerDayStatus({ staffId: _mgrStaffId, date: _ymd });
-                  setMgrDayStatuses(p => (p || []).filter(r => !(String(r.staff_id) === String(_mgrStaffId) && r.date === _ymd)));
-                } else if (window.BOA_DB.saveManagerDayStatus) {
-                  const _rec = await window.BOA_DB.saveManagerDayStatus({ staffId: _mgrStaffId, date: _ymd, status: _bare, recordedBy: _recorder });
-                  setMgrDayStatuses(p => {
-                    const arr = (p || []).filter(r => !(String(r.staff_id) === String(_mgrStaffId) && r.date === _ymd));
-                    arr.push(_rec || { staff_id: _mgrStaffId, date: _ymd, status: _bare, updated_by: _recorder, updated_at: new Date().toISOString() });
-                    return arr;
-                  });
-                }
-              } catch (e) { alert("Could not update the manager's status: " + (e.message || e)); }
-            }
+          // Record the manual edit as an ADMIN OVERRIDE — the final truth
+          // for the sheet and payroll, stamped with who set it. Clearing the
+          // cell clears the override too, so the day falls back to the
+          // kiosk / schedule reading.
+          const _ovBy = (currentUser && (currentUser.name || currentUser.email)) || "admin";
+          const _ovBare = (v && v.charAt(0) === "~") ? v.slice(1) : (v || "");
+          const _ovRec = _ovBare ? { status: _ovBare, by: _ovBy, at: new Date().toISOString() } : null;
+          setAttMeta(p => {
+            const prevOv = (p && p.adminOverrides) || {};
+            const ovEc = { ...(prevOv[ec] || {}) };
+            if (_ovRec) ovEc[d] = _ovRec; else delete ovEc[d];
+            const nextOv = { ...prevOv };
+            if (Object.keys(ovEc).length) nextOv[ec] = ovEc; else delete nextOv[ec];
+            return { ...(p || {}), adminOverrides: nextOv };
+          });
+          // Save ONLY this cell with a read-merge-write, never the whole
+          // in-memory grid — a whole-grid save from a tab loaded hours ago
+          // silently wiped every cell anyone else (kiosk, trigger, another
+          // admin) had written since, which is how manually added days kept
+          // vanishing overnight.
+          try {
+            if (window.BOA_DB.updateAttendanceCells) await window.BOA_DB.updateAttendanceCells(attBranch, attYM, { [ec]: { [d]: (v === "" || v == null) ? null : v } }, null, { [ec]: { [d]: _ovRec } });
+            else await window.BOA_DB.saveAttendance(attBranch, attYM, next);
           }
+          catch (e) { alert("Could not save: " + (e.message || e)); }
+          // NOTE: manual sheet edits used to mirror manager rows into the
+          // manager_day_status store (the ROM's record) because that overlay
+          // otherwise won and the edit reverted. The admin-override layer now
+          // outranks the overlay, so the sheet edit sticks WITHOUT rewriting
+          // the ROM's record — the regional's original selection stays
+          // intact as history while the sheet shows the admin's truth.
           const staffName = (attStaff.find(s => s.ec === ec) || {}).name || ec;
           const dayObj = days.find(x => x.d === d);
           const dayDesc = dayObj ? new Date(dayObj.ymd + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ("day " + d);
@@ -25062,12 +25136,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           pushUndo("review");
           const reviewer = (currentUser && (currentUser.name || currentUser.email)) || "admin";
           const record = { reviewer, ts: new Date().toISOString(), note: null, valueAtReview: finalValue || "" };
-          const existing = ((attMeta && attMeta.reviewedWarnings) || {})[ec] || {};
-          const nextEc = { ...existing, [d]: record };
-          const nextRW = { ...((attMeta && attMeta.reviewedWarnings) || {}), [ec]: nextEc };
-          const nextMeta = { ...(attMeta || {}), reviewedWarnings: nextRW };
-          setAttMeta(nextMeta);
-          try { await window.BOA_DB.saveAttendance(attBranch, attYM, gridAtSave || attGrid, { reviewedWarnings: nextRW }); }
+          const nextRW = { ...((attMeta && attMeta.reviewedWarnings) || {}), [ec]: { ...(((attMeta && attMeta.reviewedWarnings) || {})[ec] || {}), [d]: record } };
+          // Functional update — setCell may have just written adminOverrides
+          // into attMeta in this same closure; building from the stale
+          // snapshot here would drop that update locally.
+          setAttMeta(p => ({ ...(p || {}), reviewedWarnings: { ...((p && p.reviewedWarnings) || {}), [ec]: { ...(((p && p.reviewedWarnings) || {})[ec] || {}), [d]: record } } }));
+          // Merge ONLY this review record into the stored map — replacing the
+          // whole reviewedWarnings (or grid) from a possibly-stale tab wipes
+          // reviews/cells recorded elsewhere since the tab loaded.
+          try {
+            if (window.BOA_DB.updateAttendanceCells) await window.BOA_DB.updateAttendanceCells(attBranch, attYM, null, { [ec]: { [d]: record } });
+            else await window.BOA_DB.saveAttendance(attBranch, attYM, gridAtSave || attGrid, { reviewedWarnings: nextRW });
+          }
           catch (e) { alert("Could not save review: " + (e.message || e)); }
           const staffName = (attStaff.find(s => s.ec === ec) || {}).name || ec;
           const dayObj = days.find(x => x.d === d);
@@ -25087,14 +25167,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const already = existing[d];
           const reviewer = (currentUser && (currentUser.name || currentUser.email)) || "admin";
           // Already reviewed for the current value → offer to clear the mark.
-          if (already && already.valueAtReview === (currentValue || "")) {
+          if (already && reviewMatchesCell(already, ec, d, currentValue)) {
             if (!confirm("Clear the reviewed mark on this cell?")) return;
             const nextEc = { ...(existing) }; delete nextEc[d];
             const nextRW = { ...((attMeta && attMeta.reviewedWarnings) || {}) };
             if (Object.keys(nextEc).length) nextRW[ec] = nextEc; else delete nextRW[ec];
             const nextMeta = { ...(attMeta || {}), reviewedWarnings: nextRW };
             setAttMeta(nextMeta);
-            try { await window.BOA_DB.saveAttendance(attBranch, attYM, attGrid, { reviewedWarnings: nextRW }); }
+            try {
+              if (window.BOA_DB.updateAttendanceCells) await window.BOA_DB.updateAttendanceCells(attBranch, attYM, null, { [ec]: { [d]: null } });
+              else await window.BOA_DB.saveAttendance(attBranch, attYM, attGrid, { reviewedWarnings: nextRW });
+            }
             catch (e) { alert("Could not save: " + (e.message || e)); }
             return;
           }
@@ -25121,10 +25204,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const record = { reviewer, ts: new Date().toISOString(), note: (note || "").trim() || null, valueAtReview: cleaned };
           const nextEc = { ...existing, [d]: record };
           const nextRW = { ...((attMeta && attMeta.reviewedWarnings) || {}), [ec]: nextEc };
-          const nextMeta = { ...(attMeta || {}), reviewedWarnings: nextRW };
+          // The admin's FINAL status is also an admin override — the truth
+          // for payroll, stamped with who set it (cleared if they blanked it).
+          const ovRec = cleaned ? { status: cleaned, by: reviewer, at: new Date().toISOString() } : null;
+          const prevOv = (attMeta && attMeta.adminOverrides) || {};
+          const ovEc = { ...(prevOv[ec] || {}) };
+          if (ovRec) ovEc[d] = ovRec; else delete ovEc[d];
+          const nextOv = { ...prevOv };
+          if (Object.keys(ovEc).length) nextOv[ec] = ovEc; else delete nextOv[ec];
+          const nextMeta = { ...(attMeta || {}), reviewedWarnings: nextRW, adminOverrides: nextOv };
           setAttMeta(nextMeta);
-          // Single save with both grid + extras so they can't drift.
-          try { await window.BOA_DB.saveAttendance(attBranch, attYM, nextGrid, { reviewedWarnings: nextRW }); }
+          // Single save with the cell, its review record AND the override,
+          // merged into the freshest stored state so nothing clobbers other
+          // sessions.
+          try {
+            if (window.BOA_DB.updateAttendanceCells) await window.BOA_DB.updateAttendanceCells(attBranch, attYM, { [ec]: { [d]: cleaned || null } }, { [ec]: { [d]: record } }, { [ec]: { [d]: ovRec } });
+            else await window.BOA_DB.saveAttendance(attBranch, attYM, nextGrid, { reviewedWarnings: nextRW });
+          }
           catch (e) { alert("Could not save: " + (e.message || e)); }
           const staffName = (attStaff.find(s => s.ec === ec) || {}).name || ec;
           const dayObj2 = days.find(x => x.d === d);
@@ -25591,7 +25687,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           pushUndo("Reset Cycle");
           const next = {};
           setAttGrid(next);
-          try { await window.BOA_DB.saveAttendance(attBranch, attYM, next); }
+          // Clear the admin overrides too — a reset means "undo ALL changes",
+          // and a leftover override would keep forcing a status onto a
+          // now-blank cell.
+          setAttMeta({ ...(attMeta || {}), adminOverrides: {} });
+          try { await window.BOA_DB.saveAttendance(attBranch, attYM, next, { adminOverrides: {} }); }
           catch (e) { alert("Could not reset: " + (e.message || e)); return; }
           logActivity("Reset attendance cycle", attBranch + " · " + cycLabel, "All cells cleared", "Bulk");
           alert("✓ Attendance reset for " + attBranch + " — " + cycLabel);
@@ -25624,7 +25724,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if ((step2 || "").trim() !== "2002") { alert("Cancelled — incorrect PIN."); return; }
           pushUndo("Total Reset");
           const nextGrid = {};
-          const nextMeta = { freshaWorked: {}, reviewedWarnings: {}, freshaCoverage: null, mirrorSuppressed: true };
+          const nextMeta = { freshaWorked: {}, reviewedWarnings: {}, adminOverrides: {}, freshaCoverage: null, mirrorSuppressed: true };
           setAttGrid(nextGrid);
           setAttMeta(nextMeta);
           // The 'left-early' sidecar (boa_early_<branch>_<ym>) paints
@@ -25638,6 +25738,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             await window.BOA_DB.saveAttendance(attBranch, attYM, nextGrid, {
               freshaWorked: {},
               reviewedWarnings: {},
+              adminOverrides: {},
               freshaCoverage: null,
               mirrorSuppressed: true
             });
@@ -25852,8 +25953,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // EXT counts only extra days ACTUALLY worked. An approved extra
             // day still reads "ext" while it's today/future (she can still
             // show up), but it must not hit the EXT total — and the extra
-            // pay — until some source shows she actually came in.
-            else if (v === "ext") { if (_extraDayWorkEvidence(ec, dy.d, dy.ymd)) { t.ext++; if (phOk) t.ph++; } }
+            // pay — until some source shows she actually came in. An admin
+            // override IS the truth, so it counts without further evidence.
+            else if (v === "ext") { if (_adminOv(ec, dy.d) || _extraDayWorkEvidence(ec, dy.d, dy.ymd)) { t.ext++; if (phOk) t.ph++; } }
             else if (v === "late") { t.late++; if (phOk) t.ph++; }
             else if (v === "trial" || v === "trial_ho") t.td++;
             else if (v === "on") { t.worked++; if (phOk) t.ph++; }
@@ -26064,7 +26166,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               if (isProofStatus || warning) {
                 total++;
                 const review = (reviewedMap[s.ec] || {})[dy.d];
-                if (review && review.valueAtReview === (v || "")) reviewed++;
+                if (reviewMatchesCell(review, s.ec, dy.d, v)) reviewed++;
               }
             }
           }
@@ -26462,7 +26564,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           // cells on a holiday get promoted to PH styling so the grid reads
                           // the same way payroll counts.
                           const cellReviewRec = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
-                          const cellReviewed = !!cellReviewRec && cellReviewRec.valueAtReview === (v || "");
+                          const cellReviewed = reviewMatchesCell(cellReviewRec, s.ec, dy.d, v);
                           const workedOnHol = isHol && (bareV === "on" || bareV === "late" || bareV === "ext" || bareV === "swap_i");
                           const phAuto = workedOnHol && (allMatchWork || cellReviewed);
                           if (phAuto && STAT.ph) { st = STAT.ph; }
@@ -26596,7 +26698,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const mgrClockedInUnscheduled = s.role !== "NT" && _mgrEcToStaffId[s.ec] && _mgrCheckedIn(s.ec, dy.ymd) && hint !== "on" && hint !== "ext" && isPastOrToday && !override;
                           const warning = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || missingCheckin || absentNeedsReview || workedOnOffDay || unaccountedScheduledDay || offButFreshaWorked || mgrClockedInUnscheduled;
                           const reviewRec = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
-                          const reviewed = !!reviewRec && reviewRec.valueAtReview === (v || "");
+                          const reviewed = reviewMatchesCell(reviewRec, s.ec, dy.d, v);
                           // Plain English description of the single primary mismatch
                           // (same priority order the ⚠ uses below). The verdict block
                           // at the bottom of the tooltip shows this so the user can
@@ -26673,6 +26775,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           tipLines.push("Schedule: " + schedLine);
                           if (kioskLine != null) tipLines.push("Kiosk:    " + kioskLine);
                           if (freshaLine != null) tipLines.push("Fresha:   " + freshaLine);
+                          {
+                            const _ovTip = _adminOv(s.ec, dy.d);
+                            if (_ovTip) tipLines.push("✋ Set manually by " + (_ovTip.by || "admin") + (_ovTip.at ? " · " + new Date(_ovTip.at).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "") + " — final for payroll (kiosk / regional records unchanged).");
+                          }
                           if (loanTo) tipLines.push("🔀 Loaned out to " + loanTo + (v === "loan_out" ? " (receiving branch hasn't recorded a status yet)" : ""));
                           if (bareV === "swap_o") tipLines.push("💡 Owes — tech took today off because she worked on a previous off day for a colleague.");
                           if (bareV === "swap_i") tipLines.push("💡 Owed — tech came in today because she took off on a previous day when a colleague filled in for her.");
@@ -26690,6 +26796,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             tipLines.push("⚠ " + (bareV === "sick_n" ? "Sick note" : "FRL proof") + " uploaded — click the ⚠ icon to review the proof and confirm for payroll.");
                           } else if (warning && !reviewed) {
                             tipLines.push("⚠ Mismatch — " + mismatchReason);
+                            // A review exists but no longer matches the cell — say so, with
+                            // what was confirmed and by whom, so a returning ⚠ is never a
+                            // mystery (the cell changed since the review, or another session
+                            // overwrote it).
+                            if (reviewRec) tipLines.push("⚠ Earlier review by " + (reviewRec.reviewer || "admin") + " expired — they confirmed \"" + (statLabel(reviewRec.valueAtReview) || "blank") + "\" but the cell has changed since.");
                             tipLines.push("(Click the ⚠ icon to mark as reviewed for payroll.)");
                           } else if (reviewed && reviewRec) {
                             tipLines.push("✓ Reviewed by " + (reviewRec.reviewer || "admin") + " · " + new Date(reviewRec.ts).toLocaleString("en-ZA"));
@@ -31139,6 +31250,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
 
               {renderScopeBar({ marginBottom: 12 })}
+
+              <TourCompletionsCard />
 
               <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "12px 14px", border: "1px solid #FBCFE8", marginBottom: 14, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
