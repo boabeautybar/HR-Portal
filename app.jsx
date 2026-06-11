@@ -31722,6 +31722,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   (loanedInByBranch[l.toBranch] = loanedInByBranch[l.toBranch] || []).push(l);
                 }
               });
+              // Settle completed branch transfers before grouping: a transfer
+              // is stored as flags without rewriting `branch`, so once the
+              // date arrives the manager must list under her NEW branch here
+              // (mirrors the settle rule on Locations / the attendance sheet).
+              const _mgrsEffMC = (managers || []).map(m => (m && m.transferring && m.transferTo && m.transferDate && m.transferDate <= ymd)
+                ? { ...m, branch: m.transferTo, transferring: false, transferTo: null } : m);
               const scheduledByBranch = {};
               const fallbackBranches = [];
               const allScheduled = [];
@@ -31729,7 +31735,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const loanedOut = [];          // home-branch view: managers loaned out today
               scopedBranches.forEach(b => {
                 const grid = mgrClockinSchedCache[b + "|" + ymOf];
-                const branchMgrs = managers.filter(m => m.branch === b && !m.onMat && !m.leftDate && !m.offboarded && !_hasLeftMC(m.ec) && !_onLeaveEcs.has(String(m.ec || "").trim()));
+                const branchMgrs = _mgrsEffMC.filter(m => m.branch === b && !m.onMat && !m.leftDate && !m.offboarded && !_hasLeftMC(m.ec) && !_onLeaveEcs.has(String(m.ec || "").trim()));
                 const scheduleHasToday = !!grid && branchMgrs.some(m => _readCell(grid, m.ec) != null);
                 if (!scheduleHasToday) {
                   // No schedule data for today at this branch — fall back to
@@ -31759,7 +31765,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 // to the same per-branch scheduled list so the ROM viewing
                 // this branch sees them with a "↪ from <home>" tag.
                 (loanedInByBranch[b] || []).forEach(lo => {
-                  const m = managers.find(mm => mm && String(mm.ec || "").trim() === String(lo.ec).trim());
+                  const m = _mgrsEffMC.find(mm => mm && String(mm.ec || "").trim() === String(lo.ec).trim());
                   if (!m) return;
                   if (m.onMat || m.leftDate || m.offboarded || _hasLeftMC(m.ec)) return;
                   if (_onLeaveEcs.has(String(m.ec || "").trim())) return;
@@ -34537,7 +34543,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const m = manualMgrClockinModal;
         const _close = () => setManualMgrClockinModal(null);
         const scopedBranches = SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name));
+        // Settle completed transfers so a transferred manager is picked from
+        // her NEW branch (same rule as the absence picker / roster above).
+        const _mmYmd = (() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
         const branchManagers = managers
+          .map(mg => (mg && mg.transferring && mg.transferTo && mg.transferDate && mg.transferDate <= _mmYmd) ? { ...mg, branch: mg.transferTo } : mg)
           .filter(mg => mg.branch === m.branch && !mg.leftDate && !mg._onMat)
           .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
         const _set = (patch) => setManualMgrClockinModal({ ...m, ...patch });
@@ -34644,7 +34654,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       {mgrAbsencePicker && (() => {
         const p = mgrAbsencePicker;
         const scopedBranches = SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name));
+        // Settle completed transfers so a transferred manager is picked from
+        // her NEW branch (the absence may be on a pre-transfer day, but the
+        // picker's branch dropdown reflects where she works NOW).
+        const _pickYmd = (() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
         const branchManagers = managers
+          .map(m => (m && m.transferring && m.transferTo && m.transferDate && m.transferDate <= _pickYmd) ? { ...m, branch: m.transferTo } : m)
           .filter(m => m.branch === p.branch)
           .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
         return (
