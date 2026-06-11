@@ -3500,6 +3500,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
         const cur = next[ec][d.d];
         if (cur === "X") continue;                  // preserve ghost cells
         if (cur === "L") continue;                  // already on leave
+        if (cur === "O" || cur === "R") continue;   // already scheduled OFF — an off day inside the leave window stays an off day, it doesn't become a leave day
         next[ec][d.d] = "L";
         changed = true;
       }
@@ -9877,20 +9878,74 @@ function assessLeaveOps(r, enriched, managers, leaveRecs) {
   }
   return { matched: true, isMgr, branch, headcount, maxOff, clashDays, peakDays, person };
 }
+// Publish approved tech leave onto the SAVED schedule grid(s). The kiosk
+// schedule and the My BOA schedule viewer read ONLY the saved boa_sched grid
+// — they have no access to the Leave Planner — so leave that exists purely as
+// a planner record shows on the portal (which overlays leaveRecs in memory)
+// but not on the tech's own viewers. Mirrors applyExtraDayToSchedule.
+// IMPORTANT: days already scheduled OFF (O/R) are LEFT ALONE — an off day
+// inside the leave window stays an off day and does not become a leave day.
+// X (pre-start/leaver), ML and existing L cells are preserved too; only
+// working cells (W/WE/WL/WM/WB/E) and blanks become "L". Managers are skipped
+// — the kiosk manager schedule already overlays leave records itself.
+async function publishLeaveToSchedule(ec, branch, startDate, endDate) {
+  if (!window.BOA_DB || !window.BOA_DB.loadSchedule || !window.BOA_DB.saveSchedule) return;
+  if (!ec || !branch || !startDate || !endDate) return;
+  if (/M$/i.test(String(ec).trim())) return;
+  const sd = new Date(startDate + "T00:00:00"), ed = new Date(endDate + "T00:00:00");
+  if (isNaN(sd.getTime()) || isNaN(ed.getTime()) || ed < sd) return;
+  // Group the leave days by schedule key: tech schedules live under the
+  // cycle's END-month ym (25th→24th), cells keyed by day-of-month.
+  const byYm = {};
+  for (let cur = new Date(sd); cur <= ed; cur.setDate(cur.getDate() + 1)) {
+    let y = cur.getFullYear(), m = cur.getMonth() + 1; const dom = cur.getDate();
+    if (dom >= 25) { m += 1; if (m > 12) { m = 1; y += 1; } }
+    const ym = y + "-" + String(m).padStart(2, "0");
+    (byYm[ym] = byYm[ym] || []).push(dom);
+  }
+  const KEEP = { O: 1, R: 1, X: 1, ML: 1, L: 1 };
+  for (const ym of Object.keys(byYm)) {
+    try {
+      const sched = await window.BOA_DB.loadSchedule(branch, ym, false);
+      const grid = (sched && sched.grid) || {};
+      const want = String(ec).trim().toUpperCase();
+      const ecKey = Object.keys(grid).find(k => String(k).trim().toUpperCase() === want) || String(ec).trim();
+      const row = grid[ecKey] || {};
+      let changed = false;
+      for (const dom of byYm[ym]) {
+        const cur = row[dom] != null ? row[dom] : row[String(dom)];
+        if (cur && KEEP[cur]) continue;
+        row[String(dom)] = "L";
+        changed = true;
+      }
+      if (changed) { grid[ecKey] = row; await window.BOA_DB.saveSchedule(branch, ym, grid, false); }
+    } catch (e) { console.error("publishLeaveToSchedule " + ym + ":", e); }
+  }
+}
 // Write an approved request onto the Leave Planner. Skips if unmatched or a
 // duplicate overlapping annual record already exists. Returns true when on it.
 async function addApprovedLeaveToCalendar(r, deps) {
   const { enriched, managers, leaveRecs, setLeaveRecs } = deps;
   const person = findLeavePerson(r.ec, enriched, managers);
   if (!person) return false;
+  const _schedBranch = effHomeBranch(person, r.start_date) || person.branch;
   const ecU = String(person.ec || "").toUpperCase();
   const dup = (leaveRecs || []).find(lv => String(lv.ec || "").toUpperCase() === ecU
     && lv.type === "Annual leave" && lv.startDate <= r.end_date && lv.endDate >= r.start_date);
-  if (dup) return true;
+  if (dup) {
+    // Planner already has it — still (re-)publish to the saved schedule so a
+    // record approved before schedule-publishing existed heals on re-approval.
+    try { await publishLeaveToSchedule(person.ec, _schedBranch, r.start_date, r.end_date); } catch (e) { console.error("publishLeaveToSchedule:", e); }
+    return true;
+  }
   const rec = { _id: Date.now(), ec: person.ec, startDate: r.start_date, endDate: r.end_date, type: "Annual leave", notes: "[Leave request " + (r.ref_code || "") + "]", emergency: false, balanceDays: (r.balance_days != null ? Number(r.balance_days) : null), balanceCheckedBy: r.balance_checked_by || "", balanceCheckedAt: r.balance_checked_at || null };
   const next = [...(leaveRecs || []), rec];
   setLeaveRecs(next);
   await window.BOA_DB.saveLeaveRecords(next);
+  // Publish onto the saved schedule grid so the kiosk + My BOA viewers (which
+  // read only the grid) show the leave too. Best-effort: a failure here never
+  // blocks the approval — the Schedule tab still overlays the planner record.
+  try { await publishLeaveToSchedule(person.ec, _schedBranch, r.start_date, r.end_date); } catch (e) { console.error("publishLeaveToSchedule:", e); }
   return true;
 }
 // When both gates are green, auto-approve and add to the calendar.
@@ -25961,10 +26016,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // contiguous run is treated as its own span so two separate short
           // periods (e.g. 3 + 3) keep their full days rather than being merged.
           {
-            let alRun = 0;
-            const flushAlRun = () => { if (alRun > 0) { t.al += alRun - estimateOffDays(alRun, 2); alRun = 0; } };
+            // When the run's days carry real schedule data, count EXACTLY the
+            // days that weren't already scheduled off: an O/R day inside an
+            // approved leave window stays an off day and must not consume a
+            // leave day. The ~2-offs-per-week estimate only remains for runs
+            // with no schedule signal at all.
+            let alRun = 0, alOff = 0, alSched = 0;
+            const flushAlRun = () => {
+              if (alRun > 0) {
+                t.al += alSched > 0 ? Math.max(0, alRun - alOff) : alRun - estimateOffDays(alRun, 2);
+                alRun = 0; alOff = 0; alSched = 0;
+              }
+            };
             for (const dy of days) {
-              if (getStatus(ec, dy.d) === "al") alRun++;
+              if (getStatus(ec, dy.d) === "al") {
+                alRun++;
+                const sv = attSched[ec] && attSched[ec][dy.d];
+                if (sv) alSched++;
+                if (sv === "O" || sv === "R") alOff++;
+              }
               else flushAlRun();
             }
             flushAlRun();
