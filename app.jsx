@@ -31527,7 +31527,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               for (const branchName of branchesToCheck) {
                 const grid = mgrClockinSchedCache[branchName + "|" + ymOf];
                 if (!grid) continue;        // schedule not loaded yet
-                for (const m of managers.filter(mm => mm.branch === branchName && !mm.onMat && !mm.leftDate && !mm.offboarded)) {
+                // Effective home branch — a manager transferred to another
+                // store (transferring/transferTo/transferDate) must appear
+                // under her NEW branch once the date arrives; the stored
+                // `branch` field stays stale by design (see effHomeBranch).
+                for (const m of managers.filter(mm => effHomeBranch(mm, ymd) === branchName && !mm.onMat && !mm.leftDate && !mm.offboarded)) {
                   if (_hasLeftBanner(m.ec)) continue;                             // resigned
                   if (_onLeaveEcs.has(String(m.ec || "").trim())) continue;    // on annual leave
                   const cell = (grid[m.ec]) ? (grid[m.ec][ymd] || grid[m.ec][_dom]) : undefined;
@@ -31814,14 +31818,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 let pill = buildClockPill(m.ec);
                 if (!pill && tagged) {
                   pill = <button
-                    onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: ymd, existing: tagged })}
+                    onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: effHomeBranch(m, ymd), date: ymd, existing: tagged })}
                     title={(tagged.note || "") + (tagged.recorded_by ? "\n— " + tagged.recorded_by : "")}
                     style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
                     {statLabel(tagged.status)}{tagged.proof ? " 📎" : ""} ✎
                   </button>;
                 } else if (!pill) {
                   pill = <button
-                    onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: ymd, existing: null })}
+                    onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: effHomeBranch(m, ymd), date: ymd, existing: null })}
                     style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
                     ⏳ Not in yet · Mark reason
                   </button>;
@@ -31852,14 +31856,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 let pill = buildClockPill(m.ec);
                 if (!pill && tagged) {
                   pill = <button
-                    onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: ymd, existing: tagged })}
+                    onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: effHomeBranch(m, ymd), date: ymd, existing: tagged })}
                     title={(tagged.note || "") + (tagged.recorded_by ? "\n— " + tagged.recorded_by : "")}
                     style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
                     {statLabel(tagged.status)}{tagged.proof ? " 📎" : ""} ✎
                   </button>;
                 } else if (!pill) {
                   pill = <button
-                    onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: m.branch, date: ymd, existing: null })}
+                    onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: effHomeBranch(m, ymd), date: ymd, existing: null })}
                     style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
                     ⏳ Not in yet · Mark reason
                   </button>;
