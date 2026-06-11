@@ -10005,12 +10005,13 @@ function estimateOffDays(calDays, perWeek) {
 // schedule grid is supplied (opts: { schedCache, ymdToSchedYm, ec, branch }),
 // real off-days (O / R cells) and real working shifts are read EXACTLY from the
 // roster — so a 2-day request on two working days correctly counts as 2 leave
-// days. Days that carry no off-day information — leave-stamped cells (L / ML,
-// where the original off-day pattern was overwritten by the leave itself),
-// blank cells, and months with no schedule yet — fall back to the usual ~2
-// off-days/week estimate, but short requests of 5 days or fewer are treated as
-// all working days (no deduction). E.g. 14 calendar days spanning two full weeks
-// ≈ 10 real leave days; a 21-day leave stamped entirely as L ≈ 15.
+// days, and a day she was scheduled OFF anyway is NOT deducted from the
+// balance. Leave publishing keeps O/R cells intact and stamps "L" only over
+// working/blank days, so when the range contains ANY O/R cell the off-day
+// info is trustworthy and every L/ML cell is a real leave day. Ranges with L
+// cells but NO O/R anywhere (old stamps that overwrote the offs) and blank /
+// unpublished months fall back to the usual ~2 off-days/week estimate; short
+// requests of 5 days or fewer are treated as all working days (no deduction).
 function leaveDayBreakdown(startYmd, endYmd, _isMgr, opts) {
   const cal = leaveDays(startYmd, endYmd);
   const perWeek = 2; // managers ~2/week; nail techs also usually ~2/week
@@ -10018,7 +10019,7 @@ function leaveDayBreakdown(startYmd, endYmd, _isMgr, opts) {
   const sched = opts && opts.schedCache, ec = opts && opts.ec, branch = opts && opts.branch, toSchedYm = opts && opts.ymdToSchedYm;
   if (sched && ec && branch && toSchedYm) {
     const ecU = String(ec).toUpperCase();
-    let knownOff = 0, unknownDays = 0, knownDays = 0;
+    let knownOff = 0, knownWork = 0, lDays = 0, blankDays = 0;
     const sd = new Date(startYmd + "T00:00:00"), ed = new Date(endYmd + "T00:00:00");
     for (let d = new Date(sd); d <= ed; d.setDate(d.getDate() + 1)) {
       const ymd = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
@@ -10026,12 +10027,19 @@ function leaveDayBreakdown(startYmd, endYmd, _isMgr, opts) {
       // grids may key the employee by exact or upper-cased EC; cells by number or string
       const row = grid && (grid[ec] || grid[ecU]);
       const cell = row && (row[d.getDate()] || row[String(d.getDate())]);
-      if (cell === "O" || cell === "R") { knownDays++; knownOff++; }          // roster says off
-      else if (cell && cell !== "L" && cell !== "ML") { knownDays++; }        // roster says a real working shift
-      else unknownDays++;   // leave-stamped (L / ML), blank or no grid → no off-day info, so estimate
+      if (cell === "O" || cell === "R") knownOff++;                       // roster says off — NOT a leave day
+      else if (cell === "L" || cell === "ML") lDays++;                    // leave-stamped
+      else if (cell) knownWork++;                                         // roster says a real working shift
+      else blankDays++;                                                   // no grid / blank — no info
     }
+    // O/R present → the off-day pattern survived, so L/ML cells are real
+    // leave days; only blanks remain unknown. No O/R anywhere → old stamp
+    // may have eaten the offs, estimate across L + blank days as before.
+    const offInfoSurvived = knownOff > 0;
+    const unknownDays = offInfoSurvived ? blankDays : (blankDays + lDays);
     const estUnknownOff = estimateOffDays(unknownDays, perWeek);
     const off = knownOff + estUnknownOff;
+    const knownDays = knownOff + knownWork + (offInfoSurvived ? lDays : 0);
     return { cal, off, real: Math.max(0, cal - off), perWeek, fromSchedule: knownDays > 0, knownDays, unknownDays };
   }
   const off = estimateOffDays(cal, perWeek);
@@ -24790,15 +24798,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const _do = days.find(x => x.d === d);
             const _lc = _do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd];
             if (_lc) {
-              // Defer to a genuine admin status (e.g. "Sick + note" recorded on
-              // top of a pre-approved leave day) — but NOT to a plain leave code.
-              // Auto-fill mirrors the schedule's generic "L" into the grid as a
-              // (usually faded) 'al', which must not mask the leave record's own
-              // classification: an emergency (unpaid) day would otherwise show as
-              // paid Annual. So 'al'/'el' cells are overridden by the record.
-              const _gv = attGrid[ec] && attGrid[ec][d];
-              const _gvBare = _gv ? (_gv.indexOf("~") === 0 ? _gv.slice(1) : _gv) : "";
-              if (!_gvBare || _gvBare === "al" || _gvBare === "el") return _lc;   // 'el' (emergency, unpaid) or 'al' (annual)
+              // A day she was scheduled OFF anyway stays an OFF day on the
+              // sheet — it isn't a leave day, so the overlay steps aside and
+              // the schedule fallback below renders it as off.
+              if (_schedV !== "O" && _schedV !== "R") {
+                // Defer to a genuine admin status (e.g. "Sick + note" recorded on
+                // top of a pre-approved leave day) — but NOT to a plain leave code.
+                // Auto-fill mirrors the schedule's generic "L" into the grid as a
+                // (usually faded) 'al', which must not mask the leave record's own
+                // classification: an emergency (unpaid) day would otherwise show as
+                // paid Annual. So 'al'/'el' cells are overridden by the record.
+                const _gv = attGrid[ec] && attGrid[ec][d];
+                const _gvBare = _gv ? (_gv.indexOf("~") === 0 ? _gv.slice(1) : _gv) : "";
+                if (!_gvBare || _gvBare === "al" || _gvBare === "el") return _lc;   // 'el' (emergency, unpaid) or 'al' (annual)
+              }
             }
           }
           // Unpaid legal-status leave overlay (Compliance). Like the leave
@@ -25078,7 +25091,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           {
             const _do = days.find(x => x.d === d);
             const _lc = _do && (_onLeaveByEcYmd[String(ec).trim()] || {})[_do.ymd];
-            if (_lc) return _lc;   // 'el' (emergency, unpaid) or 'al' (annual)
+            // Days she was scheduled OFF anyway stay OFF on the hint strip too.
+            const _svH = attSched[ec] && attSched[ec][d];
+            if (_lc && _svH !== "O" && _svH !== "R") return _lc;   // 'el' (emergency, unpaid) or 'al' (annual)
             if (_do && _onUnpaidLegal(ec, _do.ymd)) return "el";   // unpaid legal-status leave
           }
           const sv = attSched[ec] && attSched[ec][d];
