@@ -28080,10 +28080,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const peopleAtBranch = (sourceArr || [])
           .filter(p => effHomeBranch(p, _todayYmd) === br && !p.onMat && ROLE_GUARD(p))
           .sort((a, b) => (a.ec || "").localeCompare(b.ec || ""));
-        // For dropdown — all people of this type across all branches
+        // For dropdown — all people of this type across all branches.
+        // On-maternity people are INCLUDED here and on the planner grid
+        // (tagged 🍼): techs often take annual leave right before maternity
+        // starts, and excluding them made the person vanish from the leave
+        // calendar entirely, with no way to log that leave. They stay OUT of
+        // the active headcount — the 20% cap and the staffing checks ignore
+        // them, since they aren't staffing the store.
         const peopleAllBranches = (sourceArr || [])
-          .filter(p => !p.onMat && ROLE_GUARD(p))
+          .filter(p => ROLE_GUARD(p))
           .sort((a, b) => (a.ec || "").localeCompare(b.ec || ""));
+        const matPeopleAtBranch = (sourceArr || [])
+          .filter(p => effHomeBranch(p, _todayYmd) === br && p.onMat && ROLE_GUARD(p))
+          .sort((a, b) => (a.ec || "").localeCompare(b.ec || ""));
+        const plannerRows = [...peopleAtBranch, ...matPeopleAtBranch];
         // 20% per-day cap, minimum 1
         const maxLeave = Math.max(1, Math.floor(peopleAtBranch.length * 0.2));
         // 6 PAYROLL CYCLES from selected start cycle. Each cycle runs from
@@ -28153,7 +28163,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           for (const lv of leaveRecs) {
             if (lv.type !== "Annual leave") continue;
             const p2 = (isTechMode ? enriched : managers).find(x => x.ec === lv.ec);
-            if (!p2 || effHomeBranch(p2, _todayYmd) !== br || p2.onMat) continue;
+            // On-mat people's PRE-maternity annual leave still occupies a slot.
+            if (!p2 || effHomeBranch(p2, _todayYmd) !== br) continue;
             if (!ROLE_GUARD(p2)) continue;
             if (iso >= lv.startDate && iso <= lv.endDate) ct++;
           }
@@ -28201,7 +28212,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             return;
           }
           const stf = (isTechMode ? enriched : managers).find(p => p.ec === f.ec);
-          if (!stf || stf.onMat || !ROLE_GUARD(stf)) { alert("This sub-tab manages annual leave for " + peopleTypePlural + " only."); return; }
+          if (!stf || !ROLE_GUARD(stf)) { alert("This sub-tab manages annual leave for " + peopleTypePlural + " only."); return; }
           const stBr = effHomeBranch(stf, _todayYmd);
           const stPeople = (isTechMode ? enriched : managers).filter(p => effHomeBranch(p, _todayYmd) === stBr && !p.onMat && ROLE_GUARD(p));
           const stMx = Math.max(1, Math.floor(stPeople.length * 0.2));
@@ -28484,11 +28495,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {peopleAtBranch.map(st => (
-                      <tr key={st.ec}>
-                        <td style={{ padding: "4px 8px", position: "sticky", left: 0, background: "#fff", zIndex: 1, fontSize: 11, borderBottom: "1px solid " + aA, borderRight: "2px solid " + Y }}>
+                    {plannerRows.map(st => (
+                      <tr key={st.ec} style={st.onMat ? { opacity: 0.75 } : undefined}>
+                        <td style={{ padding: "4px 8px", position: "sticky", left: 0, background: st.onMat ? "#fdf2f8" : "#fff", zIndex: 1, fontSize: 11, borderBottom: "1px solid " + aA, borderRight: "2px solid " + Y }}>
                           <div>
-                            <div style={{ fontWeight: 700, color: "#831843" }}>{st.name}</div>
+                            <div style={{ fontWeight: 700, color: "#831843" }}>
+                              {st.name}
+                              {st.onMat && <span title={"On maternity leave" + (((st.matRec && st.matRec.matStart) || st.matStart) ? " from " + ((st.matRec && st.matRec.matStart) || st.matStart) : "") + " — annual leave before the start date can still be logged here"} style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, background: "#fce7f3", color: "#BE185D", border: "1px solid #f9a8d4", borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap" }}>🍼 MAT</span>}
+                            </div>
                             <div style={{ fontSize: 9, color: "#9ca3af" }}>{st.ec}</div>
                           </div>
                         </td>
