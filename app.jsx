@@ -26057,24 +26057,31 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // contiguous run is treated as its own span so two separate short
           // periods (e.g. 3 + 3) keep their full days rather than being merged.
           {
-            // When the run's days carry real schedule data, count EXACTLY the
-            // days that weren't already scheduled off: an O/R day inside an
-            // approved leave window stays an off day and must not consume a
-            // leave day. The ~2-offs-per-week estimate only remains for runs
-            // with no schedule signal at all.
-            let alRun = 0, alOff = 0, alSched = 0;
+            // Annual-leave days: count REAL leave days, not every blue cell.
+            // A day the schedule says O/R never reads 'al' (the leave overlay
+            // steps aside and it renders OFF), so an 'al' run contains real
+            // working-code cells, published 'L' cells and blanks:
+            //  • working codes (W/WE/…) — exact leave days, count fully;
+            //  • L/blank with SURVIVING off days — the off days break the
+            //    run into short sub-runs (≤5 days deducts nothing), so
+            //    published leave counts exactly;
+            //  • long unbroken L/blank stretches — old stamps that overwrote
+            //    the offs, or unpublished months — fall back to the usual
+            //    ~2-offs-per-week estimate so a tech's 2 weekly off days
+            //    aren't billed as leave.
+            let alRun = 0, alWork = 0;
             const flushAlRun = () => {
               if (alRun > 0) {
-                t.al += alSched > 0 ? Math.max(0, alRun - alOff) : alRun - estimateOffDays(alRun, 2);
-                alRun = 0; alOff = 0; alSched = 0;
+                const alLB = alRun - alWork;
+                t.al += alWork + Math.max(0, alLB - estimateOffDays(alLB, 2));
+                alRun = 0; alWork = 0;
               }
             };
             for (const dy of days) {
               if (getStatus(ec, dy.d) === "al") {
                 alRun++;
                 const sv = attSched[ec] && attSched[ec][dy.d];
-                if (sv) alSched++;
-                if (sv === "O" || sv === "R") alOff++;
+                if (sv && sv !== "L" && sv !== "ML") alWork++;
               }
               else flushAlRun();
             }
