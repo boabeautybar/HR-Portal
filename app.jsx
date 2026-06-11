@@ -15921,6 +15921,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }, [tab, mgrClockinDay]);
 
   // Load recent manager clock-ins when the viewer tab opens.
+  // Widen the look-back when the admin browses to a day OLDER than the
+  // default window, so history navigation never reads as missing clock-ins.
+  // Computed outside the effect so the value (and thus the refetch) only
+  // changes when the viewed day actually crosses past the loaded span.
+  const mgrClockinSpanDays = (() => {
+    try {
+      const span = Math.ceil((Date.now() - new Date(mgrClockinDay + "T00:00:00").getTime()) / 86400000) + 2;
+      return Math.max(mgrClockinDays, span);
+    } catch (_) { return mgrClockinDays; }
+  })();
   useEffect(() => {
     if (tab !== "mgrclockins" && tab !== "mgrCoverage" && tab !== "attendance" && tab !== "overtime" && tab !== "dashboard") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
@@ -15932,7 +15942,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // reach the start of the viewed cycle — otherwise a relative "last N
         // days" load silently drops the cycle's early days (or the whole cycle
         // when viewing a past month), which reads as missing clock-ins.
-        let effDays = mgrClockinDays;
+        let effDays = mgrClockinSpanDays;
         if ((tab === "attendance" || tab === "overtime") && attYM) {
           const ap = attYM.split("-").map(Number);
           const cyStart = new Date(ap[0], ap[1] - 1, 25);
@@ -15960,7 +15970,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // running 25-May → 24-Jun is saved as "2026-05"), opposite of the tech
         // schedule which uses end-month. Match the dashboard's convention.
         const today = new Date();
-        const since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - mgrClockinDays);
+        const since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - effDays);
         const ymsInRange = new Set();
         // Manager-schedule cycle ym: cycle starts on the 25th of month X
         // (saved as ym "X"); a date with day > 24 sits in the cycle whose
@@ -16021,7 +16031,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       } catch (e) { console.error("mgr clockins load:", e); }
     })();
     return () => { cancelled = true; };
-  }, [tab, mgrClockinDays, attYM]);
+  }, [tab, mgrClockinSpanDays, attYM]);
 
   // Manager Coverage tab: load manager schedules for every branch for
   // the cycle(s) the visible week touches. Reuses mgrClockinSchedCache
