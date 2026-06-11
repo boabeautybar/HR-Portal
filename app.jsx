@@ -23464,6 +23464,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // 1. Create active staff record. roleType comes from the Position
           // dropdown (manager vs tech) and is used as the role_type fallback in
           // data.js when the code suffix doesn't already decide it.
+          // Carry over EVERYTHING the onboarding form captured that the staff
+          // row supports — these were previously dropped, so the compliance
+          // status, phone, email, address and ID number typed in during
+          // onboarding never showed on the Employee list.
+          // The form's "ID Type" maps onto the compliance badge the Employee
+          // list reads: SA ID → SA Citizen, Asylum Document → Asylum on File.
+          // A plain passport doesn't prove a valid work permit, so it stays
+          // unset for HR to classify on the Staff tab.
+          const obPermit = obForm.idType === "sa_id" ? "sa_citizen"
+            : obForm.idType === "asylum" ? "asylum"
+              : null;
           const newStaff = {
             ec: ec,
             name: obForm.name,
@@ -23471,6 +23482,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             contract: "Probation (3 Months)",
             notes: obForm.notes,
             startDate: obForm.startDate,
+            permit: obPermit,
+            cellNumber: obForm.phone || null,
+            email: obForm.email || null,
+            address: obForm.homeAddress || null,
+            idNumber: obForm.idDetails || null,
             roleType: roleType // manager when a manager Position is picked, else tech
           };
 
