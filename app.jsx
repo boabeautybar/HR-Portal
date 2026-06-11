@@ -14365,6 +14365,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return () => { cancelled = true; };
   }, [tab, attBranch, attYM]);
   const [attLoading, setAttLoading] = useState(false);
+  // All-stores CSV export walker: { queue: [branches left], rows, startBranch }.
+  // Drives the attendance sheet through every store so the export reuses the
+  // sheet's EXACT totals engine instead of a parallel re-derivation.
+  const [attExportAll, setAttExportAll] = useState(null);
   // Cross-branch payroll overview — lazy-loaded counts of cells needing
   // admin review per branch for the active cycle. Lives at component scope
   // so it can be triggered from the dedicated Payroll Progress tab.
@@ -26180,46 +26184,82 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // are already counted inside Unpaid — a separate No-shows column made
         // payroll deduct those days twice, so it's deliberately NOT exported;
         // the no-shows still surface in the Bonus Loss Reason column.
+        const csvHead = ["Employee Code", "Full Name", "Role", "Start Date (new starters)", "Days Worked", "Trial Days (new starters)",
+          "Annual Leave", "Sick (with note)", "FRL", "Public Holidays", "Extra Days",
+          "Unpaid", "Lates", "Bonus Lost", "Bonus Loss Reason"];
+        // One row per staff member, using the sheet's own totals — shared by
+        // the single-branch download and the all-stores walker below.
+        const buildCsvRows = () => attStaff.map(s => {
+          const t = totalsFor(s.ec);
+          const reasons = bonusLossReasons(t);
+          const sd = startByEc[String(s.ec).trim()];
+          const isNew = sd && days.length && sd >= days[0].ymd;
+          return [
+            s.ec || "",
+            s.name || "",
+            s.smTrial ? "SM (trial)" : (s.role || ""),
+            isNew ? sd : "",
+            (t.daysWorked === Math.floor(t.daysWorked) ? t.daysWorked : t.daysWorked.toFixed(2)),
+            t.td,
+            t.al,
+            t.sickNote,
+            t.frl,
+            t.ph,
+            t.ext,
+            (t.totalUnpaid === Math.floor(t.totalUnpaid) ? t.totalUnpaid : t.totalUnpaid.toFixed(2)),
+            t.late,
+            reasons.length ? "Yes" : "No",
+            reasons.join("; ")
+          ];
+        });
         const downloadAttendanceCsv = () => {
           // The cycle runs 25th → 24th and is named after its END month — e.g.
           // 25 May → 24 Jun is the JUNE payroll — so label the file by the
           // payroll month (cycle end), not attYM (the start month).
           const payYm = cycEnd.getFullYear() + "-" + p2(cycEnd.getMonth() + 1);
           const payLabel = moShort[cycEnd.getMonth()] + " " + cycEnd.getFullYear() + " payroll";
-          const head = ["Employee Code", "Full Name", "Role", "Start Date (new starters)", "Days Worked", "Trial Days (new starters)",
-            "Annual Leave", "Sick (with note)", "FRL", "Public Holidays", "Extra Days",
-            "Unpaid", "Lates", "Bonus Lost", "Bonus Loss Reason"];
           const lines = [
             _csvEscape("Attendance totals · " + attBranch + " · Pay cycle " + cycLabel + " (" + payLabel + ")"),
             "",
-            head.map(_csvEscape).join(",")
+            csvHead.map(_csvEscape).join(","),
+            ...buildCsvRows().map(r => r.map(_csvEscape).join(","))
           ];
-          attStaff.forEach(s => {
-            const t = totalsFor(s.ec);
-            const reasons = bonusLossReasons(t);
-            const sd = startByEc[String(s.ec).trim()];
-            const isNew = sd && days.length && sd >= days[0].ymd;
-            const row = [
-              s.ec || "",
-              s.name || "",
-              s.smTrial ? "SM (trial)" : (s.role || ""),
-              isNew ? sd : "",
-              (t.daysWorked === Math.floor(t.daysWorked) ? t.daysWorked : t.daysWorked.toFixed(2)),
-              t.td,
-              t.al,
-              t.sickNote,
-              t.frl,
-              t.ph,
-              t.ext,
-              (t.totalUnpaid === Math.floor(t.totalUnpaid) ? t.totalUnpaid : t.totalUnpaid.toFixed(2)),
-              t.late,
-              reasons.length ? "Yes" : "No",
-              reasons.join("; ")
-            ];
-            lines.push(row.map(_csvEscape).join(","));
-          });
           _triggerDownload(_safeFile("attendance_totals_" + attBranch + "_" + payYm + "_payroll") + ".csv", lines.join("\r\n"), "text/csv");
         };
+
+        // ── All-stores CSV export ──────────────────────────────────────────
+        // Walks attBranch through every store: each time the sheet finishes
+        // loading a branch in the queue, its rows are captured with the SAME
+        // totalsFor the sheet renders with, then the walker advances. When the
+        // queue empties the combined file (with a Branch column) downloads and
+        // the original branch is restored. Reusing the live engine keeps the
+        // multi-store numbers identical to each branch's sheet — no parallel
+        // re-implementation to drift.
+        if (attExportAll && !attLoading && attExportAll.queue[0] === attBranch && !attExportAll._captured) {
+          attExportAll._captured = true;     // sync guard against double renders before state advances
+          const _exp = attExportAll;
+          const _branchRows = buildCsvRows().map(r => [attBranch, ...r]);
+          Promise.resolve().then(() => {
+            const rows = [..._exp.rows, ..._branchRows];
+            const queue = _exp.queue.slice(1);
+            if (queue.length === 0) {
+              const payYm = cycEnd.getFullYear() + "-" + p2(cycEnd.getMonth() + 1);
+              const payLabel = moShort[cycEnd.getMonth()] + " " + cycEnd.getFullYear() + " payroll";
+              const lines = [
+                _csvEscape("Attendance totals · ALL STORES · Pay cycle " + cycLabel + " (" + payLabel + ")"),
+                "",
+                ["Branch", ...csvHead].map(_csvEscape).join(","),
+                ...rows.map(r => r.map(_csvEscape).join(","))
+              ];
+              _triggerDownload(_safeFile("attendance_totals_ALL_STORES_" + payYm + "_payroll") + ".csv", lines.join("\r\n"), "text/csv");
+              setAttExportAll(null);
+              setAttBranch(_exp.startBranch);
+            } else {
+              setAttExportAll({ queue, rows, startBranch: _exp.startBranch });
+              setAttBranch(queue[0]);
+            }
+          });
+        }
 
         // Count warning cells in the current grid view so the dashboard
         // strip can show "X cells need review · Y resolved · Z open" and
@@ -26458,6 +26498,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               {attLoading && <span style={{ fontSize: 11, color: "#9ca3af", fontStyle: "italic" }}>Loading…</span>}
               <button onClick={autoFill} style={{ padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Fill empty cells from schedule (faded, still unconfirmed)">✓ Auto-fill from Schedule</button>
               <button onClick={downloadAttendanceCsv} style={{ padding: "7px 14px", background: "#FFFFFF", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Download a CSV of the side totals — employee code, name, role, new-starter start date, all day counts (incl. sick + note, unpaid) and whether the bonus is lost">⬇ CSV totals</button>
+              <button
+                onClick={() => {
+                  if (attExportAll) return;
+                  const _q = SALONS.map(sl => sl.name);
+                  setAttExportAll({ queue: _q, rows: [], startBranch: attBranch });
+                  if (_q[0] !== attBranch) setAttBranch(_q[0]);
+                }}
+                disabled={!!attExportAll}
+                style={{ padding: "7px 14px", background: attExportAll ? "#FCE7F3" : "#FFFFFF", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 8, cursor: attExportAll ? "default" : "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }}
+                title="Download ONE CSV with the side totals of EVERY store for this cycle (a Branch column is added). The sheet briefly steps through each store to compute its exact numbers, then returns to the store you were on.">
+                {attExportAll ? ("⏳ Exporting " + (SALONS.length - attExportAll.queue.length + 1) + " / " + SALONS.length + "…") : "⬇ CSV all stores"}
+              </button>
               <button onClick={importFresha} style={{ padding: "7px 14px", background: "#dbeafe", color: "#1e3a8a", border: "1px solid #93c5fd", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Upload a Fresha appointments CSV — every nail tech with a completed appointment that day is marked On Time">📤 Import Fresha CSV</button>
               <button onClick={importCheckins} style={{ padding: "7px 14px", background: "#dcfce7", color: "#14532d", border: "1px solid #86efac", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Pull every clock-in from the staff check-in app and stamp those days as On Time (or Extra Day if scheduled off). Confirmed cells are preserved. Use ↩ Undo to roll the import back.">✓ Import Check-ins</button>
               {attCheckinSnapshot && (
