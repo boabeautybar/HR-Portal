@@ -14850,9 +14850,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const cycEndYmdE = cycEndE.getFullYear() + "-" + pp(cycEndE.getMonth() + 1) + "-" + pp(cycEndE.getDate());
     const _todayE = new Date(); const todayYmdE = _todayE.getFullYear() + "-" + pp(_todayE.getMonth() + 1) + "-" + pp(_todayE.getDate());
     // Only consolidate once the transfer date has arrived (future pending
-    // transfers stay on the old branch until then).
-    const incoming = (staff || []).filter(s => s && s.ec && s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= todayYmdE && s.branch && s.branch !== attBranch);
-    const srcBranches = Array.from(new Set(incoming.map(s => s.branch)));
+    // transfers stay on the old branch until then). Managers (SM/SSM/AM)
+    // transfer with the same flags as techs — their record also keeps the
+    // OLD branch — so they get the same treatment; their pre-transfer
+    // schedule cells come from the source branch's MANAGER schedule.
+    const _isIncomingHere = (r) => r && r.ec && r.transferring && r.transferTo === attBranch && r.transferDate && r.transferDate <= todayYmdE && r.branch && r.branch !== attBranch;
+    const incoming = (staff || []).filter(_isIncomingHere);
+    const incomingMgrs = (managers || []).filter(_isIncomingHere);
+    const srcBranches = Array.from(new Set(incoming.concat(incomingMgrs).map(s => s.branch)));
     Promise.all([
       safe(window.BOA_DB.loadAttendance(attBranch, attYM)),
       safe(window.BOA_DB.loadSchedule(attBranch, techYm, false)),
@@ -14860,11 +14865,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadEarlyLeaves ? safe(window.BOA_DB.loadEarlyLeaves(attBranch, attYM)) : Promise.resolve({}),
       window.BOA_DB.loadExtras ? safe(window.BOA_DB.loadExtras(attBranch, attYM)) : Promise.resolve({}),
       Promise.all(srcBranches.map(async (br) => {
-        const [sAtt, sSch] = await Promise.all([
+        const [sAtt, sSch, sMgrSch] = await Promise.all([
           safe(window.BOA_DB.loadAttendance(br, attYM)),
-          safe(window.BOA_DB.loadSchedule(br, techYm, false))
+          safe(window.BOA_DB.loadSchedule(br, techYm, false)),
+          safe(window.BOA_DB.loadSchedule(br, attYM, true))
         ]);
-        return [br, (sAtt && sAtt.grid) || {}, (sSch && sSch.grid) || {}, (sAtt && sAtt.freshaWorked) || {}];
+        return [br, (sAtt && sAtt.grid) || {}, (sSch && sSch.grid) || {}, (sAtt && sAtt.freshaWorked) || {}, (sMgrSch && sMgrSch.grid) || {}];
       }))
     ]).then(([att, sch, mgrSch, early, extras, srcData]) => {
       const mergedGrid = { ...((att && att.grid) || {}) };
@@ -14872,16 +14878,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const mgrGrid = ymdReKey((mgrSch && mgrSch.grid) || {});
       const mergedSched = { ...techGrid, ...mgrGrid };
       const mergedFresha = { ...((att && att.freshaWorked) || {}) };
-      // Overlay each incoming tech's pre-transfer cells from their old branch —
+      // Overlay each incoming person's pre-transfer cells from their old branch —
       // grid, schedule AND the Fresha-worked flags, so a later Fresha check
       // validates her earlier (old-branch) cells the same as everyone else.
-      if (incoming.length) {
-        const srcMap = {}; (srcData || []).forEach(([br, g, sg, fw]) => { srcMap[br] = { g: g || {}, sg: sg || {}, fw: fw || {} }; });
-        incoming.forEach(s => {
+      if (incoming.length || incomingMgrs.length) {
+        const srcMap = {}; (srcData || []).forEach(([br, g, sg, fw, msg]) => { srcMap[br] = { g: g || {}, sg: sg || {}, fw: fw || {}, msg: ymdReKey(msg || {}) }; });
+        // schedKey: "sg" (tech schedule) for techs, "msg" (manager schedule,
+        // re-keyed from ymd to day-of-month) for managers.
+        const overlayPreTransfer = (s, schedKey) => {
           const src = srcMap[s.branch]; if (!src) return;
           const ec = s.ec, ecT = String(ec).trim();
           const srcRow = src.g[ec] || src.g[ecT] || {};
-          const srcSchRow = src.sg[ec] || src.sg[ecT] || {};
+          const srcSchRow = src[schedKey][ec] || src[schedKey][ecT] || {};
           const srcFwRow = src.fw[ec] || src.fw[ecT] || {};
           const gRow = { ...(mergedGrid[ec] || {}) };
           const sRow = { ...(mergedSched[ec] || {}) };
@@ -14905,7 +14913,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           mergedGrid[ec] = gRow;
           mergedSched[ec] = sRow;
           mergedFresha[ec] = fRow;
-        });
+        };
+        incoming.forEach(s => overlayPreTransfer(s, "sg"));
+        incomingMgrs.forEach(m => overlayPreTransfer(m, "msg"));
       }
       setAttGrid(mergedGrid);
       setAttMeta(att ? { freshaCoverage: att.freshaCoverage || null, freshaWorked: mergedFresha, reviewedWarnings: att.reviewedWarnings || {}, adminOverrides: att.adminOverrides || {}, mirrorSuppressed: !!att.mirrorSuppressed } : { freshaWorked: mergedFresha, reviewedWarnings: {}, adminOverrides: {}, mirrorSuppressed: false });
@@ -14914,7 +14924,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setAttExtras(extras || {});
     }).catch(e => console.error("Attendance load:", e))
       .finally(() => setAttLoading(false));
-  }, [tab, attBranch, attYM, staff]);
+  }, [tab, attBranch, attYM, staff, managers]);
 
   // Build the branch-agnostic Fresha index: union every branch's freshaWorked
   // for the active cycle into one normalized ec→day map. Keyed by cycle only
@@ -19582,7 +19592,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       Senior Store Manager (💎) → Store Manager (👑) →
                       Assistant Manager (⭐). */}
                       {(() => {
-                        const allMgrs = enrichedManagers.filter(m => m.branch === salon.name && !m.offHidden);
+                        // enrichedManagersEff (not enrichedManagers): a manager whose
+                        // transfer date has passed sits at the NEW branch here — the
+                        // raw list still carries the stale pre-transfer branch.
+                        const allMgrs = enrichedManagersEff.filter(m => m.branch === salon.name && !m.offHidden);
                         // Split active vs on-mat vs offboarded — active mgrs
                         // grouped by tier first (SSM > SM > AM), then offboarded
                         // (with reason chip) and maternity at the bottom so the
@@ -21307,7 +21320,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // excluding Regional managers and active maternity leave.
             const MIN_SM = 1, MIN_AM = 2;
             const mgrVacancies = SALONS.reduce((a, sl) => {
-              const mgrs = enrichedManagers.filter(m => m.branch === sl.name && !m.onMat && !m.offboarded);
+              // Settle-aware: count a transferred manager at her NEW branch.
+              const mgrs = enrichedManagersEff.filter(m => m.branch === sl.name && !m.onMat && !m.offboarded);
               const sms = mgrs.filter(m => (m.effectiveRole || m.role) === "SM").length;
               // AM trial candidates (shown in the Locations manager box) are
               // filling the AM gap, so count them toward the AM minimum.
@@ -21473,7 +21487,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               {mgrSubTab === "coverage" && (() => {
                 const MIN_SM = 1, MIN_AM = 2;
                 const branchStats = SALONS.map(salon => { // Regional managers excluded from store coverage
-                  const mgrs = enrichedManagers.filter(m => m.branch === salon.name);
+                  // Settle-aware list: a manager whose transfer date has passed
+                  // counts at the NEW branch, not the stale stored one.
+                  const mgrs = enrichedManagersEff.filter(m => m.branch === salon.name);
                   // SM-trial AMs count toward SM coverage (effectiveRole === "SM")
                   // and are excluded from the AM tally so coverage stats line up
                   // with what the schedule actually does.
@@ -24294,8 +24310,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // into this destination view — the loan arrow + the receiving branch's
         // mirrored status then render exactly as they did at the old branch.
         const _incomingByEc = {};
-        (enriched || []).forEach(s => {
-          if (s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= _todayYmdR && s.branch && s.branch !== attBranch && stillInCycle(s.ec)) {
+        (enriched || []).concat(managers || []).forEach(s => {
+          if (s && s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= _todayYmdR && s.branch && s.branch !== attBranch && stillInCycle(s.ec)) {
             _incomingByEc[s.ec] = { movedFrom: s.branch, transferDate: s.transferDate };
           }
         });
@@ -24364,17 +24380,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // AMs currently on an active Store-Manager trial (per the SM Trials
         // tab). They work SM shifts, so surface "SM · on trial" on the grid.
         const _smTrialEcSet = new Set((smTrialList || []).filter(t => t && t.status === "active" && t.ec).map(t => String(t.ec).trim()));
-        // Mid-cycle branch transfers. A transferred tech is shown ONCE, at the
-        // DESTINATION branch, with a full-cycle view (pre-transfer cells were
-        // merged in from the old branch by the loader). So: drop techs leaving
-        // THIS branch this cycle, and add techs arriving HERE this cycle (their
+        // Mid-cycle branch transfers. A transferred tech OR manager is shown
+        // ONCE, at the DESTINATION branch, with a full-cycle view (pre-transfer
+        // cells were merged in from the old branch by the loader). So: drop
+        // people leaving THIS branch, and add people arriving HERE (their
         // record still carries the old branch + transferring flags).
         const _movedAwayThisCycle = (s) => s.transferring && s.transferTo && s.transferTo !== attBranch && s.transferDate && s.transferDate <= _todayYmdR;
         const _arrivingHereThisCycle = (s) => s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= _todayYmdR && s.branch && s.branch !== attBranch;
         const attStaff = [
           ...enriched.filter(s => s.branch === attBranch && stillInCycle(s.ec) && !_movedAwayThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat, matStart: (s.matRec && s.matRec.matStart) || s.matStart || null })),
           ...enriched.filter(s => stillInCycle(s.ec) && _arrivingHereThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat, matStart: (s.matRec && s.matRec.matStart) || s.matStart || null, movedFrom: s.branch, movedOn: s.transferDate })),
-          ...managers.filter(m => m.branch === attBranch && stillInCycle(m.ec)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", onMat: !!m.onMat, matStart: (m.matRec && m.matRec.matStart) || m.matStart || null, smTrial: _smTrialEcSet.has(String(m.ec).trim()) }))
+          ...managers.filter(m => m.branch === attBranch && stillInCycle(m.ec) && !_movedAwayThisCycle(m)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", onMat: !!m.onMat, matStart: (m.matRec && m.matRec.matStart) || m.matStart || null, smTrial: _smTrialEcSet.has(String(m.ec).trim()) })),
+          ...managers.filter(m => stillInCycle(m.ec) && _arrivingHereThisCycle(m)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", onMat: !!m.onMat, matStart: (m.matRec && m.matRec.matStart) || m.matStart || null, smTrial: _smTrialEcSet.has(String(m.ec).trim()), movedFrom: m.branch, movedOn: m.transferDate }))
         ].sort((a, b) => {
           // Maternity-leave staff go to the very bottom of the grid so the
           // active roster stays at the top. Within each group, sort by
