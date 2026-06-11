@@ -3507,7 +3507,33 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     }
     if (changed) {
       setGrid(next);
-      setDirty(true);
+      // AUTO-SAVE the stamped leave cells. The on-screen stamp made the tab
+      // look correct while the SAVED grid — the only thing the kiosk schedule
+      // and the My BOA viewer read — stayed unchanged until someone clicked
+      // Save, which is easy to forget. Persist the leave cells immediately
+      // with a per-cell read-merge-write (publishLeaveToSchedule skips days
+      // already O/R/X/ML and only saves when something actually changes, so
+      // re-opening the tab is idempotent and never clobbers other edits).
+      // Scoped to records overlapping the VISIBLE cycle, and clamped to it,
+      // so historical leave records don't trigger writes to old schedules.
+      // This also self-heals leave approved before publishing existed, the
+      // first time anyone opens the affected schedule. setDirty is NOT set
+      // for leave stamps anymore — they are saved, not pending.
+      const _isoOf = (d) => d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
+      const cycStartIso = _isoOf(days[0]);
+      const cycEndIso = _isoOf(days[days.length - 1]);
+      (async () => {
+        for (const lv of leaveRecs) {
+          if (!lv || !lv.ec || !lv.startDate || !lv.endDate) continue;
+          if (lv.startDate > cycEndIso || lv.endDate < cycStartIso) continue;
+          const ec = ecByTrim[String(lv.ec).trim()];
+          if (!ec) continue;
+          const from = lv.startDate > cycStartIso ? lv.startDate : cycStartIso;
+          const to = lv.endDate < cycEndIso ? lv.endDate : cycEndIso;
+          try { await publishLeaveToSchedule(ec, branch, from, to); }
+          catch (e) { console.error("leave auto-save:", e); }
+        }
+      })();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leaveRecs, branch, ym, loading, allStaff]);
