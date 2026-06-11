@@ -1886,8 +1886,12 @@
     // we don't use here, so `select("*")` was loading 100s of KB per call
     // and dominating the kiosk's screen-render time. left_date is needed so
     // we can drop managers who have left (see off-board merge below).
+    // transferring/transfer_to/transfer_date are needed so a transferred
+    // manager can be settled onto her NEW branch below — the HR portal
+    // stores a transfer as flags without rewriting `branch`, so the raw
+    // column goes stale the moment the transfer date passes.
     var res = await c.from("staff")
-      .select("id,name,employee_code,role,role_type,branch,active,left_date")
+      .select("id,name,employee_code,role,role_type,branch,active,left_date,transferring,transfer_to,transfer_date")
       .eq("active", true)
       .order("name", { ascending: true });
     if (res.error) { console.error("listAllManagers:", res.error); return []; }
@@ -1912,6 +1916,15 @@
       var eff = (off && off.leftDate) || m.left_date || null;
       if (!eff) return true;            // not leaving
       return eff >= todayIso;           // keep last-day + future, drop past leavers
+    }).map(function (m) {
+      // Settle completed branch transfers: from the transfer date onward the
+      // manager belongs to the NEW branch, so she shows in that store's
+      // clock-in list (and stops showing at the old one). Pending (future)
+      // transfers keep the stored branch.
+      if (m && m.transferring && m.transfer_to && m.transfer_date && m.transfer_date <= todayIso) {
+        return Object.assign({}, m, { branch: m.transfer_to });
+      }
+      return m;
     });
   }
   async function listTodayManagerClockins() {
