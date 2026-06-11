@@ -25999,7 +25999,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         // Per-staff totals
         const totalsFor = (ec) => {
-          const t = { al: 0, sick: 0, sickNote: 0, frl: 0, ph: 0, mat: 0, unpaid: 0, noShow: 0, ext: 0, late: 0, td: 0, worked: 0, off: 0, term: 0, unpaidHours: 0, earlyHours: 0 };
+          const t = { al: 0, sick: 0, sickNote: 0, frl: 0, ph: 0, mat: 0, unpaid: 0, noShow: 0, ext: 0, late: 0, td: 0, worked: 0, workedFull: 0, off: 0, term: 0, unpaidHours: 0, earlyHours: 0 };
           const reviewedMapL = (attMeta && attMeta.reviewedWarnings) || {};
           // PH credit only when payroll can trust the day:
           //  (a) Schedule × Kiosk × Fresha all agree the tech worked, or
@@ -26041,21 +26041,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // pay — until some source shows she actually came in. An admin
             // override IS the truth, so it counts without further evidence.
             else if (v === "ext") { if (_adminOv(ec, dy.d) || _extraDayWorkEvidence(ec, dy.d, dy.ymd)) { t.ext++; if (phOk) t.ph++; } }
-            else if (v === "late") { t.late++; if (phOk) t.ph++; }
+            else if (v === "late") { t.late++; if (dy.ymd <= _extraTodayYmd) t.workedFull++; if (phOk) t.ph++; }
             else if (v === "trial" || v === "trial_ho") t.td++;
-            else if (v === "on") { t.worked++; if (phOk) t.ph++; }
+            else if (v === "on") { t.worked++; if (dy.ymd <= _extraTodayYmd) t.workedFull++; if (phOk) t.ph++; }
             else if (v === "off") t.off++;
-            else if (v === "swap_i") { t.worked++; if (phOk) t.ph++; }
+            else if (v === "swap_i") { t.worked++; if (dy.ymd <= _extraTodayYmd) t.workedFull++; if (phOk) t.ph++; }
             else if (v === "swap_o") t.off++;
             else if (v === "term") { t.term++; t.unpaid++; }
             // Pending loan-out placeholder: counts as worked for home-
             // branch payroll. Once the receiving branch records a status
             // the cell mirrors it and falls through one of the branches
             // above, so this only fires while attendance is pending.
-            else if (v === "loan_out") { t.worked++; }
+            else if (v === "loan_out") { t.worked++; if (dy.ymd <= _extraTodayYmd) t.workedFull++; }
             else if (v && v.indexOf("deduct") === 0) {
               let h = 0; if (v.indexOf(":") > 0) h = parseFloat(v.split(":")[1]) || 0;
               t.unpaidHours += h;
+              if (dy.ymd <= _extraTodayYmd) t.workedFull++;   // a deduct day was attended — the hours come off below
             }
             // Kiosk "Left work early" sidecar — boa_early_<branch>_<ym>:
             //   value[dayKey][ec] = { hours, recordedAt, recordedBy }
@@ -26123,6 +26124,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           t.earlyDays = t.earlyHours / 8;
           t.unpaidFromHours = deductHoursOnly / 9 + t.earlyDays;
           t.totalUnpaid = t.unpaid + t.unpaidFromHours;
+          // Days ACTUALLY worked: every On Time / Late cell (incl. swap-ins,
+          // loan-outs and attended deduct-days) up to TODAY — future scheduled
+          // days mirror as faded On Time and must not count — minus the
+          // day-fractions lost
+          // to deducted hours (left-early 8h = 1 day, deduct cells 9h = 1 day)
+          // — so someone who left 4h early counts ~0.5 less. Extra and trial
+          // days are NOT in here; they have their own EXD / TRIAL columns.
+          t.daysWorked = Math.max(0, t.workedFull - t.unpaidFromHours);
           return t;
         };
 
@@ -26177,7 +26186,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // payroll month (cycle end), not attYM (the start month).
           const payYm = cycEnd.getFullYear() + "-" + p2(cycEnd.getMonth() + 1);
           const payLabel = moShort[cycEnd.getMonth()] + " " + cycEnd.getFullYear() + " payroll";
-          const head = ["Employee Code", "Full Name", "Role", "Start Date (new starters)", "Trial Days (new starters)",
+          const head = ["Employee Code", "Full Name", "Role", "Start Date (new starters)", "Days Worked", "Trial Days (new starters)",
             "Annual Leave", "Sick (with note)", "FRL", "Public Holidays", "Extra Days",
             "Unpaid", "Lates", "Bonus Lost", "Bonus Loss Reason"];
           const lines = [
@@ -26195,6 +26204,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               s.name || "",
               s.smTrial ? "SM (trial)" : (s.role || ""),
               isNew ? sd : "",
+              (t.daysWorked === Math.floor(t.daysWorked) ? t.daysWorked : t.daysWorked.toFixed(2)),
               t.td,
               t.al,
               t.sickNote,
@@ -26531,6 +26541,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       );
                     })}
                     {[
+                      { l: "WORKED", bg: "#ecfdf5", c: "#065f46", t: "Days actually worked — every On Time + Late cell (incl. swap-ins and loan-outs). Left-early / deducted hours subtract partial days (8h left early = 1 day; deduct cells at 9h = 1 day). Extra days and trial days are counted in their own columns, not here." },
                       { l: "TRIAL", bg: "#fefce8", c: "#854d0e", t: "Paid trial days (new starters) — the yellow T / HO trial days a hired new starter worked this cycle. Matches the CSV's Trial Days column." },
                       { l: "AL", bg: "#eff6ff", c: "#1e40af", t: "Annual Leave (off-days deducted — ~2 per 7-day span; e.g. 6 days = 5, 7 days = 5, 21 days = 15; runs of 5 days or fewer count in full)" },
                       { l: "SICK+N", bg: "#f0fdf4", c: "#166534", t: "Sick days WITH a doctor's note (paid). Sick without a note is unpaid and counted in UNPAID." },
@@ -26545,7 +26556,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </thead>
                 <tbody>
                   {attStaff.length === 0 && (
-                    <tr><td colSpan={days.length + 7} style={{ padding: 30, textAlign: "center", color: "#9ca3af", fontStyle: "italic" }}>No active staff at {attBranch}.</td></tr>
+                    <tr><td colSpan={days.length + 8} style={{ padding: 30, textAlign: "center", color: "#9ca3af", fontStyle: "italic" }}>No active staff at {attBranch}.</td></tr>
                   )}
                   {attStaff.map((s, idx) => {
                     const t = totalsFor(s.ec);
@@ -26555,7 +26566,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const showSection = idx === 0 || isMgr !== prevIsMgr;
                     const sectionRow = showSection ? (
                       <tr key={"section-" + (isMgr ? "mgr" : "tech")}>
-                        <td colSpan={days.length + 7} style={{ background: isMgr ? "#FCE7F3" : "#FDEEF5", padding: 0, borderTop: "2px solid #FBCFE8", borderBottom: "1px solid #FBCFE8" }}>
+                        <td colSpan={days.length + 8} style={{ background: isMgr ? "#FCE7F3" : "#FDEEF5", padding: 0, borderTop: "2px solid #FBCFE8", borderBottom: "1px solid #FBCFE8" }}>
                           <div style={{ position: "sticky", left: 0, padding: "8px 14px", fontSize: 11, fontWeight: 800, color: "#831843", letterSpacing: "0.12em", textTransform: "uppercase", background: isMgr ? "#FCE7F3" : "#FDEEF5", width: "max-content" }}>
                             {isMgr ? "👑 Managers" : "💅 Nail Techs"}
                           </div>
@@ -27088,7 +27099,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             </td>
                           );
                         })}
-                        <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: t.td > 0 ? "#854d0e" : "#cbb1bd", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "3px solid #FBCFE8", background: "#fefce8" }} title={t.td + " paid trial day" + (t.td === 1 ? "" : "s") + " (new starter)"}>{t.td}</td>
+                        <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#065f46", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "3px solid #FBCFE8", background: "#ecfdf5" }}
+                          title={(t.daysWorked === Math.floor(t.daysWorked) ? t.daysWorked : t.daysWorked.toFixed(2)) + " day" + (t.daysWorked === 1 ? "" : "s") + " worked (On Time + Late; deducted hours subtracted)"}>{t.daysWorked === Math.floor(t.daysWorked) ? t.daysWorked : t.daysWorked.toFixed(2)}</td>
+                        <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: t.td > 0 ? "#854d0e" : "#cbb1bd", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#fefce8" }} title={t.td + " paid trial day" + (t.td === 1 ? "" : "s") + " (new starter)"}>{t.td}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#1e40af", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#eff6ff" }}>{t.al}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#166534", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#f0fdf4" }} title={t.sickNote + " sick day" + (t.sickNote === 1 ? "" : "s") + " WITH a doctor's note (paid)"}>{t.sickNote}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, fontWeight: 800, color: "#78350f", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", background: "#fffbeb" }}>{t.frl}</td>
@@ -27120,7 +27133,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     return (
                       <React.Fragment key="trial-att-section">
                         <tr>
-                          <td colSpan={days.length + 7} style={{ background: "#fefce8", padding: 0, borderTop: "2px solid #fde68a", borderBottom: "1px solid #fde68a" }}>
+                          <td colSpan={days.length + 8} style={{ background: "#fefce8", padding: 0, borderTop: "2px solid #fde68a", borderBottom: "1px solid #fde68a" }}>
                             <div style={{ position: "sticky", left: 0, padding: "8px 14px", fontSize: 11, fontWeight: 800, color: "#854d0e", letterSpacing: "0.12em", textTransform: "uppercase", background: "#fefce8", width: "max-content" }}>🧪 Trial · paid trial days <span style={{ fontWeight: 600, textTransform: "none", letterSpacing: 0 }}>(T = in store · HO = head office)</span></div>
                           </td>
                         </tr>
@@ -27148,7 +27161,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 else if (s === "absent") { bg = "#fca5a5"; fg = "#7f1d1d"; txt = "A"; }
                                 return <td key={dy.d} title={txt === "HO" ? (c.name + " · head-office training day (paid)") : txt === "T" ? (c.name + " · trial day worked (paid)" + (s === "late" ? " · late" : "")) : (txt === "A" ? (c.name + " · absent (unpaid)") : "")} style={{ padding: 0, textAlign: "center", fontSize: txt === "HO" ? 8.5 : 10, fontWeight: 800, color: fg, background: bg, borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", height: 34 }}>{txt}</td>;
                               })}
-                              <td colSpan={7} style={{ padding: "6px 10px", fontSize: 11, fontWeight: 800, color: "#854d0e", textAlign: "left", borderBottom: "1px solid #FCE7F3", borderLeft: "3px solid #FBCFE8", background: "#fefce8" }}>
+                              <td colSpan={8} style={{ padding: "6px 10px", fontSize: 11, fontWeight: 800, color: "#854d0e", textAlign: "left", borderBottom: "1px solid #FCE7F3", borderLeft: "3px solid #FBCFE8", background: "#fefce8" }}>
                                 {paid} paid trial day{paid === 1 ? "" : "s"}{ho > 0 ? " (" + (paid - ho) + " store · " + ho + " head office)" : ""}{absent > 0 ? " · " + absent + " absent" : ""}
                               </td>
                             </tr>
