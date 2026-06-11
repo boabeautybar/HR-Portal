@@ -26041,22 +26041,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // pay — until some source shows she actually came in. An admin
             // override IS the truth, so it counts without further evidence.
             else if (v === "ext") { if (_adminOv(ec, dy.d) || _extraDayWorkEvidence(ec, dy.d, dy.ymd)) { t.ext++; if (phOk) t.ph++; } }
-            else if (v === "late") { t.late++; t.workedFull++; if (phOk) t.ph++; }
+            else if (v === "late") { t.late++; if (dy.ymd <= _extraTodayYmd) t.workedFull++; if (phOk) t.ph++; }
             else if (v === "trial" || v === "trial_ho") t.td++;
-            else if (v === "on") { t.worked++; t.workedFull++; if (phOk) t.ph++; }
+            else if (v === "on") { t.worked++; if (dy.ymd <= _extraTodayYmd) t.workedFull++; if (phOk) t.ph++; }
             else if (v === "off") t.off++;
-            else if (v === "swap_i") { t.worked++; t.workedFull++; if (phOk) t.ph++; }
+            else if (v === "swap_i") { t.worked++; if (dy.ymd <= _extraTodayYmd) t.workedFull++; if (phOk) t.ph++; }
             else if (v === "swap_o") t.off++;
             else if (v === "term") { t.term++; t.unpaid++; }
             // Pending loan-out placeholder: counts as worked for home-
             // branch payroll. Once the receiving branch records a status
             // the cell mirrors it and falls through one of the branches
             // above, so this only fires while attendance is pending.
-            else if (v === "loan_out") { t.worked++; t.workedFull++; }
+            else if (v === "loan_out") { t.worked++; if (dy.ymd <= _extraTodayYmd) t.workedFull++; }
             else if (v && v.indexOf("deduct") === 0) {
               let h = 0; if (v.indexOf(":") > 0) h = parseFloat(v.split(":")[1]) || 0;
               t.unpaidHours += h;
-              t.workedFull++;       // a deduct day was attended — the hours come off below
+              if (dy.ymd <= _extraTodayYmd) t.workedFull++;   // a deduct day was attended — the hours come off below
             }
             // Kiosk "Left work early" sidecar — boa_early_<branch>_<ym>:
             //   value[dayKey][ec] = { hours, recordedAt, recordedBy }
@@ -26125,7 +26125,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           t.unpaidFromHours = deductHoursOnly / 9 + t.earlyDays;
           t.totalUnpaid = t.unpaid + t.unpaidFromHours;
           // Days ACTUALLY worked: every On Time / Late cell (incl. swap-ins,
-          // loan-outs and attended deduct-days), minus the day-fractions lost
+          // loan-outs and attended deduct-days) up to TODAY — future scheduled
+          // days mirror as faded On Time and must not count — minus the
+          // day-fractions lost
           // to deducted hours (left-early 8h = 1 day, deduct cells 9h = 1 day)
           // — so someone who left 4h early counts ~0.5 less. Extra and trial
           // days are NOT in here; they have their own EXD / TRIAL columns.
