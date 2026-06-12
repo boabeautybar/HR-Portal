@@ -1018,18 +1018,25 @@
     // Push an audit-log entry directly — setAttendanceStatus used to do
     // this for us as a side-effect, but we've broken that linkage.
     try {
-      var logKey = "boa_kiosk_log_" + branch() + "_" + ym;
+      // Same START-month log bucket setAttendanceStatus writes to (attKey
+      // shifts the END-month cycle key back one month).
+      var logKey = "boa_kiosk_log_" + branch() + "_" + attKey(ym).split("_").pop();
       var prior  = await c.from("app_state").select("value").eq("key", logKey).maybeSingle();
       var log    = (prior.data && Array.isArray(prior.data.value)) ? prior.data.value : [];
-      // ymd derivation mirrors setAttendanceStatus's calendar math: days
-      // 25..31 belong to the previous month of the payroll cycle, 1..24
-      // belong to the current month.
+      // ym here is the END-month cycle key (ymForDate names the 25th→24th
+      // cycle by the month its 24th falls in; extrasKey uses it directly).
+      // Days 25..31 therefore belong to the PREVIOUS calendar month and days
+      // 1..24 to ym's own month. The old math assumed a START-month base
+      // (like setAttendanceStatus, which first shifts ym back via attKey), so
+      // every extra day logged here carried a ymd exactly ONE MONTH IN THE
+      // FUTURE — and surfaced in the portal's Daily Check-ins as a phantom
+      // EXTRA a month later, at the branch it was originally marked at.
       var cycP = ym.split("-");
       var cycY = +cycP[0], cycM = +cycP[1];
       var dayN = parseInt(dayKey, 10);
       var dt;
-      if (dayN >= 25) { dt = new Date(cycY, cycM - 1, dayN); }
-      else { var nm = cycM + 1, ny = cycY; if (nm > 12) { nm = 1; ny += 1; } dt = new Date(ny, nm - 1, dayN); }
+      if (dayN >= 25) { var pm = cycM - 1, py = cycY; if (pm < 1) { pm = 12; py -= 1; } dt = new Date(py, pm - 1, dayN); }
+      else { dt = new Date(cycY, cycM - 1, dayN); }
       var ymd = dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
       log.push({
         ec: ec, dayKey: String(dayKey), ymd: ymd,
