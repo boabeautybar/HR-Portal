@@ -92,6 +92,29 @@ begin
     end if;
   end if;
 
+  -- Block duplicate LEAVE requests while an earlier one is still in review:
+  -- the same person (employee code, or name when no code) can't submit another
+  -- annual-type request whose dates overlap a PENDING one. Approved/declined
+  -- requests don't block — a declined request may legitimately be re-submitted
+  -- for the same dates. The leave form turns 'duplicate_pending_request' into
+  -- a friendly notice.
+  if btrim(coalesce(p_leave_type, '')) not in ('Sick', 'Absent') then
+    if exists (
+      select 1 from leave_requests
+      where leave_type not in ('Sick', 'Absent')
+        and status = 'pending'
+        and start_date <= p_end_date
+        and end_date   >= p_start_date
+        and case
+          when nullif(btrim(p_ec), '') is not null
+            then upper(btrim(coalesce(ec, ''))) = upper(btrim(p_ec))
+          else lower(btrim(name)) = lower(btrim(p_name))
+        end
+    ) then
+      raise exception 'duplicate_pending_request';
+    end if;
+  end if;
+
   v_ref := 'LV-' || to_char(now() at time zone 'Africa/Johannesburg', 'YYMMDD')
            || '-' || upper(substr(md5(random()::text), 1, 4));
 
