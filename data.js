@@ -1093,11 +1093,24 @@
         if (!e || !e.ts) return;
         var ts = new Date(e.ts);
         if (isNaN(ts) || ts < since) return;
+        // Heal kiosk extra-day entries dated one cycle forward. The kiosk's
+        // markExtraDay used START-month date math on its END-month cycle key,
+        // stamping a ymd exactly one month in the future — so a May 12 extra
+        // day surfaced as a phantom EXTRA on June 12. A kiosk "ext" mark is
+        // always made ON the day itself, so its ymd can never be after the
+        // date it was written: pull such entries back to the timestamp's day.
+        // (The kiosk write is fixed too, but the bad entries persist in the
+        // log, and a kiosk with a stale cached script may still write more.)
+        var ymd = e.ymd || null;
+        if (ymd && e.status === "ext" && !e.manual) {
+          var tsYmd = ts.getFullYear() + "-" + String(ts.getMonth() + 1).padStart(2, "0") + "-" + String(ts.getDate()).padStart(2, "0");
+          if (ymd > tsYmd) ymd = tsYmd;
+        }
         out.push({
           id: "kiosk_" + rowBranch + "_" + e.ts + "_" + (e.ec || ""),
           ts: e.ts,
           dayKey: e.dayKey,
-          ymd: e.ymd || null,
+          ymd: ymd,
           type: "att",
           status: e.status,
           note: e.note || null,
