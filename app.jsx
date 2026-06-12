@@ -3430,6 +3430,38 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     });
   }, [branch, ym]);
 
+  // Heal grid rows keyed by a DRIFTED employee code — stray whitespace or a
+  // case difference between the saved row key and the current staff record's
+  // ec (e.g. after the code was edited on the staff record). The grid render
+  // and the staff-sync diff both look up rows by the EXACT staff ec, so a
+  // drifted row renders as a blank row, the person is flagged "+ Add" (an
+  // autofilled duplicate), and her REAL row shows as a stale row to remove —
+  // syncing would wipe a hand-made schedule. Re-key drifted rows to the staff
+  // ec as soon as both the grid and the staff list are here; when a row also
+  // exists under the exact key, the exact row's cells win and the drifted row
+  // only fills its blanks. Marks the schedule dirty so Save persists the
+  // healed keys (the kiosk + My BOA viewers read the saved grid).
+  useEffect(() => {
+    if (loading) return;
+    const byNorm = {};
+    (allStaff || []).forEach(s => { if (s && s.ec) byNorm[String(s.ec).trim().toUpperCase()] = s.ec; });
+    const keys = Object.keys(grid || {});
+    const isDrifted = (k) => { const c = byNorm[String(k).trim().toUpperCase()]; return !!c && c !== k; };
+    if (!keys.some(isDrifted)) return;
+    const healed = {};
+    // Drifted rows first, exact-key rows second, so real exact cells override.
+    keys.filter(isDrifted).forEach(k => {
+      const canon = byNorm[String(k).trim().toUpperCase()];
+      healed[canon] = Object.assign({}, healed[canon], grid[k]);
+    });
+    keys.filter(k => !isDrifted(k)).forEach(k => {
+      healed[k] = Object.assign({}, healed[k], grid[k]);
+    });
+    setGrid(healed);
+    setDirty(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [grid, allStaff, loading]);
+
   const days = window.BOA_DB ? window.BOA_DB.periodDays(ym) : [];
 
   // Auto-stamp 'R' on cells with a pending off-day request — runs after each
@@ -5661,11 +5693,17 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   // Active techs that don't have a scheduled row yet — almost always new
   // joiners whose start date lands inside or just before the cycle. Excludes
   // people whose start date is AFTER the cycle ends (no working days here).
+  // EC comparisons are by TRIMMED, case-folded code — a saved row whose key
+  // carries formatting drift still belongs to the person (the load-time heal
+  // re-keys it; this keeps the diff honest even before that runs), so she is
+  // neither flagged "+ Add" nor her real row flagged stale for removal.
   const missingTechs = useMemo(() => {
     if (!gridHasData) return [];
+    const _norm = (x) => String(x == null ? "" : x).trim().toUpperCase();
+    const rowsByNorm = {};
+    Object.keys(grid).forEach(k => { if (grid[k] && Object.keys(grid[k]).length > 0) rowsByNorm[_norm(k)] = true; });
     return techs.filter(t => {
-      const row = grid[t.ec];
-      if (row && Object.keys(row).length > 0) return false;
+      if (rowsByNorm[_norm(t.ec)]) return false;
       const startDate = t.startDate || t._startDate;
       if (startDate && periodEndYmd && startDate > periodEndYmd) return false;
       return true;
@@ -5678,10 +5716,11 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   // row entirely (leftDate before cycle / record gone).
   const staleStaff = useMemo(() => {
     if (!gridHasData) return [];
-    const activeEcs = new Set(techs.map(t => t.ec));
-    return Object.keys(grid).filter(ec => !activeEcs.has(ec)).map(ec => ({
+    const _norm = (x) => String(x == null ? "" : x).trim().toUpperCase();
+    const activeEcs = new Set(techs.map(t => _norm(t.ec)));
+    return Object.keys(grid).filter(ec => !activeEcs.has(_norm(ec))).map(ec => ({
       ec,
-      staff: allStaff.find(s => s.ec === ec) || null
+      staff: allStaff.find(s => _norm(s.ec) === _norm(ec)) || null
     }));
   }, [techs, grid, allStaff, gridHasData]);
 
