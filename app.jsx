@@ -9996,6 +9996,44 @@ async function addApprovedLeaveToCalendar(r, deps) {
   try { await publishLeaveToSchedule(person.ec, _schedBranch, r.start_date, r.end_date); } catch (e) { console.error("publishLeaveToSchedule:", e); }
   return true;
 }
+// Split-approve a request whose annual balance can't cover the whole range:
+// days up to `paidEndYmd` go on the Leave Planner as PAID annual leave, the
+// remainder as UNPAID emergency leave (paidEndYmd null = no balance at all,
+// the whole range is unpaid). Two separate planner records keep the portions
+// visibly distinct everywhere downstream — the planner paints emergency
+// records as orange "E" cells with the UNPAID badge, the Schedule tab paints
+// their days orange "EL" instead of grey "L", and the attendance sheet pays
+// them as 'el' (unpaid) instead of 'al'. Days already covered by existing
+// planner records are skipped, like a normal approval.
+async function approveSplitLeave(r, paidEndYmd, availDays, actor, deps) {
+  const { enriched, managers, leaveRecs, setLeaveRecs } = deps;
+  const person = findLeavePerson(r.ec, enriched, managers);
+  if (!person) return false;
+  const _schedBranch = effHomeBranch(person, r.start_date) || person.branch;
+  const nextYmd = (ymd) => { const d = new Date(ymd + "T00:00:00"); d.setDate(d.getDate() + 1); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+  const segments = uncoveredLeaveSegments(r, person, leaveRecs);
+  const recs = [];
+  let idSeq = Date.now();
+  const nowIso = new Date().toISOString();
+  for (const sg of segments) {
+    if (paidEndYmd && sg.start <= paidEndYmd) {
+      recs.push({ _id: idSeq++, ec: person.ec, startDate: sg.start, endDate: (sg.end <= paidEndYmd ? sg.end : paidEndYmd), type: "Annual leave", notes: "[Leave request " + (r.ref_code || "") + " · paid portion of split approval]", emergency: false, balanceDays: (availDays != null ? Number(availDays) : null), balanceCheckedBy: actor || "", balanceCheckedAt: nowIso, balancePending: false });
+    }
+    if (!paidEndYmd || sg.end > paidEndYmd) {
+      const us = (!paidEndYmd || sg.start > paidEndYmd) ? sg.start : nextYmd(paidEndYmd);
+      recs.push({ _id: idSeq++, ec: person.ec, startDate: us, endDate: sg.end, type: "Annual leave", notes: "[EMERGENCY] Unpaid portion of leave request " + (r.ref_code || "") + " — annual leave balance exhausted", emergency: true, balanceDays: null, balanceCheckedBy: null, balanceCheckedAt: null, balancePending: false, balanceRequestedBy: actor || "", balanceRequestedAt: nowIso });
+    }
+  }
+  if (recs.length > 0) {
+    const next = [...(leaveRecs || []), ...recs];
+    setLeaveRecs(next);
+    await window.BOA_DB.saveLeaveRecords(next);
+  }
+  // Stamp the whole range onto the saved schedule grid (kiosk / My BOA read
+  // only the grid). Best-effort, like the normal approval path.
+  try { await publishLeaveToSchedule(person.ec, _schedBranch, r.start_date, r.end_date); } catch (e) { console.error("publishLeaveToSchedule:", e); }
+  return true;
+}
 // When both gates are green, auto-approve and add to the calendar.
 async function finalizeLeaveIfReady(r, deps) {
   const { patch, actor, logActivity } = deps;
@@ -12191,6 +12229,59 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
     } catch (e) { alert("Could not add to the Leave Planner: " + (e.message || e)); }
     setBusy(false);
   };
+  // Split approval — for requests the annual balance can't fully cover. Pays
+  // annual leave up to the day the balance runs out; the remaining days are
+  // logged as UNPAID emergency leave. Requires the operational check first
+  // (unpaid leave still takes the person off the floor) and confirms the
+  // operational impact before committing.
+  const splitApprove = async (r) => {
+    if (r.status === "approved" || r.status === "declined") return;
+    if (!r.ops_cleared_at) { alert("Please complete the operational check (step 1) first — a split approval still needs confirmation that the store can spare this person."); return; }
+    // Balance to use for the paid portion: a typed figure wins, then the
+    // recorded balance check, then the uploaded balance sheet.
+    const typed = balDraft[r.id];
+    let avail = (typed !== "" && typed != null && !isNaN(Number(typed))) ? Number(typed)
+      : (r.balance_days != null && !isNaN(Number(r.balance_days))) ? Number(r.balance_days)
+        : (() => { const b = availableForEc(r.ec); return b ? Math.round(b.available * 100) / 100 : null; })();
+    if (avail == null || isNaN(avail)) { alert("Enter this person's leave balance (days available on Sage) in the balance box first — the split needs to know how many paid days they have."); return; }
+    if (avail < 0) avail = 0;
+    const isM = isMgrReq(r);
+    const opts = schedOpts(r);
+    const total = leaveDayBreakdown(r.start_date, r.end_date, isM, opts).real;
+    if (avail + 1e-9 >= total) { alert("Their balance (" + fmtDays(avail) + " day(s)) covers this whole request (" + fmtDays(total) + " leave day(s)) — no split is needed. Use the normal ✓ balance check to approve it as fully paid annual leave."); return; }
+    // Walk the range to find the last day the balance still covers: the paid
+    // portion is the longest prefix whose ACTUAL leave days (off days don't
+    // consume balance) fit within the available days.
+    let paidEnd = null, paidDays = 0;
+    for (let d = new Date(r.start_date + "T00:00:00"), e = new Date(r.end_date + "T00:00:00"); d <= e; d.setDate(d.getDate() + 1)) {
+      const ymd = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+      const real = leaveDayBreakdown(r.start_date, ymd, isM, opts).real;
+      if (real <= avail + 1e-9) { paidEnd = ymd; paidDays = real; } else break;
+    }
+    const unpaidStart = paidEnd ? _addDays(paidEnd, 1) : r.start_date;
+    const unpaidDays = Math.max(0, Math.round((total - paidDays) * 100) / 100);
+    const plan = paidEnd
+      ? "PAID annual leave: " + fmtIncidentDate(r.start_date) + " → " + fmtIncidentDate(paidEnd) + " (" + fmtDays(paidDays) + " leave day(s) — uses their remaining balance of " + fmtDays(avail) + ")\nUNPAID emergency leave: " + fmtIncidentDate(unpaidStart) + " → " + fmtIncidentDate(r.end_date) + " (" + fmtDays(unpaidDays) + " day(s), unpaid)"
+      : "This person has no paid leave days available (balance " + fmtDays(avail) + "), so the ENTIRE request — " + fmtIncidentDate(r.start_date) + " → " + fmtIncidentDate(r.end_date) + " — would be logged as UNPAID emergency leave.";
+    const ok = window.confirm(
+      "Split approval for " + (r.name || r.ec || "this person") + ":\n\n" + plan + "\n\n"
+      + "Please note before confirming: unpaid emergency leave should remain the exception rather than the rule. The business must continue to operate, and it cannot afford to have too many people away on unpaid leave at the same time. Kindly satisfy yourself that staffing levels at " + (r.store || "the store") + " can absorb this absence.\n\n"
+      + "Are you sure that approving the unpaid emergency portion is acceptable in this case?");
+    if (!ok) return;
+    setBusy(true);
+    try {
+      const added = await approveSplitLeave(r, paidEnd, avail, actor, gateDeps);
+      if (!added) { alert("No staff member or manager matches employee code \"" + (r.ec || "—") + "\" — the planner records can't be created, so nothing was approved."); setBusy(false); return; }
+      const note = paidEnd
+        ? "SPLIT APPROVAL — paid annual leave " + r.start_date + " → " + paidEnd + " (" + fmtDays(paidDays) + "d, balance " + fmtDays(avail) + "d) · unpaid EMERGENCY leave " + unpaidStart + " → " + r.end_date + " (" + fmtDays(unpaidDays) + "d, unpaid — balance exhausted)"
+        : "SPLIT APPROVAL — no annual balance available (" + fmtDays(avail) + "d): entire leave " + r.start_date + " → " + r.end_date + " logged as unpaid EMERGENCY leave";
+      try { await window.BOA_DB.setLeaveBalance(r.id, true, avail, actor); } catch (_e) { }
+      await window.BOA_DB.setLeaveStatus(r.id, "approved", note, actor);
+      patchLocal(r.id, { status: "approved", reviewed: true, decided_by: actor, decided_at: new Date().toISOString(), decision_note: note, balance_checked_at: new Date().toISOString(), balance_checked_by: actor, balance_days: avail });
+      if (logActivity) logActivity("Approved leave request (split paid/unpaid)", r.name, note, "Leave");
+    } catch (e) { alert("Could not complete the split approval: " + (e.message || e)); }
+    setBusy(false);
+  };
 
   const toggleOps = async (r, clear) => {
     setBusy(true);
@@ -12371,6 +12462,9 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
             </div>
             <div style={{ fontSize: 11.5, color: "#9d6a82", marginTop: 10 }}>
               💡 Open a request below to action your step. The coloured <strong>progress dots</strong> on each one show how far it's got. The two checks can be done in any order; a request only turns <strong>green/approved</strong> when both are ticked.
+            </div>
+            <div style={{ marginTop: 9, background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 9, padding: "9px 12px", fontSize: 11.5, color: "#92400e", lineHeight: 1.55 }}>
+              ✂️ <strong>Not enough leave days for the whole request?</strong> After the operational check, the payroll officer can use <strong>"Approve as paid + unpaid emergency split"</strong> on the request: paid annual leave is approved up to the day the balance runs out, and the remaining days are logged as <strong>unpaid emergency leave</strong>. Both portions land on the Leave Planner and the schedules — paid annual shows as the usual leave marking, the unpaid emergency stretch shows in <strong>orange (E on the planner, EL on the schedule)</strong> — and the attendance sheet pays them accordingly. Please use this sparingly: the business must continue to operate, and unpaid emergency leave should remain the exception, not the rule.
             </div>
           </div>
         );
@@ -12569,14 +12663,26 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                             const enough = bal && bal.available + 1e-9 >= need;
                             const avail = bal ? Math.round(bal.available * 100) / 100 : null;
                             return (
-                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                                {enough && <button disabled={busy} onClick={() => setBalance(r, true, avail)} title={"Records " + fmtDays(avail) + " days available (from the sheet) and clears this gate — no typing needed."} style={btn("#15803d", "#fff", "#15803d")}>✓ Enough — confirm ({fmtDays(avail)} available)</button>}
-                                <input type="number" min="0" step="0.5" placeholder={avail != null ? "or type (sheet: " + fmtDays(avail) + ")" : "days available"}
-                                  value={balDraft[r.id] != null ? balDraft[r.id] : (r.balance_days != null ? r.balance_days : "")}
-                                  onChange={e => setBalDraft({ ...balDraft, [r.id]: e.target.value })}
-                                  style={{ width: 150, fontFamily: "inherit", fontSize: 13, padding: "7px 10px", borderRadius: 9, border: "1.5px solid #e7c6d4" }} />
-                                <button disabled={busy} onClick={() => setBalance(r, true)} style={btn(enough ? "#fff" : "#0f766e", enough ? "#0f766e" : "#fff", "#0f766e")}>✓ Balance OK</button>
-                                <span style={{ fontSize: 11, color: "#9d6a82" }}>Needs {need} leave day(s)</span>
+                              <div>
+                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                                  {enough && <button disabled={busy} onClick={() => setBalance(r, true, avail)} title={"Records " + fmtDays(avail) + " days available (from the sheet) and clears this gate — no typing needed."} style={btn("#15803d", "#fff", "#15803d")}>✓ Enough — confirm ({fmtDays(avail)} available)</button>}
+                                  <input type="number" min="0" step="0.5" placeholder={avail != null ? "or type (sheet: " + fmtDays(avail) + ")" : "days available"}
+                                    value={balDraft[r.id] != null ? balDraft[r.id] : (r.balance_days != null ? r.balance_days : "")}
+                                    onChange={e => setBalDraft({ ...balDraft, [r.id]: e.target.value })}
+                                    style={{ width: 150, fontFamily: "inherit", fontSize: 13, padding: "7px 10px", borderRadius: 9, border: "1.5px solid #e7c6d4" }} />
+                                  <button disabled={busy} onClick={() => setBalance(r, true)} style={btn(enough ? "#fff" : "#0f766e", enough ? "#0f766e" : "#fff", "#0f766e")}>✓ Balance OK</button>
+                                  <span style={{ fontSize: 11, color: "#9d6a82" }}>Needs {need} leave day(s)</span>
+                                </div>
+                                {!enough && (
+                                  <div style={{ marginTop: 9, background: "#fffbeb", border: "1px dashed #f59e0b", borderRadius: 9, padding: "9px 11px" }}>
+                                    <button disabled={busy} onClick={() => splitApprove(r)}
+                                      title="Approves paid annual leave up to the day the balance runs out; the remaining days are logged as unpaid emergency leave. You'll see the exact split and be asked to confirm before anything is saved."
+                                      style={btn("#b45309", "#fff", "#b45309")}>✂️ Not enough balance? Approve as paid + unpaid emergency split</button>
+                                    <div style={{ fontSize: 11.5, color: "#92400e", marginTop: 6, lineHeight: 1.5 }}>
+                                      Pays annual leave until the balance runs out{r.ops_cleared_at ? "" : " (operational check required first)"}; the remaining days become <strong>unpaid emergency leave</strong>. The Leave Planner and schedules show the unpaid stretch in orange (E / EL) and the attendance sheet pays it as unpaid. Uses the balance typed above (or the sheet figure).
+                                    </div>
+                                  </div>
+                                )}
                               </div>
                             );
                           })()
