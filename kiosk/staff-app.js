@@ -266,12 +266,17 @@
     if (!body) return;
     var targetYm = window.APP_DATA.nextMonthYm();
     var label    = window.APP_DATA.nextMonthLabel();
-    // Exclude staff currently on maternity / annual leave (already away).
-    // Managers stay in the picker — addOffRequest routes their entries to
-    // boa_mgr_requests_v1 and techs to boa_tech_requests_v1, both of which
-    // the HR portal already reads.
-    var cats     = await window.APP_DATA.categorizeStaff(new Date(), { activeOnly: true });
-    var staff    = cats.active;
+    // Cycle-aware roster: who belongs to THIS branch during the TARGET cycle,
+    // not who is here today. Today's roster wrongly hid people who ARE on next
+    // month's schedule — anyone away on leave right now, and techs whose
+    // transfer into this branch lands before/during the cycle. Maternity and
+    // whole-cycle leave are still excluded. Managers stay in the picker —
+    // addOffRequest routes their entries to boa_mgr_requests_v1 and techs to
+    // boa_tech_requests_v1, both of which the HR portal already reads.
+    // (Fallback to the old today-roster if a cached data.js predates the API.)
+    var staff = window.APP_DATA.listOffRequestStaff
+      ? await window.APP_DATA.listOffRequestStaff(targetYm)
+      : (await window.APP_DATA.categorizeStaff(new Date(), { activeOnly: true })).active;
     var existing = await window.APP_DATA.listOffRequests(targetYm);
 
     // Render the cycle, not the calendar month. For "June" (targetYm
