@@ -473,6 +473,69 @@
     return { active: active, onMat: onMat, onLeave: onLeave, loansToday: loansToday, leftCompany: leftCompany };
   }
 
+  // Roster for the Off Requests picker: everyone who belongs to THIS branch at
+  // any point during the 25th→24th cycle named by targetYm. The picker used to
+  // take TODAY's active roster (categorizeStaff), which silently dropped people
+  // who ARE on next month's schedule in the HR portal:
+  //   • anyone on annual leave today — away now, but the off requests are for
+  //     NEXT month, which they'll be back for;
+  //   • a tech transferring INTO this branch whose transfer date hasn't arrived
+  //     yet — the portal already rosters her here for the target cycle.
+  // Cycle-aware rules instead: leavers and transfers OUT drop only when they're
+  // gone BEFORE the cycle starts; transfers IN appear as soon as the move lands
+  // on or before the cycle's last day; annual leave only excludes someone whose
+  // approved leave covers EVERY day of the cycle; maternity stays excluded
+  // (long-term away).
+  async function listOffRequestStaff(targetYm) {
+    var c = client(); if (!c) return [];
+    var days = periodDays(targetYm);
+    var p2 = function (n) { return String(n).padStart(2, "0"); };
+    var first = days[0], last = days[days.length - 1];
+    var cycleStart = first.year + "-" + p2(first.monthIdx + 1) + "-" + p2(first.day);
+    var cycleEnd   = last.year  + "-" + p2(last.monthIdx + 1)  + "-" + p2(last.day);
+    var thisBranch = branch();
+    var results = await Promise.all([
+      listStaff({ activeOnly: true }),
+      listMaternity(),
+      listLeaveRecords(),
+      loadOffboarding(),
+      listTransfersInto(thisBranch)
+    ]);
+    var staff = results[0], matRecs = results[1], leaveRecs = results[2], offList = results[3], transfersIn = results[4];
+    var offByEc = {};
+    (offList || []).forEach(function (o) { if (o && o.ec) offByEc[String(o.ec).trim()] = o; });
+    var matByEc = {};
+    (matRecs || []).forEach(function (m) {
+      if ((m.mat_status === "on_mat" || m.mat_status === "dates_tbc") && m.employee_code) matByEc[m.employee_code] = true;
+    });
+    var fullCycleLeaveEcs = {};
+    (leaveRecs || []).forEach(function (l) {
+      if (!l || l.type !== "Annual leave" || !l.ec || !l.startDate || !l.endDate) return;
+      if (l.startDate <= cycleStart && l.endDate >= cycleEnd) fullCycleLeaveEcs[String(l.ec).trim()] = true;
+    });
+    // Transfers IN that land before the cycle ends — already on this branch's
+    // target-cycle schedule in the portal, so they must be pickable here.
+    (transfersIn || []).forEach(function (t) {
+      if (!t || !t.employee_code) return;
+      if (!t.transfer_date || t.transfer_date > cycleEnd) return;
+      if (staff.some(function (s) { return s.id === t.id || s.employee_code === t.employee_code; })) return;
+      t._transferredIn = true;
+      t._homeBranch = t.branch || "";
+      staff.push(t);
+    });
+    return staff.filter(function (s) {
+      if (!s) return false;
+      var ec = s.employee_code ? String(s.employee_code).trim() : "";
+      var left = (ec && offByEc[ec] && offByEc[ec].leftDate) || s.left_date || null;
+      if (left && left < cycleStart) return false;                      // gone before the cycle
+      if (s.transferring && s.transfer_to && s.transfer_to !== thisBranch
+          && s.transfer_date && s.transfer_date <= cycleStart) return false;  // moved away before the cycle
+      if (s.employee_code && matByEc[s.employee_code]) return false;    // on maternity
+      if (ec && fullCycleLeaveEcs[ec]) return false;                    // on leave for the whole cycle
+      return true;
+    }).sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
+  }
+
   async function addStaff(name, employeeCode) {
     var c = client(); if (!c) throw new Error("Supabase not configured");
     var res = await c.from("staff").insert({
@@ -1632,7 +1695,7 @@
     saveTrialEvaluation: saveTrialEvaluation,
     markKioskReminderDone: markKioskReminderDone,
     markKioskReminderUndone: markKioskReminderUndone,
-    categorizeStaff: categorizeStaff, addStaff: addStaff, updateStaff: updateStaff,
+    categorizeStaff: categorizeStaff, listOffRequestStaff: listOffRequestStaff, addStaff: addStaff, updateStaff: updateStaff,
     deactivateStaff: deactivateStaff,
     lastClockinToday: lastClockinToday, addClockin: addClockin, listTodayClockins: listTodayClockins,
     todaysCashup: todaysCashup, cashupForDate: cashupForDate, outstandingCashupDates: outstandingCashupDates, addCashup: addCashup, listRecentCashups: listRecentCashups,
