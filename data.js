@@ -1003,29 +1003,42 @@
 
   // portal's spot-check viewer. Photo + GPS lives in app_state under
   // boa_mgrclockin_meta_<id> — fetch lazily per row.
+  // Fetch ALL clockins since a cutoff, paging past PostgREST's server-side
+  // row cap (~1000 rows per request). The old single request silently
+  // returned only the NEWEST ~1000 rows — as daily volume grew, the visible
+  // window shrank below the requested daysBack and older days' clock-ins
+  // appeared to vanish "day by day". Nothing was ever deleted; the rows just
+  // fell past the cap. Newest-first so consumers keep their ordering.
+  async function _allClockinsSince(sinceIso) {
+    var out = [], page = 1000, from = 0;
+    for (;;) {
+      var res = await sb.from("clockins")
+        .select("*, staff:staff_id ( id, name, employee_code, role_type, branch )")
+        .gte("ts", sinceIso)
+        .order("ts", { ascending: false })
+        .range(from, from + page - 1);
+      if (res.error) { console.error("clockins page @" + from + ":", res.error); break; }
+      var rows = res.data || [];
+      for (var i = 0; i < rows.length; i++) out.push(rows[i]);
+      if (rows.length < page || out.length >= 60000) break;   // exhausted (or sanity stop)
+      from += page;
+    }
+    return out;
+  }
   async function listRecentManagerClockins(daysBack) {
     var since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - (daysBack || 14));
-    var res = await sb.from("clockins")
-      .select("*, staff:staff_id ( id, name, employee_code, role_type, branch )")
-      .gte("ts", since.toISOString())
-      .order("ts", { ascending: false });
-    if (res.error) { console.error("listRecentManagerClockins:", res.error); return []; }
-    return (res.data || []).filter(function (r) { return r.staff && r.staff.role_type === "manager"; });
+    var rows = await _allClockinsSince(since.toISOString());
+    return rows.filter(function (r) { return r.staff && r.staff.role_type === "manager"; });
   }
   // Same as the manager viewer but filtered to nail-tech clock-ins. Used by
   // the Daily Check-ins tab and by the Attendance tab to overlay check-in
   // markers on the grid.
   async function listRecentTechClockins(daysBack) {
     var since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - (daysBack || 60));
-    var res = await sb.from("clockins")
-      .select("*, staff:staff_id ( id, name, employee_code, role_type, branch )")
-      .gte("ts", since.toISOString())
-      .order("ts", { ascending: false })
-      .limit(5000);
-    if (res.error) { console.error("listRecentTechClockins:", res.error); return []; }
+    var rows = await _allClockinsSince(since.toISOString());
     // Keep tech rows AND orphan rows (staff join failed) so the Daily Check-ins
     // tab can surface them as diagnostics. Only manager-tagged rows are dropped.
-    return (res.data || []).filter(function (r) { return !r.staff || r.staff.role_type !== "manager"; });
+    return rows.filter(function (r) { return !r.staff || r.staff.role_type !== "manager"; });
   }
   // Lazily fetch a single proof image from app_state. The kiosk app stores
   // proof-of-sickness/FRL pictures as data URLs at boa_proof_<branch>_<ym>_<ec>_<day>
