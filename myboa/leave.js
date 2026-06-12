@@ -212,6 +212,25 @@
     if (!back) { setErr("Please choose the date you'll be back at work."); return; }
     if (back <= end) { setErr("The 'Back at work' date must be after your last day of leave."); return; }
 
+    // One request at a time per date range: if an earlier request covering any
+    // of these days is still being reviewed, don't let a second one through —
+    // duplicates double up HR's queue and the replies confuse everyone. The
+    // server enforces this too (duplicate_pending_request); this check just
+    // gives a friendlier message without a round trip. Declined/approved
+    // requests don't block — those already have an answer.
+    var clash = (state.recent || []).filter(function (q) {
+      var qs = String(q.status || "pending").toLowerCase();
+      return qs !== "approved" && qs !== "declined"
+        && q.start_date && q.end_date
+        && q.start_date <= end && q.end_date >= start;
+    })[0];
+    if (clash) {
+      setErr("You already have a leave request for " + fmt(clash.start_date) + " → " + fmt(clash.end_date)
+        + (clash.ref_code ? " (" + clash.ref_code + ")" : "")
+        + " that is still being reviewed. Please wait for HR's reply before requesting these dates again.");
+      return;
+    }
+
     var notes = ($("reason").value || "").trim();
     var reason = "Back at work: " + fmt(back) + (notes ? "\n" + notes : "");
 
@@ -229,7 +248,16 @@
     state.busy = true; $("submit").disabled = true; $("submit").textContent = "Sending…";
     sb.rpc("submit_leave_request", payload).then(function (res) {
       state.busy = false;
-      if (res.error) { renderForm(); setErr("Sorry — could not send. Please try again. (" + (res.error.message || "error") + ")"); return; }
+      if (res.error) {
+        var msg = res.error.message || "";
+        renderForm();
+        if (/duplicate_pending_request/i.test(msg)) {
+          setErr("You already have a leave request for these dates that is still being reviewed. Please wait for HR's reply before requesting them again.");
+        } else {
+          setErr("Sorry — could not send. Please try again. (" + (msg || "error") + ")");
+        }
+        return;
+      }
       done(res.data);
     }).catch(function () {
       state.busy = false; renderForm(); setErr("Sorry — could not send. Check your signal and try again.");
