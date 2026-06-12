@@ -11621,9 +11621,12 @@ function PayrollInboxTab({ requests, setRequests, currentUser, leaveRecs, setLea
     .sort((a, b) => (a.start_date || "").localeCompare(b.start_date || ""));
   // Leave added straight onto the Leave Planner by someone without balance
   // access (e.g. National Ops) — flagged balancePending for the payroll officer
-  // to verify how many days the person actually has.
+  // to verify how many days the person actually has. Emergency leave is
+  // excluded: it's unpaid and never deducted from the balance, so there's
+  // nothing for payroll to verify (also skips legacy emergency records that
+  // were flagged pending before the exemption existed).
   const pendingCalLeave = (leaveRecs || [])
-    .filter(lv => lv && lv.balancePending)
+    .filter(lv => lv && lv.balancePending && !lv.emergency)
     .sort((a, b) => (a.startDate || "").localeCompare(b.startDate || ""));
 
   const confirmCalBalance = async (lv) => {
@@ -17530,7 +17533,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "overtime", l: "⏱️ Overtime" },
                   ...(accessAllows(currentUser, leavePayrollCfg) ? [(() => {
                     const nReq = (leaveRequests || []).filter(r => r.status !== "declined" && r.leave_type !== "Sick" && r.leave_type !== "Absent" && !r.balance_checked_at).length;
-                    const nCal = (leaveRecs || []).filter(lv => lv && lv.balancePending).length;
+                    const nCal = (leaveRecs || []).filter(lv => lv && lv.balancePending && !lv.emergency).length;
                     const n = nReq + nCal;
                     return { t: "payrollInbox", l: "📥 Payroll Inbox" + (n ? "  (" + n + ")" : ""), forceShow: true };
                   })()] : []),
@@ -28287,9 +28290,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // balance (from Sage) before the leave is added. Anyone else (e.g.
           // National Ops) can log the leave, but it goes on "balance pending" for
           // the payroll officer to verify the days — they can't fake a balance
-          // they can't see.
+          // they can't see. EMERGENCY leave is exempt: it's UNPAID and never
+          // deducted from the annual-leave balance, so there's no balance to
+          // check (or to queue for payroll).
           let balNum = null;
-          if (canCheckBalance) {
+          if (canCheckBalance && !f.emergency) {
             if (!f.balanceChecked) { alert("Please confirm you've checked this person's leave balance on Sage before adding annual leave to the calendar."); return; }
             balNum = Number(f.balanceDays);
             if (f.balanceDays === "" || isNaN(balNum) || balNum < 0) { alert("Enter the leave balance (days available on Sage) so it's on record."); return; }
@@ -28346,13 +28351,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const notes = f.emergency ? "[EMERGENCY] " + f.emergencyNote : "";
           const who = (currentUser && (currentUser.name || currentUser.pin)) || "";
           const nowIso = new Date().toISOString();
-          const newRec = canCheckBalance
-            ? { _id: Date.now(), ec: f.ec, startDate: f.startDate, endDate: f.endDate, type: "Annual leave", notes, emergency: !!f.emergency, balanceDays: balNum, balanceCheckedBy: who, balanceCheckedAt: nowIso, balancePending: false }
-            : { _id: Date.now(), ec: f.ec, startDate: f.startDate, endDate: f.endDate, type: "Annual leave", notes, emergency: !!f.emergency, balanceDays: null, balanceCheckedBy: null, balanceCheckedAt: null, balancePending: true, balanceRequestedBy: who, balanceRequestedAt: nowIso };
+          const newRec = f.emergency
+            // Unpaid — no balance to record and nothing for payroll to verify,
+            // so it must NOT land in the payroll inbox as balancePending.
+            ? { _id: Date.now(), ec: f.ec, startDate: f.startDate, endDate: f.endDate, type: "Annual leave", notes, emergency: true, balanceDays: null, balanceCheckedBy: null, balanceCheckedAt: null, balancePending: false, balanceRequestedBy: who, balanceRequestedAt: nowIso }
+            : canCheckBalance
+              ? { _id: Date.now(), ec: f.ec, startDate: f.startDate, endDate: f.endDate, type: "Annual leave", notes, emergency: false, balanceDays: balNum, balanceCheckedBy: who, balanceCheckedAt: nowIso, balancePending: false }
+              : { _id: Date.now(), ec: f.ec, startDate: f.startDate, endDate: f.endDate, type: "Annual leave", notes, emergency: false, balanceDays: null, balanceCheckedBy: null, balanceCheckedAt: null, balancePending: true, balanceRequestedBy: who, balanceRequestedAt: nowIso };
           persistLeaves([...leaveRecs, newRec]);
           const subj = stf ? (stf.name + " (" + stf.ec + ")") : f.ec;
-          logActivity("Added leave", subj, f.startDate + " → " + f.endDate + (canCheckBalance ? " · balance " + balNum + "d" : " · balance pending payroll check") + (f.emergency ? " · emergency" : "") + (f.emergencyNote ? " · " + f.emergencyNote : ""), "Leave");
-          if (!canCheckBalance) window.alert("Leave added and flagged for the payroll officer to verify the balance (you don't have access to leave balances).");
+          logActivity("Added leave", subj, f.startDate + " → " + f.endDate + (f.emergency ? " · emergency (unpaid — no balance check)" : canCheckBalance ? " · balance " + balNum + "d" : " · balance pending payroll check") + (f.emergencyNote ? " · " + f.emergencyNote : ""), "Leave");
+          if (!canCheckBalance && !f.emergency) window.alert("Leave added and flagged for the payroll officer to verify the balance (you don't have access to leave balances).");
           setLeaveForm({ ec: "", startDate: "", endDate: "", emergency: false, emergencyNote: "", balanceDays: "", balanceChecked: false });
         };
         // Clear the 'L' cells the Schedule auto-stamped for a now-removed leave,
@@ -28525,15 +28534,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <label style={{ fontSize: 10, color: "#F472B6", fontWeight: 700 }}>TO</label>
                   <input type="date" value={f.endDate} onChange={e => setLeaveForm({ ...f, endDate: e.target.value })} style={{ width: "100%", padding: "6px 9px", borderRadius: 6, border: "1px solid " + Y, fontFamily: "inherit", fontSize: 12, background: aA, boxSizing: "border-box" }} />
                 </div>
-                {canCheckBalance && (
+                {canCheckBalance && !f.emergency && (
                   <div>
                     <label style={{ fontSize: 10, color: "#0f766e", fontWeight: 700 }}>BALANCE (SAGE)</label>
                     <input type="number" min="0" step="0.5" value={f.balanceDays} onChange={e => setLeaveForm({ ...f, balanceDays: e.target.value })} placeholder="days" title="Days available on Sage — required" style={{ width: "100%", padding: "6px 9px", borderRadius: 6, border: "1px solid #99f6e4", fontFamily: "inherit", fontSize: 12, background: "#f0fdfa", boxSizing: "border-box" }} />
                   </div>
                 )}
-                <button onClick={addLeave} disabled={canCheckBalance && !f.balanceChecked} title={canCheckBalance && !f.balanceChecked ? "Confirm the leave balance has been checked first" : "Add to calendar"} style={{ background: (!canCheckBalance || f.balanceChecked) ? "#F472B6" : "#f0c8db", color: "#fff", border: "none", borderRadius: 7, padding: "8px 14px", cursor: (!canCheckBalance || f.balanceChecked) ? "pointer" : "not-allowed", fontFamily: "inherit", fontWeight: 700, fontSize: 12 }}>+ Add</button>
+                <button onClick={addLeave} disabled={canCheckBalance && !f.balanceChecked && !f.emergency} title={canCheckBalance && !f.balanceChecked && !f.emergency ? "Confirm the leave balance has been checked first" : "Add to calendar"} style={{ background: (!canCheckBalance || f.balanceChecked || f.emergency) ? "#F472B6" : "#f0c8db", color: "#fff", border: "none", borderRadius: 7, padding: "8px 14px", cursor: (!canCheckBalance || f.balanceChecked || f.emergency) ? "pointer" : "not-allowed", fontFamily: "inherit", fontWeight: 700, fontSize: 12 }}>+ Add</button>
               </div>
-              {canCheckBalance ? (
+              {f.emergency ? (
+                <div style={{ background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 8, padding: "8px 12px", marginBottom: 10, fontSize: 12.5, color: "#9a3412" }}>
+                  💸 <strong>Emergency leave is unpaid</strong> — it isn't deducted from the annual-leave balance, so no Sage balance check is needed.
+                </div>
+              ) : canCheckBalance ? (
                 <div style={{ background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 8, padding: "8px 12px", marginBottom: 10 }}>
                   <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "#0f766e", cursor: "pointer", fontWeight: 700 }}>
                     <input type="checkbox" checked={f.balanceChecked} onChange={e => setLeaveForm({ ...f, balanceChecked: e.target.checked })} style={{ width: 15, height: 15, accentColor: "#0f766e" }} />
@@ -28720,11 +28733,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         {/* Audit row: who added it + who balance-checked / approved it */}
                         <div style={{ marginTop: 8, paddingTop: 7, borderTop: "1px dashed " + aA, display: "flex", flexWrap: "wrap", gap: "3px 16px", fontSize: 10.5, color: "#9d6a82" }}>
                           <span>➕ <strong style={{ color: "#7c5866" }}>Added by</strong> {addedBy || "—"}{addedWhen ? " · " + addedWhen : ""}</span>
-                          {checkedBy
-                            ? <span title={"Sage balance verified" + (checkedWhen ? " on " + checkedWhen : "")}>✅ <strong style={{ color: "#0f766e" }}>Balance checked by</strong> {checkedBy}{checkedWhen ? " · " + checkedWhen : ""}{lv.balanceDays != null ? " · " + lv.balanceDays + "d available" : ""}</span>
-                            : lv.balancePending
-                              ? <span style={{ color: "#b45309", fontWeight: 700 }}>⏳ Awaiting payroll balance check</span>
-                              : <span style={{ color: "#0f766e", fontWeight: 600 }} title="Added before the balance-check step — already on the approved calendar.">✅ Already approved</span>}
+                          {lv.emergency
+                            ? <span style={{ color: "#9a3412", fontWeight: 600 }} title="Emergency leave is unpaid — it isn't deducted from the annual-leave balance, so no Sage balance check applies.">💸 Unpaid — no balance check needed</span>
+                            : checkedBy
+                              ? <span title={"Sage balance verified" + (checkedWhen ? " on " + checkedWhen : "")}>✅ <strong style={{ color: "#0f766e" }}>Balance checked by</strong> {checkedBy}{checkedWhen ? " · " + checkedWhen : ""}{lv.balanceDays != null ? " · " + lv.balanceDays + "d available" : ""}</span>
+                              : lv.balancePending
+                                ? <span style={{ color: "#b45309", fontWeight: 700 }}>⏳ Awaiting payroll balance check</span>
+                                : <span style={{ color: "#0f766e", fontWeight: 600 }} title="Added before the balance-check step — already on the approved calendar.">✅ Already approved</span>}
                         </div>
                       </div>
                     );
