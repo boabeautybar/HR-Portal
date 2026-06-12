@@ -9948,24 +9948,46 @@ async function publishLeaveToSchedule(ec, branch, startDate, endDate) {
     } catch (e) { console.error("publishLeaveToSchedule " + ym + ":", e); }
   }
 }
-// Write an approved request onto the Leave Planner. Skips if unmatched or a
-// duplicate overlapping annual record already exists. Returns true when on it.
+// Days inside an approved request's range that NO existing annual-leave
+// planner record for that person covers, grouped into contiguous runs.
+// Empty array = the planner already has every day (a true duplicate).
+function uncoveredLeaveSegments(r, person, leaveRecs) {
+  const ecU = String((person && person.ec) || "").trim().toUpperCase();
+  const cover = (leaveRecs || []).filter(lv => lv && lv.type === "Annual leave"
+    && String(lv.ec || "").trim().toUpperCase() === ecU
+    && lv.startDate && lv.endDate);
+  const segments = [];
+  const sd = new Date(r.start_date + "T00:00:00"), ed = new Date(r.end_date + "T00:00:00");
+  if (isNaN(sd.getTime()) || isNaN(ed.getTime()) || ed < sd) return segments;
+  let run = null;
+  for (let d = new Date(sd); d <= ed; d.setDate(d.getDate() + 1)) {
+    const iso = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    if (cover.some(lv => iso >= lv.startDate && iso <= lv.endDate)) { run = null; continue; }
+    if (run) run.end = iso; else { run = { start: iso, end: iso }; segments.push(run); }
+  }
+  return segments;
+}
+// Write an approved request onto the Leave Planner. Skips if unmatched or the
+// range is already fully covered by annual records. Returns true when on it.
 async function addApprovedLeaveToCalendar(r, deps) {
   const { enriched, managers, leaveRecs, setLeaveRecs } = deps;
   const person = findLeavePerson(r.ec, enriched, managers);
   if (!person) return false;
   const _schedBranch = effHomeBranch(person, r.start_date) || person.branch;
-  const ecU = String(person.ec || "").toUpperCase();
-  const dup = (leaveRecs || []).find(lv => String(lv.ec || "").toUpperCase() === ecU
-    && lv.type === "Annual leave" && lv.startDate <= r.end_date && lv.endDate >= r.start_date);
-  if (dup) {
+  // Only the days no existing annual record covers need a planner write.
+  // Previously ANY overlapping record skipped the planner entirely, so a
+  // request that extended an existing booking (or brushed an older record by
+  // a day) was stamped onto the schedule but its extra days never reached the
+  // Leave Planner — and once approved it never retried.
+  const segments = uncoveredLeaveSegments(r, person, leaveRecs);
+  if (segments.length === 0) {
     // Planner already has it — still (re-)publish to the saved schedule so a
     // record approved before schedule-publishing existed heals on re-approval.
     try { await publishLeaveToSchedule(person.ec, _schedBranch, r.start_date, r.end_date); } catch (e) { console.error("publishLeaveToSchedule:", e); }
     return true;
   }
-  const rec = { _id: Date.now(), ec: person.ec, startDate: r.start_date, endDate: r.end_date, type: "Annual leave", notes: "[Leave request " + (r.ref_code || "") + "]", emergency: false, balanceDays: (r.balance_days != null ? Number(r.balance_days) : null), balanceCheckedBy: r.balance_checked_by || "", balanceCheckedAt: r.balance_checked_at || null };
-  const next = [...(leaveRecs || []), rec];
+  const recs = segments.map((sg, i) => ({ _id: Date.now() + i, ec: person.ec, startDate: sg.start, endDate: sg.end, type: "Annual leave", notes: "[Leave request " + (r.ref_code || "") + "]", emergency: false, balanceDays: (r.balance_days != null ? Number(r.balance_days) : null), balanceCheckedBy: r.balance_checked_by || "", balanceCheckedAt: r.balance_checked_at || null }));
+  const next = [...(leaveRecs || []), ...recs];
   setLeaveRecs(next);
   await window.BOA_DB.saveLeaveRecords(next);
   // Publish onto the saved schedule grid so the kiosk + My BOA viewers (which
@@ -12145,6 +12167,28 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
   const assessOps = (r) => assessLeaveOps(r, enriched, managers, leaveRecs);
   const maybeFinalize = (r) => finalizeLeaveIfReady(r, gateDeps);
 
+  // An APPROVED request whose days aren't (all) on the Leave Planner — e.g.
+  // approved while an older overlapping record existed (the planner write used
+  // to be skipped on ANY overlap), or the planner save failed mid-approval.
+  // Approval never re-runs once status is set, so without a repair the leave
+  // stays on the schedule but invisible to the planner forever.
+  const plannerGap = (r) => {
+    if (r.status !== "approved") return null;
+    const p = findLeavePerson(r.ec, enriched, managers);
+    if (!p) return { person: null, days: 0 };
+    const segments = uncoveredLeaveSegments(r, p, leaveRecs);
+    return { person: p, days: segments.reduce((n, sg) => n + leaveDays(sg.start, sg.end), 0) };
+  };
+  const repairPlanner = async (r) => {
+    setBusy(true);
+    try {
+      const ok = await addApprovedLeaveToCalendar(r, gateDeps);
+      if (!ok) alert("No staff member or manager matches employee code \"" + (r.ec || "—") + "\" — please add this leave on the Leave Planner manually.");
+      else if (logActivity) logActivity("Repaired planner leave", r.name, r.start_date + " → " + r.end_date + " · added missing Leave Planner record", "Leave");
+    } catch (e) { alert("Could not add to the Leave Planner: " + (e.message || e)); }
+    setBusy(false);
+  };
+
   const toggleOps = async (r, clear) => {
     setBusy(true);
     try {
@@ -12275,6 +12319,13 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                   <span>📅 {fmtIncidentDate(r.start_date)} → {fmtIncidentDate(r.end_date)}</span>
                   <span style={{ color: "#0f766e", fontWeight: 700 }}>{fmtDays(need)} leave day{need === 1 ? "" : "s"}</span>
                   {r.balance_days != null && <span style={{ color: "#6b7280", fontSize: 11.5 }}>· bal {r.balance_days}d</span>}
+                  {(() => {
+                    const g = plannerGap(r);
+                    if (!g) return null;
+                    if (!g.person) return <span style={{ fontSize: 11, fontWeight: 700, color: "#92400e", background: "#fef3c7", border: "1px solid #f59e0b", borderRadius: 999, padding: "2px 9px" }} title={"Approved, but no staff member or manager matches employee code \"" + (r.ec || "—") + "\" — add this leave on the Leave Planner manually."}>⚠ not on planner — no EC match</span>;
+                    if (g.days <= 0) return null;
+                    return <button onClick={() => repairPlanner(r)} disabled={busy} title={g.days + " day(s) of this approved leave are missing from the Leave Planner. Click to add them now."} style={{ fontSize: 11, fontWeight: 800, color: "#92400e", background: "#fef3c7", border: "1px solid #f59e0b", borderRadius: 999, padding: "2px 10px", cursor: "pointer" }}>⚠ not on planner · add now</button>;
+                  })()}
                   <span style={{ marginLeft: "auto", fontSize: 11, color: "#6b7280" }}>✓ {r.decided_by || "—"}{r.decided_at ? " · " + fmtAppr(r.decided_at) : ""}</span>
                 </div>
               );
@@ -12396,6 +12447,32 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                     <div style={{ fontSize: 11, color: "#9a7b3a", marginTop: 4 }}>Check this isn't a duplicate before approving.</div>
                   </div>
                 )}
+
+                {r.status === "approved" && (() => {
+                  const g = plannerGap(r);
+                  if (!g) return null;
+                  const amber = { background: "#fef3c7", border: "1.5px solid #f59e0b", borderRadius: 11, padding: "10px 13px", marginBottom: 14, fontSize: 12.5, color: "#92400e", lineHeight: 1.5 };
+                  if (!g.person) return (
+                    <div style={amber}>
+                      <strong>⚠ Approved, but NOT on the Leave Planner</strong> — no staff member or manager matches employee code "{r.ec || "—"}", so it can't be added automatically. Add it on the Leave Planner manually (it won't show there, or block Fresha, until you do).
+                    </div>
+                  );
+                  if (g.days > 0) return (
+                    <div style={amber}>
+                      <strong>⚠ Approved, but {g.days} day{g.days === 1 ? "" : "s"} of this leave {g.days === 1 ? "is" : "are"} not on the Leave Planner.</strong> It may show on the schedule (the grid was stamped at approval) while the planner — which drives the 20% cap, balances and Fresha blocking — doesn't know about it.
+                      <div style={{ marginTop: 8 }}>
+                        <button onClick={() => repairPlanner(r)} disabled={busy} style={{ background: "#b45309", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", fontWeight: 800, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>➕ Add to Leave Planner now</button>
+                      </div>
+                    </div>
+                  );
+                  const effBr = effHomeBranch(g.person, _today);
+                  if (effBr && r.store && effBr !== r.store) return (
+                    <div style={{ background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 11, padding: "9px 13px", marginBottom: 14, fontSize: 12.5, color: "#0f766e" }}>
+                      ✓ On the Leave Planner — but listed under <strong>{effBr}</strong> ({g.person.name ? g.person.name.split(" ")[0] + "'s" : "their"} current home store, e.g. after a transfer), not {r.store}. Switch the planner to {effBr} to see it.
+                    </div>
+                  );
+                  return null;
+                })()}
 
                 {r.status !== "pending" && r.decided_by && (
                   <div style={{ background: r.status === "approved" ? "#f0fdf4" : "#fef2f2", border: "1px solid " + (r.status === "approved" ? "#bbf7d0" : "#fecaca"), borderRadius: 11, padding: "10px 13px", marginBottom: 14 }}>
@@ -28165,9 +28242,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (ym && out.indexOf(ym) === -1) out.push(ym);
           return out.sort();
         })();
+        // Match leave records to people by TRIMMED, case-folded EC — the same
+        // rule the Schedule overlay uses. Strict === dropped records whose EC
+        // carried formatting drift (stray space / lower case), so the leave
+        // showed on the schedule grid but silently vanished from the planner.
+        const _ecEq = (a, b) => String(a == null ? "" : a).trim().toUpperCase() === String(b == null ? "" : b).trim().toUpperCase();
         const onLeaveAt = (ec, iso) => {
           for (const lv of leaveRecs) {
-            if (lv.ec === ec && iso >= lv.startDate && iso <= lv.endDate) return lv;
+            if (_ecEq(lv.ec, ec) && iso >= lv.startDate && iso <= lv.endDate) return lv;
           }
           return null;
         };
@@ -28175,7 +28257,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           let ct = 0;
           for (const lv of leaveRecs) {
             if (lv.type !== "Annual leave") continue;
-            const p2 = (isTechMode ? enriched : managers).find(x => x.ec === lv.ec);
+            const p2 = (isTechMode ? enriched : managers).find(x => _ecEq(x.ec, lv.ec));
             // On-mat people's PRE-maternity annual leave still occupies a slot.
             if (!p2 || effHomeBranch(p2, _todayYmd) !== br) continue;
             if (!ROLE_GUARD(p2)) continue;
@@ -28218,7 +28300,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Block double-logging: same person already has annual / emergency leave
           // whose dates overlap these ones. Stops duplicate planner entries (which
           // also doubled up the Fresha block reminder).
-          const dup = leaveRecs.find(lv => lv.ec === f.ec && lv.type === "Annual leave"
+          const dup = leaveRecs.find(lv => _ecEq(lv.ec, f.ec) && lv.type === "Annual leave"
             && lv.startDate <= f.endDate && lv.endDate >= f.startDate);
           if (dup) {
             alert("Cannot add: this person already has annual leave logged for " + fmtIncidentDate(dup.startDate) + " → " + fmtIncidentDate(dup.endDate) + ", which overlaps these dates. Edit or remove that entry instead of adding a duplicate.");
@@ -28252,7 +28334,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             let ct = 1;
             for (const lv of leaveRecs) {
               if (lv.type !== "Annual leave") continue;
-              const ls = (isTechMode ? enriched : managers).find(p2 => p2.ec === lv.ec);
+              const ls = (isTechMode ? enriched : managers).find(p2 => _ecEq(p2.ec, lv.ec));
               if (!ls || effHomeBranch(ls, _todayYmd) !== stBr || ls.onMat || !ROLE_GUARD(ls)) continue;
               if (ds >= lv.startDate && ds <= lv.endDate) ct++;
             }
@@ -28336,7 +28418,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const storeLeave = leaveRecs
           .filter(lv => {
             if (lv.type !== "Annual leave") return false;
-            const p = (isTechMode ? enriched : managers).find(x => x.ec === lv.ec);
+            const p = (isTechMode ? enriched : managers).find(x => _ecEq(x.ec, lv.ec));
             if (!p) return false;
             if (effHomeBranch(p, _todayYmd) !== br) return false;
             return ROLE_GUARD(p);
