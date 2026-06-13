@@ -13336,16 +13336,58 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
 
   return (
     <div>
-      {/* Role legend / what-you-can-do notice */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
-        <div style={{ fontSize: 12, color: "#6b7280" }}>
-          {canRecruit && canTrain ? "You can schedule interviews and record outcomes."
-            : canRecruit ? "You're set up as the recruiter — schedule interviews and book inductions."
-              : canTrain ? "You're set up as the nail-tech trainer — mark attendance and pass/fail."
-                : "View only — interview actions are limited to the recruiter and the nail-tech trainer."}
+      {/* Title + role legend / what-you-can-do notice */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
+        <div>
+          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, fontWeight: 700, color: "#4f46e5" }}>📋 Nail Tech Interviews</div>
+          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>
+            {canRecruit && canTrain ? "You can schedule interviews and record outcomes."
+              : canRecruit ? "You're set up as the recruiter — schedule interviews and book inductions."
+                : canTrain ? "You're set up as the nail-tech trainer — mark attendance and pass/fail."
+                  : "View only — interview actions are limited to the recruiter and the nail-tech trainer."}
+          </div>
         </div>
-        {canRecruit && <button onClick={openAdd} style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 9, padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>+ Add candidate</button>}
+        {canRecruit && <button onClick={openAdd} style={{ background: "#4f46e5", color: "#fff", border: "none", borderRadius: 9, padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>+ Add candidate</button>}
       </div>
+
+      {/* Pipeline funnel — at-a-glance flow from booked interview through to
+          the Trial Period. The recruiter's dashboard centrepiece. */}
+      {(() => {
+        const sc = {};
+        list.forEach(r => { const s = interviewStage(r); sc[s] = (sc[s] || 0) + 1; });
+        const steps = [
+          { k: "scheduled", l: "Booked" },
+          { k: "interviewed", l: "Interviewed" },
+          { k: "passed", l: "Passed" },
+          { k: "induction_booked", l: "Induction set" },
+          { k: "to_trial", l: "In Trial" }
+        ];
+        return (
+          <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 14, padding: "14px 16px", marginBottom: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: "#831843", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>Recruitment pipeline</div>
+            <div style={{ display: "flex", alignItems: "stretch", gap: 4, flexWrap: "wrap" }}>
+              {steps.map((step, i) => {
+                const m = INTERVIEW_STAGE[step.k];
+                return (
+                  <React.Fragment key={step.k}>
+                    <div style={{ flex: "1 1 90px", minWidth: 84, background: m.bg, borderRadius: 10, padding: "10px 8px", textAlign: "center" }}>
+                      <div style={{ fontSize: 24, fontWeight: 800, color: m.color, lineHeight: 1 }}>{sc[step.k] || 0}</div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: m.color, opacity: 0.8, marginTop: 4, letterSpacing: "0.03em" }}>{step.l.toUpperCase()}</div>
+                    </div>
+                    {i < steps.length - 1 && <div style={{ alignSelf: "center", color: "#d1d5db", fontSize: 16, fontWeight: 700 }}>→</div>}
+                  </React.Fragment>
+                );
+              })}
+            </div>
+            {((sc.no_show || 0) > 0 || (sc.failed || 0) > 0) && (
+              <div style={{ display: "flex", gap: 14, marginTop: 10, fontSize: 11, color: "#9ca3af" }}>
+                {(sc.no_show || 0) > 0 && <span>✗ No-shows: <strong style={{ color: "#991b1b" }}>{sc.no_show}</strong></span>}
+                {(sc.failed || 0) > 0 && <span>✗ Not successful: <strong style={{ color: "#6b7280" }}>{sc.failed}</strong></span>}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Stats */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 10, marginBottom: 16 }}>
@@ -13500,7 +13542,7 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
         <div onClick={() => setForm(null)} style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 100000, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", overflowY: "auto" }}>
           <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "22px 24px", width: "min(560px,96vw)", boxShadow: "0 20px 60px rgba(0,0,0,.25)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-              <div style={{ fontSize: 16, fontWeight: 800, color: "#BE185D" }}>{form._editId ? "✏️ Edit candidate" : "➕ New interview candidate"}</div>
+              <div style={{ fontSize: 16, fontWeight: 800, color: "#4f46e5" }}>{form._editId ? "✏️ Edit candidate" : "➕ New interview candidate"}</div>
               <button onClick={() => setForm(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 20 }}>✕</button>
             </div>
             {dup && (
@@ -13522,7 +13564,7 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
             </div>
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 18 }}>
               <button onClick={() => setForm(null)} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", cursor: "pointer", fontSize: 13 }}>Cancel</button>
-              <button onClick={saveForm} style={{ padding: "9px 22px", borderRadius: 9, border: "none", background: "#BE185D", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>{form._editId ? "Save" : "Add candidate"}</button>
+              <button onClick={saveForm} style={{ padding: "9px 22px", borderRadius: 9, border: "none", background: "#4f46e5", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>{form._editId ? "Save" : "Add candidate"}</button>
             </div>
           </div>
         </div>
@@ -19752,7 +19794,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   return (
                     <div style={card}>
                       <div style={cardTitle}>
-                        <span>📋 Upcoming interviews</span>
+                        <span>📋 Nail Tech Interviews</span>
                         <button onClick={() => { setRecruitSubTab("interviews"); tryChangeTab("recruitment"); }} style={{ background: PINK.accent, color: "#fff", border: "none", borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit" }}>Open →</button>
                       </div>
                       <div style={{ display: "grid", gap: 6 }}>
@@ -22098,7 +22140,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       {/* ── RECRUITMENT TAB (parent) ── */}
       {tab === "recruitment" && (
         <div style={{ padding: "0 24px" }}>
-          {/* Sub-nav: Nail Tech vs Manager Recruitment — large, prominent toggle */}
+          {/* Sub-nav — card-style tabs. Nail Tech Interviews is given a
+              distinct indigo accent (vs the pink recruitment tabs) plus a red
+              "to action" pip so the recruiter's workspace stands out and isn't
+              lost between the two vacancy views. */}
           {(() => {
             // Manager vacancy total: sum of missing SMs (min 1/branch) + missing AMs (min 2/branch),
             // excluding Regional managers and active maternity leave.
@@ -22113,21 +22158,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               return a + Math.max(0, MIN_SM - sms) + Math.max(0, MIN_AM - ams);
             }, 0);
             const interviewPipeline = (interviewList || []).filter(r => { const s = interviewStage(r); return s !== "failed" && s !== "to_trial"; }).length;
+            // Items awaiting someone's action — drives the red attention pip.
+            const _p2 = n => String(n).padStart(2, "0");
+            const _todayY = (d => d.getFullYear() + "-" + _p2(d.getMonth() + 1) + "-" + _p2(d.getDate()))(new Date());
+            const interviewNeedsAction = (interviewList || []).filter(r => !r.promotedToTrialId && ((r.attendance === "came" && !r.outcome) || (r.interviewDate && r.interviewDate < _todayY && !r.attendance) || (r.outcome === "passed" && !r.inductionDate))).length;
             const counts = { nailTech: stats.vacancies, mgrRecruit: mgrVacancies, interviews: interviewPipeline };
+            const TABS = [
+              { k: "nailTech", label: "💅 Nail Tech Recruitment", accent: "#BE185D", soft: "#FCE7F3", border: "#FBCFE8", sub: "Vacancies by branch" },
+              { k: "interviews", label: "📋 Nail Tech Interviews", accent: "#4f46e5", soft: "#eef2ff", border: "#c7d2fe", sub: "Schedule, outcomes & inductions", pip: interviewNeedsAction },
+              { k: "mgrRecruit", label: "👔 Manager Recruitment", accent: "#BE185D", soft: "#FCE7F3", border: "#FBCFE8", sub: "Coverage & planner" }
+            ];
             return (
-              <div style={{ display: "flex", gap: 0, marginBottom: 24, padding: 6, background: "#FCE7F3", borderRadius: 14, border: "1px solid #FBCFE8", maxWidth: 980 }}>
-                {[
-                  { k: "nailTech", label: "💅 Nail Tech Recruitment" },
-                  { k: "interviews", label: "📋 Interviews" },
-                  { k: "mgrRecruit", label: "👔 Manager Recruitment" }
-                ].map(t => {
+              <div style={{ display: "flex", gap: 10, marginBottom: 24, flexWrap: "wrap" }}>
+                {TABS.map(t => {
                   const active = recruitSubTab === t.k;
                   const n = counts[t.k];
                   return (
                     <button key={t.k} onClick={() => setRecruitSubTab(t.k)}
-                      style={{ flex: 1, padding: "14px 22px", borderRadius: 10, border: "none", background: active ? "#BE185D" : "transparent", color: active ? "#FFFFFF" : "#831843", cursor: "pointer", fontFamily: "inherit", fontSize: 15, fontWeight: 700, transition: "all .18s", boxShadow: active ? "0 4px 12px rgba(190,24,93,0.32)" : "none", letterSpacing: "0.01em", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
-                      <span>{t.label}</span>
-                      <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 24, height: 24, padding: "0 8px", borderRadius: 12, background: active ? "#FFFFFF" : (n > 0 ? "#BE185D" : "#FBCFE8"), color: active ? "#BE185D" : (n > 0 ? "#FFFFFF" : "#9F1A4F"), fontSize: 12, fontWeight: 800, lineHeight: 1 }}>{n}</span>
+                      style={{ position: "relative", flex: "1 1 230px", minWidth: 200, textAlign: "left", padding: "14px 18px", borderRadius: 14, border: `2px solid ${active ? t.accent : t.border}`, background: active ? t.accent : t.soft, color: active ? "#FFFFFF" : t.accent, cursor: "pointer", fontFamily: "inherit", transition: "all .18s", boxShadow: active ? `0 6px 16px ${t.accent}40` : "none" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 15, fontWeight: 800, letterSpacing: "0.01em" }}>{t.label}</span>
+                        <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 24, height: 24, padding: "0 8px", borderRadius: 12, background: active ? "rgba(255,255,255,0.28)" : (n > 0 ? t.accent : "#FFFFFF"), color: active ? "#FFFFFF" : (n > 0 ? "#FFFFFF" : "#9ca3af"), fontSize: 12, fontWeight: 800, lineHeight: 1 }}>{n}</span>
+                      </div>
+                      <div style={{ fontSize: 11, marginTop: 3, opacity: active ? 0.9 : 0.7, fontWeight: 600 }}>{t.sub}</div>
+                      {!!t.pip && !active && <span style={{ position: "absolute", top: -8, right: -8, background: "#dc2626", color: "#fff", fontSize: 10, fontWeight: 800, borderRadius: 999, padding: "2px 8px", boxShadow: "0 2px 6px rgba(220,38,38,0.45)" }}>{t.pip} to action</span>}
                     </button>
                   );
                 })}
