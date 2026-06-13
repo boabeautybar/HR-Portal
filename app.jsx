@@ -13238,7 +13238,7 @@ const CT_STORE_GEO = {
   "Cape Gate":     { lat: -33.8690, lng: 18.6960, region: "Northern Suburbs", corridors: ["northern_line"] },
   "Somerset West": { lat: -34.0840, lng: 18.8490, region: "Winelands", corridors: ["winelands"] },
   "Winelands":     { lat: -33.7340, lng: 18.9620, region: "Winelands", corridors: ["winelands", "northern_line"] },
-  "Betty":         { lat: -34.3520, lng: 18.9080, region: "Overberg", corridors: ["winelands"] }
+  "Betty":         { lat: -33.9190, lng: 18.4140, region: "CBD / Atlantic Seaboard", corridors: ["atlantic", "westcoast", "southern_line", "northern_line", "central_line", "cbd_hub"] }
 };
 // Common Cape Town suburbs + region keywords → coordinates + corridors.
 const CT_AREAS = {
