@@ -13250,9 +13250,9 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
     return null;
   };
 
-  const blankForm = () => ({ firstName: "", surname: "", nationality: "South African", phone: "", email: "", area: "", branch: SALONS[0]?.name || "", source: "indeed", interviewDate: "", interviewTime: "", _editId: null });
+  const blankForm = () => ({ firstName: "", surname: "", nationality: "South African", phone: "", email: "", area: "", branch: "", source: "indeed", interviewDate: "", interviewTime: "", _editId: null });
   const openAdd = () => setForm(blankForm());
-  const openEdit = (r) => setForm({ firstName: r.firstName || "", surname: r.surname || "", nationality: r.nationality || "", phone: r.phone || "", email: r.email || "", area: r.area || "", branch: r.branch || SALONS[0]?.name || "", source: r.source || "other", interviewDate: r.interviewDate || "", interviewTime: r.interviewTime || "", _editId: r._id });
+  const openEdit = (r) => setForm({ firstName: r.firstName || "", surname: r.surname || "", nationality: r.nationality || "", phone: r.phone || "", email: r.email || "", area: r.area || "", branch: r.branch || "", source: r.source || "other", interviewDate: r.interviewDate || "", interviewTime: r.interviewTime || "", _editId: r._id });
   const saveForm = () => {
     if (!form.firstName.trim() || !form.surname.trim()) { alert("First name and surname are required."); return; }
     const base = {
@@ -13275,12 +13275,13 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
   // there's no double entry. Guards against being sent twice.
   const sendToInduction = (r) => {
     if (r.promotedToTrialId) { alert("Already sent to the Trial Period."); return; }
+    if (!r.branch) { alert("Pick the branch they'll induct at first."); return; }
     if (!r.inductionDate) { alert("Set an induction date first."); return; }
     const fullName = ((r.firstName || "") + " " + (r.surname || "")).trim();
     const trialRec = {
       _id: Date.now(),
       name: fullName, phone: r.phone || "", email: r.email || "", homeAddress: r.area || "",
-      trainerName: "", inductionPassDate: "", branch: r.branch || SALONS[0]?.name || "",
+      trainerName: "", inductionPassDate: "", branch: r.branch || "",
       startDate: r.inductionDate,
       notes: "From interview" + (r.interviewDate ? " on " + fmtDay(r.interviewDate) : "") + (r.nationality ? " · " + r.nationality : ""),
       boaPathways: false,
@@ -13463,8 +13464,14 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
                       <div style={{ fontSize: 9, fontWeight: 800, color: "#15803d", letterSpacing: "0.06em", marginBottom: 6 }}>📋 RECRUITER · BOOK INDUCTION</div>
                       {canRecruit ? (
                         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                          {!r.branch && (
+                            <select value={r.branch || ""} onChange={e => update(r._id, { branch: e.target.value })} style={{ border: "1px solid #BBF7D0", borderRadius: 7, padding: "5px 8px", fontSize: 12, fontFamily: "inherit" }}>
+                              <option value="">Branch…</option>{SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                            </select>
+                          )}
                           <input type="date" value={r.inductionDate || ""} onChange={e => update(r._id, { inductionDate: e.target.value })} style={{ border: "1px solid #BBF7D0", borderRadius: 7, padding: "5px 8px", fontSize: 12, fontFamily: "inherit" }} />
-                          <button disabled={!r.inductionDate} onClick={() => sendToInduction(r)} style={{ background: r.inductionDate ? "#15803d" : "#d1d5db", color: "#fff", border: "none", borderRadius: 7, padding: "6px 12px", cursor: r.inductionDate ? "pointer" : "not-allowed", fontSize: 12, fontWeight: 700 }}>Send to induction →</button>
+                          <button disabled={!r.inductionDate || !r.branch} onClick={() => sendToInduction(r)} style={{ background: (r.inductionDate && r.branch) ? "#15803d" : "#d1d5db", color: "#fff", border: "none", borderRadius: 7, padding: "6px 12px", cursor: (r.inductionDate && r.branch) ? "pointer" : "not-allowed", fontSize: 12, fontWeight: 700 }}>Send to induction →</button>
+                          {!r.branch && <span style={{ fontSize: 10, color: "#15803d", width: "100%" }}>Pick a branch to send them to induction.</span>}
                         </div>
                       ) : <div style={{ fontSize: 11, color: "#15803d" }}>Passed — waiting on the recruiter to book an induction date.</div>}
                     </div>
@@ -13508,7 +13515,7 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
               <div><label style={lbl}>Area they live in</label><input style={inp} value={form.area} onChange={e => setForm({ ...form, area: e.target.value })} placeholder="e.g. Khayelitsha" /></div>
               <div><label style={lbl}>Phone</label><input style={inp} value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} placeholder="+27 …" /></div>
               <div><label style={lbl}>Email</label><input type="email" style={inp} value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} /></div>
-              <div><label style={lbl}>Assigned branch</label><select style={inp} value={form.branch} onChange={e => setForm({ ...form, branch: e.target.value })}>{SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}</select></div>
+              <div><label style={lbl}>Assigned branch <span style={{ fontWeight: 400, textTransform: "none", color: "#9ca3af" }}>(optional)</span></label><select style={inp} value={form.branch} onChange={e => setForm({ ...form, branch: e.target.value })}><option value="">— Not decided yet</option>{SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}</select></div>
               <div><label style={lbl}>Source</label><select style={inp} value={form.source} onChange={e => setForm({ ...form, source: e.target.value })}>{Object.entries(INTERVIEW_SOURCES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></div>
               <div><label style={lbl}>Interview date</label><input type="date" style={inp} value={form.interviewDate} onChange={e => setForm({ ...form, interviewDate: e.target.value })} /></div>
               <div><label style={lbl}>Interview time</label><input type="time" style={inp} value={form.interviewTime} onChange={e => setForm({ ...form, interviewTime: e.target.value })} /></div>
