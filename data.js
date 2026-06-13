@@ -223,16 +223,46 @@
   }
 
   // ---------- Staff CRUD ----------
-  async function saveStaff(s) {
-    var row = _prune(staffToRow(s));
-    if (s.id) {
-      var u = await sb.from("staff").update(row).eq("id", s.id).select().single();
-      if (u.error) throw u.error;
-      return rowToStaff(u.data);
+  // Insert/update a staff row, surviving deployments whose `staff` table
+  // doesn't have every optional column yet. PostgREST rejects the WHOLE write
+  // when the payload names a column missing from its schema cache ("Could not
+  // find the 'cell_number' column of 'staff' in the schema cache"), which
+  // blocked onboarding outright whenever a phone/email/ID was typed in. Strip
+  // the offending column and retry so the person is still saved; warn once per
+  // column so someone runs sql/staff_contact_columns.sql to stop the dropping.
+  var _warnedMissingStaffCols = {};
+  function _warnDroppedStaffCols(dropped) {
+    var fresh = dropped.filter(function (c) { return !_warnedMissingStaffCols[c]; });
+    if (!fresh.length) return;
+    fresh.forEach(function (c) { _warnedMissingStaffCols[c] = true; });
+    console.warn("[BOA DB] staff table is missing column(s): " + dropped.join(", "));
+    try {
+      alert("Saved — but the database's staff table doesn't have the column(s) "
+        + dropped.join(", ") + " yet, so those details could NOT be stored (everything else saved fine).\n\n"
+        + "Run sql/staff_contact_columns.sql in the Supabase SQL editor to add them, then re-save this person to capture the missing details.");
+    } catch (_e) {}
+  }
+  async function _writeStaffRow(row, id) {
+    var dropped = [];
+    for (var attempt = 0; attempt < 10; attempt++) {
+      var q = id ? sb.from("staff").update(row).eq("id", id) : sb.from("staff").insert(row);
+      var res = await q.select().single();
+      if (!res.error) {
+        if (dropped.length) _warnDroppedStaffCols(dropped);
+        return res.data;
+      }
+      var m = /Could not find the '([^']+)' column/.exec(res.error.message || "");
+      if (!m || !(m[1] in row)) throw res.error;
+      dropped.push(m[1]);
+      var slim = {};
+      for (var k in row) { if (k !== m[1]) slim[k] = row[k]; }
+      row = slim;
     }
-    var i = await sb.from("staff").insert(row).select().single();
-    if (i.error) throw i.error;
-    return rowToStaff(i.data);
+    throw new Error("Could not save the staff record (too many unknown columns).");
+  }
+  async function saveStaff(s) {
+    var data = await _writeStaffRow(_prune(staffToRow(s)), s.id);
+    return rowToStaff(data);
   }
   async function deleteStaff(id) {
     var r = await sb.from("staff").delete().eq("id", id);
@@ -241,15 +271,10 @@
 
   // ---------- Manager CRUD ----------
   async function saveManager(m) {
-    var row = _prune(managerToRow(m));
-    if (m.id) {
-      var u = await sb.from("staff").update(row).eq("id", m.id).select().single();
-      if (u.error) throw u.error;
-      return rowToManager(u.data);
-    }
-    var i = await sb.from("staff").insert(row).select().single();
-    if (i.error) throw i.error;
-    return rowToManager(i.data);
+    // Same unknown-column tolerance as saveStaff — manager rows live on the
+    // same `staff` table and carry the same optional contact columns.
+    var data = await _writeStaffRow(_prune(managerToRow(m)), m.id);
+    return rowToManager(data);
   }
   async function deleteManager(id) {
     var r = await sb.from("staff").delete().eq("id", id);
@@ -1093,11 +1118,24 @@
         if (!e || !e.ts) return;
         var ts = new Date(e.ts);
         if (isNaN(ts) || ts < since) return;
+        // Heal kiosk extra-day entries dated one cycle forward. The kiosk's
+        // markExtraDay used START-month date math on its END-month cycle key,
+        // stamping a ymd exactly one month in the future — so a May 12 extra
+        // day surfaced as a phantom EXTRA on June 12. A kiosk "ext" mark is
+        // always made ON the day itself, so its ymd can never be after the
+        // date it was written: pull such entries back to the timestamp's day.
+        // (The kiosk write is fixed too, but the bad entries persist in the
+        // log, and a kiosk with a stale cached script may still write more.)
+        var ymd = e.ymd || null;
+        if (ymd && e.status === "ext" && !e.manual) {
+          var tsYmd = ts.getFullYear() + "-" + String(ts.getMonth() + 1).padStart(2, "0") + "-" + String(ts.getDate()).padStart(2, "0");
+          if (ymd > tsYmd) ymd = tsYmd;
+        }
         out.push({
           id: "kiosk_" + rowBranch + "_" + e.ts + "_" + (e.ec || ""),
           ts: e.ts,
           dayKey: e.dayKey,
-          ymd: e.ymd || null,
+          ymd: ymd,
           type: "att",
           status: e.status,
           note: e.note || null,
