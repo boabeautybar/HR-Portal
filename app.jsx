@@ -2724,6 +2724,11 @@ const LevelBadge = ({ level }) => {
   const [bg, c] = m[level] || ["#f3f4f6", "#374151"];
   return <span style={{ background: bg, color: c, borderRadius: 6, padding: "3px 9px", fontSize: 11, fontWeight: 700 }}>{level}</span>;
 };
+// BOA Pathways — the programme for unemployed South Africans some staff come
+// through. Graduates get a 🎓 cap next to their name (hover for the label).
+const BoaPathwaysBadge = ({ size }) => (
+  <span title="BOA Pathways graduate" style={{ fontSize: size || 13, cursor: "default" }}>🎓</span>
+);
 function Meter({ current, capacity, goal, lowDemand }) {
   const target = goal || capacity;
   const pct = Math.min(current / target * 100, 100);
@@ -2970,6 +2975,18 @@ function StaffModal({ s, onClose, onSave, onTransfer, allStaff, isOwner, onHardD
               </div>
             )}
           </div>
+          {/* BOA Pathways — flags staff recruited through the BOA Pathways
+              programme for unemployed South Africans. Drives the 🎓 badge on
+              the Employee list and the Locations overview, and the BOA Pathways
+              total tile. */}
+          <label style={{ gridColumn: "1/-1", display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderRadius: 12, border: `2px solid ${f.boaPathways ? "#6EE7B7" : "#e5e7eb"}`, background: f.boaPathways ? "#ECFDF5" : "#fff", cursor: "pointer" }}>
+            <input type="checkbox" checked={!!f.boaPathways} onChange={e => set("boaPathways", e.target.checked)} style={{ width: 17, height: 17, accentColor: "#059669", cursor: "pointer" }} />
+            <span style={{ fontSize: 18 }}>🎓</span>
+            <span>
+              <span style={{ display: "block", fontSize: 12, fontWeight: 700, color: f.boaPathways ? "#065F46" : "#374151" }}>BOA Pathways graduate</span>
+              <span style={{ display: "block", fontSize: 11, color: "#6b7280" }}>Recruited through the BOA Pathways programme.</span>
+            </span>
+          </label>
         </div>
         <div style={{ display: "flex", gap: 10, marginTop: 22, justifyContent: "space-between", alignItems: "center", flexWrap: "wrap" }}>
           {s._id !== undefined && (
@@ -3233,6 +3250,14 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, onStar
               </div>
             )}
           </div>
+
+          {/* BOA Pathways — same flag as the staff modal; shows the 🎓 badge
+              next to the manager's name on the Locations overview and lists. */}
+          <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderRadius: 10, border: `2px solid ${f.boaPathways ? "#6EE7B7" : "#e5e7eb"}`, background: f.boaPathways ? "#ECFDF5" : "#fff", cursor: "pointer" }}>
+            <input type="checkbox" checked={!!f.boaPathways} onChange={e => set("boaPathways", e.target.checked)} style={{ width: 17, height: 17, accentColor: "#059669", cursor: "pointer" }} />
+            <span style={{ fontSize: 18 }}>🎓</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: f.boaPathways ? "#065F46" : "#374151" }}>BOA Pathways graduate</span>
+          </label>
 
           <div>
             <label style={lbl}>Personal Clock-in PIN <span style={{ fontWeight: 500, color: "#9CA3AF", letterSpacing: 0, textTransform: "none", marginLeft: 4 }}>(6 digits — used in the check-in app{isNew && pinInput ? " · auto-generated" : ""})</span></label>
@@ -14403,13 +14428,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     bankName: "", accNumber: "", branchCode: "",
     nextOfKinName: "", nextOfKinPhone: "",
     files: [], // Array to hold File objects before upload
+    boaPathways: false,
     _editId: null, _fromTrialId: null, _mgrTrial: false
   });
   const [hrTaskModal, setHrTaskModal] = useState(null); // { task: <task object>, scores: { lateness:5, reliability:5 }, docs: [] }
   const [quickPick, setQuickPick] = useState(null);   // pending-term quick-pick modal
   const [pendingTerms, setPendingTerms] = useState([]);  // auto-detected from attendance grid
   // Trial Period add-trainee form state (lifted to component level — used inside tab IIFE)
-  const [tForm, setTForm] = useState({ name: "", phone: "", email: "", homeAddress: "", trainerName: "", inductionPassDate: "", branch: SALONS[0]?.name || "", startDate: "", notes: "", role: "nt", _open: false });
+  const [tForm, setTForm] = useState({ name: "", phone: "", email: "", homeAddress: "", trainerName: "", inductionPassDate: "", branch: SALONS[0]?.name || "", startDate: "", notes: "", boaPathways: false, role: "nt", _open: false });
   // Onboarding registration modal toggle
   const [obShowForm, setObShowForm] = useState(false);
   const [obSubmitting, setObSubmitting] = useState(false);
@@ -19483,7 +19509,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <tr key={"mgr-" + (m._id || m.ec)} style={{ background: rowBg, borderTop: `1px solid ${bdr}`, opacity: rowOpacity }}>
                           <td style={{ padding: "10px 12px", fontFamily: "monospace", fontSize: 11, color: "#8E5570", fontWeight: 700 }}>{m.ec}</td>
                           <td style={{ padding: "10px 12px", fontWeight: 700, color: m.onMat ? "#7A4258" : "#111827", whiteSpace: "nowrap", fontStyle: m.onMat ? "italic" : "normal" }}>
-                            {m.onMat ? "🤱 " : m.pregnant ? "🤰 " : ""}{icon} {m.firstName || m.name?.split(' ')[0] || ""}
+                            {m.onMat ? "🤱 " : m.pregnant ? "🤰 " : ""}{icon} {m.firstName || m.name?.split(' ')[0] || ""}{m.boaPathways && <> <BoaPathwaysBadge size={12} /></>}
                             {m.transferring && <span style={{ fontSize: 10, marginLeft: 5, background: "#FBCFE8", color: "#BE185D", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>→ {m.transferTo} on {m.transferDate ? new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
                           </td>
                           <td style={{ padding: "10px 12px", fontWeight: 700, color: m.onMat ? "#7A4258" : "#111827", whiteSpace: "nowrap", fontStyle: m.onMat ? "italic" : "normal" }}>
@@ -19533,7 +19559,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <tr key={s._id} style={{ background: rowBg, borderTop: `1px solid ${bdr}`, opacity: rowOpacity }}>
                           <td style={{ padding: "10px 12px", fontFamily: "monospace", fontSize: 11, color: "#8E5570", fontWeight: 700, textDecoration: (departed || terminated) ? "line-through" : "none" }}>{s.ec}</td>
                           <td style={{ padding: "10px 12px", fontWeight: 700, color: (departed || terminated) ? "#6b7280" : s.onMat ? "#7A4258" : s.transferring ? "#0369a1" : "#111827", whiteSpace: "nowrap", fontStyle: s.onMat ? "italic" : "normal", textDecoration: (departed && !terminated) ? "line-through" : "none" }}>
-                            {terminated ? "🛑 Archived · " : departed ? "👋 " : s.onMat ? "🤱 " : s.pregnant ? "🤰 " : s.isShadow ? "🔄 Arriving · " : s.transferring && !s.isShadow ? "🔄 Transferring · " : ""}{s.firstName || s.name?.split(' ')[0] || ""}
+                            {terminated ? "🛑 Archived · " : departed ? "👋 " : s.onMat ? "🤱 " : s.pregnant ? "🤰 " : s.isShadow ? "🔄 Arriving · " : s.transferring && !s.isShadow ? "🔄 Transferring · " : ""}{s.firstName || s.name?.split(' ')[0] || ""}{s.boaPathways && <> <BoaPathwaysBadge size={12} /></>}
                             {s.transferring && !s.isShadow && <span style={{ fontSize: 10, marginLeft: 5, background: "#FBCFE8", color: "#BE185D", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>→ {s.transferTo} on {s.transferDate ? new Date(s.transferDate.replace(/\//g, "-")).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
                             {s.isShadow && <span style={{ fontSize: 10, marginLeft: 5, background: "#FBCFE8", color: "#BE185D", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>from {s.transferFrom} on {s.transferDate ? new Date(s.transferDate.replace(/\//g, "-")).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
                           </td>
@@ -19651,6 +19677,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const filteredSeats = filteredSalonData.reduce((a, s) => a + s.capacity, 0);
           const filteredVacancies = filteredSalonData.reduce((a, s) =>
             a + Math.max(0, (s.targetCapacity || s.capacity) - s.active.length - s.trial.length), 0);
+          // BOA Pathways graduate headcount across the branches in view (so it
+          // respects the region filter; "All regions" = company-wide total).
+          // Counts current staff + managers + in-pipeline trial candidates;
+          // excludes anyone who has left or been off-boarded.
+          const _visBranches = new Set(filteredSalonData.map(s => s.name));
+          const filteredBoaGrads =
+            (staff || []).filter(s => s.boaPathways && !s.leftDate && s.active !== false && _visBranches.has(s.branch)).length
+            + (managers || []).filter(m => m.boaPathways && !m.leftDate && m.active !== false && _visBranches.has(m.branch)).length
+            + (trialList || []).filter(t => t.boaPathways && t.status !== "failed" && t.status !== "hired" && !t.promotedToOnboarding && _visBranches.has(t.branch)).length;
           return (
             <div style={{ padding: "0 24px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
@@ -19710,6 +19745,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { l: "On Mat. Leave", v: filteredOnMat, c: "#7A4258", bg: "#fce7f3" },
                   { l: "Total Seats", v: filteredSeats, c: "#111827", bg: "#f3f4f6" },
                   { l: "Vacancies", v: filteredVacancies, c: "#9a3412", bg: "#ffedd5" },
+                  { l: "🎓 BOA Pathways", v: filteredBoaGrads, c: "#065F46", bg: "#D1FAE5" },
                 ].map(c => (
                   <div key={c.l} style={{ background: c.bg, borderRadius: 12, padding: "13px 14px" }}>
                     <div style={{ fontSize: 26, fontWeight: 800, color: c.c, lineHeight: 1 }}>{c.v}</div>
@@ -19873,7 +19909,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               <div key={m._id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderRadius: 8, background: "#FFFFFF", border: "1px solid #FBCFE8", opacity: m.onUnpaidLegal ? 0.75 : 1 }}>
                                 <span style={{ fontSize: 9, color: "#9ca3af", fontFamily: "monospace", minWidth: 36 }}>{m.ec}</span>
                                 <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: m.onUnpaidLegal ? "#6b7280" : m.onMat ? "#7A4258" : m.transferring ? "#1d4ed8" : "#111827" }}>
-                                  {m.onUnpaidLegal ? "⏸ " : m.onMat ? "🤱 " : m.pregnant ? "🤰 " : m.transferring ? "🔄 " : ""}{m.name}
+                                  {m.onUnpaidLegal ? "⏸ " : m.onMat ? "🤱 " : m.pregnant ? "🤰 " : m.transferring ? "🔄 " : ""}{m.name}{m.boaPathways && <> <BoaPathwaysBadge size={11} /></>}
                                   {m.transferring && <span style={{ fontSize: 9, marginLeft: 4, color: "#BE185D", fontWeight: 400 }}>→ {m.transferTo}</span>}
                                 </span>
                                 <button onClick={() => { setStaffModal(m); setManagePanel(null); }}
@@ -19941,7 +19977,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               {ssm.map(m => (
                                 <div key={m._id} style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", opacity: m.onMat ? 0.5 : 1 }}>
                                   <span style={{ fontSize: 13 }}>{m.onMat ? "🤱" : "💎"}</span>
-                                  <span style={{ fontSize: 11, fontWeight: 700, color: m.onMat ? "#7A4258" : "#92400e", fontStyle: m.onMat ? "italic" : "normal", flex: 1 }}>{m.name}</span>
+                                  <span style={{ fontSize: 11, fontWeight: 700, color: m.onMat ? "#7A4258" : "#92400e", fontStyle: m.onMat ? "italic" : "normal", flex: 1 }}>{m.name}{m.boaPathways && <> <BoaPathwaysBadge size={11} /></>}</span>
                                   {m.transferring && m.transferTo && <span style={{ fontSize: 9, color: "#1d4ed8", background: "#dbeafe", border: "1px solid #bfdbfe", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🔄 leaving → {m.transferTo}{m.transferDate ? ` · ${new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                                   {m.onMat && <span style={{ fontSize: 9, color: "#8E5570", background: "#FBCFE8", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>on leave{m.matReturn ? ` · ↩${new Date(m.matReturn).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                                   {m.pregnant && !m.onMat && <span style={{ fontSize: 9, color: "#8E5570", background: "#FCE7F3", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🤰 pregnant{m.matStart ? ` · leaves ${new Date(m.matStart).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
@@ -19952,7 +19988,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               {sm.map(m => (
                                 <div key={m._id} style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", opacity: m.onMat ? 0.5 : 1 }}>
                                   <span style={{ fontSize: 13 }}>{m.onMat ? "🤱" : "👑"}</span>
-                                  <span style={{ fontSize: 11, fontWeight: 700, color: m.onMat ? "#7A4258" : "#1e293b", fontStyle: m.onMat ? "italic" : "normal", flex: 1 }}>{m.name}</span>
+                                  <span style={{ fontSize: 11, fontWeight: 700, color: m.onMat ? "#7A4258" : "#1e293b", fontStyle: m.onMat ? "italic" : "normal", flex: 1 }}>{m.name}{m.boaPathways && <> <BoaPathwaysBadge size={11} /></>}</span>
                                   {m.transferring && m.transferTo && <span style={{ fontSize: 9, color: "#1d4ed8", background: "#dbeafe", border: "1px solid #bfdbfe", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🔄 leaving → {m.transferTo}{m.transferDate ? ` · ${new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                                   {m.onMat && <span style={{ fontSize: 9, color: "#8E5570", background: "#FBCFE8", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>on leave{m.matReturn ? ` · ↩${new Date(m.matReturn).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                                   {m.pregnant && !m.onMat && <span style={{ fontSize: 9, color: "#8E5570", background: "#FCE7F3", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🤰 pregnant{m.matStart ? ` · leaves ${new Date(m.matStart).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
@@ -19967,7 +20003,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               {am.map(m => (
                                 <div key={m._id} style={{ display: "flex", alignItems: "center", gap: 6, opacity: 1 }}>
                                   <span style={{ fontSize: 13 }}>⭐</span>
-                                  <span style={{ fontSize: 11, fontWeight: 500, color: "#475569", flex: 1 }}>{m.name}</span>
+                                  <span style={{ fontSize: 11, fontWeight: 500, color: "#475569", flex: 1 }}>{m.name}{m.boaPathways && <> <BoaPathwaysBadge size={11} /></>}</span>
                                   {m.transferring && m.transferTo && <span style={{ fontSize: 9, color: "#1d4ed8", background: "#dbeafe", border: "1px solid #bfdbfe", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🔄 leaving → {m.transferTo}{m.transferDate ? ` · ${new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                                   {m.pregnant && <span style={{ fontSize: 9, color: "#8E5570", background: "#FCE7F3", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🤰 pregnant{m.matStart ? ` · leaves ${new Date(m.matStart).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                                   {!m.pregnant && !m.transferring && m.notes && <span style={{ fontSize: 9, color: "#BE185D", fontStyle: "italic", maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.notes}>⚑</span>}
@@ -19988,7 +20024,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 return (
                                 <div key={t._id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 7px", borderRadius: 7, background: isPassed ? "#F0FDF4" : "#FFFBEB", border: "1.5px dashed " + (isPassed ? "#86EFAC" : "#FCD34D") }}>
                                   <span style={{ fontSize: 13 }}>{isPassed ? "✅" : "⏳"}</span>
-                                  <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: isPassed ? "#14532d" : "#78350f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name}</span>
+                                  <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: isPassed ? "#14532d" : "#78350f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name}{t.boaPathways && <> <BoaPathwaysBadge size={11} /></>}</span>
                                   <span style={{ fontSize: 9, background: isPassed ? "#86EFAC" : "#FCD34D", color: isPassed ? "#14532d" : "#78350f", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{isPassed ? "passed" : t.status}</span>
                                   <span style={{ fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 700, letterSpacing: "0.04em" }}>AM · TRIAL</span>
                                 </div>
@@ -20070,7 +20106,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <div key={m._id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 7px", borderRadius: 7, background: m.isShadow ? "#eff6ff" : m.transferring ? "#eff6ff" : m.pregnant ? "#fffbeb" : m.permit === "z_na" ? "#FAEEF1" : "#f9fafb", border: `1px solid ${m.isShadow || m.transferring ? "#bfdbfe" : m.pregnant ? "#fde68a" : m.permit === "z_na" ? "#fecaca" : "#e5e7eb"}` }}>
                             <span style={{ fontSize: 9, color: "#9ca3af", fontFamily: "monospace", minWidth: 34 }}>{m.ec}</span>
                             <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: m.isShadow || m.transferring ? "#1d4ed8" : "#111827", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                              {m.pregnant ? "🤰 " : m.isShadow ? "🔄 " : m.transferring ? "🔄 " : ""}{m.name}
+                              {m.pregnant ? "🤰 " : m.isShadow ? "🔄 " : m.transferring ? "🔄 " : ""}{m.name}{m.boaPathways && <> <BoaPathwaysBadge size={11} /></>}
                               {m.transferring && !m.isShadow && <span style={{ fontSize: 9, marginLeft: 4, color: "#BE185D" }}>→{m.transferTo} {m.transferDate ? new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
                               {m.isShadow && <span style={{ fontSize: 9, marginLeft: 4, color: "#BE185D" }}>from {m.transferFrom} {m.transferDate ? new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
                             </span>
@@ -20162,7 +20198,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           return (
                           <div key={m._id} style={{ padding: "5px 7px", borderRadius: 7, background: isPassed ? "#F0FDF4" : "#FFFBEB", border: "1px dashed " + (isPassed ? "#86EFAC" : "#FCD34D"), display: "flex", alignItems: "center", gap: 6 }}>
                             <span style={{ fontSize: 12 }}>{isPassed ? "✅" : "⏳"}</span>
-                            <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: "#111827" }}>{m.name}</span>
+                            <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: "#111827" }}>{m.name}{m.boaPathways && <> <BoaPathwaysBadge size={11} /></>}</span>
                             <span style={{ fontSize: 9, background: isPassed ? "#86EFAC" : "#FCD34D", color: isPassed ? "#14532d" : "#78350f", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{isPassed ? "passed" : m.status}</span>
                           </div>
                           );
@@ -22653,7 +22689,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             idType: "sa_id", idDetails: "",
             bankName: "", accNumber: "", branchCode: "",
             nextOfKinName: "", nextOfKinPhone: "",
-            files: [],
+            files: [], boaPathways: !!r.boaPathways,
             _editId: null, _fromTrialId: r._id, _mgrTrial: isMgrTrial
           });
           // Don't close the trial out here — promotion only pre-fills the
@@ -22675,6 +22711,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             homeAddress: r.homeAddress || "", trainerName: r.trainerName || "",
             inductionPassDate: r.inductionPassDate || "", branch: r.branch || SALONS[0].name,
             startDate: r.startDate || "", notes: r.notes || "", role: r.role || "nt",
+            boaPathways: !!r.boaPathways,
             _open: true, _editId: r._id
           });
           if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
@@ -22697,6 +22734,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 branch: tForm.branch,
                 startDate: tForm.startDate,
                 notes: tForm.notes,
+                boaPathways: !!tForm.boaPathways,
                 updatedAt: new Date().toISOString()
               }
               : r));
@@ -22712,6 +22750,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               branch: tForm.branch,
               startDate: tForm.startDate,
               notes: tForm.notes,
+              boaPathways: !!tForm.boaPathways,
               role: role,
               status: role === "am" ? "trial_w1" : "induction",
               addedAt: new Date().toISOString(),
@@ -22719,7 +22758,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             };
             persistTrial([...trialList, rec]);
           }
-          setTForm({ name: "", phone: "", email: "", homeAddress: "", trainerName: "", inductionPassDate: "", branch: SALONS[0].name, startDate: "", notes: "", role: "nt", _open: false, _editId: null });
+          setTForm({ name: "", phone: "", email: "", homeAddress: "", trainerName: "", inductionPassDate: "", branch: SALONS[0].name, startDate: "", notes: "", boaPathways: false, role: "nt", _open: false, _editId: null });
         };
 
         const currentList = trialList.filter(r => (r.role || "nt") === trialSubTab);
@@ -23186,6 +23225,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <label style={lbl}>Notes</label>
                   <textarea rows={2} style={{ ...inp, width: "100%", boxSizing: "border-box", resize: "vertical" }} value={tForm.notes || ""} onChange={e => setTForm(f => ({ ...f, notes: e.target.value }))} />
                 </div>
+                {/* BOA Pathways — carries through onto the staff record when the
+                    candidate is later converted in onboarding, so the 🎓 badge
+                    follows them from trial to active staff. */}
+                <label style={{ marginBottom: 16, display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderRadius: 10, border: `2px solid ${tForm.boaPathways ? "#6EE7B7" : "#e5e7eb"}`, background: tForm.boaPathways ? "#ECFDF5" : "#fff", cursor: "pointer" }}>
+                  <input type="checkbox" checked={!!tForm.boaPathways} onChange={e => setTForm(f => ({ ...f, boaPathways: e.target.checked }))} style={{ width: 17, height: 17, accentColor: "#059669", cursor: "pointer" }} />
+                  <span style={{ fontSize: 18 }}>🎓</span>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: tForm.boaPathways ? "#065F46" : "#374151" }}>BOA Pathways graduate</span>
+                </label>
                 {/* Trial days & dates — edit the actual days she was in, right here. */}
                 {tForm._editId && (() => {
                   const rec = trialList.find(x => x._id === tForm._editId);
@@ -23712,6 +23759,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             email: obForm.email || null,
             address: obForm.homeAddress || null,
             idNumber: obForm.idDetails || null,
+            boaPathways: !!obForm.boaPathways,
             roleType: roleType // manager when a manager Position is picked, else tech
           };
 
@@ -23972,7 +24020,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
           logActivity("Onboarded staff", obForm.name + " (" + ec + ")", obForm.position + " · " + obForm.branch);
 
-          setObForm({ name: "", ec: "", branch: SALONS[0].name, position: "Nail Tech", positionOther: "", startDate: "", notes: "", phone: "", email: "", homeAddress: "", idType: "sa_id", idDetails: "", bankName: "", accNumber: "", branchCode: "", nextOfKinName: "", nextOfKinPhone: "", files: [], _editId: null, _fromTrialId: null, _mgrTrial: false });
+          setObForm({ name: "", ec: "", branch: SALONS[0].name, position: "Nail Tech", positionOther: "", startDate: "", notes: "", phone: "", email: "", homeAddress: "", idType: "sa_id", idDetails: "", bankName: "", accNumber: "", branchCode: "", nextOfKinName: "", nextOfKinPhone: "", files: [], boaPathways: false, _editId: null, _fromTrialId: null, _mgrTrial: false });
           setObShowForm(false);
           setObSubmitting(false);
           alert("✅ Successfully onboarded! " + obForm.name + " is now an Active Staff member.");
@@ -24113,6 +24161,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <label style={lbl}>Registration Notes</label>
                       <textarea rows={3} style={{ ...inp, width: "100%", boxSizing: "border-box", resize: "vertical" }} value={obForm.notes || ""} onChange={e => setObForm({ ...obForm, notes: e.target.value })} placeholder="Internal notes about this hire..." />
                     </div>
+
+                    {/* BOA Pathways — pre-ticked when converting a trial
+                        candidate already flagged; sets the 🎓 badge on the new
+                        staff record. */}
+                    <label style={{ marginBottom: 24, display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderRadius: 10, border: `2px solid ${obForm.boaPathways ? "#6EE7B7" : "#e5e7eb"}`, background: obForm.boaPathways ? "#ECFDF5" : "#fff", cursor: "pointer" }}>
+                      <input type="checkbox" checked={!!obForm.boaPathways} onChange={e => setObForm({ ...obForm, boaPathways: e.target.checked })} style={{ width: 17, height: 17, accentColor: "#059669", cursor: "pointer" }} />
+                      <span style={{ fontSize: 18 }}>🎓</span>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: obForm.boaPathways ? "#065F46" : "#374151" }}>BOA Pathways graduate</span>
+                    </label>
 
                     <button
                       onClick={submitOb}
