@@ -13238,7 +13238,8 @@ const CT_STORE_GEO = {
   "Cape Gate":     { lat: -33.8690, lng: 18.6960, region: "Northern Suburbs", corridors: ["northern_line"] },
   "Somerset West": { lat: -34.0840, lng: 18.8490, region: "Winelands", corridors: ["winelands"] },
   "Winelands":     { lat: -33.7340, lng: 18.9620, region: "Winelands", corridors: ["winelands", "northern_line"] },
-  "Betty":         { lat: -33.9190, lng: 18.4140, region: "CBD / Atlantic Seaboard", corridors: ["atlantic", "westcoast", "southern_line", "northern_line", "central_line", "cbd_hub"] }
+  "Betty":         { lat: -33.9190, lng: 18.4140, region: "CBD / Atlantic Seaboard", corridors: ["atlantic", "westcoast", "southern_line", "northern_line", "central_line", "cbd_hub"] },
+  "Cobble Walk":   { lat: -33.8230, lng: 18.6530, region: "Northern Suburbs", corridors: ["northern_line"] }   // Sonstraal Heights / Durbanville — opens Jul 2026
 };
 // Common Cape Town suburbs + region keywords → coordinates + corridors.
 const CT_AREAS = {
@@ -13355,11 +13356,35 @@ function ctFindArea(text) {
   }
   return best;
 }
+// Resolve a branch name (which may be a custom store with a longer label, e.g.
+// "Cobble Walk (Durbanville)") to its geo entry — exact first, then the longest
+// normalised substring match so naming variants still place on the map.
+function ctGeoForStore(name) {
+  if (!name) return null;
+  if (CT_STORE_GEO[name]) return CT_STORE_GEO[name];
+  const n = _ctNorm(name);
+  let best = null, bestLen = 0;
+  for (const k in CT_STORE_GEO) {
+    const nk = _ctNorm(k);
+    if (nk === n || n.includes(nk) || nk.includes(n)) { if (nk.length > bestLen) { best = CT_STORE_GEO[k]; bestLen = nk.length; } }
+  }
+  return best;
+}
 function ctModesFor(shared) {
   if (!shared.length) return ["Minibus taxi (transfer likely)"];
   const out = [];
   shared.forEach(c => { const l = CT_CORRIDOR_MODE[c]; if (l && !out.includes(l)) out.push(l); });
   return out.slice(0, 2);
+}
+// Commute-quality label from the effective (transport-weighted) distance, so
+// the picker reads best → hardest to reach at a glance.
+function ctCommuteRating(ease) {
+  if (ease <= 12) return { label: "Excellent", color: "#15803d", bg: "#dcfce7" };
+  if (ease <= 20) return { label: "Very good", color: "#047857", bg: "#d1fae5" };
+  if (ease <= 32) return { label: "Good", color: "#a16207", bg: "#fef9c3" };
+  if (ease <= 45) return { label: "Moderate", color: "#c2410c", bg: "#ffedd5" };
+  if (ease <= 70) return { label: "Challenging", color: "#b91c1c", bg: "#fee2e2" };
+  return { label: "Not ideal", color: "#7f1d1d", bg: "#fee2e2" };
 }
 // Rank branches by travel-ease from a typed area/suburb. Returns the matched
 // area (or null) and a sorted list of branches that exist in `salonNames`.
@@ -13367,14 +13392,14 @@ function ctSuggestStores(text, salonNames, limit) {
   const area = ctFindArea(text);
   if (!area) return { area: null, results: [] };
   const names = salonNames && salonNames.length ? salonNames : Object.keys(CT_STORE_GEO);
-  const results = names.filter(n => CT_STORE_GEO[n]).map(n => {
-    const g = CT_STORE_GEO[n];
+  const results = names.map(n => ({ n, g: ctGeoForStore(n) })).filter(x => x.g).map(({ n, g }) => {
     const km = _ctHaversineKm(area, g);
     const shared = (area.corridors || []).filter(c => (g.corridors || []).includes(c));
     const shares = shared.length > 0;
-    return { name: n, region: g.region, km: Math.round(km), shares, modes: ctModesFor(shared), ease: km * (shares ? 0.72 : 1) };
+    const ease = km * (shares ? 0.72 : 1);
+    return { name: n, region: g.region, km: Math.round(km), shares, modes: ctModesFor(shared), ease, rating: ctCommuteRating(ease) };
   }).sort((a, b) => a.ease - b.ease);
-  return { area, results: results.slice(0, limit || 5) };
+  return { area, results: limit ? results.slice(0, limit) : results };
 }
 
 function InterviewsView({ interviewList, persistInterviews, trialList, persistTrialList, staff, managers, currentUser }) {
@@ -13421,7 +13446,7 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
   const openAdd = () => { setSuggest(null); setForm(blankForm()); };
   const openEdit = (r) => { setSuggest(null); setForm({ firstName: r.firstName || "", surname: r.surname || "", nationality: r.nationality || "", phone: r.phone || "", email: r.email || "", area: r.area || "", branch: r.branch || "", source: r.source || "other", interviewDate: r.interviewDate || "", interviewTime: r.interviewTime || "", _editId: r._id }); };
   const closeForm = () => { setSuggest(null); setForm(null); };
-  const runSuggest = () => setSuggest(ctSuggestStores(form.area, SALONS.map(s => s.name), 5));
+  const runSuggest = () => setSuggest(ctSuggestStores(form.area, SALONS.map(s => s.name)));
   const saveForm = () => {
     if (!form.firstName.trim() || !form.surname.trim()) { alert("First name and surname are required."); return; }
     const base = {
@@ -13739,24 +13764,28 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
             <div style={{ marginTop: 14, background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 12, padding: "12px 14px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                 <div style={{ fontSize: 12, fontWeight: 800, color: "#3730a3" }}>🧭 Easiest stores to travel to</div>
-                <button onClick={runSuggest} style={{ background: "#4f46e5", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Suggest from “{form.area || "area"}”</button>
+                <button onClick={runSuggest} style={{ background: "#4f46e5", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Rank from "{form.area || "area"}"</button>
               </div>
               {suggest && suggest.area === null && (
                 <div style={{ fontSize: 12, color: "#6b7280", marginTop: 8 }}>Couldn't place “{form.area}”. Try a Cape Town suburb or region (e.g. Khayelitsha, Bellville, Atlantic Seaboard).</div>
               )}
               {suggest && suggest.area && (
-                <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
-                  {suggest.results.map((s, i) => (
-                    <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 8, background: "#fff", border: `1px solid ${form.branch === s.name ? "#4f46e5" : "#e5e7eb"}`, borderRadius: 9, padding: "7px 10px" }}>
-                      <span style={{ fontSize: 12, fontWeight: 800, color: i === 0 ? "#15803d" : "#9ca3af", minWidth: 16 }}>{i + 1}</span>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>📍 {s.name} <span style={{ fontSize: 10, fontWeight: 600, color: "#9ca3af" }}>· ~{s.km} km</span></div>
-                        <div style={{ fontSize: 11, color: "#4f46e5" }}>{s.modes.join(" · ")}</div>
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 6 }}>Ranked best → hardest to reach from <strong style={{ color: "#3730a3" }}>{form.area}</strong>:</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 280, overflowY: "auto" }}>
+                    {suggest.results.map((s, i) => (
+                      <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 8, background: "#fff", border: `1px solid ${form.branch === s.name ? "#4f46e5" : "#e5e7eb"}`, borderRadius: 9, padding: "7px 10px" }}>
+                        <span style={{ fontSize: 12, fontWeight: 800, color: "#9ca3af", minWidth: 16 }}>{i + 1}</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>📍 {s.name} <span style={{ fontSize: 10, fontWeight: 600, color: "#9ca3af" }}>· ~{s.km} km</span></div>
+                          <div style={{ fontSize: 11, color: "#4f46e5" }}>{s.modes.join(" · ")}</div>
+                        </div>
+                        <span style={{ fontSize: 10, fontWeight: 800, color: s.rating.color, background: s.rating.bg, borderRadius: 99, padding: "2px 8px", whiteSpace: "nowrap" }}>{s.rating.label}</span>
+                        <button onClick={() => setForm(f => ({ ...f, branch: s.name }))} style={{ background: form.branch === s.name ? "#4f46e5" : "#eef2ff", color: form.branch === s.name ? "#fff" : "#4f46e5", border: "none", borderRadius: 7, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{form.branch === s.name ? "✓" : "Use"}</button>
                       </div>
-                      <button onClick={() => setForm(f => ({ ...f, branch: s.name }))} style={{ background: form.branch === s.name ? "#4f46e5" : "#eef2ff", color: form.branch === s.name ? "#fff" : "#4f46e5", border: "none", borderRadius: 7, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>{form.branch === s.name ? "✓ Selected" : "Use"}</button>
-                    </div>
-                  ))}
-                  <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 2 }}>Estimates from straight-line distance + typical transport corridors — sense-check against the candidate's actual commute.</div>
+                    ))}
+                  </div>
+                  <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 6 }}>Estimates from straight-line distance + typical transport corridors — sense-check against the candidate's actual commute.</div>
                 </div>
               )}
             </div>
@@ -15064,6 +15093,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [pendingTerms, setPendingTerms] = useState([]);  // auto-detected from attendance grid
   // Trial Period add-trainee form state (lifted to component level — used inside tab IIFE)
   const [tForm, setTForm] = useState({ name: "", phone: "", email: "", homeAddress: "", trainerName: "", inductionPassDate: "", branch: SALONS[0]?.name || "", startDate: "", notes: "", boaPathways: false, role: "nt", _open: false });
+  const [trialSuggest, setTrialSuggest] = useState(null);  // store-picker results for the trial form ({ area, results } | { area:null })
   // Onboarding registration modal toggle
   const [obShowForm, setObShowForm] = useState(false);
   const [obSubmitting, setObSubmitting] = useState(false);
@@ -23908,6 +23938,39 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <label style={lbl}>Home Address <span style={{ fontWeight: 400, textTransform: "none", color: "#9ca3af" }}>(helps assign nearest branch)</span></label>
                   <textarea rows={2} style={{ ...inp, width: "100%", boxSizing: "border-box", resize: "vertical" }} value={tForm.homeAddress || ""} onChange={e => setTForm(f => ({ ...f, homeAddress: e.target.value }))} placeholder="Street, suburb, city" />
                 </div>
+
+                {/* Intelligent store picker — ranks branches easiest to reach
+                    from the candidate's home area (approx distance + Cape Town
+                    public-transport corridors). Pick one to set the branch. */}
+                <div style={{ marginBottom: 16, background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 12, padding: "12px 14px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: "#3730a3" }}>🧭 Easiest stores to travel to</div>
+                    <button type="button" onClick={() => setTrialSuggest(ctSuggestStores(tForm.homeAddress, SALONS.map(s => s.name)))} style={{ background: "#4f46e5", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Rank from address</button>
+                  </div>
+                  {trialSuggest && trialSuggest.area === null && (
+                    <div style={{ fontSize: 12, color: "#6b7280", marginTop: 8 }}>Couldn't place that area. Try a Cape Town suburb or region (e.g. Khayelitsha, Bellville, Atlantic Seaboard).</div>
+                  )}
+                  {trialSuggest && trialSuggest.area && (
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 6 }}>Ranked best → hardest to reach:</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 280, overflowY: "auto" }}>
+                        {trialSuggest.results.map((s, i) => (
+                          <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 8, background: "#fff", border: `1px solid ${tForm.branch === s.name ? "#4f46e5" : "#e5e7eb"}`, borderRadius: 9, padding: "7px 10px" }}>
+                            <span style={{ fontSize: 12, fontWeight: 800, color: "#9ca3af", minWidth: 16 }}>{i + 1}</span>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>📍 {s.name} <span style={{ fontSize: 10, fontWeight: 600, color: "#9ca3af" }}>· ~{s.km} km</span></div>
+                              <div style={{ fontSize: 11, color: "#4f46e5" }}>{s.modes.join(" · ")}</div>
+                            </div>
+                            <span style={{ fontSize: 10, fontWeight: 800, color: s.rating.color, background: s.rating.bg, borderRadius: 99, padding: "2px 8px", whiteSpace: "nowrap" }}>{s.rating.label}</span>
+                            <button type="button" onClick={() => setTForm(f => ({ ...f, branch: s.name }))} style={{ background: tForm.branch === s.name ? "#4f46e5" : "#eef2ff", color: tForm.branch === s.name ? "#fff" : "#4f46e5", border: "none", borderRadius: 7, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{tForm.branch === s.name ? "✓" : "Use"}</button>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 6 }}>Estimates from straight-line distance + typical transport corridors.</div>
+                    </div>
+                  )}
+                </div>
+
                 <div style={{ marginBottom: 16 }}>
                   <label style={lbl}>Notes</label>
                   <textarea rows={2} style={{ ...inp, width: "100%", boxSizing: "border-box", resize: "vertical" }} value={tForm.notes || ""} onChange={e => setTForm(f => ({ ...f, notes: e.target.value }))} />
