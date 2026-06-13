@@ -128,7 +128,7 @@ function installDemoMode() {
 const READ_ONLY_GUARDED_METHODS = [
   "saveStaff", "saveMat", "saveManager", "saveSchedule", "saveAttendance", "saveEarlyLeaves",
   "saveOnboarding", "saveOffboarding", "saveLeaveRecords", "saveMgrRequests",
-  "saveTechRequests", "saveManagerPins", "saveTrialPeriod", "deleteMat", "deleteManager", "deleteSchedule",
+  "saveTechRequests", "saveManagerPins", "saveTrialPeriod", "saveInterviews", "deleteMat", "deleteManager", "deleteSchedule",
   "saveAttendanceUndo", "clearAttendanceUndo"
 ];
 function installReadOnlyGuard() {
@@ -8126,6 +8126,31 @@ function canSeeIncidents(user) {
          r.includes("national") || isRomRole(user.role);
 }
 
+// ─── RECRUITMENT / INTERVIEW ROLE GATES ──────────────────────────────────────
+// The interview pipeline is split by responsibility: the RECRUITER (e.g. Siphe)
+// logs candidates, schedules interviews and books inductions; the NAIL-TECH
+// TRAINER (e.g. Varonique) marks attendance and pass/fail. The Owner and Master
+// Admin can do both. Roles are free text (Settings → Users), so we match
+// loosely: "recruiter"/"recruitment" for recruiters, and any "trainer" role
+// that is NOT a *manager* trainer for the nail-tech trainer — so Varonique
+// ("Nail Tech Trainer") qualifies but Farida ("Manager Trainer / LSM") doesn't.
+function _isOwnerOrMaster(user) {
+  if (!user) return false;
+  if (user.isOwner) return true;
+  return (user.role || "").toLowerCase().trim() === "master admin";
+}
+function canRecruitInterviews(user) {
+  if (!user) return false;
+  if (_isOwnerOrMaster(user)) return true;
+  return /recruit/i.test(user.role || "");
+}
+function canTrainInterviews(user) {
+  if (!user) return false;
+  if (_isOwnerOrMaster(user)) return true;
+  const r = (user.role || "");
+  return /\btrainer\b/i.test(r) && !/manager/i.test(r);
+}
+
 // Shared access-gate check: does this user fall inside an access config
 // ({ roles:[...], pins:[...] })? Owners always pass. Role keys are matched
 // loosely against the user's role title so seed/typo variants still work.
@@ -13153,6 +13178,629 @@ function StoreReportsTab({ extraDayRequests, managers }) {
   );
 }
 
+// ─── NAIL-TECH INTERVIEW PIPELINE ─────────────────────────────────────────────
+// Front of the recruitment funnel: the recruiter logs candidates and schedules
+// interviews; the nail-tech trainer marks attendance + pass/fail; the recruiter
+// books an induction date which hands the candidate to the Trial Period
+// (induction stage). Lives under Recruitment → Interviews.
+const INTERVIEW_SOURCES = { indeed: "Indeed", linkedin: "LinkedIn", social_media: "Social Media", referral: "Referral", agency: "Agency", walk_in: "Walk In", other: "Other" };
+const INTERVIEW_STAGE = {
+  new:              { label: "Draft",                  bg: "#f3f4f6", color: "#374151" },
+  scheduled:        { label: "Interview booked",       bg: "#dbeafe", color: "#1e40af" },
+  no_show:          { label: "No-show",                bg: "#fee2e2", color: "#991b1b" },
+  interviewed:      { label: "Awaiting outcome",       bg: "#fef9c3", color: "#854d0e" },
+  passed:           { label: "Passed · book induction", bg: "#dcfce7", color: "#14532d" },
+  induction_booked: { label: "Induction booked",       bg: "#cffafe", color: "#0e7490" },
+  to_trial:         { label: "In Trial Period",        bg: "#ede9fe", color: "#5b21b6" },
+  failed:           { label: "Not successful",         bg: "#f3f4f6", color: "#6b7280" },
+};
+function interviewStage(r) {
+  if (!r) return "new";
+  if (r.promotedToTrialId) return "to_trial";
+  if (r.outcome === "failed") return "failed";
+  if (r.outcome === "passed") return r.inductionDate ? "induction_booked" : "passed";
+  if (r.attendance === "no_show") return "no_show";
+  if (r.attendance === "came") return "interviewed";
+  if (r.interviewDate) return "scheduled";
+  return "new";
+}
+function _telDigits(phone) { return (phone || "").replace(/[^\d+]/g, ""); }
+function _waDigits(phone) {
+  let d = (phone || "").replace(/[^\d]/g, "");
+  if (d.startsWith("0")) d = "27" + d.slice(1);      // local SA → international
+  return d;
+}
+
+// ─── CAPE TOWN STORE PICKER (travel-ease) ─────────────────────────────────────
+// An honest, offline estimator: where does a candidate live → which branches are
+// easiest to get to on public transport. We model two things:
+//   1. Approximate coordinates for each branch and ~70 common CT suburbs/regions
+//      (straight-line "as the crow flies" distance — a proxy, not live routing).
+//   2. Transport CORRIDORS each place sits on (MyCiti routes, the three Metrorail
+//      lines, the Helderberg/Winelands Golden-Arrow+taxi axis, the CBD
+//      interchange). When a suburb and a branch share a corridor there's usually
+//      a single-mode/one-transfer link, so we weight those branches as easier.
+// Branch keys match the app's SALON names. Coordinates are approximate.
+const CT_STORE_GEO = {
+  "Bree":          { lat: -33.9205, lng: 18.4190, region: "CBD / Atlantic Seaboard", corridors: ["atlantic", "westcoast", "southern_line", "northern_line", "central_line", "cbd_hub"] },
+  "Kloof":         { lat: -33.9290, lng: 18.4080, region: "CBD / Atlantic Seaboard", corridors: ["atlantic", "cbd_hub", "southern_line"] },
+  "Green Point":   { lat: -33.9062, lng: 18.4070, region: "CBD / Atlantic Seaboard", corridors: ["atlantic", "cbd_hub"] },
+  "Sea Point":     { lat: -33.9190, lng: 18.3850, region: "CBD / Atlantic Seaboard", corridors: ["atlantic"] },
+  "Riverlands":    { lat: -33.9370, lng: 18.4720, region: "Southern Suburbs", corridors: ["southern_line", "central_line"] },
+  "Rondebosch":    { lat: -33.9625, lng: 18.4760, region: "Southern Suburbs", corridors: ["southern_line"] },
+  "Claremont":     { lat: -33.9840, lng: 18.4647, region: "Southern Suburbs", corridors: ["southern_line"] },
+  "Plumstead":     { lat: -34.0190, lng: 18.4690, region: "Southern Suburbs", corridors: ["southern_line"] },
+  "Westlake":      { lat: -34.0760, lng: 18.4250, region: "Southern Suburbs", corridors: ["southern_line"] },
+  "Kuils River":   { lat: -33.9300, lng: 18.6770, region: "Northern Suburbs", corridors: ["northern_line"] },
+  "Durbanville":   { lat: -33.8310, lng: 18.6470, region: "Northern Suburbs", corridors: ["northern_line"] },
+  "Sandown":       { lat: -33.8090, lng: 18.4920, region: "Northern Suburbs", corridors: ["westcoast"] },
+  "Table Bay":     { lat: -33.7870, lng: 18.4790, region: "Northern Suburbs", corridors: ["westcoast"] },
+  "Cape Gate":     { lat: -33.8690, lng: 18.6960, region: "Northern Suburbs", corridors: ["northern_line"] },
+  "Somerset West": { lat: -34.0840, lng: 18.8490, region: "Winelands", corridors: ["winelands"] },
+  "Winelands":     { lat: -33.7340, lng: 18.9620, region: "Winelands", corridors: ["winelands", "northern_line"] },
+  "Betty":         { lat: -33.9190, lng: 18.4140, region: "CBD / Atlantic Seaboard", corridors: ["atlantic", "westcoast", "southern_line", "northern_line", "central_line", "cbd_hub"] },
+  "Cobble Walk":   { lat: -33.8230, lng: 18.6530, region: "Northern Suburbs", corridors: ["northern_line"] }   // Sonstraal Heights / Durbanville — opens Jul 2026
+};
+// Common Cape Town suburbs + region keywords → coordinates + corridors.
+const CT_AREAS = {
+  "cape town cbd": { lat: -33.9249, lng: 18.4241, corridors: ["atlantic", "westcoast", "southern_line", "northern_line", "central_line", "cbd_hub", "winelands"] },
+  "city centre": { lat: -33.9249, lng: 18.4241, corridors: ["atlantic", "westcoast", "southern_line", "northern_line", "central_line", "cbd_hub", "winelands"] },
+  "city bowl": { lat: -33.9300, lng: 18.4120, corridors: ["atlantic", "cbd_hub"] },
+  "atlantic seaboard": { lat: -33.9150, lng: 18.3880, corridors: ["atlantic"] },
+  "southern suburbs": { lat: -33.9840, lng: 18.4690, corridors: ["southern_line"] },
+  "northern suburbs": { lat: -33.8900, lng: 18.6200, corridors: ["northern_line"] },
+  "west coast": { lat: -33.8200, lng: 18.4880, corridors: ["westcoast"] },
+  "cape flats": { lat: -34.0000, lng: 18.5600, corridors: ["central_line"] },
+  "winelands": { lat: -33.9320, lng: 18.8600, corridors: ["winelands"] },
+  "helderberg": { lat: -34.0900, lng: 18.8400, corridors: ["winelands"] },
+  "gardens": { lat: -33.9320, lng: 18.4120, corridors: ["atlantic", "cbd_hub"] },
+  "tamboerskloof": { lat: -33.9300, lng: 18.4050, corridors: ["atlantic", "cbd_hub"] },
+  "vredehoek": { lat: -33.9360, lng: 18.4180, corridors: ["atlantic", "cbd_hub"] },
+  "woodstock": { lat: -33.9270, lng: 18.4450, corridors: ["southern_line", "central_line", "cbd_hub"] },
+  "salt river": { lat: -33.9290, lng: 18.4650, corridors: ["southern_line", "central_line"] },
+  "observatory": { lat: -33.9370, lng: 18.4720, corridors: ["southern_line", "central_line"] },
+  "sea point": { lat: -33.9190, lng: 18.3850, corridors: ["atlantic"] },
+  "green point": { lat: -33.9062, lng: 18.4070, corridors: ["atlantic", "cbd_hub"] },
+  "mouille point": { lat: -33.9000, lng: 18.4050, corridors: ["atlantic"] },
+  "bantry bay": { lat: -33.9260, lng: 18.3760, corridors: ["atlantic"] },
+  "camps bay": { lat: -33.9510, lng: 18.3780, corridors: ["atlantic"] },
+  "hout bay": { lat: -34.0470, lng: 18.3560, corridors: ["southern_line", "atlantic"] },
+  "mowbray": { lat: -33.9460, lng: 18.4760, corridors: ["southern_line", "central_line"] },
+  "rosebank": { lat: -33.9560, lng: 18.4730, corridors: ["southern_line"] },
+  "rondebosch": { lat: -33.9625, lng: 18.4760, corridors: ["southern_line"] },
+  "newlands": { lat: -33.9750, lng: 18.4520, corridors: ["southern_line"] },
+  "claremont": { lat: -33.9840, lng: 18.4647, corridors: ["southern_line"] },
+  "kenilworth": { lat: -33.9960, lng: 18.4720, corridors: ["southern_line"] },
+  "wynberg": { lat: -34.0050, lng: 18.4690, corridors: ["southern_line", "central_line"] },
+  "plumstead": { lat: -34.0190, lng: 18.4690, corridors: ["southern_line"] },
+  "diep river": { lat: -34.0260, lng: 18.4600, corridors: ["southern_line"] },
+  "bergvliet": { lat: -34.0470, lng: 18.4540, corridors: ["southern_line"] },
+  "constantia": { lat: -34.0280, lng: 18.4460, corridors: ["southern_line"] },
+  "tokai": { lat: -34.0660, lng: 18.4350, corridors: ["southern_line"] },
+  "retreat": { lat: -34.0560, lng: 18.4730, corridors: ["southern_line"] },
+  "steenberg": { lat: -34.0700, lng: 18.4690, corridors: ["southern_line"] },
+  "lakeside": { lat: -34.0810, lng: 18.4640, corridors: ["southern_line"] },
+  "muizenberg": { lat: -34.1080, lng: 18.4690, corridors: ["southern_line"] },
+  "fish hoek": { lat: -34.1360, lng: 18.4290, corridors: ["southern_line"] },
+  "grassy park": { lat: -34.0420, lng: 18.5070, corridors: ["southern_line", "central_line"] },
+  "lotus river": { lat: -34.0260, lng: 18.5180, corridors: ["central_line", "southern_line"] },
+  "ottery": { lat: -34.0130, lng: 18.5060, corridors: ["southern_line", "central_line"] },
+  "athlone": { lat: -33.9650, lng: 18.5100, corridors: ["central_line", "southern_line"] },
+  "rylands": { lat: -33.9700, lng: 18.5150, corridors: ["central_line"] },
+  "hanover park": { lat: -33.9950, lng: 18.5200, corridors: ["central_line"] },
+  "manenberg": { lat: -33.9870, lng: 18.5430, corridors: ["central_line"] },
+  "gugulethu": { lat: -33.9800, lng: 18.5700, corridors: ["central_line"] },
+  "nyanga": { lat: -33.9930, lng: 18.5860, corridors: ["central_line"] },
+  "langa": { lat: -33.9450, lng: 18.5300, corridors: ["central_line"] },
+  "philippi": { lat: -34.0080, lng: 18.5870, corridors: ["central_line"] },
+  "khayelitsha": { lat: -34.0390, lng: 18.6760, corridors: ["central_line"] },
+  "mitchells plain": { lat: -34.0420, lng: 18.6180, corridors: ["central_line"] },
+  "mfuleni": { lat: -34.0250, lng: 18.6680, corridors: ["central_line", "northern_line"] },
+  "delft": { lat: -33.9720, lng: 18.6470, corridors: ["central_line", "northern_line"] },
+  "blue downs": { lat: -34.0090, lng: 18.6760, corridors: ["central_line", "northern_line"] },
+  "pinelands": { lat: -33.9400, lng: 18.5120, corridors: ["southern_line", "central_line"] },
+  "thornton": { lat: -33.9260, lng: 18.5430, corridors: ["northern_line", "central_line"] },
+  "goodwood": { lat: -33.9120, lng: 18.5520, corridors: ["northern_line"] },
+  "parow": { lat: -33.9010, lng: 18.5900, corridors: ["northern_line"] },
+  "bellville": { lat: -33.9020, lng: 18.6290, corridors: ["northern_line"] },
+  "bothasig": { lat: -33.8650, lng: 18.5440, corridors: ["westcoast", "northern_line"] },
+  "edgemead": { lat: -33.8730, lng: 18.5560, corridors: ["northern_line"] },
+  "monte vista": { lat: -33.8870, lng: 18.5510, corridors: ["northern_line"] },
+  "brackenfell": { lat: -33.8710, lng: 18.6960, corridors: ["northern_line"] },
+  "kraaifontein": { lat: -33.8470, lng: 18.7180, corridors: ["northern_line"] },
+  "kuils river": { lat: -33.9300, lng: 18.6770, corridors: ["northern_line"] },
+  "durbanville": { lat: -33.8310, lng: 18.6470, corridors: ["northern_line"] },
+  "sonstraal heights": { lat: -33.8200, lng: 18.6560, corridors: ["northern_line"] },
+  "milnerton": { lat: -33.8780, lng: 18.4950, corridors: ["westcoast"] },
+  "century city": { lat: -33.8910, lng: 18.5110, corridors: ["westcoast", "northern_line"] },
+  "table view": { lat: -33.8230, lng: 18.4900, corridors: ["westcoast"] },
+  "parklands": { lat: -33.8150, lng: 18.4960, corridors: ["westcoast"] },
+  "sunningdale": { lat: -33.7960, lng: 18.4920, corridors: ["westcoast"] },
+  "bloubergstrand": { lat: -33.8060, lng: 18.4600, corridors: ["westcoast"] },
+  "blouberg": { lat: -33.8100, lng: 18.4700, corridors: ["westcoast"] },
+  "melkbosstrand": { lat: -33.7220, lng: 18.4420, corridors: ["westcoast"] },
+  "atlantis": { lat: -33.5670, lng: 18.4960, corridors: ["westcoast"] },
+  "dunoon": { lat: -33.8170, lng: 18.5360, corridors: ["westcoast"] },
+  "somerset west": { lat: -34.0840, lng: 18.8490, corridors: ["winelands"] },
+  "strand": { lat: -34.1080, lng: 18.8320, corridors: ["winelands"] },
+  "gordons bay": { lat: -34.1620, lng: 18.8700, corridors: ["winelands"] },
+  "macassar": { lat: -34.0680, lng: 18.7600, corridors: ["winelands", "central_line"] },
+  "paarl": { lat: -33.7340, lng: 18.9620, corridors: ["winelands", "northern_line"] },
+  "stellenbosch": { lat: -33.9320, lng: 18.8600, corridors: ["winelands", "northern_line"] }
+};
+const CT_CORRIDOR_MODE = {
+  atlantic: "MyCiti bus", westcoast: "MyCiti bus",
+  southern_line: "Train (Southern line) + taxi",
+  northern_line: "Train (Northern line) + taxi",
+  central_line: "Train (Central line) + taxi",
+  winelands: "Golden Arrow / taxi",
+  cbd_hub: "via City-centre interchange"
+};
+function _ctNorm(s) { return (s || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim(); }
+function _ctHaversineKm(a, b) {
+  const R = 6371, toR = d => d * Math.PI / 180;
+  const dLat = toR(b.lat - a.lat), dLng = toR(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toR(a.lat)) * Math.cos(toR(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function ctFindArea(text) {
+  const q = _ctNorm(text);
+  if (!q) return null;
+  if (CT_AREAS[q]) return { key: q, ...CT_AREAS[q] };
+  let best = null;
+  for (const key in CT_AREAS) {
+    const nk = _ctNorm(key);
+    if (q.includes(nk) || nk.includes(q)) {
+      if (!best || nk.length > best._len) best = { key, _len: nk.length, ...CT_AREAS[key] };
+    }
+  }
+  return best;
+}
+// Resolve a branch name (which may be a custom store with a longer label, e.g.
+// "Cobble Walk (Durbanville)") to its geo entry — exact first, then the longest
+// normalised substring match so naming variants still place on the map.
+function ctGeoForStore(name) {
+  if (!name) return null;
+  if (CT_STORE_GEO[name]) return CT_STORE_GEO[name];
+  const n = _ctNorm(name);
+  let best = null, bestLen = 0;
+  for (const k in CT_STORE_GEO) {
+    const nk = _ctNorm(k);
+    if (nk === n || n.includes(nk) || nk.includes(n)) { if (nk.length > bestLen) { best = CT_STORE_GEO[k]; bestLen = nk.length; } }
+  }
+  return best;
+}
+function ctModesFor(shared) {
+  if (!shared.length) return ["Minibus taxi (transfer likely)"];
+  const out = [];
+  shared.forEach(c => { const l = CT_CORRIDOR_MODE[c]; if (l && !out.includes(l)) out.push(l); });
+  return out.slice(0, 2);
+}
+// Commute-quality label from the effective (transport-weighted) distance, so
+// the picker reads best → hardest to reach at a glance.
+function ctCommuteRating(ease) {
+  if (ease <= 12) return { label: "Excellent", color: "#15803d", bg: "#dcfce7" };
+  if (ease <= 20) return { label: "Very good", color: "#047857", bg: "#d1fae5" };
+  if (ease <= 32) return { label: "Good", color: "#a16207", bg: "#fef9c3" };
+  if (ease <= 45) return { label: "Moderate", color: "#c2410c", bg: "#ffedd5" };
+  if (ease <= 70) return { label: "Challenging", color: "#b91c1c", bg: "#fee2e2" };
+  return { label: "Not ideal", color: "#7f1d1d", bg: "#fee2e2" };
+}
+// Rank branches by travel-ease from a typed area/suburb. Returns the matched
+// area (or null) and a sorted list of branches that exist in `salonNames`.
+function ctSuggestStores(text, salonNames, limit) {
+  const area = ctFindArea(text);
+  if (!area) return { area: null, results: [] };
+  const names = salonNames && salonNames.length ? salonNames : Object.keys(CT_STORE_GEO);
+  const results = names.map(n => ({ n, g: ctGeoForStore(n) })).filter(x => x.g).map(({ n, g }) => {
+    const km = _ctHaversineKm(area, g);
+    const shared = (area.corridors || []).filter(c => (g.corridors || []).includes(c));
+    const shares = shared.length > 0;
+    const ease = km * (shares ? 0.72 : 1);
+    return { name: n, region: g.region, km: Math.round(km), shares, modes: ctModesFor(shared), ease, rating: ctCommuteRating(ease) };
+  }).sort((a, b) => a.ease - b.ease);
+  return { area, results: limit ? results.slice(0, limit) : results };
+}
+
+function InterviewsView({ interviewList, persistInterviews, trialList, persistTrialList, staff, managers, currentUser }) {
+  const canRecruit = canRecruitInterviews(currentUser);
+  const canTrain = canTrainInterviews(currentUser);
+  const viewerOnly = !canRecruit && !canTrain;
+  const [form, setForm] = useState(null);          // null = closed; else candidate draft (+ _editId when editing)
+  const [filter, setFilter] = useState("active");  // active | needsAction | today | all
+  const [suggest, setSuggest] = useState(null);    // { area, results } from the store picker, or { area:null } when not found
+
+  const inp = { width: "100%", padding: "8px 11px", borderRadius: 8, border: "1px solid #FBCFE8", background: "#FCE7F3", fontFamily: "inherit", fontSize: 13, color: "#111827", boxSizing: "border-box" };
+  const lbl = { display: "block", fontSize: 10, fontWeight: 700, color: "#BE185D", letterSpacing: "0.08em", marginBottom: 4, textTransform: "uppercase" };
+
+  const pad = n => String(n).padStart(2, "0");
+  const toYmd = d => d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+  const todayYmd = toYmd(new Date());
+  const _t = new Date(); _t.setDate(_t.getDate() + 1); const tmrwYmd = toYmd(_t);
+  const fmtDay = ymd => ymd ? new Date(ymd + "T00:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" }) : "";
+  const _now = new Date();
+  const _dow = (_now.getDay() + 6) % 7;            // 0 = Monday
+  const _ws = new Date(_now); _ws.setDate(_now.getDate() - _dow);
+  const _we = new Date(_ws); _we.setDate(_ws.getDate() + 6);
+  const wS = toYmd(_ws), wE = toYmd(_we);
+
+  const list = interviewList || [];
+  const update = (id, patch) => persistInterviews(list.map(r => r._id === id ? { ...r, ...patch, updatedAt: new Date().toISOString() } : r));
+  const remove = (r) => { if (!window.confirm("Delete interview candidate " + (r.firstName || "") + " " + (r.surname || "") + "?")) return; persistInterviews(list.filter(x => x._id !== r._id)); };
+
+  // Duplicate detection: same phone or email already on a staff/manager record,
+  // another interview candidate, or a trial candidate. Warns the recruiter so
+  // the same person isn't logged (or re-interviewed) twice.
+  const dupFor = (draft) => {
+    const ph = _telDigits(draft.phone), em = (draft.email || "").trim().toLowerCase();
+    if (!ph && !em) return null;
+    const hit = (n, p, e) => (ph && _telDigits(p) === ph) || (em && (e || "").trim().toLowerCase() === em) ? n : null;
+    for (const s of (staff || [])) { const h = hit(s.name, s.cellNumber, s.email); if (h) return { who: h, where: "staff" }; }
+    for (const m of (managers || [])) { const h = hit(m.name, m.cellNumber, m.email); if (h) return { who: h, where: "managers" }; }
+    for (const t of (trialList || [])) { const h = hit(t.name, t.phone, t.email); if (h) return { who: h, where: "trial period" }; }
+    for (const c of list) { if (c._id === draft._editId) continue; const h = hit(((c.firstName || "") + " " + (c.surname || "")).trim(), c.phone, c.email); if (h) return { who: h, where: "interview list" }; }
+    return null;
+  };
+
+  const blankForm = () => ({ firstName: "", surname: "", nationality: "South African", phone: "", email: "", area: "", branch: "", source: "indeed", interviewDate: "", interviewTime: "", _editId: null });
+  const openAdd = () => { setSuggest(null); setForm(blankForm()); };
+  const openEdit = (r) => { setSuggest(null); setForm({ firstName: r.firstName || "", surname: r.surname || "", nationality: r.nationality || "", phone: r.phone || "", email: r.email || "", area: r.area || "", branch: r.branch || "", source: r.source || "other", interviewDate: r.interviewDate || "", interviewTime: r.interviewTime || "", _editId: r._id }); };
+  const closeForm = () => { setSuggest(null); setForm(null); };
+  const runSuggest = () => setSuggest(ctSuggestStores(form.area, SALONS.map(s => s.name)));
+  const saveForm = () => {
+    if (!form.firstName.trim() || !form.surname.trim()) { alert("First name and surname are required."); return; }
+    const base = {
+      firstName: form.firstName.trim(), surname: form.surname.trim(),
+      nationality: (form.nationality || "").trim(), phone: form.phone.trim(),
+      email: form.email.trim(), area: form.area.trim(), branch: form.branch,
+      source: form.source, interviewDate: form.interviewDate || "", interviewTime: form.interviewTime || "",
+      updatedAt: new Date().toISOString()
+    };
+    if (form._editId) {
+      persistInterviews(list.map(r => r._id === form._editId ? { ...r, ...base } : r));
+    } else {
+      persistInterviews([...list, { _id: Date.now(), attendance: "", outcome: "", trainerNotes: "", trainerScore: "", inductionDate: "", promotedToTrialId: null, addedAt: new Date().toISOString(), addedBy: (currentUser && currentUser.name) || "", ...base }]);
+    }
+    closeForm();
+  };
+
+  // Hand a passed candidate (with an induction date) to the Trial Period as an
+  // induction-stage record — pre-filling everything captured at interview so
+  // there's no double entry. Guards against being sent twice.
+  const sendToInduction = (r) => {
+    if (r.promotedToTrialId) { alert("Already sent to the Trial Period."); return; }
+    if (!r.branch) { alert("Pick the branch they'll induct at first."); return; }
+    if (!r.inductionDate) { alert("Set an induction date first."); return; }
+    const fullName = ((r.firstName || "") + " " + (r.surname || "")).trim();
+    const trialRec = {
+      _id: Date.now(),
+      name: fullName, phone: r.phone || "", email: r.email || "", homeAddress: r.area || "",
+      trainerName: "", inductionPassDate: "", branch: r.branch || "",
+      startDate: r.inductionDate,
+      notes: "From interview" + (r.interviewDate ? " on " + fmtDay(r.interviewDate) : "") + (r.nationality ? " · " + r.nationality : ""),
+      boaPathways: false,
+      role: "nt", status: "induction",
+      addedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), fromInterviewId: r._id
+    };
+    persistTrialList([...(trialList || []), trialRec]);
+    update(r._id, { promotedToTrialId: trialRec._id, promotedAt: new Date().toISOString() });
+    alert("✅ " + fullName + " added to the Trial Period (induction) at " + trialRec.branch + ", starting " + fmtDay(r.inductionDate) + ".\n\nOpen People → Trial Period to track them from here.");
+  };
+
+  // ── Stats ──
+  const cameN = list.filter(r => r.attendance === "came").length;
+  const noShowN = list.filter(r => r.attendance === "no_show").length;
+  const passedN = list.filter(r => r.outcome === "passed").length;
+  const failedN = list.filter(r => r.outcome === "failed").length;
+  const bookedN = list.filter(r => r.inductionDate).length;
+  const scheduledThisWeek = list.filter(r => r.interviewDate && r.interviewDate >= wS && r.interviewDate <= wE && !r.promotedToTrialId).length;
+  const noShowRate = (cameN + noShowN) ? Math.round(noShowN / (cameN + noShowN) * 100) : 0;
+  const passRate = (passedN + failedN) ? Math.round(passedN / (passedN + failedN) * 100) : 0;
+  const conv = list.length ? Math.round(bookedN / list.length * 100) : 0;
+
+  // ── Action queues (drive the reminder banner + the "needs action" filter) ──
+  const needsTrainer = list.filter(r => !r.promotedToTrialId && ((r.attendance === "came" && !r.outcome) || (r.interviewDate && r.interviewDate < todayYmd && !r.attendance)));
+  const needsRecruiter = list.filter(r => !r.promotedToTrialId && r.outcome === "passed" && !r.inductionDate);
+  const todayList = list.filter(r => r.interviewDate === todayYmd && !r.promotedToTrialId).sort((a, b) => (a.interviewTime || "").localeCompare(b.interviewTime || ""));
+  const tomorrowN = list.filter(r => r.interviewDate === tmrwYmd && !r.promotedToTrialId).length;
+
+  // ── Filtered + grouped-by-day for the schedule ("who's coming when") ──
+  const needActionIds = new Set([...needsTrainer, ...needsRecruiter].map(r => r._id));
+  const filtered = list.filter(r => {
+    const st = interviewStage(r);
+    if (filter === "all") return true;
+    if (filter === "today") return r.interviewDate === todayYmd && !r.promotedToTrialId;
+    if (filter === "needsAction") return needActionIds.has(r._id);
+    return st !== "failed" && st !== "to_trial"; // "active"
+  });
+  const groups = {};
+  filtered.forEach(r => { const k = r.interviewDate || "zzz_unscheduled"; (groups[k] = groups[k] || []).push(r); });
+  const groupKeys = Object.keys(groups).sort();
+  Object.values(groups).forEach(g => g.sort((a, b) => (a.interviewTime || "").localeCompare(b.interviewTime || "")));
+
+  const tile = (l, v, c, bg, sub) => (
+    <div key={l} style={{ background: bg, borderRadius: 12, padding: "13px 15px" }}>
+      <div style={{ fontSize: 26, fontWeight: 800, color: c, lineHeight: 1 }}>{v}</div>
+      <div style={{ fontSize: 9, fontWeight: 700, color: c, opacity: 0.75, marginTop: 4, letterSpacing: "0.05em" }}>{l.toUpperCase()}</div>
+      {sub && <div style={{ fontSize: 9, color: c, opacity: 0.55, marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+
+  const dup = form ? dupFor(form) : null;
+
+  return (
+    <div>
+      {/* Title + role legend / what-you-can-do notice */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
+        <div>
+          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, fontWeight: 700, color: "#4f46e5" }}>📋 Nail Tech Interviews</div>
+          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>
+            {canRecruit && canTrain ? "You can schedule interviews and record outcomes."
+              : canRecruit ? "You're set up as the recruiter — schedule interviews and book inductions."
+                : canTrain ? "You're set up as the nail-tech trainer — mark attendance and pass/fail."
+                  : "View only — interview actions are limited to the recruiter and the nail-tech trainer."}
+          </div>
+        </div>
+        {canRecruit && <button onClick={openAdd} style={{ background: "#4f46e5", color: "#fff", border: "none", borderRadius: 9, padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>+ Add candidate</button>}
+      </div>
+
+      {/* Pipeline funnel — at-a-glance flow from booked interview through to
+          the Trial Period. The recruiter's dashboard centrepiece. */}
+      {(() => {
+        const sc = {};
+        list.forEach(r => { const s = interviewStage(r); sc[s] = (sc[s] || 0) + 1; });
+        const steps = [
+          { k: "scheduled", l: "Booked" },
+          { k: "interviewed", l: "Interviewed" },
+          { k: "passed", l: "Passed" },
+          { k: "induction_booked", l: "Induction set" },
+          { k: "to_trial", l: "In Trial" }
+        ];
+        return (
+          <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 14, padding: "14px 16px", marginBottom: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: "#831843", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>Recruitment pipeline</div>
+            <div style={{ display: "flex", alignItems: "stretch", gap: 4, flexWrap: "wrap" }}>
+              {steps.map((step, i) => {
+                const m = INTERVIEW_STAGE[step.k];
+                return (
+                  <React.Fragment key={step.k}>
+                    <div style={{ flex: "1 1 90px", minWidth: 84, background: m.bg, borderRadius: 10, padding: "10px 8px", textAlign: "center" }}>
+                      <div style={{ fontSize: 24, fontWeight: 800, color: m.color, lineHeight: 1 }}>{sc[step.k] || 0}</div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: m.color, opacity: 0.8, marginTop: 4, letterSpacing: "0.03em" }}>{step.l.toUpperCase()}</div>
+                    </div>
+                    {i < steps.length - 1 && <div style={{ alignSelf: "center", color: "#d1d5db", fontSize: 16, fontWeight: 700 }}>→</div>}
+                  </React.Fragment>
+                );
+              })}
+            </div>
+            {((sc.no_show || 0) > 0 || (sc.failed || 0) > 0) && (
+              <div style={{ display: "flex", gap: 14, marginTop: 10, fontSize: 11, color: "#9ca3af" }}>
+                {(sc.no_show || 0) > 0 && <span>✗ No-shows: <strong style={{ color: "#991b1b" }}>{sc.no_show}</strong></span>}
+                {(sc.failed || 0) > 0 && <span>✗ Not successful: <strong style={{ color: "#6b7280" }}>{sc.failed}</strong></span>}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* Stats */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 10, marginBottom: 16 }}>
+        {tile("Interviews this week", scheduledThisWeek, "#1e40af", "#dbeafe")}
+        {tile("No-show rate", noShowRate + "%", "#991b1b", "#fee2e2", cameN + noShowN + " interviewed")}
+        {tile("Pass rate", passRate + "%", "#14532d", "#dcfce7", passedN + " of " + (passedN + failedN) + " passed")}
+        {tile("Inductions booked", bookedN, "#0e7490", "#cffafe", conv + "% conversion")}
+        {tile("In pipeline", list.filter(r => { const s = interviewStage(r); return s !== "failed" && s !== "to_trial"; }).length, "#5b21b6", "#ede9fe")}
+      </div>
+
+      {/* Reminder banner */}
+      {(todayList.length > 0 || tomorrowN > 0 || needsTrainer.length > 0 || needsRecruiter.length > 0) && (
+        <div style={{ background: "#FFFBEB", border: "1px solid #FCD34D", borderRadius: 12, padding: "12px 16px", marginBottom: 16 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: "#92400e", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 6 }}>⏰ Reminders</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "#78350f" }}>
+            {todayList.length > 0 && <div><strong>Today:</strong> {todayList.map(r => ((r.firstName || "") + (r.interviewTime ? " (" + r.interviewTime + ")" : "")).trim()).join(", ")}</div>}
+            {tomorrowN > 0 && <div><strong>Tomorrow:</strong> {tomorrowN} interview{tomorrowN !== 1 ? "s" : ""} booked</div>}
+            {needsTrainer.length > 0 && <div>🎓 <strong>{needsTrainer.length}</strong> awaiting the trainer (attendance / outcome not recorded)</div>}
+            {needsRecruiter.length > 0 && <div>📋 <strong>{needsRecruiter.length}</strong> passed — recruiter to book an induction date</div>}
+          </div>
+        </div>
+      )}
+
+      {/* Filter pills */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        {[{ k: "active", l: "Active" }, { k: "needsAction", l: "Needs action · " + needActionIds.size }, { k: "today", l: "Today · " + todayList.length }, { k: "all", l: "All · " + list.length }].map(f => (
+          <button key={f.k} onClick={() => setFilter(f.k)} style={{ background: filter === f.k ? "#BE185D" : "#FCE7F3", color: filter === f.k ? "#fff" : "#831843", border: "1px solid #FBCFE8", borderRadius: 999, padding: "6px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>{f.l}</button>
+        ))}
+      </div>
+
+      {/* Schedule grouped by interview day */}
+      {filtered.length === 0 ? (
+        <div style={{ background: "#fff", border: "1px dashed #FBCFE8", borderRadius: 14, padding: "40px 20px", textAlign: "center", color: "#9F1A4F", fontSize: 13 }}>
+          {list.length === 0 ? "No interview candidates yet." : "Nothing in this view."}
+          {canRecruit && list.length === 0 && <div style={{ marginTop: 8 }}><button onClick={openAdd} style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>+ Add the first candidate</button></div>}
+        </div>
+      ) : groupKeys.map(gk => (
+        <div key={gk} style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: "#831843", letterSpacing: "0.04em", marginBottom: 8, paddingBottom: 4, borderBottom: "2px solid #FBCFE8" }}>
+            {gk === "zzz_unscheduled" ? "🗓 Not yet scheduled" : "🗓 " + fmtDay(gk) + (gk === todayYmd ? " · TODAY" : gk === tmrwYmd ? " · tomorrow" : "")}
+            <span style={{ marginLeft: 8, fontWeight: 600, color: "#9ca3af" }}>{groups[gk].length}</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(320px,1fr))", gap: 12 }}>
+            {groups[gk].map(r => {
+              const st = interviewStage(r);
+              const sc = INTERVIEW_STAGE[st];
+              const fullName = ((r.firstName || "") + " " + (r.surname || "")).trim();
+              return (
+                <div key={r._id} style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 14, padding: "14px 16px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 8 }}>
+                    <div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: "#111827" }}>{fullName}</div>
+                      <div style={{ fontSize: 11, color: "#6b7280", marginTop: 1 }}>
+                        {r.nationality || "—"}{r.area ? " · 📍 " + r.area : ""}
+                      </div>
+                    </div>
+                    <span style={{ background: sc.bg, color: sc.color, fontSize: 9, fontWeight: 800, padding: "3px 8px", borderRadius: 99, whiteSpace: "nowrap", letterSpacing: "0.04em" }}>{sc.label.toUpperCase()}</span>
+                  </div>
+
+                  {/* Contact shortcuts */}
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                    {r.phone && <a href={"tel:" + _telDigits(r.phone)} style={{ fontSize: 11, fontWeight: 700, color: "#1e40af", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 7, padding: "3px 9px", textDecoration: "none" }}>📞 Call</a>}
+                    {r.phone && <a href={"https://wa.me/" + _waDigits(r.phone)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, fontWeight: 700, color: "#15803d", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 7, padding: "3px 9px", textDecoration: "none" }}>💬 WhatsApp</a>}
+                    {r.email && <a href={"mailto:" + r.email} style={{ fontSize: 11, fontWeight: 700, color: "#9a3412", background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 7, padding: "3px 9px", textDecoration: "none" }}>✉️ Email</a>}
+                    {r.phone && <span style={{ fontSize: 11, color: "#9ca3af", alignSelf: "center" }}>{r.phone}</span>}
+                  </div>
+
+                  <div style={{ fontSize: 11, color: "#374151", marginBottom: 8 }}>
+                    <span style={{ fontWeight: 700 }}>Interview:</span> {r.interviewDate ? fmtDay(r.interviewDate) : "not scheduled"}{r.interviewTime ? " at " + r.interviewTime : ""}
+                    {" · "}<span style={{ color: "#9ca3af" }}>{INTERVIEW_SOURCES[r.source] || "—"}</span>
+                    {r.branch && <> · 🏢 {r.branch}</>}
+                  </div>
+
+                  {/* TRAINER controls — attendance then outcome */}
+                  {canTrain && !r.promotedToTrialId && r.outcome !== "passed" && r.outcome !== "failed" && (
+                    <div style={{ background: "#F9FAFB", border: "1px solid #e5e7eb", borderRadius: 9, padding: "9px 11px", marginBottom: 8 }}>
+                      <div style={{ fontSize: 9, fontWeight: 800, color: "#6b7280", letterSpacing: "0.06em", marginBottom: 6 }}>🎓 TRAINER</div>
+                      {!r.attendance && (
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <button onClick={() => update(r._id, { attendance: "came" })} style={{ flex: 1, background: "#dcfce7", color: "#14532d", border: "1px solid #86efac", borderRadius: 7, padding: "6px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>✓ Came</button>
+                          <button onClick={() => update(r._id, { attendance: "no_show" })} style={{ flex: 1, background: "#fee2e2", color: "#991b1b", border: "1px solid #fca5a5", borderRadius: 7, padding: "6px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>✗ No-show</button>
+                        </div>
+                      )}
+                      {r.attendance === "came" && (
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <button onClick={() => update(r._id, { outcome: "passed" })} style={{ flex: 1, background: "#dcfce7", color: "#14532d", border: "1px solid #86efac", borderRadius: 7, padding: "6px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>✓ Passed</button>
+                          <button onClick={() => update(r._id, { outcome: "failed" })} style={{ flex: 1, background: "#f3f4f6", color: "#6b7280", border: "1px solid #d1d5db", borderRadius: 7, padding: "6px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>✗ Not successful</button>
+                        </div>
+                      )}
+                      {r.attendance === "no_show" && (
+                        <div style={{ fontSize: 11, color: "#991b1b" }}>Marked no-show. <button onClick={() => update(r._id, { attendance: "" })} style={{ background: "none", border: "none", color: "#1e40af", cursor: "pointer", fontSize: 11, fontWeight: 700, padding: 0, textDecoration: "underline" }}>undo</button></div>
+                      )}
+                      <div style={{ marginTop: 8 }}>
+                        <textarea rows={2} placeholder="Interview notes…" value={r.trainerNotes || ""} onChange={e => update(r._id, { trainerNotes: e.target.value })} style={{ width: "100%", boxSizing: "border-box", border: "1px solid #e5e7eb", borderRadius: 7, padding: "6px 8px", fontSize: 12, fontFamily: "inherit", resize: "vertical" }} />
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
+                          <span style={{ fontSize: 10, fontWeight: 700, color: "#6b7280" }}>SCORE</span>
+                          <select value={r.trainerScore || ""} onChange={e => update(r._id, { trainerScore: e.target.value })} style={{ border: "1px solid #e5e7eb", borderRadius: 6, padding: "3px 6px", fontSize: 12, fontFamily: "inherit" }}>
+                            <option value="">—</option>{[1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n}/5</option>)}
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Trainer's recorded notes/score (read-only echo once decided) */}
+                  {(r.outcome === "passed" || r.outcome === "failed") && (r.trainerNotes || r.trainerScore) && (
+                    <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 8 }}>
+                      {r.trainerScore && <span style={{ fontWeight: 700, color: "#374151" }}>Score {r.trainerScore}/5. </span>}
+                      {r.trainerNotes}
+                    </div>
+                  )}
+
+                  {/* RECRUITER controls — induction date once passed */}
+                  {r.outcome === "passed" && !r.promotedToTrialId && (
+                    <div style={{ background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 9, padding: "9px 11px", marginBottom: 8 }}>
+                      <div style={{ fontSize: 9, fontWeight: 800, color: "#15803d", letterSpacing: "0.06em", marginBottom: 6 }}>📋 RECRUITER · BOOK INDUCTION</div>
+                      {canRecruit ? (
+                        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                          {!r.branch && (
+                            <select value={r.branch || ""} onChange={e => update(r._id, { branch: e.target.value })} style={{ border: "1px solid #BBF7D0", borderRadius: 7, padding: "5px 8px", fontSize: 12, fontFamily: "inherit" }}>
+                              <option value="">Branch…</option>{SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                            </select>
+                          )}
+                          <input type="date" value={r.inductionDate || ""} onChange={e => update(r._id, { inductionDate: e.target.value })} style={{ border: "1px solid #BBF7D0", borderRadius: 7, padding: "5px 8px", fontSize: 12, fontFamily: "inherit" }} />
+                          <button disabled={!r.inductionDate || !r.branch} onClick={() => sendToInduction(r)} style={{ background: (r.inductionDate && r.branch) ? "#15803d" : "#d1d5db", color: "#fff", border: "none", borderRadius: 7, padding: "6px 12px", cursor: (r.inductionDate && r.branch) ? "pointer" : "not-allowed", fontSize: 12, fontWeight: 700 }}>Send to induction →</button>
+                          {!r.branch && <span style={{ fontSize: 10, color: "#15803d", width: "100%" }}>Pick a branch to send them to induction.</span>}
+                        </div>
+                      ) : <div style={{ fontSize: 11, color: "#15803d" }}>Passed — waiting on the recruiter to book an induction date.</div>}
+                    </div>
+                  )}
+
+                  {r.promotedToTrialId && (
+                    <div style={{ fontSize: 11, color: "#5b21b6", background: "#ede9fe", borderRadius: 8, padding: "7px 10px", marginBottom: 8 }}>✅ In the Trial Period{r.inductionDate ? " · induction " + fmtDay(r.inductionDate) : ""} — track in People → Trial Period.</div>
+                  )}
+
+                  {/* Recruiter row actions */}
+                  {canRecruit && (
+                    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                      <button onClick={() => openEdit(r)} style={{ background: "#f3f4f6", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#831843" }}>✏️ Edit</button>
+                      <button onClick={() => remove(r)} style={{ background: "#fff", border: "1px solid #fecaca", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#991b1b" }}>🗑</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+
+      {/* Add / edit candidate modal */}
+      {form && (
+        <div onClick={closeForm} style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 100000, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", overflowY: "auto" }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "22px 24px", width: "min(560px,96vw)", boxShadow: "0 20px 60px rgba(0,0,0,.25)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <div style={{ fontSize: 16, fontWeight: 800, color: "#4f46e5" }}>{form._editId ? "✏️ Edit candidate" : "➕ New interview candidate"}</div>
+              <button onClick={closeForm} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 20 }}>✕</button>
+            </div>
+            {dup && (
+              <div style={{ background: "#FEF3C7", border: "1px solid #FCD34D", borderRadius: 9, padding: "9px 12px", marginBottom: 12, fontSize: 12, color: "#78350f" }}>
+                ⚠ Possible duplicate — <strong>{dup.who}</strong> already has this phone/email in the {dup.where}.
+              </div>
+            )}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <div><label style={lbl}>First Name *</label><input style={inp} value={form.firstName} onChange={e => setForm({ ...form, firstName: e.target.value })} placeholder="e.g. Thandi" /></div>
+              <div><label style={lbl}>Surname *</label><input style={inp} value={form.surname} onChange={e => setForm({ ...form, surname: e.target.value })} placeholder="e.g. Mokoena" /></div>
+              <div><label style={lbl}>Nationality</label><input style={inp} value={form.nationality} onChange={e => setForm({ ...form, nationality: e.target.value })} placeholder="e.g. South African" /></div>
+              <div><label style={lbl}>Area they live in</label><input style={inp} value={form.area} onChange={e => setForm({ ...form, area: e.target.value })} placeholder="e.g. Khayelitsha" /></div>
+              <div><label style={lbl}>Phone</label><input style={inp} value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} placeholder="+27 …" /></div>
+              <div><label style={lbl}>Email</label><input type="email" style={inp} value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} /></div>
+              <div><label style={lbl}>Assigned branch <span style={{ fontWeight: 400, textTransform: "none", color: "#9ca3af" }}>(optional)</span></label><select style={inp} value={form.branch} onChange={e => setForm({ ...form, branch: e.target.value })}><option value="">— Not decided yet</option>{SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}</select></div>
+              <div><label style={lbl}>Source</label><select style={inp} value={form.source} onChange={e => setForm({ ...form, source: e.target.value })}>{Object.entries(INTERVIEW_SOURCES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></div>
+              <div><label style={lbl}>Interview date</label><input type="date" style={inp} value={form.interviewDate} onChange={e => setForm({ ...form, interviewDate: e.target.value })} /></div>
+              <div><label style={lbl}>Interview time</label><input type="time" style={inp} value={form.interviewTime} onChange={e => setForm({ ...form, interviewTime: e.target.value })} /></div>
+            </div>
+
+            {/* Intelligent store picker — ranks branches by travel-ease from
+                the candidate's area using approximate distance + Cape Town
+                public-transport corridors (MyCiti / Metrorail / Golden Arrow /
+                taxi). Estimates only — pick one to fill the branch. */}
+            <div style={{ marginTop: 14, background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 12, padding: "12px 14px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 12, fontWeight: 800, color: "#3730a3" }}>🧭 Easiest stores to travel to</div>
+                <button onClick={runSuggest} style={{ background: "#4f46e5", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Rank from "{form.area || "area"}"</button>
+              </div>
+              {suggest && suggest.area === null && (
+                <div style={{ fontSize: 12, color: "#6b7280", marginTop: 8 }}>Couldn't place “{form.area}”. Try a Cape Town suburb or region (e.g. Khayelitsha, Bellville, Atlantic Seaboard).</div>
+              )}
+              {suggest && suggest.area && (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 6 }}>Ranked best → hardest to reach from <strong style={{ color: "#3730a3" }}>{form.area}</strong>:</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 280, overflowY: "auto" }}>
+                    {suggest.results.map((s, i) => (
+                      <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 8, background: "#fff", border: `1px solid ${form.branch === s.name ? "#4f46e5" : "#e5e7eb"}`, borderRadius: 9, padding: "7px 10px" }}>
+                        <span style={{ fontSize: 12, fontWeight: 800, color: "#9ca3af", minWidth: 16 }}>{i + 1}</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>📍 {s.name} <span style={{ fontSize: 10, fontWeight: 600, color: "#9ca3af" }}>· ~{s.km} km</span></div>
+                          <div style={{ fontSize: 11, color: "#4f46e5" }}>{s.modes.join(" · ")}</div>
+                        </div>
+                        <span style={{ fontSize: 10, fontWeight: 800, color: s.rating.color, background: s.rating.bg, borderRadius: 99, padding: "2px 8px", whiteSpace: "nowrap" }}>{s.rating.label}</span>
+                        <button onClick={() => setForm(f => ({ ...f, branch: s.name }))} style={{ background: form.branch === s.name ? "#4f46e5" : "#eef2ff", color: form.branch === s.name ? "#fff" : "#4f46e5", border: "none", borderRadius: 7, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{form.branch === s.name ? "✓" : "Use"}</button>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 6 }}>Estimates from straight-line distance + typical transport corridors — sense-check against the candidate's actual commute.</div>
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 18 }}>
+              <button onClick={closeForm} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", cursor: "pointer", fontSize: 13 }}>Cancel</button>
+              <button onClick={saveForm} style={{ padding: "9px 22px", borderRadius: 9, border: "none", background: "#4f46e5", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>{form._editId ? "Save" : "Add candidate"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // ── Activity logger — records who did what to the boa_activity_log_v1 row.
   // Failures are swallowed so a logging hiccup never blocks the actual edit.
@@ -14300,6 +14948,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [obList, setObList] = useState([]);           // joiner records (3-month contract signers)
   const [obFilter, setObFilter] = useState("recent"); // "recent" = last 31 days, "all" = every onboarded record
   const [trialList, setTrialList] = useState([]);     // trial period candidates (pre-contract)
+  const [interviewList, setInterviewList] = useState([]); // nail-tech interview candidates (pre-trial; boa_nt_interviews_v1)
   const [freshaAccess, setFreshaAccess] = useState({}); // who opens/sees trial Fresha reminders (boa_fresha_access_v1)
   // Resolved Fresha-access config with sensible defaults: Rochelle (3030)
   // and Farida (4040) open techs on Fresha; National Ops + Regional Ops
@@ -14395,6 +15044,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     try { await window.BOA_DB.saveTrialPeriod(next); }
     catch (e) { window.alert("Could not save trial data: " + (e.message || e)); }
   };
+  // Interview pipeline persister — same optimistic-then-save pattern. The
+  // read-only guard (see READ_ONLY_GUARDED_METHODS) turns saveInterviews into a
+  // no-op for view-only users, so this is safe to call from the UI.
+  const persistInterviews = async (next) => {
+    setInterviewList(next);
+    try { await window.BOA_DB.saveInterviews(next); }
+    catch (e) { window.alert("Could not save interview data: " + (e.message || e)); }
+  };
   // Toggle a Fresha milestone flag on a trial record, stamping who/when.
   const setTrialFresha = (id, field, on) => {
     persistTrialList((trialList || []).map(r => r._id === id
@@ -14436,6 +15093,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [pendingTerms, setPendingTerms] = useState([]);  // auto-detected from attendance grid
   // Trial Period add-trainee form state (lifted to component level — used inside tab IIFE)
   const [tForm, setTForm] = useState({ name: "", phone: "", email: "", homeAddress: "", trainerName: "", inductionPassDate: "", branch: SALONS[0]?.name || "", startDate: "", notes: "", boaPathways: false, role: "nt", _open: false });
+  const [trialSuggest, setTrialSuggest] = useState(null);  // store-picker results for the trial form ({ area, results } | { area:null })
   // Onboarding registration modal toggle
   const [obShowForm, setObShowForm] = useState(false);
   const [obSubmitting, setObSubmitting] = useState(false);
@@ -15882,8 +16540,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       (window.BOA_DB.loadLeaveRequests && _needRequests) ? window.BOA_DB.loadLeaveRequests() : Promise.resolve([]),
       (window.BOA_DB.loadExtraDayRequests && _needRequests) ? window.BOA_DB.loadExtraDayRequests() : Promise.resolve([]),
       window.BOA_DB.loadFreshaExtraOpenings ? window.BOA_DB.loadFreshaExtraOpenings() : Promise.resolve({}),
-      window.BOA_DB.loadFreshaBlocks ? window.BOA_DB.loadFreshaBlocks() : Promise.resolve({})
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, cuReviewAccess, lvOpsAccess, lvPayrollAccess, lvBalancesAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap]) => {
+      window.BOA_DB.loadFreshaBlocks ? window.BOA_DB.loadFreshaBlocks() : Promise.resolve({}),
+      window.BOA_DB.loadInterviews ? window.BOA_DB.loadInterviews() : Promise.resolve([])
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, cuReviewAccess, lvOpsAccess, lvPayrollAccess, lvBalancesAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap, interviews]) => {
       setStaff(d.staff);
       setManagers(d.managers);
       setMatRecs(d.matRecs);
@@ -15893,6 +16552,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setMgrPins(pins && typeof pins === "object" ? pins : {});
       setHrTasks(Array.isArray(tasks) ? tasks : []);
       setTrialList(Array.isArray(trial) ? trial : []);
+      setInterviewList(Array.isArray(interviews) ? interviews : []);
       setSmTrialList(Array.isArray(smTrial) ? smTrial : []);
       setOvertimeReqs(Array.isArray(ot) ? ot : []);
       setFreshaAccess(freshaAcc && typeof freshaAcc === "object" ? freshaAcc : {});
@@ -17926,8 +18586,53 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
       <div style={{ maxWidth: 1380, margin: "0 auto", padding: isMobile ? "14px 12px" : "22px 24px" }}>
 
+        {/* Recruitment sub-nav — kept at the very top so the sub-categories
+            (incl. Nail Tech Interviews) lead the page and don't get lost
+            below the vacancy stats. */}
+        {tab === "recruitment" && (() => {
+          // Manager vacancy total: sum of missing SMs (min 1/branch) + missing AMs (min 2/branch),
+          // excluding Regional managers and active maternity leave.
+          const MIN_SM = 1, MIN_AM = 2;
+          const mgrVacancies = SALONS.reduce((a, sl) => {
+            const mgrs = enrichedManagersEff.filter(m => m.branch === sl.name && !m.onMat && !m.offboarded);
+            const sms = mgrs.filter(m => (m.effectiveRole || m.role) === "SM").length;
+            const ams = mgrs.filter(m => (m.effectiveRole || m.role) === "AM").length + (activeTrialByBranch.am[sl.name] || 0);
+            return a + Math.max(0, MIN_SM - sms) + Math.max(0, MIN_AM - ams);
+          }, 0);
+          const interviewPipeline = (interviewList || []).filter(r => { const s = interviewStage(r); return s !== "failed" && s !== "to_trial"; }).length;
+          // Items awaiting someone's action — drives the red attention pip.
+          const _p2 = n => String(n).padStart(2, "0");
+          const _todayY = (d => d.getFullYear() + "-" + _p2(d.getMonth() + 1) + "-" + _p2(d.getDate()))(new Date());
+          const interviewNeedsAction = (interviewList || []).filter(r => !r.promotedToTrialId && ((r.attendance === "came" && !r.outcome) || (r.interviewDate && r.interviewDate < _todayY && !r.attendance) || (r.outcome === "passed" && !r.inductionDate))).length;
+          const counts = { nailTech: stats.vacancies, mgrRecruit: mgrVacancies, interviews: interviewPipeline };
+          const TABS = [
+            { k: "nailTech", label: "💅 Nail Tech Recruitment", accent: "#BE185D", soft: "#FCE7F3", border: "#FBCFE8", sub: "Vacancies by branch" },
+            { k: "interviews", label: "📋 Nail Tech Interviews", accent: "#4f46e5", soft: "#eef2ff", border: "#c7d2fe", sub: "Schedule, outcomes & inductions", pip: interviewNeedsAction },
+            { k: "mgrRecruit", label: "👔 Manager Recruitment", accent: "#BE185D", soft: "#FCE7F3", border: "#FBCFE8", sub: "Coverage & planner" }
+          ];
+          return (
+            <div style={{ display: "flex", gap: 10, marginBottom: 18, flexWrap: "wrap" }}>
+              {TABS.map(t => {
+                const active = recruitSubTab === t.k;
+                const n = counts[t.k];
+                return (
+                  <button key={t.k} onClick={() => setRecruitSubTab(t.k)}
+                    style={{ position: "relative", flex: "1 1 230px", minWidth: 200, textAlign: "left", padding: "14px 18px", borderRadius: 14, border: `2px solid ${active ? t.accent : t.border}`, background: active ? t.accent : t.soft, color: active ? "#FFFFFF" : t.accent, cursor: "pointer", fontFamily: "inherit", transition: "all .18s", boxShadow: active ? `0 6px 16px ${t.accent}40` : "none" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 15, fontWeight: 800, letterSpacing: "0.01em" }}>{t.label}</span>
+                      <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 24, height: 24, padding: "0 8px", borderRadius: 12, background: active ? "rgba(255,255,255,0.28)" : (n > 0 ? t.accent : "#FFFFFF"), color: active ? "#FFFFFF" : (n > 0 ? "#FFFFFF" : "#9ca3af"), fontSize: 12, fontWeight: 800, lineHeight: 1 }}>{n}</span>
+                    </div>
+                    <div style={{ fontSize: 11, marginTop: 3, opacity: active ? 0.9 : 0.7, fontWeight: 600 }}>{t.sub}</div>
+                    {!!t.pip && !active && <span style={{ position: "absolute", top: -8, right: -8, background: "#dc2626", color: "#fff", fontSize: 10, fontWeight: 800, borderRadius: 999, padding: "2px 8px", boxShadow: "0 2px 6px rgba(220,38,38,0.45)" }}>{t.pip} to action</span>}
+                  </button>
+                );
+              })}
+            </div>
+          );
+        })()}
+
         {/* STAT CARDS — only on recruitment tab (nail-tech sub-tab) */}
-        {tab === "recruitment" && recruitSubTab !== "mgrRecruit" && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(108px,1fr))", gap: 9, marginBottom: 16 }}>
+        {tab === "recruitment" && recruitSubTab === "nailTech" && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(108px,1fr))", gap: 9, marginBottom: 16 }}>
           {[
             { l: "Active Staff", v: stats.active, i: "👥", c: "#1e3a8a", bg: "#dbeafe", note: "incl. pregnant" },
             { l: "Pregnant (in store)", v: stats.pregnant, i: "🤰", c: "#92400e", bg: "#fef3c7" },
@@ -17949,7 +18654,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
 
         {/* TO HIRE PER BRANCH — only on recruitment tab (nail-tech sub-tab) */}
-        {tab === "recruitment" && recruitSubTab !== "mgrRecruit" && <>
+        {tab === "recruitment" && recruitSubTab === "nailTech" && <>
           {stats.vacancies > 0 && (
             <div style={{ background: "#FFFFFF", borderRadius: 13, border: "1px solid #E8C9D2", marginBottom: 16, overflow: "hidden" }}>
               <div style={{ background: "#BE185D", color: "#fff", padding: "10px 18px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
@@ -19345,6 +20050,41 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </>
                   )}
                 </div>
+
+                {/* Upcoming interviews — only for the recruiter, the nail-tech
+                    trainer and the owner, so it doesn't clutter other dashboards. */}
+                {(canRecruitInterviews(currentUser) || canTrainInterviews(currentUser)) && (() => {
+                  const ivs = interviewList || [];
+                  const _p = n => String(n).padStart(2, "0");
+                  const _y = d => d.getFullYear() + "-" + _p(d.getMonth() + 1) + "-" + _p(d.getDate());
+                  const _today = _y(new Date());
+                  const _t2 = new Date(); _t2.setDate(_t2.getDate() + 1); const _tmrw = _y(_t2);
+                  const _fmt = ymd => new Date(ymd + "T00:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" });
+                  const todayIv = ivs.filter(r => r.interviewDate === _today && !r.promotedToTrialId).sort((a, b) => (a.interviewTime || "").localeCompare(b.interviewTime || ""));
+                  const tmrwIv = ivs.filter(r => r.interviewDate === _tmrw && !r.promotedToTrialId);
+                  const needsTrainer = ivs.filter(r => !r.promotedToTrialId && ((r.attendance === "came" && !r.outcome) || (r.interviewDate && r.interviewDate < _today && !r.attendance))).length;
+                  const needsRecruiter = ivs.filter(r => !r.promotedToTrialId && r.outcome === "passed" && !r.inductionDate).length;
+                  if (!todayIv.length && !tmrwIv.length && !needsTrainer && !needsRecruiter) return null;
+                  return (
+                    <div style={card}>
+                      <div style={cardTitle}>
+                        <span>📋 Nail Tech Interviews</span>
+                        <button onClick={() => { setRecruitSubTab("interviews"); tryChangeTab("recruitment"); }} style={{ background: PINK.accent, color: "#fff", border: "none", borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit" }}>Open →</button>
+                      </div>
+                      <div style={{ display: "grid", gap: 6 }}>
+                        {todayIv.length > 0 && (
+                          <div style={{ background: "#dbeafe", border: "1px solid #bfdbfe", borderRadius: 9, padding: "8px 12px" }}>
+                            <div style={{ fontSize: 11, fontWeight: 800, color: "#1e40af" }}>TODAY · {todayIv.length}</div>
+                            <div style={{ fontSize: 12, color: "#1e3a8a", marginTop: 2 }}>{todayIv.map(r => ((r.firstName || "") + (r.interviewTime ? " " + r.interviewTime : "")).trim()).join(", ")}</div>
+                          </div>
+                        )}
+                        {tmrwIv.length > 0 && <div style={{ display: "flex", justifyContent: "space-between", background: "#eff6ff", border: "1px solid #dbeafe", borderRadius: 9, padding: "8px 12px", fontSize: 12, color: "#1e40af", fontWeight: 700 }}><span>Tomorrow ({_fmt(_tmrw)})</span><span>{tmrwIv.length}</span></div>}
+                        {needsTrainer > 0 && <div style={{ display: "flex", justifyContent: "space-between", background: "#fef9c3", border: "1px solid #fde68a", borderRadius: 9, padding: "8px 12px", fontSize: 12, color: "#854d0e", fontWeight: 700 }}><span>🎓 Awaiting trainer</span><span>{needsTrainer}</span></div>}
+                        {needsRecruiter > 0 && <div style={{ display: "flex", justifyContent: "space-between", background: "#dcfce7", border: "1px solid #bbf7d0", borderRadius: 9, padding: "8px 12px", fontSize: 12, color: "#14532d", fontWeight: 700 }}><span>📋 Passed · book induction</span><span>{needsRecruiter}</span></div>}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* ── SECTION: ATTENTION ── hidden for ROM users; the Z/NA,
@@ -21671,44 +22411,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         })()}
       </div>
 
-      {/* ── RECRUITMENT TAB (parent) ── */}
+      {/* ── RECRUITMENT TAB (parent) ── (sub-nav rendered at page top) ── */}
       {tab === "recruitment" && (
         <div style={{ padding: "0 24px" }}>
-          {/* Sub-nav: Nail Tech vs Manager Recruitment — large, prominent toggle */}
-          {(() => {
-            // Manager vacancy total: sum of missing SMs (min 1/branch) + missing AMs (min 2/branch),
-            // excluding Regional managers and active maternity leave.
-            const MIN_SM = 1, MIN_AM = 2;
-            const mgrVacancies = SALONS.reduce((a, sl) => {
-              // Settle-aware: count a transferred manager at her NEW branch.
-              const mgrs = enrichedManagersEff.filter(m => m.branch === sl.name && !m.onMat && !m.offboarded);
-              const sms = mgrs.filter(m => (m.effectiveRole || m.role) === "SM").length;
-              // AM trial candidates (shown in the Locations manager box) are
-              // filling the AM gap, so count them toward the AM minimum.
-              const ams = mgrs.filter(m => (m.effectiveRole || m.role) === "AM").length + (activeTrialByBranch.am[sl.name] || 0);
-              return a + Math.max(0, MIN_SM - sms) + Math.max(0, MIN_AM - ams);
-            }, 0);
-            const counts = { nailTech: stats.vacancies, mgrRecruit: mgrVacancies };
-            return (
-              <div style={{ display: "flex", gap: 0, marginBottom: 24, padding: 6, background: "#FCE7F3", borderRadius: 14, border: "1px solid #FBCFE8", maxWidth: 680 }}>
-                {[
-                  { k: "nailTech", label: "💅 Nail Tech Recruitment" },
-                  { k: "mgrRecruit", label: "👔 Manager Recruitment" }
-                ].map(t => {
-                  const active = recruitSubTab === t.k;
-                  const n = counts[t.k];
-                  return (
-                    <button key={t.k} onClick={() => setRecruitSubTab(t.k)}
-                      style={{ flex: 1, padding: "14px 22px", borderRadius: 10, border: "none", background: active ? "#BE185D" : "transparent", color: active ? "#FFFFFF" : "#831843", cursor: "pointer", fontFamily: "inherit", fontSize: 15, fontWeight: 700, transition: "all .18s", boxShadow: active ? "0 4px 12px rgba(190,24,93,0.32)" : "none", letterSpacing: "0.01em", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
-                      <span>{t.label}</span>
-                      <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 24, height: 24, padding: "0 8px", borderRadius: 12, background: active ? "#FFFFFF" : (n > 0 ? "#BE185D" : "#FBCFE8"), color: active ? "#BE185D" : (n > 0 ? "#FFFFFF" : "#9F1A4F"), fontSize: 12, fontWeight: 800, lineHeight: 1 }}>{n}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            );
-          })()}
-
           {recruitSubTab === "nailTech" && (<>
             {/* Summary header */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10, marginBottom: 20 }}>
@@ -21827,6 +22532,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               )
             }
           </>)}
+
+          {recruitSubTab === "interviews" && (
+            <InterviewsView
+              interviewList={interviewList}
+              persistInterviews={persistInterviews}
+              trialList={trialList}
+              persistTrialList={persistTrialList}
+              staff={staff}
+              managers={managers}
+              currentUser={currentUser}
+            />
+          )}
 
           {recruitSubTab === "mgrRecruit" && (
             <div>
@@ -23221,6 +23938,39 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <label style={lbl}>Home Address <span style={{ fontWeight: 400, textTransform: "none", color: "#9ca3af" }}>(helps assign nearest branch)</span></label>
                   <textarea rows={2} style={{ ...inp, width: "100%", boxSizing: "border-box", resize: "vertical" }} value={tForm.homeAddress || ""} onChange={e => setTForm(f => ({ ...f, homeAddress: e.target.value }))} placeholder="Street, suburb, city" />
                 </div>
+
+                {/* Intelligent store picker — ranks branches easiest to reach
+                    from the candidate's home area (approx distance + Cape Town
+                    public-transport corridors). Pick one to set the branch. */}
+                <div style={{ marginBottom: 16, background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 12, padding: "12px 14px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: "#3730a3" }}>🧭 Easiest stores to travel to</div>
+                    <button type="button" onClick={() => setTrialSuggest(ctSuggestStores(tForm.homeAddress, SALONS.map(s => s.name)))} style={{ background: "#4f46e5", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Rank from address</button>
+                  </div>
+                  {trialSuggest && trialSuggest.area === null && (
+                    <div style={{ fontSize: 12, color: "#6b7280", marginTop: 8 }}>Couldn't place that area. Try a Cape Town suburb or region (e.g. Khayelitsha, Bellville, Atlantic Seaboard).</div>
+                  )}
+                  {trialSuggest && trialSuggest.area && (
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 6 }}>Ranked best → hardest to reach:</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 280, overflowY: "auto" }}>
+                        {trialSuggest.results.map((s, i) => (
+                          <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 8, background: "#fff", border: `1px solid ${tForm.branch === s.name ? "#4f46e5" : "#e5e7eb"}`, borderRadius: 9, padding: "7px 10px" }}>
+                            <span style={{ fontSize: 12, fontWeight: 800, color: "#9ca3af", minWidth: 16 }}>{i + 1}</span>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>📍 {s.name} <span style={{ fontSize: 10, fontWeight: 600, color: "#9ca3af" }}>· ~{s.km} km</span></div>
+                              <div style={{ fontSize: 11, color: "#4f46e5" }}>{s.modes.join(" · ")}</div>
+                            </div>
+                            <span style={{ fontSize: 10, fontWeight: 800, color: s.rating.color, background: s.rating.bg, borderRadius: 99, padding: "2px 8px", whiteSpace: "nowrap" }}>{s.rating.label}</span>
+                            <button type="button" onClick={() => setTForm(f => ({ ...f, branch: s.name }))} style={{ background: tForm.branch === s.name ? "#4f46e5" : "#eef2ff", color: tForm.branch === s.name ? "#fff" : "#4f46e5", border: "none", borderRadius: 7, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{tForm.branch === s.name ? "✓" : "Use"}</button>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 6 }}>Estimates from straight-line distance + typical transport corridors.</div>
+                    </div>
+                  )}
+                </div>
+
                 <div style={{ marginBottom: 16 }}>
                   <label style={lbl}>Notes</label>
                   <textarea rows={2} style={{ ...inp, width: "100%", boxSizing: "border-box", resize: "vertical" }} value={tForm.notes || ""} onChange={e => setTForm(f => ({ ...f, notes: e.target.value }))} />
