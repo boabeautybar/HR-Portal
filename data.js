@@ -812,6 +812,33 @@
     return records;
   }
 
+  // ---------- Nail-tech Interviews (boa_nt_interviews_v1) ----------
+  // The recruitment front of the funnel — BEFORE the trial period. The
+  // recruiter logs interview candidates (name, nationality, contact, area) and
+  // sets an interview date/time; the nail-tech trainer marks attendance and
+  // pass/fail; the recruiter then books an induction date, which hands the
+  // candidate over to the Trial Period (induction stage). Stored as one JSON
+  // blob (array) in app_state, same shape as the trial-period list. Each
+  // record: {
+  //   _id, firstName, surname, nationality, phone, email, area, branch,
+  //   source, interviewDate, interviewTime,
+  //   attendance: "" | "came" | "no_show",
+  //   outcome:    "" | "passed" | "failed",
+  //   trainerNotes, trainerScore, inductionDate,
+  //   promotedToTrialId, promotedAt, addedAt, addedBy, updatedAt
+  // }
+  async function loadInterviews() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_nt_interviews_v1").maybeSingle();
+    if (res.error) { console.error("loadInterviews:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveInterviews(records) {
+    var res = await sb.from("app_state").upsert({ key: "boa_nt_interviews_v1", value: records || [] });
+    if (res.error) throw res.error;
+    return records;
+  }
+
   // ---------- Off-boarding (boa_offboard_v1) ----------
   // Each record: {ec, name, branch, leftDate, reason, notes, addedAt}
   async function loadOffboarding() {
@@ -2205,6 +2232,8 @@
     saveOnboarding: saveOnboarding,
     loadTrialPeriod: loadTrialPeriod,
     saveTrialPeriod: saveTrialPeriod,
+    loadInterviews: loadInterviews,
+    saveInterviews: saveInterviews,
     loadOffboarding: loadOffboarding,
     saveOffboarding: saveOffboarding,
     loadSmTrial:   loadSmTrial,

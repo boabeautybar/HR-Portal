@@ -128,7 +128,7 @@ function installDemoMode() {
 const READ_ONLY_GUARDED_METHODS = [
   "saveStaff", "saveMat", "saveManager", "saveSchedule", "saveAttendance", "saveEarlyLeaves",
   "saveOnboarding", "saveOffboarding", "saveLeaveRecords", "saveMgrRequests",
-  "saveTechRequests", "saveManagerPins", "saveTrialPeriod", "deleteMat", "deleteManager", "deleteSchedule",
+  "saveTechRequests", "saveManagerPins", "saveTrialPeriod", "saveInterviews", "deleteMat", "deleteManager", "deleteSchedule",
   "saveAttendanceUndo", "clearAttendanceUndo"
 ];
 function installReadOnlyGuard() {
@@ -8126,6 +8126,31 @@ function canSeeIncidents(user) {
          r.includes("national") || isRomRole(user.role);
 }
 
+// ─── RECRUITMENT / INTERVIEW ROLE GATES ──────────────────────────────────────
+// The interview pipeline is split by responsibility: the RECRUITER (e.g. Siphe)
+// logs candidates, schedules interviews and books inductions; the NAIL-TECH
+// TRAINER (e.g. Varonique) marks attendance and pass/fail. The Owner and Master
+// Admin can do both. Roles are free text (Settings → Users), so we match
+// loosely: "recruiter"/"recruitment" for recruiters, and any "trainer" role
+// that is NOT a *manager* trainer for the nail-tech trainer — so Varonique
+// ("Nail Tech Trainer") qualifies but Farida ("Manager Trainer / LSM") doesn't.
+function _isOwnerOrMaster(user) {
+  if (!user) return false;
+  if (user.isOwner) return true;
+  return (user.role || "").toLowerCase().trim() === "master admin";
+}
+function canRecruitInterviews(user) {
+  if (!user) return false;
+  if (_isOwnerOrMaster(user)) return true;
+  return /recruit/i.test(user.role || "");
+}
+function canTrainInterviews(user) {
+  if (!user) return false;
+  if (_isOwnerOrMaster(user)) return true;
+  const r = (user.role || "");
+  return /\btrainer\b/i.test(r) && !/manager/i.test(r);
+}
+
 // Shared access-gate check: does this user fall inside an access config
 // ({ roles:[...], pins:[...] })? Owners always pass. Role keys are matched
 // loosely against the user's role title so seed/typo variants still work.
@@ -13153,6 +13178,352 @@ function StoreReportsTab({ extraDayRequests, managers }) {
   );
 }
 
+// ─── NAIL-TECH INTERVIEW PIPELINE ─────────────────────────────────────────────
+// Front of the recruitment funnel: the recruiter logs candidates and schedules
+// interviews; the nail-tech trainer marks attendance + pass/fail; the recruiter
+// books an induction date which hands the candidate to the Trial Period
+// (induction stage). Lives under Recruitment → Interviews.
+const INTERVIEW_SOURCES = { referral: "Referral", agency: "Agency", walk_in: "Walk-in", boa_pathways: "BOA Pathways", other: "Other" };
+const INTERVIEW_STAGE = {
+  new:              { label: "Draft",                  bg: "#f3f4f6", color: "#374151" },
+  scheduled:        { label: "Interview booked",       bg: "#dbeafe", color: "#1e40af" },
+  no_show:          { label: "No-show",                bg: "#fee2e2", color: "#991b1b" },
+  interviewed:      { label: "Awaiting outcome",       bg: "#fef9c3", color: "#854d0e" },
+  passed:           { label: "Passed · book induction", bg: "#dcfce7", color: "#14532d" },
+  induction_booked: { label: "Induction booked",       bg: "#cffafe", color: "#0e7490" },
+  to_trial:         { label: "In Trial Period",        bg: "#ede9fe", color: "#5b21b6" },
+  failed:           { label: "Not successful",         bg: "#f3f4f6", color: "#6b7280" },
+};
+function interviewStage(r) {
+  if (!r) return "new";
+  if (r.promotedToTrialId) return "to_trial";
+  if (r.outcome === "failed") return "failed";
+  if (r.outcome === "passed") return r.inductionDate ? "induction_booked" : "passed";
+  if (r.attendance === "no_show") return "no_show";
+  if (r.attendance === "came") return "interviewed";
+  if (r.interviewDate) return "scheduled";
+  return "new";
+}
+function _telDigits(phone) { return (phone || "").replace(/[^\d+]/g, ""); }
+function _waDigits(phone) {
+  let d = (phone || "").replace(/[^\d]/g, "");
+  if (d.startsWith("0")) d = "27" + d.slice(1);      // local SA → international
+  return d;
+}
+
+function InterviewsView({ interviewList, persistInterviews, trialList, persistTrialList, staff, managers, currentUser }) {
+  const canRecruit = canRecruitInterviews(currentUser);
+  const canTrain = canTrainInterviews(currentUser);
+  const viewerOnly = !canRecruit && !canTrain;
+  const [form, setForm] = useState(null);          // null = closed; else candidate draft (+ _editId when editing)
+  const [filter, setFilter] = useState("active");  // active | needsAction | today | all
+
+  const inp = { width: "100%", padding: "8px 11px", borderRadius: 8, border: "1px solid #FBCFE8", background: "#FCE7F3", fontFamily: "inherit", fontSize: 13, color: "#111827", boxSizing: "border-box" };
+  const lbl = { display: "block", fontSize: 10, fontWeight: 700, color: "#BE185D", letterSpacing: "0.08em", marginBottom: 4, textTransform: "uppercase" };
+
+  const pad = n => String(n).padStart(2, "0");
+  const toYmd = d => d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+  const todayYmd = toYmd(new Date());
+  const _t = new Date(); _t.setDate(_t.getDate() + 1); const tmrwYmd = toYmd(_t);
+  const fmtDay = ymd => ymd ? new Date(ymd + "T00:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" }) : "";
+  const _now = new Date();
+  const _dow = (_now.getDay() + 6) % 7;            // 0 = Monday
+  const _ws = new Date(_now); _ws.setDate(_now.getDate() - _dow);
+  const _we = new Date(_ws); _we.setDate(_ws.getDate() + 6);
+  const wS = toYmd(_ws), wE = toYmd(_we);
+
+  const list = interviewList || [];
+  const update = (id, patch) => persistInterviews(list.map(r => r._id === id ? { ...r, ...patch, updatedAt: new Date().toISOString() } : r));
+  const remove = (r) => { if (!window.confirm("Delete interview candidate " + (r.firstName || "") + " " + (r.surname || "") + "?")) return; persistInterviews(list.filter(x => x._id !== r._id)); };
+
+  // Duplicate detection: same phone or email already on a staff/manager record,
+  // another interview candidate, or a trial candidate. Warns the recruiter so
+  // the same person isn't logged (or re-interviewed) twice.
+  const dupFor = (draft) => {
+    const ph = _telDigits(draft.phone), em = (draft.email || "").trim().toLowerCase();
+    if (!ph && !em) return null;
+    const hit = (n, p, e) => (ph && _telDigits(p) === ph) || (em && (e || "").trim().toLowerCase() === em) ? n : null;
+    for (const s of (staff || [])) { const h = hit(s.name, s.cellNumber, s.email); if (h) return { who: h, where: "staff" }; }
+    for (const m of (managers || [])) { const h = hit(m.name, m.cellNumber, m.email); if (h) return { who: h, where: "managers" }; }
+    for (const t of (trialList || [])) { const h = hit(t.name, t.phone, t.email); if (h) return { who: h, where: "trial period" }; }
+    for (const c of list) { if (c._id === draft._editId) continue; const h = hit(((c.firstName || "") + " " + (c.surname || "")).trim(), c.phone, c.email); if (h) return { who: h, where: "interview list" }; }
+    return null;
+  };
+
+  const blankForm = () => ({ firstName: "", surname: "", nationality: "South African", phone: "", email: "", area: "", branch: SALONS[0]?.name || "", source: "boa_pathways", interviewDate: "", interviewTime: "", _editId: null });
+  const openAdd = () => setForm(blankForm());
+  const openEdit = (r) => setForm({ firstName: r.firstName || "", surname: r.surname || "", nationality: r.nationality || "", phone: r.phone || "", email: r.email || "", area: r.area || "", branch: r.branch || SALONS[0]?.name || "", source: r.source || "other", interviewDate: r.interviewDate || "", interviewTime: r.interviewTime || "", _editId: r._id });
+  const saveForm = () => {
+    if (!form.firstName.trim() || !form.surname.trim()) { alert("First name and surname are required."); return; }
+    const base = {
+      firstName: form.firstName.trim(), surname: form.surname.trim(),
+      nationality: (form.nationality || "").trim(), phone: form.phone.trim(),
+      email: form.email.trim(), area: form.area.trim(), branch: form.branch,
+      source: form.source, interviewDate: form.interviewDate || "", interviewTime: form.interviewTime || "",
+      updatedAt: new Date().toISOString()
+    };
+    if (form._editId) {
+      persistInterviews(list.map(r => r._id === form._editId ? { ...r, ...base } : r));
+    } else {
+      persistInterviews([...list, { _id: Date.now(), attendance: "", outcome: "", trainerNotes: "", trainerScore: "", inductionDate: "", promotedToTrialId: null, addedAt: new Date().toISOString(), addedBy: (currentUser && currentUser.name) || "", ...base }]);
+    }
+    setForm(null);
+  };
+
+  // Hand a passed candidate (with an induction date) to the Trial Period as an
+  // induction-stage record — pre-filling everything captured at interview so
+  // there's no double entry. Guards against being sent twice.
+  const sendToInduction = (r) => {
+    if (r.promotedToTrialId) { alert("Already sent to the Trial Period."); return; }
+    if (!r.inductionDate) { alert("Set an induction date first."); return; }
+    const fullName = ((r.firstName || "") + " " + (r.surname || "")).trim();
+    const trialRec = {
+      _id: Date.now(),
+      name: fullName, phone: r.phone || "", email: r.email || "", homeAddress: r.area || "",
+      trainerName: "", inductionPassDate: "", branch: r.branch || SALONS[0]?.name || "",
+      startDate: r.inductionDate,
+      notes: "From interview" + (r.interviewDate ? " on " + fmtDay(r.interviewDate) : "") + (r.nationality ? " · " + r.nationality : ""),
+      boaPathways: r.source === "boa_pathways",
+      role: "nt", status: "induction",
+      addedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), fromInterviewId: r._id
+    };
+    persistTrialList([...(trialList || []), trialRec]);
+    update(r._id, { promotedToTrialId: trialRec._id, promotedAt: new Date().toISOString() });
+    alert("✅ " + fullName + " added to the Trial Period (induction) at " + trialRec.branch + ", starting " + fmtDay(r.inductionDate) + ".\n\nOpen People → Trial Period to track them from here.");
+  };
+
+  // ── Stats ──
+  const cameN = list.filter(r => r.attendance === "came").length;
+  const noShowN = list.filter(r => r.attendance === "no_show").length;
+  const passedN = list.filter(r => r.outcome === "passed").length;
+  const failedN = list.filter(r => r.outcome === "failed").length;
+  const bookedN = list.filter(r => r.inductionDate).length;
+  const scheduledThisWeek = list.filter(r => r.interviewDate && r.interviewDate >= wS && r.interviewDate <= wE && !r.promotedToTrialId).length;
+  const noShowRate = (cameN + noShowN) ? Math.round(noShowN / (cameN + noShowN) * 100) : 0;
+  const passRate = (passedN + failedN) ? Math.round(passedN / (passedN + failedN) * 100) : 0;
+  const conv = list.length ? Math.round(bookedN / list.length * 100) : 0;
+
+  // ── Action queues (drive the reminder banner + the "needs action" filter) ──
+  const needsTrainer = list.filter(r => !r.promotedToTrialId && ((r.attendance === "came" && !r.outcome) || (r.interviewDate && r.interviewDate < todayYmd && !r.attendance)));
+  const needsRecruiter = list.filter(r => !r.promotedToTrialId && r.outcome === "passed" && !r.inductionDate);
+  const todayList = list.filter(r => r.interviewDate === todayYmd && !r.promotedToTrialId).sort((a, b) => (a.interviewTime || "").localeCompare(b.interviewTime || ""));
+  const tomorrowN = list.filter(r => r.interviewDate === tmrwYmd && !r.promotedToTrialId).length;
+
+  // ── Filtered + grouped-by-day for the schedule ("who's coming when") ──
+  const needActionIds = new Set([...needsTrainer, ...needsRecruiter].map(r => r._id));
+  const filtered = list.filter(r => {
+    const st = interviewStage(r);
+    if (filter === "all") return true;
+    if (filter === "today") return r.interviewDate === todayYmd && !r.promotedToTrialId;
+    if (filter === "needsAction") return needActionIds.has(r._id);
+    return st !== "failed" && st !== "to_trial"; // "active"
+  });
+  const groups = {};
+  filtered.forEach(r => { const k = r.interviewDate || "zzz_unscheduled"; (groups[k] = groups[k] || []).push(r); });
+  const groupKeys = Object.keys(groups).sort();
+  Object.values(groups).forEach(g => g.sort((a, b) => (a.interviewTime || "").localeCompare(b.interviewTime || "")));
+
+  const tile = (l, v, c, bg, sub) => (
+    <div key={l} style={{ background: bg, borderRadius: 12, padding: "13px 15px" }}>
+      <div style={{ fontSize: 26, fontWeight: 800, color: c, lineHeight: 1 }}>{v}</div>
+      <div style={{ fontSize: 9, fontWeight: 700, color: c, opacity: 0.75, marginTop: 4, letterSpacing: "0.05em" }}>{l.toUpperCase()}</div>
+      {sub && <div style={{ fontSize: 9, color: c, opacity: 0.55, marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+
+  const dup = form ? dupFor(form) : null;
+
+  return (
+    <div>
+      {/* Role legend / what-you-can-do notice */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
+        <div style={{ fontSize: 12, color: "#6b7280" }}>
+          {canRecruit && canTrain ? "You can schedule interviews and record outcomes."
+            : canRecruit ? "You're set up as the recruiter — schedule interviews and book inductions."
+              : canTrain ? "You're set up as the nail-tech trainer — mark attendance and pass/fail."
+                : "View only — interview actions are limited to the recruiter and the nail-tech trainer."}
+        </div>
+        {canRecruit && <button onClick={openAdd} style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 9, padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>+ Add candidate</button>}
+      </div>
+
+      {/* Stats */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 10, marginBottom: 16 }}>
+        {tile("Interviews this week", scheduledThisWeek, "#1e40af", "#dbeafe")}
+        {tile("No-show rate", noShowRate + "%", "#991b1b", "#fee2e2", cameN + noShowN + " interviewed")}
+        {tile("Pass rate", passRate + "%", "#14532d", "#dcfce7", passedN + " of " + (passedN + failedN) + " passed")}
+        {tile("Inductions booked", bookedN, "#0e7490", "#cffafe", conv + "% conversion")}
+        {tile("In pipeline", list.filter(r => { const s = interviewStage(r); return s !== "failed" && s !== "to_trial"; }).length, "#5b21b6", "#ede9fe")}
+      </div>
+
+      {/* Reminder banner */}
+      {(todayList.length > 0 || tomorrowN > 0 || needsTrainer.length > 0 || needsRecruiter.length > 0) && (
+        <div style={{ background: "#FFFBEB", border: "1px solid #FCD34D", borderRadius: 12, padding: "12px 16px", marginBottom: 16 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: "#92400e", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 6 }}>⏰ Reminders</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "#78350f" }}>
+            {todayList.length > 0 && <div><strong>Today:</strong> {todayList.map(r => ((r.firstName || "") + (r.interviewTime ? " (" + r.interviewTime + ")" : "")).trim()).join(", ")}</div>}
+            {tomorrowN > 0 && <div><strong>Tomorrow:</strong> {tomorrowN} interview{tomorrowN !== 1 ? "s" : ""} booked</div>}
+            {needsTrainer.length > 0 && <div>🎓 <strong>{needsTrainer.length}</strong> awaiting the trainer (attendance / outcome not recorded)</div>}
+            {needsRecruiter.length > 0 && <div>📋 <strong>{needsRecruiter.length}</strong> passed — recruiter to book an induction date</div>}
+          </div>
+        </div>
+      )}
+
+      {/* Filter pills */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        {[{ k: "active", l: "Active" }, { k: "needsAction", l: "Needs action · " + needActionIds.size }, { k: "today", l: "Today · " + todayList.length }, { k: "all", l: "All · " + list.length }].map(f => (
+          <button key={f.k} onClick={() => setFilter(f.k)} style={{ background: filter === f.k ? "#BE185D" : "#FCE7F3", color: filter === f.k ? "#fff" : "#831843", border: "1px solid #FBCFE8", borderRadius: 999, padding: "6px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>{f.l}</button>
+        ))}
+      </div>
+
+      {/* Schedule grouped by interview day */}
+      {filtered.length === 0 ? (
+        <div style={{ background: "#fff", border: "1px dashed #FBCFE8", borderRadius: 14, padding: "40px 20px", textAlign: "center", color: "#9F1A4F", fontSize: 13 }}>
+          {list.length === 0 ? "No interview candidates yet." : "Nothing in this view."}
+          {canRecruit && list.length === 0 && <div style={{ marginTop: 8 }}><button onClick={openAdd} style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>+ Add the first candidate</button></div>}
+        </div>
+      ) : groupKeys.map(gk => (
+        <div key={gk} style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: "#831843", letterSpacing: "0.04em", marginBottom: 8, paddingBottom: 4, borderBottom: "2px solid #FBCFE8" }}>
+            {gk === "zzz_unscheduled" ? "🗓 Not yet scheduled" : "🗓 " + fmtDay(gk) + (gk === todayYmd ? " · TODAY" : gk === tmrwYmd ? " · tomorrow" : "")}
+            <span style={{ marginLeft: 8, fontWeight: 600, color: "#9ca3af" }}>{groups[gk].length}</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(320px,1fr))", gap: 12 }}>
+            {groups[gk].map(r => {
+              const st = interviewStage(r);
+              const sc = INTERVIEW_STAGE[st];
+              const fullName = ((r.firstName || "") + " " + (r.surname || "")).trim();
+              return (
+                <div key={r._id} style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 14, padding: "14px 16px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 8 }}>
+                    <div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: "#111827" }}>{fullName}{r.source === "boa_pathways" && <span title="BOA Pathways graduate" style={{ marginLeft: 6, fontSize: 13 }}>🎓</span>}</div>
+                      <div style={{ fontSize: 11, color: "#6b7280", marginTop: 1 }}>
+                        {r.nationality || "—"}{r.area ? " · 📍 " + r.area : ""}
+                      </div>
+                    </div>
+                    <span style={{ background: sc.bg, color: sc.color, fontSize: 9, fontWeight: 800, padding: "3px 8px", borderRadius: 99, whiteSpace: "nowrap", letterSpacing: "0.04em" }}>{sc.label.toUpperCase()}</span>
+                  </div>
+
+                  {/* Contact shortcuts */}
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                    {r.phone && <a href={"tel:" + _telDigits(r.phone)} style={{ fontSize: 11, fontWeight: 700, color: "#1e40af", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 7, padding: "3px 9px", textDecoration: "none" }}>📞 Call</a>}
+                    {r.phone && <a href={"https://wa.me/" + _waDigits(r.phone)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, fontWeight: 700, color: "#15803d", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 7, padding: "3px 9px", textDecoration: "none" }}>💬 WhatsApp</a>}
+                    {r.email && <a href={"mailto:" + r.email} style={{ fontSize: 11, fontWeight: 700, color: "#9a3412", background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 7, padding: "3px 9px", textDecoration: "none" }}>✉️ Email</a>}
+                    {r.phone && <span style={{ fontSize: 11, color: "#9ca3af", alignSelf: "center" }}>{r.phone}</span>}
+                  </div>
+
+                  <div style={{ fontSize: 11, color: "#374151", marginBottom: 8 }}>
+                    <span style={{ fontWeight: 700 }}>Interview:</span> {r.interviewDate ? fmtDay(r.interviewDate) : "not scheduled"}{r.interviewTime ? " at " + r.interviewTime : ""}
+                    {" · "}<span style={{ color: "#9ca3af" }}>{INTERVIEW_SOURCES[r.source] || "—"}</span>
+                    {r.branch && <> · 🏢 {r.branch}</>}
+                  </div>
+
+                  {/* TRAINER controls — attendance then outcome */}
+                  {canTrain && !r.promotedToTrialId && r.outcome !== "passed" && r.outcome !== "failed" && (
+                    <div style={{ background: "#F9FAFB", border: "1px solid #e5e7eb", borderRadius: 9, padding: "9px 11px", marginBottom: 8 }}>
+                      <div style={{ fontSize: 9, fontWeight: 800, color: "#6b7280", letterSpacing: "0.06em", marginBottom: 6 }}>🎓 TRAINER</div>
+                      {!r.attendance && (
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <button onClick={() => update(r._id, { attendance: "came" })} style={{ flex: 1, background: "#dcfce7", color: "#14532d", border: "1px solid #86efac", borderRadius: 7, padding: "6px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>✓ Came</button>
+                          <button onClick={() => update(r._id, { attendance: "no_show" })} style={{ flex: 1, background: "#fee2e2", color: "#991b1b", border: "1px solid #fca5a5", borderRadius: 7, padding: "6px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>✗ No-show</button>
+                        </div>
+                      )}
+                      {r.attendance === "came" && (
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <button onClick={() => update(r._id, { outcome: "passed" })} style={{ flex: 1, background: "#dcfce7", color: "#14532d", border: "1px solid #86efac", borderRadius: 7, padding: "6px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>✓ Passed</button>
+                          <button onClick={() => update(r._id, { outcome: "failed" })} style={{ flex: 1, background: "#f3f4f6", color: "#6b7280", border: "1px solid #d1d5db", borderRadius: 7, padding: "6px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>✗ Not successful</button>
+                        </div>
+                      )}
+                      {r.attendance === "no_show" && (
+                        <div style={{ fontSize: 11, color: "#991b1b" }}>Marked no-show. <button onClick={() => update(r._id, { attendance: "" })} style={{ background: "none", border: "none", color: "#1e40af", cursor: "pointer", fontSize: 11, fontWeight: 700, padding: 0, textDecoration: "underline" }}>undo</button></div>
+                      )}
+                      <div style={{ marginTop: 8 }}>
+                        <textarea rows={2} placeholder="Interview notes…" value={r.trainerNotes || ""} onChange={e => update(r._id, { trainerNotes: e.target.value })} style={{ width: "100%", boxSizing: "border-box", border: "1px solid #e5e7eb", borderRadius: 7, padding: "6px 8px", fontSize: 12, fontFamily: "inherit", resize: "vertical" }} />
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
+                          <span style={{ fontSize: 10, fontWeight: 700, color: "#6b7280" }}>SCORE</span>
+                          <select value={r.trainerScore || ""} onChange={e => update(r._id, { trainerScore: e.target.value })} style={{ border: "1px solid #e5e7eb", borderRadius: 6, padding: "3px 6px", fontSize: 12, fontFamily: "inherit" }}>
+                            <option value="">—</option>{[1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n}/5</option>)}
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Trainer's recorded notes/score (read-only echo once decided) */}
+                  {(r.outcome === "passed" || r.outcome === "failed") && (r.trainerNotes || r.trainerScore) && (
+                    <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 8 }}>
+                      {r.trainerScore && <span style={{ fontWeight: 700, color: "#374151" }}>Score {r.trainerScore}/5. </span>}
+                      {r.trainerNotes}
+                    </div>
+                  )}
+
+                  {/* RECRUITER controls — induction date once passed */}
+                  {r.outcome === "passed" && !r.promotedToTrialId && (
+                    <div style={{ background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 9, padding: "9px 11px", marginBottom: 8 }}>
+                      <div style={{ fontSize: 9, fontWeight: 800, color: "#15803d", letterSpacing: "0.06em", marginBottom: 6 }}>📋 RECRUITER · BOOK INDUCTION</div>
+                      {canRecruit ? (
+                        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                          <input type="date" value={r.inductionDate || ""} onChange={e => update(r._id, { inductionDate: e.target.value })} style={{ border: "1px solid #BBF7D0", borderRadius: 7, padding: "5px 8px", fontSize: 12, fontFamily: "inherit" }} />
+                          <button disabled={!r.inductionDate} onClick={() => sendToInduction(r)} style={{ background: r.inductionDate ? "#15803d" : "#d1d5db", color: "#fff", border: "none", borderRadius: 7, padding: "6px 12px", cursor: r.inductionDate ? "pointer" : "not-allowed", fontSize: 12, fontWeight: 700 }}>Send to induction →</button>
+                        </div>
+                      ) : <div style={{ fontSize: 11, color: "#15803d" }}>Passed — waiting on the recruiter to book an induction date.</div>}
+                    </div>
+                  )}
+
+                  {r.promotedToTrialId && (
+                    <div style={{ fontSize: 11, color: "#5b21b6", background: "#ede9fe", borderRadius: 8, padding: "7px 10px", marginBottom: 8 }}>✅ In the Trial Period{r.inductionDate ? " · induction " + fmtDay(r.inductionDate) : ""} — track in People → Trial Period.</div>
+                  )}
+
+                  {/* Recruiter row actions */}
+                  {canRecruit && (
+                    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                      <button onClick={() => openEdit(r)} style={{ background: "#f3f4f6", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#831843" }}>✏️ Edit</button>
+                      <button onClick={() => remove(r)} style={{ background: "#fff", border: "1px solid #fecaca", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#991b1b" }}>🗑</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+
+      {/* Add / edit candidate modal */}
+      {form && (
+        <div onClick={() => setForm(null)} style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 100000, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", overflowY: "auto" }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "22px 24px", width: "min(560px,96vw)", boxShadow: "0 20px 60px rgba(0,0,0,.25)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <div style={{ fontSize: 16, fontWeight: 800, color: "#BE185D" }}>{form._editId ? "✏️ Edit candidate" : "➕ New interview candidate"}</div>
+              <button onClick={() => setForm(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 20 }}>✕</button>
+            </div>
+            {dup && (
+              <div style={{ background: "#FEF3C7", border: "1px solid #FCD34D", borderRadius: 9, padding: "9px 12px", marginBottom: 12, fontSize: 12, color: "#78350f" }}>
+                ⚠ Possible duplicate — <strong>{dup.who}</strong> already has this phone/email in the {dup.where}.
+              </div>
+            )}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <div><label style={lbl}>First Name *</label><input style={inp} value={form.firstName} onChange={e => setForm({ ...form, firstName: e.target.value })} placeholder="e.g. Thandi" /></div>
+              <div><label style={lbl}>Surname *</label><input style={inp} value={form.surname} onChange={e => setForm({ ...form, surname: e.target.value })} placeholder="e.g. Mokoena" /></div>
+              <div><label style={lbl}>Nationality</label><input style={inp} value={form.nationality} onChange={e => setForm({ ...form, nationality: e.target.value })} placeholder="e.g. South African" /></div>
+              <div><label style={lbl}>Area they live in</label><input style={inp} value={form.area} onChange={e => setForm({ ...form, area: e.target.value })} placeholder="e.g. Khayelitsha" /></div>
+              <div><label style={lbl}>Phone</label><input style={inp} value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} placeholder="+27 …" /></div>
+              <div><label style={lbl}>Email</label><input type="email" style={inp} value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} /></div>
+              <div><label style={lbl}>Assigned branch</label><select style={inp} value={form.branch} onChange={e => setForm({ ...form, branch: e.target.value })}>{SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}</select></div>
+              <div><label style={lbl}>Source</label><select style={inp} value={form.source} onChange={e => setForm({ ...form, source: e.target.value })}>{Object.entries(INTERVIEW_SOURCES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></div>
+              <div><label style={lbl}>Interview date</label><input type="date" style={inp} value={form.interviewDate} onChange={e => setForm({ ...form, interviewDate: e.target.value })} /></div>
+              <div><label style={lbl}>Interview time</label><input type="time" style={inp} value={form.interviewTime} onChange={e => setForm({ ...form, interviewTime: e.target.value })} /></div>
+            </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 18 }}>
+              <button onClick={() => setForm(null)} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", cursor: "pointer", fontSize: 13 }}>Cancel</button>
+              <button onClick={saveForm} style={{ padding: "9px 22px", borderRadius: 9, border: "none", background: "#BE185D", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>{form._editId ? "Save" : "Add candidate"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // ── Activity logger — records who did what to the boa_activity_log_v1 row.
   // Failures are swallowed so a logging hiccup never blocks the actual edit.
@@ -14300,6 +14671,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [obList, setObList] = useState([]);           // joiner records (3-month contract signers)
   const [obFilter, setObFilter] = useState("recent"); // "recent" = last 31 days, "all" = every onboarded record
   const [trialList, setTrialList] = useState([]);     // trial period candidates (pre-contract)
+  const [interviewList, setInterviewList] = useState([]); // nail-tech interview candidates (pre-trial; boa_nt_interviews_v1)
   const [freshaAccess, setFreshaAccess] = useState({}); // who opens/sees trial Fresha reminders (boa_fresha_access_v1)
   // Resolved Fresha-access config with sensible defaults: Rochelle (3030)
   // and Farida (4040) open techs on Fresha; National Ops + Regional Ops
@@ -14394,6 +14766,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     setTrialList(next);
     try { await window.BOA_DB.saveTrialPeriod(next); }
     catch (e) { window.alert("Could not save trial data: " + (e.message || e)); }
+  };
+  // Interview pipeline persister — same optimistic-then-save pattern. The
+  // read-only guard (see READ_ONLY_GUARDED_METHODS) turns saveInterviews into a
+  // no-op for view-only users, so this is safe to call from the UI.
+  const persistInterviews = async (next) => {
+    setInterviewList(next);
+    try { await window.BOA_DB.saveInterviews(next); }
+    catch (e) { window.alert("Could not save interview data: " + (e.message || e)); }
   };
   // Toggle a Fresha milestone flag on a trial record, stamping who/when.
   const setTrialFresha = (id, field, on) => {
@@ -15882,8 +16262,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       (window.BOA_DB.loadLeaveRequests && _needRequests) ? window.BOA_DB.loadLeaveRequests() : Promise.resolve([]),
       (window.BOA_DB.loadExtraDayRequests && _needRequests) ? window.BOA_DB.loadExtraDayRequests() : Promise.resolve([]),
       window.BOA_DB.loadFreshaExtraOpenings ? window.BOA_DB.loadFreshaExtraOpenings() : Promise.resolve({}),
-      window.BOA_DB.loadFreshaBlocks ? window.BOA_DB.loadFreshaBlocks() : Promise.resolve({})
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, cuReviewAccess, lvOpsAccess, lvPayrollAccess, lvBalancesAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap]) => {
+      window.BOA_DB.loadFreshaBlocks ? window.BOA_DB.loadFreshaBlocks() : Promise.resolve({}),
+      window.BOA_DB.loadInterviews ? window.BOA_DB.loadInterviews() : Promise.resolve([])
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, cuReviewAccess, lvOpsAccess, lvPayrollAccess, lvBalancesAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap, interviews]) => {
       setStaff(d.staff);
       setManagers(d.managers);
       setMatRecs(d.matRecs);
@@ -15893,6 +16274,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setMgrPins(pins && typeof pins === "object" ? pins : {});
       setHrTasks(Array.isArray(tasks) ? tasks : []);
       setTrialList(Array.isArray(trial) ? trial : []);
+      setInterviewList(Array.isArray(interviews) ? interviews : []);
       setSmTrialList(Array.isArray(smTrial) ? smTrial : []);
       setOvertimeReqs(Array.isArray(ot) ? ot : []);
       setFreshaAccess(freshaAcc && typeof freshaAcc === "object" ? freshaAcc : {});
@@ -19345,6 +19727,41 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </>
                   )}
                 </div>
+
+                {/* Upcoming interviews — only for the recruiter, the nail-tech
+                    trainer and the owner, so it doesn't clutter other dashboards. */}
+                {(canRecruitInterviews(currentUser) || canTrainInterviews(currentUser)) && (() => {
+                  const ivs = interviewList || [];
+                  const _p = n => String(n).padStart(2, "0");
+                  const _y = d => d.getFullYear() + "-" + _p(d.getMonth() + 1) + "-" + _p(d.getDate());
+                  const _today = _y(new Date());
+                  const _t2 = new Date(); _t2.setDate(_t2.getDate() + 1); const _tmrw = _y(_t2);
+                  const _fmt = ymd => new Date(ymd + "T00:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" });
+                  const todayIv = ivs.filter(r => r.interviewDate === _today && !r.promotedToTrialId).sort((a, b) => (a.interviewTime || "").localeCompare(b.interviewTime || ""));
+                  const tmrwIv = ivs.filter(r => r.interviewDate === _tmrw && !r.promotedToTrialId);
+                  const needsTrainer = ivs.filter(r => !r.promotedToTrialId && ((r.attendance === "came" && !r.outcome) || (r.interviewDate && r.interviewDate < _today && !r.attendance))).length;
+                  const needsRecruiter = ivs.filter(r => !r.promotedToTrialId && r.outcome === "passed" && !r.inductionDate).length;
+                  if (!todayIv.length && !tmrwIv.length && !needsTrainer && !needsRecruiter) return null;
+                  return (
+                    <div style={card}>
+                      <div style={cardTitle}>
+                        <span>📋 Upcoming interviews</span>
+                        <button onClick={() => { setRecruitSubTab("interviews"); tryChangeTab("recruitment"); }} style={{ background: PINK.accent, color: "#fff", border: "none", borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit" }}>Open →</button>
+                      </div>
+                      <div style={{ display: "grid", gap: 6 }}>
+                        {todayIv.length > 0 && (
+                          <div style={{ background: "#dbeafe", border: "1px solid #bfdbfe", borderRadius: 9, padding: "8px 12px" }}>
+                            <div style={{ fontSize: 11, fontWeight: 800, color: "#1e40af" }}>TODAY · {todayIv.length}</div>
+                            <div style={{ fontSize: 12, color: "#1e3a8a", marginTop: 2 }}>{todayIv.map(r => ((r.firstName || "") + (r.interviewTime ? " " + r.interviewTime : "")).trim()).join(", ")}</div>
+                          </div>
+                        )}
+                        {tmrwIv.length > 0 && <div style={{ display: "flex", justifyContent: "space-between", background: "#eff6ff", border: "1px solid #dbeafe", borderRadius: 9, padding: "8px 12px", fontSize: 12, color: "#1e40af", fontWeight: 700 }}><span>Tomorrow ({_fmt(_tmrw)})</span><span>{tmrwIv.length}</span></div>}
+                        {needsTrainer > 0 && <div style={{ display: "flex", justifyContent: "space-between", background: "#fef9c3", border: "1px solid #fde68a", borderRadius: 9, padding: "8px 12px", fontSize: 12, color: "#854d0e", fontWeight: 700 }}><span>🎓 Awaiting trainer</span><span>{needsTrainer}</span></div>}
+                        {needsRecruiter > 0 && <div style={{ display: "flex", justifyContent: "space-between", background: "#dcfce7", border: "1px solid #bbf7d0", borderRadius: 9, padding: "8px 12px", fontSize: 12, color: "#14532d", fontWeight: 700 }}><span>📋 Passed · book induction</span><span>{needsRecruiter}</span></div>}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* ── SECTION: ATTENTION ── hidden for ROM users; the Z/NA,
@@ -21688,11 +22105,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const ams = mgrs.filter(m => (m.effectiveRole || m.role) === "AM").length + (activeTrialByBranch.am[sl.name] || 0);
               return a + Math.max(0, MIN_SM - sms) + Math.max(0, MIN_AM - ams);
             }, 0);
-            const counts = { nailTech: stats.vacancies, mgrRecruit: mgrVacancies };
+            const interviewPipeline = (interviewList || []).filter(r => { const s = interviewStage(r); return s !== "failed" && s !== "to_trial"; }).length;
+            const counts = { nailTech: stats.vacancies, mgrRecruit: mgrVacancies, interviews: interviewPipeline };
             return (
-              <div style={{ display: "flex", gap: 0, marginBottom: 24, padding: 6, background: "#FCE7F3", borderRadius: 14, border: "1px solid #FBCFE8", maxWidth: 680 }}>
+              <div style={{ display: "flex", gap: 0, marginBottom: 24, padding: 6, background: "#FCE7F3", borderRadius: 14, border: "1px solid #FBCFE8", maxWidth: 980 }}>
                 {[
                   { k: "nailTech", label: "💅 Nail Tech Recruitment" },
+                  { k: "interviews", label: "📋 Interviews" },
                   { k: "mgrRecruit", label: "👔 Manager Recruitment" }
                 ].map(t => {
                   const active = recruitSubTab === t.k;
@@ -21827,6 +22246,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               )
             }
           </>)}
+
+          {recruitSubTab === "interviews" && (
+            <InterviewsView
+              interviewList={interviewList}
+              persistInterviews={persistInterviews}
+              trialList={trialList}
+              persistTrialList={persistTrialList}
+              staff={staff}
+              managers={managers}
+              currentUser={currentUser}
+            />
+          )}
 
           {recruitSubTab === "mgrRecruit" && (
             <div>
