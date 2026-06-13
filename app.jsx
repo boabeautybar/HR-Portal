@@ -13211,12 +13211,179 @@ function _waDigits(phone) {
   return d;
 }
 
+// ─── CAPE TOWN STORE PICKER (travel-ease) ─────────────────────────────────────
+// An honest, offline estimator: where does a candidate live → which branches are
+// easiest to get to on public transport. We model two things:
+//   1. Approximate coordinates for each branch and ~70 common CT suburbs/regions
+//      (straight-line "as the crow flies" distance — a proxy, not live routing).
+//   2. Transport CORRIDORS each place sits on (MyCiti routes, the three Metrorail
+//      lines, the Helderberg/Winelands Golden-Arrow+taxi axis, the CBD
+//      interchange). When a suburb and a branch share a corridor there's usually
+//      a single-mode/one-transfer link, so we weight those branches as easier.
+// Branch keys match the app's SALON names. Coordinates are approximate.
+const CT_STORE_GEO = {
+  "Bree":          { lat: -33.9205, lng: 18.4190, region: "CBD / Atlantic Seaboard", corridors: ["atlantic", "westcoast", "southern_line", "northern_line", "central_line", "cbd_hub"] },
+  "Kloof":         { lat: -33.9290, lng: 18.4080, region: "CBD / Atlantic Seaboard", corridors: ["atlantic", "cbd_hub", "southern_line"] },
+  "Green Point":   { lat: -33.9062, lng: 18.4070, region: "CBD / Atlantic Seaboard", corridors: ["atlantic", "cbd_hub"] },
+  "Sea Point":     { lat: -33.9190, lng: 18.3850, region: "CBD / Atlantic Seaboard", corridors: ["atlantic"] },
+  "Riverlands":    { lat: -33.9370, lng: 18.4720, region: "Southern Suburbs", corridors: ["southern_line", "central_line"] },
+  "Rondebosch":    { lat: -33.9625, lng: 18.4760, region: "Southern Suburbs", corridors: ["southern_line"] },
+  "Claremont":     { lat: -33.9840, lng: 18.4647, region: "Southern Suburbs", corridors: ["southern_line"] },
+  "Plumstead":     { lat: -34.0190, lng: 18.4690, region: "Southern Suburbs", corridors: ["southern_line"] },
+  "Westlake":      { lat: -34.0760, lng: 18.4250, region: "Southern Suburbs", corridors: ["southern_line"] },
+  "Kuils River":   { lat: -33.9300, lng: 18.6770, region: "Northern Suburbs", corridors: ["northern_line"] },
+  "Durbanville":   { lat: -33.8310, lng: 18.6470, region: "Northern Suburbs", corridors: ["northern_line"] },
+  "Sandown":       { lat: -33.8090, lng: 18.4920, region: "Northern Suburbs", corridors: ["westcoast"] },
+  "Table Bay":     { lat: -33.7870, lng: 18.4790, region: "Northern Suburbs", corridors: ["westcoast"] },
+  "Cape Gate":     { lat: -33.8690, lng: 18.6960, region: "Northern Suburbs", corridors: ["northern_line"] },
+  "Somerset West": { lat: -34.0840, lng: 18.8490, region: "Winelands", corridors: ["winelands"] },
+  "Winelands":     { lat: -33.7340, lng: 18.9620, region: "Winelands", corridors: ["winelands", "northern_line"] },
+  "Betty":         { lat: -34.3520, lng: 18.9080, region: "Overberg", corridors: ["winelands"] }
+};
+// Common Cape Town suburbs + region keywords → coordinates + corridors.
+const CT_AREAS = {
+  "cape town cbd": { lat: -33.9249, lng: 18.4241, corridors: ["atlantic", "westcoast", "southern_line", "northern_line", "central_line", "cbd_hub", "winelands"] },
+  "city centre": { lat: -33.9249, lng: 18.4241, corridors: ["atlantic", "westcoast", "southern_line", "northern_line", "central_line", "cbd_hub", "winelands"] },
+  "city bowl": { lat: -33.9300, lng: 18.4120, corridors: ["atlantic", "cbd_hub"] },
+  "atlantic seaboard": { lat: -33.9150, lng: 18.3880, corridors: ["atlantic"] },
+  "southern suburbs": { lat: -33.9840, lng: 18.4690, corridors: ["southern_line"] },
+  "northern suburbs": { lat: -33.8900, lng: 18.6200, corridors: ["northern_line"] },
+  "west coast": { lat: -33.8200, lng: 18.4880, corridors: ["westcoast"] },
+  "cape flats": { lat: -34.0000, lng: 18.5600, corridors: ["central_line"] },
+  "winelands": { lat: -33.9320, lng: 18.8600, corridors: ["winelands"] },
+  "helderberg": { lat: -34.0900, lng: 18.8400, corridors: ["winelands"] },
+  "gardens": { lat: -33.9320, lng: 18.4120, corridors: ["atlantic", "cbd_hub"] },
+  "tamboerskloof": { lat: -33.9300, lng: 18.4050, corridors: ["atlantic", "cbd_hub"] },
+  "vredehoek": { lat: -33.9360, lng: 18.4180, corridors: ["atlantic", "cbd_hub"] },
+  "woodstock": { lat: -33.9270, lng: 18.4450, corridors: ["southern_line", "central_line", "cbd_hub"] },
+  "salt river": { lat: -33.9290, lng: 18.4650, corridors: ["southern_line", "central_line"] },
+  "observatory": { lat: -33.9370, lng: 18.4720, corridors: ["southern_line", "central_line"] },
+  "sea point": { lat: -33.9190, lng: 18.3850, corridors: ["atlantic"] },
+  "green point": { lat: -33.9062, lng: 18.4070, corridors: ["atlantic", "cbd_hub"] },
+  "mouille point": { lat: -33.9000, lng: 18.4050, corridors: ["atlantic"] },
+  "bantry bay": { lat: -33.9260, lng: 18.3760, corridors: ["atlantic"] },
+  "camps bay": { lat: -33.9510, lng: 18.3780, corridors: ["atlantic"] },
+  "hout bay": { lat: -34.0470, lng: 18.3560, corridors: ["southern_line", "atlantic"] },
+  "mowbray": { lat: -33.9460, lng: 18.4760, corridors: ["southern_line", "central_line"] },
+  "rosebank": { lat: -33.9560, lng: 18.4730, corridors: ["southern_line"] },
+  "rondebosch": { lat: -33.9625, lng: 18.4760, corridors: ["southern_line"] },
+  "newlands": { lat: -33.9750, lng: 18.4520, corridors: ["southern_line"] },
+  "claremont": { lat: -33.9840, lng: 18.4647, corridors: ["southern_line"] },
+  "kenilworth": { lat: -33.9960, lng: 18.4720, corridors: ["southern_line"] },
+  "wynberg": { lat: -34.0050, lng: 18.4690, corridors: ["southern_line", "central_line"] },
+  "plumstead": { lat: -34.0190, lng: 18.4690, corridors: ["southern_line"] },
+  "diep river": { lat: -34.0260, lng: 18.4600, corridors: ["southern_line"] },
+  "bergvliet": { lat: -34.0470, lng: 18.4540, corridors: ["southern_line"] },
+  "constantia": { lat: -34.0280, lng: 18.4460, corridors: ["southern_line"] },
+  "tokai": { lat: -34.0660, lng: 18.4350, corridors: ["southern_line"] },
+  "retreat": { lat: -34.0560, lng: 18.4730, corridors: ["southern_line"] },
+  "steenberg": { lat: -34.0700, lng: 18.4690, corridors: ["southern_line"] },
+  "lakeside": { lat: -34.0810, lng: 18.4640, corridors: ["southern_line"] },
+  "muizenberg": { lat: -34.1080, lng: 18.4690, corridors: ["southern_line"] },
+  "fish hoek": { lat: -34.1360, lng: 18.4290, corridors: ["southern_line"] },
+  "grassy park": { lat: -34.0420, lng: 18.5070, corridors: ["southern_line", "central_line"] },
+  "lotus river": { lat: -34.0260, lng: 18.5180, corridors: ["central_line", "southern_line"] },
+  "ottery": { lat: -34.0130, lng: 18.5060, corridors: ["southern_line", "central_line"] },
+  "athlone": { lat: -33.9650, lng: 18.5100, corridors: ["central_line", "southern_line"] },
+  "rylands": { lat: -33.9700, lng: 18.5150, corridors: ["central_line"] },
+  "hanover park": { lat: -33.9950, lng: 18.5200, corridors: ["central_line"] },
+  "manenberg": { lat: -33.9870, lng: 18.5430, corridors: ["central_line"] },
+  "gugulethu": { lat: -33.9800, lng: 18.5700, corridors: ["central_line"] },
+  "nyanga": { lat: -33.9930, lng: 18.5860, corridors: ["central_line"] },
+  "langa": { lat: -33.9450, lng: 18.5300, corridors: ["central_line"] },
+  "philippi": { lat: -34.0080, lng: 18.5870, corridors: ["central_line"] },
+  "khayelitsha": { lat: -34.0390, lng: 18.6760, corridors: ["central_line"] },
+  "mitchells plain": { lat: -34.0420, lng: 18.6180, corridors: ["central_line"] },
+  "mfuleni": { lat: -34.0250, lng: 18.6680, corridors: ["central_line", "northern_line"] },
+  "delft": { lat: -33.9720, lng: 18.6470, corridors: ["central_line", "northern_line"] },
+  "blue downs": { lat: -34.0090, lng: 18.6760, corridors: ["central_line", "northern_line"] },
+  "pinelands": { lat: -33.9400, lng: 18.5120, corridors: ["southern_line", "central_line"] },
+  "thornton": { lat: -33.9260, lng: 18.5430, corridors: ["northern_line", "central_line"] },
+  "goodwood": { lat: -33.9120, lng: 18.5520, corridors: ["northern_line"] },
+  "parow": { lat: -33.9010, lng: 18.5900, corridors: ["northern_line"] },
+  "bellville": { lat: -33.9020, lng: 18.6290, corridors: ["northern_line"] },
+  "bothasig": { lat: -33.8650, lng: 18.5440, corridors: ["westcoast", "northern_line"] },
+  "edgemead": { lat: -33.8730, lng: 18.5560, corridors: ["northern_line"] },
+  "monte vista": { lat: -33.8870, lng: 18.5510, corridors: ["northern_line"] },
+  "brackenfell": { lat: -33.8710, lng: 18.6960, corridors: ["northern_line"] },
+  "kraaifontein": { lat: -33.8470, lng: 18.7180, corridors: ["northern_line"] },
+  "kuils river": { lat: -33.9300, lng: 18.6770, corridors: ["northern_line"] },
+  "durbanville": { lat: -33.8310, lng: 18.6470, corridors: ["northern_line"] },
+  "sonstraal heights": { lat: -33.8200, lng: 18.6560, corridors: ["northern_line"] },
+  "milnerton": { lat: -33.8780, lng: 18.4950, corridors: ["westcoast"] },
+  "century city": { lat: -33.8910, lng: 18.5110, corridors: ["westcoast", "northern_line"] },
+  "table view": { lat: -33.8230, lng: 18.4900, corridors: ["westcoast"] },
+  "parklands": { lat: -33.8150, lng: 18.4960, corridors: ["westcoast"] },
+  "sunningdale": { lat: -33.7960, lng: 18.4920, corridors: ["westcoast"] },
+  "bloubergstrand": { lat: -33.8060, lng: 18.4600, corridors: ["westcoast"] },
+  "blouberg": { lat: -33.8100, lng: 18.4700, corridors: ["westcoast"] },
+  "melkbosstrand": { lat: -33.7220, lng: 18.4420, corridors: ["westcoast"] },
+  "atlantis": { lat: -33.5670, lng: 18.4960, corridors: ["westcoast"] },
+  "dunoon": { lat: -33.8170, lng: 18.5360, corridors: ["westcoast"] },
+  "somerset west": { lat: -34.0840, lng: 18.8490, corridors: ["winelands"] },
+  "strand": { lat: -34.1080, lng: 18.8320, corridors: ["winelands"] },
+  "gordons bay": { lat: -34.1620, lng: 18.8700, corridors: ["winelands"] },
+  "macassar": { lat: -34.0680, lng: 18.7600, corridors: ["winelands", "central_line"] },
+  "paarl": { lat: -33.7340, lng: 18.9620, corridors: ["winelands", "northern_line"] },
+  "stellenbosch": { lat: -33.9320, lng: 18.8600, corridors: ["winelands", "northern_line"] }
+};
+const CT_CORRIDOR_MODE = {
+  atlantic: "MyCiti bus", westcoast: "MyCiti bus",
+  southern_line: "Train (Southern line) + taxi",
+  northern_line: "Train (Northern line) + taxi",
+  central_line: "Train (Central line) + taxi",
+  winelands: "Golden Arrow / taxi",
+  cbd_hub: "via City-centre interchange"
+};
+function _ctNorm(s) { return (s || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim(); }
+function _ctHaversineKm(a, b) {
+  const R = 6371, toR = d => d * Math.PI / 180;
+  const dLat = toR(b.lat - a.lat), dLng = toR(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toR(a.lat)) * Math.cos(toR(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function ctFindArea(text) {
+  const q = _ctNorm(text);
+  if (!q) return null;
+  if (CT_AREAS[q]) return { key: q, ...CT_AREAS[q] };
+  let best = null;
+  for (const key in CT_AREAS) {
+    const nk = _ctNorm(key);
+    if (q.includes(nk) || nk.includes(q)) {
+      if (!best || nk.length > best._len) best = { key, _len: nk.length, ...CT_AREAS[key] };
+    }
+  }
+  return best;
+}
+function ctModesFor(shared) {
+  if (!shared.length) return ["Minibus taxi (transfer likely)"];
+  const out = [];
+  shared.forEach(c => { const l = CT_CORRIDOR_MODE[c]; if (l && !out.includes(l)) out.push(l); });
+  return out.slice(0, 2);
+}
+// Rank branches by travel-ease from a typed area/suburb. Returns the matched
+// area (or null) and a sorted list of branches that exist in `salonNames`.
+function ctSuggestStores(text, salonNames, limit) {
+  const area = ctFindArea(text);
+  if (!area) return { area: null, results: [] };
+  const names = salonNames && salonNames.length ? salonNames : Object.keys(CT_STORE_GEO);
+  const results = names.filter(n => CT_STORE_GEO[n]).map(n => {
+    const g = CT_STORE_GEO[n];
+    const km = _ctHaversineKm(area, g);
+    const shared = (area.corridors || []).filter(c => (g.corridors || []).includes(c));
+    const shares = shared.length > 0;
+    return { name: n, region: g.region, km: Math.round(km), shares, modes: ctModesFor(shared), ease: km * (shares ? 0.72 : 1) };
+  }).sort((a, b) => a.ease - b.ease);
+  return { area, results: results.slice(0, limit || 5) };
+}
+
 function InterviewsView({ interviewList, persistInterviews, trialList, persistTrialList, staff, managers, currentUser }) {
   const canRecruit = canRecruitInterviews(currentUser);
   const canTrain = canTrainInterviews(currentUser);
   const viewerOnly = !canRecruit && !canTrain;
   const [form, setForm] = useState(null);          // null = closed; else candidate draft (+ _editId when editing)
   const [filter, setFilter] = useState("active");  // active | needsAction | today | all
+  const [suggest, setSuggest] = useState(null);    // { area, results } from the store picker, or { area:null } when not found
 
   const inp = { width: "100%", padding: "8px 11px", borderRadius: 8, border: "1px solid #FBCFE8", background: "#FCE7F3", fontFamily: "inherit", fontSize: 13, color: "#111827", boxSizing: "border-box" };
   const lbl = { display: "block", fontSize: 10, fontWeight: 700, color: "#BE185D", letterSpacing: "0.08em", marginBottom: 4, textTransform: "uppercase" };
@@ -13251,8 +13418,10 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
   };
 
   const blankForm = () => ({ firstName: "", surname: "", nationality: "South African", phone: "", email: "", area: "", branch: "", source: "indeed", interviewDate: "", interviewTime: "", _editId: null });
-  const openAdd = () => setForm(blankForm());
-  const openEdit = (r) => setForm({ firstName: r.firstName || "", surname: r.surname || "", nationality: r.nationality || "", phone: r.phone || "", email: r.email || "", area: r.area || "", branch: r.branch || "", source: r.source || "other", interviewDate: r.interviewDate || "", interviewTime: r.interviewTime || "", _editId: r._id });
+  const openAdd = () => { setSuggest(null); setForm(blankForm()); };
+  const openEdit = (r) => { setSuggest(null); setForm({ firstName: r.firstName || "", surname: r.surname || "", nationality: r.nationality || "", phone: r.phone || "", email: r.email || "", area: r.area || "", branch: r.branch || "", source: r.source || "other", interviewDate: r.interviewDate || "", interviewTime: r.interviewTime || "", _editId: r._id }); };
+  const closeForm = () => { setSuggest(null); setForm(null); };
+  const runSuggest = () => setSuggest(ctSuggestStores(form.area, SALONS.map(s => s.name), 5));
   const saveForm = () => {
     if (!form.firstName.trim() || !form.surname.trim()) { alert("First name and surname are required."); return; }
     const base = {
@@ -13267,7 +13436,7 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
     } else {
       persistInterviews([...list, { _id: Date.now(), attendance: "", outcome: "", trainerNotes: "", trainerScore: "", inductionDate: "", promotedToTrialId: null, addedAt: new Date().toISOString(), addedBy: (currentUser && currentUser.name) || "", ...base }]);
     }
-    setForm(null);
+    closeForm();
   };
 
   // Hand a passed candidate (with an induction date) to the Trial Period as an
@@ -13539,11 +13708,11 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
 
       {/* Add / edit candidate modal */}
       {form && (
-        <div onClick={() => setForm(null)} style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 100000, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", overflowY: "auto" }}>
+        <div onClick={closeForm} style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 100000, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", overflowY: "auto" }}>
           <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "22px 24px", width: "min(560px,96vw)", boxShadow: "0 20px 60px rgba(0,0,0,.25)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <div style={{ fontSize: 16, fontWeight: 800, color: "#4f46e5" }}>{form._editId ? "✏️ Edit candidate" : "➕ New interview candidate"}</div>
-              <button onClick={() => setForm(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 20 }}>✕</button>
+              <button onClick={closeForm} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 20 }}>✕</button>
             </div>
             {dup && (
               <div style={{ background: "#FEF3C7", border: "1px solid #FCD34D", borderRadius: 9, padding: "9px 12px", marginBottom: 12, fontSize: 12, color: "#78350f" }}>
@@ -13562,8 +13731,38 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
               <div><label style={lbl}>Interview date</label><input type="date" style={inp} value={form.interviewDate} onChange={e => setForm({ ...form, interviewDate: e.target.value })} /></div>
               <div><label style={lbl}>Interview time</label><input type="time" style={inp} value={form.interviewTime} onChange={e => setForm({ ...form, interviewTime: e.target.value })} /></div>
             </div>
+
+            {/* Intelligent store picker — ranks branches by travel-ease from
+                the candidate's area using approximate distance + Cape Town
+                public-transport corridors (MyCiti / Metrorail / Golden Arrow /
+                taxi). Estimates only — pick one to fill the branch. */}
+            <div style={{ marginTop: 14, background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 12, padding: "12px 14px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 12, fontWeight: 800, color: "#3730a3" }}>🧭 Easiest stores to travel to</div>
+                <button onClick={runSuggest} style={{ background: "#4f46e5", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Suggest from “{form.area || "area"}”</button>
+              </div>
+              {suggest && suggest.area === null && (
+                <div style={{ fontSize: 12, color: "#6b7280", marginTop: 8 }}>Couldn't place “{form.area}”. Try a Cape Town suburb or region (e.g. Khayelitsha, Bellville, Atlantic Seaboard).</div>
+              )}
+              {suggest && suggest.area && (
+                <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+                  {suggest.results.map((s, i) => (
+                    <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 8, background: "#fff", border: `1px solid ${form.branch === s.name ? "#4f46e5" : "#e5e7eb"}`, borderRadius: 9, padding: "7px 10px" }}>
+                      <span style={{ fontSize: 12, fontWeight: 800, color: i === 0 ? "#15803d" : "#9ca3af", minWidth: 16 }}>{i + 1}</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>📍 {s.name} <span style={{ fontSize: 10, fontWeight: 600, color: "#9ca3af" }}>· ~{s.km} km</span></div>
+                        <div style={{ fontSize: 11, color: "#4f46e5" }}>{s.modes.join(" · ")}</div>
+                      </div>
+                      <button onClick={() => setForm(f => ({ ...f, branch: s.name }))} style={{ background: form.branch === s.name ? "#4f46e5" : "#eef2ff", color: form.branch === s.name ? "#fff" : "#4f46e5", border: "none", borderRadius: 7, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>{form.branch === s.name ? "✓ Selected" : "Use"}</button>
+                    </div>
+                  ))}
+                  <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 2 }}>Estimates from straight-line distance + typical transport corridors — sense-check against the candidate's actual commute.</div>
+                </div>
+              )}
+            </div>
+
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 18 }}>
-              <button onClick={() => setForm(null)} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", cursor: "pointer", fontSize: 13 }}>Cancel</button>
+              <button onClick={closeForm} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", cursor: "pointer", fontSize: 13 }}>Cancel</button>
               <button onClick={saveForm} style={{ padding: "9px 22px", borderRadius: 9, border: "none", background: "#4f46e5", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>{form._editId ? "Save" : "Add candidate"}</button>
             </div>
           </div>
@@ -18357,8 +18556,53 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
       <div style={{ maxWidth: 1380, margin: "0 auto", padding: isMobile ? "14px 12px" : "22px 24px" }}>
 
+        {/* Recruitment sub-nav — kept at the very top so the sub-categories
+            (incl. Nail Tech Interviews) lead the page and don't get lost
+            below the vacancy stats. */}
+        {tab === "recruitment" && (() => {
+          // Manager vacancy total: sum of missing SMs (min 1/branch) + missing AMs (min 2/branch),
+          // excluding Regional managers and active maternity leave.
+          const MIN_SM = 1, MIN_AM = 2;
+          const mgrVacancies = SALONS.reduce((a, sl) => {
+            const mgrs = enrichedManagersEff.filter(m => m.branch === sl.name && !m.onMat && !m.offboarded);
+            const sms = mgrs.filter(m => (m.effectiveRole || m.role) === "SM").length;
+            const ams = mgrs.filter(m => (m.effectiveRole || m.role) === "AM").length + (activeTrialByBranch.am[sl.name] || 0);
+            return a + Math.max(0, MIN_SM - sms) + Math.max(0, MIN_AM - ams);
+          }, 0);
+          const interviewPipeline = (interviewList || []).filter(r => { const s = interviewStage(r); return s !== "failed" && s !== "to_trial"; }).length;
+          // Items awaiting someone's action — drives the red attention pip.
+          const _p2 = n => String(n).padStart(2, "0");
+          const _todayY = (d => d.getFullYear() + "-" + _p2(d.getMonth() + 1) + "-" + _p2(d.getDate()))(new Date());
+          const interviewNeedsAction = (interviewList || []).filter(r => !r.promotedToTrialId && ((r.attendance === "came" && !r.outcome) || (r.interviewDate && r.interviewDate < _todayY && !r.attendance) || (r.outcome === "passed" && !r.inductionDate))).length;
+          const counts = { nailTech: stats.vacancies, mgrRecruit: mgrVacancies, interviews: interviewPipeline };
+          const TABS = [
+            { k: "nailTech", label: "💅 Nail Tech Recruitment", accent: "#BE185D", soft: "#FCE7F3", border: "#FBCFE8", sub: "Vacancies by branch" },
+            { k: "interviews", label: "📋 Nail Tech Interviews", accent: "#4f46e5", soft: "#eef2ff", border: "#c7d2fe", sub: "Schedule, outcomes & inductions", pip: interviewNeedsAction },
+            { k: "mgrRecruit", label: "👔 Manager Recruitment", accent: "#BE185D", soft: "#FCE7F3", border: "#FBCFE8", sub: "Coverage & planner" }
+          ];
+          return (
+            <div style={{ display: "flex", gap: 10, marginBottom: 18, flexWrap: "wrap" }}>
+              {TABS.map(t => {
+                const active = recruitSubTab === t.k;
+                const n = counts[t.k];
+                return (
+                  <button key={t.k} onClick={() => setRecruitSubTab(t.k)}
+                    style={{ position: "relative", flex: "1 1 230px", minWidth: 200, textAlign: "left", padding: "14px 18px", borderRadius: 14, border: `2px solid ${active ? t.accent : t.border}`, background: active ? t.accent : t.soft, color: active ? "#FFFFFF" : t.accent, cursor: "pointer", fontFamily: "inherit", transition: "all .18s", boxShadow: active ? `0 6px 16px ${t.accent}40` : "none" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 15, fontWeight: 800, letterSpacing: "0.01em" }}>{t.label}</span>
+                      <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 24, height: 24, padding: "0 8px", borderRadius: 12, background: active ? "rgba(255,255,255,0.28)" : (n > 0 ? t.accent : "#FFFFFF"), color: active ? "#FFFFFF" : (n > 0 ? "#FFFFFF" : "#9ca3af"), fontSize: 12, fontWeight: 800, lineHeight: 1 }}>{n}</span>
+                    </div>
+                    <div style={{ fontSize: 11, marginTop: 3, opacity: active ? 0.9 : 0.7, fontWeight: 600 }}>{t.sub}</div>
+                    {!!t.pip && !active && <span style={{ position: "absolute", top: -8, right: -8, background: "#dc2626", color: "#fff", fontSize: 10, fontWeight: 800, borderRadius: 999, padding: "2px 8px", boxShadow: "0 2px 6px rgba(220,38,38,0.45)" }}>{t.pip} to action</span>}
+                  </button>
+                );
+              })}
+            </div>
+          );
+        })()}
+
         {/* STAT CARDS — only on recruitment tab (nail-tech sub-tab) */}
-        {tab === "recruitment" && recruitSubTab !== "mgrRecruit" && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(108px,1fr))", gap: 9, marginBottom: 16 }}>
+        {tab === "recruitment" && recruitSubTab === "nailTech" && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(108px,1fr))", gap: 9, marginBottom: 16 }}>
           {[
             { l: "Active Staff", v: stats.active, i: "👥", c: "#1e3a8a", bg: "#dbeafe", note: "incl. pregnant" },
             { l: "Pregnant (in store)", v: stats.pregnant, i: "🤰", c: "#92400e", bg: "#fef3c7" },
@@ -18380,7 +18624,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
 
         {/* TO HIRE PER BRANCH — only on recruitment tab (nail-tech sub-tab) */}
-        {tab === "recruitment" && recruitSubTab !== "mgrRecruit" && <>
+        {tab === "recruitment" && recruitSubTab === "nailTech" && <>
           {stats.vacancies > 0 && (
             <div style={{ background: "#FFFFFF", borderRadius: 13, border: "1px solid #E8C9D2", marginBottom: 16, overflow: "hidden" }}>
               <div style={{ background: "#BE185D", color: "#fff", padding: "10px 18px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
@@ -22137,58 +22381,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         })()}
       </div>
 
-      {/* ── RECRUITMENT TAB (parent) ── */}
+      {/* ── RECRUITMENT TAB (parent) ── (sub-nav rendered at page top) ── */}
       {tab === "recruitment" && (
         <div style={{ padding: "0 24px" }}>
-          {/* Sub-nav — card-style tabs. Nail Tech Interviews is given a
-              distinct indigo accent (vs the pink recruitment tabs) plus a red
-              "to action" pip so the recruiter's workspace stands out and isn't
-              lost between the two vacancy views. */}
-          {(() => {
-            // Manager vacancy total: sum of missing SMs (min 1/branch) + missing AMs (min 2/branch),
-            // excluding Regional managers and active maternity leave.
-            const MIN_SM = 1, MIN_AM = 2;
-            const mgrVacancies = SALONS.reduce((a, sl) => {
-              // Settle-aware: count a transferred manager at her NEW branch.
-              const mgrs = enrichedManagersEff.filter(m => m.branch === sl.name && !m.onMat && !m.offboarded);
-              const sms = mgrs.filter(m => (m.effectiveRole || m.role) === "SM").length;
-              // AM trial candidates (shown in the Locations manager box) are
-              // filling the AM gap, so count them toward the AM minimum.
-              const ams = mgrs.filter(m => (m.effectiveRole || m.role) === "AM").length + (activeTrialByBranch.am[sl.name] || 0);
-              return a + Math.max(0, MIN_SM - sms) + Math.max(0, MIN_AM - ams);
-            }, 0);
-            const interviewPipeline = (interviewList || []).filter(r => { const s = interviewStage(r); return s !== "failed" && s !== "to_trial"; }).length;
-            // Items awaiting someone's action — drives the red attention pip.
-            const _p2 = n => String(n).padStart(2, "0");
-            const _todayY = (d => d.getFullYear() + "-" + _p2(d.getMonth() + 1) + "-" + _p2(d.getDate()))(new Date());
-            const interviewNeedsAction = (interviewList || []).filter(r => !r.promotedToTrialId && ((r.attendance === "came" && !r.outcome) || (r.interviewDate && r.interviewDate < _todayY && !r.attendance) || (r.outcome === "passed" && !r.inductionDate))).length;
-            const counts = { nailTech: stats.vacancies, mgrRecruit: mgrVacancies, interviews: interviewPipeline };
-            const TABS = [
-              { k: "nailTech", label: "💅 Nail Tech Recruitment", accent: "#BE185D", soft: "#FCE7F3", border: "#FBCFE8", sub: "Vacancies by branch" },
-              { k: "interviews", label: "📋 Nail Tech Interviews", accent: "#4f46e5", soft: "#eef2ff", border: "#c7d2fe", sub: "Schedule, outcomes & inductions", pip: interviewNeedsAction },
-              { k: "mgrRecruit", label: "👔 Manager Recruitment", accent: "#BE185D", soft: "#FCE7F3", border: "#FBCFE8", sub: "Coverage & planner" }
-            ];
-            return (
-              <div style={{ display: "flex", gap: 10, marginBottom: 24, flexWrap: "wrap" }}>
-                {TABS.map(t => {
-                  const active = recruitSubTab === t.k;
-                  const n = counts[t.k];
-                  return (
-                    <button key={t.k} onClick={() => setRecruitSubTab(t.k)}
-                      style={{ position: "relative", flex: "1 1 230px", minWidth: 200, textAlign: "left", padding: "14px 18px", borderRadius: 14, border: `2px solid ${active ? t.accent : t.border}`, background: active ? t.accent : t.soft, color: active ? "#FFFFFF" : t.accent, cursor: "pointer", fontFamily: "inherit", transition: "all .18s", boxShadow: active ? `0 6px 16px ${t.accent}40` : "none" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 15, fontWeight: 800, letterSpacing: "0.01em" }}>{t.label}</span>
-                        <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 24, height: 24, padding: "0 8px", borderRadius: 12, background: active ? "rgba(255,255,255,0.28)" : (n > 0 ? t.accent : "#FFFFFF"), color: active ? "#FFFFFF" : (n > 0 ? "#FFFFFF" : "#9ca3af"), fontSize: 12, fontWeight: 800, lineHeight: 1 }}>{n}</span>
-                      </div>
-                      <div style={{ fontSize: 11, marginTop: 3, opacity: active ? 0.9 : 0.7, fontWeight: 600 }}>{t.sub}</div>
-                      {!!t.pip && !active && <span style={{ position: "absolute", top: -8, right: -8, background: "#dc2626", color: "#fff", fontSize: 10, fontWeight: 800, borderRadius: 999, padding: "2px 8px", boxShadow: "0 2px 6px rgba(220,38,38,0.45)" }}>{t.pip} to action</span>}
-                    </button>
-                  );
-                })}
-              </div>
-            );
-          })()}
-
           {recruitSubTab === "nailTech" && (<>
             {/* Summary header */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10, marginBottom: 20 }}>
