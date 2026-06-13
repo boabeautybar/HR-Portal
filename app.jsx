@@ -13183,7 +13183,7 @@ function StoreReportsTab({ extraDayRequests, managers }) {
 // interviews; the nail-tech trainer marks attendance + pass/fail; the recruiter
 // books an induction date which hands the candidate to the Trial Period
 // (induction stage). Lives under Recruitment → Interviews.
-const INTERVIEW_SOURCES = { referral: "Referral", agency: "Agency", walk_in: "Walk-in", boa_pathways: "BOA Pathways", other: "Other" };
+const INTERVIEW_SOURCES = { indeed: "Indeed", linkedin: "LinkedIn", social_media: "Social Media", referral: "Referral", agency: "Agency", walk_in: "Walk In", other: "Other" };
 const INTERVIEW_STAGE = {
   new:              { label: "Draft",                  bg: "#f3f4f6", color: "#374151" },
   scheduled:        { label: "Interview booked",       bg: "#dbeafe", color: "#1e40af" },
@@ -13250,7 +13250,7 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
     return null;
   };
 
-  const blankForm = () => ({ firstName: "", surname: "", nationality: "South African", phone: "", email: "", area: "", branch: SALONS[0]?.name || "", source: "boa_pathways", interviewDate: "", interviewTime: "", _editId: null });
+  const blankForm = () => ({ firstName: "", surname: "", nationality: "South African", phone: "", email: "", area: "", branch: SALONS[0]?.name || "", source: "indeed", interviewDate: "", interviewTime: "", _editId: null });
   const openAdd = () => setForm(blankForm());
   const openEdit = (r) => setForm({ firstName: r.firstName || "", surname: r.surname || "", nationality: r.nationality || "", phone: r.phone || "", email: r.email || "", area: r.area || "", branch: r.branch || SALONS[0]?.name || "", source: r.source || "other", interviewDate: r.interviewDate || "", interviewTime: r.interviewTime || "", _editId: r._id });
   const saveForm = () => {
@@ -13283,7 +13283,7 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
       trainerName: "", inductionPassDate: "", branch: r.branch || SALONS[0]?.name || "",
       startDate: r.inductionDate,
       notes: "From interview" + (r.interviewDate ? " on " + fmtDay(r.interviewDate) : "") + (r.nationality ? " · " + r.nationality : ""),
-      boaPathways: r.source === "boa_pathways",
+      boaPathways: false,
       role: "nt", status: "induction",
       addedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), fromInterviewId: r._id
     };
@@ -13396,7 +13396,7 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
                 <div key={r._id} style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 14, padding: "14px 16px" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 8 }}>
                     <div>
-                      <div style={{ fontSize: 15, fontWeight: 700, color: "#111827" }}>{fullName}{r.source === "boa_pathways" && <span title="BOA Pathways graduate" style={{ marginLeft: 6, fontSize: 13 }}>🎓</span>}</div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: "#111827" }}>{fullName}</div>
                       <div style={{ fontSize: 11, color: "#6b7280", marginTop: 1 }}>
                         {r.nationality || "—"}{r.area ? " · 📍 " + r.area : ""}
                       </div>
