@@ -3709,6 +3709,24 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     });
     return set;
   }, [leaveRecs]);
+  // ALL Leave-Planner days (annual + emergency), trimmed-ec|ymd. Drives a live
+  // display overlay so leave shows on the schedule the moment it's in the planner
+  // — even if the saved grid wasn't re-stamped yet (the auto-stamp effect only
+  // fires while THIS branch/cycle is open, so a tech's freshly-approved leave
+  // could otherwise read blank/working until someone re-opened their schedule).
+  const plannerLeaveSet = useMemo(() => {
+    const set = new Set();
+    (leaveRecs || []).forEach(lv => {
+      if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return;
+      const sd = new Date(lv.startDate + "T00:00:00"), ed = new Date(lv.endDate + "T00:00:00");
+      if (isNaN(sd.getTime()) || isNaN(ed.getTime())) return;
+      for (let cur = new Date(sd); cur <= ed; cur.setDate(cur.getDate() + 1)) {
+        const ymd = cur.getFullYear() + "-" + String(cur.getMonth() + 1).padStart(2, "0") + "-" + String(cur.getDate()).padStart(2, "0");
+        set.add(String(lv.ec).trim() + "|" + ymd);
+      }
+    });
+    return set;
+  }, [leaveRecs]);
 
   const cycle = ["W", "WE", "WL", "O", "R", "L", "E", "X", "trial", ""];
   const cellStyle = (z) => {
@@ -6773,7 +6791,16 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         <div style={{ fontSize: 10, color: "#9CA3AF", marginTop: 1, letterSpacing: "0.04em" }}>{s.ec}</div>
                       </td>
                       {days.map(d => {
-                        const v = (grid[s.ec] || {})[d.d] || "";
+                        const dYmd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
+                        let v = (grid[s.ec] || {})[d.d] || "";
+                        // Live Leave-Planner overlay — a planner leave day reads as
+                        // "L" even when the saved grid wasn't (re)stamped yet, so
+                        // leave added after the schedule was generated still shows.
+                        // A scheduled OFF / ghost / maternity day inside the window
+                        // stays as-is (matches the auto-stamp + attendance — you
+                        // don't take leave on a day off).
+                        if (v !== "O" && v !== "R" && v !== "X" && v !== "ML" && v !== "L"
+                            && plannerLeaveSet.has(String(s.ec).trim() + "|" + dYmd)) v = "L";
                         const weekEnd = d.dow === 0;
                         const requested = requestedSet.has(s.ec + "|" + d.d);
                         const requestUnapplied = requested && v !== "R" && v !== "O";
@@ -6783,7 +6810,6 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         // set, the post-departure days visibly disappear from
                         // the schedule without waiting for an auto-fill or
                         // sync pass to stamp X.
-                        const dYmd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
                         // Emergency (unpaid) leave: the grid stores a generic "L"
                         // for all leave, so flag days inside an emergency Leave
                         // Planner record to paint them orange "EL" (vs grey "L").

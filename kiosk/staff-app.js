@@ -779,9 +779,11 @@
       } catch (_apErr) { /* fallback only — never block the live view */ }
     }
     // Leave-Planner overlay: ec → { ymd: true } for every covered leave day
-    // (same construction as the portal's coverage view).
+    // (same construction as the portal's coverage view). Applies to nail techs
+    // AND managers — it used to be managers-only, so a nail tech with approved
+    // Leave Planner leave never showed as "L" on the kiosk schedule.
     var leaveByEcYmd = {};
-    if (isMgr && window.APP_DATA.listLeaveRecords) {
+    if (window.APP_DATA.listLeaveRecords) {
       try {
         var _lvs = (await window.APP_DATA.listLeaveRecords()) || [];
         _lvs.forEach(function (lv) {
@@ -832,7 +834,7 @@
     // Re-derived split-shift manager labels (WE/WM/WL/WB) so the kiosk shows the
     // SAME shift Manager Coverage / myboa show, instead of the raw saved "W".
     // null for non-split stores (and tech view) → callers keep the raw cell.
-    var _mgrLabelGrid = isMgr ? buildMgrLabelGrid(thisBranch, grid, approvedGrid, days, staff) : null;
+    var _mgrLabelGrid = isMgr ? buildMgrLabelGrid(thisBranch, grid, approvedGrid, days, staff, leaveByEcYmd) : null;
     var monthAbbr = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
     var _pad2 = function (n) { return String(n).padStart(2, "0"); };
     var _ymdOf = function (d) { return d.year + "-" + _pad2(d.monthIdx + 1) + "-" + _pad2(d.day); };
@@ -938,10 +940,14 @@
         var cell = false;
         if (!blanked) {
           var _ecT = String(s.employee_code || "").trim();
-          if (leaveByEcYmd[_ecT] && leaveByEcYmd[_ecT][_ymd]) cell = "L";
-          else {
-            var _raw = (grid[s.employee_code] && grid[s.employee_code][d.day])
-                    || (approvedGrid[s.employee_code] && approvedGrid[s.employee_code][d.day]);
+          var _raw = (grid[s.employee_code] && grid[s.employee_code][d.day])
+                  || (approvedGrid[s.employee_code] && approvedGrid[s.employee_code][d.day]);
+          // Leave-Planner overlay wins for a working/blank day, but a scheduled
+          // OFF / ghost day inside the leave window stays as-is (matches the
+          // portal schedule + attendance — you don't "take leave" on a day off).
+          if (leaveByEcYmd[_ecT] && leaveByEcYmd[_ecT][_ymd] && _raw !== "O" && _raw !== "R" && _raw !== "X") {
+            cell = "L";
+          } else {
             // Prefer the re-derived split-shift label for a WORKING cell so the
             // kiosk matches Manager Coverage — EXCEPT on days with a custom-hours
             // override, where Coverage keeps the raw saved code. Off / loan / etc.
@@ -3376,7 +3382,7 @@
   // a split-shift store, seeded from the live grid (approved-snapshot fallback),
   // keyed by day-of-month to match the kiosk's collapsed grid + render. Returns
   // null for non-split stores so callers keep the raw cell.
-  function buildMgrLabelGrid(branch, grid, approvedGrid, days, staffList) {
+  function buildMgrLabelGrid(branch, grid, approvedGrid, days, staffList, leaveByEcYmd) {
     if (!SPLIT_SHIFT_STORES[branch]) return null;
     var roleByNorm = {};
     (staffList || []).forEach(function (s) {
@@ -3390,10 +3396,20 @@
     Object.keys(grid || {}).forEach(function (ec) {
       mgrs.push({ ec: ec, role: roleByNorm[_mgrCodeNorm(ec)] || "" });
       out[ec] = {};
+      var _ect = String(ec).trim();
       (days || []).forEach(function (d) {
         var raw = (grid[ec] && grid[ec][d.day]) ||
                   (approvedGrid && approvedGrid[ec] && approvedGrid[ec][d.day]) || "";
-        out[ec][d.day] = String(raw).toUpperCase();
+        var up = String(raw).toUpperCase();
+        // A manager on Leave-Planner leave is OFF that day, so seed "L" — this
+        // keeps them OUT of the day's working lineup (matches the portal, which
+        // derives labels from readWithFallback where leave reads as "L"), so the
+        // remaining managers get the correct opener/late labels.
+        if (leaveByEcYmd && leaveByEcYmd[_ect]) {
+          var ymd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.day).padStart(2, "0");
+          if (leaveByEcYmd[_ect][ymd] && up !== "O" && up !== "R" && up !== "X") up = "L";
+        }
+        out[ec][d.day] = up;
       });
     });
     applyBranchShiftRules(out, dates, mgrs, branch);
