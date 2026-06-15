@@ -877,6 +877,32 @@ function matCycleWindow(person, cycleStartYmd, cycleEndYmd) {
   return { full: false, fromYmd: ms, untilYmd: null };                             // mid-cycle start
 }
 
+// Unpaid legal-status leave window for one cycle — parallels matCycleWindow.
+// A tech/manager whose Compliance "Unpaid Leave (Legal)" record (status
+// on_leave) covers these dates is kept OFF the roster and rendered as unpaid
+// emergency leave (EL), exactly like maternity. The record arrives through
+// enriched as person.unpaidLegalRec; start/end may be null (open-ended → the
+// whole cycle). untilYmd is EXCLUSIVE (the first day back), matching
+// matCycleWindow so the render's cell test can be shared.
+function legalLeaveWindow(person, cycleStartYmd, cycleEndYmd) {
+  const rec = person && person.unpaidLegalRec;
+  if (!rec) return { full: false, fromYmd: null, untilYmd: null };
+  const start = rec.startDate || null;
+  const end = rec.endDate || null;
+  if (end && end < cycleStartYmd) return { full: false, fromYmd: null, untilYmd: null };          // ended before this cycle
+  if (start && cycleEndYmd && start > cycleEndYmd) return { full: false, fromYmd: null, untilYmd: null }; // starts a later cycle
+  const startsBefore = !start || start <= cycleStartYmd;
+  const endsAfter = !end || (cycleEndYmd && end >= cycleEndYmd);
+  if (startsBefore && endsAfter) return { full: true, fromYmd: cycleStartYmd, untilYmd: null };   // whole cycle
+  const fromYmd = startsBefore ? cycleStartYmd : start;
+  let untilYmd = null;
+  if (!endsAfter && end) {
+    const d = new Date(end + "T00:00:00"); d.setDate(d.getDate() + 1);            // exclusive: first day back
+    untilYmd = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
+  return { full: false, fromYmd, untilYmd };
+}
+
 // ─── MANAGER SCHEDULE GENERATOR (mgrSched) ────────────────────────────────────────
 // Ported 1:1 from the old HR portal HTML (function originally on line 842).
 // Generates a per-manager × per-day grid for one branch over a single 25th→24th
@@ -3766,12 +3792,20 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     const _cycEndYmd = days.length ? days[days.length - 1].year + "-" + String(days[days.length - 1].monthIdx + 1).padStart(2, "0") + "-" + String(days[days.length - 1].d).padStart(2, "0") : "";
     const matWin = {};
     techs.forEach(t => { matWin[t.ec] = matCycleWindow(t, _cycStartYmd, _cycEndYmd); });
-    // Active techs = everyone not on maternity for the full cycle (a mid-cycle
-    // mat tech is active here so they get real days before their start date).
-    const allActive = [...techs].filter(t => !matWin[t.ec].full);
+    // Unpaid legal-status leave windows — handled exactly like maternity:
+    // a tech on legal leave for the whole cycle is kept off the roster, and a
+    // mid-cycle window is overlaid as leave on its days. Maternity wins when
+    // someone is on both.
+    const legalWin = {};
+    techs.forEach(t => { legalWin[t.ec] = matWin[t.ec].full ? { full: false, fromYmd: null, untilYmd: null } : legalLeaveWindow(t, _cycStartYmd, _cycEndYmd); });
+    // Active techs = everyone not on maternity OR legal leave for the full cycle
+    // (a mid-cycle mat/legal tech is active here so they get real days before
+    // their window starts).
+    const allActive = [...techs].filter(t => !matWin[t.ec].full && !legalWin[t.ec].full);
     const sortedTechs = allActive
       .sort((a, b) => (a.ec || "").localeCompare(b.ec || ""));
     const onMatTechs = techs.filter(t => matWin[t.ec].full);
+    const onLegalTechs = techs.filter(t => !matWin[t.ec].full && legalWin[t.ec].full);
     const totalStaff = sortedTechs.length;
     const sundayGroup = {};
     sortedTechs.forEach((s, i) => { sundayGroup[s.ec] = (i % 2 === 0) ? "A" : "B"; });
@@ -4194,6 +4228,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     const techByEc = {};
     sortedTechs.forEach(t => { techByEc[t.ec] = t; });
     onMatTechs.forEach(t => { techByEc[t.ec] = t; });
+    onLegalTechs.forEach(t => { techByEc[t.ec] = t; });
     const dayToWeekIdx = new Map();
     weeks.forEach((wk, wIdx) => wk.forEach(d => dayToWeekIdx.set(d.d, wIdx)));
     const _logUnhonoured = (req, reason) => {
@@ -4953,6 +4988,13 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
       newGrid[t.ec] = newGrid[t.ec] || {};
       days.forEach(d => { newGrid[t.ec][d.d] = "L"; });
     });
+    // Full-cycle legal-leave staff: same treatment — every day Leave. The cell
+    // render overlays these as unpaid emergency leave (EL); maternity already
+    // claimed anyone on both, so there's no overlap here.
+    onLegalTechs.forEach(t => {
+      newGrid[t.ec] = newGrid[t.ec] || {};
+      days.forEach(d => { newGrid[t.ec][d.d] = "L"; });
+    });
 
     // Annual-leave stamping — for any tech who is still employed (active
     // row in the grid) and has a leave record on the calendar that
@@ -5085,6 +5127,18 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
       days.forEach(d => {
         const dy = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
         if (dy >= w.fromYmd && (!w.untilYmd || dy < w.untilYmd)) newGrid[t.ec][d.d] = "ML";
+      });
+    });
+    // Mid-cycle legal-leave overlay — same idea, stamping plain 'L' (the cell
+    // render paints it as unpaid emergency leave). Maternity already owns any
+    // overlapping day (its overlay ran just above and we skip ML cells here).
+    techs.forEach(t => {
+      const w = legalWin[t.ec];
+      if (!w || w.full || !w.fromYmd) return;
+      newGrid[t.ec] = newGrid[t.ec] || {};
+      days.forEach(d => {
+        const dy = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
+        if (dy >= w.fromYmd && (!w.untilYmd || dy < w.untilYmd) && newGrid[t.ec][d.d] !== "ML") newGrid[t.ec][d.d] = "L";
       });
     });
 
@@ -6676,16 +6730,23 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                   // Returner: ML only up to the return date (exclusive); real
                   // shifts show from the return date onward.
                   const matUntilYmd = _matWin.untilYmd;
+                  // Unpaid legal-status leave window — same shape as maternity.
+                  // Maternity wins when someone is on both (matWin checked first).
+                  const _legalWin = fullMat ? { full: false, fromYmd: null, untilYmd: null } : legalLeaveWindow(s, _cycStartYmd, _cycEndYmd);
+                  const fullLegal = _legalWin.full;
+                  const legalFromYmd = _legalWin.fromYmd;
+                  const legalUntilYmd = _legalWin.untilYmd;
                   // Off-boarding visibility: row is greyed-out for the
                   // entire cycle they leave in. Cells on/before leftDate
                   // remain editable (real schedule for the days worked);
                   // cells after leftDate are stamped X by PHASE 18 / sync.
                   const isLeaving = !!s.leftDate;
-                  // Only a FULL-cycle maternity greys the whole row; a mid-cycle
-                  // start keeps the row readable so the worked days show.
-                  const rowOpacity = fullMat ? 0.55 : (isLeaving ? 0.7 : 1);
-                  const nameBg = fullMat ? "#f3f4f6" : (isLeaving ? "#f9fafb" : "#fff");
-                  const nameColor = fullMat ? "#6b7280" : (isLeaving ? "#6b7280" : "#831843");
+                  // Only a FULL-cycle maternity / legal leave greys the whole
+                  // row; a mid-cycle start keeps the row readable so the worked
+                  // days show.
+                  const rowOpacity = (fullMat || fullLegal) ? 0.55 : (isLeaving ? 0.7 : 1);
+                  const nameBg = (fullMat || fullLegal) ? "#f3f4f6" : (isLeaving ? "#f9fafb" : "#fff");
+                  const nameColor = (fullMat || fullLegal) ? "#6b7280" : (isLeaving ? "#6b7280" : "#831843");
                   return (
                     <tr key={s.ec} style={{ opacity: rowOpacity }}>
                       <td style={{ position: "sticky", left: 0, background: nameBg, padding: "6px 10px", borderBottom: "1px solid #FCE7F3", color: nameColor, fontWeight: 600, fontSize: 12, zIndex: 1 }}>
@@ -6702,6 +6763,8 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                           {fullMat && <span style={{ background: "#e5e7eb", color: "#374151", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>🤱 ON MAT</span>}
                           {!fullMat && matFromYmd && <span style={{ background: "#ede9fe", color: "#6b21a8", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>🤱 {matUntilYmd ? "BACK " + new Date(matUntilYmd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : "ML FROM " + new Date(matFromYmd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}</span>}
                           {!fullMat && isLeaving && <span style={{ background: "#fee2e2", color: "#991b1b", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>👋 LEFT {s.leftDate}</span>}
+                          {fullLegal && <span style={{ background: "#ffedd5", color: "#9a3412", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>⏸ LEGAL UNPAID</span>}
+                          {!fullLegal && legalFromYmd && <span style={{ background: "#ffedd5", color: "#9a3412", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>⏸ {legalUntilYmd ? "BACK " + new Date(legalUntilYmd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : "EL FROM " + new Date(legalFromYmd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}</span>}
                           {/* Transfer chips — surface mid-month moves so the
                             manager sees the cross-over at a glance. */}
                           {s.isShadow && s.transferFrom && <span style={{ background: "#dbeafe", color: "#1e40af", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>🔄 FROM {s.transferFrom}{s.transferDate ? " · " + new Date(s.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
@@ -6737,6 +6800,10 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         // means only days on/after it — days before stay the
                         // real worked shift.
                         const cellMat = fullMat || (!!matFromYmd && dYmd >= matFromYmd && (!matUntilYmd || dYmd < matUntilYmd));
+                        // Legal-leave cell: orange 'EL' (unpaid emergency leave)
+                        // across the covered window. Maternity wins, so this
+                        // never fires on a maternity cell.
+                        const cellLegal = !cellMat && (fullLegal || (!!legalFromYmd && dYmd >= legalFromYmd && (!legalUntilYmd || dYmd < legalUntilYmd)));
                         // Transfer-edge: for a mid-month branch move, cells
                         // on the wrong side of transferDate render as locked,
                         // greyed placeholders showing where they're moving
@@ -6753,13 +6820,13 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         const transferOtherBranch = transferEdge === "in" ? (s.transferFrom || "")
                           : transferEdge === "out" ? (s.transferTo || "")
                             : null;
-                        const cellLocked = cellMat || isPastLeft || isPreStart || !!transferEdge;
+                        const cellLocked = cellMat || cellLegal || isPastLeft || isPreStart || !!transferEdge;
                         // Cross-store loan: if this tech has a same-day loan FROM
                         // this branch, the cell is tinted teal and shows the
                         // destination store (e.g. Betty's first-Sunday Bree/GP
                         // split, or any manually-logged movement).
                         const _outgoingLoan = (techLoans || []).find(l => l && l.ec === s.ec && l.date === dYmd && l.fromBranch === branch);
-                        const _loanCell = _outgoingLoan && !cellMat && !isPastLeft
+                        const _loanCell = _outgoingLoan && !cellMat && !cellLegal && !isPastLeft
                           ? (_outgoingLoan.toBranch === "Bree" ? { background: "#cffafe", color: "#155e75" }
                             : _outgoingLoan.toBranch === "Green Point" ? { background: "#fce7f3", color: "#9d174d" }
                               : { background: "#e0e7ff", color: "#3730a3" })
@@ -6767,6 +6834,8 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         // Maternity leave cells: distinct lavender tint so
                         // ML reads differently from a regular L (annual
                         // leave) and from a post-departure ghost cell.
+                        // Legal-leave + emergency-leave cells share the orange
+                        // unpaid-leave tint (EL).
                         const matCell = cellMat
                           ? { background: "#ede9fe", color: "#6b21a8" }
                           : (isPastLeft || isPreStart)
@@ -6775,7 +6844,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                               ? { background: "#fef3c7", color: "#92400e" }   // amber — moving out
                               : transferEdge === "in"
                                 ? { background: "#dbeafe", color: "#1e40af" }   // blue — coming in
-                                : _loanCell || (isEmergLeave ? { background: "#fed7aa", color: "#9a3412", fontWeight: 700 } : cellStyle(v));
+                                : _loanCell || ((isEmergLeave || cellLegal) ? { background: "#fed7aa", color: "#9a3412", fontWeight: 700 } : cellStyle(v));
                         // Drag-drop visual states
                         const isSrc = dragSource && dragSource.ec === s.ec && dragSource.day === d.d;
                         const isValidDrop = !cellLocked && isValidDropTarget(s.ec, d.d);
@@ -6786,6 +6855,8 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         const dragCursor = cellLocked ? "default" : (v ? "grab" : "pointer");
                         const cellTitle = cellMat
                           ? `${s.name} · on maternity leave${matFromYmd && !fullMat ? " (from " + matFromYmd + ")" : ""}`
+                          : cellLegal
+                          ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · unpaid legal leave (shown as Emergency / unpaid)`
                           : isPreStart
                             ? `${s.name} · starts ${s.startDate} — not on the schedule until then`
                             : isPastLeft
@@ -6810,6 +6881,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                             title={cellTitle}
                             style={{ ...matCell, padding: 0, height: 30, textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", borderRight: weekEnd ? "3px solid #BE185D" : "none", cursor: dragCursor, fontSize: 11, fontWeight: 700, userSelect: "none", outline: dropOutline, outlineOffset: -1, opacity: isSrc ? 0.4 : undefined, position: "relative" }}>
                             {cellMat ? "ML"
+                              : cellLegal ? "EL"
                               : (isPastLeft || isPreStart) ? "—"
                                 : transferEdge === "out" ? (
                                   <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: "0.04em" }}>
@@ -6833,8 +6905,8 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                           </td>
                         );
                       })}
-                      <td style={{ padding: "6px 8px", borderLeft: "2px solid #FBCFE8", borderBottom: "1px solid #FCE7F3", textAlign: "center", color: fullMat ? "#9ca3af" : "#15803d", fontSize: 11, fontWeight: 700 }}>{fullMat ? "—" : counts.w}</td>
-                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #FCE7F3", textAlign: "center", color: fullMat ? "#9ca3af" : "#991b1b", fontSize: 11, fontWeight: 700 }}>{fullMat ? "—" : counts.off}</td>
+                      <td style={{ padding: "6px 8px", borderLeft: "2px solid #FBCFE8", borderBottom: "1px solid #FCE7F3", textAlign: "center", color: (fullMat || fullLegal) ? "#9ca3af" : "#15803d", fontSize: 11, fontWeight: 700 }}>{(fullMat || fullLegal) ? "—" : counts.w}</td>
+                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #FCE7F3", textAlign: "center", color: (fullMat || fullLegal) ? "#9ca3af" : "#991b1b", fontSize: 11, fontWeight: 700 }}>{(fullMat || fullLegal) ? "—" : counts.off}</td>
                     </tr>
                   );
                 })}
