@@ -27064,7 +27064,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             else if (v === "sick_n") t.sickNote++;
             else if (v === "frl") t.frl++;
             else if (v === "ph") t.ph++;        // explicit PH always counts
-            else if (v === "mat") { t.mat++; t.unpaid++; }
+            else if (v === "mat") { t.mat++; }   // unpaid deduction computed run-based below (off days excluded)
             else if (v === "no") { t.unpaid++; t.noShow++; }   // no-show → unpaid AND forfeits the attendance bonus
             else if (v === "unpaid" || v === "absent") t.unpaid++;
             // EXT counts only extra days ACTUALLY worked. An approved extra
@@ -27079,7 +27079,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             else if (v === "off") t.off++;
             else if (v === "swap_i") { t.worked++; if (dy.ymd <= _extraTodayYmd) t.workedFull++; if (phOk) t.ph++; }
             else if (v === "swap_o") t.off++;
-            else if (v === "term") { t.term++; t.unpaid++; }
+            else if (v === "term") { t.term++; }   // unpaid deduction computed run-based below (off days excluded)
             // Pending loan-out placeholder: counts as worked for home-
             // branch payroll. Once the receiving branch records a status
             // the cell mirrors it and falls through one of the branches
@@ -27145,6 +27145,42 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               else flushAlRun();
             }
             flushAlRun();
+          }
+          // Maternity & terminated stretches are deducted as UNPAID — but only
+          // for days the person was actually rostered to WORK. The grid stamps
+          // EVERY calendar day of these stretches (incl. weekly off days) as
+          // mat/term, so counting each cell as unpaid over-deducts by the rest
+          // days. Mirror the annual-leave rule above: read real off days (O/R)
+          // and real working shifts from the schedule where it survived, and
+          // fall back to the ~2-off-days-per-7-day estimate for the unknown
+          // remainder (e.g. a terminated future stretch the roster never
+          // covered, or a maternity row with no surviving offs). Each
+          // contiguous run is its own span so short stretches deduct nothing
+          // for off days (estimateOffDays returns 0 for runs of ≤5 days).
+          {
+            const unpaidWorkDaysFor = (code) => {
+              let run = 0, work = 0, off = 0, total = 0;
+              const flush = () => {
+                if (run > 0) {
+                  const unknown = run - work - off;
+                  total += work + Math.max(0, unknown - estimateOffDays(unknown, 2));
+                }
+                run = 0; work = 0; off = 0;
+              };
+              for (const dy of days) {
+                if (getStatus(ec, dy.d) === code) {
+                  run++;
+                  const sv = attSched[ec] && attSched[ec][dy.d];
+                  if (sv === "O" || sv === "R") off++;                              // rostered off — never unpaid
+                  else if (sv && sv !== "L" && sv !== "ML" && sv !== "X") work++;   // real working shift — unpaid
+                  // L / ML / X / blank → unknown; estimated off-days applied on flush
+                } else flush();
+              }
+              flush();
+              return total;
+            };
+            t.unpaid += unpaidWorkDaysFor("mat");
+            t.unpaid += unpaidWorkDaysFor("term");
           }
           // Convert deductions to days. Short hours from the kiosk's
           // "Left work early" use 8h/day per business rule (4h = 0.5 day);
