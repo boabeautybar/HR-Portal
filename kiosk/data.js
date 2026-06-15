@@ -1307,7 +1307,14 @@
       var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(k);
       if (m) {
         if (k < cycStart || k > cycEnd) return;        // stray date from another cycle — ignore
-        conv[parseInt(m[3], 10)] = row2[k];
+        // Mirror the HR portal Manager Coverage readCell (row[ymd] || row[dom]):
+        // an in-cycle full-date key only wins when it actually holds a value. An
+        // EMPTY full-date cell must NOT shadow a real bare day-number code —
+        // otherwise the kiosk falls through to the stale approved snapshot and
+        // shows the wrong shift (e.g. W instead of WL, or WE instead of WL).
+        var _val = row2[k];
+        if (_val === "" || _val == null) return;
+        conv[parseInt(m[3], 10)] = _val;
         fromYmd[parseInt(m[3], 10)] = true;
       } else {
         var dn = parseInt(k, 10);
