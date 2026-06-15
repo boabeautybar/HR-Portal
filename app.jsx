@@ -13424,7 +13424,42 @@ const CT_AREAS = {
   "gordons bay": { lat: -34.1620, lng: 18.8700, corridors: ["winelands"] },
   "macassar": { lat: -34.0680, lng: 18.7600, corridors: ["winelands", "central_line"] },
   "paarl": { lat: -33.7340, lng: 18.9620, corridors: ["winelands", "northern_line"] },
-  "stellenbosch": { lat: -33.9320, lng: 18.8600, corridors: ["winelands", "northern_line"] }
+  "stellenbosch": { lat: -33.9320, lng: 18.8600, corridors: ["winelands", "northern_line"] },
+  // Cape Flats / townships + further areas — common candidate home areas that
+  // were previously unrecognised (e.g. Crossroads), so the picker couldn't rank.
+  "crossroads": { lat: -33.9850, lng: 18.5750, corridors: ["central_line"] },
+  "new crossroads": { lat: -33.9880, lng: 18.5800, corridors: ["central_line"] },
+  "browns farm": { lat: -34.0050, lng: 18.5800, corridors: ["central_line"] },
+  "samora machel": { lat: -34.0150, lng: 18.5650, corridors: ["central_line"] },
+  "weltevreden valley": { lat: -34.0250, lng: 18.6000, corridors: ["central_line"] },
+  "bonteheuwel": { lat: -33.9460, lng: 18.5470, corridors: ["central_line"] },
+  "heideveld": { lat: -33.9700, lng: 18.5450, corridors: ["central_line"] },
+  "bridgetown": { lat: -33.9550, lng: 18.5250, corridors: ["central_line"] },
+  "kewtown": { lat: -33.9600, lng: 18.5200, corridors: ["central_line"] },
+  "valhalla park": { lat: -33.9300, lng: 18.5650, corridors: ["central_line", "northern_line"] },
+  "bishop lavis": { lat: -33.9400, lng: 18.5800, corridors: ["central_line", "northern_line"] },
+  "matroosfontein": { lat: -33.9250, lng: 18.5750, corridors: ["northern_line", "central_line"] },
+  "elsies river": { lat: -33.9230, lng: 18.5560, corridors: ["northern_line"] },
+  "ravensmead": { lat: -33.9050, lng: 18.6050, corridors: ["northern_line"] },
+  "uitsig": { lat: -33.9100, lng: 18.6100, corridors: ["northern_line"] },
+  "belhar": { lat: -33.9430, lng: 18.6320, corridors: ["northern_line"] },
+  "bellville south": { lat: -33.9180, lng: 18.6320, corridors: ["northern_line"] },
+  "kensington": { lat: -33.9080, lng: 18.5230, corridors: ["northern_line", "central_line"] },
+  "factreton": { lat: -33.9050, lng: 18.5180, corridors: ["northern_line", "central_line"] },
+  "maitland": { lat: -33.9230, lng: 18.4980, corridors: ["central_line", "northern_line"] },
+  "brooklyn": { lat: -33.9000, lng: 18.4870, corridors: ["westcoast", "northern_line"] },
+  "lavender hill": { lat: -34.0830, lng: 18.4830, corridors: ["southern_line"] },
+  "vrygrond": { lat: -34.0900, lng: 18.4760, corridors: ["southern_line"] },
+  "seawinds": { lat: -34.0850, lng: 18.4800, corridors: ["southern_line"] },
+  "pelican park": { lat: -34.0620, lng: 18.5260, corridors: ["central_line", "southern_line"] },
+  "strandfontein": { lat: -34.0850, lng: 18.5550, corridors: ["central_line"] },
+  "eerste river": { lat: -34.0150, lng: 18.7150, corridors: ["central_line", "northern_line"] },
+  "kraaifontein": { lat: -33.8470, lng: 18.7180, corridors: ["northern_line"] },
+  "wallacedene": { lat: -33.8350, lng: 18.7150, corridors: ["northern_line"] },
+  "bloekombos": { lat: -33.8300, lng: 18.7200, corridors: ["northern_line"] },
+  "scottsdene": { lat: -33.8400, lng: 18.7250, corridors: ["northern_line"] },
+  "firgrove": { lat: -34.0500, lng: 18.7900, corridors: ["winelands"] },
+  "sir lowrys pass": { lat: -34.1300, lng: 18.9050, corridors: ["winelands"] }
 };
 const CT_CORRIDOR_MODE = {
   atlantic: "MyCiti bus", westcoast: "MyCiti bus",
@@ -13498,6 +13533,24 @@ function ctSuggestStores(text, salonNames, limit) {
     return { name: n, region: g.region, km: Math.round(km), shares, modes: ctModesFor(shared), ease, rating: ctCommuteRating(ease) };
   }).sort((a, b) => a.ease - b.ease);
   return { area, results: limit ? results.slice(0, limit) : results };
+}
+
+// Google Maps deep links (no API key needed). They open in the recruiter's
+// browser, where Google geocodes the candidate's EXACT typed address and shows
+// the REAL travel distance/time — defaulted to public transport (transit) so it
+// reflects the minibus-taxi / MyCiTi commute the candidate would actually make.
+function ctMapsSearchUrl(address) {
+  return "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(String(address || "").trim());
+}
+function ctMapsDirectionsUrl(address, storeName) {
+  const g = ctGeoForStore(storeName);
+  // Destination as exact store coordinates when known (reliable point), else a
+  // text query for the salon. Origin is the candidate's typed address — Google
+  // resolves the precise location on open.
+  const dest = g ? (g.lat + "," + g.lng) : ("Boa Beauty Bar " + storeName + ", Cape Town");
+  return "https://www.google.com/maps/dir/?api=1&travelmode=transit"
+    + "&origin=" + encodeURIComponent(String(address || "").trim())
+    + "&destination=" + encodeURIComponent(dest);
 }
 
 function InterviewsView({ interviewList, persistInterviews, trialList, persistTrialList, staff, managers, currentUser }) {
@@ -13864,8 +13917,21 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
                 <div style={{ fontSize: 12, fontWeight: 800, color: "#3730a3" }}>🧭 Easiest stores to travel to</div>
                 <button onClick={runSuggest} style={{ background: "#4f46e5", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Rank from "{form.area || "area"}"</button>
               </div>
+              {form.area && form.area.trim() && (
+                <div style={{ marginTop: 8, fontSize: 12 }}>
+                  <a href={ctMapsSearchUrl(form.area)} target="_blank" rel="noopener noreferrer" style={{ fontWeight: 700, color: "#4f46e5", textDecoration: "none" }}>📍 View their address on Google Maps</a>
+                  <span style={{ color: "#9ca3af" }}> · use “🚌 Directions” per store for the real taxi / MyCiTi time</span>
+                </div>
+              )}
               {suggest && suggest.area === null && (
-                <div style={{ fontSize: 12, color: "#6b7280", marginTop: 8 }}>Couldn't place “{form.area}”. Try a Cape Town suburb or region (e.g. Khayelitsha, Bellville, Atlantic Seaboard).</div>
+                <div style={{ fontSize: 12, color: "#6b7280", marginTop: 8 }}>
+                  Couldn't auto-rank “{form.area}”. Open Google Maps directions below to compare the actual public-transport commute, or try a nearby Cape Town suburb / region.
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                    {SALONS.filter(sl => ctGeoForStore(sl.name)).map(sl => (
+                      <a key={sl.name} href={ctMapsDirectionsUrl(form.area, sl.name)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, fontWeight: 700, color: "#3730a3", background: "#fff", border: "1px solid #c7d2fe", borderRadius: 7, padding: "4px 9px", textDecoration: "none" }}>🚌 {sl.name}</a>
+                    ))}
+                  </div>
+                </div>
               )}
               {suggest && suggest.area && (
                 <div style={{ marginTop: 10 }}>
@@ -13879,11 +13945,12 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
                           <div style={{ fontSize: 11, color: "#4f46e5" }}>{s.modes.join(" · ")}</div>
                         </div>
                         <span style={{ fontSize: 10, fontWeight: 800, color: s.rating.color, background: s.rating.bg, borderRadius: 99, padding: "2px 8px", whiteSpace: "nowrap" }}>{s.rating.label}</span>
+                        <a href={ctMapsDirectionsUrl(form.area, s.name)} target="_blank" rel="noopener noreferrer" title="Open Google Maps transit directions (minibus taxi / MyCiTi) from their address" style={{ fontSize: 11, fontWeight: 700, color: "#3730a3", textDecoration: "none", whiteSpace: "nowrap" }}>🚌 Directions</a>
                         <button onClick={() => setForm(f => ({ ...f, branch: s.name }))} style={{ background: form.branch === s.name ? "#4f46e5" : "#eef2ff", color: form.branch === s.name ? "#fff" : "#4f46e5", border: "none", borderRadius: 7, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{form.branch === s.name ? "✓" : "Use"}</button>
                       </div>
                     ))}
                   </div>
-                  <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 6 }}>Estimates from straight-line distance + typical transport corridors — sense-check against the candidate's actual commute.</div>
+                  <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 6 }}>Quick estimate from distance + Cape Town taxi/bus corridors. Tap <strong>🚌 Directions</strong> for the actual Google Maps travel time by minibus taxi / MyCiTi.</div>
                 </div>
               )}
             </div>
@@ -24045,8 +24112,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <div style={{ fontSize: 12, fontWeight: 800, color: "#3730a3" }}>🧭 Easiest stores to travel to</div>
                     <button type="button" onClick={() => setTrialSuggest(ctSuggestStores(tForm.homeAddress, SALONS.map(s => s.name)))} style={{ background: "#4f46e5", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Rank from address</button>
                   </div>
+                  {tForm.homeAddress && tForm.homeAddress.trim() && (
+                    <div style={{ marginTop: 8, fontSize: 12 }}>
+                      <a href={ctMapsSearchUrl(tForm.homeAddress)} target="_blank" rel="noopener noreferrer" style={{ fontWeight: 700, color: "#4f46e5", textDecoration: "none" }}>📍 View their address on Google Maps</a>
+                      <span style={{ color: "#9ca3af" }}> · use “🚌 Directions” per store for the real taxi / MyCiTi time</span>
+                    </div>
+                  )}
                   {trialSuggest && trialSuggest.area === null && (
-                    <div style={{ fontSize: 12, color: "#6b7280", marginTop: 8 }}>Couldn't place that area. Try a Cape Town suburb or region (e.g. Khayelitsha, Bellville, Atlantic Seaboard).</div>
+                    <div style={{ fontSize: 12, color: "#6b7280", marginTop: 8 }}>
+                      Couldn't auto-rank “{(tForm.homeAddress || "").trim()}”. Open Google Maps directions below to compare the actual public-transport commute, or try a nearby Cape Town suburb / region.
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                        {SALONS.filter(sl => ctGeoForStore(sl.name)).map(sl => (
+                          <a key={sl.name} href={ctMapsDirectionsUrl(tForm.homeAddress, sl.name)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, fontWeight: 700, color: "#3730a3", background: "#fff", border: "1px solid #c7d2fe", borderRadius: 7, padding: "4px 9px", textDecoration: "none" }}>🚌 {sl.name}</a>
+                        ))}
+                      </div>
+                    </div>
                   )}
                   {trialSuggest && trialSuggest.area && (
                     <div style={{ marginTop: 10 }}>
@@ -24060,11 +24140,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               <div style={{ fontSize: 11, color: "#4f46e5" }}>{s.modes.join(" · ")}</div>
                             </div>
                             <span style={{ fontSize: 10, fontWeight: 800, color: s.rating.color, background: s.rating.bg, borderRadius: 99, padding: "2px 8px", whiteSpace: "nowrap" }}>{s.rating.label}</span>
+                            <a href={ctMapsDirectionsUrl(tForm.homeAddress, s.name)} target="_blank" rel="noopener noreferrer" title="Open Google Maps transit directions (minibus taxi / MyCiTi) from their address" style={{ fontSize: 11, fontWeight: 700, color: "#3730a3", textDecoration: "none", whiteSpace: "nowrap" }}>🚌 Directions</a>
                             <button type="button" onClick={() => setTForm(f => ({ ...f, branch: s.name }))} style={{ background: tForm.branch === s.name ? "#4f46e5" : "#eef2ff", color: tForm.branch === s.name ? "#fff" : "#4f46e5", border: "none", borderRadius: 7, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{tForm.branch === s.name ? "✓" : "Use"}</button>
                           </div>
                         ))}
                       </div>
-                      <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 6 }}>Estimates from straight-line distance + typical transport corridors.</div>
+                      <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 6 }}>Quick estimate from distance + Cape Town taxi/bus corridors. Tap <strong>🚌 Directions</strong> for the actual Google Maps travel time by minibus taxi / MyCiTi.</div>
                     </div>
                   )}
                 </div>
