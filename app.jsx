@@ -11425,21 +11425,35 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
       if (dom >= 25) { m += 1; if (m > 12) { m = 1; y += 1; } }   // END-month ym (25th→24th cycle)
       const endYm = y + "-" + String(m).padStart(2, "0");
       const dayKey = String(dom);
+      const ymdKey = String(r.work_date).trim().slice(0, 10);    // full date, e.g. "2026-06-23"
       // Managers live on the manager schedule (boa_mgrsched), stored under the
       // cycle's START-month ym; nail techs on boa_sched under the END-month ym.
       // Writing the manager grid is what makes an approved manager extra day
       // show on the Scheduling tab AND the Manager Coverage overview.
+      // KEY SHAPE MATTERS: manager grids are full-date (YMD) keyed
+      // ("2026-06-23"); nail-tech grids are day-of-month keyed ("23"). Writing
+      // a manager cell under the day-of-month key let the manager's existing
+      // YMD cell for that day (e.g. an "O" off — exactly when an extra day is
+      // granted) shadow it, so it never showed on Coverage or the schedule.
       const isMgr = isManagerEc(r.ec);
       let smy = y, smm = m - 1; if (smm < 1) { smm = 12; smy -= 1; }
       const schedYm = isMgr ? (smy + "-" + String(smm).padStart(2, "0")) : endYm;
+      const cellKey = isMgr ? ymdKey : dayKey;
       const sched = await window.BOA_DB.loadSchedule(r.store, schedYm, isMgr);
       const grid = (sched && sched.grid) || {};
       const want = String(r.ec).trim().toUpperCase();
       const ecKey = Object.keys(grid).find(k => String(k).trim().toUpperCase() === want) || String(r.ec).trim();
       const row = grid[ecKey] || {};
-      const cur = row[dom] != null ? row[dom] : row[String(dom)];
+      // Read the cell we'd write, also tolerating a legacy day-of-month entry a
+      // previous (buggy) approve may have left on a manager row.
+      const cur = row[cellKey] != null ? row[cellKey]
+        : (row[dom] != null ? row[dom] : row[String(dom)]);
       if (publish) {
-        row[String(dom)] = "E";
+        row[cellKey] = "E";
+        // Managers: drop any legacy day-of-month cell for the same date so it
+        // can't shadow / sit beside the YMD cell that Coverage + the editor
+        // read (also cleans up days written by the old day-of-month code).
+        if (isMgr) { delete row[dom]; delete row[String(dom)]; }
         grid[ecKey] = row;
         await window.BOA_DB.saveSchedule(r.store, schedYm, grid, isMgr);
         // Mirror into the kiosk/attendance extras sidecar (END-month keyed) —
@@ -11450,7 +11464,11 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
         }
       } else {
         // Only revert a schedule cell we set; always clear our sidecar entry.
-        if (cur === "E") { delete row[dom]; delete row[String(dom)]; grid[ecKey] = row; await window.BOA_DB.saveSchedule(r.store, schedYm, grid, isMgr); }
+        if (cur === "E") {
+          delete row[cellKey]; delete row[dom]; delete row[String(dom)];
+          grid[ecKey] = row;
+          await window.BOA_DB.saveSchedule(r.store, schedYm, grid, isMgr);
+        }
         if (!isMgr && window.BOA_DB.clearExtraDay) {
           try { await window.BOA_DB.clearExtraDay(r.store, endYm, dayKey, String(r.ec).trim()); }
           catch (e2) { console.error("clearExtraDay:", e2); }
