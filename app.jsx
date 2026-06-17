@@ -154,7 +154,13 @@ function installReadOnlyGuard() {
 }
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────────
-const TODAY = new Date("2026-04-27");
+// TODAY is the real current date, pinned to UTC midnight of the local
+// calendar day so day-count maths against date-only strings (which parse as
+// UTC midnight) come out as clean whole days. Previously this was hardcoded
+// to a fixed date left over from development, which made every daysDiff()
+// countdown (transfer ETAs, maternity returns, permit deadlines, …) read
+// off the wrong "today".
+const TODAY = (() => { const n = new Date(); return new Date(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate())); })();
 function daysDiff(d) { return d ? Math.ceil((new Date(d) - TODAY) / 86400000) : null; }
 // Effective home branch on a given date (YYYY-MM-DD). A branch transfer is
 // stored as flags (transferring/transferTo/transferDate) without rewriting the
@@ -3066,7 +3072,7 @@ function TransferModal({ s, onClose, onConfirm, onCancelTransfer }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const inp = { width: "100%", padding: "8px 11px", borderRadius: 8, border: "1px solid #FBCFE8", background: "#FCE7F3", fontFamily: "inherit", fontSize: 13, boxSizing: "border-box" };
   const lbl = { display: "block", fontSize: 10, fontWeight: 700, color: "#BE185D", letterSpacing: "0.08em", marginBottom: 4, textTransform: "uppercase" };
-  const isPending = transferDate && new Date(transferDate) > new Date("2026-04-27");
+  const isPending = transferDate && new Date(transferDate) > TODAY;
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
