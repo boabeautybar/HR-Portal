@@ -16519,9 +16519,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // loan cells for managers from other stores, and a cleared cell
         // saved as "" while a stale day-of-month key still says "W"
         // would otherwise read as "scheduled to work".
+        // Evaluate each manager at their EFFECTIVE branch (mirrors the tech
+        // block above). Once a transfer has settled, the manager belongs to
+        // the destination, so we judge them against the destination's roster +
+        // schedule — not the stale "W" cells still sitting in the old branch's
+        // grid. Without this a manager who moved branches and is OFF at the new
+        // store (e.g. Vela: Sea Point→Green Point, off at Green Point today)
+        // still reads as "scheduled but not checked in" at the OLD store.
         const _branchMgrEcs = new Set(
           (managers || [])
-            .filter(m => m && m.branch === name && !m.onMat && !m.offboarded && !(m.leftDate && ymd > m.leftDate) && !(m.startDate && ymd < m.startDate))
+            .filter(m => m && _effBranch(m) === name && !m.onMat && !m.offboarded && !(m.leftDate && ymd > m.leftDate) && !(m.startDate && ymd < m.startDate))
             .map(m => String(m.ec || "").trim())
             .filter(Boolean)
         );
