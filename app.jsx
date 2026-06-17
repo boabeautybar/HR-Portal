@@ -2755,19 +2755,34 @@ const LevelBadge = ({ level }) => {
 const BoaPathwaysBadge = ({ size }) => (
   <span title="BOA Pathways graduate" style={{ fontSize: size || 13, cursor: "default" }}>🎓</span>
 );
-function Meter({ current, capacity, goal, lowDemand }) {
+function Meter({ current, capacity, goal, lowDemand, projected }) {
   const target = goal || capacity;
   const pct = Math.min(current / target * 100, 100);
   const col = current === 0 ? "#dc2626" : current < target * 0.6 ? "#f97316" : current < target ? "#eab308" : "#16a34a";
+  // `projected` is the headcount once all pending transfers settle. Only show
+  // the second marker/label when it differs from the live count, so stores
+  // with no pending moves keep the original single-number meter.
+  const hasProjection = typeof projected === "number" && projected !== current;
+  const projPct = hasProjection ? Math.min(projected / target * 100, 100) : 0;
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontWeight: 700, marginBottom: 3, color: current >= target ? "#15803d" : "#9a3412" }}>
         <span>{current} / {target} active{lowDemand ? " (target)" : ""}</span>
         <span>{current >= target ? "✓ Sufficient" : `${target - current} needed`}</span>
       </div>
-      <div style={{ height: 7, borderRadius: 99, background: "#e5e7eb", overflow: "hidden" }}>
+      <div style={{ position: "relative", height: 7, borderRadius: 99, background: "#e5e7eb", overflow: "hidden" }}>
         <div style={{ height: "100%", width: `${pct}%`, background: col, borderRadius: 99, transition: "width .4s" }} />
+        {/* Dashed marker for the after-transfers headcount. */}
+        {hasProjection && (
+          <div title={`After transfers: ${projected} active`} style={{ position: "absolute", top: -1, bottom: -1, left: `calc(${projPct}% - 1px)`, width: 2, background: "#1d4ed8" }} />
+        )}
       </div>
+      {hasProjection && (
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, fontWeight: 700, marginTop: 3, color: "#1d4ed8" }}>
+          <span>🔮 After transfers: {projected} / {target} active</span>
+          <span>{projected >= target ? "✓ Sufficient" : `${target - projected} needed`}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -18009,7 +18024,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const urgency = preOpen
       ? "preopen"
       : (active.length === 0 ? "critical" : fillRate < 0.5 ? "high" : fillRate < 1 ? "low" : "full");
-    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, arrivingMgrs, trial, trialMgrs, urgency, goal, preOpen, daysToOpen };
+    // Forward staffing planning. `active` still counts people who are LEAVING
+    // (a pending outgoing transfer keeps the stale `branch` until the date
+    // arrives) and EXCLUDES people who are ARRIVING (shown as `arriving` but
+    // not counted). `leaving` are the active techs with a pending move to
+    // another branch; `projectedActive` is the headcount once every pending
+    // transfer has settled: current − leaving + arriving. Lets the team plan
+    // for the future instead of only seeing the snapshot of who's here today.
+    const leaving = active.filter(s => s.transferring && s.transferTo && s.transferTo !== salon.name);
+    const projectedActive = active.length - leaving.length + arriving.length;
+    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, arrivingMgrs, trial, trialMgrs, urgency, goal, preOpen, daysToOpen, leaving, projectedActive };
     });
   }, [enriched, enrichedManagers, managers, trialList, _customSalonsTick]);
 
@@ -20691,6 +20715,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             ? scopedSalonData
             : scopedSalonData.filter(s => s.region === locFilterRegion);
           const filteredActive = filteredSalonData.reduce((a, s) => a + s.active.length, 0);
+          // Company-wide headcount once every pending transfer settles. Within
+          // the scope/region in view, inter-branch moves net to zero — but a
+          // move OUT of the filtered set (e.g. region filter on) can shift it,
+          // so it's summed independently rather than assumed equal to active.
+          const filteredProjected = filteredSalonData.reduce((a, s) => a + s.projectedActive, 0);
+          const filteredPendingMoves = filteredSalonData.reduce((a, s) => a + (s.arriving ? s.arriving.length : 0) + (s.leaving ? s.leaving.length : 0), 0);
           const filteredOnMat = filteredSalonData.reduce((a, s) => a + s.onMat.length, 0);
           const filteredSeats = filteredSalonData.reduce((a, s) => a + s.capacity, 0);
           const filteredVacancies = filteredSalonData.reduce((a, s) =>
@@ -20760,6 +20790,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { l: "Needs Staff", v: filteredSalonData.filter(s => s.urgency === "low").length, c: "#b45309", bg: "#fef9c3" },
                   { l: "At Capacity", v: filteredSalonData.filter(s => s.urgency === "full").length, c: "#15803d", bg: "#dcfce7" },
                   { l: "Active (incl. pregnant)", v: filteredActive, c: "#1e3a8a", bg: "#dbeafe" },
+                  // Only surfaced when a pending transfer is in flight — the
+                  // headcount once every move settles, for forward planning.
+                  ...(filteredPendingMoves > 0 ? [{ l: "🔮 After Transfers", v: filteredProjected, c: "#1d4ed8", bg: "#e0e7ff" }] : []),
                   { l: "On Mat. Leave", v: filteredOnMat, c: "#7A4258", bg: "#fce7f3" },
                   { l: "Total Seats", v: filteredSeats, c: "#111827", bg: "#f3f4f6" },
                   { l: "Vacancies", v: filteredVacancies, c: "#9a3412", bg: "#ffedd5" },
@@ -21117,7 +21150,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           </div>
                         );
                       })()}
-                      <div style={{ marginBottom: 10 }}><Meter current={salon.active.length + (salon.trial ? salon.trial.length : 0)} capacity={salon.capacity} goal={salon.goal} lowDemand={salon.lowDemand} /></div>
+                      <div style={{ marginBottom: 10 }}>
+                        <Meter current={salon.active.length + (salon.trial ? salon.trial.length : 0)} capacity={salon.capacity} goal={salon.goal} lowDemand={salon.lowDemand} projected={(salon.leaving && salon.leaving.length) || (salon.arriving && salon.arriving.length) ? salon.projectedActive + (salon.trial ? salon.trial.length : 0) : undefined} />
+                        {/* After-transfers planning line — only when a pending
+                        move touches this branch. Shows current vs projected
+                        headcount with the +arriving / −leaving breakdown so the
+                        team can plan ahead instead of reading today's snapshot. */}
+                        {((salon.leaving && salon.leaving.length > 0) || (salon.arriving && salon.arriving.length > 0)) && (
+                          <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 10, fontWeight: 700, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 8, padding: "5px 9px" }}>
+                            <span style={{ color: "#475569" }}>Now <strong style={{ color: "#111827" }}>{salon.active.length}</strong></span>
+                            <span style={{ color: "#1d4ed8" }}>→ After transfers <strong>{salon.projectedActive}</strong></span>
+                            {salon.arriving.length > 0 && <span style={{ color: "#15803d" }}>+{salon.arriving.length} arriving</span>}
+                            {salon.leaving.length > 0 && <span style={{ color: "#b45309" }}>−{salon.leaving.length} leaving</span>}
+                          </div>
+                        )}
+                      </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 270, overflowY: "auto" }}>
                         {/* Active staff */}
                         {salon.active.map(m => (
