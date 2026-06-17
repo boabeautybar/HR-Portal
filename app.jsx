@@ -21187,16 +21187,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <div style={{ marginBottom: 10 }}>
                         <Meter current={salon.active.length + (salon.trial ? salon.trial.length : 0)} capacity={salon.capacity} goal={salon.goal} lowDemand={salon.lowDemand} projected={(salon.leaving && salon.leaving.length) || (salon.arriving && salon.arriving.length) ? salon.projectedActive + (salon.trial ? salon.trial.length : 0) : undefined} />
                         {/* After-transfers planning — only when a pending move
-                        touches this branch. Two big numbers side by side (Now →
-                        After) so the current and projected headcount read at a
-                        glance, with the +arriving / −leaving breakdown beneath. */}
+                        touches this branch. Two numbers side by side (Now →
+                        After), with the +arriving / −leaving breakdown beneath.
+                        Both counts include trial/induction candidates so they
+                        match the meter above (active + trial). */}
                         {((salon.leaving && salon.leaving.length > 0) || (salon.arriving && salon.arriving.length > 0)) && (
                           <div style={{ marginTop: 6, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 8, padding: "4px 10px" }}>
                             <span style={{ fontSize: 8, fontWeight: 800, color: "#6b7280", letterSpacing: "0.06em" }}>NOW</span>
-                            <span style={{ fontSize: 15, fontWeight: 800, color: "#111827", lineHeight: 1 }}>{salon.active.length}</span>
+                            <span style={{ fontSize: 15, fontWeight: 800, color: "#111827", lineHeight: 1 }}>{salon.active.length + (salon.trial ? salon.trial.length : 0)}</span>
                             <span style={{ color: "#9ca3af", fontSize: 13, fontWeight: 800 }}>→</span>
                             <span style={{ fontSize: 8, fontWeight: 800, color: "#1d4ed8", letterSpacing: "0.06em" }}>AFTER</span>
-                            <span style={{ fontSize: 15, fontWeight: 800, color: "#1d4ed8", lineHeight: 1 }}>{salon.projectedActive}</span>
+                            <span style={{ fontSize: 15, fontWeight: 800, color: "#1d4ed8", lineHeight: 1 }}>{salon.projectedActive + (salon.trial ? salon.trial.length : 0)}</span>
                             <span style={{ fontSize: 9, fontWeight: 700 }}>
                               {salon.arriving.length > 0 && <span style={{ color: "#15803d" }}>+{salon.arriving.length}</span>}
                               {salon.arriving.length > 0 && salon.leaving.length > 0 && <span style={{ color: "#9ca3af" }}> · </span>}
