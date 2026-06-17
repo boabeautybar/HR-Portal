@@ -22180,6 +22180,69 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 ))}
               </div>
 
+              {/* ── BY LOCATION OVERVIEW ── one count per store so you can see
+                  at a glance which branch has the biggest issues. Columns:
+                  red-alarm (no valid permit = z_na or unset, same definition as
+                  the "Not compliant" stat), South Africans, and asylum / work-
+                  permit / DHA-verified. Sorted with the worst (most no-permit)
+                  at the top; a totals row reconciles with the stat cards. */}
+              {(() => {
+                const named = [
+                  ...SALONS.map(s => s.name).filter(name => pool.some(p => p.branch === name)),
+                  ...[...new Set(pool.map(p => p.branch).filter(b => b && !SALONS.some(s => s.name === b)))]
+                ];
+                const hasBlank = pool.some(p => !p.branch);
+                const allLocs = hasBlank ? [...named, ""] : named;
+                if (allLocs.length === 0) return null;
+                const rows = allLocs.map(brName => {
+                  const inBr = pool.filter(p => (p.branch || "") === brName);
+                  const red = inBr.filter(isNonCompliant).length;
+                  const sa = inBr.filter(p => p.permit === "sa_citizen").length;
+                  const docs = inBr.filter(p => p.permit === "asylum" || p.permit === "work_permit" || p.permit === "verified_dha").length;
+                  return { brName: brName || "(no branch set)", total: inBr.length, red, sa, docs };
+                }).sort((a, b) => b.red - a.red || b.total - a.total || a.brName.localeCompare(b.brName));
+                const th = { padding: "9px 12px", fontSize: 10, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase", color: "#9d6a82", textAlign: "center", whiteSpace: "nowrap" };
+                const td = { padding: "9px 12px", fontSize: 14.5, textAlign: "center", fontWeight: 700 };
+                const sum = (k) => rows.reduce((n, r) => n + r[k], 0);
+                return (
+                  <div style={{ marginBottom: 24 }}>
+                    <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: "#831843" }}>🚦 By location — biggest issues first</div>
+                    <div style={{ fontSize: 12, color: "#6b7280", margin: "2px 0 12px" }}>Per store: 🚨 red-alarm (no valid permit), 🇿🇦 South Africans, and 📄 asylum / work-permit / DHA-verified. Stores with the most no-permit people are listed at the top.</div>
+                    <div style={{ overflowX: "auto", border: "1px solid #FBCFE8", borderRadius: 14 }}>
+                      <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 480, background: "#fff" }}>
+                        <thead>
+                          <tr style={{ background: "#FCE7F3" }}>
+                            <th style={{ ...th, textAlign: "left" }}>📍 Location</th>
+                            <th style={{ ...th, color: "#7f1d1d" }}>🚨 No permit</th>
+                            <th style={th}>🇿🇦 SA</th>
+                            <th style={th}>📄 Asylum / Permit</th>
+                            <th style={th}>Total</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map(r => (
+                            <tr key={r.brName} style={{ borderTop: "1px solid #FCE7F3", background: r.red > 0 ? "#fff5f5" : "#fff" }}>
+                              <td style={{ padding: "9px 12px", fontSize: 13.5, fontWeight: 700, color: "#831843" }}>{r.brName}</td>
+                              <td style={{ ...td, color: r.red > 0 ? "#b91c1c" : "#9ca3af" }}>{r.red > 0 ? "🚨 " + r.red : "0"}</td>
+                              <td style={{ ...td, color: "#14532d" }}>{r.sa}</td>
+                              <td style={{ ...td, color: "#4c1d95" }}>{r.docs}</td>
+                              <td style={{ ...td, color: "#6b7280", fontWeight: 600 }}>{r.total}</td>
+                            </tr>
+                          ))}
+                          <tr style={{ borderTop: "2px solid #FBCFE8", background: "#FCE7F3" }}>
+                            <td style={{ padding: "9px 12px", fontSize: 13, fontWeight: 800, color: "#831843" }}>All stores</td>
+                            <td style={{ ...td, color: "#7f1d1d" }}>{sum("red")}</td>
+                            <td style={{ ...td, color: "#14532d" }}>{sum("sa")}</td>
+                            <td style={{ ...td, color: "#4c1d95" }}>{sum("docs")}</td>
+                            <td style={{ ...td, color: "#6b7280" }}>{sum("total")}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* ── EXPIRING SOON ── asylum / work-permit holders whose
                   document expiry date is within the next 90 days (or
                   already past). Grouped by store and split into mgrs /
