@@ -11644,7 +11644,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
 //   • approved nail-tech extra days (open the tech for that single day), and
 //   • trial techs awaiting their Fresha opening (trial window, then the month
 //     once they pass). Tick each one once it's opened on Fresha.
-function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen, trialList, setTrialFresha, leaveRequests, freshaBlocks, markFreshaBlocked, leaveRecs, enriched, obList, markFreshaMgrProfile, managers }) {
+function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen, trialList, setTrialFresha, leaveRequests, freshaBlocks, markFreshaBlocked, leaveRecs, enriched, obList, markFreshaMgrProfile, managers, techLoans }) {
   const card = { background: "#fff", border: "1px solid #e9d5ff", borderRadius: 12, padding: "12px 14px", marginBottom: 10 };
   const chip = (bg, fg, txt) => <span style={{ background: bg, color: fg, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 800 }}>{txt}</span>;
   const openBtn = (label, onClick) => <button onClick={onClick} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "6px 13px", fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>{label}</button>;
@@ -11683,6 +11683,24 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
   // Off-boarded nail techs to remove from Fresha entirely (all future dates).
   const removeTodos = freshaOffboardRemovals(enriched)
     .sort((a, b) => (Number(isBlocked(a.key)) - Number(isBlocked(b.key))) || (a.leftDate || "").localeCompare(b.leftDate || ""));
+
+  // Borrowed techs: a logged day-loan means the nail tech takes Fresha bookings
+  // at the branch she's lent TO that day, and none at her home branch. So each
+  // borrow carries two ticks — open her at the destination, close her at home —
+  // both for that single day. Sourced from boa_tech_loans_v1; only today/future
+  // loans (a past loan day can't be actioned). The open tick rides on the
+  // extra-open store and the close tick on the blocks store, keyed off the loan
+  // id so they're independent and survive a reload.
+  const _todayYmd = new Date().toISOString().slice(0, 10);
+  const loanTodos = (techLoans || [])
+    .filter(l => l && l.ec && l.date && l.fromBranch && l.toBranch && isTech(l.ec) && l.date >= _todayYmd)
+    .map(l => ({
+      id: l._id, ec: l.ec, name: l.name || l.ec, date: l.date,
+      fromBranch: l.fromBranch, toBranch: l.toBranch,
+      openKey: "loan-" + l._id + "-open", closeKey: "loan-" + l._id + "-close"
+    }))
+    .sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+  const loanDoneFn = (l) => isOpen(l.openKey) && isBlocked(l.closeKey);
 
   const secHead = (txt) => <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase", color: "#6b21a8", margin: "0 0 2px" }}>{txt}</div>;
   const secNote = (txt) => <div style={{ fontSize: 12, color: "#9333ea", marginBottom: 10 }}>{txt}</div>;
@@ -11758,6 +11776,40 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
       </div>
     );
   };
+  const loanCard = (l) => {
+    const opened = isOpen(l.openKey);
+    const closed = isBlocked(l.closeKey);
+    const done = opened && closed;
+    const dw = dowInfo(l.date);
+    const om = (freshaExtraOpen && freshaExtraOpen[l.openKey]) || {};
+    const cm = (freshaBlocks && freshaBlocks[l.closeKey]) || {};
+    return (
+      <div key={"ln-" + l.id} style={{ ...card, opacity: done ? 0.7 : 1 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <strong style={{ color: "#111827", fontSize: 14 }}>{l.name}</strong>
+          {chip("#e0f2fe", "#075985", "🔄 Borrowed")}
+          <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(l.date)}</span>
+          {dw.name && chip(dw.busy ? "#ffedd5" : "#f3f4f6", dw.busy ? "#9a3412" : "#6b7280", (dw.busy ? "🔥 " : "") + dw.name)}
+          {l.ec && <span style={{ color: "#9ca3af", fontSize: 12, fontFamily: "monospace" }}>{l.ec}</span>}
+        </div>
+        <div style={{ fontSize: 12, color: "#9d6a82", margin: "6px 0 2px" }}>📍 {l.fromBranch} → {l.toBranch}</div>
+        <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginTop: 8 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 12, color: "#374151", fontWeight: 700 }}>Open at {l.toBranch}:</span>
+            {opened
+              ? <>{chip("#dcfce7", "#166534", "✓ Opened" + (om.by ? " · " + om.by : ""))}{undo(() => markFreshaExtraOpen(l.openKey, false))}</>
+              : openBtn("Mark opened on Fresha", () => markFreshaExtraOpen(l.openKey, true))}
+          </span>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 12, color: "#374151", fontWeight: 700 }}>Close at {l.fromBranch}:</span>
+            {closed
+              ? <>{chip("#dcfce7", "#166534", "✓ Closed" + (cm.by ? " · " + cm.by : ""))}{undo(() => markFreshaBlocked(l.closeKey, false))}</>
+              : openBtn("Mark closed on Fresha", () => markFreshaBlocked(l.closeKey, true))}
+          </span>
+        </div>
+      </div>
+    );
+  };
   const profileCard = (o) => (
     <div key={"p-" + o._id} style={card}>
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -11781,15 +11833,17 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
   const blockDone = blockTodos.filter(r => isBlocked(r.key));
   const removePending = removeTodos.filter(r => !isBlocked(r.key));
   const removeDone = removeTodos.filter(r => isBlocked(r.key));
-  const doneCount = extraDone.length + blockDone.length + removeDone.length;
+  const loanPending = loanTodos.filter(l => !loanDoneFn(l));
+  const loanDone = loanTodos.filter(loanDoneFn);
+  const doneCount = extraDone.length + blockDone.length + removeDone.length + loanDone.length;
   const pendingCount = extraPending.length + trialOpen.length + monthOpen.length
-    + blockPending.length + removePending.length + profileTodos.length;
+    + blockPending.length + removePending.length + profileTodos.length + loanPending.length;
 
   return (
     <div>
       <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#6b21a8", margin: 0 }}>💇‍♀️ Fresha To-Do</h2>
       <p style={{ color: "#9333ea", fontSize: 13.5, margin: "6px 0 18px", maxWidth: 700 }}>
-        Fresha reminders — create profiles for new managers, open approved extra-day cover and trial techs, block techs who are off (sick / absent, or on annual / emergency leave this cycle), and remove off-boarded techs from all future dates. Outstanding items are listed first; completed ones tuck into Done at the bottom.{pendingCount > 0 && <strong> · {pendingCount} to do</strong>}
+        Fresha reminders — create profiles for new managers, open approved extra-day cover and trial techs, move borrowed techs (open at the branch they're lent to, close at home for that day), block techs who are off (sick / absent, or on annual / emergency leave this cycle), and remove off-boarded techs from all future dates. Outstanding items are listed first; completed ones tuck into Done at the bottom.{pendingCount > 0 && <strong> · {pendingCount} to do</strong>}
       </p>
 
       {pendingCount === 0 && (
@@ -11809,6 +11863,14 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
           {secHead("💰 Extra-day cover · " + extraPending.length + " to open")}
           {secNote("Each approved extra day means opening that nail tech on Fresha for that single day so she can take bookings.")}
           {extraPending.map(extraCard)}
+        </div>
+      )}
+
+      {loanPending.length > 0 && (
+        <div style={{ marginBottom: 22 }}>
+          {secHead("🔄 Borrowed techs · " + loanPending.length + " to sort")}
+          {secNote("Each logged day-loan needs the tech opened on Fresha at the branch she's borrowed to, and closed at her home branch — both just for that day, so client bookings land where she actually is.")}
+          {loanPending.map(loanCard)}
         </div>
       )}
 
@@ -11860,6 +11922,7 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
           <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase", color: "#6b7280" }}>✓ Done · {doneCount}</summary>
           <div style={{ marginTop: 12 }}>
             {extraDone.map(extraCard)}
+            {loanDone.map(loanCard)}
             {blockDone.map(blockCard)}
             {removeDone.map(removeCard)}
           </div>
@@ -18549,7 +18612,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const _recentOb = (o) => { const t = Date.parse(o.startDate || o.addedAt || ""); return !isNaN(t) && (Date.now() - t) < 60 * 86400000; };
                     const _liveMgrEcs = new Set((managers || []).filter(m => m && m.ec).map(m => String(m.ec).toUpperCase().trim()));
                     const profilesToCreate = (obList || []).filter(o => o && _mgrPos.has(o.position) && !o.freshaProfileCreated && _recentOb(o) && _liveMgrEcs.has(String(o.ec || "").toUpperCase().trim())).length;
-                    const n = extraToOpen + trialToOpen + monthToOpen + toBlock + toRemove + profilesToCreate;
+                    // Borrowed techs (today/future) still needing to be opened at the
+                    // destination and closed at home count as one item each until both ticked.
+                    const _todayYmd = new Date().toISOString().slice(0, 10);
+                    const loanToSort = (techLoans || []).filter(l => l && l.ec && l.date && l.fromBranch && l.toBranch && isTech(l.ec) && l.date >= _todayYmd
+                      && !(isOpen("loan-" + l._id + "-open") && isBlocked("loan-" + l._id + "-close"))).length;
+                    const n = extraToOpen + trialToOpen + monthToOpen + toBlock + toRemove + profilesToCreate + loanToSort;
                     return { t: "freshaTodo", l: "💇‍♀️ Fresha To-Do" + (n ? "  (" + n + ")" : "") };
                   })(),
                   { t: "storeOpenings", l: "🔓 Store Openings" },
@@ -22551,7 +22619,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         )}
 
         {tab === "freshaTodo" && (
-          <FreshaTodoTab extraDayRequests={extraDayRequests} freshaExtraOpen={freshaExtraOpen} markFreshaExtraOpen={markFreshaExtraOpen} trialList={trialList} setTrialFresha={setTrialFresha} leaveRequests={leaveRequests} freshaBlocks={freshaBlocks} markFreshaBlocked={markFreshaBlocked} leaveRecs={leaveRecs} enriched={enriched} obList={obList} markFreshaMgrProfile={markFreshaMgrProfile} managers={managers} />
+          <FreshaTodoTab extraDayRequests={extraDayRequests} freshaExtraOpen={freshaExtraOpen} markFreshaExtraOpen={markFreshaExtraOpen} trialList={trialList} setTrialFresha={setTrialFresha} leaveRequests={leaveRequests} freshaBlocks={freshaBlocks} markFreshaBlocked={markFreshaBlocked} leaveRecs={leaveRecs} enriched={enriched} obList={obList} markFreshaMgrProfile={markFreshaMgrProfile} managers={managers} techLoans={techLoans} />
         )}
 
         {/* ── ALERTS TAB ── */}
