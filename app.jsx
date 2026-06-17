@@ -27398,13 +27398,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // b) all-3-agree (mirrors the allMatchWork logic on the cell)
             const hint = schedHint(ec, dy.d);
             const scheduleSaysWork = hint === "on" || hint === "ext";
-            const freshaWorkedCell = _freshaWorkedFor(ec, dy.d);
             const checkin = _ciFor(ec, dy.ymd);
             const kioskAbs = _kaFor(ec, dy.ymd);
             const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
             const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
             const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i" || bareV === "late";
             const kioskSaysPresent = checkinHasIn || isWorking;
+            // Managers have NO Fresha appointments to import, so requiring a
+            // Fresha match would mean a manager could never be credited a
+            // worked public holiday. For them the trusted "worked" signal is
+            // their own kiosk clock-in (mgrClockinRows) on a rostered day.
+            if (isManagerEc(ec)) return scheduleSaysWork && (_mgrCheckedIn(ec, dy.ymd) || kioskSaysPresent);
+            const freshaWorkedCell = _freshaWorkedFor(ec, dy.d);
             return scheduleSaysWork && freshaWorkedCell && kioskSaysPresent;
           };
           for (const dy of days) {
@@ -27427,7 +27432,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // show up), but it must not hit the EXT total — and the extra
             // pay — until some source shows she actually came in. An admin
             // override IS the truth, so it counts without further evidence.
-            else if (v === "ext") { if (_adminOv(ec, dy.d) || _extraDayWorkEvidence(ec, dy.d, dy.ymd)) { t.ext++; if (phOk) t.ph++; } }
+            // An extra day worked on a public holiday counts as an EXTRA day
+            // only — it pays more than a public holiday, so it must NOT also
+            // land in the PH column (no double-credit). It stays "Extra Day".
+            else if (v === "ext") { if (_adminOv(ec, dy.d) || _extraDayWorkEvidence(ec, dy.d, dy.ymd)) { t.ext++; } }
             else if (v === "late") { t.late++; if (dy.ymd <= _extraTodayYmd) t.workedFull++; if (phOk) t.ph++; }
             else if (v === "trial" || v === "trial_ho") t.td++;
             else if (v === "on") { t.worked++; if (dy.ymd <= _extraTodayYmd) t.workedFull++; if (phOk) t.ph++; }
@@ -28104,13 +28112,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const allMatchWork = s.role === "NT" && freshaWorkedCell && scheduleSaysWork && (kioskSaysPresent || checkinHasIn);
                           // Auto-display worked public holidays as "Public Holiday" once
                           // payroll can trust the cell (same gate as the PH total: all 3
-                          // sources agree OR admin reviewed). On Time / Late / Ext / Swap-in
-                          // cells on a holiday get promoted to PH styling so the grid reads
-                          // the same way payroll counts.
+                          // sources agree, a manager clock-in, OR admin reviewed). On Time
+                          // / Late / Swap-in cells on a holiday get promoted to PH styling
+                          // so the grid reads the same way payroll counts. Extra days are
+                          // excluded (handled separately below — they pay more than a PH).
                           const cellReviewRec = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
                           const cellReviewed = reviewMatchesCell(cellReviewRec, s.ec, dy.d, v);
-                          const workedOnHol = isHol && (bareV === "on" || bareV === "late" || bareV === "ext" || bareV === "swap_i");
-                          const phAuto = workedOnHol && (allMatchWork || cellReviewed);
+                          // Extra days are deliberately excluded — an extra day
+                          // worked on a public holiday stays "Extra Day" (it pays
+                          // more than a PH), so it is never relabelled "Public
+                          // Holiday" and never counts in the PH total.
+                          const workedOnHol = isHol && (bareV === "on" || bareV === "late" || bareV === "swap_i");
+                          // Managers have no Fresha to confirm the day, so allMatchWork
+                          // (Fresha-gated, NT-only) can never fire for them — trust a
+                          // rostered manager clock-in instead so their worked public
+                          // holiday shows as PH just like a nail tech's does.
+                          const mgrWorkedTrusted = s.role !== "NT" && scheduleSaysWork && (_mgrCheckedIn(s.ec, dy.ymd) || isWorking || isLate);
+                          const phAuto = workedOnHol && (allMatchWork || mgrWorkedTrusted || cellReviewed);
                           if (phAuto && STAT.ph) { st = STAT.ph; }
                           // Left-early override: when the kiosk's boa_early
                           // sidecar has a record for this (ec, day), paint
