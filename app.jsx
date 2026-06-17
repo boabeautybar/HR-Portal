@@ -3089,7 +3089,9 @@ function TransferModal({ s, onClose, onConfirm, onCancelTransfer }) {
 
         {/* Staff summary */}
         <div style={{ background: "#F5E1E7", border: "1px solid #7dd3fc", borderRadius: 10, padding: "12px 14px", marginBottom: 18 }}>
-          <div style={{ fontWeight: 700, fontSize: 13, color: "#0c4a6e" }}>{s.name} <span style={{ fontFamily: "monospace", fontSize: 11, color: "#BE185D" }}>({s.ec})</span></div>
+          <div style={{ fontWeight: 700, fontSize: 13, color: "#0c4a6e" }}>{s.name} {s.ec
+            ? <span style={{ fontFamily: "monospace", fontSize: 11, color: "#BE185D" }}>({s.ec})</span>
+            : <span style={{ background: "#FCD34D", color: "#78350f", fontSize: 9, fontWeight: 800, padding: "1px 7px", borderRadius: 999, letterSpacing: "0.04em" }}>{(s.role || "nt") === "am" ? "AM TRIAL" : "ON TRIAL / INDUCTION"}</span>}</div>
           <div style={{ fontSize: 11, color: "#BE185D", marginTop: 3 }}>Currently at: <strong>{s.branch}</strong></div>
         </div>
 
@@ -17973,6 +17975,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const settle = (x) => (x && x.transferring && x.transferTo && x.transferDate && x.transferDate < _ymd)
       ? { ...x, branch: x.transferTo, transferring: false, transferTo: null } : x;
     const eff = enriched.map(settle);
+    // Trial candidates settle the same way staff do (the settle() helper only
+    // reads branch / transferring / transferTo / transferDate, all of which
+    // trial records now carry once a transfer is scheduled).
+    const effTrials = (trialList || []).map(settle);
     return SALONS.map(salon => {
     // .offHidden hides leavers older than 31 days post-leftDate from the cards.
     const all = eff.filter(s => s.branch === salon.name && !s.offHidden).sort(ecSort);
@@ -18006,9 +18012,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     // "failed", "hired", and anyone already promoted to onboarding — those have
     // left the trial strip. Split by role: nail-tech trials sit with the techs;
     // AM trials belong in the management-team box.
-    const trialAll = trialList.filter(c => c.branch === salon.name && c.status !== "failed" && c.status !== "hired" && !c.promotedToOnboarding);
+    // Trial transfers mirror staff transfers. A candidate whose transfer date
+    // has passed sits at the destination (effTrials applied settle); a pending
+    // transfer keeps them at the origin (still counted there) AND surfaces an
+    // "arriving" row on the destination card. The driving use case: a new hire
+    // / trial candidate works at an existing store while their new store is
+    // still being built, then moves across on the opening date.
+    const trialAll = effTrials.filter(c => c.branch === salon.name && c.status !== "failed" && c.status !== "hired" && !c.promotedToOnboarding);
     const trial = trialAll.filter(c => (c.role || "nt") !== "am");
     const trialMgrs = trialAll.filter(c => (c.role || "nt") === "am");
+    // Pending incoming trial transfers pointing at this branch.
+    const arrivingTrialAll = (trialList || [])
+      .filter(c => c.transferring && c.transferTo === salon.name && c.transferDate && c.transferDate >= _ymd && c.status !== "failed" && c.status !== "hired" && !c.promotedToOnboarding)
+      .map(c => ({ ...c, branch: salon.name, transferFrom: c.branch, _shadow: true }));
+    const trialArriving = arrivingTrialAll.filter(c => (c.role || "nt") !== "am");
+    const trialMgrsArriving = arrivingTrialAll.filter(c => (c.role || "nt") === "am");
+    // Trial candidates leaving this branch on a pending transfer.
+    const trialLeaving = trial.filter(c => c.transferring && c.transferTo && c.transferTo !== salon.name);
+    const trialMgrsLeaving = trialMgrs.filter(c => c.transferring && c.transferTo && c.transferTo !== salon.name);
+    // Projected nail-tech trial headcount once every pending trial move settles.
+    const projectedTrial = trial.length - trialLeaving.length + trialArriving.length;
 
     // Use targetCapacity for low-demand stores (e.g. Betty), full capacity otherwise
     const goal = salon.targetCapacity || salon.capacity;
@@ -18033,7 +18056,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     // for the future instead of only seeing the snapshot of who's here today.
     const leaving = active.filter(s => s.transferring && s.transferTo && s.transferTo !== salon.name);
     const projectedActive = active.length - leaving.length + arriving.length;
-    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, arrivingMgrs, trial, trialMgrs, urgency, goal, preOpen, daysToOpen, leaving, projectedActive };
+    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, arrivingMgrs, trial, trialMgrs, trialArriving, trialMgrsArriving, trialLeaving, trialMgrsLeaving, projectedTrial, urgency, goal, preOpen, daysToOpen, leaving, projectedActive };
     });
   }, [enriched, enrichedManagers, managers, trialList, _customSalonsTick]);
 
@@ -18049,11 +18072,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     let vacancies = 0, vacanciesNow = 0, understaffed = 0, pendingMoves = 0;
     for (const s of salonData) {
       const filledNow = s.active.length + s.trial.length;
-      const filledFut = s.projectedActive + s.trial.length;
+      // Pending trial transfers shift the future fill the same way staff moves
+      // do — projectedTrial already nets arriving − leaving trial candidates.
+      const filledFut = s.projectedActive + (s.projectedTrial != null ? s.projectedTrial : s.trial.length);
       const needNow = Math.max(0, s.goal - filledNow);
       const need = Math.max(0, s.goal - filledFut);
-      const arriving = s.arriving ? s.arriving.length : 0;
-      const leaving = s.leaving ? s.leaving.length : 0;
+      const arriving = (s.arriving ? s.arriving.length : 0) + (s.trialArriving ? s.trialArriving.length : 0);
+      const leaving = (s.leaving ? s.leaving.length : 0) + (s.trialLeaving ? s.trialLeaving.length : 0);
       perBranch[s.name] = { filledNow, filledFut, needNow, need, arriving, leaving };
       vacancies += need;
       vacanciesNow += needNow;
@@ -18190,6 +18215,36 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // accordingly. Persistence was previously missing for both — now the new
   // branch / transfer flags survive a page refresh.
   async function handleTransfer({ staff, toBranch, transferDate, note, isPending }) {
+    // Trial / induction candidates live in trialList (boa_trial_period_v1),
+    // not the staff or managers tables. They now carry the same transfer flags
+    // as staff so the Locations cards can move them on a scheduled date. Detect
+    // this FIRST — an AM trial has role "am", which would otherwise match the
+    // manager role test below and route the save to the wrong table.
+    if (staff && staff._isTrial) {
+      const fields = isPending
+        ? { transferring: true, transferTo: toBranch, transferDate, transferNote: note }
+        : { branch: toBranch, transferring: false, transferTo: null, transferDate: null, transferNote: note };
+      // Strip the UI-only helper flags before persisting.
+      const { _isTrial, _shadow, isShadow, transferFrom, ...clean } = staff;
+      const updated = { ...clean, ...fields, updatedAt: new Date().toISOString() };
+      const nextTrial = (trialList || []).map(t => t._id === staff._id ? updated : t);
+      setTrialList(nextTrial);
+      try {
+        await window.BOA_DB.saveTrialPeriod(nextTrial);
+      } catch (e) {
+        alert("Could not save trial transfer: " + (e.message || e));
+        return;
+      }
+      setTransferModal(null);
+      logActivity(
+        isPending ? "Scheduled trial transfer" : "Transferred trial candidate",
+        staff.name || "",
+        (staff.branch || "—") + " → " + (toBranch || "—") +
+        (transferDate ? " on " + transferDate : "") +
+        (note ? " · " + note : "")
+      );
+      return;
+    }
     // Detect whether this record lives in the managers list. _id can drift
     // between staff and manager rows for the same person (e.g. a manager
     // who was previously a tech keeps a staff row with a different UUID),
@@ -18231,6 +18286,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }
 
   async function cancelTransfer(staff) {
+    if (staff && staff._isTrial) {
+      const { _isTrial, _shadow, isShadow, transferFrom, ...clean } = staff;
+      const updated = { ...clean, transferring: false, transferTo: null, transferDate: null, transferNote: null, updatedAt: new Date().toISOString() };
+      const nextTrial = (trialList || []).map(t => t._id === staff._id ? updated : t);
+      setTrialList(nextTrial);
+      try {
+        await window.BOA_DB.saveTrialPeriod(nextTrial);
+      } catch (e) {
+        alert("Could not cancel trial transfer: " + (e.message || e));
+        return;
+      }
+      setTransferModal(null);
+      logActivity("Cancelled trial transfer", staff.name || "", "Was → " + (staff.transferTo || "—"));
+      return;
+    }
     const role = (staff && staff.role) || "";
     const isMgr =
          !!(managers || []).find(m => m && m._id === staff._id)
@@ -20754,8 +20824,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // move OUT of the filtered set (e.g. region filter on) can shift it,
           // so it's summed independently rather than assumed equal to active.
           const filteredProjected = filteredSalonData.reduce((a, s) => a + s.projectedActive, 0);
-          const filteredPendingMoves = filteredSalonData.reduce((a, s) => a + (s.arriving ? s.arriving.length : 0) + (s.leaving ? s.leaving.length : 0), 0);
+          const filteredPendingMoves = filteredSalonData.reduce((a, s) => a + (s.arriving ? s.arriving.length : 0) + (s.leaving ? s.leaving.length : 0) + (s.trialArriving ? s.trialArriving.length : 0) + (s.trialLeaving ? s.trialLeaving.length : 0), 0);
           const filteredOnMat = filteredSalonData.reduce((a, s) => a + s.onMat.length, 0);
+          // Spots being filled by people in induction or on trial across the
+          // branches in view (nail-tech + AM trial candidates).
+          const filteredTrial = filteredSalonData.reduce((a, s) => a + (s.trial ? s.trial.length : 0) + (s.trialMgrs ? s.trialMgrs.length : 0), 0);
           const filteredSeats = filteredSalonData.reduce((a, s) => a + s.capacity, 0);
           const filteredVacancies = filteredSalonData.reduce((a, s) =>
             a + Math.max(0, (s.targetCapacity || s.capacity) - s.active.length - s.trial.length), 0);
@@ -20827,6 +20900,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   // Only surfaced when a pending transfer is in flight — the
                   // headcount once every move settles, for forward planning.
                   ...(filteredPendingMoves > 0 ? [{ l: "🔮 After Transfers", v: filteredProjected, c: "#1d4ed8", bg: "#e0e7ff" }] : []),
+                  { l: "On Trial / Induction", v: filteredTrial, c: "#92400e", bg: "#fef9c3" },
                   { l: "On Mat. Leave", v: filteredOnMat, c: "#7A4258", bg: "#fce7f3" },
                   { l: "Total Seats", v: filteredSeats, c: "#111827", bg: "#f3f4f6" },
                   { l: "Vacancies", v: filteredVacancies, c: "#9a3412", bg: "#ffedd5" },
@@ -21027,6 +21101,49 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 </div>
                               );
                             })}
+                            {/* Trial / induction candidates — transferable just
+                            like staff. The Transfer button opens the same modal;
+                            handleTransfer routes the save to trialList. */}
+                            {(salon.trial.length > 0 || salon.trialMgrs.length > 0 || (salon.trialArriving && salon.trialArriving.length > 0) || (salon.trialMgrsArriving && salon.trialMgrsArriving.length > 0)) && (
+                              <div style={{ marginTop: 2, paddingTop: 8, borderTop: "1px dashed #FBCFE8" }}>
+                                <div style={{ fontSize: 9, fontWeight: 800, color: "#92400e", letterSpacing: "0.08em", marginBottom: 5 }}>ON TRIAL / INDUCTION</div>
+                                {[...salon.trial, ...salon.trialMgrs].map(t => (
+                                  <div key={t._id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderRadius: 8, background: "#FFFBEB", border: "1px solid #FCD34D", marginBottom: 4 }}>
+                                    <span style={{ fontSize: 11 }}>{t.transferring ? "🔄" : "⏳"}</span>
+                                    <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: "#78350f" }}>
+                                      {t.name}
+                                      {t.transferring && t.transferTo && <span style={{ fontSize: 9, marginLeft: 5, color: "#1d4ed8", fontWeight: 700 }}>→ {t.transferTo}{t.transferDate ? " · " + new Date(t.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
+                                    </span>
+                                    <span style={{ fontSize: 9, background: (t.role || "nt") === "am" ? "#FED7AA" : "#FCD34D", color: (t.role || "nt") === "am" ? "#9A3412" : "#78350f", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{(t.role || "nt") === "am" ? "AM · TRIAL" : "TRIAL"}</span>
+                                    <button onClick={() => { setTransferModal({ ...t, _isTrial: true }); setManagePanel(null); }}
+                                      style={{ background: t.transferring ? "#bfdbfe" : "#e0f2fe", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#BE185D" }}>
+                                      🔄 {t.transferring ? "Edit Transfer" : "Transfer"}
+                                    </button>
+                                  </div>
+                                ))}
+                                {/* Arriving trial candidates — pending transfer
+                                pointing here. Edit Transfer opens the original
+                                trial record so the move can be amended/cancelled. */}
+                                {[...(salon.trialArriving || []), ...(salon.trialMgrsArriving || [])].map(t => {
+                                  const original = (trialList || []).find(x => x && x._id === t._id);
+                                  return (
+                                    <div key={"arr-trial-" + t._id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderRadius: 8, background: "#eff6ff", border: "1.5px dashed #93c5fd", marginBottom: 4 }}>
+                                      <span style={{ fontSize: 11 }}>🔄</span>
+                                      <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: "#1d4ed8" }}>
+                                        {t.name}
+                                        <span style={{ fontSize: 9, marginLeft: 5, color: "#2563eb", fontWeight: 500 }}>arriving from {t.transferFrom}{t.transferDate ? " · " + new Date(t.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>
+                                      </span>
+                                      {original && (
+                                        <button onClick={() => { setTransferModal({ ...original, _isTrial: true }); setManagePanel(null); }}
+                                          style={{ background: "#bfdbfe", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#BE185D" }}>
+                                          🔄 Edit Transfer
+                                        </button>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </div>
                         </div>
                       )}
@@ -21054,7 +21171,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         const ssm = mgrs.filter(m => (m.effectiveRole || m.role) === "SSM");
                         const sm = mgrs.filter(m => (m.effectiveRole || m.role) === "SM");
                         const am = mgrs.filter(m => (m.effectiveRole || m.role) === "AM");
-                        if (allMgrs.length === 0 && (!salon.arrivingMgrs || salon.arrivingMgrs.length === 0) && (!salon.trialMgrs || salon.trialMgrs.length === 0)) return null;
+                        if (allMgrs.length === 0 && (!salon.arrivingMgrs || salon.arrivingMgrs.length === 0) && (!salon.trialMgrs || salon.trialMgrs.length === 0) && (!salon.trialMgrsArriving || salon.trialMgrsArriving.length === 0)) return null;
                         return (
                           <div style={{ background: "#FCE7F3", border: "1px solid #FBCFE8", borderRadius: 10, padding: "9px 12px", marginBottom: 10 }}>
                             <div style={{ fontSize: 9, fontWeight: 800, color: "#BE185D", letterSpacing: "0.1em", marginBottom: 7 }}>MANAGEMENT TEAM</div>
@@ -21110,11 +21227,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 <div key={t._id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 7px", borderRadius: 7, background: isPassed ? "#F0FDF4" : "#FFFBEB", border: "1.5px dashed " + (isPassed ? "#86EFAC" : "#FCD34D") }}>
                                   <span style={{ fontSize: 13 }}>{isPassed ? "✅" : "⏳"}</span>
                                   <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: isPassed ? "#14532d" : "#78350f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name}{t.boaPathways && <> <BoaPathwaysBadge size={11} /></>}</span>
+                                  {t.transferring && t.transferTo && <span style={{ fontSize: 9, color: "#1d4ed8", background: "#dbeafe", border: "1px solid #bfdbfe", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🔄 → {t.transferTo}{t.transferDate ? ` · ${new Date(t.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                                   <span style={{ fontSize: 9, background: isPassed ? "#86EFAC" : "#FCD34D", color: isPassed ? "#14532d" : "#78350f", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{isPassed ? "passed" : t.status}</span>
                                   <span style={{ fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 700, letterSpacing: "0.04em" }}>AM · TRIAL</span>
                                 </div>
                                 );
                               })}
+                              {/* Arriving AM trial candidates — scheduled to move
+                              here from another store (e.g. on a new store's
+                              opening date). */}
+                              {(salon.trialMgrsArriving || []).map(t => (
+                                <div key={"arr-mtrial-" + t._id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 7px", borderRadius: 7, background: "#eff6ff", border: "1.5px dashed #93c5fd" }}>
+                                  <span style={{ fontSize: 13 }}>🔄</span>
+                                  <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: "#1d4ed8", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                    {t.name}
+                                    <span style={{ fontSize: 9, marginLeft: 5, color: "#2563eb", fontWeight: 400 }}>arriving from {t.transferFrom}{t.transferDate ? " on " + new Date(t.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : ""}</span>
+                                  </span>
+                                  <span style={{ fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 700, letterSpacing: "0.04em" }}>AM · TRIAL</span>
+                                </div>
+                              ))}
                               {/* Arriving (pending incoming transfer) — managers
                               from another branch with transferTo === this salon.
                               Shows the source store + expected start date. Same
@@ -21185,26 +21316,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         );
                       })()}
                       <div style={{ marginBottom: 10 }}>
-                        <Meter current={salon.active.length + (salon.trial ? salon.trial.length : 0)} capacity={salon.capacity} goal={salon.goal} lowDemand={salon.lowDemand} projected={(salon.leaving && salon.leaving.length) || (salon.arriving && salon.arriving.length) ? salon.projectedActive + (salon.trial ? salon.trial.length : 0) : undefined} />
+                        {(() => {
+                          // Pending moves touching this branch, staff + trial.
+                          const inMoves = (salon.arriving ? salon.arriving.length : 0) + (salon.trialArriving ? salon.trialArriving.length : 0) + (salon.trialMgrsArriving ? salon.trialMgrsArriving.length : 0);
+                          const outMoves = (salon.leaving ? salon.leaving.length : 0) + (salon.trialLeaving ? salon.trialLeaving.length : 0) + (salon.trialMgrsLeaving ? salon.trialMgrsLeaving.length : 0);
+                          const nowCount = salon.active.length + (salon.trial ? salon.trial.length : 0);
+                          const afterCount = salon.projectedActive + (salon.projectedTrial != null ? salon.projectedTrial : (salon.trial ? salon.trial.length : 0));
+                          return (<>
+                        <Meter current={nowCount} capacity={salon.capacity} goal={salon.goal} lowDemand={salon.lowDemand} projected={(inMoves || outMoves) ? afterCount : undefined} />
                         {/* After-transfers planning — only when a pending move
                         touches this branch. Two numbers side by side (Now →
                         After), with the +arriving / −leaving breakdown beneath.
                         Both counts include trial/induction candidates so they
                         match the meter above (active + trial). */}
-                        {((salon.leaving && salon.leaving.length > 0) || (salon.arriving && salon.arriving.length > 0)) && (
+                        {(inMoves > 0 || outMoves > 0) && (
                           <div style={{ marginTop: 6, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 8, padding: "4px 10px" }}>
                             <span style={{ fontSize: 8, fontWeight: 800, color: "#6b7280", letterSpacing: "0.06em" }}>NOW</span>
-                            <span style={{ fontSize: 15, fontWeight: 800, color: "#111827", lineHeight: 1 }}>{salon.active.length + (salon.trial ? salon.trial.length : 0)}</span>
+                            <span style={{ fontSize: 15, fontWeight: 800, color: "#111827", lineHeight: 1 }}>{nowCount}</span>
                             <span style={{ color: "#9ca3af", fontSize: 13, fontWeight: 800 }}>→</span>
                             <span style={{ fontSize: 8, fontWeight: 800, color: "#1d4ed8", letterSpacing: "0.06em" }}>AFTER</span>
-                            <span style={{ fontSize: 15, fontWeight: 800, color: "#1d4ed8", lineHeight: 1 }}>{salon.projectedActive + (salon.trial ? salon.trial.length : 0)}</span>
+                            <span style={{ fontSize: 15, fontWeight: 800, color: "#1d4ed8", lineHeight: 1 }}>{afterCount}</span>
                             <span style={{ fontSize: 9, fontWeight: 700 }}>
-                              {salon.arriving.length > 0 && <span style={{ color: "#15803d" }}>+{salon.arriving.length}</span>}
-                              {salon.arriving.length > 0 && salon.leaving.length > 0 && <span style={{ color: "#9ca3af" }}> · </span>}
-                              {salon.leaving.length > 0 && <span style={{ color: "#b45309" }}>−{salon.leaving.length}</span>}
+                              {inMoves > 0 && <span style={{ color: "#15803d" }}>+{inMoves}</span>}
+                              {inMoves > 0 && outMoves > 0 && <span style={{ color: "#9ca3af" }}> · </span>}
+                              {outMoves > 0 && <span style={{ color: "#b45309" }}>−{outMoves}</span>}
                             </span>
                           </div>
                         )}
+                          </>);
+                        })()}
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 270, overflowY: "auto" }}>
                         {/* Active staff */}
@@ -21303,12 +21443,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const isPassed = m.status === "passed";
                           return (
                           <div key={m._id} style={{ padding: "5px 7px", borderRadius: 7, background: isPassed ? "#F0FDF4" : "#FFFBEB", border: "1px dashed " + (isPassed ? "#86EFAC" : "#FCD34D"), display: "flex", alignItems: "center", gap: 6 }}>
-                            <span style={{ fontSize: 12 }}>{isPassed ? "✅" : "⏳"}</span>
+                            <span style={{ fontSize: 12 }}>{m.transferring ? "🔄" : isPassed ? "✅" : "⏳"}</span>
                             <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: "#111827" }}>{m.name}{m.boaPathways && <> <BoaPathwaysBadge size={11} /></>}</span>
+                            {m.transferring && m.transferTo && <span style={{ fontSize: 9, color: "#1d4ed8", background: "#dbeafe", border: "1px solid #bfdbfe", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🔄 → {m.transferTo}{m.transferDate ? ` · ${new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                             <span style={{ fontSize: 9, background: isPassed ? "#86EFAC" : "#FCD34D", color: isPassed ? "#14532d" : "#78350f", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{isPassed ? "passed" : m.status}</span>
                           </div>
                           );
                         })}
+                        {/* Arriving trial candidates (pending incoming transfer) —
+                        scheduled to move here, e.g. on a new store's opening date.
+                        Shown but not yet counted toward the seats above. */}
+                        {(salon.trialArriving || []).map(m => (
+                          <div key={"arr-trial-card-" + m._id} style={{ padding: "5px 7px", borderRadius: 7, background: "#eff6ff", border: "1.5px dashed #93c5fd", display: "flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ fontSize: 12 }}>🔄</span>
+                            <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: "#1d4ed8", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                              {m.name}
+                              <span style={{ fontSize: 9, marginLeft: 5, color: "#2563eb", fontWeight: 400 }}>arriving from {m.transferFrom}{m.transferDate ? " on " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : ""}</span>
+                            </span>
+                            <span style={{ fontSize: 9, background: "#F9A8D4", color: "#1e40af", borderRadius: 4, padding: "1px 6px", fontWeight: 700, whiteSpace: "nowrap" }}>{m.transferDate ? `${daysDiff(m.transferDate)}d` : "pending"}</span>
+                          </div>
+                        ))}
 
                         {/* Remaining Vacant seats */}
                         {Array.from({ length: Math.max(0, salon.capacity - salon.active.length - salon.offboarded.length - (salon.trial ? salon.trial.length : 0)) }).map((_, i) => (
@@ -23837,9 +23991,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Managers (AM trials) get an "M"-suffixed code — that suffix is what
           // marks them as a manager everywhere (scheduling, clock-ins, leave).
           const nextEc = "B" + (maxNum + 1) + (isMgrTrial ? "M" : "");
+          // Use the effective branch: if a scheduled transfer has already taken
+          // effect (date in the past), onboard the candidate at the store they
+          // moved to, not the origin still stored on the trial record.
+          const _obToday = (() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
+          const _obBranch = (r.transferring && r.transferTo && r.transferDate && String(r.transferDate).replace(/\//g, "-") <= _obToday) ? r.transferTo : (r.branch || SALONS[0].name);
           setObForm({
             name: r.name || "", ec: nextEc,
-            branch: r.branch || SALONS[0].name,
+            branch: _obBranch,
             position: (isMgrTrial ? "AM" : "Nail Tech"), positionOther: "",
             startDate: "", notes: "Promoted from Trial Period · " + fmtDate(r.startDate),
             phone: r.phone || "", email: r.email || "", homeAddress: r.homeAddress || "",
