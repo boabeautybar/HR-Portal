@@ -21157,21 +21157,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         After) so the current and projected headcount read at a
                         glance, with the +arriving / −leaving breakdown beneath. */}
                         {((salon.leaving && salon.leaving.length > 0) || (salon.arriving && salon.arriving.length > 0)) && (
-                          <div style={{ marginTop: 8, display: "flex", alignItems: "stretch", gap: 6 }}>
-                            <div style={{ flex: 1, textAlign: "center", background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 10, padding: "7px 4px" }}>
-                              <div style={{ fontSize: 24, fontWeight: 800, color: "#111827", lineHeight: 1 }}>{salon.active.length}</div>
-                              <div style={{ fontSize: 8, fontWeight: 800, color: "#6b7280", letterSpacing: "0.07em", marginTop: 4 }}>NOW</div>
-                            </div>
-                            <div style={{ display: "flex", alignItems: "center", color: "#9ca3af", fontSize: 18, fontWeight: 800 }}>→</div>
-                            <div style={{ flex: 1, textAlign: "center", background: "#eff6ff", border: "1.5px solid #bfdbfe", borderRadius: 10, padding: "7px 4px" }}>
-                              <div style={{ fontSize: 24, fontWeight: 800, color: "#1d4ed8", lineHeight: 1 }}>{salon.projectedActive}</div>
-                              <div style={{ fontSize: 8, fontWeight: 800, color: "#1d4ed8", letterSpacing: "0.07em", marginTop: 4 }}>AFTER TRANSFERS</div>
-                              <div style={{ fontSize: 9, fontWeight: 700, marginTop: 3 }}>
-                                {salon.arriving.length > 0 && <span style={{ color: "#15803d" }}>+{salon.arriving.length} in</span>}
-                                {salon.arriving.length > 0 && salon.leaving.length > 0 && <span style={{ color: "#9ca3af" }}> · </span>}
-                                {salon.leaving.length > 0 && <span style={{ color: "#b45309" }}>−{salon.leaving.length} out</span>}
-                              </div>
-                            </div>
+                          <div style={{ marginTop: 6, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 8, padding: "4px 10px" }}>
+                            <span style={{ fontSize: 8, fontWeight: 800, color: "#6b7280", letterSpacing: "0.06em" }}>NOW</span>
+                            <span style={{ fontSize: 15, fontWeight: 800, color: "#111827", lineHeight: 1 }}>{salon.active.length}</span>
+                            <span style={{ color: "#9ca3af", fontSize: 13, fontWeight: 800 }}>→</span>
+                            <span style={{ fontSize: 8, fontWeight: 800, color: "#1d4ed8", letterSpacing: "0.06em" }}>AFTER</span>
+                            <span style={{ fontSize: 15, fontWeight: 800, color: "#1d4ed8", lineHeight: 1 }}>{salon.projectedActive}</span>
+                            <span style={{ fontSize: 9, fontWeight: 700 }}>
+                              {salon.arriving.length > 0 && <span style={{ color: "#15803d" }}>+{salon.arriving.length}</span>}
+                              {salon.arriving.length > 0 && salon.leaving.length > 0 && <span style={{ color: "#9ca3af" }}> · </span>}
+                              {salon.leaving.length > 0 && <span style={{ color: "#b45309" }}>−{salon.leaving.length}</span>}
+                            </span>
                           </div>
                         )}
                       </div>
