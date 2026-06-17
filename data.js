@@ -81,6 +81,7 @@
       passport: r.passport || r.passport_number || "",
       taxNumber: r.tax_number || "",
       gender: r.gender || "",
+      boaPathways: !!r.boa_pathways,
       active: r.active !== undefined ? (typeof r.active === 'string' ? r.active.toUpperCase() === 'TRUE' : !!r.active) : !r.left_date
     };
   }
@@ -108,7 +109,8 @@
       address: s.address || null,
       id_number: s.idNumber || null,
       tax_number: s.taxNumber || null,
-      gender: s.gender || null
+      gender: s.gender || null,
+      boa_pathways: !!s.boaPathways
     };
   }
 
@@ -142,6 +144,7 @@
       passport: r.passport || r.passport_number || "",
       taxNumber: r.tax_number || "",
       gender: r.gender || "",
+      boaPathways: !!r.boa_pathways,
       active: r.active !== undefined ? (typeof r.active === 'string' ? r.active.toUpperCase() === 'TRUE' : !!r.active) : !r.left_date
     };
   }
@@ -168,7 +171,8 @@
       address: m.address || null,
       id_number: m.idNumber || null,
       tax_number: m.taxNumber || null,
-      gender: m.gender || null
+      gender: m.gender || null,
+      boa_pathways: !!m.boaPathways
     };
   }
 
@@ -804,6 +808,33 @@
   }
   async function saveTrialPeriod(records) {
     var res = await sb.from("app_state").upsert({ key: "boa_trial_period_v1", value: records || [] });
+    if (res.error) throw res.error;
+    return records;
+  }
+
+  // ---------- Nail-tech Interviews (boa_nt_interviews_v1) ----------
+  // The recruitment front of the funnel — BEFORE the trial period. The
+  // recruiter logs interview candidates (name, nationality, contact, area) and
+  // sets an interview date/time; the nail-tech trainer marks attendance and
+  // pass/fail; the recruiter then books an induction date, which hands the
+  // candidate over to the Trial Period (induction stage). Stored as one JSON
+  // blob (array) in app_state, same shape as the trial-period list. Each
+  // record: {
+  //   _id, firstName, surname, nationality, phone, email, area, branch,
+  //   source, interviewDate, interviewTime,
+  //   attendance: "" | "came" | "no_show",
+  //   outcome:    "" | "passed" | "failed",
+  //   trainerNotes, trainerScore, inductionDate,
+  //   promotedToTrialId, promotedAt, addedAt, addedBy, updatedAt
+  // }
+  async function loadInterviews() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_nt_interviews_v1").maybeSingle();
+    if (res.error) { console.error("loadInterviews:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveInterviews(records) {
+    var res = await sb.from("app_state").upsert({ key: "boa_nt_interviews_v1", value: records || [] });
     if (res.error) throw res.error;
     return records;
   }
@@ -2201,6 +2232,8 @@
     saveOnboarding: saveOnboarding,
     loadTrialPeriod: loadTrialPeriod,
     saveTrialPeriod: saveTrialPeriod,
+    loadInterviews: loadInterviews,
+    saveInterviews: saveInterviews,
     loadOffboarding: loadOffboarding,
     saveOffboarding: saveOffboarding,
     loadSmTrial:   loadSmTrial,
