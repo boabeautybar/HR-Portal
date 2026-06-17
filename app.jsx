@@ -10046,7 +10046,7 @@ function findLeavePerson(ec, enriched, managers) {
 // 20% of techs per store per day, counting approved leave on the calendar).
 function assessLeaveOps(r, enriched, managers, leaveRecs) {
   const ec = String(r.ec || "").trim().toUpperCase();
-  const isMgr = /M$/i.test(ec);
+  const isMgr = isManagerEc(ec);
   const pool = isMgr ? (managers || []) : (enriched || []);
   const person = findLeavePerson(ec, enriched, managers);
   if (!ec || !person) return { matched: false, isMgr };
@@ -10104,7 +10104,7 @@ function assessLeaveOps(r, enriched, managers, leaveRecs) {
 async function publishLeaveToSchedule(ec, branch, startDate, endDate) {
   if (!window.BOA_DB || !window.BOA_DB.loadSchedule || !window.BOA_DB.saveSchedule) return;
   if (!ec || !branch || !startDate || !endDate) return;
-  if (/M$/i.test(String(ec).trim())) return;
+  if (isManagerEc(ec)) return;
   const sd = new Date(startDate + "T00:00:00"), ed = new Date(endDate + "T00:00:00");
   if (isNaN(sd.getTime()) || isNaN(ed.getTime()) || ed < sd) return;
   // Group the leave days by schedule key: tech schedules live under the
@@ -10235,7 +10235,15 @@ async function finalizeLeaveIfReady(r, deps) {
   if (logActivity) logActivity("Approved leave request", r.name, r.start_date + " → " + r.end_date + (added ? " · added to calendar" : ""), "Leave");
 }
 
-function isManagerEc(ec) { return /M$/i.test(String(ec || "").trim()); }
+// Managers use TWO employee-code conventions: the modern format ends in "M"
+// (e.g. B643M — onboarding appends the M, see ob-form), and a legacy format
+// where the code STARTS with M followed by digits (e.g. M003 = Robin P, an
+// assistant manager). Nail-tech codes are always B### (B-prefix, never start
+// with M, never end in M), so matching either manager shape is unambiguous.
+// Detecting only the trailing-M form silently mis-classified every legacy
+// M### assistant manager as a tech — sending their approved extra days to the
+// tech schedule/kiosk instead of the manager schedule & Manager Coverage.
+function isManagerEc(ec) { const e = String(ec || "").trim(); return /M$/i.test(e) || /^M\d/i.test(e); }
 // Estimated off-days inside a stretch of `calDays` calendar days when there is
 // no saved roster to read the real off-days from. Short requests (1–5 days) are
 // assumed to land entirely on working days, so nothing is deducted; a 6-day
@@ -10345,7 +10353,7 @@ function freshaLeaveBlocks(leaveRecs, enriched) {
   const cycleEnd = cy + "-" + pad(cm) + "-24";     // 24th of the cycle's end month
   const now = new Date();
   const ymdNow = now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate());
-  const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
+  const isTech = (ec) => !isManagerEc(ec);
   const byEc = {};
   (enriched || []).forEach(s => { if (s && s.ec) byEc[String(s.ec).toUpperCase().trim()] = s; });
   // Content-based key (tech + date range) so the planner holding duplicate
@@ -10374,7 +10382,7 @@ function freshaLeaveBlocks(leaveRecs, enriched) {
 // after their last day (the same window leavers stay visible elsewhere). Keyed
 // "off-<ec>" so the "removed" tick rides on the shared freshaBlocks store.
 function freshaOffboardRemovals(enriched) {
-  const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
+  const isTech = (ec) => !isManagerEc(ec);
   const out = [], seen = new Set();
   (enriched || []).forEach(s => {
     if (!s || !s.ec || !isTech(s.ec) || !s.offboarded || s.offHidden) return;
@@ -11303,7 +11311,7 @@ function CalledInSickTab({ requests, setRequests, currentUser }) {
           const st = LEAVE_STATUS[r.status] || LEAVE_STATUS.pending;
           // Nail techs take Fresha bookings (manager ECs end in "M"); suggest
           // blocking them so no clients book a tech who's off.
-          const isTech = !/M$/i.test((r.ec || "").trim());
+          const isTech = !isManagerEc(r.ec);
           const firstName = (r.name || "").trim().split(/\s+/)[0] || "this tech";
           const awayLbl = fmtIncidentDate(r.start_date) + (r.end_date !== r.start_date ? "–" + fmtIncidentDate(r.end_date) : "");
           // Pull the proof URL out of the reason so we can show a compact "view"
@@ -11421,7 +11429,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
       // cycle's START-month ym; nail techs on boa_sched under the END-month ym.
       // Writing the manager grid is what makes an approved manager extra day
       // show on the Scheduling tab AND the Manager Coverage overview.
-      const isMgr = /M$/i.test(String(r.ec).trim());
+      const isMgr = isManagerEc(r.ec);
       let smy = y, smm = m - 1; if (smm < 1) { smm = 12; smy -= 1; }
       const schedYm = isMgr ? (smy + "-" + String(smm).padStart(2, "0")) : endYm;
       const sched = await window.BOA_DB.loadSchedule(r.store, schedYm, isMgr);
@@ -11448,12 +11456,31 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
           catch (e2) { console.error("clearExtraDay:", e2); }
         }
       }
+      // Self-heal: legacy M### manager codes used to be mis-detected as techs
+      // (see isManagerEc), so an earlier approve wrote this extra day onto the
+      // TECH schedule + kiosk extras sidecar instead of the manager schedule.
+      // A manager never belongs there — strip any such stale "E" so the day
+      // lives only on the manager schedule / Manager Coverage. Runs on both
+      // publish and decline so re-approving an old request fully corrects it.
+      if (isMgr) {
+        try {
+          const tsched = await window.BOA_DB.loadSchedule(r.store, endYm, false);
+          const tgrid = (tsched && tsched.grid) || {};
+          const tKey = Object.keys(tgrid).find(k => String(k).trim().toUpperCase() === want);
+          if (tKey) {
+            const trow = tgrid[tKey] || {};
+            const tcur = trow[dom] != null ? trow[dom] : trow[String(dom)];
+            if (tcur === "E") { delete trow[dom]; delete trow[String(dom)]; tgrid[tKey] = trow; await window.BOA_DB.saveSchedule(r.store, endYm, tgrid, false); }
+          }
+          if (window.BOA_DB.clearExtraDay) await window.BOA_DB.clearExtraDay(r.store, endYm, dayKey, String(r.ec).trim());
+        } catch (e3) { console.error("applyExtraDayToSchedule (manager self-heal):", e3); }
+      }
     } catch (e) { console.error("applyExtraDayToSchedule:", e); }
   };
   const setStatus = async (r, status, note) => {
     if (busy) return;
     if (status === "approved") {
-      const isTech = !/M$/i.test(String(r.ec || "").trim());
+      const isTech = !isManagerEc(r.ec);
       if (!window.confirm(
         "Are you sure we need extra cover on " + fmtIncidentDate(r.work_date) + "?\n\n" +
         "Check the schedule / demand for that day first — only approve if cover is genuinely needed.\n\n" +
@@ -11494,7 +11521,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
   const pendingCount = (requests || []).filter(r => r.status === "pending").length;
   // Split into managers (EC ends in "M") and nail techs, shown as two
   // distinct colour-coded columns side by side.
-  const isMgrReq = (r) => /M$/i.test(String(r.ec || "").trim());
+  const isMgrReq = (r) => isManagerEc(r.ec);
   const mgrReqs = filtered.filter(isMgrReq);
   const techReqs = filtered.filter(r => !isMgrReq(r));
   const groups = [
@@ -11550,7 +11577,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
             {r.status !== "pending" && r.decided_by && (
               <div style={{ marginTop: 10, background: r.status === "approved" ? "#f0fdf4" : "#fef2f2", border: "1px solid " + (r.status === "approved" ? "#bbf7d0" : "#fecaca"), borderRadius: 11, padding: "10px 13px" }}>
                 <div style={{ fontSize: 12, fontWeight: 800, color: r.status === "approved" ? "#15803d" : "#b91c1c" }}>{r.status === "approved" ? "✅ Approved" : "✕ Declined"}</div>
-                {r.status === "approved" && <div style={{ fontSize: 11.5, color: "#15803d", marginTop: 2 }}>📅 Published to {(r.name || "the").split(" ")[0]}'s {/M$/i.test(String(r.ec || "").trim()) ? "manager schedule & coverage" : "schedule"} as an extra day ({fmtIncidentDate(r.work_date)}).</div>}
+                {r.status === "approved" && <div style={{ fontSize: 11.5, color: "#15803d", marginTop: 2 }}>📅 Published to {(r.name || "the").split(" ")[0]}'s {isManagerEc(r.ec) ? "manager schedule & coverage" : "schedule"} as an extra day ({fmtIncidentDate(r.work_date)}).</div>}
                 {r.decision_note && <div style={{ fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{r.decision_note}</div>}
                 <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>{r.decided_by}{r.decided_at ? " · " + fmtIncidentTime(r.decided_at) : ""}</div>
               </div>
@@ -11605,7 +11632,7 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
   const openBtn = (label, onClick) => <button onClick={onClick} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "6px 13px", fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>{label}</button>;
   const undo = (onClick) => <button onClick={onClick} style={{ background: "transparent", color: "#15803d", border: "none", fontSize: 11, fontWeight: 700, cursor: "pointer", textDecoration: "underline" }}>undo</button>;
 
-  const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
+  const isTech = (ec) => !isManagerEc(ec);
   const isOpen = (id) => !!(freshaExtraOpen && freshaExtraOpen[id] && freshaExtraOpen[id].opened);
   const extraTodos = (extraDayRequests || []).filter(r => r.status === "approved" && isTech(r.ec))
     .sort((a, b) => (Number(isOpen(a.id)) - Number(isOpen(b.id))) || (a.work_date || "").localeCompare(b.work_date || ""));
@@ -12563,7 +12590,7 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
 
   // Split into managers (EC ends in "M") and nail techs, shown as two distinct
   // colour-coded columns side by side — same as the Extra-Day Requests tab.
-  const isMgrReq = (r) => /M$/i.test(String(r.ec || "").trim());
+  const isMgrReq = (r) => isManagerEc(r.ec);
   const mgrReqs = filtered.filter(isMgrReq);
   const techReqs = filtered.filter(r => !isMgrReq(r));
   const groups = [
@@ -18489,7 +18516,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   // to the Fresha openers (e.g. Farida) who don't pass the HR
                   // gate that hides the other request tabs.
                   (() => {
-                    const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
+                    const isTech = (ec) => !isManagerEc(ec);
                     const isOpen = (id) => !!(freshaExtraOpen && freshaExtraOpen[id] && freshaExtraOpen[id].opened);
                     const extraToOpen = (extraDayRequests || []).filter(r => r.status === "approved" && isTech(r.ec) && !isOpen(r.id)).length;
                     const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
@@ -19181,7 +19208,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               {canSeeIncidents(currentUser) && (() => {
                 const _now0 = new Date(); _now0.setHours(0, 0, 0, 0);
                 const daysUntil = (ymd) => ymd ? Math.ceil((new Date(ymd + "T00:00:00") - _now0) / 86400000) : null;
-                const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
+                const isTech = (ec) => !isManagerEc(ec);
                 const URGENT = 3;   // less than 3 days away
 
                 // OPEN — approved extra-day cover not yet opened on Fresha
@@ -19558,7 +19585,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   Scoped to the ROM's own stores. */}
               {!(new Set(currentUser?.hideTabs || []).has("dashCalledInSick")) && canSeeIncidents(currentUser) && (() => {
                 const { today, tomorrow, list } = calledInSickWindow(leaveRequests);
-                const isMgrEc = (ec) => /M$/i.test(String(ec || "").trim());
+                const isMgrEc = (ec) => isManagerEc(ec);
                 const mgrSick = list.filter(r => isMgrEc(r.ec) && !r.reviewed
                   && (!_hasStoreScope || (r.store && scopedSalonNames.has(r.store))))
                   .sort((a, b) => (a.start_date || "").localeCompare(b.start_date || ""));
@@ -19620,7 +19647,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   (Managers are handled by the ROM-action card above.) */}
               {!(new Set(currentUser?.hideTabs || []).has("dashCalledInSick")) && canSeeIncidents(currentUser) && (() => {
                 const { today, tomorrow, list: _list } = calledInSickWindow(leaveRequests);
-                const list = _list.filter(r => !/M$/i.test(String(r.ec || "").trim()));
+                const list = _list.filter(r => !isManagerEc(r.ec));
                 if (!list.length) return null;
                 const todayList = list.filter(r => r.start_date <= today && r.end_date >= today);
                 const tomorrowList = list.filter(r => r.start_date <= tomorrow && r.end_date >= tomorrow);
