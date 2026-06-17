@@ -4,14 +4,3 @@
   for = "/manifest.webmanifest"
   [headers.values]
     Content-Type = "application/manifest+json"
-
-# Interim security gate: password-wall the whole portal via HTTP Basic Auth
-# (netlify/edge-functions/auth.js). The app embeds a PUBLIC Supabase anon key
-# and has no server-side auth, so this stops the open internet from reaching
-# the page (and the key). The kiosk and My BOA staff apps are excluded — a
-# password would break them; they need the proper auth + RLS fix instead.
-# REQUIRES the BOA_PORTAL_PASSWORD env var to be set in Netlify.
-[[edge_functions]]
-  path = "/*"
-  excludedPath = ["/kiosk/*", "/myboa/*"]
-  function = "auth"
