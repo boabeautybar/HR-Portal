@@ -18037,6 +18037,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     });
   }, [enriched, enrichedManagers, managers, trialList, _customSalonsTick]);
 
+  // Recruitment, forward-looking. Pending inter-branch transfers redistribute
+  // staff: a branch LOSING a tech has a real opening to fill, a branch GAINING
+  // one needs to hire less. So the recruitment tab plans against each store's
+  // PROJECTED headcount (after every pending transfer settles), not just
+  // today's snapshot. Trials still occupy a seat. Per-branch need is clamped at
+  // 0; the company total can sit above the snapshot when a leaver's store can't
+  // be backfilled by the incoming move (e.g. the destination was already full).
+  const recruitFuture = useMemo(() => {
+    const perBranch = {};
+    let vacancies = 0, vacanciesNow = 0, understaffed = 0, pendingMoves = 0;
+    for (const s of salonData) {
+      const filledNow = s.active.length + s.trial.length;
+      const filledFut = s.projectedActive + s.trial.length;
+      const needNow = Math.max(0, s.goal - filledNow);
+      const need = Math.max(0, s.goal - filledFut);
+      const arriving = s.arriving ? s.arriving.length : 0;
+      const leaving = s.leaving ? s.leaving.length : 0;
+      perBranch[s.name] = { filledNow, filledFut, needNow, need, arriving, leaving };
+      vacancies += need;
+      vacanciesNow += needNow;
+      if (filledFut < s.goal) understaffed++;
+      pendingMoves += arriving + leaving;
+    }
+    return { perBranch, vacancies, vacanciesNow, understaffed, pendingMoves };
+  }, [salonData]);
+
   // Managers placed at their effective branch for Locations: a manager whose
   // transfer date is strictly in the past shows at the new branch with the
   // transfer flags cleared (mirrors `settle` in salonData above).
@@ -18906,7 +18932,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const _p2 = n => String(n).padStart(2, "0");
           const _todayY = (d => d.getFullYear() + "-" + _p2(d.getMonth() + 1) + "-" + _p2(d.getDate()))(new Date());
           const interviewNeedsAction = (interviewList || []).filter(r => !r.promotedToTrialId && ((r.attendance === "came" && !r.outcome) || (r.interviewDate && r.interviewDate < _todayY && !r.attendance) || (r.outcome === "passed" && !r.inductionDate))).length;
-          const counts = { nailTech: stats.vacancies, mgrRecruit: mgrVacancies, interviews: interviewPipeline };
+          const counts = { nailTech: recruitFuture.vacancies, mgrRecruit: mgrVacancies, interviews: interviewPipeline };
           const TABS = [
             { k: "nailTech", label: "💅 Nail Tech Recruitment", accent: "#BE185D", soft: "#FCE7F3", border: "#FBCFE8", sub: "Vacancies by branch" },
             { k: "interviews", label: "📋 Nail Tech Interviews", accent: "#4f46e5", soft: "#eef2ff", border: "#c7d2fe", sub: "Schedule, outcomes & inductions", pip: interviewNeedsAction },
@@ -18942,8 +18968,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             { l: "Returning ≤60d", v: stats.returning60, i: "🔜", c: "#065f46", bg: "#d1fae5" },
             { l: "Z/NA (Risk)", v: stats.zna, i: "🚨", c: "#7f1d1d", bg: "#fee2e2" },
             { l: "No Contract", v: stats.noContract, i: "📄", c: "#7f1d1d", bg: "#fee2e2" },
-            { l: "Still To Hire", v: stats.vacancies, i: "🎯", c: "#7c3aed", bg: "#ede9fe", note: "across all branches" },
-            { l: "Understaffed", v: stats.understaffed, i: "📍", c: "#78350f", bg: "#fef3c7" },
+            { l: "Still To Hire", v: recruitFuture.vacancies, i: "🎯", c: "#7c3aed", bg: "#ede9fe", note: recruitFuture.pendingMoves > 0 ? `after transfers · now ${recruitFuture.vacanciesNow}` : "across all branches" },
+            { l: "Understaffed", v: recruitFuture.understaffed, i: "📍", c: "#78350f", bg: "#fef3c7" },
           ].map(c => (
             <div key={c.l} style={{ background: c.bg, borderRadius: 13, padding: "12px 14px" }}>
               <div style={{ fontSize: 18 }}>{c.i}</div>
@@ -18957,16 +18983,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* TO HIRE PER BRANCH — only on recruitment tab (nail-tech sub-tab) */}
         {tab === "recruitment" && recruitSubTab === "nailTech" && <>
-          {stats.vacancies > 0 && (
+          {recruitFuture.vacancies > 0 && (
             <div style={{ background: "#FFFFFF", borderRadius: 13, border: "1px solid #E8C9D2", marginBottom: 16, overflow: "hidden" }}>
               <div style={{ background: "#BE185D", color: "#fff", padding: "10px 18px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-                <span style={{ fontWeight: 700, fontSize: 13 }}>🎯 Staff Still Needed — {stats.vacancies} position{stats.vacancies !== 1 ? "s" : ""} across {stats.understaffed} branch{stats.understaffed !== 1 ? "es" : ""}</span>
-                <span style={{ fontSize: 11, opacity: 0.8 }}>Sorted by most urgent</span>
+                <span style={{ fontWeight: 700, fontSize: 13 }}>🎯 Staff Still Needed — {recruitFuture.vacancies} position{recruitFuture.vacancies !== 1 ? "s" : ""} across {recruitFuture.understaffed} branch{recruitFuture.understaffed !== 1 ? "es" : ""}</span>
+                <span style={{ fontSize: 11, opacity: 0.8 }}>{recruitFuture.pendingMoves > 0 ? "After transfers · sorted by most urgent" : "Sorted by most urgent"}</span>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(185px,1fr))" }}>
-                {salonData.filter(s => (s.active.length + s.trial.length) < s.goal).sort((a, b) => (b.goal - b.active.length - b.trial.length) - (a.goal - a.active.length - a.trial.length)).map((s, i) => {
-                  const filled = s.active.length + s.trial.length;
-                  const need = Math.max(0, s.goal - filled);
+                {salonData.filter(s => (recruitFuture.perBranch[s.name] || {}).need > 0).sort((a, b) => ((recruitFuture.perBranch[b.name] || {}).need || 0) - ((recruitFuture.perBranch[a.name] || {}).need || 0)).map((s, i) => {
+                  const pb = recruitFuture.perBranch[s.name] || {};
+                  const filled = pb.filledFut;
+                  const need = pb.need;
                   const pct = s.goal > 0 ? Math.round(filled / s.goal * 100) : 100;
                   const [col, bg] = need >= 5 ? ["#7f1d1d", "#fee2e2"] : need >= 3 ? ["#9a3412", "#ffedd5"] : ["#78350f", "#fef9c3"];
                   return (
@@ -18976,6 +19003,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <div style={{ fontWeight: 800, fontSize: 22, color: col, lineHeight: 1 }}>{need}</div>
                       </div>
                       <div style={{ fontSize: 10, color: "#BE185D", marginTop: 2 }}>{filled}/{s.goal} filled · {pct}%</div>
+                      {(pb.arriving > 0 || pb.leaving > 0) && (
+                        <div style={{ fontSize: 9, fontWeight: 700, marginTop: 2 }}>
+                          {pb.arriving > 0 && <span style={{ color: "#15803d" }}>+{pb.arriving} arriving</span>}
+                          {pb.arriving > 0 && pb.leaving > 0 && <span style={{ color: "#9ca3af" }}> · </span>}
+                          {pb.leaving > 0 && <span style={{ color: "#b45309" }}>−{pb.leaving} leaving</span>}
+                        </div>
+                      )}
                       <div style={{ height: 4, borderRadius: 99, background: "#e5e7eb", marginTop: 5, overflow: "hidden" }}>
                         <div style={{ height: "100%", width: `${pct}%`, background: pct < 60 ? "#dc2626" : pct < 80 ? "#f97316" : "#eab308", borderRadius: 99 }} />
                       </div>
@@ -22812,9 +22846,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             {/* Summary header */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10, marginBottom: 20 }}>
               {[
-                { l: "Positions Needed", v: stats.vacancies, i: "🎯", c: "#7c3aed", bg: "#ede9fe" },
-                { l: "Branches Hiring", v: stats.understaffed, i: "📍", c: "#9a3412", bg: "#ffedd5" },
-                { l: "At Full Capacity", v: SALONS.length - stats.understaffed, i: "✅", c: "#065f46", bg: "#d1fae5" },
+                { l: "Positions Needed", v: recruitFuture.vacancies, i: "🎯", c: "#7c3aed", bg: "#ede9fe", note: recruitFuture.pendingMoves > 0 ? `after transfers · now ${recruitFuture.vacanciesNow}` : null },
+                { l: "Branches Hiring", v: recruitFuture.understaffed, i: "📍", c: "#9a3412", bg: "#ffedd5" },
+                { l: "At Full Capacity", v: SALONS.length - recruitFuture.understaffed, i: "✅", c: "#065f46", bg: "#d1fae5" },
                 { l: "On Maternity Leave", v: stats.onMat, i: "🤱", c: "#7A4258", bg: "#fce7f3", note: "returning soon may fill gaps" },
                 { l: "Returning ≤60 Days", v: stats.returning60, i: "🔜", c: "#065f46", bg: "#d1fae5" },
               ].map(c => (
@@ -22827,7 +22861,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               ))}
             </div>
 
-            {stats.vacancies === 0
+            {recruitFuture.vacancies === 0
               ? <div style={{ textAlign: "center", padding: 60, color: "#BE185D", fontSize: 16, fontWeight: 700 }}>✅ All branches fully staffed — no recruitment needed!</div>
               : (
                 <>
@@ -22841,9 +22875,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
                   {/* Per-branch cards sorted by urgency */}
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 12 }}>
-                    {salonData.sort((a, b) => (b.goal - b.active.length - b.trial.length) - (a.goal - a.active.length - a.trial.length)).map(salon => {
-                      const filled = salon.active.length + salon.trial.length;   // trial candidates occupy seats (as on Locations)
-                      const need = Math.max(0, salon.goal - filled);
+                    {salonData.sort((a, b) => ((recruitFuture.perBranch[b.name] || {}).need || 0) - ((recruitFuture.perBranch[a.name] || {}).need || 0)).map(salon => {
+                      const pb = recruitFuture.perBranch[salon.name] || {};
+                      const filled = pb.filledFut;   // post-transfer headcount; trial candidates occupy seats (as on Locations)
+                      const need = pb.need;
                       const pct = salon.goal > 0 ? Math.min(Math.round(filled / salon.goal * 100), 100) : 100;
                       const [col, bg, brd] = need === 0 ? ["#14532d", "#dcfce7", "#86efac"] : need >= 5 ? ["#7f1d1d", "#fee2e2", "#fca5a5"] : need >= 3 ? ["#9a3412", "#ffedd5", "#fcd34d"] : ["#78350f", "#fef9c3", "#fde68a"];
                       return (
@@ -22874,6 +22909,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               <div style={{ height: 8, borderRadius: 99, background: "#e5e7eb", overflow: "hidden" }}>
                                 <div style={{ height: "100%", width: `${pct}%`, background: need === 0 ? "#16a34a" : pct < 60 ? "#dc2626" : pct < 80 ? "#f97316" : "#eab308", borderRadius: 99, transition: "width .5s" }} />
                               </div>
+                              {/* Pending-transfer adjustment — explains why the
+                              count differs from today's roster: incoming techs
+                              reduce the gap, departing techs add to it. */}
+                              {(pb.arriving > 0 || pb.leaving > 0) && (
+                                <div style={{ fontSize: 10, fontWeight: 700, marginTop: 5, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                  <span style={{ color: "#6b7280" }}>🔄 after transfers · now {pb.filledNow}/{salon.goal}</span>
+                                  {pb.arriving > 0 && <span style={{ color: "#15803d" }}>+{pb.arriving} arriving</span>}
+                                  {pb.leaving > 0 && <span style={{ color: "#b45309" }}>−{pb.leaving} leaving</span>}
+                                </div>
+                              )}
                             </div>
 
                             {/* Returning staff that will fill gaps */}
