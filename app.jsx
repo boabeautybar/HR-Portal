@@ -13881,7 +13881,10 @@ function _ctVehicleIcon(v) {
 // address field gets Google Places autocomplete. Degrades gracefully (offline
 // estimate + deep link) when the proxy / API key isn't set up. Used by the
 // Trial onboarding + Interview forms.
-function CtStorePicker({ value, onChange, selectedBranch, onPickStore, salonNames, label, hint, showInput, startDate }) {
+function CtStorePicker({ value, onChange, selectedBranch, onPickStore, salonNames, label, hint, showInput, startDate, branchNeed }) {
+  const needMap = branchNeed || {};
+  const hasNeed = Object.keys(needMap).length > 0;
+  const needOf = (name) => (needMap[name] && needMap[name].need) || 0;
   const [acItems, setAcItems] = React.useState([]);
   const [acOpen, setAcOpen] = React.useState(false);
   const [live, setLive] = React.useState(null);   // { byName, mode } | null
@@ -13985,22 +13988,29 @@ function CtStorePicker({ value, onChange, selectedBranch, onPickStore, salonName
 
   // Unified rows: offline ranking, overlaid + re-sorted by live transit time
   // once fetched. When the address isn't in the offline list we still build
-  // rows from the live results so any address can be ranked.
+  // rows from the live results so any address can be ranked. Ordering is
+  // STAFFING NEED first (most understaffed → top), commute breaks ties; so
+  // fully-staffed stores (need 0) sink to the bottom.
+  const commuteRank = (r) => r.live ? r.live.durationSeconds : ((r.off && r.off.ease) || 1e9);
+  const byNeedThenCommute = (a, b) => {
+    const na = needOf(a.name), nb = needOf(b.name);
+    if (na !== nb) return nb - na;                 // more need first
+    return commuteRank(a) - commuteRank(b);        // then easier commute
+  };
   const rows = React.useMemo(() => {
     const base = {}; (ranked.results || []).forEach(s => { base[s.name] = s; });
+    let list;
     if (live) {
       const order = Object.keys(live.byName).length ? Object.keys(live.byName) : names;
-      return order.map(name => {
+      list = order.map(name => {
         const off = base[name]; const lv = live.byName[name];
         return { name, off: off || null, live: (lv && lv.status === "OK") ? lv : null };
-      }).sort((a, b) => {
-        const ax = a.live ? a.live.durationSeconds : Infinity, bx = b.live ? b.live.durationSeconds : Infinity;
-        if (ax !== bx) return ax - bx;
-        return ((a.off && a.off.ease) || 1e9) - ((b.off && b.off.ease) || 1e9);
       });
+    } else {
+      list = (ranked.results || []).map(s => ({ name: s.name, off: s, live: null }));
     }
-    return (ranked.results || []).map(s => ({ name: s.name, off: s, live: null }));
-  }, [ranked, live, names.join("|")]);
+    return list.sort(byNeedThenCommute);
+  }, [ranked, live, names.join("|"), needMap]);
 
   const lblS = { display: "block", fontSize: 10, fontWeight: 700, color: "#BE185D", letterSpacing: "0.08em", marginBottom: 4, textTransform: "uppercase" };
   const inpS = { width: "100%", padding: "8px 11px", borderRadius: 8, border: "1px solid #FBCFE8", background: "#FCE7F3", fontFamily: "inherit", fontSize: 13, color: "#111827", boxSizing: "border-box" };
@@ -14095,27 +14105,42 @@ function CtStorePicker({ value, onChange, selectedBranch, onPickStore, salonName
 
         {haveList && (
           <div style={{ marginTop: 10 }}>
-            <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 6 }}>{live ? "Ranked by real transit time — pick a branch to see the full route" : "Offline estimate — tap Get commute times for real routes"}:</div>
+            <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 6 }}>{hasNeed ? "Ranked by staffing need, then commute — pick a branch to see the full route" : (live ? "Ranked by real transit time — pick a branch to see the full route" : "Offline estimate — tap Get commute times for real routes")}:</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {rows.map((s, i) => {
                 const off = s.off; const sel = selectedBranch === s.name; const open = expanded === s.name;
+                const nd = needMap[s.name] || {}; const need = nd.need || 0;
+                const showDivider = hasNeed && need === 0 && i > 0 && needOf(rows[i - 1].name) > 0;
+                const head = (typeof nd.filledNow === "number" && typeof nd.goal === "number") ? (nd.filledNow + "/" + nd.goal) : null;
                 return (
-                  <div key={s.name} style={{ background: "#fff", border: `1px solid ${sel ? "#4f46e5" : "#e5e7eb"}`, borderRadius: 9, overflow: "hidden" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", minHeight: 38 }}>
-                      <span style={{ fontSize: 12, fontWeight: 800, color: "#9ca3af", minWidth: 16 }}>{i + 1}</span>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>📍 {s.name} {s.live ? <span style={{ fontSize: 11, fontWeight: 800, color: "#15803d" }}>· 🚆 {s.live.durationText} · {s.live.distanceText}</span> : (off ? <span style={{ fontSize: 10, fontWeight: 600, color: "#9ca3af" }}>· ~{off.km} km</span> : (live ? <span style={{ fontSize: 10, fontWeight: 600, color: "#b45309" }}>· no transit route found</span> : null))}</div>
-                        {off && <div style={{ fontSize: 11, color: "#4f46e5" }}>{off.modes.join(" · ")}</div>}
+                  <React.Fragment key={s.name}>
+                    {showDivider && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "2px 2px 0" }}>
+                        <div style={{ flex: 1, height: 1, background: "#e5e7eb" }} />
+                        <span style={{ fontSize: 10, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: 0.4 }}>Fully staffed</span>
+                        <div style={{ flex: 1, height: 1, background: "#e5e7eb" }} />
                       </div>
-                      {off && <span style={{ fontSize: 10, fontWeight: 800, color: off.rating.color, background: off.rating.bg, borderRadius: 99, padding: "2px 8px", whiteSpace: "nowrap" }}>{off.rating.label}</span>}
-                      <button type="button" onClick={() => pick(s.name)} style={{ background: sel ? "#4f46e5" : "#eef2ff", color: sel ? "#fff" : "#4f46e5", border: "none", borderRadius: 7, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{sel ? "✓ Route" : "Use"}</button>
+                    )}
+                    <div style={{ background: "#fff", border: `1px solid ${sel ? "#4f46e5" : "#e5e7eb"}`, borderRadius: 9, overflow: "hidden", opacity: (hasNeed && need === 0) ? 0.72 : 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", minHeight: 38 }}>
+                        <span style={{ fontSize: 12, fontWeight: 800, color: "#9ca3af", minWidth: 16 }}>{i + 1}</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>📍 {s.name} {s.live ? <span style={{ fontSize: 11, fontWeight: 800, color: "#15803d" }}>· 🚆 {s.live.durationText} · {s.live.distanceText}</span> : (off ? <span style={{ fontSize: 10, fontWeight: 600, color: "#9ca3af" }}>· ~{off.km} km</span> : (live ? <span style={{ fontSize: 10, fontWeight: 600, color: "#b45309" }}>· no transit route found</span> : null))}</div>
+                          {(off || head) && <div style={{ fontSize: 11, color: "#4f46e5" }}>{off ? off.modes.join(" · ") : ""}{off && head ? " · " : ""}{head ? <span style={{ color: "#6b7280" }}>{head} staffed</span> : null}</div>}
+                        </div>
+                        {hasNeed && (need > 0
+                          ? <span style={{ fontSize: 10, fontWeight: 800, color: "#92400e", background: "#fef3c7", borderRadius: 99, padding: "2px 8px", whiteSpace: "nowrap" }}>Needs {need}</span>
+                          : <span style={{ fontSize: 10, fontWeight: 700, color: "#6b7280", background: "#f3f4f6", borderRadius: 99, padding: "2px 8px", whiteSpace: "nowrap" }}>Full</span>)}
+                        {off && <span style={{ fontSize: 10, fontWeight: 800, color: off.rating.color, background: off.rating.bg, borderRadius: 99, padding: "2px 8px", whiteSpace: "nowrap" }}>{off.rating.label}</span>}
+                        <button type="button" onClick={() => pick(s.name)} style={{ background: sel ? "#4f46e5" : "#eef2ff", color: sel ? "#fff" : "#4f46e5", border: "none", borderRadius: 7, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{sel ? "✓ Route" : "Use"}</button>
+                      </div>
+                      {open && renderDetail(s.name)}
                     </div>
-                    {open && renderDetail(s.name)}
-                  </div>
+                  </React.Fragment>
                 );
               })}
             </div>
-            <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 6 }}>{live ? "Live Google transit (bus / rail). " : "Offline estimate. "}Pick a branch for the full in-page route + leave-by time. Minibus taxis aren't in Google routing.</div>
+            <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 6 }}>{hasNeed ? "Most-understaffed first; commute breaks ties. " : (live ? "Live Google transit (bus / rail). " : "Offline estimate. ")}Pick a branch for the full in-page route + leave-by time. Minibus taxis aren't in Google routing.</div>
           </div>
         )}
       </div>
@@ -14123,7 +14148,7 @@ function CtStorePicker({ value, onChange, selectedBranch, onPickStore, salonName
   );
 }
 
-function InterviewsView({ interviewList, persistInterviews, trialList, persistTrialList, staff, managers, currentUser }) {
+function InterviewsView({ interviewList, persistInterviews, trialList, persistTrialList, staff, managers, currentUser, branchNeed }) {
   const canRecruit = canRecruitInterviews(currentUser);
   const canTrain = canTrainInterviews(currentUser);
   const viewerOnly = !canRecruit && !canTrain;
@@ -14489,6 +14514,7 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
                 onPickStore={(name) => setForm(f => ({ ...f, branch: name }))}
                 salonNames={SALONS.map(s => s.name)}
                 showInput={false}
+                branchNeed={branchNeed}
               />
             </div>
 
@@ -18498,7 +18524,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const need = Math.max(0, s.goal - filledFut);
       const arriving = (s.arriving ? s.arriving.length : 0) + (s.trialArriving ? s.trialArriving.length : 0);
       const leaving = (s.leaving ? s.leaving.length : 0) + (s.trialLeaving ? s.trialLeaving.length : 0);
-      perBranch[s.name] = { filledNow, filledFut, needNow, need, arriving, leaving };
+      perBranch[s.name] = { filledNow, filledFut, needNow, need, arriving, leaving, goal: s.goal };
       vacancies += need;
       vacanciesNow += needNow;
       if (filledFut < s.goal) understaffed++;
@@ -23556,6 +23582,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               staff={staff}
               managers={managers}
               currentUser={currentUser}
+              branchNeed={recruitFuture.perBranch}
             />
           )}
 
@@ -24964,6 +24991,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     hint="(helps assign nearest branch)"
                     showInput={true}
                     startDate={tForm.startDate}
+                    branchNeed={recruitFuture.perBranch}
                   />
                 </div>
 
