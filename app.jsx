@@ -32828,7 +32828,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const curCell = (result.grid[M.ec] && result.grid[M.ec][M.d]) || "";
               const isPinnedCell = !!(_effShiftPins[M.ec] && _effShiftPins[M.ec][M.d]);
               const dLabel = (() => { try { return new Date(M.d + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" }); } catch (_) { return M.d; } })();
-              const opts = [
+              const _isSplitStore = !!SPLIT_SHIFT_STORES[branch];
+              // Stores with shift splits (Sandown, Riverlands, …) get the
+              // WE/WM/WL/WB variants + Auto. Plain stores only have Work / Off.
+              const opts = _isSplitStore ? [
                 { code: "WE", label: "WE — Work early" },
                 { code: "WM", label: "WM — Work middle shift" },
                 { code: "WL", label: "WL — Work late" },
@@ -32837,8 +32840,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 { code: "O", label: "Off" },
                 { code: "R", label: "Requested off" },
                 { code: "E", label: "Extra cover" },
+              ] : [
+                { code: "W", label: "W — Work" },
+                { code: "O", label: "Off" },
+                { code: "R", label: "Requested off" },
+                { code: "E", label: "Extra cover" },
               ];
-              const MENU_W = 232, MENU_H = 392;
+              const MENU_W = 232, MENU_H = opts.length * 42 + 52;
               const vw = (typeof window !== "undefined" && window.innerWidth) || 1200;
               const vh = (typeof window !== "undefined" && window.innerHeight) || 800;
               const left = Math.max(8, Math.min(M.x, vw - MENU_W - 8));
