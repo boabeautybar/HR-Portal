@@ -2,6 +2,15 @@ node_modules/
 .DS_Store
 .venv/
 
+# Local secrets — Netlify Function env vars (Google Maps key, etc.). Never commit.
+# .env.example IS committed as a template; the real .env is not.
+.env
+.env.local
+.env.*.local
+
 # Fresha exports — contain client PII; imported into Supabase, never committed
 *.csv
 Gift Card Transactions.csv
+
+# Local Netlify folder
+.netlify
