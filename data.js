@@ -1720,6 +1720,25 @@
     return map || {};
   }
 
+  // ---------- Manager pinned shift codes (boa_mgr_shift_pins_v1) ----------
+  // Per-manager, per-day manual override of the AUTO-derived WE/WM/WL/WB
+  // shift label (applyBranchShiftRules normally assigns those from who's
+  // working that day + their role). A pin forces one specific cell to a
+  // chosen working variant and is overlaid AFTER the auto-labeller runs, so
+  // it changes only that cell and never re-shuffles anyone else's label.
+  // Keyed by employee code then ISO date — both globally unique — matching
+  // the schedule grid + custom-hours stores. Shape: { [ec]: { "YYYY-MM-DD": "WL" } }.
+  async function loadMgrShiftPins() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_mgr_shift_pins_v1").maybeSingle();
+    if (res.error) { console.error("loadMgrShiftPins:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveMgrShiftPins(map) {
+    var res = await sb.from("app_state").upsert({ key: "boa_mgr_shift_pins_v1", value: map || {} });
+    if (res.error) { console.error("saveMgrShiftPins:", res.error); throw res.error; }
+    return map || {};
+  }
+
   // Abscond / absence-warning follow-ups. When HR actions a flagged person on
   // the dashboard ("marked done" + a note of what was done) we store it here so
   // the warning clears — until the person misses again AFTER the actioned date.
@@ -2314,6 +2333,8 @@
     saveTechLoans: saveTechLoans,
     loadMgrTimes: loadMgrTimes,
     saveMgrTimes: saveMgrTimes,
+    loadMgrShiftPins: loadMgrShiftPins,
+    saveMgrShiftPins: saveMgrShiftPins,
     loadAbscondActions: loadAbscondActions,
     saveAbscondActions: saveAbscondActions,
     loadMgrLoans: loadMgrLoans,
