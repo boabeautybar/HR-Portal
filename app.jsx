@@ -154,7 +154,13 @@ function installReadOnlyGuard() {
 }
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────────
-const TODAY = new Date("2026-04-27");
+// TODAY is the real current date, pinned to UTC midnight of the local
+// calendar day so day-count maths against date-only strings (which parse as
+// UTC midnight) come out as clean whole days. Previously this was hardcoded
+// to a fixed date left over from development, which made every daysDiff()
+// countdown (transfer ETAs, maternity returns, permit deadlines, …) read
+// off the wrong "today".
+const TODAY = (() => { const n = new Date(); return new Date(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate())); })();
 function daysDiff(d) { return d ? Math.ceil((new Date(d) - TODAY) / 86400000) : null; }
 // Effective home branch on a given date (YYYY-MM-DD). A branch transfer is
 // stored as flags (transferring/transferTo/transferDate) without rewriting the
@@ -2755,19 +2761,34 @@ const LevelBadge = ({ level }) => {
 const BoaPathwaysBadge = ({ size }) => (
   <span title="BOA Pathways graduate" style={{ fontSize: size || 13, cursor: "default" }}>🎓</span>
 );
-function Meter({ current, capacity, goal, lowDemand }) {
+function Meter({ current, capacity, goal, lowDemand, projected }) {
   const target = goal || capacity;
   const pct = Math.min(current / target * 100, 100);
   const col = current === 0 ? "#dc2626" : current < target * 0.6 ? "#f97316" : current < target ? "#eab308" : "#16a34a";
+  // `projected` is the headcount once all pending transfers settle. Only show
+  // the second marker/label when it differs from the live count, so stores
+  // with no pending moves keep the original single-number meter.
+  const hasProjection = typeof projected === "number" && projected !== current;
+  const projPct = hasProjection ? Math.min(projected / target * 100, 100) : 0;
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontWeight: 700, marginBottom: 3, color: current >= target ? "#15803d" : "#9a3412" }}>
         <span>{current} / {target} active{lowDemand ? " (target)" : ""}</span>
         <span>{current >= target ? "✓ Sufficient" : `${target - current} needed`}</span>
       </div>
-      <div style={{ height: 7, borderRadius: 99, background: "#e5e7eb", overflow: "hidden" }}>
+      <div style={{ position: "relative", height: 7, borderRadius: 99, background: "#e5e7eb", overflow: "hidden" }}>
         <div style={{ height: "100%", width: `${pct}%`, background: col, borderRadius: 99, transition: "width .4s" }} />
+        {/* Dashed marker for the after-transfers headcount. */}
+        {hasProjection && (
+          <div title={`After transfers: ${projected} active`} style={{ position: "absolute", top: -1, bottom: -1, left: `calc(${projPct}% - 1px)`, width: 2, background: "#1d4ed8" }} />
+        )}
       </div>
+      {hasProjection && (
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, fontWeight: 700, marginTop: 3, color: "#1d4ed8" }}>
+          <span>🔮 After transfers: {projected} / {target} active</span>
+          <span>{projected >= target ? "✓ Sufficient" : `${target - projected} needed`}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -3051,7 +3072,7 @@ function TransferModal({ s, onClose, onConfirm, onCancelTransfer }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const inp = { width: "100%", padding: "8px 11px", borderRadius: 8, border: "1px solid #FBCFE8", background: "#FCE7F3", fontFamily: "inherit", fontSize: 13, boxSizing: "border-box" };
   const lbl = { display: "block", fontSize: 10, fontWeight: 700, color: "#BE185D", letterSpacing: "0.08em", marginBottom: 4, textTransform: "uppercase" };
-  const isPending = transferDate && new Date(transferDate) > new Date("2026-04-27");
+  const isPending = transferDate && new Date(transferDate) > TODAY;
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
@@ -3074,7 +3095,9 @@ function TransferModal({ s, onClose, onConfirm, onCancelTransfer }) {
 
         {/* Staff summary */}
         <div style={{ background: "#F5E1E7", border: "1px solid #7dd3fc", borderRadius: 10, padding: "12px 14px", marginBottom: 18 }}>
-          <div style={{ fontWeight: 700, fontSize: 13, color: "#0c4a6e" }}>{s.name} <span style={{ fontFamily: "monospace", fontSize: 11, color: "#BE185D" }}>({s.ec})</span></div>
+          <div style={{ fontWeight: 700, fontSize: 13, color: "#0c4a6e" }}>{s.name} {s.ec
+            ? <span style={{ fontFamily: "monospace", fontSize: 11, color: "#BE185D" }}>({s.ec})</span>
+            : <span style={{ background: "#FCD34D", color: "#78350f", fontSize: 9, fontWeight: 800, padding: "1px 7px", borderRadius: 999, letterSpacing: "0.04em" }}>{(s.role || "nt") === "am" ? "AM TRIAL" : "ON TRIAL / INDUCTION"}</span>}</div>
           <div style={{ fontSize: 11, color: "#BE185D", marginTop: 3 }}>Currently at: <strong>{s.branch}</strong></div>
         </div>
 
@@ -10046,7 +10069,7 @@ function findLeavePerson(ec, enriched, managers) {
 // 20% of techs per store per day, counting approved leave on the calendar).
 function assessLeaveOps(r, enriched, managers, leaveRecs) {
   const ec = String(r.ec || "").trim().toUpperCase();
-  const isMgr = /M$/i.test(ec);
+  const isMgr = isManagerEc(ec);
   const pool = isMgr ? (managers || []) : (enriched || []);
   const person = findLeavePerson(ec, enriched, managers);
   if (!ec || !person) return { matched: false, isMgr };
@@ -10104,7 +10127,7 @@ function assessLeaveOps(r, enriched, managers, leaveRecs) {
 async function publishLeaveToSchedule(ec, branch, startDate, endDate) {
   if (!window.BOA_DB || !window.BOA_DB.loadSchedule || !window.BOA_DB.saveSchedule) return;
   if (!ec || !branch || !startDate || !endDate) return;
-  if (/M$/i.test(String(ec).trim())) return;
+  if (isManagerEc(ec)) return;
   const sd = new Date(startDate + "T00:00:00"), ed = new Date(endDate + "T00:00:00");
   if (isNaN(sd.getTime()) || isNaN(ed.getTime()) || ed < sd) return;
   // Group the leave days by schedule key: tech schedules live under the
@@ -10235,7 +10258,15 @@ async function finalizeLeaveIfReady(r, deps) {
   if (logActivity) logActivity("Approved leave request", r.name, r.start_date + " → " + r.end_date + (added ? " · added to calendar" : ""), "Leave");
 }
 
-function isManagerEc(ec) { return /M$/i.test(String(ec || "").trim()); }
+// Managers use TWO employee-code conventions: the modern format ends in "M"
+// (e.g. B643M — onboarding appends the M, see ob-form), and a legacy format
+// where the code STARTS with M followed by digits (e.g. M003 = Robin P, an
+// assistant manager). Nail-tech codes are always B### (B-prefix, never start
+// with M, never end in M), so matching either manager shape is unambiguous.
+// Detecting only the trailing-M form silently mis-classified every legacy
+// M### assistant manager as a tech — sending their approved extra days to the
+// tech schedule/kiosk instead of the manager schedule & Manager Coverage.
+function isManagerEc(ec) { const e = String(ec || "").trim(); return /M$/i.test(e) || /^M\d/i.test(e); }
 // Estimated off-days inside a stretch of `calDays` calendar days when there is
 // no saved roster to read the real off-days from. Short requests (1–5 days) are
 // assumed to land entirely on working days, so nothing is deducted; a 6-day
@@ -10345,7 +10376,7 @@ function freshaLeaveBlocks(leaveRecs, enriched) {
   const cycleEnd = cy + "-" + pad(cm) + "-24";     // 24th of the cycle's end month
   const now = new Date();
   const ymdNow = now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate());
-  const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
+  const isTech = (ec) => !isManagerEc(ec);
   const byEc = {};
   (enriched || []).forEach(s => { if (s && s.ec) byEc[String(s.ec).toUpperCase().trim()] = s; });
   // Content-based key (tech + date range) so the planner holding duplicate
@@ -10374,7 +10405,7 @@ function freshaLeaveBlocks(leaveRecs, enriched) {
 // after their last day (the same window leavers stay visible elsewhere). Keyed
 // "off-<ec>" so the "removed" tick rides on the shared freshaBlocks store.
 function freshaOffboardRemovals(enriched) {
-  const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
+  const isTech = (ec) => !isManagerEc(ec);
   const out = [], seen = new Set();
   (enriched || []).forEach(s => {
     if (!s || !s.ec || !isTech(s.ec) || !s.offboarded || s.offHidden) return;
@@ -11303,7 +11334,7 @@ function CalledInSickTab({ requests, setRequests, currentUser }) {
           const st = LEAVE_STATUS[r.status] || LEAVE_STATUS.pending;
           // Nail techs take Fresha bookings (manager ECs end in "M"); suggest
           // blocking them so no clients book a tech who's off.
-          const isTech = !/M$/i.test((r.ec || "").trim());
+          const isTech = !isManagerEc(r.ec);
           const firstName = (r.name || "").trim().split(/\s+/)[0] || "this tech";
           const awayLbl = fmtIncidentDate(r.start_date) + (r.end_date !== r.start_date ? "–" + fmtIncidentDate(r.end_date) : "");
           // Pull the proof URL out of the reason so we can show a compact "view"
@@ -11417,21 +11448,35 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
       if (dom >= 25) { m += 1; if (m > 12) { m = 1; y += 1; } }   // END-month ym (25th→24th cycle)
       const endYm = y + "-" + String(m).padStart(2, "0");
       const dayKey = String(dom);
+      const ymdKey = String(r.work_date).trim().slice(0, 10);    // full date, e.g. "2026-06-23"
       // Managers live on the manager schedule (boa_mgrsched), stored under the
       // cycle's START-month ym; nail techs on boa_sched under the END-month ym.
       // Writing the manager grid is what makes an approved manager extra day
       // show on the Scheduling tab AND the Manager Coverage overview.
-      const isMgr = /M$/i.test(String(r.ec).trim());
+      // KEY SHAPE MATTERS: manager grids are full-date (YMD) keyed
+      // ("2026-06-23"); nail-tech grids are day-of-month keyed ("23"). Writing
+      // a manager cell under the day-of-month key let the manager's existing
+      // YMD cell for that day (e.g. an "O" off — exactly when an extra day is
+      // granted) shadow it, so it never showed on Coverage or the schedule.
+      const isMgr = isManagerEc(r.ec);
       let smy = y, smm = m - 1; if (smm < 1) { smm = 12; smy -= 1; }
       const schedYm = isMgr ? (smy + "-" + String(smm).padStart(2, "0")) : endYm;
+      const cellKey = isMgr ? ymdKey : dayKey;
       const sched = await window.BOA_DB.loadSchedule(r.store, schedYm, isMgr);
       const grid = (sched && sched.grid) || {};
       const want = String(r.ec).trim().toUpperCase();
       const ecKey = Object.keys(grid).find(k => String(k).trim().toUpperCase() === want) || String(r.ec).trim();
       const row = grid[ecKey] || {};
-      const cur = row[dom] != null ? row[dom] : row[String(dom)];
+      // Read the cell we'd write, also tolerating a legacy day-of-month entry a
+      // previous (buggy) approve may have left on a manager row.
+      const cur = row[cellKey] != null ? row[cellKey]
+        : (row[dom] != null ? row[dom] : row[String(dom)]);
       if (publish) {
-        row[String(dom)] = "E";
+        row[cellKey] = "E";
+        // Managers: drop any legacy day-of-month cell for the same date so it
+        // can't shadow / sit beside the YMD cell that Coverage + the editor
+        // read (also cleans up days written by the old day-of-month code).
+        if (isMgr) { delete row[dom]; delete row[String(dom)]; }
         grid[ecKey] = row;
         await window.BOA_DB.saveSchedule(r.store, schedYm, grid, isMgr);
         // Mirror into the kiosk/attendance extras sidecar (END-month keyed) —
@@ -11442,18 +11487,41 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
         }
       } else {
         // Only revert a schedule cell we set; always clear our sidecar entry.
-        if (cur === "E") { delete row[dom]; delete row[String(dom)]; grid[ecKey] = row; await window.BOA_DB.saveSchedule(r.store, schedYm, grid, isMgr); }
+        if (cur === "E") {
+          delete row[cellKey]; delete row[dom]; delete row[String(dom)];
+          grid[ecKey] = row;
+          await window.BOA_DB.saveSchedule(r.store, schedYm, grid, isMgr);
+        }
         if (!isMgr && window.BOA_DB.clearExtraDay) {
           try { await window.BOA_DB.clearExtraDay(r.store, endYm, dayKey, String(r.ec).trim()); }
           catch (e2) { console.error("clearExtraDay:", e2); }
         }
+      }
+      // Self-heal: legacy M### manager codes used to be mis-detected as techs
+      // (see isManagerEc), so an earlier approve wrote this extra day onto the
+      // TECH schedule + kiosk extras sidecar instead of the manager schedule.
+      // A manager never belongs there — strip any such stale "E" so the day
+      // lives only on the manager schedule / Manager Coverage. Runs on both
+      // publish and decline so re-approving an old request fully corrects it.
+      if (isMgr) {
+        try {
+          const tsched = await window.BOA_DB.loadSchedule(r.store, endYm, false);
+          const tgrid = (tsched && tsched.grid) || {};
+          const tKey = Object.keys(tgrid).find(k => String(k).trim().toUpperCase() === want);
+          if (tKey) {
+            const trow = tgrid[tKey] || {};
+            const tcur = trow[dom] != null ? trow[dom] : trow[String(dom)];
+            if (tcur === "E") { delete trow[dom]; delete trow[String(dom)]; tgrid[tKey] = trow; await window.BOA_DB.saveSchedule(r.store, endYm, tgrid, false); }
+          }
+          if (window.BOA_DB.clearExtraDay) await window.BOA_DB.clearExtraDay(r.store, endYm, dayKey, String(r.ec).trim());
+        } catch (e3) { console.error("applyExtraDayToSchedule (manager self-heal):", e3); }
       }
     } catch (e) { console.error("applyExtraDayToSchedule:", e); }
   };
   const setStatus = async (r, status, note) => {
     if (busy) return;
     if (status === "approved") {
-      const isTech = !/M$/i.test(String(r.ec || "").trim());
+      const isTech = !isManagerEc(r.ec);
       if (!window.confirm(
         "Are you sure we need extra cover on " + fmtIncidentDate(r.work_date) + "?\n\n" +
         "Check the schedule / demand for that day first — only approve if cover is genuinely needed.\n\n" +
@@ -11494,7 +11562,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
   const pendingCount = (requests || []).filter(r => r.status === "pending").length;
   // Split into managers (EC ends in "M") and nail techs, shown as two
   // distinct colour-coded columns side by side.
-  const isMgrReq = (r) => /M$/i.test(String(r.ec || "").trim());
+  const isMgrReq = (r) => isManagerEc(r.ec);
   const mgrReqs = filtered.filter(isMgrReq);
   const techReqs = filtered.filter(r => !isMgrReq(r));
   const groups = [
@@ -11550,7 +11618,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
             {r.status !== "pending" && r.decided_by && (
               <div style={{ marginTop: 10, background: r.status === "approved" ? "#f0fdf4" : "#fef2f2", border: "1px solid " + (r.status === "approved" ? "#bbf7d0" : "#fecaca"), borderRadius: 11, padding: "10px 13px" }}>
                 <div style={{ fontSize: 12, fontWeight: 800, color: r.status === "approved" ? "#15803d" : "#b91c1c" }}>{r.status === "approved" ? "✅ Approved" : "✕ Declined"}</div>
-                {r.status === "approved" && <div style={{ fontSize: 11.5, color: "#15803d", marginTop: 2 }}>📅 Published to {(r.name || "the").split(" ")[0]}'s {/M$/i.test(String(r.ec || "").trim()) ? "manager schedule & coverage" : "schedule"} as an extra day ({fmtIncidentDate(r.work_date)}).</div>}
+                {r.status === "approved" && <div style={{ fontSize: 11.5, color: "#15803d", marginTop: 2 }}>📅 Published to {(r.name || "the").split(" ")[0]}'s {isManagerEc(r.ec) ? "manager schedule & coverage" : "schedule"} as an extra day ({fmtIncidentDate(r.work_date)}).</div>}
                 {r.decision_note && <div style={{ fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{r.decision_note}</div>}
                 <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>{r.decided_by}{r.decided_at ? " · " + fmtIncidentTime(r.decided_at) : ""}</div>
               </div>
@@ -11599,13 +11667,13 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
 //   • approved nail-tech extra days (open the tech for that single day), and
 //   • trial techs awaiting their Fresha opening (trial window, then the month
 //     once they pass). Tick each one once it's opened on Fresha.
-function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen, trialList, setTrialFresha, leaveRequests, freshaBlocks, markFreshaBlocked, leaveRecs, enriched, obList, markFreshaMgrProfile, managers }) {
+function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen, trialList, setTrialFresha, leaveRequests, freshaBlocks, markFreshaBlocked, leaveRecs, enriched, obList, markFreshaMgrProfile, managers, techLoans }) {
   const card = { background: "#fff", border: "1px solid #e9d5ff", borderRadius: 12, padding: "12px 14px", marginBottom: 10 };
   const chip = (bg, fg, txt) => <span style={{ background: bg, color: fg, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 800 }}>{txt}</span>;
   const openBtn = (label, onClick) => <button onClick={onClick} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "6px 13px", fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>{label}</button>;
   const undo = (onClick) => <button onClick={onClick} style={{ background: "transparent", color: "#15803d", border: "none", fontSize: 11, fontWeight: 700, cursor: "pointer", textDecoration: "underline" }}>undo</button>;
 
-  const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
+  const isTech = (ec) => !isManagerEc(ec);
   const isOpen = (id) => !!(freshaExtraOpen && freshaExtraOpen[id] && freshaExtraOpen[id].opened);
   const extraTodos = (extraDayRequests || []).filter(r => r.status === "approved" && isTech(r.ec))
     .sort((a, b) => (Number(isOpen(a.id)) - Number(isOpen(b.id))) || (a.work_date || "").localeCompare(b.work_date || ""));
@@ -11638,6 +11706,24 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
   // Off-boarded nail techs to remove from Fresha entirely (all future dates).
   const removeTodos = freshaOffboardRemovals(enriched)
     .sort((a, b) => (Number(isBlocked(a.key)) - Number(isBlocked(b.key))) || (a.leftDate || "").localeCompare(b.leftDate || ""));
+
+  // Borrowed techs: a logged day-loan means the nail tech takes Fresha bookings
+  // at the branch she's lent TO that day, and none at her home branch. So each
+  // borrow carries two ticks — open her at the destination, close her at home —
+  // both for that single day. Sourced from boa_tech_loans_v1; only today/future
+  // loans (a past loan day can't be actioned). The open tick rides on the
+  // extra-open store and the close tick on the blocks store, keyed off the loan
+  // id so they're independent and survive a reload.
+  const _todayYmd = new Date().toISOString().slice(0, 10);
+  const loanTodos = (techLoans || [])
+    .filter(l => l && l.ec && l.date && l.fromBranch && l.toBranch && isTech(l.ec) && l.date >= _todayYmd)
+    .map(l => ({
+      id: l._id, ec: l.ec, name: l.name || l.ec, date: l.date,
+      fromBranch: l.fromBranch, toBranch: l.toBranch,
+      openKey: "loan-" + l._id + "-open", closeKey: "loan-" + l._id + "-close"
+    }))
+    .sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+  const loanDoneFn = (l) => isOpen(l.openKey) && isBlocked(l.closeKey);
 
   const secHead = (txt) => <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase", color: "#6b21a8", margin: "0 0 2px" }}>{txt}</div>;
   const secNote = (txt) => <div style={{ fontSize: 12, color: "#9333ea", marginBottom: 10 }}>{txt}</div>;
@@ -11713,6 +11799,40 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
       </div>
     );
   };
+  const loanCard = (l) => {
+    const opened = isOpen(l.openKey);
+    const closed = isBlocked(l.closeKey);
+    const done = opened && closed;
+    const dw = dowInfo(l.date);
+    const om = (freshaExtraOpen && freshaExtraOpen[l.openKey]) || {};
+    const cm = (freshaBlocks && freshaBlocks[l.closeKey]) || {};
+    return (
+      <div key={"ln-" + l.id} style={{ ...card, opacity: done ? 0.7 : 1 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <strong style={{ color: "#111827", fontSize: 14 }}>{l.name}</strong>
+          {chip("#e0f2fe", "#075985", "🔄 Borrowed")}
+          <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(l.date)}</span>
+          {dw.name && chip(dw.busy ? "#ffedd5" : "#f3f4f6", dw.busy ? "#9a3412" : "#6b7280", (dw.busy ? "🔥 " : "") + dw.name)}
+          {l.ec && <span style={{ color: "#9ca3af", fontSize: 12, fontFamily: "monospace" }}>{l.ec}</span>}
+        </div>
+        <div style={{ fontSize: 12, color: "#9d6a82", margin: "6px 0 2px" }}>📍 {l.fromBranch} → {l.toBranch}</div>
+        <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginTop: 8 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 12, color: "#374151", fontWeight: 700 }}>Open at {l.toBranch}:</span>
+            {opened
+              ? <>{chip("#dcfce7", "#166534", "✓ Opened" + (om.by ? " · " + om.by : ""))}{undo(() => markFreshaExtraOpen(l.openKey, false))}</>
+              : openBtn("Mark opened on Fresha", () => markFreshaExtraOpen(l.openKey, true))}
+          </span>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 12, color: "#374151", fontWeight: 700 }}>Close at {l.fromBranch}:</span>
+            {closed
+              ? <>{chip("#dcfce7", "#166534", "✓ Closed" + (cm.by ? " · " + cm.by : ""))}{undo(() => markFreshaBlocked(l.closeKey, false))}</>
+              : openBtn("Mark closed on Fresha", () => markFreshaBlocked(l.closeKey, true))}
+          </span>
+        </div>
+      </div>
+    );
+  };
   const profileCard = (o) => (
     <div key={"p-" + o._id} style={card}>
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -11736,15 +11856,17 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
   const blockDone = blockTodos.filter(r => isBlocked(r.key));
   const removePending = removeTodos.filter(r => !isBlocked(r.key));
   const removeDone = removeTodos.filter(r => isBlocked(r.key));
-  const doneCount = extraDone.length + blockDone.length + removeDone.length;
+  const loanPending = loanTodos.filter(l => !loanDoneFn(l));
+  const loanDone = loanTodos.filter(loanDoneFn);
+  const doneCount = extraDone.length + blockDone.length + removeDone.length + loanDone.length;
   const pendingCount = extraPending.length + trialOpen.length + monthOpen.length
-    + blockPending.length + removePending.length + profileTodos.length;
+    + blockPending.length + removePending.length + profileTodos.length + loanPending.length;
 
   return (
     <div>
       <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#6b21a8", margin: 0 }}>💇‍♀️ Fresha To-Do</h2>
       <p style={{ color: "#9333ea", fontSize: 13.5, margin: "6px 0 18px", maxWidth: 700 }}>
-        Fresha reminders — create profiles for new managers, open approved extra-day cover and trial techs, block techs who are off (sick / absent, or on annual / emergency leave this cycle), and remove off-boarded techs from all future dates. Outstanding items are listed first; completed ones tuck into Done at the bottom.{pendingCount > 0 && <strong> · {pendingCount} to do</strong>}
+        Fresha reminders — create profiles for new managers, open approved extra-day cover and trial techs, move borrowed techs (open at the branch they're lent to, close at home for that day), block techs who are off (sick / absent, or on annual / emergency leave this cycle), and remove off-boarded techs from all future dates. Outstanding items are listed first; completed ones tuck into Done at the bottom.{pendingCount > 0 && <strong> · {pendingCount} to do</strong>}
       </p>
 
       {pendingCount === 0 && (
@@ -11764,6 +11886,14 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
           {secHead("💰 Extra-day cover · " + extraPending.length + " to open")}
           {secNote("Each approved extra day means opening that nail tech on Fresha for that single day so she can take bookings.")}
           {extraPending.map(extraCard)}
+        </div>
+      )}
+
+      {loanPending.length > 0 && (
+        <div style={{ marginBottom: 22 }}>
+          {secHead("🔄 Borrowed techs · " + loanPending.length + " to sort")}
+          {secNote("Each logged day-loan needs the tech opened on Fresha at the branch she's borrowed to, and closed at her home branch — both just for that day, so client bookings land where she actually is.")}
+          {loanPending.map(loanCard)}
         </div>
       )}
 
@@ -11815,6 +11945,7 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
           <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase", color: "#6b7280" }}>✓ Done · {doneCount}</summary>
           <div style={{ marginTop: 12 }}>
             {extraDone.map(extraCard)}
+            {loanDone.map(loanCard)}
             {blockDone.map(blockCard)}
             {removeDone.map(removeCard)}
           </div>
@@ -12563,7 +12694,7 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
 
   // Split into managers (EC ends in "M") and nail techs, shown as two distinct
   // colour-coded columns side by side — same as the Extra-Day Requests tab.
-  const isMgrReq = (r) => /M$/i.test(String(r.ec || "").trim());
+  const isMgrReq = (r) => isManagerEc(r.ec);
   const mgrReqs = filtered.filter(isMgrReq);
   const techReqs = filtered.filter(r => !isMgrReq(r));
   const groups = [
@@ -16388,9 +16519,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // loan cells for managers from other stores, and a cleared cell
         // saved as "" while a stale day-of-month key still says "W"
         // would otherwise read as "scheduled to work".
+        // Evaluate each manager at their EFFECTIVE branch (mirrors the tech
+        // block above). Once a transfer has settled, the manager belongs to
+        // the destination, so we judge them against the destination's roster +
+        // schedule — not the stale "W" cells still sitting in the old branch's
+        // grid. Without this a manager who moved branches and is OFF at the new
+        // store (e.g. Vela: Sea Point→Green Point, off at Green Point today)
+        // still reads as "scheduled but not checked in" at the OLD store.
         const _branchMgrEcs = new Set(
           (managers || [])
-            .filter(m => m && m.branch === name && !m.onMat && !m.offboarded && !(m.leftDate && ymd > m.leftDate) && !(m.startDate && ymd < m.startDate))
+            .filter(m => m && _effBranch(m) === name && !m.onMat && !m.offboarded && !(m.leftDate && ymd > m.leftDate) && !(m.startDate && ymd < m.startDate))
             .map(m => String(m.ec || "").trim())
             .filter(Boolean)
         );
@@ -17850,6 +17988,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const settle = (x) => (x && x.transferring && x.transferTo && x.transferDate && x.transferDate < _ymd)
       ? { ...x, branch: x.transferTo, transferring: false, transferTo: null } : x;
     const eff = enriched.map(settle);
+    // Trial candidates settle the same way staff do (the settle() helper only
+    // reads branch / transferring / transferTo / transferDate, all of which
+    // trial records now carry once a transfer is scheduled).
+    const effTrials = (trialList || []).map(settle);
     return SALONS.map(salon => {
     // .offHidden hides leavers older than 31 days post-leftDate from the cards.
     const all = eff.filter(s => s.branch === salon.name && !s.offHidden).sort(ecSort);
@@ -17883,9 +18025,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     // "failed", "hired", and anyone already promoted to onboarding — those have
     // left the trial strip. Split by role: nail-tech trials sit with the techs;
     // AM trials belong in the management-team box.
-    const trialAll = trialList.filter(c => c.branch === salon.name && c.status !== "failed" && c.status !== "hired" && !c.promotedToOnboarding);
+    // Trial transfers mirror staff transfers. A candidate whose transfer date
+    // has passed sits at the destination (effTrials applied settle); a pending
+    // transfer keeps them at the origin (still counted there) AND surfaces an
+    // "arriving" row on the destination card. The driving use case: a new hire
+    // / trial candidate works at an existing store while their new store is
+    // still being built, then moves across on the opening date.
+    const trialAll = effTrials.filter(c => c.branch === salon.name && c.status !== "failed" && c.status !== "hired" && !c.promotedToOnboarding);
     const trial = trialAll.filter(c => (c.role || "nt") !== "am");
     const trialMgrs = trialAll.filter(c => (c.role || "nt") === "am");
+    // Pending incoming trial transfers pointing at this branch.
+    const arrivingTrialAll = (trialList || [])
+      .filter(c => c.transferring && c.transferTo === salon.name && c.transferDate && c.transferDate >= _ymd && c.status !== "failed" && c.status !== "hired" && !c.promotedToOnboarding)
+      .map(c => ({ ...c, branch: salon.name, transferFrom: c.branch, _shadow: true }));
+    const trialArriving = arrivingTrialAll.filter(c => (c.role || "nt") !== "am");
+    const trialMgrsArriving = arrivingTrialAll.filter(c => (c.role || "nt") === "am");
+    // Trial candidates leaving this branch on a pending transfer.
+    const trialLeaving = trial.filter(c => c.transferring && c.transferTo && c.transferTo !== salon.name);
+    const trialMgrsLeaving = trialMgrs.filter(c => c.transferring && c.transferTo && c.transferTo !== salon.name);
+    // Projected nail-tech trial headcount once every pending trial move settles.
+    const projectedTrial = trial.length - trialLeaving.length + trialArriving.length;
 
     // Use targetCapacity for low-demand stores (e.g. Betty), full capacity otherwise
     const goal = salon.targetCapacity || salon.capacity;
@@ -17901,9 +18060,46 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const urgency = preOpen
       ? "preopen"
       : (active.length === 0 ? "critical" : fillRate < 0.5 ? "high" : fillRate < 1 ? "low" : "full");
-    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, arrivingMgrs, trial, trialMgrs, urgency, goal, preOpen, daysToOpen };
+    // Forward staffing planning. `active` still counts people who are LEAVING
+    // (a pending outgoing transfer keeps the stale `branch` until the date
+    // arrives) and EXCLUDES people who are ARRIVING (shown as `arriving` but
+    // not counted). `leaving` are the active techs with a pending move to
+    // another branch; `projectedActive` is the headcount once every pending
+    // transfer has settled: current − leaving + arriving. Lets the team plan
+    // for the future instead of only seeing the snapshot of who's here today.
+    const leaving = active.filter(s => s.transferring && s.transferTo && s.transferTo !== salon.name);
+    const projectedActive = active.length - leaving.length + arriving.length;
+    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, arrivingMgrs, trial, trialMgrs, trialArriving, trialMgrsArriving, trialLeaving, trialMgrsLeaving, projectedTrial, urgency, goal, preOpen, daysToOpen, leaving, projectedActive };
     });
   }, [enriched, enrichedManagers, managers, trialList, _customSalonsTick]);
+
+  // Recruitment, forward-looking. Pending inter-branch transfers redistribute
+  // staff: a branch LOSING a tech has a real opening to fill, a branch GAINING
+  // one needs to hire less. So the recruitment tab plans against each store's
+  // PROJECTED headcount (after every pending transfer settles), not just
+  // today's snapshot. Trials still occupy a seat. Per-branch need is clamped at
+  // 0; the company total can sit above the snapshot when a leaver's store can't
+  // be backfilled by the incoming move (e.g. the destination was already full).
+  const recruitFuture = useMemo(() => {
+    const perBranch = {};
+    let vacancies = 0, vacanciesNow = 0, understaffed = 0, pendingMoves = 0;
+    for (const s of salonData) {
+      const filledNow = s.active.length + s.trial.length;
+      // Pending trial transfers shift the future fill the same way staff moves
+      // do — projectedTrial already nets arriving − leaving trial candidates.
+      const filledFut = s.projectedActive + (s.projectedTrial != null ? s.projectedTrial : s.trial.length);
+      const needNow = Math.max(0, s.goal - filledNow);
+      const need = Math.max(0, s.goal - filledFut);
+      const arriving = (s.arriving ? s.arriving.length : 0) + (s.trialArriving ? s.trialArriving.length : 0);
+      const leaving = (s.leaving ? s.leaving.length : 0) + (s.trialLeaving ? s.trialLeaving.length : 0);
+      perBranch[s.name] = { filledNow, filledFut, needNow, need, arriving, leaving };
+      vacancies += need;
+      vacanciesNow += needNow;
+      if (filledFut < s.goal) understaffed++;
+      pendingMoves += arriving + leaving;
+    }
+    return { perBranch, vacancies, vacanciesNow, understaffed, pendingMoves };
+  }, [salonData]);
 
   // Managers placed at their effective branch for Locations: a manager whose
   // transfer date is strictly in the past shows at the new branch with the
@@ -18032,6 +18228,36 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // accordingly. Persistence was previously missing for both — now the new
   // branch / transfer flags survive a page refresh.
   async function handleTransfer({ staff, toBranch, transferDate, note, isPending }) {
+    // Trial / induction candidates live in trialList (boa_trial_period_v1),
+    // not the staff or managers tables. They now carry the same transfer flags
+    // as staff so the Locations cards can move them on a scheduled date. Detect
+    // this FIRST — an AM trial has role "am", which would otherwise match the
+    // manager role test below and route the save to the wrong table.
+    if (staff && staff._isTrial) {
+      const fields = isPending
+        ? { transferring: true, transferTo: toBranch, transferDate, transferNote: note }
+        : { branch: toBranch, transferring: false, transferTo: null, transferDate: null, transferNote: note };
+      // Strip the UI-only helper flags before persisting.
+      const { _isTrial, _shadow, isShadow, transferFrom, ...clean } = staff;
+      const updated = { ...clean, ...fields, updatedAt: new Date().toISOString() };
+      const nextTrial = (trialList || []).map(t => t._id === staff._id ? updated : t);
+      setTrialList(nextTrial);
+      try {
+        await window.BOA_DB.saveTrialPeriod(nextTrial);
+      } catch (e) {
+        alert("Could not save trial transfer: " + (e.message || e));
+        return;
+      }
+      setTransferModal(null);
+      logActivity(
+        isPending ? "Scheduled trial transfer" : "Transferred trial candidate",
+        staff.name || "",
+        (staff.branch || "—") + " → " + (toBranch || "—") +
+        (transferDate ? " on " + transferDate : "") +
+        (note ? " · " + note : "")
+      );
+      return;
+    }
     // Detect whether this record lives in the managers list. _id can drift
     // between staff and manager rows for the same person (e.g. a manager
     // who was previously a tech keeps a staff row with a different UUID),
@@ -18073,6 +18299,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }
 
   async function cancelTransfer(staff) {
+    if (staff && staff._isTrial) {
+      const { _isTrial, _shadow, isShadow, transferFrom, ...clean } = staff;
+      const updated = { ...clean, transferring: false, transferTo: null, transferDate: null, transferNote: null, updatedAt: new Date().toISOString() };
+      const nextTrial = (trialList || []).map(t => t._id === staff._id ? updated : t);
+      setTrialList(nextTrial);
+      try {
+        await window.BOA_DB.saveTrialPeriod(nextTrial);
+      } catch (e) {
+        alert("Could not cancel trial transfer: " + (e.message || e));
+        return;
+      }
+      setTransferModal(null);
+      logActivity("Cancelled trial transfer", staff.name || "", "Was → " + (staff.transferTo || "—"));
+      return;
+    }
     const role = (staff && staff.role) || "";
     const isMgr =
          !!(managers || []).find(m => m && m._id === staff._id)
@@ -18489,7 +18730,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   // to the Fresha openers (e.g. Farida) who don't pass the HR
                   // gate that hides the other request tabs.
                   (() => {
-                    const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
+                    const isTech = (ec) => !isManagerEc(ec);
                     const isOpen = (id) => !!(freshaExtraOpen && freshaExtraOpen[id] && freshaExtraOpen[id].opened);
                     const extraToOpen = (extraDayRequests || []).filter(r => r.status === "approved" && isTech(r.ec) && !isOpen(r.id)).length;
                     const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
@@ -18504,7 +18745,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const _recentOb = (o) => { const t = Date.parse(o.startDate || o.addedAt || ""); return !isNaN(t) && (Date.now() - t) < 60 * 86400000; };
                     const _liveMgrEcs = new Set((managers || []).filter(m => m && m.ec).map(m => String(m.ec).toUpperCase().trim()));
                     const profilesToCreate = (obList || []).filter(o => o && _mgrPos.has(o.position) && !o.freshaProfileCreated && _recentOb(o) && _liveMgrEcs.has(String(o.ec || "").toUpperCase().trim())).length;
-                    const n = extraToOpen + trialToOpen + monthToOpen + toBlock + toRemove + profilesToCreate;
+                    // Borrowed techs (today/future) still needing to be opened at the
+                    // destination and closed at home count as one item each until both ticked.
+                    const _todayYmd = new Date().toISOString().slice(0, 10);
+                    const loanToSort = (techLoans || []).filter(l => l && l.ec && l.date && l.fromBranch && l.toBranch && isTech(l.ec) && l.date >= _todayYmd
+                      && !(isOpen("loan-" + l._id + "-open") && isBlocked("loan-" + l._id + "-close"))).length;
+                    const n = extraToOpen + trialToOpen + monthToOpen + toBlock + toRemove + profilesToCreate + loanToSort;
                     return { t: "freshaTodo", l: "💇‍♀️ Fresha To-Do" + (n ? "  (" + n + ")" : "") };
                   })(),
                   { t: "storeOpenings", l: "🔓 Store Openings" },
@@ -18769,7 +19015,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const _p2 = n => String(n).padStart(2, "0");
           const _todayY = (d => d.getFullYear() + "-" + _p2(d.getMonth() + 1) + "-" + _p2(d.getDate()))(new Date());
           const interviewNeedsAction = (interviewList || []).filter(r => !r.promotedToTrialId && ((r.attendance === "came" && !r.outcome) || (r.interviewDate && r.interviewDate < _todayY && !r.attendance) || (r.outcome === "passed" && !r.inductionDate))).length;
-          const counts = { nailTech: stats.vacancies, mgrRecruit: mgrVacancies, interviews: interviewPipeline };
+          const counts = { nailTech: recruitFuture.vacancies, mgrRecruit: mgrVacancies, interviews: interviewPipeline };
           const TABS = [
             { k: "nailTech", label: "💅 Nail Tech Recruitment", accent: "#BE185D", soft: "#FCE7F3", border: "#FBCFE8", sub: "Vacancies by branch" },
             { k: "interviews", label: "📋 Nail Tech Interviews", accent: "#4f46e5", soft: "#eef2ff", border: "#c7d2fe", sub: "Schedule, outcomes & inductions", pip: interviewNeedsAction },
@@ -18805,8 +19051,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             { l: "Returning ≤60d", v: stats.returning60, i: "🔜", c: "#065f46", bg: "#d1fae5" },
             { l: "Z/NA (Risk)", v: stats.zna, i: "🚨", c: "#7f1d1d", bg: "#fee2e2" },
             { l: "No Contract", v: stats.noContract, i: "📄", c: "#7f1d1d", bg: "#fee2e2" },
-            { l: "Still To Hire", v: stats.vacancies, i: "🎯", c: "#7c3aed", bg: "#ede9fe", note: "across all branches" },
-            { l: "Understaffed", v: stats.understaffed, i: "📍", c: "#78350f", bg: "#fef3c7" },
+            { l: "Still To Hire", v: recruitFuture.vacancies, i: "🎯", c: "#7c3aed", bg: "#ede9fe", note: recruitFuture.pendingMoves > 0 ? `after transfers · now ${recruitFuture.vacanciesNow}` : "across all branches" },
+            { l: "Understaffed", v: recruitFuture.understaffed, i: "📍", c: "#78350f", bg: "#fef3c7" },
           ].map(c => (
             <div key={c.l} style={{ background: c.bg, borderRadius: 13, padding: "12px 14px" }}>
               <div style={{ fontSize: 18 }}>{c.i}</div>
@@ -18820,16 +19066,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* TO HIRE PER BRANCH — only on recruitment tab (nail-tech sub-tab) */}
         {tab === "recruitment" && recruitSubTab === "nailTech" && <>
-          {stats.vacancies > 0 && (
+          {recruitFuture.vacancies > 0 && (
             <div style={{ background: "#FFFFFF", borderRadius: 13, border: "1px solid #E8C9D2", marginBottom: 16, overflow: "hidden" }}>
               <div style={{ background: "#BE185D", color: "#fff", padding: "10px 18px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-                <span style={{ fontWeight: 700, fontSize: 13 }}>🎯 Staff Still Needed — {stats.vacancies} position{stats.vacancies !== 1 ? "s" : ""} across {stats.understaffed} branch{stats.understaffed !== 1 ? "es" : ""}</span>
-                <span style={{ fontSize: 11, opacity: 0.8 }}>Sorted by most urgent</span>
+                <span style={{ fontWeight: 700, fontSize: 13 }}>🎯 Staff Still Needed — {recruitFuture.vacancies} position{recruitFuture.vacancies !== 1 ? "s" : ""} across {recruitFuture.understaffed} branch{recruitFuture.understaffed !== 1 ? "es" : ""}</span>
+                <span style={{ fontSize: 11, opacity: 0.8 }}>{recruitFuture.pendingMoves > 0 ? "After transfers · sorted by most urgent" : "Sorted by most urgent"}</span>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(185px,1fr))" }}>
-                {salonData.filter(s => (s.active.length + s.trial.length) < s.goal).sort((a, b) => (b.goal - b.active.length - b.trial.length) - (a.goal - a.active.length - a.trial.length)).map((s, i) => {
-                  const filled = s.active.length + s.trial.length;
-                  const need = Math.max(0, s.goal - filled);
+                {salonData.filter(s => (recruitFuture.perBranch[s.name] || {}).need > 0).sort((a, b) => ((recruitFuture.perBranch[b.name] || {}).need || 0) - ((recruitFuture.perBranch[a.name] || {}).need || 0)).map((s, i) => {
+                  const pb = recruitFuture.perBranch[s.name] || {};
+                  const filled = pb.filledFut;
+                  const need = pb.need;
                   const pct = s.goal > 0 ? Math.round(filled / s.goal * 100) : 100;
                   const [col, bg] = need >= 5 ? ["#7f1d1d", "#fee2e2"] : need >= 3 ? ["#9a3412", "#ffedd5"] : ["#78350f", "#fef9c3"];
                   return (
@@ -18839,6 +19086,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <div style={{ fontWeight: 800, fontSize: 22, color: col, lineHeight: 1 }}>{need}</div>
                       </div>
                       <div style={{ fontSize: 10, color: "#BE185D", marginTop: 2 }}>{filled}/{s.goal} filled · {pct}%</div>
+                      {(pb.arriving > 0 || pb.leaving > 0) && (
+                        <div style={{ fontSize: 9, fontWeight: 700, marginTop: 2 }}>
+                          {pb.arriving > 0 && <span style={{ color: "#15803d" }}>+{pb.arriving} arriving</span>}
+                          {pb.arriving > 0 && pb.leaving > 0 && <span style={{ color: "#9ca3af" }}> · </span>}
+                          {pb.leaving > 0 && <span style={{ color: "#b45309" }}>−{pb.leaving} leaving</span>}
+                        </div>
+                      )}
                       <div style={{ height: 4, borderRadius: 99, background: "#e5e7eb", marginTop: 5, overflow: "hidden" }}>
                         <div style={{ height: "100%", width: `${pct}%`, background: pct < 60 ? "#dc2626" : pct < 80 ? "#f97316" : "#eab308", borderRadius: 99 }} />
                       </div>
@@ -19181,7 +19435,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               {canSeeIncidents(currentUser) && (() => {
                 const _now0 = new Date(); _now0.setHours(0, 0, 0, 0);
                 const daysUntil = (ymd) => ymd ? Math.ceil((new Date(ymd + "T00:00:00") - _now0) / 86400000) : null;
-                const isTech = (ec) => !/M$/i.test(String(ec || "").trim());
+                const isTech = (ec) => !isManagerEc(ec);
                 const URGENT = 3;   // less than 3 days away
 
                 // OPEN — approved extra-day cover not yet opened on Fresha
@@ -19558,7 +19812,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   Scoped to the ROM's own stores. */}
               {!(new Set(currentUser?.hideTabs || []).has("dashCalledInSick")) && canSeeIncidents(currentUser) && (() => {
                 const { today, tomorrow, list } = calledInSickWindow(leaveRequests);
-                const isMgrEc = (ec) => /M$/i.test(String(ec || "").trim());
+                const isMgrEc = (ec) => isManagerEc(ec);
                 const mgrSick = list.filter(r => isMgrEc(r.ec) && !r.reviewed
                   && (!_hasStoreScope || (r.store && scopedSalonNames.has(r.store))))
                   .sort((a, b) => (a.start_date || "").localeCompare(b.start_date || ""));
@@ -19620,7 +19874,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   (Managers are handled by the ROM-action card above.) */}
               {!(new Set(currentUser?.hideTabs || []).has("dashCalledInSick")) && canSeeIncidents(currentUser) && (() => {
                 const { today, tomorrow, list: _list } = calledInSickWindow(leaveRequests);
-                const list = _list.filter(r => !/M$/i.test(String(r.ec || "").trim()));
+                const list = _list.filter(r => !isManagerEc(r.ec));
                 if (!list.length) return null;
                 const todayList = list.filter(r => r.start_date <= today && r.end_date >= today);
                 const tomorrowList = list.filter(r => r.start_date <= tomorrow && r.end_date >= tomorrow);
@@ -20578,7 +20832,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             ? scopedSalonData
             : scopedSalonData.filter(s => s.region === locFilterRegion);
           const filteredActive = filteredSalonData.reduce((a, s) => a + s.active.length, 0);
+          // Company-wide headcount once every pending transfer settles. Within
+          // the scope/region in view, inter-branch moves net to zero — but a
+          // move OUT of the filtered set (e.g. region filter on) can shift it,
+          // so it's summed independently rather than assumed equal to active.
+          const filteredProjected = filteredSalonData.reduce((a, s) => a + s.projectedActive, 0);
+          const filteredPendingMoves = filteredSalonData.reduce((a, s) => a + (s.arriving ? s.arriving.length : 0) + (s.leaving ? s.leaving.length : 0) + (s.trialArriving ? s.trialArriving.length : 0) + (s.trialLeaving ? s.trialLeaving.length : 0), 0);
           const filteredOnMat = filteredSalonData.reduce((a, s) => a + s.onMat.length, 0);
+          // Spots being filled by people in induction or on trial across the
+          // branches in view (nail-tech + AM trial candidates).
+          const filteredTrial = filteredSalonData.reduce((a, s) => a + (s.trial ? s.trial.length : 0) + (s.trialMgrs ? s.trialMgrs.length : 0), 0);
           const filteredSeats = filteredSalonData.reduce((a, s) => a + s.capacity, 0);
           const filteredVacancies = filteredSalonData.reduce((a, s) =>
             a + Math.max(0, (s.targetCapacity || s.capacity) - s.active.length - s.trial.length), 0);
@@ -20647,6 +20910,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { l: "Needs Staff", v: filteredSalonData.filter(s => s.urgency === "low").length, c: "#b45309", bg: "#fef9c3" },
                   { l: "At Capacity", v: filteredSalonData.filter(s => s.urgency === "full").length, c: "#15803d", bg: "#dcfce7" },
                   { l: "Active (incl. pregnant)", v: filteredActive, c: "#1e3a8a", bg: "#dbeafe" },
+                  // Only surfaced when a pending transfer is in flight — the
+                  // headcount once every move settles, for forward planning.
+                  ...(filteredPendingMoves > 0 ? [{ l: "🔮 After Transfers", v: filteredProjected, c: "#1d4ed8", bg: "#e0e7ff" }] : []),
+                  { l: "On Trial / Induction", v: filteredTrial, c: "#92400e", bg: "#fef9c3" },
                   { l: "On Mat. Leave", v: filteredOnMat, c: "#7A4258", bg: "#fce7f3" },
                   { l: "Total Seats", v: filteredSeats, c: "#111827", bg: "#f3f4f6" },
                   { l: "Vacancies", v: filteredVacancies, c: "#9a3412", bg: "#ffedd5" },
@@ -20847,6 +21114,49 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 </div>
                               );
                             })}
+                            {/* Trial / induction candidates — transferable just
+                            like staff. The Transfer button opens the same modal;
+                            handleTransfer routes the save to trialList. */}
+                            {(salon.trial.length > 0 || salon.trialMgrs.length > 0 || (salon.trialArriving && salon.trialArriving.length > 0) || (salon.trialMgrsArriving && salon.trialMgrsArriving.length > 0)) && (
+                              <div style={{ marginTop: 2, paddingTop: 8, borderTop: "1px dashed #FBCFE8" }}>
+                                <div style={{ fontSize: 9, fontWeight: 800, color: "#92400e", letterSpacing: "0.08em", marginBottom: 5 }}>ON TRIAL / INDUCTION</div>
+                                {[...salon.trial, ...salon.trialMgrs].map(t => (
+                                  <div key={t._id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderRadius: 8, background: "#FFFBEB", border: "1px solid #FCD34D", marginBottom: 4 }}>
+                                    <span style={{ fontSize: 11 }}>{t.transferring ? "🔄" : "⏳"}</span>
+                                    <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: "#78350f" }}>
+                                      {t.name}
+                                      {t.transferring && t.transferTo && <span style={{ fontSize: 9, marginLeft: 5, color: "#1d4ed8", fontWeight: 700 }}>→ {t.transferTo}{t.transferDate ? " · " + new Date(t.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
+                                    </span>
+                                    <span style={{ fontSize: 9, background: (t.role || "nt") === "am" ? "#FED7AA" : "#FCD34D", color: (t.role || "nt") === "am" ? "#9A3412" : "#78350f", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{(t.role || "nt") === "am" ? "AM · TRIAL" : "TRIAL"}</span>
+                                    <button onClick={() => { setTransferModal({ ...t, _isTrial: true }); setManagePanel(null); }}
+                                      style={{ background: t.transferring ? "#bfdbfe" : "#e0f2fe", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#BE185D" }}>
+                                      🔄 {t.transferring ? "Edit Transfer" : "Transfer"}
+                                    </button>
+                                  </div>
+                                ))}
+                                {/* Arriving trial candidates — pending transfer
+                                pointing here. Edit Transfer opens the original
+                                trial record so the move can be amended/cancelled. */}
+                                {[...(salon.trialArriving || []), ...(salon.trialMgrsArriving || [])].map(t => {
+                                  const original = (trialList || []).find(x => x && x._id === t._id);
+                                  return (
+                                    <div key={"arr-trial-" + t._id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderRadius: 8, background: "#eff6ff", border: "1.5px dashed #93c5fd", marginBottom: 4 }}>
+                                      <span style={{ fontSize: 11 }}>🔄</span>
+                                      <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: "#1d4ed8" }}>
+                                        {t.name}
+                                        <span style={{ fontSize: 9, marginLeft: 5, color: "#2563eb", fontWeight: 500 }}>arriving from {t.transferFrom}{t.transferDate ? " · " + new Date(t.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>
+                                      </span>
+                                      {original && (
+                                        <button onClick={() => { setTransferModal({ ...original, _isTrial: true }); setManagePanel(null); }}
+                                          style={{ background: "#bfdbfe", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#BE185D" }}>
+                                          🔄 Edit Transfer
+                                        </button>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </div>
                         </div>
                       )}
@@ -20874,7 +21184,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         const ssm = mgrs.filter(m => (m.effectiveRole || m.role) === "SSM");
                         const sm = mgrs.filter(m => (m.effectiveRole || m.role) === "SM");
                         const am = mgrs.filter(m => (m.effectiveRole || m.role) === "AM");
-                        if (allMgrs.length === 0 && (!salon.arrivingMgrs || salon.arrivingMgrs.length === 0) && (!salon.trialMgrs || salon.trialMgrs.length === 0)) return null;
+                        if (allMgrs.length === 0 && (!salon.arrivingMgrs || salon.arrivingMgrs.length === 0) && (!salon.trialMgrs || salon.trialMgrs.length === 0) && (!salon.trialMgrsArriving || salon.trialMgrsArriving.length === 0)) return null;
                         return (
                           <div style={{ background: "#FCE7F3", border: "1px solid #FBCFE8", borderRadius: 10, padding: "9px 12px", marginBottom: 10 }}>
                             <div style={{ fontSize: 9, fontWeight: 800, color: "#BE185D", letterSpacing: "0.1em", marginBottom: 7 }}>MANAGEMENT TEAM</div>
@@ -20930,11 +21240,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 <div key={t._id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 7px", borderRadius: 7, background: isPassed ? "#F0FDF4" : "#FFFBEB", border: "1.5px dashed " + (isPassed ? "#86EFAC" : "#FCD34D") }}>
                                   <span style={{ fontSize: 13 }}>{isPassed ? "✅" : "⏳"}</span>
                                   <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: isPassed ? "#14532d" : "#78350f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name}{t.boaPathways && <> <BoaPathwaysBadge size={11} /></>}</span>
+                                  {t.transferring && t.transferTo && <span style={{ fontSize: 9, color: "#1d4ed8", background: "#dbeafe", border: "1px solid #bfdbfe", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🔄 → {t.transferTo}{t.transferDate ? ` · ${new Date(t.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                                   <span style={{ fontSize: 9, background: isPassed ? "#86EFAC" : "#FCD34D", color: isPassed ? "#14532d" : "#78350f", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{isPassed ? "passed" : t.status}</span>
                                   <span style={{ fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 700, letterSpacing: "0.04em" }}>AM · TRIAL</span>
                                 </div>
                                 );
                               })}
+                              {/* Arriving AM trial candidates — scheduled to move
+                              here from another store (e.g. on a new store's
+                              opening date). */}
+                              {(salon.trialMgrsArriving || []).map(t => (
+                                <div key={"arr-mtrial-" + t._id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 7px", borderRadius: 7, background: "#eff6ff", border: "1.5px dashed #93c5fd" }}>
+                                  <span style={{ fontSize: 13 }}>🔄</span>
+                                  <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: "#1d4ed8", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                    {t.name}
+                                    <span style={{ fontSize: 9, marginLeft: 5, color: "#2563eb", fontWeight: 400 }}>arriving from {t.transferFrom}{t.transferDate ? " on " + new Date(t.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : ""}</span>
+                                  </span>
+                                  <span style={{ fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 700, letterSpacing: "0.04em" }}>AM · TRIAL</span>
+                                </div>
+                              ))}
                               {/* Arriving (pending incoming transfer) — managers
                               from another branch with transferTo === this salon.
                               Shows the source store + expected start date. Same
@@ -21004,7 +21328,37 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           </div>
                         );
                       })()}
-                      <div style={{ marginBottom: 10 }}><Meter current={salon.active.length + (salon.trial ? salon.trial.length : 0)} capacity={salon.capacity} goal={salon.goal} lowDemand={salon.lowDemand} /></div>
+                      <div style={{ marginBottom: 10 }}>
+                        {(() => {
+                          // Pending moves touching this branch, staff + trial.
+                          const inMoves = (salon.arriving ? salon.arriving.length : 0) + (salon.trialArriving ? salon.trialArriving.length : 0) + (salon.trialMgrsArriving ? salon.trialMgrsArriving.length : 0);
+                          const outMoves = (salon.leaving ? salon.leaving.length : 0) + (salon.trialLeaving ? salon.trialLeaving.length : 0) + (salon.trialMgrsLeaving ? salon.trialMgrsLeaving.length : 0);
+                          const nowCount = salon.active.length + (salon.trial ? salon.trial.length : 0);
+                          const afterCount = salon.projectedActive + (salon.projectedTrial != null ? salon.projectedTrial : (salon.trial ? salon.trial.length : 0));
+                          return (<>
+                        <Meter current={nowCount} capacity={salon.capacity} goal={salon.goal} lowDemand={salon.lowDemand} projected={(inMoves || outMoves) ? afterCount : undefined} />
+                        {/* After-transfers planning — only when a pending move
+                        touches this branch. Two numbers side by side (Now →
+                        After), with the +arriving / −leaving breakdown beneath.
+                        Both counts include trial/induction candidates so they
+                        match the meter above (active + trial). */}
+                        {(inMoves > 0 || outMoves > 0) && (
+                          <div style={{ marginTop: 6, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 8, padding: "4px 10px" }}>
+                            <span style={{ fontSize: 8, fontWeight: 800, color: "#6b7280", letterSpacing: "0.06em" }}>NOW</span>
+                            <span style={{ fontSize: 15, fontWeight: 800, color: "#111827", lineHeight: 1 }}>{nowCount}</span>
+                            <span style={{ color: "#9ca3af", fontSize: 13, fontWeight: 800 }}>→</span>
+                            <span style={{ fontSize: 8, fontWeight: 800, color: "#1d4ed8", letterSpacing: "0.06em" }}>AFTER</span>
+                            <span style={{ fontSize: 15, fontWeight: 800, color: "#1d4ed8", lineHeight: 1 }}>{afterCount}</span>
+                            <span style={{ fontSize: 9, fontWeight: 700 }}>
+                              {inMoves > 0 && <span style={{ color: "#15803d" }}>+{inMoves}</span>}
+                              {inMoves > 0 && outMoves > 0 && <span style={{ color: "#9ca3af" }}> · </span>}
+                              {outMoves > 0 && <span style={{ color: "#b45309" }}>−{outMoves}</span>}
+                            </span>
+                          </div>
+                        )}
+                          </>);
+                        })()}
+                      </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 270, overflowY: "auto" }}>
                         {/* Active staff */}
                         {salon.active.map(m => (
@@ -21102,12 +21456,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const isPassed = m.status === "passed";
                           return (
                           <div key={m._id} style={{ padding: "5px 7px", borderRadius: 7, background: isPassed ? "#F0FDF4" : "#FFFBEB", border: "1px dashed " + (isPassed ? "#86EFAC" : "#FCD34D"), display: "flex", alignItems: "center", gap: 6 }}>
-                            <span style={{ fontSize: 12 }}>{isPassed ? "✅" : "⏳"}</span>
+                            <span style={{ fontSize: 12 }}>{m.transferring ? "🔄" : isPassed ? "✅" : "⏳"}</span>
                             <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: "#111827" }}>{m.name}{m.boaPathways && <> <BoaPathwaysBadge size={11} /></>}</span>
+                            {m.transferring && m.transferTo && <span style={{ fontSize: 9, color: "#1d4ed8", background: "#dbeafe", border: "1px solid #bfdbfe", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🔄 → {m.transferTo}{m.transferDate ? ` · ${new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
                             <span style={{ fontSize: 9, background: isPassed ? "#86EFAC" : "#FCD34D", color: isPassed ? "#14532d" : "#78350f", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{isPassed ? "passed" : m.status}</span>
                           </div>
                           );
                         })}
+                        {/* Arriving trial candidates (pending incoming transfer) —
+                        scheduled to move here, e.g. on a new store's opening date.
+                        Shown but not yet counted toward the seats above. */}
+                        {(salon.trialArriving || []).map(m => (
+                          <div key={"arr-trial-card-" + m._id} style={{ padding: "5px 7px", borderRadius: 7, background: "#eff6ff", border: "1.5px dashed #93c5fd", display: "flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ fontSize: 12 }}>🔄</span>
+                            <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: "#1d4ed8", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                              {m.name}
+                              <span style={{ fontSize: 9, marginLeft: 5, color: "#2563eb", fontWeight: 400 }}>arriving from {m.transferFrom}{m.transferDate ? " on " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : ""}</span>
+                            </span>
+                            <span style={{ fontSize: 9, background: "#F9A8D4", color: "#1e40af", borderRadius: 4, padding: "1px 6px", fontWeight: 700, whiteSpace: "nowrap" }}>{m.transferDate ? `${daysDiff(m.transferDate)}d` : "pending"}</span>
+                          </div>
+                        ))}
 
                         {/* Remaining Vacant seats */}
                         {Array.from({ length: Math.max(0, salon.capacity - salon.active.length - salon.offboarded.length - (salon.trial ? salon.trial.length : 0)) }).map((_, i) => (
@@ -22067,6 +22435,69 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 ))}
               </div>
 
+              {/* ── BY LOCATION OVERVIEW ── one count per store so you can see
+                  at a glance which branch has the biggest issues. Columns:
+                  red-alarm (no valid permit = z_na or unset, same definition as
+                  the "Not compliant" stat), South Africans, and asylum / work-
+                  permit / DHA-verified. Sorted with the worst (most no-permit)
+                  at the top; a totals row reconciles with the stat cards. */}
+              {(() => {
+                const named = [
+                  ...SALONS.map(s => s.name).filter(name => pool.some(p => p.branch === name)),
+                  ...[...new Set(pool.map(p => p.branch).filter(b => b && !SALONS.some(s => s.name === b)))]
+                ];
+                const hasBlank = pool.some(p => !p.branch);
+                const allLocs = hasBlank ? [...named, ""] : named;
+                if (allLocs.length === 0) return null;
+                const rows = allLocs.map(brName => {
+                  const inBr = pool.filter(p => (p.branch || "") === brName);
+                  const red = inBr.filter(isNonCompliant).length;
+                  const sa = inBr.filter(p => p.permit === "sa_citizen").length;
+                  const docs = inBr.filter(p => p.permit === "asylum" || p.permit === "work_permit" || p.permit === "verified_dha").length;
+                  return { brName: brName || "(no branch set)", total: inBr.length, red, sa, docs };
+                }).sort((a, b) => b.red - a.red || b.total - a.total || a.brName.localeCompare(b.brName));
+                const th = { padding: "9px 12px", fontSize: 10, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase", color: "#9d6a82", textAlign: "center", whiteSpace: "nowrap" };
+                const td = { padding: "9px 12px", fontSize: 14.5, textAlign: "center", fontWeight: 700 };
+                const sum = (k) => rows.reduce((n, r) => n + r[k], 0);
+                return (
+                  <div style={{ marginBottom: 24 }}>
+                    <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: "#831843" }}>🚦 By location — biggest issues first</div>
+                    <div style={{ fontSize: 12, color: "#6b7280", margin: "2px 0 12px" }}>Per store: 🚨 red-alarm (no valid permit), 🇿🇦 South Africans, and 📄 asylum / work-permit / DHA-verified. Stores with the most no-permit people are listed at the top.</div>
+                    <div style={{ overflowX: "auto", border: "1px solid #FBCFE8", borderRadius: 14 }}>
+                      <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 480, background: "#fff" }}>
+                        <thead>
+                          <tr style={{ background: "#FCE7F3" }}>
+                            <th style={{ ...th, textAlign: "left" }}>📍 Location</th>
+                            <th style={{ ...th, color: "#7f1d1d" }}>🚨 No permit</th>
+                            <th style={th}>🇿🇦 SA</th>
+                            <th style={th}>📄 Asylum / Permit</th>
+                            <th style={th}>Total</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map(r => (
+                            <tr key={r.brName} style={{ borderTop: "1px solid #FCE7F3", background: r.red > 0 ? "#fff5f5" : "#fff" }}>
+                              <td style={{ padding: "9px 12px", fontSize: 13.5, fontWeight: 700, color: "#831843" }}>{r.brName}</td>
+                              <td style={{ ...td, color: r.red > 0 ? "#b91c1c" : "#9ca3af" }}>{r.red > 0 ? "🚨 " + r.red : "0"}</td>
+                              <td style={{ ...td, color: "#14532d" }}>{r.sa}</td>
+                              <td style={{ ...td, color: "#4c1d95" }}>{r.docs}</td>
+                              <td style={{ ...td, color: "#6b7280", fontWeight: 600 }}>{r.total}</td>
+                            </tr>
+                          ))}
+                          <tr style={{ borderTop: "2px solid #FBCFE8", background: "#FCE7F3" }}>
+                            <td style={{ padding: "9px 12px", fontSize: 13, fontWeight: 800, color: "#831843" }}>All stores</td>
+                            <td style={{ ...td, color: "#7f1d1d" }}>{sum("red")}</td>
+                            <td style={{ ...td, color: "#14532d" }}>{sum("sa")}</td>
+                            <td style={{ ...td, color: "#4c1d95" }}>{sum("docs")}</td>
+                            <td style={{ ...td, color: "#6b7280" }}>{sum("total")}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* ── EXPIRING SOON ── asylum / work-permit holders whose
                   document expiry date is within the next 90 days (or
                   already past). Grouped by store and split into mgrs /
@@ -22506,7 +22937,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         )}
 
         {tab === "freshaTodo" && (
-          <FreshaTodoTab extraDayRequests={extraDayRequests} freshaExtraOpen={freshaExtraOpen} markFreshaExtraOpen={markFreshaExtraOpen} trialList={trialList} setTrialFresha={setTrialFresha} leaveRequests={leaveRequests} freshaBlocks={freshaBlocks} markFreshaBlocked={markFreshaBlocked} leaveRecs={leaveRecs} enriched={enriched} obList={obList} markFreshaMgrProfile={markFreshaMgrProfile} managers={managers} />
+          <FreshaTodoTab extraDayRequests={extraDayRequests} freshaExtraOpen={freshaExtraOpen} markFreshaExtraOpen={markFreshaExtraOpen} trialList={trialList} setTrialFresha={setTrialFresha} leaveRequests={leaveRequests} freshaBlocks={freshaBlocks} markFreshaBlocked={markFreshaBlocked} leaveRecs={leaveRecs} enriched={enriched} obList={obList} markFreshaMgrProfile={markFreshaMgrProfile} managers={managers} techLoans={techLoans} />
         )}
 
         {/* ── ALERTS TAB ── */}
@@ -22583,9 +23014,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             {/* Summary header */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10, marginBottom: 20 }}>
               {[
-                { l: "Positions Needed", v: stats.vacancies, i: "🎯", c: "#7c3aed", bg: "#ede9fe" },
-                { l: "Branches Hiring", v: stats.understaffed, i: "📍", c: "#9a3412", bg: "#ffedd5" },
-                { l: "At Full Capacity", v: SALONS.length - stats.understaffed, i: "✅", c: "#065f46", bg: "#d1fae5" },
+                { l: "Positions Needed", v: recruitFuture.vacancies, i: "🎯", c: "#7c3aed", bg: "#ede9fe", note: recruitFuture.pendingMoves > 0 ? `after transfers · now ${recruitFuture.vacanciesNow}` : null },
+                { l: "Branches Hiring", v: recruitFuture.understaffed, i: "📍", c: "#9a3412", bg: "#ffedd5" },
+                { l: "At Full Capacity", v: SALONS.length - recruitFuture.understaffed, i: "✅", c: "#065f46", bg: "#d1fae5" },
                 { l: "On Maternity Leave", v: stats.onMat, i: "🤱", c: "#7A4258", bg: "#fce7f3", note: "returning soon may fill gaps" },
                 { l: "Returning ≤60 Days", v: stats.returning60, i: "🔜", c: "#065f46", bg: "#d1fae5" },
               ].map(c => (
@@ -22598,7 +23029,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               ))}
             </div>
 
-            {stats.vacancies === 0
+            {recruitFuture.vacancies === 0
               ? <div style={{ textAlign: "center", padding: 60, color: "#BE185D", fontSize: 16, fontWeight: 700 }}>✅ All branches fully staffed — no recruitment needed!</div>
               : (
                 <>
@@ -22612,9 +23043,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
                   {/* Per-branch cards sorted by urgency */}
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 12 }}>
-                    {salonData.sort((a, b) => (b.goal - b.active.length - b.trial.length) - (a.goal - a.active.length - a.trial.length)).map(salon => {
-                      const filled = salon.active.length + salon.trial.length;   // trial candidates occupy seats (as on Locations)
-                      const need = Math.max(0, salon.goal - filled);
+                    {salonData.sort((a, b) => ((recruitFuture.perBranch[b.name] || {}).need || 0) - ((recruitFuture.perBranch[a.name] || {}).need || 0)).map(salon => {
+                      const pb = recruitFuture.perBranch[salon.name] || {};
+                      const filled = pb.filledFut;   // post-transfer headcount; trial candidates occupy seats (as on Locations)
+                      const need = pb.need;
                       const pct = salon.goal > 0 ? Math.min(Math.round(filled / salon.goal * 100), 100) : 100;
                       const [col, bg, brd] = need === 0 ? ["#14532d", "#dcfce7", "#86efac"] : need >= 5 ? ["#7f1d1d", "#fee2e2", "#fca5a5"] : need >= 3 ? ["#9a3412", "#ffedd5", "#fcd34d"] : ["#78350f", "#fef9c3", "#fde68a"];
                       return (
@@ -22645,6 +23077,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               <div style={{ height: 8, borderRadius: 99, background: "#e5e7eb", overflow: "hidden" }}>
                                 <div style={{ height: "100%", width: `${pct}%`, background: need === 0 ? "#16a34a" : pct < 60 ? "#dc2626" : pct < 80 ? "#f97316" : "#eab308", borderRadius: 99, transition: "width .5s" }} />
                               </div>
+                              {/* Pending-transfer adjustment — explains why the
+                              count differs from today's roster: incoming techs
+                              reduce the gap, departing techs add to it. */}
+                              {(pb.arriving > 0 || pb.leaving > 0) && (
+                                <div style={{ fontSize: 10, fontWeight: 700, marginTop: 5, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                  <span style={{ color: "#6b7280" }}>🔄 after transfers · now {pb.filledNow}/{salon.goal}</span>
+                                  {pb.arriving > 0 && <span style={{ color: "#15803d" }}>+{pb.arriving} arriving</span>}
+                                  {pb.leaving > 0 && <span style={{ color: "#b45309" }}>−{pb.leaving} leaving</span>}
+                                </div>
+                              )}
                             </div>
 
                             {/* Returning staff that will fill gaps */}
@@ -23562,9 +24004,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Managers (AM trials) get an "M"-suffixed code — that suffix is what
           // marks them as a manager everywhere (scheduling, clock-ins, leave).
           const nextEc = "B" + (maxNum + 1) + (isMgrTrial ? "M" : "");
+          // Use the effective branch: if a scheduled transfer has already taken
+          // effect (date in the past), onboard the candidate at the store they
+          // moved to, not the origin still stored on the trial record.
+          const _obToday = (() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
+          const _obBranch = (r.transferring && r.transferTo && r.transferDate && String(r.transferDate).replace(/\//g, "-") <= _obToday) ? r.transferTo : (r.branch || SALONS[0].name);
           setObForm({
             name: r.name || "", ec: nextEc,
-            branch: r.branch || SALONS[0].name,
+            branch: _obBranch,
             position: (isMgrTrial ? "AM" : "Nail Tech"), positionOther: "",
             startDate: "", notes: "Promoted from Trial Period · " + fmtDate(r.startDate),
             phone: r.phone || "", email: r.email || "", homeAddress: r.homeAddress || "",
@@ -27222,13 +27669,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // b) all-3-agree (mirrors the allMatchWork logic on the cell)
             const hint = schedHint(ec, dy.d);
             const scheduleSaysWork = hint === "on" || hint === "ext";
-            const freshaWorkedCell = _freshaWorkedFor(ec, dy.d);
             const checkin = _ciFor(ec, dy.ymd);
             const kioskAbs = _kaFor(ec, dy.ymd);
             const swapOwesCell = bareV === "swap_o" || (kioskAbs && kioskAbs.status === "swap_o");
             const checkinHasIn = !!(checkin && checkin.hasIn) && !swapOwesCell;
             const isWorking = bareV === "on" || bareV === "ext" || bareV === "trial" || bareV === "swap_i" || bareV === "late";
             const kioskSaysPresent = checkinHasIn || isWorking;
+            // Managers have NO Fresha appointments to import, so requiring a
+            // Fresha match would mean a manager could never be credited a
+            // worked public holiday. For them the trusted "worked" signal is
+            // their own kiosk clock-in (mgrClockinRows) on a rostered day.
+            if (isManagerEc(ec)) return scheduleSaysWork && (_mgrCheckedIn(ec, dy.ymd) || kioskSaysPresent);
+            const freshaWorkedCell = _freshaWorkedFor(ec, dy.d);
             return scheduleSaysWork && freshaWorkedCell && kioskSaysPresent;
           };
           for (const dy of days) {
@@ -27251,7 +27703,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // show up), but it must not hit the EXT total — and the extra
             // pay — until some source shows she actually came in. An admin
             // override IS the truth, so it counts without further evidence.
-            else if (v === "ext") { if (_adminOv(ec, dy.d) || _extraDayWorkEvidence(ec, dy.d, dy.ymd)) { t.ext++; if (phOk) t.ph++; } }
+            // An extra day worked on a public holiday counts as an EXTRA day
+            // only — it pays more than a public holiday, so it must NOT also
+            // land in the PH column (no double-credit). It stays "Extra Day".
+            else if (v === "ext") { if (_adminOv(ec, dy.d) || _extraDayWorkEvidence(ec, dy.d, dy.ymd)) { t.ext++; } }
             else if (v === "late") { t.late++; if (dy.ymd <= _extraTodayYmd) t.workedFull++; if (phOk) t.ph++; }
             else if (v === "trial" || v === "trial_ho") t.td++;
             else if (v === "on") { t.worked++; if (dy.ymd <= _extraTodayYmd) t.workedFull++; if (phOk) t.ph++; }
@@ -27928,13 +28383,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const allMatchWork = s.role === "NT" && freshaWorkedCell && scheduleSaysWork && (kioskSaysPresent || checkinHasIn);
                           // Auto-display worked public holidays as "Public Holiday" once
                           // payroll can trust the cell (same gate as the PH total: all 3
-                          // sources agree OR admin reviewed). On Time / Late / Ext / Swap-in
-                          // cells on a holiday get promoted to PH styling so the grid reads
-                          // the same way payroll counts.
+                          // sources agree, a manager clock-in, OR admin reviewed). On Time
+                          // / Late / Swap-in cells on a holiday get promoted to PH styling
+                          // so the grid reads the same way payroll counts. Extra days are
+                          // excluded (handled separately below — they pay more than a PH).
                           const cellReviewRec = (((attMeta || {}).reviewedWarnings || {})[s.ec] || {})[dy.d];
                           const cellReviewed = reviewMatchesCell(cellReviewRec, s.ec, dy.d, v);
-                          const workedOnHol = isHol && (bareV === "on" || bareV === "late" || bareV === "ext" || bareV === "swap_i");
-                          const phAuto = workedOnHol && (allMatchWork || cellReviewed);
+                          // Extra days are deliberately excluded — an extra day
+                          // worked on a public holiday stays "Extra Day" (it pays
+                          // more than a PH), so it is never relabelled "Public
+                          // Holiday" and never counts in the PH total.
+                          const workedOnHol = isHol && (bareV === "on" || bareV === "late" || bareV === "swap_i");
+                          // Managers have no Fresha to confirm the day, so allMatchWork
+                          // (Fresha-gated, NT-only) can never fire for them — trust a
+                          // rostered manager clock-in instead so their worked public
+                          // holiday shows as PH just like a nail tech's does.
+                          const mgrWorkedTrusted = s.role !== "NT" && scheduleSaysWork && (_mgrCheckedIn(s.ec, dy.ymd) || isWorking || isLate);
+                          const phAuto = workedOnHol && (allMatchWork || mgrWorkedTrusted || cellReviewed);
                           if (phAuto && STAT.ph) { st = STAT.ph; }
                           // Left-early override: when the kiosk's boa_early
                           // sidecar has a record for this (ec, day), paint
