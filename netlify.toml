@@ -1,3 +1,7 @@
+# Serverless functions (the Google Maps proxy for the store picker lives here).
+[functions]
+  directory = "netlify/functions"
+
 # Serve the PWA manifest with the correct content-type (Netlify otherwise sends
 # application/octet-stream for .webmanifest, which some browsers reject).
 [[headers]]

@@ -7892,6 +7892,111 @@ function BonusConfig() {
 }
 
 
+// ─── STORE OPENING HOURS CONFIG (Owner / Master Admin) ──────────────────────
+// Owner-editable per-branch opening times that feed the recruitment commute
+// picker's "leave home by X" calc. Stored in app_state["boa_store_hours_v1"]
+// (anon-readable), falling back to STORE_HOURS_DEFAULT / STORE_HOURS_FALLBACK.
+function StoreHoursConfig() {
+  const PINK = { ink: "#831843", accent: "#BE185D", soft: "#FBCFE8", softer: "#FCE7F3" };
+  const [hours, setHours] = React.useState({});
+  const [loaded, setLoaded] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+  const [result, setResult] = React.useState(null);
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const v = window.BOA_DB && window.BOA_DB.loadByKey ? await window.BOA_DB.loadByKey("boa_store_hours_v1") : null;
+        if (v && typeof v === "object") setHours(v);
+      } catch (_e) { /* keep empty → defaults */ }
+      finally { setLoaded(true); }
+    })();
+  }, []);
+
+  const branches = (SALONS || []).map(s => s.name);
+  const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const getH = (b) => (hours[b] || STORE_HOURS_DEFAULT[b] || STORE_HOURS_FALLBACK);
+  const setOpen = (b, val) => setHours(h => ({ ...h, [b]: { ...getH(b), open: val } }));
+  const setDow = (b, dow, val) => setHours(h => {
+    const cur = getH(b);
+    const byDow = { ...(cur.byDow || {}) };
+    if (val) byDow[String(dow)] = val; else delete byDow[String(dow)];
+    return { ...h, [b]: { ...cur, byDow } };
+  });
+
+  const save = async () => {
+    if (busy) return;
+    setBusy(true); setResult(null);
+    try {
+      // Persist only branch entries with a usable open time.
+      const clean = {};
+      branches.forEach(b => {
+        const h = getH(b);
+        if (h && h.open) clean[b] = { open: h.open, byDow: h.byDow || {} };
+      });
+      await window.BOA_DB.sb.from("app_state").upsert({ key: "boa_store_hours_v1", value: clean });
+      setHours(clean);
+      if (window.BOA_LOG_ACTIVITY) window.BOA_LOG_ACTIVITY("Updated store opening hours", "", "Operations", "Admin");
+      setResult({ ok: true, msg: "Saved — the recruitment commute picker will use these immediately." });
+    } catch (e) {
+      setResult({ ok: false, msg: "Could not save: " + ((e && e.message) || e) });
+    } finally { setBusy(false); }
+  };
+
+  const inp = { padding: "5px 7px", fontSize: 13, border: `1px solid ${PINK.soft}`, borderRadius: 7, fontFamily: "inherit", color: PINK.ink, boxSizing: "border-box" };
+  const th = { textAlign: "left", fontSize: 11, fontWeight: 800, color: PINK.accent, textTransform: "uppercase", letterSpacing: 0.4, padding: "6px 8px", borderBottom: `1px solid ${PINK.soft}` };
+  const td = { padding: "6px 8px", borderBottom: `1px solid ${PINK.softer}`, verticalAlign: "middle" };
+
+  if (!loaded) return <div style={{ padding: 24, color: "#9ca3af" }}>Loading store hours…</div>;
+
+  return (
+    <div style={{ maxWidth: 720 }}>
+      <h2 style={{ color: PINK.ink, margin: "4px 0 2px" }}>🕖 Store Opening Hours</h2>
+      <p style={{ color: "#6b7280", fontSize: 13, margin: "0 0 14px", lineHeight: 1.5 }}>
+        Used by the recruitment <strong>commute picker</strong> to tell a candidate when to leave home to arrive
+        <strong> 15 minutes before</strong> their branch opens. Set the normal weekday open time, and optionally a
+        different time for <strong>Sunday</strong> / <strong>Saturday</strong>. Closed days are skipped automatically.
+      </p>
+      <div style={{ background: "#fff", border: `1px solid ${PINK.soft}`, borderRadius: 14, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              <th style={th}>Branch</th>
+              <th style={th}>Weekday open</th>
+              <th style={th}>Sunday</th>
+              <th style={th}>Saturday</th>
+            </tr>
+          </thead>
+          <tbody>
+            {branches.map(b => {
+              const h = getH(b);
+              const closed = salonClosedDow(b).map(d => DOW[d]).join(", ");
+              return (
+                <tr key={b}>
+                  <td style={td}>
+                    <div style={{ fontWeight: 700, color: PINK.ink, fontSize: 13 }}>{b}</div>
+                    {closed && <div style={{ fontSize: 10, color: "#9ca3af" }}>Closed {closed}</div>}
+                  </td>
+                  <td style={td}><input type="time" value={h.open || ""} onChange={e => setOpen(b, e.target.value)} style={inp} /></td>
+                  <td style={td}><input type="time" value={(h.byDow && h.byDow["0"]) || ""} placeholder="—" onChange={e => setDow(b, 0, e.target.value)} style={inp} /></td>
+                  <td style={td}><input type="time" value={(h.byDow && h.byDow["6"]) || ""} placeholder="—" onChange={e => setDow(b, 6, e.target.value)} style={inp} /></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 14 }}>
+        <button onClick={save} disabled={busy} style={{ background: PINK.accent, color: "#fff", border: "none", borderRadius: 9, padding: "9px 18px", fontWeight: 800, fontSize: 14, cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }}>
+          {busy ? "Saving…" : "Save opening hours"}
+        </button>
+        {result && <span style={{ fontSize: 13, fontWeight: 700, color: result.ok ? "#15803d" : "#b91c1c" }}>{result.msg}</span>}
+      </div>
+    </div>
+  );
+}
+
+
 // ─── APP GATE ─────────────────────────────────────────────────────────────────
 // Mounts the PIN sign-in screen until a valid user is set. Once unlocked, the
 // real <App/> mounts. Done as a wrapper so <App/>'s hooks always run in the
@@ -8158,6 +8263,7 @@ const SETTINGS_TABS = [
   { t: "extraDayRequests", l: "Extra-Day Requests", cat: "Operations", icon: "💰" },
   { t: "freshaTodo", l: "Fresha To-Do", cat: "Operations", icon: "💇‍♀️" },
   { t: "storeOpenings", l: "Store Openings", cat: "Operations", icon: "🔓" },
+  { t: "storeHours", l: "Store Opening Hours", cat: "Operations", icon: "🕖" },
   { t: "movements", l: "Today's Movements", cat: "Operations", icon: "🔀" },
   { t: "dailyTasks", l: "Daily Tasks", cat: "Operations", icon: "📋" },
   { t: "mgrCoverage", l: "Manager Coverage", cat: "Operations", icon: "🗓" },
@@ -13449,6 +13555,69 @@ function _waDigits(phone) {
 //      lines, the Helderberg/Winelands Golden-Arrow+taxi axis, the CBD
 //      interchange). When a suburb and a branch share a corridor there's usually
 //      a single-mode/one-transfer link, so we weight those branches as easier.
+// ─── STORE OPENING HOURS (owner-editable via app_state boa_store_hours_v1) ──
+// Drives the recruitment commute picker's "leave home by X to arrive 15 min
+// before the branch opens" line. Shape per branch:
+//   { open: "08:00", byDow: { "0": "09:00" } }   // byDow overrides per weekday
+// (0 = Sunday … 6 = Saturday). Unlisted branches use STORE_HOURS_FALLBACK.
+// Closed days come from each salon's `closedDow` (SALONS), so they're skipped.
+// These are seed defaults — the owner corrects them in the portal editor.
+const STORE_HOURS_FALLBACK = { open: "08:00", byDow: { "0": "09:00" } };
+const STORE_HOURS_DEFAULT = {
+  "Sea Point":     { open: "08:00", byDow: { "0": "09:00" } },
+  "Bree":          { open: "08:00", byDow: { "0": "09:00" } },
+  "Kloof":         { open: "08:00", byDow: { "0": "09:00" } },
+  "Claremont":     { open: "08:00", byDow: { "0": "09:00" } },
+  "Rondebosch":    { open: "08:00", byDow: { "0": "09:00" } },
+  "Durbanville":   { open: "08:00", byDow: { "0": "09:00" } },
+  "Table Bay":     { open: "09:00", byDow: { "0": "09:00" } },  // mall hours
+  "Somerset West": { open: "08:00", byDow: { "0": "09:00" } },
+  "Riverlands":    { open: "09:00", byDow: { "0": "08:30" } },
+  "Kuils River":   { open: "08:00", byDow: { "0": "09:00" } },
+  "Westlake":      { open: "08:00", byDow: { "0": "09:00" } },
+  "Green Point":   { open: "08:00", byDow: { "0": "09:00" } },
+  "Plumstead":     { open: "08:00", byDow: { "0": "09:00" } },
+  "Sandown":       { open: "08:00", byDow: { "0": "09:00" } },
+  "Cape Gate":     { open: "09:00", byDow: { "0": "09:00" } },  // mall hours
+  "Winelands":     { open: "08:00", byDow: { "0": "09:00" } },
+  "Betty":         { open: "08:00", byDow: { "0": "09:00" } }   // closed Sun/Mon (closedDow)
+};
+function _ctHmToMin(hm) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hm || "").trim());
+  return m ? (+m[1]) * 60 + (+m[2]) : null;
+}
+function storeHoursFor(branch, hours) {
+  return (hours && hours[branch]) || STORE_HOURS_DEFAULT[branch] || STORE_HOURS_FALLBACK;
+}
+function salonClosedDow(branch) {
+  const s = (typeof SALONS !== "undefined" ? SALONS : []).find(x => x && x.name === branch);
+  return (s && Array.isArray(s.closedDow)) ? s.closedDow : [];
+}
+function storeOpenHmForDow(branch, dow, hours) {
+  const h = storeHoursFor(branch, hours);
+  const byd = h.byDow && h.byDow[String(dow)];
+  return byd || h.open || "08:00";
+}
+// Next day the branch is open at/after fromDate (skips closedDow). Returns
+// { openDate, arrivalDate (open − 15 min), openHm, dow } or null. The trial
+// form passes its Trial Start Date as fromDate; otherwise it's "from now".
+function nextOpenArrival(branch, hours, fromDate) {
+  const closed = salonClosedDow(branch);
+  const base = (fromDate instanceof Date && !isNaN(fromDate)) ? fromDate : new Date();
+  for (let i = 0; i < 14; i++) {
+    const d = new Date(base.getFullYear(), base.getMonth(), base.getDate() + i);
+    const dow = d.getDay();
+    if (closed.indexOf(dow) !== -1) continue;
+    const mins = _ctHmToMin(storeOpenHmForDow(branch, dow, hours));
+    if (mins == null) continue;
+    const openDate = new Date(d.getFullYear(), d.getMonth(), d.getDate(), Math.floor(mins / 60), mins % 60, 0, 0);
+    // Google transit needs a future time — if today's open already passed, skip on.
+    if (openDate.getTime() <= Date.now() + 60000) continue;
+    return { openDate, arrivalDate: new Date(openDate.getTime() - 15 * 60000), openHm: storeOpenHmForDow(branch, dow, hours), dow };
+  }
+  return null;
+}
+
 // Branch keys match the app's SALON names. Coordinates are approximate.
 const CT_STORE_GEO = {
   "Bree":          { lat: -33.9205, lng: 18.4190, region: "CBD / Atlantic Seaboard", corridors: ["atlantic", "westcoast", "southern_line", "northern_line", "central_line", "cbd_hub"] },
@@ -13682,6 +13851,276 @@ function ctMapsDirectionsUrl(address, storeName) {
   return "https://www.google.com/maps/dir/?api=1&travelmode=transit"
     + "&origin=" + encodeURIComponent(String(address || "").trim())
     + "&destination=" + encodeURIComponent(dest);
+}
+
+// Calls the Netlify Maps proxy (/.netlify/functions/maps). Returns parsed JSON;
+// throws on non-200 so callers can fall back to the offline estimate + links.
+async function ctMapsProxy(payload) {
+  const res = await fetch("/.netlify/functions/maps", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload)
+  });
+  let data = {}; try { data = await res.json(); } catch (_e) { /* non-JSON */ }
+  if (!res.ok) throw new Error(data.error || ("Maps proxy error " + res.status));
+  return data;
+}
+
+// Vehicle → emoji for transit step rendering.
+function _ctVehicleIcon(v) {
+  const t = String(v || "").toUpperCase();
+  if (t.indexOf("RAIL") !== -1 || t.indexOf("TRAIN") !== -1 || t.indexOf("SUBWAY") !== -1 || t.indexOf("TRAM") !== -1) return "🚆";
+  if (t.indexOf("BUS") !== -1) return "🚌";
+  if (t.indexOf("FERRY") !== -1) return "⛴️";
+  return "🚍";
+}
+
+// Address + branch picker. Shows an instant offline ranking, then fetches REAL
+// Google transit times (works for ANY address) and re-sorts by the live
+// commute. Picking a branch loads its full step-by-step route IN-PAGE (walk +
+// bus/train lines with times), the nearest taxi rank (best-effort), and a
+// "leave home by X to arrive 15 min before it opens" line. With showInput the
+// address field gets Google Places autocomplete. Degrades gracefully (offline
+// estimate + deep link) when the proxy / API key isn't set up. Used by the
+// Trial onboarding + Interview forms.
+function CtStorePicker({ value, onChange, selectedBranch, onPickStore, salonNames, label, hint, showInput, startDate }) {
+  const [acItems, setAcItems] = React.useState([]);
+  const [acOpen, setAcOpen] = React.useState(false);
+  const [live, setLive] = React.useState(null);   // { byName, mode } | null
+  const [busy, setBusy] = React.useState(false);
+  const [err, setErr] = React.useState("");
+  const [hours, setHours] = React.useState({});    // boa_store_hours_v1
+  const [expanded, setExpanded] = React.useState(""); // branch whose route panel is open
+  const [detail, setDetail] = React.useState({});   // branch → { loading, route, taxi, arr, err }
+  const acTimer = React.useRef(null);
+  const acSeq = React.useRef(0);
+  const wrapRef = React.useRef(null);
+
+  const text = (value || "").trim();
+  const names = (salonNames && salonNames.length) ? salonNames : [];
+  const ranked = React.useMemo(() => ctSuggestStores(value, names), [value, names.join("|")]);
+
+  React.useEffect(() => { setLive(null); setErr(""); setExpanded(""); setDetail({}); }, [text]); // address changed → reset
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const v = window.BOA_DB && window.BOA_DB.loadByKey ? await window.BOA_DB.loadByKey("boa_store_hours_v1") : null;
+        if (v && typeof v === "object") setHours(v);
+      } catch (_e) { /* defaults */ }
+    })();
+  }, []);
+  React.useEffect(() => {
+    const onDoc = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setAcOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+
+  const onType = (v) => {
+    onChange(v);
+    if (!showInput) return;
+    if (acTimer.current) clearTimeout(acTimer.current);
+    const q = (v || "").trim();
+    if (q.length < 3) { setAcItems([]); setAcOpen(false); return; }
+    const seq = ++acSeq.current;
+    acTimer.current = setTimeout(async () => {
+      try {
+        const d = await ctMapsProxy({ action: "autocomplete", input: q });
+        if (seq !== acSeq.current) return;                                 // a newer keystroke won
+        const items = d.suggestions || [];
+        setAcItems(items); setAcOpen(items.length > 0);
+      } catch (_e) { setAcItems([]); setAcOpen(false); }                   // no key / offline → silent
+    }, 320);
+  };
+
+  // Rank ALL branches by real transit time — works even when the address
+  // isn't in the offline suburb list (the key fix for out-of-list addresses).
+  const getLive = async () => {
+    if (busy) return;
+    if (!text) { setErr("Enter an address first."); return; }
+    const dests = names.map(n => { const g = ctGeoForStore(n); return g ? { name: n, lat: g.lat, lng: g.lng } : null; }).filter(Boolean);
+    if (!dests.length) { setErr("No mappable branches to compare."); return; }
+    const cacheKey = "ctlive|" + text.toLowerCase() + "|transit";
+    try { const c = JSON.parse(sessionStorage.getItem(cacheKey) || "null"); if (c && c.byName) { setLive(c); return; } } catch (_e) {}
+    setBusy(true); setErr("");
+    try {
+      const d = await ctMapsProxy({ action: "distances", origin: text, destinations: dests, mode: "transit" });
+      const byName = {}; (d.results || []).forEach(r => { byName[r.name] = r; });
+      const payload = { byName, mode: d.mode || "transit" };
+      setLive(payload);
+      try { sessionStorage.setItem(cacheKey, JSON.stringify(payload)); } catch (_e) {}
+    } catch (e) {
+      setErr("Live times unavailable (" + ((e && e.message) || e) + ") — showing the offline estimate.");
+    } finally { setBusy(false); }
+  };
+
+  // Pick a branch → load its full route + nearest taxi rank + leave-by, in-page.
+  const pick = async (name) => {
+    onPickStore(name);
+    setExpanded(name);
+    if (!text) return;                              // no origin yet → just select
+    if (detail[name] && (detail[name].route || detail[name].loading)) return; // already have it
+    const g = ctGeoForStore(name); if (!g) return;
+    const from = startDate ? new Date(startDate + "T00:00:00") : null;
+    const arr = nextOpenArrival(name, hours, from);
+    const arrivalTime = arr ? Math.floor(arr.arrivalDate.getTime() / 1000) : null;
+    const dayKey = arr ? arr.arrivalDate.toISOString().slice(0, 10) : "now";
+    const cacheKey = "ctroute|" + text.toLowerCase() + "|" + name + "|" + dayKey;
+    try {
+      const c = JSON.parse(sessionStorage.getItem(cacheKey) || "null");
+      if (c && c.route) { setDetail(d => ({ ...d, [name]: { loading: false, ...c, arr } })); return; }
+    } catch (_e) {}
+    setDetail(d => ({ ...d, [name]: { loading: true } }));
+    try {
+      const route = await ctMapsProxy({ action: "directions", origin: text, destination: { lat: g.lat, lng: g.lng }, mode: "transit", arrivalTime });
+      let taxi = null;
+      const sl = route.startLocation;
+      if (sl && typeof sl.lat === "number") {
+        try { const t = await ctMapsProxy({ action: "nearbyTaxi", lat: sl.lat, lng: sl.lng }); taxi = t.taxi || null; } catch (_e) {}
+      }
+      const payload = { route, taxi };
+      setDetail(d => ({ ...d, [name]: { loading: false, route, taxi, arr } }));
+      try { sessionStorage.setItem(cacheKey, JSON.stringify(payload)); } catch (_e) {}
+    } catch (e) {
+      setDetail(d => ({ ...d, [name]: { loading: false, err: (e && e.message) || String(e), arr } }));
+    }
+  };
+
+  // Unified rows: offline ranking, overlaid + re-sorted by live transit time
+  // once fetched. When the address isn't in the offline list we still build
+  // rows from the live results so any address can be ranked.
+  const rows = React.useMemo(() => {
+    const base = {}; (ranked.results || []).forEach(s => { base[s.name] = s; });
+    if (live) {
+      const order = Object.keys(live.byName).length ? Object.keys(live.byName) : names;
+      return order.map(name => {
+        const off = base[name]; const lv = live.byName[name];
+        return { name, off: off || null, live: (lv && lv.status === "OK") ? lv : null };
+      }).sort((a, b) => {
+        const ax = a.live ? a.live.durationSeconds : Infinity, bx = b.live ? b.live.durationSeconds : Infinity;
+        if (ax !== bx) return ax - bx;
+        return ((a.off && a.off.ease) || 1e9) - ((b.off && b.off.ease) || 1e9);
+      });
+    }
+    return (ranked.results || []).map(s => ({ name: s.name, off: s, live: null }));
+  }, [ranked, live, names.join("|")]);
+
+  const lblS = { display: "block", fontSize: 10, fontWeight: 700, color: "#BE185D", letterSpacing: "0.08em", marginBottom: 4, textTransform: "uppercase" };
+  const inpS = { width: "100%", padding: "8px 11px", borderRadius: 8, border: "1px solid #FBCFE8", background: "#FCE7F3", fontFamily: "inherit", fontSize: 13, color: "#111827", boxSizing: "border-box" };
+  const haveList = rows.length > 0;
+
+  const renderDetail = (name) => {
+    const d = detail[name];
+    if (!d) return null;
+    if (d.loading) return <div style={{ fontSize: 12, color: "#6b7280", padding: "8px 10px" }}>Loading route…</div>;
+    if (d.err) return (
+      <div style={{ fontSize: 11, color: "#b45309", padding: "8px 10px" }}>
+        Couldn't load the route ({d.err}). <a href={ctMapsDirectionsUrl(text, name)} target="_blank" rel="noopener noreferrer" style={{ color: "#3730a3", fontWeight: 700 }}>Open in Google Maps 🚌</a>
+      </div>
+    );
+    const r = d.route, arr = d.arr;
+    const dow = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    return (
+      <div style={{ padding: "10px 12px", background: "#f8fafc", borderTop: "1px solid #e5e7eb" }}>
+        {arr && (
+          <div style={{ fontSize: 12.5, fontWeight: 800, color: "#0369a1", background: "#e0f2fe", border: "1px solid #bae6fd", borderRadius: 8, padding: "8px 10px", marginBottom: 8 }}>
+            🕖 Leave home by <strong>{r.departureText || "—"}</strong>{r.arrivalText ? <> to arrive ~<strong>{r.arrivalText}</strong></> : null} — about 15 min before {name} opens at <strong>{arr.openHm}</strong> on {dow[arr.dow]}.
+          </div>
+        )}
+        {!arr && <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 8 }}>No opening time set for {name} (set it in Operations → Store Opening Hours) — showing a depart-now route.</div>}
+        <div style={{ fontSize: 11, fontWeight: 800, color: "#374151", marginBottom: 6 }}>🚆 Route · {r.durationText}{r.distanceText ? " · " + r.distanceText : ""}</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {(r.steps || []).map((st, i) => st.transit ? (
+            <div key={i} style={{ fontSize: 12, color: "#111827" }}>
+              {_ctVehicleIcon(st.transit.vehicle)} <strong>{st.transit.line || st.transit.vehicle || "Transit"}</strong>
+              {st.transit.headsign ? <span style={{ color: "#6b7280" }}> → {st.transit.headsign}</span> : null}
+              <div style={{ fontSize: 11, color: "#6b7280", marginLeft: 18 }}>
+                {st.transit.departureStop ? st.transit.departureStop : ""}{st.transit.arrivalStop ? " → " + st.transit.arrivalStop : ""}
+                {st.transit.departureText ? " · dep " + st.transit.departureText : ""}{typeof st.transit.numStops === "number" ? " · " + st.transit.numStops + " stop" + (st.transit.numStops === 1 ? "" : "s") : ""}
+              </div>
+            </div>
+          ) : (
+            <div key={i} style={{ fontSize: 12, color: "#4b5563" }}>🚶 {st.instruction || "Walk"}{st.durationText ? " · " + st.durationText : ""}</div>
+          ))}
+        </div>
+        {d.taxi && (
+          <div style={{ fontSize: 11.5, color: "#9a3412", marginTop: 8 }}>
+            🚕 Nearest taxi rank: <strong>{d.taxi.name}</strong>{d.taxi.vicinity ? " (" + d.taxi.vicinity + ")" : ""} <span style={{ color: "#9ca3af" }}>· best-effort, taxis aren't in Google routing</span>
+          </div>
+        )}
+        <div style={{ marginTop: 8 }}>
+          <a href={ctMapsDirectionsUrl(text, name)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, fontWeight: 700, color: "#3730a3", textDecoration: "none" }}>Open full route in Google Maps 🚌</a>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      {showInput && (
+        <div ref={wrapRef} style={{ position: "relative", marginBottom: 12 }}>
+          <label style={lblS}>{label || "Home Address"} {hint && <span style={{ fontWeight: 400, textTransform: "none", color: "#9ca3af" }}>{hint}</span>}</label>
+          <input style={inpS} value={value || ""} onChange={e => onType(e.target.value)} onFocus={() => acItems.length && setAcOpen(true)} placeholder="Start typing a street / suburb…" autoComplete="off" />
+          {acOpen && (
+            <div style={{ position: "absolute", zIndex: 40, top: "100%", left: 0, right: 0, background: "#fff", border: "1px solid #e5e7eb", borderRadius: 9, boxShadow: "0 12px 30px rgba(0,0,0,0.14)", marginTop: 3, overflow: "hidden" }}>
+              {acItems.map((s, i) => (
+                <div key={i} onMouseDown={() => { onChange(s.description); setAcOpen(false); setAcItems([]); }} style={{ padding: "9px 11px", fontSize: 12.5, color: "#111827", cursor: "pointer", borderBottom: i < acItems.length - 1 ? "1px solid #f3f4f6" : "none" }}>📍 {s.description}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div style={{ background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 12, padding: "12px 14px", marginBottom: showInput ? 0 : 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: "#3730a3" }}>🧭 Easiest stores to travel to</div>
+          {text && (
+            <button type="button" onClick={getLive} disabled={busy} style={{ background: busy ? "#a5b4fc" : "#4f46e5", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", cursor: busy ? "default" : "pointer", fontSize: 12, fontWeight: 700 }}>{busy ? "Fetching…" : (live ? "↻ Refresh times" : "🚆 Get commute times")}</button>
+          )}
+        </div>
+        {text && (
+          <div style={{ marginTop: 8, fontSize: 12 }}>
+            <a href={ctMapsSearchUrl(text)} target="_blank" rel="noopener noreferrer" style={{ fontWeight: 700, color: "#4f46e5", textDecoration: "none" }}>📍 View their address on Google Maps</a>
+          </div>
+        )}
+        {err && <div style={{ fontSize: 11, color: "#b45309", marginTop: 8 }}>{err}</div>}
+
+        {text && !haveList && !busy && (
+          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 8 }}>
+            Tap <strong>🚆 Get commute times</strong> for real bus / train times to every branch, ranked by the actual commute.
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+              {names.filter(n => ctGeoForStore(n)).map(n => (
+                <a key={n} href={ctMapsDirectionsUrl(text, n)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, fontWeight: 700, color: "#3730a3", background: "#fff", border: "1px solid #c7d2fe", borderRadius: 7, padding: "4px 9px", textDecoration: "none" }}>🚌 {n}</a>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {haveList && (
+          <div style={{ marginTop: 10 }}>
+            <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 6 }}>{live ? "Ranked by real transit time — pick a branch to see the full route" : "Offline estimate — tap Get commute times for real routes"}:</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {rows.map((s, i) => {
+                const off = s.off; const sel = selectedBranch === s.name; const open = expanded === s.name;
+                return (
+                  <div key={s.name} style={{ background: "#fff", border: `1px solid ${sel ? "#4f46e5" : "#e5e7eb"}`, borderRadius: 9, overflow: "hidden" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", minHeight: 38 }}>
+                      <span style={{ fontSize: 12, fontWeight: 800, color: "#9ca3af", minWidth: 16 }}>{i + 1}</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>📍 {s.name} {s.live ? <span style={{ fontSize: 11, fontWeight: 800, color: "#15803d" }}>· 🚆 {s.live.durationText} · {s.live.distanceText}</span> : (off ? <span style={{ fontSize: 10, fontWeight: 600, color: "#9ca3af" }}>· ~{off.km} km</span> : (live ? <span style={{ fontSize: 10, fontWeight: 600, color: "#b45309" }}>· no transit route found</span> : null))}</div>
+                        {off && <div style={{ fontSize: 11, color: "#4f46e5" }}>{off.modes.join(" · ")}</div>}
+                      </div>
+                      {off && <span style={{ fontSize: 10, fontWeight: 800, color: off.rating.color, background: off.rating.bg, borderRadius: 99, padding: "2px 8px", whiteSpace: "nowrap" }}>{off.rating.label}</span>}
+                      <button type="button" onClick={() => pick(s.name)} style={{ background: sel ? "#4f46e5" : "#eef2ff", color: sel ? "#fff" : "#4f46e5", border: "none", borderRadius: 7, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{sel ? "✓ Route" : "Use"}</button>
+                    </div>
+                    {open && renderDetail(s.name)}
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 6 }}>{live ? "Live Google transit (bus / rail). " : "Offline estimate. "}Pick a branch for the full in-page route + leave-by time. Minibus taxis aren't in Google routing.</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function InterviewsView({ interviewList, persistInterviews, trialList, persistTrialList, staff, managers, currentUser }) {
@@ -14039,51 +14478,18 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
               <div><label style={lbl}>Interview time</label><input type="time" style={inp} value={form.interviewTime} onChange={e => setForm({ ...form, interviewTime: e.target.value })} /></div>
             </div>
 
-            {/* Intelligent store picker — ranks branches by travel-ease from
-                the candidate's area using approximate distance + Cape Town
-                public-transport corridors (MyCiti / Metrorail / Golden Arrow /
-                taxi). Estimates only — pick one to fill the branch. */}
-            <div style={{ marginTop: 14, background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 12, padding: "12px 14px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                <div style={{ fontSize: 12, fontWeight: 800, color: "#3730a3" }}>🧭 Easiest stores to travel to</div>
-                <button onClick={runSuggest} style={{ background: "#4f46e5", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Rank from "{form.area || "area"}"</button>
-              </div>
-              {form.area && form.area.trim() && (
-                <div style={{ marginTop: 8, fontSize: 12 }}>
-                  <a href={ctMapsSearchUrl(form.area)} target="_blank" rel="noopener noreferrer" style={{ fontWeight: 700, color: "#4f46e5", textDecoration: "none" }}>📍 View their address on Google Maps</a>
-                  <span style={{ color: "#9ca3af" }}> · use “🚌 Directions” per store for the real taxi / MyCiTi time</span>
-                </div>
-              )}
-              {suggest && suggest.area === null && (
-                <div style={{ fontSize: 12, color: "#6b7280", marginTop: 8 }}>
-                  Couldn't auto-rank “{form.area}”. Open Google Maps directions below to compare the actual public-transport commute, or try a nearby Cape Town suburb / region.
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
-                    {SALONS.filter(sl => ctGeoForStore(sl.name)).map(sl => (
-                      <a key={sl.name} href={ctMapsDirectionsUrl(form.area, sl.name)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, fontWeight: 700, color: "#3730a3", background: "#fff", border: "1px solid #c7d2fe", borderRadius: 7, padding: "4px 9px", textDecoration: "none" }}>🚌 {sl.name}</a>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {suggest && suggest.area && (
-                <div style={{ marginTop: 10 }}>
-                  <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 6 }}>Ranked best → hardest to reach from <strong style={{ color: "#3730a3" }}>{form.area}</strong>:</div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 280, overflowY: "auto" }}>
-                    {suggest.results.map((s, i) => (
-                      <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 8, background: "#fff", border: `1px solid ${form.branch === s.name ? "#4f46e5" : "#e5e7eb"}`, borderRadius: 9, padding: "7px 10px" }}>
-                        <span style={{ fontSize: 12, fontWeight: 800, color: "#9ca3af", minWidth: 16 }}>{i + 1}</span>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>📍 {s.name} <span style={{ fontSize: 10, fontWeight: 600, color: "#9ca3af" }}>· ~{s.km} km</span></div>
-                          <div style={{ fontSize: 11, color: "#4f46e5" }}>{s.modes.join(" · ")}</div>
-                        </div>
-                        <span style={{ fontSize: 10, fontWeight: 800, color: s.rating.color, background: s.rating.bg, borderRadius: 99, padding: "2px 8px", whiteSpace: "nowrap" }}>{s.rating.label}</span>
-                        <a href={ctMapsDirectionsUrl(form.area, s.name)} target="_blank" rel="noopener noreferrer" title="Open Google Maps transit directions (minibus taxi / MyCiTi) from their address" style={{ fontSize: 11, fontWeight: 700, color: "#3730a3", textDecoration: "none", whiteSpace: "nowrap" }}>🚌 Directions</a>
-                        <button onClick={() => setForm(f => ({ ...f, branch: s.name }))} style={{ background: form.branch === s.name ? "#4f46e5" : "#eef2ff", color: form.branch === s.name ? "#fff" : "#4f46e5", border: "none", borderRadius: 7, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{form.branch === s.name ? "✓" : "Use"}</button>
-                      </div>
-                    ))}
-                  </div>
-                  <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 6 }}>Quick estimate from distance + Cape Town taxi/bus corridors. Tap <strong>🚌 Directions</strong> for the actual Google Maps travel time by minibus taxi / MyCiTi.</div>
-                </div>
-              )}
+            {/* Store picker — offline travel-ease ranking + live Google transit
+                times on demand. (Autocomplete stays off here; the grid already
+                has the coarse "area" field.) */}
+            <div style={{ marginTop: 14 }}>
+              <CtStorePicker
+                value={form.area}
+                onChange={(v) => setForm(f => ({ ...f, area: v }))}
+                selectedBranch={form.branch}
+                onPickStore={(name) => setForm(f => ({ ...f, branch: name }))}
+                salonNames={SALONS.map(s => s.name)}
+                showInput={false}
+              />
             </div>
 
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 18 }}>
@@ -15064,7 +15470,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Map of tab → category name. Kept in sync with the groups list below.
   const NAV_TAB_TO_CATEGORY = {
     onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
-    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", freshaTodo: "Operations", storeOpenings: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
+    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", freshaTodo: "Operations", storeOpenings: "Operations", storeHours: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
     attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll", payrollInbox: "Payroll", leaveBalances: "Payroll", frl: "Payroll",
     leaveRequests: "Operations", calledInSick: "Operations", extraDayRequests: "Operations",
     alerts: "Insights", activity: "Insights", storeReports: "Insights", staffingReport: "Insights",
@@ -18754,6 +19160,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     return { t: "freshaTodo", l: "💇‍♀️ Fresha To-Do" + (n ? "  (" + n + ")" : "") };
                   })(),
                   { t: "storeOpenings", l: "🔓 Store Openings" },
+                  ...((currentUser?.isOwner || currentUser?.role === "Master Admin") ? [{ t: "storeHours", l: "🕖 Store Opening Hours" }] : []),
                   { t: "movements", l: "🔀 Today's Movements" },
                   { t: "dailyTasks", l: "📋 Daily Tasks" },
                   { t: "mgrCoverage", l: "🗓 Manager Coverage" },
@@ -24523,8 +24930,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
             {/* Add / Edit Trainee — modal popup */}
             {tForm._open && (
-              <div onClick={() => setTForm(f => ({ ...f, _open: false, _editId: null }))} style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 100000, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", overflowY: "auto" }}>
-              <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, border: "2px solid #7c3aed", padding: "20px 22px", width: "100%", maxWidth: 620, maxHeight: "88vh", overflowY: "auto", boxShadow: "0 24px 70px rgba(0,0,0,0.35)" }}>
+              <div onClick={() => setTForm(f => ({ ...f, _open: false, _editId: null }))} style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 100000, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "24px 20px", overflowY: "auto" }}>
+              <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, border: "2px solid #7c3aed", padding: "24px 28px", width: "100%", maxWidth: 1200, maxHeight: "94vh", overflowY: "auto", boxShadow: "0 24px 70px rgba(0,0,0,0.35)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
                   <div style={{ fontSize: 16, fontWeight: 800, color: "#7c3aed" }}>{tForm._editId ? "✏️ Edit Trial Candidate" : "➕ New Trial Candidate"}</div>
                   <button onClick={() => setTForm(f => ({ ...f, _open: false, _editId: null }))} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 20, lineHeight: 1, padding: 0 }}>✕</button>
@@ -24546,55 +24953,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </div>
                   <div><label style={lbl}>Trial Start Date</label><input type="date" style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.startDate || ""} onChange={e => setTForm(f => ({ ...f, startDate: e.target.value }))} /></div>
                 </div>
-                <div style={{ marginBottom: 12 }}>
-                  <label style={lbl}>Home Address <span style={{ fontWeight: 400, textTransform: "none", color: "#9ca3af" }}>(helps assign nearest branch)</span></label>
-                  <textarea rows={2} style={{ ...inp, width: "100%", boxSizing: "border-box", resize: "vertical" }} value={tForm.homeAddress || ""} onChange={e => setTForm(f => ({ ...f, homeAddress: e.target.value }))} placeholder="Street, suburb, city" />
-                </div>
-
-                {/* Intelligent store picker — ranks branches easiest to reach
-                    from the candidate's home area (approx distance + Cape Town
-                    public-transport corridors). Pick one to set the branch. */}
-                <div style={{ marginBottom: 16, background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 12, padding: "12px 14px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    <div style={{ fontSize: 12, fontWeight: 800, color: "#3730a3" }}>🧭 Easiest stores to travel to</div>
-                    <button type="button" onClick={() => setTrialSuggest(ctSuggestStores(tForm.homeAddress, SALONS.map(s => s.name)))} style={{ background: "#4f46e5", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Rank from address</button>
-                  </div>
-                  {tForm.homeAddress && tForm.homeAddress.trim() && (
-                    <div style={{ marginTop: 8, fontSize: 12 }}>
-                      <a href={ctMapsSearchUrl(tForm.homeAddress)} target="_blank" rel="noopener noreferrer" style={{ fontWeight: 700, color: "#4f46e5", textDecoration: "none" }}>📍 View their address on Google Maps</a>
-                      <span style={{ color: "#9ca3af" }}> · use “🚌 Directions” per store for the real taxi / MyCiTi time</span>
-                    </div>
-                  )}
-                  {trialSuggest && trialSuggest.area === null && (
-                    <div style={{ fontSize: 12, color: "#6b7280", marginTop: 8 }}>
-                      Couldn't auto-rank “{(tForm.homeAddress || "").trim()}”. Open Google Maps directions below to compare the actual public-transport commute, or try a nearby Cape Town suburb / region.
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
-                        {SALONS.filter(sl => ctGeoForStore(sl.name)).map(sl => (
-                          <a key={sl.name} href={ctMapsDirectionsUrl(tForm.homeAddress, sl.name)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, fontWeight: 700, color: "#3730a3", background: "#fff", border: "1px solid #c7d2fe", borderRadius: 7, padding: "4px 9px", textDecoration: "none" }}>🚌 {sl.name}</a>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {trialSuggest && trialSuggest.area && (
-                    <div style={{ marginTop: 10 }}>
-                      <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 6 }}>Ranked best → hardest to reach:</div>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 280, overflowY: "auto" }}>
-                        {trialSuggest.results.map((s, i) => (
-                          <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 8, background: "#fff", border: `1px solid ${tForm.branch === s.name ? "#4f46e5" : "#e5e7eb"}`, borderRadius: 9, padding: "7px 10px" }}>
-                            <span style={{ fontSize: 12, fontWeight: 800, color: "#9ca3af", minWidth: 16 }}>{i + 1}</span>
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>📍 {s.name} <span style={{ fontSize: 10, fontWeight: 600, color: "#9ca3af" }}>· ~{s.km} km</span></div>
-                              <div style={{ fontSize: 11, color: "#4f46e5" }}>{s.modes.join(" · ")}</div>
-                            </div>
-                            <span style={{ fontSize: 10, fontWeight: 800, color: s.rating.color, background: s.rating.bg, borderRadius: 99, padding: "2px 8px", whiteSpace: "nowrap" }}>{s.rating.label}</span>
-                            <a href={ctMapsDirectionsUrl(tForm.homeAddress, s.name)} target="_blank" rel="noopener noreferrer" title="Open Google Maps transit directions (minibus taxi / MyCiTi) from their address" style={{ fontSize: 11, fontWeight: 700, color: "#3730a3", textDecoration: "none", whiteSpace: "nowrap" }}>🚌 Directions</a>
-                            <button type="button" onClick={() => setTForm(f => ({ ...f, branch: s.name }))} style={{ background: tForm.branch === s.name ? "#4f46e5" : "#eef2ff", color: tForm.branch === s.name ? "#fff" : "#4f46e5", border: "none", borderRadius: 7, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{tForm.branch === s.name ? "✓" : "Use"}</button>
-                          </div>
-                        ))}
-                      </div>
-                      <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 6 }}>Quick estimate from distance + Cape Town taxi/bus corridors. Tap <strong>🚌 Directions</strong> for the actual Google Maps travel time by minibus taxi / MyCiTi.</div>
-                    </div>
-                  )}
+                <div style={{ marginBottom: 16 }}>
+                  <CtStorePicker
+                    value={tForm.homeAddress}
+                    onChange={(v) => setTForm(f => ({ ...f, homeAddress: v }))}
+                    selectedBranch={tForm.branch}
+                    onPickStore={(name) => setTForm(f => ({ ...f, branch: name }))}
+                    salonNames={SALONS.map(s => s.name)}
+                    label="Home Address"
+                    hint="(helps assign nearest branch)"
+                    showInput={true}
+                    startDate={tForm.startDate}
+                  />
                 </div>
 
                 <div style={{ marginBottom: 16 }}>
@@ -35906,6 +36276,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
       {tab === "bonusConfig" && (currentUser?.isOwner || currentUser?.role === "Master Admin") && (
         <div style={{ padding: "0 24px" }}><BonusConfig /></div>
+      )}
+
+      {tab === "storeHours" && (currentUser?.isOwner || currentUser?.role === "Master Admin") && (
+        <div style={{ padding: "0 24px" }}><StoreHoursConfig /></div>
       )}
 
       {tab === "dailyTasks" && (

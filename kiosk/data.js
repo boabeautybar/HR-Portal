@@ -1437,6 +1437,11 @@
     var c = client(); if (!c) throw new Error("Supabase not configured");
     var name = (openedBy || "").trim();
     if (name.length < 2) throw new Error("Please enter your name.");
+    // First open of the day WINS — if the store is already marked open today,
+    // keep the original time + opener. Re-taps (e.g. after a re-sign-in that
+    // re-shows the open-store gate) must NOT overwrite the real opening time.
+    var existing = await getStoreOpenedToday();
+    if (existing && existing.openedAt) return existing;
     var rec = {
       branch:    branch(),
       date:      todayStr(),
