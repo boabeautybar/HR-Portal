@@ -15604,6 +15604,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // merged on top at render and persisted by the schedule Save button.
   const [mgrShiftPins, setMgrShiftPins] = useState({});
   const [mgrShiftPinsDraft, setMgrShiftPinsDraft] = useState({});
+  // Open shift-picker popover on the manager Scheduling grid: { ec, d, name, x, y }.
+  const [mgrShiftMenu, setMgrShiftMenu] = useState(null);
   // When the first pending coverage change was staged. Drafts are a pure
   // browser-tab preview — Manager Coverage shows them, but the kiosk / myboa /
   // Scheduling keep the saved state, so a draft left unapplied for hours makes
@@ -31675,58 +31677,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           });
           setMgrSchedDirty(true);
         };
-        // Quick-edit the cell value with a double-click.
-        //
-        //  • Working cells (WE / WM / WL / WB) STEP through the shift variants
-        //    WE → WM → WL → WB → OFF. The variant labels are normally
-        //    auto-derived from who's working each day + their role
-        //    (applyBranchShiftRules, re-run on every render/save), so we can't
-        //    just write the code into the grid — it'd be recomputed away. Instead
-        //    each step sets a PIN that's overlaid AFTER the labeller, changing
-        //    only this one cell and never re-shuffling anyone else's label. The
-        //    final step (after WB) clears the pin and flips the day OFF.
-        //  • Off / blank / W / R / E cells cycle the everyday codes:
-        //    blank → W → O → R → E → blank — letting a ROM flip a day on or off.
-        //    Putting a day back to W lets the labeller re-assign its variant.
-        const toggleReq = (ec, d) => {
-          const cur = (result.grid[ec] && result.grid[ec][d]) || "";
-          const workCodes = ["WE", "WM", "WL", "WB"];
-          // Working cell → advance the pinned variant (or open OFF after WB).
-          if (workCodes.indexOf(cur) >= 0) {
-            const i = workCodes.indexOf(cur);
-            if (i < workCodes.length - 1) {
-              _setShiftPin(ec, d, workCodes[i + 1]);   // e.g. WM → pin WL
-              return;
-            }
-            // cur === "WB" → clear the pin and turn the day OFF.
-            _setShiftPin(ec, d, "");
-            const offGrid = JSON.parse(JSON.stringify(result.grid));
-            if (!offGrid[ec]) offGrid[ec] = {};
-            offGrid[ec][d] = "O";
-            setMgrSchedHist(h => {
-              const updated = { ...h };
-              const arr = (updated[editKey] || []).slice(-49);
-              arr.push(JSON.parse(JSON.stringify(result.grid)));
-              updated[editKey] = arr;
-              return updated;
-            });
-            setMgrSchedDraft(offGrid);
-            setMgrSchedDirty(true);
-            return;
-          }
-          const cycle = ["", "W", "O", "R", "E"];
-          const idx = cycle.indexOf(cur);
-          if (idx < 0) {
-            alert("This cell is using a specific shift code (" + cur + "). Drag another day onto it to swap, or edit it from the Manager Coverage tab.");
-            return;
-          }
-          const next = cycle[(idx + 1) % cycle.length];
-          const newGrid = JSON.parse(JSON.stringify(result.grid));
-          if (!newGrid[ec]) newGrid[ec] = {};
-          if (next) newGrid[ec][d] = next;
-          else delete newGrid[ec][d];
-          // Leaving a working day clears any stale pin on it.
-          if (next === "" || next === "O" || next === "R") _setShiftPin(ec, d, "");
+        // Double-clicking a manager-day cell opens a shift picker (rendered
+        // below) so the value can be set directly — WE / WM / WL / WB / Auto /
+        // Off / Req-off / Extra — instead of cycling.
+        const openShiftMenu = (ec, d, name, ev) => {
+          setMgrShiftMenu({ ec, d, name: name || "", x: ev.clientX, y: ev.clientY });
+        };
+        // Apply a picked shift code to one cell.
+        //  • WE/WM/WL/WB → set the day working and PIN the chosen variant. The
+        //    variant labels are otherwise auto-derived from who's working each
+        //    day + their role (applyBranchShiftRules, re-run every render/save),
+        //    so the pin is overlaid AFTER the labeller — changing only this one
+        //    cell and never re-shuffling anyone else's label.
+        //  • "W" / "AUTO" → clear the pin and let the labeller assign the variant.
+        //  • O / R / E / "" → set that everyday code and clear any pin.
+        const applyShiftChoice = (ec, d, code) => {
           setMgrSchedHist(h => {
             const updated = { ...h };
             const arr = (updated[editKey] || []).slice(-49);
@@ -31734,8 +31699,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             updated[editKey] = arr;
             return updated;
           });
-          setMgrSchedDraft(newGrid);
+          const isVariant = ["WE", "WM", "WL", "WB"].indexOf(code) >= 0;
+          const g = JSON.parse(JSON.stringify(result.grid));
+          if (!g[ec]) g[ec] = {};
+          if (isVariant || code === "W" || code === "AUTO") {
+            g[ec][d] = "W";                 // mark working; labeller/overlay set the label
+            _setShiftPin(ec, d, isVariant ? code : "");
+          } else {
+            if (code === "") delete g[ec][d];
+            else g[ec][d] = code;           // O / R / E
+            _setShiftPin(ec, d, "");        // leaving work clears any pin
+          }
+          setMgrSchedDraft(g);
           setMgrSchedDirty(true);
+          setMgrShiftMenu(null);
         };
         const undo = () => {
           const arr = mgrSchedHist[editKey] || [];
@@ -32699,9 +32676,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         // blank when mgrSched didn't write a value.
                         const rawV = (result.grid[mg.ec] && result.grid[mg.ec][dy.d]) || "";
                         const v = mg._onMat ? "ML" : rawV;
-                        // Manually pinned shift variant (overrides the auto label
-                        // for this one cell) — flagged with a small dot.
-                        const isPinned = !!(_effShiftPins[mg.ec] && _effShiftPins[mg.ec][dy.d]) && (v === "WE" || v === "WM" || v === "WL" || v === "WB");
                         // Transfer-edge: same logic as the tech schedule —
                         // cells on the wrong side of transferDate render
                         // greyed with a '→ X' / '← Y' badge and are not
@@ -32752,17 +32726,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 if (data.ec === mg.ec && data.d !== dy.d) dragSwap(mg.ec, data.d, dy.d);
                               } catch (_) { }
                             }}
-                            onDoubleClick={xferEdge || isLoanOut || mg._guestFromBranch ? undefined : () => toggleReq(mg.ec, dy.d)}
+                            onDoubleClick={xferEdge || isLoanOut || mg._guestFromBranch || v === "L" || v === "X" || v === "ML" ? undefined : (ev) => openShiftMenu(mg.ec, dy.d, mg.name, ev)}
                             title={xferEdge === "out" ? `${mg.name} · ${dy.d} · transferring to ${xferOther} on ${_xferDate} — fill remaining days on the destination schedule`
                               : xferEdge === "in" ? `${mg.name} · ${dy.d} · arriving from ${xferOther} on ${_xferDate} — pre-transfer days are still on the source schedule`
                                 : isLoanOut ? `${mg.name} · ${dy.d} · loaned to ${loanToBranch} this day — manage from Manager Coverage tab`
                                 : mg._guestFromBranch ? `${mg.name} · ${dy.d} · on loan from ${mg._guestFromBranch} — edit on Manager Coverage tab`
-                                : dy.d + ": " + (txt || "—") + ((v === "WE" || v === "WM" || v === "WL" || v === "WB") ? " · double-click pins the shift: WE → WM → WL → WB → OFF (pin overrides the auto-assigned shift, this cell only)" : " · double-click cycles blank → W → OFF → REQ → EXT") + (draggable ? " · drag to swap days" : "")}
+                                : dy.d + ": " + (txt || "—") + " · double-click to set the shift (WE/WM/WL/Off…)" + (draggable ? " · drag to swap days" : "")}
                             style={{ padding: "4px 0", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: isMon ? "3px solid #E84B9B" : "1px solid #FCE7F3", background: bg, color: fg, fontSize: 10, fontWeight: 700, cursor: draggable ? "grab" : "default", userSelect: "none" }}>
                             {xferEdge === "out" ? <span style={{ fontSize: 9, fontWeight: 800 }}>→{xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0, 4)}</span>
                               : xferEdge === "in" ? <span style={{ fontSize: 9, fontWeight: 800 }}>←{xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0, 4)}</span>
                                 : isLoanOut ? <span style={{ fontSize: 9, fontWeight: 800 }}>→{loanToBranch === "Green Point" ? "GP" : (loanToBranch || "").slice(0, 4)}{_loanRec && _loanRec.extra ? <span style={{ color: "#047857" }} title="Extra Day — home pays the extra"> ·E</span> : null}</span>
-                                : <span>{txt}{isPinned ? <span title="Manually pinned shift — overrides the auto-assigned variant" style={{ color: "#BE185D", fontSize: 8, verticalAlign: "super", marginLeft: 1 }}>📌</span> : null}</span>}
+                                : txt}
                           </td>
                         );
                       })}
@@ -32847,6 +32821,49 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </tfoot>
               </table>
             </div>}
+
+            {/* ── Shift picker (double-click a manager-day cell) ── */}
+            {mgrShiftMenu && (() => {
+              const M = mgrShiftMenu;
+              const curCell = (result.grid[M.ec] && result.grid[M.ec][M.d]) || "";
+              const isPinnedCell = !!(_effShiftPins[M.ec] && _effShiftPins[M.ec][M.d]);
+              const dLabel = (() => { try { return new Date(M.d + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" }); } catch (_) { return M.d; } })();
+              const opts = [
+                { code: "WE", label: "WE — Work early" },
+                { code: "WM", label: "WM — Work morning" },
+                { code: "WL", label: "WL — Work late" },
+                { code: "WB", label: "WB — Work both" },
+                { code: "W", label: "Auto — let the system assign" },
+                { code: "O", label: "Off" },
+                { code: "R", label: "Requested off" },
+                { code: "E", label: "Extra cover" },
+              ];
+              const MENU_W = 232, MENU_H = 392;
+              const vw = (typeof window !== "undefined" && window.innerWidth) || 1200;
+              const vh = (typeof window !== "undefined" && window.innerHeight) || 800;
+              const left = Math.max(8, Math.min(M.x, vw - MENU_W - 8));
+              const top = Math.max(8, Math.min(M.y, vh - MENU_H - 8));
+              const isWorking = curCell === "W" || curCell === "WE" || curCell === "WM" || curCell === "WL" || curCell === "WB";
+              return (
+                <div onClick={() => setMgrShiftMenu(null)} style={{ position: "fixed", inset: 0, zIndex: 10000 }}>
+                  <div onClick={e => e.stopPropagation()} style={{ position: "fixed", left, top, width: MENU_W, background: "#fff", border: "1px solid #FBCFE8", borderRadius: 12, boxShadow: "0 18px 50px rgba(131,24,67,0.28)", padding: "10px", fontFamily: "inherit" }}>
+                    <div style={{ padding: "2px 6px 8px" }}>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: "#831843" }}>{M.name}</div>
+                      <div style={{ fontSize: 10, fontWeight: 600, color: "#9ca3af" }}>{dLabel} · set shift</div>
+                    </div>
+                    {opts.map(o => {
+                      const active = (o.code === "W") ? (isWorking && !isPinnedCell) : (curCell === o.code && (["WE", "WM", "WL", "WB"].indexOf(o.code) < 0 || isPinnedCell));
+                      return (
+                        <button key={o.code} onClick={() => applyShiftChoice(M.ec, M.d, o.code)}
+                          style={{ display: "block", width: "100%", textAlign: "left", padding: "7px 9px", marginTop: 2, borderRadius: 7, border: "1px solid " + (active ? "#E84B9B" : "transparent"), background: active ? "#FDEEF5" : "transparent", color: "#831843", fontSize: 12.5, fontWeight: active ? 800 : 600, cursor: "pointer" }}>
+                          {o.label}{active ? "  ✓" : ""}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* ── Add-request modal ── */}
             {mgrReqModal && (
