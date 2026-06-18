@@ -32830,7 +32830,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const dLabel = (() => { try { return new Date(M.d + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" }); } catch (_) { return M.d; } })();
               const opts = [
                 { code: "WE", label: "WE — Work early" },
-                { code: "WM", label: "WM — Work morning" },
+                { code: "WM", label: "WM — Work middle shift" },
                 { code: "WL", label: "WL — Work late" },
                 { code: "WB", label: "WB — Work both" },
                 { code: "W", label: "Auto — let the system assign" },
@@ -36689,7 +36689,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           { code: "W",  lbl: "Work · standard" },
           { code: "WE", lbl: "Work early" },
           { code: "WL", lbl: "Work late" },
-          { code: "WM", lbl: "Work morning (half)" },
+          { code: "WM", lbl: "Work middle shift" },
           { code: "WB", lbl: "Work both shifts" },
           { code: "E",  lbl: "Extra cover" },
           { code: "O",  lbl: "Off" },
