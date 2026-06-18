@@ -31618,26 +31618,28 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Quick-cycle the cell value with a double-click. Steps through
         // the common manager codes in order: blank → W → O → R → E → blank.
         // Lets a ROM flip an OFF day straight to W without having to drag
-        // a Work cell over. Specialised working codes (WE / WM / WL / WB)
-        // step through the shift variants and then hand off to OFF:
-        // WE → WM → WL → WB → OFF, after which the everyday cycle takes
-        // over (OFF → REQ → EXT → blank → W → …). That last hop to OFF
-        // lets a ROM drop a working day straight to off — handy when
-        // adjusting partial / rollover weeks — without dragging a day
-        // over or opening the Manager Coverage editor. (To turn it back
-        // into a specific shift variant, drag-swap or use Manager
-        // Coverage; double-click only enters working codes from OFF→…→W
-        // as a plain W.)
+        // a Work cell over.
+        //
+        // Specialised working codes (WE / WM / WL / WB) can't be hand-picked
+        // here: applyBranchShiftRules re-derives them from WHO is working
+        // each day + their role on every render AND every save, so a manual
+        // variant would just be recomputed away (it'd look like the cell
+        // "won't change"). The one working-cell edit the labeller respects
+        // is flipping the day OFF — that changes the work/off pattern it
+        // reads — so a double-click on any working cell drops it straight to
+        // OFF. From there the everyday cycle (OFF → REQ → EXT → blank → W)
+        // takes over, and a re-worked day gets its WE/WM/WL label assigned
+        // automatically. This is what partial / rollover-week tidy-ups need.
         const toggleReq = (ec, d) => {
           const cur = (result.grid[ec] && result.grid[ec][d]) || "";
           const cycle = ["", "W", "O", "R", "E"];
-          const workCycle = ["WE", "WM", "WL", "WB"];
+          const workCodes = ["WE", "WM", "WL", "WB"];
           let next;
-          const wi = workCycle.indexOf(cur);
-          if (wi >= 0) {
-            // Advance through the shift variants, then exit to OFF so the
-            // working cell can be turned off right here.
-            next = wi < workCycle.length - 1 ? workCycle[wi + 1] : "O";
+          if (workCodes.indexOf(cur) >= 0) {
+            // Auto-labelled working cell → drop straight to OFF (the only
+            // edit that survives the re-labeller). Everyday cycle handles
+            // the rest from there.
+            next = "O";
           } else {
             const idx = cycle.indexOf(cur);
             if (idx < 0) {
@@ -32660,7 +32662,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               : xferEdge === "in" ? `${mg.name} · ${dy.d} · arriving from ${xferOther} on ${_xferDate} — pre-transfer days are still on the source schedule`
                                 : isLoanOut ? `${mg.name} · ${dy.d} · loaned to ${loanToBranch} this day — manage from Manager Coverage tab`
                                 : mg._guestFromBranch ? `${mg.name} · ${dy.d} · on loan from ${mg._guestFromBranch} — edit on Manager Coverage tab`
-                                : dy.d + ": " + (txt || "—") + ((v === "WE" || v === "WM" || v === "WL" || v === "WB") ? " · double-click cycles WE → WM → WL → WB → OFF" : " · double-click cycles blank → W → OFF → REQ → EXT") + (draggable ? " · drag to swap days" : "")}
+                                : dy.d + ": " + (txt || "—") + ((v === "WE" || v === "WM" || v === "WL" || v === "WB") ? " · auto-assigned shift — double-click to set OFF (WE/WM/WL are derived from who's working)" : " · double-click cycles blank → W → OFF → REQ → EXT") + (draggable ? " · drag to swap days" : "")}
                             style={{ padding: "4px 0", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: isMon ? "3px solid #E84B9B" : "1px solid #FCE7F3", background: bg, color: fg, fontSize: 10, fontWeight: 700, cursor: draggable ? "grab" : "default", userSelect: "none" }}>
                             {xferEdge === "out" ? <span style={{ fontSize: 9, fontWeight: 800 }}>→{xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0, 4)}</span>
                               : xferEdge === "in" ? <span style={{ fontSize: 9, fontWeight: 800 }}>←{xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0, 4)}</span>
