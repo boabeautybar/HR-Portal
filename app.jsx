@@ -31619,12 +31619,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // the common manager codes in order: blank → W → O → R → E → blank.
         // Lets a ROM flip an OFF day straight to W without having to drag
         // a Work cell over. Specialised working codes (WE / WM / WL / WB)
-        // get their OWN little cycle (WE → WM → WL → WB → WE …) so a ROM
-        // can flip a cell straight between the early / morning / late /
-        // both shift variants right here, without opening the Manager
-        // Coverage editor or dragging a matching day over. Both cycles
-        // keep the cell a working cell, so coverage counts don't shift —
-        // to turn a shift into OFF/REQ, drag-swap or use Manager Coverage.
+        // step through the shift variants and then hand off to OFF:
+        // WE → WM → WL → WB → OFF, after which the everyday cycle takes
+        // over (OFF → REQ → EXT → blank → W → …). That last hop to OFF
+        // lets a ROM drop a working day straight to off — handy when
+        // adjusting partial / rollover weeks — without dragging a day
+        // over or opening the Manager Coverage editor. (To turn it back
+        // into a specific shift variant, drag-swap or use Manager
+        // Coverage; double-click only enters working codes from OFF→…→W
+        // as a plain W.)
         const toggleReq = (ec, d) => {
           const cur = (result.grid[ec] && result.grid[ec][d]) || "";
           const cycle = ["", "W", "O", "R", "E"];
@@ -31632,7 +31635,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           let next;
           const wi = workCycle.indexOf(cur);
           if (wi >= 0) {
-            next = workCycle[(wi + 1) % workCycle.length];
+            // Advance through the shift variants, then exit to OFF so the
+            // working cell can be turned off right here.
+            next = wi < workCycle.length - 1 ? workCycle[wi + 1] : "O";
           } else {
             const idx = cycle.indexOf(cur);
             if (idx < 0) {
@@ -32655,7 +32660,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               : xferEdge === "in" ? `${mg.name} · ${dy.d} · arriving from ${xferOther} on ${_xferDate} — pre-transfer days are still on the source schedule`
                                 : isLoanOut ? `${mg.name} · ${dy.d} · loaned to ${loanToBranch} this day — manage from Manager Coverage tab`
                                 : mg._guestFromBranch ? `${mg.name} · ${dy.d} · on loan from ${mg._guestFromBranch} — edit on Manager Coverage tab`
-                                : dy.d + ": " + (txt || "—") + ((v === "WE" || v === "WM" || v === "WL" || v === "WB") ? " · double-click cycles WE → WM → WL → WB" : " · double-click cycles blank → W → OFF → REQ → EXT") + (draggable ? " · drag to swap days" : "")}
+                                : dy.d + ": " + (txt || "—") + ((v === "WE" || v === "WM" || v === "WL" || v === "WB") ? " · double-click cycles WE → WM → WL → WB → OFF" : " · double-click cycles blank → W → OFF → REQ → EXT") + (draggable ? " · drag to swap days" : "")}
                             style={{ padding: "4px 0", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: isMon ? "3px solid #E84B9B" : "1px solid #FCE7F3", background: bg, color: fg, fontSize: 10, fontWeight: 700, cursor: draggable ? "grab" : "default", userSelect: "none" }}>
                             {xferEdge === "out" ? <span style={{ fontSize: 9, fontWeight: 800 }}>→{xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0, 4)}</span>
                               : xferEdge === "in" ? <span style={{ fontSize: 9, fontWeight: 800 }}>←{xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0, 4)}</span>
