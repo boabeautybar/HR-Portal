@@ -27641,16 +27641,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 }
                 const t = norm(stripEcPrefix(raw) || raw);
                 if (!t) return { kind: "unknown" };
-                let firstNameAmbig = false, firstNameHit = null;
+                // Match a tech by EC (above), exact full name, or first+last name.
+                // We deliberately do NOT allocate on a FIRST NAME alone: a trial
+                // tech / walk-in who shares only a first name (e.g. a trial
+                // "Zezethu" vs B729 "Zezethu Skolpate") would otherwise have her
+                // completed appointments mis-credited to the wrong person. Rows
+                // that only overlap on first name are reported as "firstname_only"
+                // so they're skipped + surfaced, never guessed.
+                let firstNameSeen = false;
                 for (const s of globalStaff) {
                   if (s.role !== "NT") continue;
                   const n = norm(s.name); if (!n) continue;
                   if (n === t) return { kind: "tech", ec: s.ec, branch: s.branch };
                   const tp = t.split(" "), np = n.split(" ");
                   if (tp[0] === np[0] && tp[tp.length - 1] === np[np.length - 1]) return { kind: "tech", ec: s.ec, branch: s.branch };
-                  if (tp[0] === np[0]) { if (firstNameHit) firstNameAmbig = true; else firstNameHit = { ec: s.ec, branch: s.branch }; }
+                  if (tp[0] === np[0]) firstNameSeen = true;
                 }
-                if (firstNameHit && !firstNameAmbig) return { kind: "tech", ec: firstNameHit.ec, branch: firstNameHit.branch };
                 for (const s of globalStaff) {
                   if (s.role === "NT") continue;
                   const n = norm(s.name); if (!n) continue;
@@ -27658,6 +27664,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   const tp = t.split(" "), np = n.split(" ");
                   if (tp[0] === np[0] && tp[tp.length - 1] === np[np.length - 1]) return { kind: "manager", branch: s.branch };
                 }
+                // Only a first-name overlap remained — too risky to allocate.
+                if (firstNameSeen) return { kind: "firstname_only" };
                 return { kind: "unknown" };
               };
 
@@ -27689,6 +27697,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const otherStatusSeen = new Set();
               const badDateSamples = new Set();
               const unmatched = new Set();
+              const firstNameOnly = new Set();   // shared first name only — skipped, needs EC/surname in Fresha
+              let firstNameOnlySkipped = 0;
               const seenDayPerEc = new Set(); // dedupe: only count first appt per (branch|ec, day)
               const markedByBranch = {};      // per-branch tally for the summary
               const freshaThroughByBranch = {}; // max in-cycle ymd seen per branch (drives off-day matching)
@@ -27720,6 +27730,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 if (!cycleYmd.has(ymd)) { outOfCycle++; continue; }
                 const match = matchStaff(r[staffCol]);
                 if (match.kind === "manager") { managerSkipped++; continue; }
+                if (match.kind === "firstname_only") { firstNameOnlySkipped++; firstNameOnly.add((r[staffCol] || "").trim() || "(blank)"); continue; }
                 if (match.kind !== "tech") { unmatched.add((r[staffCol] || "").trim() || "(blank)"); continue; }
                 const ec = match.ec;
                 const techBranch = match.branch;
@@ -27759,6 +27770,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 "• No-show: " + noShow + "\n" +
                 "• Scheduled / not yet completed: " + scheduled + "\n" +
                 "• Manager appointments (skipped): " + managerSkipped + "\n" +
+                "• First name only — NOT allocated (add EC or surname in Fresha): " + firstNameOnlySkipped +
+                (firstNameOnly.size > 0 ? " — " + [...firstNameOnly].slice(0, 6).join(", ") + (firstNameOnly.size > 6 ? ", …" : "") : "") + "\n" +
                 "• Other status (skipped): " + otherStatus +
                 (otherStatusSeen.size > 0 ? " — " + [...otherStatusSeen].slice(0, 4).join(", ") + (otherStatusSeen.size > 4 ? ", …" : "") : "") + "\n" +
                 "• Date column read: " + (dateCol >= 0 ? "'" + headers[dateCol] + "'" : "(none)") + "\n" +
