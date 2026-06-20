@@ -18020,9 +18020,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // EC stays primary so two staff with the same name can't be cross-
   // contaminated; the name index ONLY holds records whose EC matches
   // nothing in staff/managers.
+  // Production data can hold MORE THAN ONE maternity record per EC — a stale
+  // record from an earlier leave (typically already "returned") sitting next
+  // to the current one. The maternity table is loaded with no ordering and no
+  // de-dup (data.js), so a plain last-write-wins map let whichever row Supabase
+  // happened to return LAST decide the person's status. When a stale "returned"
+  // row won over a live "on_mat" one, the person silently resurfaced as ACTIVE
+  // on Locations even though nobody brought them back — while the schedule
+  // (which reads returnDate-aware logic) still showed them on leave. Pick a
+  // deterministic winner instead: a live maternity status beats pregnant beats
+  // returned beats anything else, with the newest record id breaking ties.
   const matRecByEc = useMemo(() => {
+    const rank = (st) => (st === "on_mat" || st === "dates_tbc") ? 3 : st === "pregnant" ? 2 : st === "returned" ? 1 : 0;
     const m = new Map();
-    (matRecs || []).forEach(r => { if (r && r.ec) m.set(r.ec.trim(), r); });
+    (matRecs || []).forEach(r => {
+      if (!r || !r.ec) return;
+      const ec = r.ec.trim();
+      const prev = m.get(ec);
+      if (!prev) { m.set(ec, r); return; }
+      const rr = rank(r.matStatus), rp = rank(prev.matStatus);
+      if (rr > rp || (rr === rp && (Number(r.id) || 0) > (Number(prev.id) || 0))) m.set(ec, r);
+    });
     return m;
   }, [matRecs]);
   const _knownEcs = useMemo(() => {
@@ -18032,6 +18050,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return s;
   }, [staff, managers]);
   const orphanMatByName = useMemo(() => {
+    const rank = (st) => (st === "on_mat" || st === "dates_tbc") ? 3 : st === "pregnant" ? 2 : st === "returned" ? 1 : 0;
     const m = new Map();
     (matRecs || []).forEach(r => {
       if (!r || !r.name) return;
@@ -18039,9 +18058,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (ec && _knownEcs.has(ec)) return;             // not orphan
       const key = r.name.trim().toLowerCase();
       if (!key) return;
-      // First write wins; multiple orphans with the same name is unusual
-      // enough that we'd rather flag than silently merge.
-      if (!m.has(key)) m.set(key, r);
+      // Same deterministic winner as matRecByEc: a live maternity status must
+      // not be shadowed by a stale "returned" orphan that happens to load
+      // first (which would resurface the person as active on Locations).
+      const prev = m.get(key);
+      if (!prev) { m.set(key, r); return; }
+      const rr = rank(r.matStatus), rp = rank(prev.matStatus);
+      if (rr > rp || (rr === rp && (Number(r.id) || 0) > (Number(prev.id) || 0))) m.set(key, r);
     });
     return m;
   }, [matRecs, _knownEcs]);
@@ -31228,11 +31251,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // re-add someone automatically while still on mat, only once HR flips
         // them to "returned". EC first, name fallback for orphan mat records.
         const _matRecByEc = {}; const _matRecByName = {};
+        // Same deterministic winner as the global matRecByEc/orphanMatByName so
+        // a stale "returned" duplicate can't shadow a live "on_mat" record and
+        // make a manager's row drop its ML band (the Locations-resurfacing bug,
+        // mirrored on the manager schedule).
+        const _matRank = (st) => (st === "on_mat" || st === "dates_tbc") ? 3 : st === "pregnant" ? 2 : st === "returned" ? 1 : 0;
+        const _matPut = (bucket, key, r) => {
+          const prev = bucket[key];
+          if (!prev) { bucket[key] = r; return; }
+          const rr = _matRank(r.matStatus), rp = _matRank(prev.matStatus);
+          if (rr > rp || (rr === rp && (Number(r.id) || 0) > (Number(prev.id) || 0))) bucket[key] = r;
+        };
         (matRecs || []).forEach(r => {
           if (!r) return;
           if (!(r.matStatus === "on_mat" || r.matStatus === "dates_tbc" || r.matStatus === "returned")) return;
-          if (r.ec) _matRecByEc[r.ec.trim()] = r;
-          if (r.name) _matRecByName[r.name.trim().toLowerCase()] = r;
+          if (r.ec) _matPut(_matRecByEc, r.ec.trim(), r);
+          if (r.name) _matPut(_matRecByName, r.name.trim().toLowerCase(), r);
         });
         const _matCycEnd = (() => {
           const cs = new Date(cycleStart + "T00:00:00");
