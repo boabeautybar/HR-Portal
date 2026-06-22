@@ -16425,10 +16425,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return () => { cancelled = true; };
   }, [tab, attBranch, attYM]);
   const [attLoading, setAttLoading] = useState(false);
-  // All-stores CSV export walker: { queue: [branches left], rows, startBranch }.
-  // Drives the attendance sheet through every store so the export reuses the
-  // sheet's EXACT totals engine instead of a parallel re-derivation.
-  const [attExportAll, setAttExportAll] = useState(null);
+  // "Branch|cycle" key the main attendance loader last finished. Lets the
+  // all-stores CSV collector tell whether the on-screen grid actually belongs
+  // to the branch it just switched to, rather than the previous branch's grid
+  // (attLoading flips to false a render before the new load even starts).
+  const [attLoadedKey, setAttLoadedKey] = useState("");
+  // False while the cross-branch loan grids are (re)loading for the current
+  // branch — the all-stores export waits for these too, so a loaned-out day is
+  // counted the same as it is in the on-screen sheet.
+  const [crossBranchReady, setCrossBranchReady] = useState(true);
+  // Drives the "⬇ All stores CSV" export: walks every store in turn, letting
+  // the normal per-branch pipeline load each one, then captures that branch's
+  // CSV rows with the EXACT same totals logic the single-store download uses.
+  //   { stores:[name…], idx, rows:[[…]…], origBranch, ym }  |  null = idle
+  const [allExport, setAllExport] = useState(null);
+  // Holds the current render's row-builder + readiness so the top-level
+  // collector effect (which can't see the attendance tab's render-scoped
+  // closures) can pull this branch's rows once its data has settled.
+  const attExportRef = useRef(null);
   // Cross-branch payroll overview — lazy-loaded counts of cells needing
   // admin review per branch for the active cycle. Lives at component scope
   // so it can be triggered from the dedicated Payroll Progress tab.
@@ -17076,7 +17090,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setAttEarly(early || {});
       setAttExtras(extras || {});
     }).catch(e => console.error("Attendance load:", e))
-      .finally(() => setAttLoading(false));
+      .finally(() => { setAttLoading(false); setAttLoadedKey(attBranch + "|" + attYM); });
   }, [tab, attBranch, attYM, staff, managers]);
 
   // Build the branch-agnostic Fresha index: union every branch's freshaWorked
@@ -17142,8 +17156,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         if (inc && l.fromBranch === inc.branch && l.date < inc.transferDate) targets.add(l.toBranch);
       });
     }
-    if (targets.size === 0) { setCrossBranchAttGrids({}); return; }
+    if (targets.size === 0) { setCrossBranchAttGrids({}); setCrossBranchReady(true); return; }
     let cancelled = false;
+    setCrossBranchReady(false);
     Promise.all([...targets].map(async (br) => {
       try {
         const att = await window.BOA_DB.loadAttendance(br, attYM);
@@ -17154,9 +17169,50 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const next = {};
       for (const [br, g] of pairs) next[br] = g;
       setCrossBranchAttGrids(next);
+      setCrossBranchReady(true);
     });
     return () => { cancelled = true; };
   }, [tab, attBranch, attYM, techLoans, mgrLoanRows, staff]);
+
+  // ── All-stores attendance CSV collector ──
+  // The "⬇ All stores CSV" button seeds `allExport` and points the attendance
+  // view at the first store. Each time a store's data finishes loading this
+  // effect grabs that branch's rows (via attExportRef, populated during the
+  // attendance render with the SAME totals logic as the single-store download),
+  // then advances to the next store. When the last store is captured it writes
+  // one combined CSV — one row per person, at their current store — and restores
+  // the branch the user was on. Reusing the live per-branch pipeline is what
+  // guarantees each store's rows reconcile exactly to its own CSV totals file.
+  useEffect(() => {
+    if (!allExport) return;
+    const target = allExport.stores[allExport.idx];
+    const snap = attExportRef.current;
+    // Wait until the on-screen attendance data really belongs to `target`:
+    // the main grid finished loading for this branch+cycle, no load is in
+    // flight, and the cross-branch loan grids have settled too.
+    if (!snap || snap.branch !== target || snap.ym !== allExport.ym) return;
+    if (attLoading || !crossBranchReady) return;
+    if (attLoadedKey !== target + "|" + allExport.ym) return;
+    let rows;
+    try { rows = snap.buildRows(); } catch (e) { console.error("All-stores export:", e); rows = []; }
+    const withStore = rows.map(r => [target, ...r]);
+    const nextRows = allExport.rows.concat(withStore);
+    const nextIdx = allExport.idx + 1;
+    if (nextIdx >= allExport.stores.length) {
+      const head = ["Store", ...snap.head];
+      const lines = [
+        _csvEscape("Attendance totals · ALL STORES · Pay cycle " + snap.cycLabel + " (" + snap.payLabel + ")"),
+        "",
+        head.map(_csvEscape).join(",")
+      ].concat(nextRows.map(r => r.map(_csvEscape).join(",")));
+      _triggerDownload(_safeFile("attendance_totals_ALL_STORES_" + snap.payYm + "_payroll") + ".csv", lines.join("\r\n"), "text/csv");
+      setAllExport(null);
+      setAttBranch(allExport.origBranch);
+    } else {
+      setAllExport({ ...allExport, idx: nextIdx, rows: nextRows });
+      setAttBranch(allExport.stores[nextIdx]);
+    }
+  }, [allExport, attLoading, crossBranchReady, attLoadedKey, attBranch, attYM]);
 
   // ── Dashboard: count staff scheduled to work today across all branches ──
   const [dashScheduledToday, setDashScheduledToday] = useState(null); // null = loading
@@ -28819,12 +28875,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // are already counted inside Unpaid — a separate No-shows column made
         // payroll deduct those days twice, so it's deliberately NOT exported;
         // the no-shows still surface in the Bonus Loss Reason column.
-        const csvHead = ["Employee Code", "Full Name", "Role", "Start Date (new starters)", "Days Worked", "Trial Days (new starters)",
+        // The cycle runs 25th → 24th and is named after its END month — e.g.
+        // 25 May → 24 Jun is the JUNE payroll — so label the file by the
+        // payroll month (cycle end), not attYM (the start month).
+        const attCsvPayYm = cycEnd.getFullYear() + "-" + p2(cycEnd.getMonth() + 1);
+        const attCsvPayLabel = moShort[cycEnd.getMonth()] + " " + cycEnd.getFullYear() + " payroll";
+        const attCsvHead = ["Employee Code", "Full Name", "Role", "Start Date (new starters)", "Days Worked", "Trial Days (new starters)",
           "Annual Leave", "Sick (with note)", "FRL", "Public Holidays", "Extra Days",
           "Unpaid", "Lates", "Bonus Lost", "Bonus Loss Reason"];
-        // One row per staff member, using the sheet's own totals — shared by
-        // the single-branch download and the all-stores walker below.
-        const buildCsvRows = () => attStaff.map(s => {
+        // Build this branch's data rows (one per person, in the same column
+        // order as attCsvHead) using the live totals logic. Shared by the
+        // single-store download and the all-stores collector so both agree.
+        const buildAttCsvRows = () => attStaff.map(s => {
           const t = totalsFor(s.ec);
           const reasons = bonusLossReasons(t);
           const sd = startByEc[String(s.ec).trim()];
@@ -28848,53 +28910,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           ];
         });
         const downloadAttendanceCsv = () => {
-          // The cycle runs 25th → 24th and is named after its END month — e.g.
-          // 25 May → 24 Jun is the JUNE payroll — so label the file by the
-          // payroll month (cycle end), not attYM (the start month).
-          const payYm = cycEnd.getFullYear() + "-" + p2(cycEnd.getMonth() + 1);
-          const payLabel = moShort[cycEnd.getMonth()] + " " + cycEnd.getFullYear() + " payroll";
           const lines = [
-            _csvEscape("Attendance totals · " + attBranch + " · Pay cycle " + cycLabel + " (" + payLabel + ")"),
+            _csvEscape("Attendance totals · " + attBranch + " · Pay cycle " + cycLabel + " (" + attCsvPayLabel + ")"),
             "",
-            csvHead.map(_csvEscape).join(","),
-            ...buildCsvRows().map(r => r.map(_csvEscape).join(","))
-          ];
-          _triggerDownload(_safeFile("attendance_totals_" + attBranch + "_" + payYm + "_payroll") + ".csv", lines.join("\r\n"), "text/csv");
+            attCsvHead.map(_csvEscape).join(",")
+          ].concat(buildAttCsvRows().map(r => r.map(_csvEscape).join(",")));
+          _triggerDownload(_safeFile("attendance_totals_" + attBranch + "_" + attCsvPayYm + "_payroll") + ".csv", lines.join("\r\n"), "text/csv");
         };
-
-        // ── All-stores CSV export ──────────────────────────────────────────
-        // Walks attBranch through every store: each time the sheet finishes
-        // loading a branch in the queue, its rows are captured with the SAME
-        // totalsFor the sheet renders with, then the walker advances. When the
-        // queue empties the combined file (with a Branch column) downloads and
-        // the original branch is restored. Reusing the live engine keeps the
-        // multi-store numbers identical to each branch's sheet — no parallel
-        // re-implementation to drift.
-        if (attExportAll && !attLoading && attExportAll.queue[0] === attBranch && !attExportAll._captured) {
-          attExportAll._captured = true;     // sync guard against double renders before state advances
-          const _exp = attExportAll;
-          const _branchRows = buildCsvRows().map(r => [attBranch, ...r]);
-          Promise.resolve().then(() => {
-            const rows = [..._exp.rows, ..._branchRows];
-            const queue = _exp.queue.slice(1);
-            if (queue.length === 0) {
-              const payYm = cycEnd.getFullYear() + "-" + p2(cycEnd.getMonth() + 1);
-              const payLabel = moShort[cycEnd.getMonth()] + " " + cycEnd.getFullYear() + " payroll";
-              const lines = [
-                _csvEscape("Attendance totals · ALL STORES · Pay cycle " + cycLabel + " (" + payLabel + ")"),
-                "",
-                ["Branch", ...csvHead].map(_csvEscape).join(","),
-                ...rows.map(r => r.map(_csvEscape).join(","))
-              ];
-              _triggerDownload(_safeFile("attendance_totals_ALL_STORES_" + payYm + "_payroll") + ".csv", lines.join("\r\n"), "text/csv");
-              setAttExportAll(null);
-              setAttBranch(_exp.startBranch);
-            } else {
-              setAttExportAll({ queue, rows, startBranch: _exp.startBranch });
-              setAttBranch(queue[0]);
-            }
-          });
-        }
+        // Publish this render's row-builder + readiness for the all-stores
+        // collector effect (it runs at component scope and can't reach these
+        // render-local closures otherwise).
+        attExportRef.current = {
+          branch: attBranch, ym: attYM, buildRows: buildAttCsvRows,
+          head: attCsvHead, payYm: attCsvPayYm, payLabel: attCsvPayLabel, cycLabel
+        };
+        // Kick off an all-stores export: remember where the user was, then
+        // point the view at the first store; the collector effect drives the rest.
+        const downloadAllStoresCsv = () => {
+          if (allExport) return;
+          const stores = SALONS.map(s => s.name);
+          if (!stores.length) return;
+          setAllExport({ stores, idx: 0, rows: [], origBranch: attBranch, ym: attYM });
+          setAttBranch(stores[0]);
+        };
 
         // Count warning cells in the current grid view so the dashboard
         // strip can show "X cells need review · Y resolved · Z open" and
@@ -29135,20 +29173,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
               <div style={{ flex: 1 }} />
               {attLoading && <span style={{ fontSize: 11, color: "#9ca3af", fontStyle: "italic" }}>Loading…</span>}
+              {allExport && <span style={{ fontSize: 11, color: "#BE185D", fontStyle: "italic", fontWeight: 600 }}>Building all-stores CSV… {allExport.idx + 1}/{allExport.stores.length} ({allExport.stores[allExport.idx]})</span>}
               <button onClick={autoFill} style={{ padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Fill empty cells from schedule (faded, still unconfirmed)">✓ Auto-fill from Schedule</button>
-              <button onClick={downloadAttendanceCsv} style={{ padding: "7px 14px", background: "#FFFFFF", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Download a CSV of the side totals — employee code, name, role, new-starter start date, all day counts (incl. sick + note, unpaid) and whether the bonus is lost">⬇ CSV totals</button>
-              <button
-                onClick={() => {
-                  if (attExportAll) return;
-                  const _q = SALONS.map(sl => sl.name);
-                  setAttExportAll({ queue: _q, rows: [], startBranch: attBranch });
-                  if (_q[0] !== attBranch) setAttBranch(_q[0]);
-                }}
-                disabled={!!attExportAll}
-                style={{ padding: "7px 14px", background: attExportAll ? "#FCE7F3" : "#FFFFFF", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 8, cursor: attExportAll ? "default" : "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }}
-                title="Download ONE CSV with the side totals of EVERY store for this cycle (a Branch column is added). The sheet briefly steps through each store to compute its exact numbers, then returns to the store you were on.">
-                {attExportAll ? ("⏳ Exporting " + (SALONS.length - attExportAll.queue.length + 1) + " / " + SALONS.length + "…") : "⬇ CSV all stores"}
-              </button>
+              <button onClick={downloadAttendanceCsv} disabled={!!allExport} style={{ padding: "7px 14px", background: "#FFFFFF", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 8, cursor: allExport ? "default" : "pointer", opacity: allExport ? 0.5 : 1, fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Download a CSV of the side totals for THIS store — employee code, name, role, new-starter start date, all day counts (incl. sick + note, unpaid) and whether the bonus is lost">⬇ CSV totals</button>
+              <button onClick={downloadAllStoresCsv} disabled={!!allExport} style={{ padding: "7px 14px", background: "#BE185D", color: "#FFFFFF", border: "1px solid #BE185D", borderRadius: 8, cursor: allExport ? "default" : "pointer", opacity: allExport ? 0.6 : 1, fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Download ONE CSV covering every store for this pay cycle — one row per person, at their current store (transfers and loaned days folded in exactly as on each store's own sheet). Walks each store in turn, so it takes a few seconds.">⬇ All stores CSV</button>
               <button onClick={importFresha} style={{ padding: "7px 14px", background: "#dbeafe", color: "#1e3a8a", border: "1px solid #93c5fd", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Upload a Fresha appointments CSV — every nail tech with a completed appointment that day is marked On Time">📤 Import Fresha CSV</button>
               <button onClick={importCheckins} style={{ padding: "7px 14px", background: "#dcfce7", color: "#14532d", border: "1px solid #86efac", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Pull every clock-in from the staff check-in app and stamp those days as On Time (or Extra Day if scheduled off). Confirmed cells are preserved. Use ↩ Undo to roll the import back.">✓ Import Check-ins</button>
               {attCheckinSnapshot && (
