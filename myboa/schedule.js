@@ -31,6 +31,7 @@
     view: "soon",            // soon | week | month
     monthYm: null,
     cache: {},               // ym -> grid object (for state.store + isManager)
+    awayMap: {},             // ymEnd -> { ymd: { branch, code } } — where a loan_out day actually lands
     mgrRoles: {},            // EC(upper/trim) -> role, for split-store shift labelling
     smTrialEcs: {},          // EC(upper/trim) -> 1 for AMs on an active SM trial
     covLabels: {},           // ym -> re-derived WE/WM/WL grid (mirrors Manager Coverage)
@@ -523,6 +524,20 @@
     if (loan && loan.toBranch && loan.toBranch !== state.store) return loanInfo(loan);
     var code = getCell(row, dt);
     var c = (code == null ? "" : String(code)).toUpperCase();
+    // Loaned out this day (grid-driven movement, no loan record needed): resolve
+    // the branch where they're actually working + that branch's hours. Never Off.
+    if (c === "LOAN_OUT") {
+      var away = (state.awayMap[ymForDate(dt)] || {})[ymdStr(dt)];
+      if (away && away.branch) {
+        var ymdK = ymdStr(dt);
+        var ah = (state.custom && state.custom[ymdK]) ? state.custom[ymdK] + " · custom hours"
+          : (state.isManager
+              ? shiftTimes(state.effRole || state.role, away.code || "W", away.branch, dt.getDay())
+              : (techTime(away.branch, dt.getDay(), WORK_CODES[away.code] ? away.code : "W") || ""));
+        return { kind: "work", label: "🔄 Working at " + away.branch, sub: (ah ? ah + " · " : "") + "hours set by " + away.branch };
+      }
+      return { kind: "work", label: "🔄 Working at another store", sub: "Borrowed out — hours are set by that store" };
+    }
     if (c === "O") return { kind: "off", label: "Off", sub: "" };
     if (c === "R") return { kind: "off", label: "Off", sub: "Requested day off" };
     if (c === "L") return { kind: "leave", label: "On leave", sub: "" };
@@ -584,11 +599,62 @@
     state.cache[ymEnd] = grid;
     return grid;
   }
+  function isLoanOut(v) { return String(v == null ? "" : v).toUpperCase().trim() === "LOAN_OUT"; }
+
+  // Split / loaned managers (and techs) appear in MORE THAN ONE branch's grid:
+  // a `loan_out` cell in their looked-up store means they're actually working at
+  // the OTHER branch that day. There's often no boa_*_loans_v1 record for it —
+  // the truth lives in the grids — so we resolve it from the live grids. For any
+  // cycle where this person has a loan_out cell, fetch every other branch's grid
+  // (one batched query) and record, per loan_out date, the branch + code where
+  // they're actually working. Builds nothing (zero extra fetches) for the common
+  // case of someone with no loan_out days.
+  async function ensureAwayMap(ymEnd) {
+    if (state.awayMap[ymEnd] !== undefined) return state.awayMap[ymEnd];
+    var grid = state.cache[ymEnd];
+    var row = rowFor(grid);
+    var days = periodDays(ymEnd);
+    var loanDays = row ? days.filter(function (x) { return isLoanOut(getCell(row, x.date)); }) : [];
+    if (!loanDays.length) { state.awayMap[ymEnd] = {}; return state.awayMap[ymEnd]; }
+
+    var prefix = state.isManager ? "boa_mgrsched_" : "boa_sched_";
+    var ymPart = state.isManager ? shiftYm(ymEnd, -1) : ymEnd;
+    var keys = STORES.filter(function (s) { return s !== state.store; })
+      .map(function (s) { return prefix + s + "_" + ymPart; });
+    var byBranch = {};
+    try {
+      var res = await sb.from("app_state").select("key,value").in("key", keys);
+      var rows = (res && res.data) || [];
+      rows.forEach(function (r) {
+        var g = r && r.value && r.value.grid;
+        if (!g) return;
+        var branch = String(r.key).slice(prefix.length, String(r.key).length - (ymPart.length + 1));
+        byBranch[branch] = g;
+      });
+    } catch (_e) { /* leave byBranch empty → loan_out shows neutral "working elsewhere" */ }
+
+    var map = {};
+    loanDays.forEach(function (x) {
+      var hit = null;
+      for (var branch in byBranch) {
+        if (!Object.prototype.hasOwnProperty.call(byBranch, branch)) continue;
+        var k = findEcKey(byBranch[branch], state.ec);
+        if (!k) continue;
+        var code = getCell(byBranch[branch][k], x.date);
+        var cu = String(code == null ? "" : code).toUpperCase();
+        if (cu === "E" || WORK_CODES[cu]) { hit = { branch: branch, code: cu }; break; }
+      }
+      map[ymdStr(x.date)] = hit || { branch: null };
+    });
+    state.awayMap[ymEnd] = map;
+    return map;
+  }
   // Status for a specific calendar date (loads its cycle as needed).
   async function statusForDate(dt) {
     // Maternity wins even if this cycle's roster hasn't been published yet.
     if (matMlOn(dt)) return { published: true, info: ML_INFO };
     var grid = await loadCycle(ymForDate(dt));
+    await ensureAwayMap(ymForDate(dt));
     var row = rowFor(grid);
     if (!row) {
       var loan = loanForDate(dt);
@@ -677,6 +743,7 @@
       state.matStart = null;
       state.custom = {};
       state.cache = {};
+      state.awayMap = {};
       state.mgrRoles = {};
       state.smTrialEcs = {};
       state.covLabels = {};
@@ -863,6 +930,7 @@
     // Month (cycle) view with prev/next.
     var ym = state.monthYm;
     await loadCycle(ym);
+    await ensureAwayMap(ym);
     var days2 = periodDays(ym);
     var rows = days2.map(function (x) {
       var st = { published: false };
