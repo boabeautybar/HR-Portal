@@ -28835,13 +28835,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         };
 
         // Attendance bonus is forfeited by any no-show, or by more than 7
-        // lates in the cycle. Returns the reason(s) for display; empty = keeps bonus.
-        const bonusLossReasons = (t) => {
+        // lates in the cycle. MANAGERS (not nail techs) are held to a stricter
+        // rule — they forfeit the bonus on ANY missed day in the cycle: a paid
+        // sick day, FRL, emergency leave, or any unpaid/absent day, not just a
+        // no-show. Pass isManager=true to apply it. Returns the reason(s) for
+        // display; empty = keeps bonus.
+        const bonusLossReasons = (t, isManager) => {
           const r = [];
           if (t.noShow > 0) r.push(t.noShow + " no-show" + (t.noShow === 1 ? "" : "s"));
           if (t.late > 7) r.push(t.late + " lates");
+          if (isManager) {
+            if (t.sickNote > 0) r.push(t.sickNote + " paid sick day" + (t.sickNote === 1 ? "" : "s"));
+            if (t.frl > 0) r.push(t.frl + " FRL day" + (t.frl === 1 ? "" : "s"));
+            // Every other full unpaid/absent day (sick-no-note, emergency leave,
+            // absent, unpaid, council sick…) — no-shows are already listed above,
+            // so subtract them to avoid counting the same day twice.
+            const otherUnpaid = (t.unpaid || 0) - (t.noShow || 0);
+            if (otherUnpaid > 0) r.push(otherUnpaid + " unpaid/absent day" + (otherUnpaid === 1 ? "" : "s"));
+          }
           return r;
         };
+        // A row is a manager (held to the stricter bonus rule) if it resolves to
+        // a known manager staff_id, or its role is anything other than nail tech.
+        const _isMgrBonusRow = (s) => !!(s && (_mgrEcToStaffId[String(s.ec || "").trim()] || (s.role && s.role !== "NT")));
 
         const moShort = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
         const cycLabel = cycStart.getDate() + " " + moShort[cycStart.getMonth()] + " → " + cycEnd.getDate() + " " + moShort[cycEnd.getMonth()] + " " + cycEnd.getFullYear();
@@ -28892,7 +28908,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // single-store download and the all-stores collector so both agree.
         const buildAttCsvRows = () => attStaff.map(s => {
           const t = totalsFor(s.ec);
-          const reasons = bonusLossReasons(t);
+          const reasons = bonusLossReasons(t, _isMgrBonusRow(s));
           const sd = startByEc[String(s.ec).trim()];
           const isNew = sd && days.length && sd >= days[0].ymd;
           return [
@@ -29233,8 +29249,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
             {(() => {
               // Bonus rule: a no-show, or more than 7 lates this cycle, forfeits the attendance bonus.
+              // Managers also forfeit it on any missed day (paid sick / FRL / unpaid).
               const lost = attStaff
-                .map(s => ({ s, r: bonusLossReasons(totalsFor(s.ec)) }))
+                .map(s => ({ s, r: bonusLossReasons(totalsFor(s.ec), _isMgrBonusRow(s)) }))
                 .filter(x => x.r.length > 0);
               if (lost.length === 0) return null;
               return (
@@ -29317,7 +29334,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             {s.smTrial && <span title="On a Store-Manager trial (SM Trials tab) — works SM shifts" style={{ background: "#FFEDD5", color: "#9A3412", border: "1px solid #FED7AA", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>⭐ SM TRIAL</span>}
                             {s.council && <span title="Signed up with the bargaining council — sick days are covered by the council fund and are NOT paid by the company, even with a note (a 'Sick + note' day counts as unpaid)." style={{ background: "#DBEAFE", color: "#1E40AF", border: "1px solid #93C5FD", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>🤝 COUNCIL</span>}
                             {s.movedFrom && <span title={"Transferred from " + s.movedFrom + (s.movedOn ? " on " + new Date(s.movedOn + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : "") + " — earlier cells in this cycle are from " + s.movedFrom} style={{ background: "#dbeafe", color: "#1e40af", border: "1px solid #93c5fd", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>🔄 FROM {s.movedFrom}{s.movedOn ? " · " + new Date(s.movedOn + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
-                            {(() => { const _br = bonusLossReasons(t); return _br.length > 0 ? <span title={"Bonus forfeited — " + _br.join(" · ") + " this cycle"} style={{ background: "#fee2e2", color: "#991b1b", border: "1px solid #fca5a5", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>🚫 NO BONUS</span> : null; })()}
+                            {(() => { const _br = bonusLossReasons(t, _isMgrBonusRow(s)); return _br.length > 0 ? <span title={"Bonus forfeited — " + _br.join(" · ") + " this cycle"} style={{ background: "#fee2e2", color: "#991b1b", border: "1px solid #fca5a5", borderRadius: 4, padding: "0 5px", fontSize: 8, fontWeight: 800, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>🚫 NO BONUS</span> : null; })()}
                           </div>
                           <div style={{ fontSize: 9, color: "#9ca3af" }}>{s.ec} · {s.smTrial ? "SM · on trial" : s.role}</div>
                         </td>
