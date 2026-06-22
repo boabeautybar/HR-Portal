@@ -21119,6 +21119,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         const sid = r.staff_id != null ? r.staff_id : (r.staff.id != null ? r.staff.id : null);
                         if (ec && sid != null && !(ec in ecToStaffId)) ecToStaffId[ec] = String(sid);
                       });
+                      // Fallback by NAME + date. A reason can be saved against a
+                      // staff_id that no longer lines up with the manager's current
+                      // record — e.g. a duplicate / re-created manager record, where
+                      // the tag sits on one record's id and the dashboard happens to
+                      // scan the other. The strict id match above misses that and the
+                      // day wrongly reappears even though the reason is plainly there
+                      // (and shows on the Manager Check-ins tab). Resolve every saved
+                      // reason's staff_id to a manager NAME via ANY id either record
+                      // carries, and treat a name+date hit as "already has a reason".
+                      const _nameByAnyId = {};
+                      (managers || []).forEach(m => {
+                        const nm = String(m.name || "").trim().toLowerCase();
+                        if (!nm) return;
+                        [m._id, m.id].forEach(idv => { if (idv != null) _nameByAnyId[String(idv)] = nm; });
+                      });
+                      const taggedNameDate = new Set();
+                      (mgrDayStatuses || []).forEach(s => {
+                        const nm = _nameByAnyId[String(s.staff_id != null ? s.staff_id : "")];
+                        if (nm) taggedNameDate.add(nm + "|" + s.date);
+                      });
                       // Build no-shows from cached clockin rows. If the cache is
                       // empty (data still loading) the tile defers — clicking
                       // still works.
@@ -21186,6 +21206,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const _ownId = (m._id != null ? m._id : (m.id != null ? m.id : null));
                           const sid = _ownId != null ? String(_ownId) : (ecToStaffId[m.ec] || ecToStaffId[String(m.ec || "").trim()]);
                           if (sid && taggedKeys.has(sid + "|" + ymd)) return;
+                          // Fallback: a reason already exists for this manager (by
+                          // name) on this date, just under a mismatched/duplicate
+                          // staff record — don't chase it again.
+                          if (taggedNameDate.has(String(m.name || "").trim().toLowerCase() + "|" + ymd)) return;
                           pending.push({ name: m.name, branch: m.branch, ymd });
                         });
                       }
