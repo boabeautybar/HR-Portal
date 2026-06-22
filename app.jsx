@@ -10633,9 +10633,13 @@ function lbParsePaste(text) {
 }
 
 // ── Bargaining-council statement parsing ──────────────────────────────────
-// The council statement lists each member by SURNAME + first initial only
-// (no employee code), e.g. "Mokoena T", "T Mokoena" or columns [Surname][T].
+// The council statement lists each member by SURNAME + first initial (e.g.
+// "Mokoena T"), but the file may also be a wider sheet with named columns
+// (Name on Statement, Staff EC, …). We detect a header row and read the right
+// columns; when a Staff EC column is present we match by code (most reliable).
 function bcNormName(s) { return String(s == null ? "" : s).toLowerCase().replace(/[^a-z]/g, ""); }
+function bcNormEc(ec) { return String(ec == null ? "" : ec).toUpperCase().replace(/[^A-Z0-9]/g, ""); }
+function bcCoreEc(normed) { return String(normed || "").replace(/[A-Z]+$/, ""); }   // B330M → B330
 function bcSplitName(full) {
   const t = String(full || "").trim();
   if (!t) return { firstName: "", surname: "" };
@@ -10643,35 +10647,106 @@ function bcSplitName(full) {
   if (i < 0) return { firstName: t, surname: "" };
   return { firstName: t.slice(0, i), surname: t.slice(i + 1).trim() };
 }
-// Header / junk words we never treat as a person.
-const BC_HEADER_WORDS = { surname: 1, name: 1, names: 1, fullname: 1, initial: 1, initials: 1, first: 1, last: 1, member: 1, members: 1, employee: 1, employees: 1, staff: 1, total: 1 };
-// Pull { surname, initial, raw } out of a row's cells. Returns null for blanks
-// and obvious header rows.
+// Header / junk words we never treat as a person's name.
+const BC_HEADER_WORDS = { surname: 1, name: 1, names: 1, fullname: 1, initial: 1, initials: 1, first: 1, last: 1, member: 1, members: 1, employee: 1, employees: 1, staff: 1, total: 1, status: 1, branch: 1, role: 1, code: 1, note: 1, notes: 1 };
+// Pull { surname, initial, raw } out of a single name string (or a row's
+// cells when there's no header). Surname = the longest alphabetic token
+// (compound surnames are hyphenated, so they stay one token); the initial is a
+// standalone single letter, or the first letter of whatever first-name token is
+// left. Handles "P Shoko", "Mokoena T", "JB Moolman", "S Bijou Tshitenge",
+// "Zakade" and "F Mzamba-Mbenga". Header / blank rows return null.
 function bcParseRow(cells) {
   if (!cells || !cells.length) return null;
   const toks = [];
   cells.forEach(c => String(c == null ? "" : c).split(/[\s,.;/]+/).forEach(t => { t = t.trim(); if (t) toks.push(t); }));
   if (!toks.length) return null;
   if (toks.every(t => BC_HEADER_WORDS[t.toLowerCase()])) return null;   // header row
-  const words = [];        // multi-letter alphabetic tokens (surname / first name)
-  let initial = "";        // a standalone single letter (the first initial)
-  toks.forEach(t => {
-    const letters = t.replace(/[^A-Za-z]/g, "");
-    if (!letters) return;
-    if (letters.length === 1) { if (!initial) initial = letters.toUpperCase(); }
-    else words.push(letters);
-  });
+  // Keep letters + internal hyphens (so "Mzamba-Mbenga" is one surname token).
+  const words = toks.map(t => t.replace(/[^A-Za-z-]/g, "").replace(/^-+|-+$/g, "")).filter(t => /[A-Za-z]/.test(t));
   if (!words.length) return null;
-  let surname, init = initial;
-  if (words.length === 1) { surname = words[0]; }
-  else if (initial) { surname = words.join(""); }                       // "Van Der Merwe" + "T"
-  else { init = words[words.length - 1].charAt(0).toUpperCase(); surname = words.slice(0, -1).join(""); }   // "Mokoena Thandi"
-  return { surname: surname, initial: init, raw: toks.join(" ") };
+  if (words.length === 1) return { surname: words[0], initial: "", raw: toks.join(" ") };
+  const bare = (w) => w.replace(/-/g, "");
+  let si = 0;
+  for (let i = 1; i < words.length; i++) if (bare(words[i]).length > bare(words[si]).length) si = i;
+  let initial = "";
+  for (let i = 0; i < words.length; i++) if (i !== si && words[i].length === 1) { initial = words[i].toUpperCase(); break; }
+  if (!initial) for (let i = 0; i < words.length; i++) if (i !== si) { initial = words[i].charAt(0).toUpperCase(); break; }
+  return { surname: words[si], initial: initial, raw: toks.join(" ") };
 }
-function bcParsePaste(text) {
+// Split one delimited line into trimmed cells, honouring "quoted, fields".
+function bcSplitDelimited(line, delim) {
+  const cells = []; let cur = "", q = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (q) { if (ch === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
+    else if (ch === '"') q = true;
+    else if (ch === delim) { cells.push(cur); cur = ""; }
+    else cur += ch;
+  }
+  cells.push(cur);
+  return cells.map(c => c.trim());
+}
+// Pasted / CSV text → array-of-arrays. Tab-delimited if any tab is present
+// (Excel copy/paste), otherwise comma.
+function bcTextToAoa(text) {
+  const lines = String(text || "").split(/\r\n|\r|\n/);
+  const delim = lines.some(l => l.indexOf("\t") >= 0) ? "\t" : ",";
   const out = [];
-  String(text || "").split(/\r?\n/).forEach(line => { if (!line.trim()) return; const r = bcParseRow([line]); if (r) out.push(r); });
+  lines.forEach(l => { if (l.trim() !== "") out.push(bcSplitDelimited(l, delim)); });
   return out;
+}
+// Scan the first rows for a header that names the columns we care about.
+// Returns { nameCol, ecCol, headerIdx } or null. The EC column must be the
+// STAFF code (B###), never the council's own code.
+function bcDetectColumns(aoa) {
+  for (let i = 0; i < Math.min(aoa.length, 12); i++) {
+    const cells = (aoa[i] || []).map(c => String(c == null ? "" : c).trim().toLowerCase());
+    let nameCol = -1, ecCol = -1;
+    cells.forEach((c, idx) => {
+      if (nameCol < 0 && /(name on statement|statement name|member name|^name$|^names$|^surname$|surname.*initial|^member$)/.test(c)) nameCol = idx;
+      if (ecCol < 0 && /(staff ec|employee code|^ec$|emp code|staff code|^staff ec$)/.test(c)) ecCol = idx;
+    });
+    if (nameCol >= 0 || ecCol >= 0) return { nameCol, ecCol, headerIdx: i };
+  }
+  return null;
+}
+// Array-of-arrays → [{ surname, initial, ec, raw }]. Uses the detected columns
+// when present; otherwise falls back to one name per row.
+function bcExtractEntries(aoa) {
+  if (!aoa || !aoa.length) return [];
+  const cols = bcDetectColumns(aoa);
+  const out = [];
+  if (cols) {
+    for (let i = cols.headerIdx + 1; i < aoa.length; i++) {
+      const cells = aoa[i] || [];
+      const nameCell = cols.nameCol >= 0 ? String(cells[cols.nameCol] == null ? "" : cells[cols.nameCol]).trim() : "";
+      const ecCell = cols.ecCol >= 0 ? String(cells[cols.ecCol] == null ? "" : cells[cols.ecCol]).trim() : "";
+      if (!nameCell && !ecCell) continue;
+      const parsed = nameCell ? bcParseRow([nameCell]) : null;
+      if (!parsed && !ecCell) continue;
+      out.push({ surname: parsed ? parsed.surname : "", initial: parsed ? parsed.initial : "", ec: ecCell, raw: nameCell || ecCell });
+    }
+    return out;
+  }
+  aoa.forEach(cells => { const r = bcParseRow(cells); if (r) out.push({ surname: r.surname, initial: r.initial, ec: "", raw: r.raw }); });
+  return out;
+}
+// Match parsed entries against the staff lookups. Prefers an exact Staff-EC
+// match (fixes surname typos on the statement), then surname + first initial.
+function bcComputeMatches(entries, bySurname, byEc) {
+  return (entries || []).map((e, idx) => {
+    if (e.ec) {
+      const n = bcNormEc(e.ec);
+      const hit = byEc[n] || byEc[bcCoreEc(n)];
+      if (hit) return { idx, surname: e.surname, initial: e.initial, raw: e.raw, ec: e.ec, kind: "code", candidates: [hit] };
+    }
+    const list = bySurname[bcNormName(e.surname)] || [];
+    const initLc = (e.initial || "").toLowerCase();
+    const strong = initLc ? list.filter(p => bcNormName(p.firstName).startsWith(initLc)) : list.slice();
+    const candidates = strong.length ? strong : list;
+    const kind = candidates.length === 0 ? "none" : (strong.length === 1 ? "strong" : (strong.length > 1 ? "multi" : "surname"));
+    return { idx, surname: e.surname, initial: e.initial, raw: e.raw, ec: e.ec, kind, candidates };
+  });
 }
 
 // Payroll → Bargaining Council. Upload the council statement (which lists each
@@ -10715,22 +10790,21 @@ function BargainingCouncilTab({ enriched, managers, currentUser, logActivity, on
     return m;
   }, [allPeople]);
 
+  // ec → person, for sheets that carry a Staff EC column. Also indexed by the
+  // code's core (B330M → B330) so a manager's -M suffix still lines up.
+  const byEc = useMemo(() => {
+    const m = {};
+    allPeople.forEach(p => { const n = bcNormEc(p.ec); if (!n) return; if (!m[n]) m[n] = p; const c = bcCoreEc(n); if (c && !m[c]) m[c] = p; });
+    return m;
+  }, [allPeople]);
+
   const currentMembers = useMemo(() => allPeople.filter(p => p.council).sort((a, b) => (a.name || "").localeCompare(b.name || "")), [allPeople]);
 
-  // Build a match record per statement entry.
+  // Build a match record per statement entry (EC first, then surname+initial).
   const matches = useMemo(() => {
     if (!entries) return null;
-    return entries.map((e, idx) => {
-      const list = bySurname[bcNormName(e.surname)] || [];
-      const initLc = (e.initial || "").toLowerCase();
-      const strong = initLc ? list.filter(p => bcNormName(p.firstName).startsWith(initLc)) : list.slice();
-      // Candidates we show: prefer initial matches; fall back to all same-surname
-      // people if the initial matched nobody (so the user can still pick).
-      const candidates = strong.length ? strong : list;
-      const kind = candidates.length === 0 ? "none" : (strong.length === 1 ? "strong" : (strong.length > 1 ? "multi" : "surname"));
-      return { idx, surname: e.surname, initial: e.initial, raw: e.raw, candidates, kind };
-    });
-  }, [entries, bySurname]);
+    return bcComputeMatches(entries, bySurname, byEc);
+  }, [entries, bySurname, byEc]);
 
   const summary = useMemo(() => {
     if (!matches) return null;
@@ -10746,24 +10820,16 @@ function BargainingCouncilTab({ enriched, managers, currentUser, logActivity, on
   // parsed. Multi-candidate rows are left for the user to pick.
   const seedSelection = (ms) => {
     const sel = new Set();
-    (ms || []).forEach(m => { if (m.kind === "strong") sel.add(m.candidates[0]._id); });
+    (ms || []).forEach(m => { if (m.kind === "code" || m.kind === "strong") sel.add(m.candidates[0]._id); });
     setSelected(sel);
   };
 
+  // `rows` here are parsed ENTRIES ({ surname, initial, ec, raw }).
   const buildFrom = (rows) => {
-    if (!rows.length) { window.alert("No names found.\n\nEach line of the statement should have a surname and a first initial, e.g.:\n  Mokoena T\n  N Dlamini"); return; }
+    if (!rows.length) { window.alert("No names found.\n\nUpload the council statement (Excel/CSV) — it can have columns like “Name on Statement” and “Staff EC” — or paste names, one per line:\n  Mokoena T\n  N Dlamini"); return; }
     setEntries(rows);
     setResult(null);
-    // seed after matches recompute — do it in an effect-free way by computing here
-    const ms = rows.map((e) => {
-      const list = bySurname[bcNormName(e.surname)] || [];
-      const initLc = (e.initial || "").toLowerCase();
-      const strong = initLc ? list.filter(p => bcNormName(p.firstName).startsWith(initLc)) : list.slice();
-      const candidates = strong.length ? strong : list;
-      const kind = candidates.length === 0 ? "none" : (strong.length === 1 ? "strong" : (strong.length > 1 ? "multi" : "surname"));
-      return { candidates, kind };
-    });
-    seedSelection(ms);
+    seedSelection(bcComputeMatches(rows, bySurname, byEc));
   };
 
   const onFile = async (e) => {
@@ -10772,17 +10838,17 @@ function BargainingCouncilTab({ enriched, managers, currentUser, logActivity, on
     setFileName(file.name);
     try {
       const lower = file.name.toLowerCase();
-      let rows = [];
+      let entriesIn = [];
       if (lower.endsWith(".csv") || file.type === "text/csv") {
-        rows = bcParsePaste(await file.text());
+        entriesIn = bcExtractEntries(bcTextToAoa(await file.text()));
       } else {
         if (!window.XLSX) { window.alert("The spreadsheet reader hasn't loaded — please reload the page, or paste the names into the box instead."); return; }
         const wb = window.XLSX.read(await file.arrayBuffer(), { type: "array" });
         const ws = wb.Sheets[wb.SheetNames[0]];
         const aoa = window.XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false });
-        aoa.forEach(cells => { const r = bcParseRow(cells); if (r) rows.push(r); });
+        entriesIn = bcExtractEntries(aoa);
       }
-      buildFrom(rows);
+      buildFrom(entriesIn);
     } catch (err) { window.alert("Could not read the file: " + (err.message || err)); }
     finally { if (fileRef.current) fileRef.current.value = ""; }
   };
@@ -10819,6 +10885,7 @@ function BargainingCouncilTab({ enriched, managers, currentUser, logActivity, on
 
   const kindBadge = (kind) => {
     const map = {
+      code: { t: "Matched by code", bg: "#DCFCE7", fg: "#166534" },
       strong: { t: "Matched", bg: "#DCFCE7", fg: "#166534" },
       multi: { t: "Pick one", bg: "#FEF9C3", fg: "#854D0E" },
       surname: { t: "Surname only", bg: "#FEF9C3", fg: "#854D0E" },
@@ -10834,7 +10901,7 @@ function BargainingCouncilTab({ enriched, managers, currentUser, logActivity, on
         <h2 style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 26, color: "#111827", margin: 0 }}>🤝 Bargaining Council</h2>
       </div>
       <p style={{ fontSize: 13, color: "#4b5563", margin: "0 0 18px", lineHeight: 1.5 }}>
-        Upload the council statement to find which staff are signed up. The statement only has a <strong>surname and first initial</strong> (no employee code), so we match those against the staff list and you confirm each one. Ticked people are marked as council members — their sick days are covered by the council fund and are <strong>not paid by the company</strong>, even with a note.
+        Upload the council statement to find which staff are signed up. It can be a wide spreadsheet with columns (we read the <strong>Name on Statement</strong> column, and match by <strong>Staff EC</strong> when that column is present), or a plain list of <strong>surname + first initial</strong>. Matches are shown for you to confirm. Ticked people are marked as council members — their sick days are covered by the council fund and are <strong>not paid by the company</strong>, even with a note.
       </p>
 
       {result && (
@@ -10851,7 +10918,7 @@ function BargainingCouncilTab({ enriched, managers, currentUser, logActivity, on
           </div>
           <div style={{ flex: "1 1 280px" }}>
             <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} rows={4} placeholder={"…or paste names, one per line:\nMokoena T\nN Dlamini\nVan der Merwe S"} style={{ ...inp, fontFamily: "monospace", fontSize: 12, resize: "vertical" }} />
-            <button onClick={() => buildFrom(bcParsePaste(pasteText))} disabled={!pasteText.trim()}
+            <button onClick={() => buildFrom(bcExtractEntries(bcTextToAoa(pasteText)))} disabled={!pasteText.trim()}
               style={{ marginTop: 8, padding: "8px 16px", borderRadius: 9, border: "none", background: pasteText.trim() ? "#2563EB" : "#cbd5e1", color: "#fff", cursor: pasteText.trim() ? "pointer" : "not-allowed", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>Match pasted names</button>
           </div>
         </div>
