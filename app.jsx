@@ -23867,8 +23867,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               });
             }
           }
+          // Bargaining-council members who are leaving (off-boarded, on notice,
+          // resigned or terminated) but are still flagged as council members.
+          // They must be deregistered with the council — surfaced as an urgent
+          // to-do that clears itself once the flag is removed via "Mark
+          // deregistered" below.
+          const councilLeavers = [...enriched, ...enrichedManagers].filter(p =>
+            p && p.bargainingCouncil &&
+            (p.offboarded || p.leftDate || p.status === "terminated" || p.active === false || p.active === "false")
+          );
           const alertItems = [
             ...schedAlerts,
+            ...councilLeavers.map(p => ({ type: "critical", msg: `${p.name} (${p.branch || "—"}) — off-boarding a bargaining-council member. Deregister her with the council${p.leftDate ? " — last day " + fmt(p.leftDate) : ""}.`, council: p })),
             ...matRecs.filter(r => r.matStatus === "on_mat" && r.returnDate && daysDiff(r.returnDate) < 0).map(r => ({ type: "warning", msg: `${r.name} (${r.branch}) — return date ${fmt(r.returnDate)} was ${Math.abs(daysDiff(r.returnDate))} days ago. Confirm return or update dates.`, rec: r })),
             ...matRecs.filter(r => r.matStatus === "on_mat" && r.returnDate && daysDiff(r.returnDate) >= 0 && daysDiff(r.returnDate) <= 14).map(r => ({ type: "info", msg: `${r.name} (${r.branch}) — returning in ${daysDiff(r.returnDate)} day(s) on ${fmt(r.returnDate)}`, rec: r })),
             ...active.filter(s => s.permit === "z_na").map(s => ({ type: "critical", msg: `${s.name} (${s.branch}) — Z/NA: no valid work permit`, s })),
@@ -23895,6 +23905,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <div key={i} style={{ background: cfg.bg, border: `1px solid ${cfg.bdr}`, borderRadius: 11, padding: "11px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
                           <span style={{ fontSize: 12.5, color: cfg.c, fontWeight: 500 }}>{cfg.icon} {item.msg}</span>
                           {item.rec && <button onClick={() => { setMatModal(item.rec); setTab("maternity"); }} style={{ background: cfg.btn, color: "#fff", border: "none", borderRadius: 7, padding: "5px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>Update</button>}
+                          {item.council && <button onClick={async () => {
+                            if (!window.confirm("Mark " + item.council.name + " as deregistered from the bargaining council?\n\nThis clears their council flag (so their sick days are no longer treated as council-covered). Do this once you've notified the council that they've left.")) return;
+                            try {
+                              await applyCouncilFlags([{ _id: item.council._id, value: false }]);
+                              if (logActivity) logActivity("Deregistered bargaining-council member", item.council.name + (item.council.ec ? " (" + item.council.ec + ")" : ""), "On off-boarding", "Payroll");
+                            } catch (e) { window.alert(e.message || String(e)); }
+                          }} style={{ background: cfg.btn, color: "#fff", border: "none", borderRadius: 7, padding: "5px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>Mark deregistered</button>}
                           {item.s && <button onClick={() => { setStaffModal(item.s); setTab("staff"); }} style={{ background: cfg.btn, color: "#fff", border: "none", borderRadius: 7, padding: "5px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>Resolve</button>}
                         </div>
                       ))}
@@ -26609,9 +26626,48 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           ...managers.filter(m => !offList.some(o => o.ec === m.ec))
         ].slice().sort((a, b) => (a.branch || "").localeCompare(b.branch || "") || (a.name || "").localeCompare(b.name || ""));
 
+        // Off-boarding council members still need deregistering with the
+        // bargaining council. Urgent reminder right here on the off-boarding
+        // tab; clearing the flag (Mark deregistered) removes them from the list.
+        const councilToDeregister = [...enriched, ...enrichedManagers].filter(p =>
+          p && p.bargainingCouncil &&
+          (p.offboarded || p.leftDate || p.status === "terminated" || p.active === false || p.active === "false")
+        ).sort((a, b) => (a.leftDate || "").localeCompare(b.leftDate || "") || (a.name || "").localeCompare(b.name || ""));
+        const deregisterCouncil = async (p) => {
+          if (!window.confirm("Mark " + p.name + " as deregistered from the bargaining council?\n\nThis clears their council flag (so their sick days are no longer treated as council-covered). Do this once you've notified the council that they've left.")) return;
+          try {
+            await applyCouncilFlags([{ _id: p._id, value: false }]);
+            logActivity("Deregistered bargaining-council member", p.name + (p.ec ? " (" + p.ec + ")" : ""), "On off-boarding");
+          } catch (e) { window.alert(e.message || String(e)); }
+        };
+
         return (
           <div style={{ padding: "0 24px" }}>
             <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#831843", fontWeight: 700, marginBottom: 6, letterSpacing: "0.02em" }}>👋 Off-board Staff</div>
+
+            {/* Bargaining-council deregistration — urgent to-do for any leaver
+                still flagged as a council member. */}
+            {councilToDeregister.length > 0 && (
+              <div style={{ background: "#fee2e2", border: "1px solid #fca5a5", borderRadius: 13, padding: "14px 18px", marginBottom: 18, animation: "urgentPulse 2s infinite" }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: "#991b1b", marginBottom: 8 }}>🤝 Deregister from the bargaining council — urgent</div>
+                <div style={{ fontSize: 12, color: "#991b1b", marginBottom: 10 }}>{councilToDeregister.length} off-boarding {councilToDeregister.length === 1 ? "staff member is" : "staff members are"} signed up with the bargaining council. Notify the council that they've left, then mark them deregistered here — this clears their council flag so their sick days are no longer treated as council-covered.</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))", gap: 8 }}>
+                  {councilToDeregister.map(p => {
+                    const onNotice = p.leftDate && p.leftDate >= todayStr;
+                    return (
+                      <div key={p._id} style={{ background: "#fff", borderRadius: 9, border: "1px solid #fca5a5", padding: "10px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{p.name}</div>
+                          <div style={{ fontSize: 10, fontFamily: "monospace", color: "#991b1b", fontWeight: 700 }}>{p.ec}{p.branch ? " · " + p.branch : ""}</div>
+                          {p.leftDate && <div style={{ fontSize: 11, color: "#991b1b", marginTop: 3 }}>{onNotice ? "Last day " : "Left "}{fmt(p.leftDate)}</div>}
+                        </div>
+                        <button onClick={() => deregisterCouncil(p)} style={{ padding: "6px 12px", borderRadius: 7, border: "none", background: "#dc2626", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>Mark deregistered</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Pending Terminations banner */}
             {pendingTerms.length > 0 && (
