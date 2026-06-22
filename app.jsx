@@ -21176,7 +21176,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const _attGrid = mgrAttGridCache[(m.branch || "") + "|" + _attYm];
                           const _attCell = _attGrid && _attGrid[m.ec] && (_attGrid[m.ec][String(dom)] || _attGrid[m.ec][ymd]);
                           if (_attCell) return;
-                          const sid = ecToStaffId[m.ec] || ecToStaffId[String(m.ec || "").trim()];
+                          // Resolve the manager's staff_id from their OWN record
+                          // first (the same value the Manager Check-ins tab matches
+                          // tagged reasons with) and only fall back to the
+                          // ec-keyed map. Going via ec alone meant a blank/dup/
+                          // mismatched code resolved to the wrong id (or none), so
+                          // a reason tagged in the popup never matched and the day
+                          // stayed on the list.
+                          const _ownId = (m._id != null ? m._id : (m.id != null ? m.id : null));
+                          const sid = _ownId != null ? String(_ownId) : (ecToStaffId[m.ec] || ecToStaffId[String(m.ec || "").trim()]);
                           if (sid && taggedKeys.has(sid + "|" + ymd)) return;
                           pending.push({ name: m.name, branch: m.branch, ymd });
                         });
