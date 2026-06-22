@@ -2761,6 +2761,12 @@ const LevelBadge = ({ level }) => {
 const BoaPathwaysBadge = ({ size }) => (
   <span title="BOA Pathways graduate" style={{ fontSize: size || 13, cursor: "default" }}>🎓</span>
 );
+// Bargaining council — staff signed up with the council have a sick-pay fund,
+// so the company doesn't pay their sick days (the fund covers it). Members get
+// a 🤝 badge next to their name (hover for the label).
+const BargainingCouncilBadge = ({ size }) => (
+  <span title="Bargaining council member — sick days covered by the council fund (not paid by the company)" style={{ fontSize: size || 13, cursor: "default" }}>🤝</span>
+);
 function Meter({ current, capacity, goal, lowDemand, projected }) {
   const target = goal || capacity;
   const pct = Math.min(current / target * 100, 100);
@@ -3032,6 +3038,19 @@ function StaffModal({ s, onClose, onSave, onTransfer, allStaff, isOwner, onHardD
             <span>
               <span style={{ display: "block", fontSize: 12, fontWeight: 700, color: f.boaPathways ? "#065F46" : "#374151" }}>BOA Pathways graduate</span>
               <span style={{ display: "block", fontSize: 11, color: "#6b7280" }}>Recruited through the BOA Pathways programme.</span>
+            </span>
+          </label>
+          {/* Bargaining council — members have a sick-pay fund, so the company
+              does NOT pay their sick days (even with a note). When ticked, this
+              person's "Sick + note" is treated as unpaid on the payroll totals.
+              The Payroll → Bargaining Council tab can also tick people in bulk
+              by matching them off the council statement. */}
+          <label style={{ gridColumn: "1/-1", display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderRadius: 12, border: `2px solid ${f.bargainingCouncil ? "#93C5FD" : "#e5e7eb"}`, background: f.bargainingCouncil ? "#EFF6FF" : "#fff", cursor: "pointer" }}>
+            <input type="checkbox" checked={!!f.bargainingCouncil} onChange={e => set("bargainingCouncil", e.target.checked)} style={{ width: 17, height: 17, accentColor: "#2563EB", cursor: "pointer" }} />
+            <span style={{ fontSize: 18 }}>🤝</span>
+            <span>
+              <span style={{ display: "block", fontSize: 12, fontWeight: 700, color: f.bargainingCouncil ? "#1E40AF" : "#374151" }}>Signed up with the bargaining council</span>
+              <span style={{ display: "block", fontSize: 11, color: "#6b7280" }}>Has a council sick-pay fund — sick days are NOT paid by the company, even with a note.</span>
             </span>
           </label>
         </div>
@@ -3306,6 +3325,14 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, onStar
             <input type="checkbox" checked={!!f.boaPathways} onChange={e => set("boaPathways", e.target.checked)} style={{ width: 17, height: 17, accentColor: "#059669", cursor: "pointer" }} />
             <span style={{ fontSize: 18 }}>🎓</span>
             <span style={{ fontSize: 12, fontWeight: 700, color: f.boaPathways ? "#065F46" : "#374151" }}>BOA Pathways graduate</span>
+          </label>
+
+          {/* Bargaining council — same flag as the staff modal. Members have a
+              council sick-pay fund, so their sick days are not paid. */}
+          <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderRadius: 10, border: `2px solid ${f.bargainingCouncil ? "#93C5FD" : "#e5e7eb"}`, background: f.bargainingCouncil ? "#EFF6FF" : "#fff", cursor: "pointer" }}>
+            <input type="checkbox" checked={!!f.bargainingCouncil} onChange={e => set("bargainingCouncil", e.target.checked)} style={{ width: 17, height: 17, accentColor: "#2563EB", cursor: "pointer" }} />
+            <span style={{ fontSize: 18 }}>🤝</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: f.bargainingCouncil ? "#1E40AF" : "#374151" }}>Bargaining council — sick days not paid (council fund)</span>
           </label>
 
           <div>
@@ -10578,6 +10605,300 @@ function lbParsePaste(text) {
     if (r) out.push(r);
   });
   return out;
+}
+
+// ── Bargaining-council statement parsing ──────────────────────────────────
+// The council statement lists each member by SURNAME + first initial only
+// (no employee code), e.g. "Mokoena T", "T Mokoena" or columns [Surname][T].
+function bcNormName(s) { return String(s == null ? "" : s).toLowerCase().replace(/[^a-z]/g, ""); }
+function bcSplitName(full) {
+  const t = String(full || "").trim();
+  if (!t) return { firstName: "", surname: "" };
+  const i = t.indexOf(" ");
+  if (i < 0) return { firstName: t, surname: "" };
+  return { firstName: t.slice(0, i), surname: t.slice(i + 1).trim() };
+}
+// Header / junk words we never treat as a person.
+const BC_HEADER_WORDS = { surname: 1, name: 1, names: 1, fullname: 1, initial: 1, initials: 1, first: 1, last: 1, member: 1, members: 1, employee: 1, employees: 1, staff: 1, total: 1 };
+// Pull { surname, initial, raw } out of a row's cells. Returns null for blanks
+// and obvious header rows.
+function bcParseRow(cells) {
+  if (!cells || !cells.length) return null;
+  const toks = [];
+  cells.forEach(c => String(c == null ? "" : c).split(/[\s,.;/]+/).forEach(t => { t = t.trim(); if (t) toks.push(t); }));
+  if (!toks.length) return null;
+  if (toks.every(t => BC_HEADER_WORDS[t.toLowerCase()])) return null;   // header row
+  const words = [];        // multi-letter alphabetic tokens (surname / first name)
+  let initial = "";        // a standalone single letter (the first initial)
+  toks.forEach(t => {
+    const letters = t.replace(/[^A-Za-z]/g, "");
+    if (!letters) return;
+    if (letters.length === 1) { if (!initial) initial = letters.toUpperCase(); }
+    else words.push(letters);
+  });
+  if (!words.length) return null;
+  let surname, init = initial;
+  if (words.length === 1) { surname = words[0]; }
+  else if (initial) { surname = words.join(""); }                       // "Van Der Merwe" + "T"
+  else { init = words[words.length - 1].charAt(0).toUpperCase(); surname = words.slice(0, -1).join(""); }   // "Mokoena Thandi"
+  return { surname: surname, initial: init, raw: toks.join(" ") };
+}
+function bcParsePaste(text) {
+  const out = [];
+  String(text || "").split(/\r?\n/).forEach(line => { if (!line.trim()) return; const r = bcParseRow([line]); if (r) out.push(r); });
+  return out;
+}
+
+// Payroll → Bargaining Council. Upload the council statement (which lists each
+// member by surname + first initial only — no employee code), match the names
+// against the staff list, and tick the matched people as council members. The
+// flag lives on each staff record (bargaining_council) — the source of truth —
+// so a council member's sick days show as unpaid on the payroll totals.
+function BargainingCouncilTab({ enriched, managers, currentUser, logActivity, onApplyCouncil }) {
+  const [pasteText, setPasteText] = useState("");
+  const [fileName, setFileName] = useState("");
+  const [entries, setEntries] = useState(null);    // parsed statement rows
+  const [selected, setSelected] = useState(() => new Set());   // person _id's to flag ON
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const fileRef = useRef(null);
+
+  const inp = { width: "100%", padding: "9px 12px", borderRadius: 9, border: "1px solid #BFDBFE", background: "#EFF6FF", fontFamily: "inherit", fontSize: 13, color: "#111827", boxSizing: "border-box" };
+
+  // Everyone on the portal (techs + managers), active only, with surname /
+  // first-initial pulled out for matching. Departed people are skipped.
+  const allPeople = useMemo(() => {
+    const todayYmd = new Date().toISOString().slice(0, 10);
+    const seen = new Set(); const out = [];
+    const add = (p, role) => {
+      if (!p || p._id == null) return;
+      const id = p._id; if (seen.has(id)) return; seen.add(id);
+      if (p.offboarded || (p.leftDate && String(p.leftDate) < todayYmd)) return;
+      const sn = bcSplitName(p.name);
+      const surname = (p.surname || sn.surname || "").trim();
+      const firstName = (p.firstName || sn.firstName || "").trim();
+      out.push({ _id: id, ec: p.ec || "", name: p.name || p.ec || "", firstName, surname, branch: p.branch || "", role, council: !!p.bargainingCouncil });
+    };
+    (enriched || []).forEach(p => add(p, "Nail tech"));
+    (managers || []).forEach(m => add(m, m.role || "Manager"));
+    return out;
+  }, [enriched, managers]);
+
+  const bySurname = useMemo(() => {
+    const m = {};
+    allPeople.forEach(p => { const k = bcNormName(p.surname); if (!k) return; (m[k] = m[k] || []).push(p); });
+    return m;
+  }, [allPeople]);
+
+  const currentMembers = useMemo(() => allPeople.filter(p => p.council).sort((a, b) => (a.name || "").localeCompare(b.name || "")), [allPeople]);
+
+  // Build a match record per statement entry.
+  const matches = useMemo(() => {
+    if (!entries) return null;
+    return entries.map((e, idx) => {
+      const list = bySurname[bcNormName(e.surname)] || [];
+      const initLc = (e.initial || "").toLowerCase();
+      const strong = initLc ? list.filter(p => bcNormName(p.firstName).startsWith(initLc)) : list.slice();
+      // Candidates we show: prefer initial matches; fall back to all same-surname
+      // people if the initial matched nobody (so the user can still pick).
+      const candidates = strong.length ? strong : list;
+      const kind = candidates.length === 0 ? "none" : (strong.length === 1 ? "strong" : (strong.length > 1 ? "multi" : "surname"));
+      return { idx, surname: e.surname, initial: e.initial, raw: e.raw, candidates, kind };
+    });
+  }, [entries, bySurname]);
+
+  const summary = useMemo(() => {
+    if (!matches) return null;
+    return {
+      total: matches.length,
+      none: matches.filter(m => m.kind === "none").length,
+      needsPick: matches.filter(m => m.kind === "multi" || m.kind === "surname").length,
+      selected: selected.size
+    };
+  }, [matches, selected]);
+
+  // Auto-select unambiguous (single strong) matches whenever a new statement is
+  // parsed. Multi-candidate rows are left for the user to pick.
+  const seedSelection = (ms) => {
+    const sel = new Set();
+    (ms || []).forEach(m => { if (m.kind === "strong") sel.add(m.candidates[0]._id); });
+    setSelected(sel);
+  };
+
+  const buildFrom = (rows) => {
+    if (!rows.length) { window.alert("No names found.\n\nEach line of the statement should have a surname and a first initial, e.g.:\n  Mokoena T\n  N Dlamini"); return; }
+    setEntries(rows);
+    setResult(null);
+    // seed after matches recompute — do it in an effect-free way by computing here
+    const ms = rows.map((e) => {
+      const list = bySurname[bcNormName(e.surname)] || [];
+      const initLc = (e.initial || "").toLowerCase();
+      const strong = initLc ? list.filter(p => bcNormName(p.firstName).startsWith(initLc)) : list.slice();
+      const candidates = strong.length ? strong : list;
+      const kind = candidates.length === 0 ? "none" : (strong.length === 1 ? "strong" : (strong.length > 1 ? "multi" : "surname"));
+      return { candidates, kind };
+    });
+    seedSelection(ms);
+  };
+
+  const onFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setFileName(file.name);
+    try {
+      const lower = file.name.toLowerCase();
+      let rows = [];
+      if (lower.endsWith(".csv") || file.type === "text/csv") {
+        rows = bcParsePaste(await file.text());
+      } else {
+        if (!window.XLSX) { window.alert("The spreadsheet reader hasn't loaded — please reload the page, or paste the names into the box instead."); return; }
+        const wb = window.XLSX.read(await file.arrayBuffer(), { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const aoa = window.XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false });
+        aoa.forEach(cells => { const r = bcParseRow(cells); if (r) rows.push(r); });
+      }
+      buildFrom(rows);
+    } catch (err) { window.alert("Could not read the file: " + (err.message || err)); }
+    finally { if (fileRef.current) fileRef.current.value = ""; }
+  };
+
+  const toggle = (id) => setSelected(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+
+  const clearStatement = () => { setEntries(null); setSelected(new Set()); setPasteText(""); setFileName(""); setResult(null); };
+
+  const apply = async () => {
+    const ids = [...selected];
+    // Only flag people who aren't already members (avoids no-op saves).
+    const toAdd = ids.filter(id => { const p = allPeople.find(x => x._id === id); return p && !p.council; });
+    if (toAdd.length === 0) { window.alert("No new people to tick — everyone you've selected is already marked as a council member."); return; }
+    if (!window.confirm("Tick " + toAdd.length + " matched " + (toAdd.length === 1 ? "person" : "people") + " as bargaining-council members?\n\nTheir sick days will no longer be paid by the company (the council fund covers them). You can untick anyone afterwards.")) return;
+    setBusy(true);
+    try {
+      const changed = await onApplyCouncil(toAdd.map(id => ({ _id: id, value: true })));
+      if (logActivity) logActivity("Marked bargaining-council members", changed + " " + (changed === 1 ? "person" : "people") + (fileName ? " · from " + fileName : ""), "", "Payroll");
+      setResult({ ok: true, msg: changed + " " + (changed === 1 ? "person" : "people") + " marked as council members." });
+      clearStatement();
+    } catch (e) { window.alert(e.message || String(e)); }
+    finally { setBusy(false); }
+  };
+
+  const removeMember = async (p) => {
+    if (!window.confirm("Remove " + (p.name || p.ec) + " from the bargaining council?\n\nTheir sick days will be paid normally again (paid when a note is brought).")) return;
+    setBusy(true);
+    try {
+      await onApplyCouncil([{ _id: p._id, value: false }]);
+      if (logActivity) logActivity("Removed bargaining-council member", p.name || p.ec, "", "Payroll");
+    } catch (e) { window.alert(e.message || String(e)); }
+    finally { setBusy(false); }
+  };
+
+  const kindBadge = (kind) => {
+    const map = {
+      strong: { t: "Matched", bg: "#DCFCE7", fg: "#166534" },
+      multi: { t: "Pick one", bg: "#FEF9C3", fg: "#854D0E" },
+      surname: { t: "Surname only", bg: "#FEF9C3", fg: "#854D0E" },
+      none: { t: "No match", bg: "#FEE2E2", fg: "#991B1B" }
+    };
+    const c = map[kind] || map.none;
+    return <span style={{ background: c.bg, color: c.fg, borderRadius: 6, padding: "2px 8px", fontSize: 10, fontWeight: 800, letterSpacing: "0.04em", textTransform: "uppercase" }}>{c.t}</span>;
+  };
+
+  return (
+    <div style={{ maxWidth: 920, margin: "0 auto" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+        <h2 style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 26, color: "#111827", margin: 0 }}>🤝 Bargaining Council</h2>
+      </div>
+      <p style={{ fontSize: 13, color: "#4b5563", margin: "0 0 18px", lineHeight: 1.5 }}>
+        Upload the council statement to find which staff are signed up. The statement only has a <strong>surname and first initial</strong> (no employee code), so we match those against the staff list and you confirm each one. Ticked people are marked as council members — their sick days are covered by the council fund and are <strong>not paid by the company</strong>, even with a note.
+      </p>
+
+      {result && (
+        <div style={{ background: result.ok ? "#ECFDF5" : "#FEF2F2", border: "1px solid " + (result.ok ? "#A7F3D0" : "#FECACA"), color: result.ok ? "#065F46" : "#991B1B", borderRadius: 10, padding: "11px 14px", marginBottom: 14, fontSize: 13, fontWeight: 600 }}>{result.ok ? "✓ " : "⚠ "}{result.msg}</div>
+      )}
+
+      {/* Upload / paste */}
+      <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 14, padding: "18px 20px", marginBottom: 18 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 10 }}>Upload the statement</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-start" }}>
+          <div style={{ flex: "1 1 240px" }}>
+            <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls,text/csv" onChange={onFile} style={{ fontSize: 13 }} />
+            <div style={{ fontSize: 11, color: "#6b7280", marginTop: 6 }}>Excel (.xlsx) or CSV. {fileName ? "Loaded: " + fileName : "Uses the first sheet."}</div>
+          </div>
+          <div style={{ flex: "1 1 280px" }}>
+            <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} rows={4} placeholder={"…or paste names, one per line:\nMokoena T\nN Dlamini\nVan der Merwe S"} style={{ ...inp, fontFamily: "monospace", fontSize: 12, resize: "vertical" }} />
+            <button onClick={() => buildFrom(bcParsePaste(pasteText))} disabled={!pasteText.trim()}
+              style={{ marginTop: 8, padding: "8px 16px", borderRadius: 9, border: "none", background: pasteText.trim() ? "#2563EB" : "#cbd5e1", color: "#fff", cursor: pasteText.trim() ? "pointer" : "not-allowed", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>Match pasted names</button>
+          </div>
+        </div>
+      </div>
+
+      {/* Match results */}
+      {matches && (
+        <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 14, padding: "18px 20px", marginBottom: 18 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+            <div style={{ fontWeight: 800, fontSize: 14 }}>
+              {summary.total} name{summary.total === 1 ? "" : "s"} on the statement · <span style={{ color: "#166534" }}>{summary.selected} selected</span>
+              {summary.needsPick > 0 && <span style={{ color: "#854D0E" }}> · {summary.needsPick} need a pick</span>}
+              {summary.none > 0 && <span style={{ color: "#991B1B" }}> · {summary.none} no match</span>}
+            </div>
+            <button onClick={clearStatement} style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid #E5E7EB", background: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 600, color: "#6b7280" }}>Clear</button>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {matches.map(m => (
+              <div key={m.idx} style={{ border: "1px solid #F1F5F9", borderRadius: 10, padding: "10px 12px", background: m.kind === "none" ? "#FFF7F7" : "#FBFDFF" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <span style={{ fontWeight: 700, fontSize: 13, color: "#111827" }}>{m.surname}{m.initial ? ", " + m.initial : ""}</span>
+                  <span style={{ fontSize: 11, color: "#9ca3af" }}>“{m.raw}”</span>
+                  <span style={{ marginLeft: "auto" }}>{kindBadge(m.kind)}</span>
+                </div>
+                {m.candidates.length > 0 ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8 }}>
+                    {m.candidates.map(p => (
+                      <label key={p._id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "6px 9px", borderRadius: 8, border: "1px solid " + (selected.has(p._id) ? "#93C5FD" : "#E5E7EB"), background: selected.has(p._id) ? "#EFF6FF" : "#fff", cursor: "pointer" }}>
+                        <input type="checkbox" checked={selected.has(p._id)} onChange={() => toggle(p._id)} style={{ width: 16, height: 16, accentColor: "#2563EB", cursor: "pointer" }} />
+                        <span style={{ fontSize: 13, fontWeight: 600, color: "#111827" }}>{p.name}</span>
+                        <span style={{ fontSize: 11, color: "#6b7280" }}>{p.ec}{p.branch ? " · " + p.branch : ""} · {p.role}</span>
+                        {p.council && <span style={{ fontSize: 10, fontWeight: 800, color: "#1E40AF", background: "#DBEAFE", borderRadius: 5, padding: "1px 6px" }}>already a member</span>}
+                      </label>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: "#991B1B", marginTop: 6 }}>No one on the staff list has this surname. Check the spelling, or add them with the 🤝 tick on their staff record.</div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}>
+            <button onClick={apply} disabled={busy || selected.size === 0}
+              style={{ padding: "10px 22px", borderRadius: 10, border: "none", background: (busy || selected.size === 0) ? "#cbd5e1" : "#2563EB", color: "#fff", cursor: (busy || selected.size === 0) ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 800 }}>
+              {busy ? "Saving…" : "Tick " + selected.size + " selected as council member" + (selected.size === 1 ? "" : "s")}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Current members */}
+      <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 14, padding: "18px 20px" }}>
+        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 4 }}>Currently with the council · {currentMembers.length}</div>
+        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 12 }}>These people are marked as council members, so their sick days aren't paid by the company. Untick anyone who's no longer signed up.</div>
+        {currentMembers.length === 0 ? (
+          <div style={{ fontSize: 13, color: "#9ca3af", fontStyle: "italic" }}>Nobody is marked yet. Upload the statement above to get started.</div>
+        ) : (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {currentMembers.map(p => (
+              <div key={p._id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderRadius: 9, border: "1px solid #BFDBFE", background: "#EFF6FF" }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: "#1E3A8A" }}>{p.name}</span>
+                <span style={{ fontSize: 11, color: "#3b82f6" }}>{p.ec}{p.branch ? " · " + p.branch : ""}</span>
+                <button onClick={() => removeMember(p)} disabled={busy} title="Remove from council" style={{ background: "none", border: "none", color: "#1d4ed8", cursor: busy ? "default" : "pointer", fontSize: 15, lineHeight: 1, padding: "0 2px" }}>✕</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 // Payroll → Leave Balances. Upload the payroll-supplied annual-leave balance
@@ -18616,6 +18937,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       );
     } catch (e) { alert("Could not save staff: " + (e.message || e)); }
   }
+  // Bulk-toggle the bargaining-council flag from the Bargaining Council tab.
+  // items: [{ _id, value }]. Routes each through saveStaff / saveManager
+  // (managers live on the same table) and updates local state in place.
+  // Returns the number of records actually changed.
+  async function applyCouncilFlags(items) {
+    let changed = 0;
+    const errs = [];
+    for (const it of (items || [])) {
+      const sRec = (staff || []).find(x => x._id === it._id);
+      const mRec = sRec ? null : (managers || []).find(x => x._id === it._id);
+      const rec = sRec || mRec;
+      if (!rec) continue;
+      if (!!rec.bargainingCouncil === !!it.value) continue;   // already in the desired state
+      try {
+        const updated = { ...rec, bargainingCouncil: !!it.value };
+        if (sRec) { const saved = await window.BOA_DB.saveStaff(updated); setStaff(p => p.map(x => x._id === it._id ? saved : x)); }
+        else { const saved = await window.BOA_DB.saveManager(updated); setManagers(p => p.map(x => x._id === it._id ? saved : x)); }
+        changed++;
+      } catch (e) { errs.push((rec.name || rec.ec || it._id) + ": " + (e.message || e)); }
+    }
+    if (errs.length) throw new Error("Some records could not be saved:\n" + errs.join("\n"));
+    return changed;
+  }
   // Owner-only hard delete - bypasses off-boarding entirely. Removes the
   // staff row from Supabase AND scrubs any existing off-boarding entry for
   // that EC so the deleted person doesn't linger in the Off-boarding tab.
@@ -19229,6 +19573,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   })()] : []),
                   ...(accessAllows(currentUser, leaveBalancesCfg) ? [{ t: "leaveBalances", l: "🧾 Leave Balances", forceShow: true }] : []),
                   ...(accessAllows(currentUser, leaveBalancesCfg) ? [{ t: "frl", l: "👪 Family Responsibility", forceShow: true }] : []),
+                  ...(accessAllows(currentUser, leaveBalancesCfg) ? [{ t: "bargainingCouncil", l: "🤝 Bargaining Council", forceShow: true }] : []),
                   ...((currentUser?.isOwner || currentUser?.role === "Master Admin") ? [{ t: "bonusConfig", l: "🧮 Bonus & Commission" }] : [])
                 ]
               },
@@ -21116,7 +21461,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <tr key={"mgr-" + (m._id || m.ec)} style={{ background: rowBg, borderTop: `1px solid ${bdr}`, opacity: rowOpacity }}>
                           <td style={{ padding: "10px 12px", fontFamily: "monospace", fontSize: 11, color: "#8E5570", fontWeight: 700 }}>{m.ec}</td>
                           <td style={{ padding: "10px 12px", fontWeight: 700, color: m.onMat ? "#7A4258" : "#111827", whiteSpace: "nowrap", fontStyle: m.onMat ? "italic" : "normal" }}>
-                            {m.onMat ? "🤱 " : m.pregnant ? "🤰 " : ""}{icon} {m.firstName || m.name?.split(' ')[0] || ""}{m.boaPathways && <> <BoaPathwaysBadge size={12} /></>}
+                            {m.onMat ? "🤱 " : m.pregnant ? "🤰 " : ""}{icon} {m.firstName || m.name?.split(' ')[0] || ""}{m.boaPathways && <> <BoaPathwaysBadge size={12} /></>}{m.bargainingCouncil && <> <BargainingCouncilBadge size={12} /></>}
                             {m.transferring && <span style={{ fontSize: 10, marginLeft: 5, background: "#FBCFE8", color: "#BE185D", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>→ {m.transferTo} on {m.transferDate ? new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
                           </td>
                           <td style={{ padding: "10px 12px", fontWeight: 700, color: m.onMat ? "#7A4258" : "#111827", whiteSpace: "nowrap", fontStyle: m.onMat ? "italic" : "normal" }}>
@@ -21166,7 +21511,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <tr key={s._id} style={{ background: rowBg, borderTop: `1px solid ${bdr}`, opacity: rowOpacity }}>
                           <td style={{ padding: "10px 12px", fontFamily: "monospace", fontSize: 11, color: "#8E5570", fontWeight: 700, textDecoration: (departed || terminated) ? "line-through" : "none" }}>{s.ec}</td>
                           <td style={{ padding: "10px 12px", fontWeight: 700, color: (departed || terminated) ? "#6b7280" : s.onMat ? "#7A4258" : s.transferring ? "#0369a1" : "#111827", whiteSpace: "nowrap", fontStyle: s.onMat ? "italic" : "normal", textDecoration: (departed && !terminated) ? "line-through" : "none" }}>
-                            {terminated ? "🛑 Archived · " : departed ? "👋 " : s.onMat ? "🤱 " : s.pregnant ? "🤰 " : s.isShadow ? "🔄 Arriving · " : s.transferring && !s.isShadow ? "🔄 Transferring · " : ""}{s.firstName || s.name?.split(' ')[0] || ""}{s.boaPathways && <> <BoaPathwaysBadge size={12} /></>}
+                            {terminated ? "🛑 Archived · " : departed ? "👋 " : s.onMat ? "🤱 " : s.pregnant ? "🤰 " : s.isShadow ? "🔄 Arriving · " : s.transferring && !s.isShadow ? "🔄 Transferring · " : ""}{s.firstName || s.name?.split(' ')[0] || ""}{s.boaPathways && <> <BoaPathwaysBadge size={12} /></>}{s.bargainingCouncil && <> <BargainingCouncilBadge size={12} /></>}
                             {s.transferring && !s.isShadow && <span style={{ fontSize: 10, marginLeft: 5, background: "#FBCFE8", color: "#BE185D", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>→ {s.transferTo} on {s.transferDate ? new Date(s.transferDate.replace(/\//g, "-")).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
                             {s.isShadow && <span style={{ fontSize: 10, marginLeft: 5, background: "#FBCFE8", color: "#BE185D", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>from {s.transferFrom} on {s.transferDate ? new Date(s.transferDate.replace(/\//g, "-")).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
                           </td>
@@ -23372,6 +23717,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {tab === "frl" && accessAllows(currentUser, leaveBalancesCfg) && (
           <FamilyResponsibilityTab enriched={enriched} managers={enrichedManagers} currentUser={currentUser} logActivity={logActivity} />
+        )}
+
+        {/* ── BARGAINING COUNCIL TAB ── */}
+        {tab === "bargainingCouncil" && accessAllows(currentUser, leaveBalancesCfg) && (
+          <BargainingCouncilTab enriched={enriched} managers={enrichedManagers} currentUser={currentUser} logActivity={logActivity} onApplyCouncil={applyCouncilFlags} />
         )}
 
         {/* ── CALLED IN SICK TAB ── */}
@@ -26574,10 +26924,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const _movedAwayThisCycle = (s) => s.transferring && s.transferTo && s.transferTo !== attBranch && s.transferDate && s.transferDate <= _todayYmdR;
         const _arrivingHereThisCycle = (s) => s.transferring && s.transferTo === attBranch && s.transferDate && s.transferDate <= _todayYmdR && s.branch && s.branch !== attBranch;
         const attStaff = [
-          ...enriched.filter(s => s.branch === attBranch && stillInCycle(s.ec) && !_movedAwayThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat, matStart: (s.matRec && s.matRec.matStart) || s.matStart || null })),
-          ...enriched.filter(s => stillInCycle(s.ec) && _arrivingHereThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat, matStart: (s.matRec && s.matRec.matStart) || s.matStart || null, movedFrom: s.branch, movedOn: s.transferDate })),
-          ...managers.filter(m => m.branch === attBranch && stillInCycle(m.ec) && !_movedAwayThisCycle(m)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", onMat: !!m.onMat, matStart: (m.matRec && m.matRec.matStart) || m.matStart || null, smTrial: _smTrialEcSet.has(String(m.ec).trim()) })),
-          ...managers.filter(m => stillInCycle(m.ec) && _arrivingHereThisCycle(m)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", onMat: !!m.onMat, matStart: (m.matRec && m.matRec.matStart) || m.matStart || null, smTrial: _smTrialEcSet.has(String(m.ec).trim()), movedFrom: m.branch, movedOn: m.transferDate }))
+          ...enriched.filter(s => s.branch === attBranch && stillInCycle(s.ec) && !_movedAwayThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat, council: !!s.bargainingCouncil, matStart: (s.matRec && s.matRec.matStart) || s.matStart || null })),
+          ...enriched.filter(s => stillInCycle(s.ec) && _arrivingHereThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat, council: !!s.bargainingCouncil, matStart: (s.matRec && s.matRec.matStart) || s.matStart || null, movedFrom: s.branch, movedOn: s.transferDate })),
+          ...managers.filter(m => m.branch === attBranch && stillInCycle(m.ec) && !_movedAwayThisCycle(m)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", onMat: !!m.onMat, council: !!m.bargainingCouncil, matStart: (m.matRec && m.matRec.matStart) || m.matStart || null, smTrial: _smTrialEcSet.has(String(m.ec).trim()) })),
+          ...managers.filter(m => stillInCycle(m.ec) && _arrivingHereThisCycle(m)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", onMat: !!m.onMat, council: !!m.bargainingCouncil, matStart: (m.matRec && m.matRec.matStart) || m.matStart || null, smTrial: _smTrialEcSet.has(String(m.ec).trim()), movedFrom: m.branch, movedOn: m.transferDate }))
         ].sort((a, b) => {
           // Maternity-leave staff go to the very bottom of the grid so the
           // active roster stays at the top. Within each group, sort by
@@ -28118,7 +28468,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             if (v === "al") { /* annual leave counted via the run-based pass below (off-days deducted) */ }
             else if (v === "el") t.unpaid++;   // emergency leave = unpaid
             else if (v === "sick") t.unpaid++;   // sick (no note) is unpaid — counted in UNPAID (no separate column)
-            else if (v === "sick_n") t.sickNote++;
+            // Sick + note is normally PAID. But a bargaining-council member has a
+            // council sick-pay fund, so the company doesn't pay their sick days
+            // even with a note — count it as unpaid for them instead.
+            else if (v === "sick_n") { if ((attStaffByEc[String(ec).trim()] || {}).council) t.unpaid++; else t.sickNote++; }
             else if (v === "frl") t.frl++;
             else if (v === "ph") t.ph++;        // explicit PH always counts
             else if (v === "mat") { t.mat++; }   // unpaid deduction computed run-based below (off days excluded)
@@ -28538,6 +28891,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             return setCellAndReview(s.ec, dy.d, "deduct:" + h);
           }
           if (val === "sick_n") {
+            // Bargaining-council members have a council sick-pay fund, so the
+            // company doesn't pay their sick days even with a note. Record it
+            // (keeps the note on file) but flag that it counts as UNPAID.
+            if (s.council && !window.confirm("🤝 " + s.name + " is signed up with the bargaining council.\n\nTheir sick days are covered by the council sick-pay fund, so this \"Sick + note\" day will NOT be paid by the company — it counts as unpaid on the payroll totals.\n\nMark it anyway?")) return;
             const ok = await checkSickEligibility(s.ec, s.name, dy.ymd);
             if (!ok) return;
             return setCellAndReview(s.ec, dy.d, "sick_n");
