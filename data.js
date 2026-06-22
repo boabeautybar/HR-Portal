@@ -84,6 +84,7 @@
       taxNumber: r.tax_number || "",
       gender: r.gender || "",
       boaPathways: !!r.boa_pathways,
+      bargainingCouncil: !!r.bargaining_council,
       active: r.active !== undefined ? (typeof r.active === 'string' ? r.active.toUpperCase() === 'TRUE' : !!r.active) : !r.left_date
     };
   }
@@ -112,7 +113,8 @@
       id_number: s.idNumber || null,
       tax_number: s.taxNumber || null,
       gender: s.gender || null,
-      boa_pathways: !!s.boaPathways
+      boa_pathways: !!s.boaPathways,
+      bargaining_council: !!s.bargainingCouncil
     };
   }
 
@@ -147,6 +149,7 @@
       taxNumber: r.tax_number || "",
       gender: r.gender || "",
       boaPathways: !!r.boa_pathways,
+      bargainingCouncil: !!r.bargaining_council,
       active: r.active !== undefined ? (typeof r.active === 'string' ? r.active.toUpperCase() === 'TRUE' : !!r.active) : !r.left_date
     };
   }
@@ -174,7 +177,8 @@
       id_number: m.idNumber || null,
       tax_number: m.taxNumber || null,
       gender: m.gender || null,
-      boa_pathways: !!m.boaPathways
+      boa_pathways: !!m.boaPathways,
+      bargaining_council: !!m.bargainingCouncil
     };
   }
 
