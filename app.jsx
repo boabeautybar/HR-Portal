@@ -461,6 +461,31 @@ function _triggerDownload(filename, content, mime) {
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+// Human-readable status for a staff/manager row in the staff-list export.
+function _staffStatusLabel(p) {
+  const isTerm = p.status === "terminated" || p.active === "false" || p.active === false;
+  if (isTerm) return "Terminated";
+  const departed = p.offboarded && p.offDaysSinceLeft != null && p.offDaysSinceLeft >= 0;
+  if (departed) return "Left" + (p.leftDate ? " " + p.leftDate : "");
+  if (p.offboarded && p.offDaysSinceLeft != null && p.offDaysSinceLeft < 0) return "On notice" + (p.leftDate ? " (until " + p.leftDate + ")" : "");
+  if (p.onMat) return "Maternity leave";
+  if (p.pregnant) return "Pregnant";
+  return "Active";
+}
+// Build the staff-list CSV from the currently-shown managers + techs. Leads
+// with EC and names (the columns asked for), then a few useful extras.
+function _staffRowsToCsv(mgrs, techs) {
+  const head = ["EC", "First Name", "Surname", "Full Name", "Branch", "Role", "Start Date", "Bargaining Council", "Status"];
+  const lines = [head.map(_csvEscape).join(",")];
+  const split = (full) => { const t = (full || "").trim(); const i = t.indexOf(" "); return i < 0 ? { f: t, s: "" } : { f: t.slice(0, i), s: t.slice(i + 1).trim() }; };
+  const row = (p, roleLabel) => {
+    const sn = split(p.name);
+    return [p.ec || "", p.firstName || sn.f || "", p.surname || sn.s || "", p.name || "", p.branch || "", roleLabel, p.startDate || "", p.bargainingCouncil ? "Yes" : "No", _staffStatusLabel(p)].map(_csvEscape).join(",");
+  };
+  (mgrs || []).forEach(m => lines.push(row(m, m.effectiveRole || m.role || "Manager")));
+  (techs || []).forEach(t => lines.push(row(t, "Nail Tech")));
+  return lines.join("\r\n");
+}
 // Fillable trial-evaluation modal — used in the HR portal for the AM Week-1
 // review that the trainers (HQ) complete. Mirrors the kiosk evaluation form:
 // score each criterion 1–5, with per-point guidance and a live tally. A pass
@@ -21417,6 +21442,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <option value="AM">⭐ Assistant Manager</option>
               </select>
               <span style={{ marginLeft: "auto", fontSize: 11, color: "#BE185D", fontWeight: 700 }}>{filteredMgrs.length + filtered.length} shown {filteredMgrs.length > 0 ? "(" + filteredMgrs.length + " mgrs · " + filtered.length + " techs)" : "(sorted by EC)"}</span>
+              <button onClick={() => {
+                if (filtered.length + filteredMgrs.length === 0) { alert("Nothing to export — no staff match the current filters."); return; }
+                _triggerDownload("BOA_staff_list_" + new Date().toISOString().slice(0, 10) + ".csv", _staffRowsToCsv(filteredMgrs, filtered), "text/csv");
+              }}
+                title="Download the staff currently shown (respects the filters above) as a CSV with EC + names. Opens in Excel / Google Sheets."
+                style={{ background: "#FFFFFF", color: "#831843", border: `1px solid ${bdr}`, borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 12 }}>⬇ Export CSV</button>
               <button onClick={() => setStaffModal({ ec: "", name: "", branch: "Sea Point", contract: "Permanent", permit: "sa_citizen", level: "" })}
                 style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 12 }}>+ Add Tech</button>
               <button onClick={() => setMgrModal({ ec: "", name: "", branch: "Sea Point", role: "AM", contract: "Permanent" })}
