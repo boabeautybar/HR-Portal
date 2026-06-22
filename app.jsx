@@ -33160,9 +33160,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         // manager is loaned to another branch on this day.
                         // Resolve the destination from mgrLoanRows and render
                         // the same "→{dest}" chip we use for the tech schedule.
-                        const isLoanOut = v === "loan_out";
-                        const _loanRec = isLoanOut ? (mgrLoanRows || []).find(l => l && String(l.ec).trim() === String(mg.ec).trim() && l.date === dy.d) : null;
-                        const loanToBranch = _loanRec ? _loanRec.toBranch : (isLoanOut ? "Other store" : null);
+                        // Only a loan_out WITH a backing loan record is a real
+                        // loan. A bare loan_out (record removed when the loan
+                        // was reversed) is an orphan — fall through to a blank,
+                        // editable cell rather than showing "→Other store".
+                        const _loanRec = (v === "loan_out") ? (mgrLoanRows || []).find(l => l && String(l.ec).trim() === String(mg.ec).trim() && l.date === dy.d) : null;
+                        const isLoanOut = v === "loan_out" && !!_loanRec;
+                        const loanToBranch = _loanRec ? _loanRec.toBranch : null;
                         const bg = xferEdge === "out" ? "#fef3c7"
                           : xferEdge === "in" ? "#dbeafe"
                             : isLoanOut ? "#dbeafe"
@@ -35380,7 +35384,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 // typed differently, or even an OFF code marking a
                 // requested day at this branch).
                 const cell = grid[_ec][d.ymd] || grid[_ec][d.dom] || grid[_ec][String(d.dom)];
-                if (!cell) continue;
+                // A loan_out marks "away from THIS branch", never "working
+                // here" — it must not surface someone as a guest of this
+                // branch. Genuine guests are surfaced by a work code; a stray
+                // loan_out left by a reversed loan would otherwise add a
+                // phantom guest row.
+                if (!cell || cell === "loan_out") continue;
                 const person = ecToPerson[ecKey];
                 if (!person) { _unresolved.push(ecKey); continue; }
                 // A resigned manager (leftDate on the live record OR the
@@ -35603,9 +35612,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const cust = _effCustomTime(ec, ymd);
           const sd = _parseRange(std);
           const cd = _parseRange(cust || "");
+          // Seed the loan destination from the existing record (live or
+          // pending draft) so the editor SHOWS where this manager is loaned —
+          // and so "Stay at <branch>" is a deliberate reversal, not the silent
+          // default. "loan_out" isn't a user-selectable shift code (it's a
+          // derived marker), so baseline its code to blank; clearing the dest
+          // then clears the cell instead of writing the marker back.
+          const _eck = String(ec).trim();
+          const _liveLoan = _loansByEcYmd[_eck + "|" + ymd];
+          const _draftLoan = (mgrCoverageDraftLoans || []).find(l => l && String(l.ec).trim() === _eck && l.date === ymd && l._op !== "remove");
+          const _seedDest = (_draftLoan && _draftLoan.toBranch) || (_liveLoan && _liveLoan.toBranch) || "";
+          const _seedNote = (_draftLoan && _draftLoan.note) || (_liveLoan && _liveLoan.note) || "";
           setMgrCellEditor({
             branch: branchName, mgrYm, ec, name: name || "", role: role || "", ymd, dom,
             currentCell: currentCell || "",
+            _draftCode: currentCell === "loan_out" ? "" : (currentCell || ""),
+            _draftDest: _seedDest, _draftNote: _seedNote,
             _defStart: sd.start, _defEnd: sd.end,
             _custStart: cd.start, _custEnd: cd.end, _hadCustom: !!cust
           });
@@ -35897,6 +35919,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (cellVal === "loan_out") {
             const lo = _loansByEcYmd[String(ec).trim() + "|" + ymd];
             const draftLo = (mgrCoverageDraftLoans || []).find(l => String(l.ec).trim() === String(ec).trim() && l.date === ymd && l._op !== "remove");
+            // Orphaned loan_out — the loan was reversed (record gone) but the
+            // grid cell was left behind. Treat it as a cleared, clickable cell
+            // instead of a phantom "AWAY → Other store". Opening it seeds a
+            // blank code + no destination, so saving clears the stale cell.
+            if (!lo && !draftLo) {
+              return (
+                <td key={key} {..._dh} onClick={ec ? onCellClick : undefined} title={ec ? "Click to add a shift · drop a dragged shift here" : ""} style={{ ...tdStyle, textAlign: "center" }}>
+                  <div style={{ minHeight: 56, display: "flex", alignItems: "center", justifyContent: "center", color: ec ? "#FBCFE8" : "#e5e7eb", fontSize: 18, transition: "color 0.15s" }}>＋</div>
+                </td>
+              );
+            }
             const destLbl = (draftLo && draftLo.toBranch) || (lo && lo.toBranch) || "Other store";
             const _loanExtra = !!((draftLo && draftLo.extra) || (lo && lo.extra));
             return (
@@ -37103,10 +37136,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               next[oldDk] = odBranch;
             }
             // Home cell — loan_out marker or the explicit code (or clear).
+            // When there's NO destination we must never write back a bare
+            // "loan_out": that's how a reversed loan used to leave an orphaned
+            // cell (record removed, but the grid still read loan_out → phantom
+            // "AWAY → Other store"). Clearing the destination clears the cell.
             const hk = _dk(homeBranch, ym);
             const hb = { ...(next[hk] || {}) };
             const hr = { ...(hb[ec] || {}) };
-            const homeVal = dest && dest !== homeBranch ? "loan_out" : (draftCode || "");
+            const homeVal = dest && dest !== homeBranch ? "loan_out" : (draftCode && draftCode !== "loan_out" ? draftCode : "");
             hr[dom] = homeVal; if (ymd) hr[ymd] = homeVal;
             hb[ec] = hr;
             next[hk] = hb;
