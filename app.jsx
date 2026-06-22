@@ -28680,7 +28680,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const isHol = !!(holidayLookup && holidayLookup[dy.ymd]);
             const phOk = isHol && phEligible(dy, rawV, bareV);
             if (v === "al") { /* annual leave counted via the run-based pass below (off-days deducted) */ }
-            else if (v === "el") t.unpaid++;   // emergency leave = unpaid
+            else if (v === "el") { /* emergency leave: unpaid counted run-based below (off-days deducted, like maternity) */ }
             else if (v === "sick") t.unpaid++;   // sick (no note) is unpaid — counted in UNPAID (no separate column)
             // Sick + note is normally PAID. But a bargaining-council member has a
             // council sick-pay fund, so the company doesn't pay their sick days
@@ -28773,10 +28773,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }
             flushAlRun();
           }
-          // Maternity & terminated stretches are deducted as UNPAID — but only
-          // for days the person was actually rostered to WORK. The grid stamps
-          // EVERY calendar day of these stretches (incl. weekly off days) as
-          // mat/term, so counting each cell as unpaid over-deducts by the rest
+          // Maternity, terminated & emergency-leave stretches are deducted as
+          // UNPAID — but only for days the person was actually rostered to WORK.
+          // The grid stamps EVERY calendar day of these stretches (incl. weekly
+          // off days) as mat/term/el, so counting each cell as unpaid over-deducts by the rest
           // days. Mirror the annual-leave rule above: read real off days (O/R)
           // and real working shifts from the schedule where it survived, and
           // fall back to the ~2-off-days-per-7-day estimate for the unknown
@@ -28808,6 +28808,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             };
             t.unpaid += unpaidWorkDaysFor("mat");
             t.unpaid += unpaidWorkDaysFor("term");
+            // Emergency leave is unpaid too, and the overlay likewise stamps
+            // every calendar day of the run (incl. weekly off days) — so deduct
+            // off days the same way: a 7-day EL run counts as 5 unpaid, not 7.
+            t.unpaid += unpaidWorkDaysFor("el");
           }
           // Convert deductions to days. Short hours from the kiosk's
           // "Left work early" use 8h/day per business rule (4h = 0.5 day);
