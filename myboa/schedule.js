@@ -27,11 +27,13 @@
 
   var state = {
     ec: "", store: "", name: "", role: "", effRole: "", isManager: false,
+    homeBranch: "", typedStore: "",   // typedStore = what they entered; store = home anchor
+    transferring: false, transferTo: "", transferDate: "",   // permanent branch move (effective date)
     custom: {},              // ymd -> "HH:MM - HH:MM" custom hours for this person
     view: "soon",            // soon | week | month
     monthYm: null,
-    cache: {},               // ym -> grid object (for state.store + isManager)
-    awayMap: {},             // ymEnd -> { ymd: { branch, code } } — where a loan_out day actually lands
+    cache: {},               // "<branch>|<ymEnd>" -> grid object (effective branch can vary per day)
+    awayMap: {},             // "<branch>|<ymEnd>" -> { ymd: { branch, code } } — loan_out day resolution
     mgrRoles: {},            // EC(upper/trim) -> role, for split-store shift labelling
     smTrialEcs: {},          // EC(upper/trim) -> 1 for AMs on an active SM trial
     covLabels: {},           // ym -> re-derived WE/WM/WL grid (mirrors Manager Coverage)
@@ -417,12 +419,14 @@
     if (role === "AM" && state.smTrialEcs[up]) return "SM";
     return role;
   }
-  // Re-derive the cycle's manager shift labels (cached per cycle). Returns an
-  // ec -> { ymd: code } grid, or null when not a split store / grid not loaded.
-  function buildMgrLabels(ymEnd) {
-    if (!state.isManager || !SPLIT_SHIFT_STORES[state.store]) return null;
-    if (state.covLabels[ymEnd]) return state.covLabels[ymEnd];
-    var src = state.cache[ymEnd];
+  // Re-derive the cycle's manager shift labels (cached per cycle+branch). Returns
+  // an ec -> { ymd: code } grid, or null when not a split store / grid not loaded.
+  function buildMgrLabels(ymEnd, branch) {
+    branch = branch || state.store;
+    if (!state.isManager || !SPLIT_SHIFT_STORES[branch]) return null;
+    var ck = branch + "|" + ymEnd;
+    if (state.covLabels[ck]) return state.covLabels[ck];
+    var src = state.cache[ck];
     if (!src) return null;                       // grid not loaded yet — caller falls back to raw
     var mgrs = [];
     for (var ec in src) { if (Object.prototype.hasOwnProperty.call(src, ec)) mgrs.push({ ec: ec, role: effRoleFor(ec) }); }
@@ -439,13 +443,13 @@
         g2[mec][ymd] = (raw == null ? "" : String(raw).toUpperCase());
       }
     }
-    applyBranchShiftRules(g2, dates, mgrs, state.store);
-    state.covLabels[ymEnd] = g2;
+    applyBranchShiftRules(g2, dates, mgrs, branch);
+    state.covLabels[ck] = g2;
     return g2;
   }
   // The re-derived shift code for THIS person on a date (or null to use raw).
-  function derivedMgrCode(dt) {
-    var g = buildMgrLabels(ymForDate(dt));
+  function derivedMgrCode(dt, branch) {
+    var g = buildMgrLabels(ymForDate(dt), branch);
     if (!g) return null;
     var row = g[state.ec];
     if (!row) return null;
@@ -463,25 +467,26 @@
   // only ever marked Work/Off in the portal — so we show a time ONLY when the
   // day carries an explicit shift code (WE/WL/WM/WB); a plain "W" shows no
   // invented time (it used to wrongly default to the store's closer shift).
-  function workSub(c, dt) {
+  function workSub(c, dt, branch) {
+    branch = branch || state.store;
     if (state.isManager) {
       var custom = state.custom && state.custom[ymdStr(dt)];
       if (custom) return custom + " · custom hours";
-      return shiftTimes(state.effRole || state.role, c || "W", state.store, dt.getDay());
+      return shiftTimes(state.effRole || state.role, c || "W", branch, dt.getDay());
     }
     var dow = dt.getDay();
     var code = (c === "WE" || c === "WL" || c === "WM" || c === "WB") ? c : "W";
     var variant = c === "WE" ? " · Early" : c === "WL" ? " · Late" : c === "WM" ? " · Mid" : "";
 
     // 1) Store with tech times defined on the schedule tab (Sandown, Fourways…).
-    var tt = techTime(state.store, dow, code);
+    var tt = techTime(branch, dow, code);
     if (tt !== null) return tt ? tt + variant : variant.replace(" · ", "");
 
     // 2) Split-shift store without a full table: explicit codes show their time;
     // a plain "W" only has one known time on weekends, weekdays show just "Work".
-    if (SPLIT_STORES[state.store]) {
-      if (code !== "W") return shiftTimes(state.role, code, state.store, dow) + variant;
-      if (dow === 0 || dow === 6) return shiftTimes(state.role, "W", state.store, dow);
+    if (SPLIT_STORES[branch]) {
+      if (code !== "W") return shiftTimes(state.role, code, branch, dow) + variant;
+      if (dow === 0 || dow === 6) return shiftTimes(state.role, "W", branch, dow);
       return "";
     }
 
@@ -516,21 +521,21 @@
     };
   }
 
-  function cellStatus(row, dt) {
+  // Status for a date, resolved against `branch` (the person's EFFECTIVE store that
+  // day — home, or the transfer destination once the transfer date has passed).
+  function cellStatus(row, dt, branch) {
+    branch = branch || state.store;
     if (matMlOn(dt)) return ML_INFO;
-    // Cross-store day-loan (Manager Coverage / Movements): borrowed to ANOTHER
-    // branch this day. They're NOT off — show where they're working.
+    // Cross-store day-loan (swap/borrow): borrowed to ANOTHER branch this day.
     var loan = loanForDate(dt);
-    if (loan && loan.toBranch && loan.toBranch !== state.store) return loanInfo(loan);
+    if (loan && loan.toBranch && loan.toBranch !== branch) return loanInfo(loan);
     var code = getCell(row, dt);
     var c = (code == null ? "" : String(code)).toUpperCase();
-    // Loaned out this day (grid-driven movement, no loan record needed): resolve
-    // the branch where they're actually working + that branch's hours. Never Off.
+    // Grid-level loan_out: working at another store that day — resolve which.
     if (c === "LOAN_OUT") {
-      var away = (state.awayMap[ymForDate(dt)] || {})[ymdStr(dt)];
+      var away = (state.awayMap[branch + "|" + ymForDate(dt)] || {})[ymdStr(dt)];
       if (away && away.branch) {
-        var ymdK = ymdStr(dt);
-        var ah = (state.custom && state.custom[ymdK]) ? state.custom[ymdK] + " · custom hours"
+        var ah = (state.custom && state.custom[ymdStr(dt)]) ? state.custom[ymdStr(dt)] + " · custom hours"
           : (state.isManager
               ? shiftTimes(state.effRole || state.role, away.code || "W", away.branch, dt.getDay())
               : (techTime(away.branch, dt.getDay(), WORK_CODES[away.code] ? away.code : "W") || ""));
@@ -548,17 +553,14 @@
     // Working (incl. Extra / Pre-start). Public holidays pay double — same hours
     // as whatever weekday they fall on, flagged with 💰💰 and the holiday name.
     var hol = holidayName(dt);
-    // Split-store managers: show the shift TIME for the label Manager Coverage
-    // re-derives (WE/WM/WL) rather than the raw saved cell, which can be stale
-    // (e.g. a saved WL that Coverage relabels to WM). A per-day custom-hours
-    // override is the ROM's explicit choice, so it wins inside workSub anyway and
-    // we don't relabel it — mirroring Coverage's _covCell.
+    // Split-store managers: show the shift TIME for the label Coverage re-derives
+    // (WE/WM/WL) rather than the raw saved cell. Custom hours win inside workSub.
     var timeCode = c;
-    if (working && state.isManager && SPLIT_SHIFT_STORES[state.store] && !(state.custom && state.custom[ymdStr(dt)])) {
-      var dc = derivedMgrCode(dt);
+    if (working && state.isManager && SPLIT_SHIFT_STORES[branch] && !(state.custom && state.custom[ymdStr(dt)])) {
+      var dc = derivedMgrCode(dt, branch);
       if (dc) timeCode = dc;
     }
-    var time = (c === "X" || c === "P") ? "" : workSub(timeCode, dt);
+    var time = (c === "X" || c === "P") ? "" : workSub(timeCode, dt, branch);
     if (hol) {
       var what = c === "E" ? "Extra day" : (c === "X" || c === "P") ? "Pre-start" : "Work";
       return { kind: "holiday", label: "💰💰 " + what, sub: hol + " · pays double" + (time ? " · " + time : "") };
@@ -573,9 +575,33 @@
   // Manager schedules: key boa_mgrsched_<store>_<START-month ym>, days by bare
   // number OR full "YYYY-MM-DD". We use the END-month ym as the canonical cycle
   // id everywhere and translate when building the storage key / reading a cell.
-  function storageKey(ymEnd) {
-    if (state.isManager) return "boa_mgrsched_" + state.store + "_" + shiftYm(ymEnd, -1);
-    return "boa_sched_" + state.store + "_" + ymEnd;
+  function storageKey(ymEnd, branch) {
+    branch = branch || state.store;
+    if (state.isManager) return "boa_mgrsched_" + branch + "_" + shiftYm(ymEnd, -1);
+    return "boa_sched_" + branch + "_" + ymEnd;
+  }
+  // The branch a person is effectively at on a date — after a branch transfer's
+  // effective date, that's the destination store (mirrors the portal's
+  // effHomeBranch). Drives per-day anchoring so a mid-cycle transfer flips the
+  // source-of-truth schedule to the new store, off days and all.
+  function effectiveBranchOn(dt) {
+    if (state.transferring && state.transferTo && state.transferDate && state.transferDate <= ymdStr(dt)) return state.transferTo;
+    return state.homeBranch || state.store;
+  }
+  // Approved (PUBLISHED) snapshot key — same store + ym convention as the live
+  // key, just the "…approved_" prefix. Value is an array of snapshots, newest
+  // first; the live grid (storageKey) can hold an unpublished draft, so we read
+  // the published snapshot for display.
+  function approvedKey(store, isManager, ymEnd) {
+    return (isManager ? "boa_mgrschedapproved_" : "boa_schedapproved_") + store + "_" + (isManager ? shiftYm(ymEnd, -1) : ymEnd);
+  }
+  // Is this cycle later than the one containing today? (string "YYYY-MM" compares lexically)
+  function isFutureCycle(ymEnd) { return ymEnd > currentSchedYm(); }
+  // The newest PUBLISHED grid for a store+cycle, or null if never published.
+  async function fetchApprovedGrid(store, isManager, ymEnd) {
+    var res = await sb.from("app_state").select("value").eq("key", approvedKey(store, isManager, ymEnd)).maybeSingle();
+    var arr = res && res.data && res.data.value;
+    return (Array.isArray(arr) && arr.length && arr[0] && arr[0].grid) || null;
   }
   function rowFor(grid) {
     if (!grid) return null;
@@ -592,76 +618,84 @@
     var ymd = dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate());
     return row[ymd];
   }
-  async function loadCycle(ymEnd) {
-    if (state.cache[ymEnd] !== undefined) return state.cache[ymEnd];
-    var res = await sb.from("app_state").select("value").eq("key", storageKey(ymEnd)).maybeSingle();
-    var grid = (res && res.data && res.data.value && res.data.value.grid) || null;
-    state.cache[ymEnd] = grid;
+  // Display the PUBLISHED schedule only. If a cycle has an approved snapshot, use
+  // it (the published truth, even if the live grid was since re-drafted). If not
+  // published and the cycle is in the future → null, so the "Not published yet"
+  // greyed state shows (no draft leaks out). For the current/past with no
+  // snapshot, fall back to the live grid (stores that don't formally publish, and
+  // history, keep working).
+  async function loadCycle(ymEnd, branch) {
+    branch = branch || state.store;
+    var ck = branch + "|" + ymEnd;
+    if (state.cache[ck] !== undefined) return state.cache[ck];
+    var grid = await fetchApprovedGrid(branch, state.isManager, ymEnd);
+    if (!grid && !isFutureCycle(ymEnd)) {
+      var res = await sb.from("app_state").select("value").eq("key", storageKey(ymEnd, branch)).maybeSingle();
+      grid = (res && res.data && res.data.value && res.data.value.grid) || null;
+    }
+    state.cache[ck] = grid;
     return grid;
   }
   function isLoanOut(v) { return String(v == null ? "" : v).toUpperCase().trim() === "LOAN_OUT"; }
+  function isWorkCode(v) { var c = String(v == null ? "" : v).toUpperCase().trim(); return c === "E" || !!WORK_CODES[c]; }
 
-  // Split / loaned managers (and techs) appear in MORE THAN ONE branch's grid:
-  // a `loan_out` cell in their looked-up store means they're actually working at
-  // the OTHER branch that day. There's often no boa_*_loans_v1 record for it —
-  // the truth lives in the grids — so we resolve it from the live grids. For any
-  // cycle where this person has a loan_out cell, fetch every other branch's grid
-  // (one batched query) and record, per loan_out date, the branch + code where
-  // they're actually working. Builds nothing (zero extra fetches) for the common
-  // case of someone with no loan_out days.
-  async function ensureAwayMap(ymEnd) {
-    if (state.awayMap[ymEnd] !== undefined) return state.awayMap[ymEnd];
-    var grid = state.cache[ymEnd];
+  // Resolve grid-level day loans: a `loan_out` cell in the (effective) branch's
+  // grid means they're working at ANOTHER store that day. We find which by
+  // scanning every other store's PUBLISHED snapshot for a work code (one batched
+  // query per cycle+branch, cached). Only fires when there's a loan_out cell, so
+  // ordinary off days cost nothing. (Permanent transfers are handled separately by
+  // effectiveBranchOn, so we don't second-guess plain off days here.)
+  async function ensureAwayMap(ymEnd, branch) {
+    branch = branch || state.store;
+    var ck = branch + "|" + ymEnd;
+    if (state.awayMap[ck] !== undefined) return state.awayMap[ck];
+    var grid = state.cache[ck];
     var row = rowFor(grid);
-    var days = periodDays(ymEnd);
-    var loanDays = row ? days.filter(function (x) { return isLoanOut(getCell(row, x.date)); }) : [];
-    if (!loanDays.length) { state.awayMap[ymEnd] = {}; return state.awayMap[ymEnd]; }
+    var loanDays = row ? periodDays(ymEnd).filter(function (x) { return isLoanOut(getCell(row, x.date)); }) : [];
+    if (!loanDays.length) { state.awayMap[ck] = {}; return state.awayMap[ck]; }
 
-    var prefix = state.isManager ? "boa_mgrsched_" : "boa_sched_";
+    var prefix = state.isManager ? "boa_mgrschedapproved_" : "boa_schedapproved_";
     var ymPart = state.isManager ? shiftYm(ymEnd, -1) : ymEnd;
-    var keys = STORES.filter(function (s) { return s !== state.store; })
+    var keys = STORES.filter(function (s) { return s !== branch; })
       .map(function (s) { return prefix + s + "_" + ymPart; });
     var byBranch = {};
     try {
       var res = await sb.from("app_state").select("key,value").in("key", keys);
-      var rows = (res && res.data) || [];
-      rows.forEach(function (r) {
-        var g = r && r.value && r.value.grid;
+      (res && res.data || []).forEach(function (r) {
+        var arr = r && r.value;                                  // approved = array, newest first
+        var g = (Array.isArray(arr) && arr.length && arr[0] && arr[0].grid) || null;
         if (!g) return;
-        var branch = String(r.key).slice(prefix.length, String(r.key).length - (ymPart.length + 1));
-        byBranch[branch] = g;
+        byBranch[String(r.key).slice(prefix.length, String(r.key).length - (ymPart.length + 1))] = g;
       });
-    } catch (_e) { /* leave byBranch empty → loan_out shows neutral "working elsewhere" */ }
+    } catch (_e) { /* empty → loan_out shows neutral "working elsewhere" */ }
 
     var map = {};
     loanDays.forEach(function (x) {
       var hit = null;
-      for (var branch in byBranch) {
-        if (!Object.prototype.hasOwnProperty.call(byBranch, branch)) continue;
-        var k = findEcKey(byBranch[branch], state.ec);
-        if (!k) continue;
-        var code = getCell(byBranch[branch][k], x.date);
-        var cu = String(code == null ? "" : code).toUpperCase();
-        if (cu === "E" || WORK_CODES[cu]) { hit = { branch: branch, code: cu }; break; }
+      for (var b in byBranch) {
+        if (!Object.prototype.hasOwnProperty.call(byBranch, b)) continue;
+        var k = findEcKey(byBranch[b], state.ec);
+        if (k && isWorkCode(getCell(byBranch[b][k], x.date))) { hit = { branch: b, code: String(getCell(byBranch[b][k], x.date)).toUpperCase().trim() }; break; }
       }
       map[ymdStr(x.date)] = hit || { branch: null };
     });
-    state.awayMap[ymEnd] = map;
+    state.awayMap[ck] = map;
     return map;
   }
   // Status for a specific calendar date (loads its cycle as needed).
   async function statusForDate(dt) {
     // Maternity wins even if this cycle's roster hasn't been published yet.
     if (matMlOn(dt)) return { published: true, info: ML_INFO };
-    var grid = await loadCycle(ymForDate(dt));
-    await ensureAwayMap(ymForDate(dt));
+    var branch = effectiveBranchOn(dt);                 // home, or transfer destination from its date on
+    var grid = await loadCycle(ymForDate(dt), branch);
+    await ensureAwayMap(ymForDate(dt), branch);
     var row = rowFor(grid);
     if (!row) {
       var loan = loanForDate(dt);
-      if (loan && loan.toBranch && loan.toBranch !== state.store) return { published: true, info: loanInfo(loan) };
+      if (loan && loan.toBranch && loan.toBranch !== branch) return { published: true, info: loanInfo(loan) };
       return { published: false };
     }
-    return { published: true, info: cellStatus(row, dt) };
+    return { published: true, info: cellStatus(row, dt, branch) };
   }
 
   // ── Screens ──────────────────────────────────────────────────
@@ -739,6 +773,11 @@
       state.name = "";
       state.role = "";
       state.effRole = "";
+      state.homeBranch = "";
+      state.typedStore = "";
+      state.transferring = false;
+      state.transferTo = "";
+      state.transferDate = "";
       state.matStatus = "";
       state.matStart = null;
       state.custom = {};
@@ -762,7 +801,7 @@
         // missing column (e.g. first_name) makes PostgREST reject the whole
         // query, which silently emptied the role (→ generic wrong hours).
         var rr = await Promise.all([
-          sb.from("staff").select("employee_code,name,role,role_type").ilike("employee_code", ecTrim + "%").limit(10),
+          sb.from("staff").select("employee_code,name,role,role_type,branch,transferring,transfer_to,transfer_date").ilike("employee_code", ecTrim + "%").limit(10),
           sb.from("app_state").select("value").eq("key", "boa_sm_trial_v1").maybeSingle(),
           sb.from("app_state").select("value").eq("key", "boa_mgr_times_v1").maybeSingle(),
           // Maternity record — so the schedule flips to ML straight from the
@@ -775,6 +814,12 @@
         if (row) {
           state.name = (row.name || "").trim().split(" ")[0] || "";
           state.role = row.role || "";
+          state.homeBranch = (row.branch || "").trim();   // their base store
+          // Branch transfer (permanent move with an effective date): from
+          // transfer_date on, the destination store becomes their home/truth.
+          state.transferring = !!row.transferring;
+          state.transferTo = (row.transfer_to || "").trim();
+          state.transferDate = row.transfer_date ? String(row.transfer_date).replace(/\//g, "-") : "";
           if (row.role_type === "manager") state.isManager = true;
           if (state.role) state.mgrRoles[ecUp] = state.role;   // self always known for the lineup
         }
@@ -807,7 +852,7 @@
       // (matching Manager Coverage), which needs EVERY manager's role — fetch the
       // company's manager roles once and match by trimmed/upper code. Only managers
       // at these stores hit this; techs and plain stores skip it.
-      if (state.isManager && SPLIT_SHIFT_STORES[state.store]) {
+      if (state.isManager && (SPLIT_SHIFT_STORES[state.homeBranch || state.store] || (state.transferTo && SPLIT_SHIFT_STORES[state.transferTo]))) {
         try {
           var mr = await sb.from("staff").select("employee_code,role,role_type").eq("role_type", "manager").limit(2000);
           var mrows = (mr && mr.data) || [];
@@ -831,10 +876,20 @@
         });
       } catch (_e) { state.loans = {}; }
 
+      // Anchor display to the person's home branch (typed store only finds them).
+      // Each day then resolves to its EFFECTIVE branch — after a transfer's
+      // effective date, that's the destination store — via effectiveBranchOn().
+      state.typedStore = store;
+      if (state.homeBranch) { state.store = state.homeBranch; state.cache = {}; state.awayMap = {}; }
+
       try { localStorage.setItem(LS_KEY, JSON.stringify({ store: store, ec: found.ecKey })); } catch (_e) {}
 
       var today = new Date(), tom = new Date(); tom.setDate(tom.getDate() + 1);
-      await Promise.all([loadCycle(ymForDate(today)), loadCycle(ymForDate(tom)), loadCycle(state.monthYm)]);
+      await Promise.all([
+        loadCycle(ymForDate(today), effectiveBranchOn(today)),
+        loadCycle(ymForDate(tom), effectiveBranchOn(tom)),
+        loadCycle(state.monthYm, effectiveBranchOn(today))
+      ]);
       try { state.decidedExtras = await loadDecidedExtras(found.ecKey); } catch (_e) { state.decidedExtras = []; }
       setBusy(false);
       renderDash();
@@ -848,8 +903,8 @@
     var head = big ? (dt.toDateString() === new Date().toDateString() ? "Today" : "Tomorrow") : DOW[dt.getDay()];
     var date = dt.getDate() + " " + MONTHS[dt.getMonth()].slice(0, 3);
     var kind = st.published ? st.info.kind : "none";
-    var label = st.published ? st.info.label : "Not published";
-    var sub = st.published ? st.info.sub : "";
+    var label = st.published ? st.info.label : "Not published yet";
+    var sub = st.published ? st.info.sub : "Your manager hasn’t published this roster yet";
     var body = '<div class="st"><span class="pill k-' + kind + '">' + esc(label) + '</span>' +
       (sub ? '<span class="st-sub">' + esc(sub) + '</span>' : '') + '</div>';
     return '<div class="dayrow k-' + kind + (dt.toDateString() === new Date().toDateString() ? ' is-today' : '') + (big ? ' big' : '') + '">' +
@@ -857,6 +912,16 @@
   }
 
   async function renderDash() {
+    // Header reflects where they are TODAY (their effective branch) + any pending
+    // or recent transfer, so the label isn't stale once a move takes effect.
+    var headBranch = effectiveBranchOn(new Date());
+    var transferNote = "";
+    if (state.transferring && state.transferTo && state.transferDate) {
+      var todayYmd = ymdStr(new Date());
+      transferNote = state.transferDate > todayYmd
+        ? "Transferring to " + state.transferTo + " on " + niceDate(state.transferDate)
+        : "Transferred from " + state.homeBranch + " on " + niceDate(state.transferDate);
+    }
     var decided = state.decidedExtras || [];
     var appr = decided.filter(function (r) { return r.status === "approved"; });
     var decl = decided.filter(function (r) { return r.status === "declined"; });
@@ -879,9 +944,13 @@
       '<a class="back" href="index.html">‹ My BOA</a>',
       '<div class="dashhead">',
         '<div><div class="hi">Hi ' + esc(state.name || "there") + ' 👋</div>',
-        '<div class="meta">' + esc(state.store) + (state.role ? ' · ' + esc(state.role) : '') +
+        '<div class="meta">' + esc(headBranch) + (state.role ? ' · ' + esc(state.role) : '') +
           (state.effRole === "SM" && state.role === "AM" ? ' (SM trial)' : '') +
-          (state.isManager ? ' · Manager' : '') + '</div></div>',
+          (state.isManager ? ' · Manager' : '') + '</div>' +
+          (transferNote ? '<div class="meta" style="font-size:11px;opacity:.8">🔄 ' + esc(transferNote) + '</div>' : '') +
+          (state.typedStore && state.typedStore !== headBranch
+            ? '<div class="meta" style="font-size:11px;opacity:.8">You entered ' + esc(state.typedStore) + ' — showing your full schedule</div>'
+            : '') + '</div>',
         '<button type="button" id="chg" class="chg">Change</button>',
       '</div>',
       banner,
@@ -927,18 +996,21 @@
       return;
     }
 
-    // Month (cycle) view with prev/next.
+    // Month (cycle) view with prev/next. The effective branch can change mid-cycle
+    // (a transfer), so preload every branch the cycle touches, then resolve per day.
     var ym = state.monthYm;
-    await loadCycle(ym);
-    await ensureAwayMap(ym);
     var days2 = periodDays(ym);
+    var effBranches = {};
+    days2.forEach(function (x) { effBranches[effectiveBranchOn(x.date)] = 1; });
+    for (var eb in effBranches) { if (Object.prototype.hasOwnProperty.call(effBranches, eb)) { await loadCycle(ym, eb); await ensureAwayMap(ym, eb); } }
     var rows = days2.map(function (x) {
       var st = { published: false };
       if (matMlOn(x.date)) { st = { published: true, info: ML_INFO }; }
       else {
-        var grid = state.cache[ym], row = rowFor(grid);
-        if (row) st = { published: true, info: cellStatus(row, x.date) };
-        else { var loan = loanForDate(x.date); if (loan && loan.toBranch && loan.toBranch !== state.store) st = { published: true, info: loanInfo(loan) }; }
+        var eff = effectiveBranchOn(x.date);
+        var grid = state.cache[eff + "|" + ym], row = rowFor(grid);
+        if (row) st = { published: true, info: cellStatus(row, x.date, eff) };
+        else { var loan = loanForDate(x.date); if (loan && loan.toBranch && loan.toBranch !== eff) st = { published: true, info: loanInfo(loan) }; }
       }
       return dayCard(x.date, st, false);
     }).join("");
