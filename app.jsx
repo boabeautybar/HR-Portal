@@ -15933,6 +15933,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // mgrclockins and attendance tabs so the grid + dashboard tile + the
   // no-show banner all see the same data.
   const [mgrDayStatuses, setMgrDayStatuses] = useState([]);
+  // Loading gates for the dashboard "Manager reasons to add" tile. The count is
+  // only accurate once the data it EXCLUDES on has loaded (tagged reasons +
+  // the schedule/attendance/clock-in caches). Without these, the tile rendered
+  // a partial count that shrank as the caches arrived — so cleared days flashed
+  // up and then vanished "after a while". Show "…" until both are ready.
+  const [mgrDayStatusesLoaded, setMgrDayStatusesLoaded] = useState(false);
+  const [mgrDashCachesLoaded, setMgrDashCachesLoaded] = useState(false);
   // Modal state for the "Mark reason" flow. null when closed; otherwise
   // { staffId, ec, name, branch, date, existing? }.
   const [mgrReasonModal, setMgrReasonModal] = useState(null);
@@ -18030,9 +18037,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     if (!window.BOA_DB.loadManagerDayStatuses) return;
     if (tab !== "dashboard" && tab !== "mgrclockins" && tab !== "attendance" && tab !== "mgrCoverage") return;
     let cancelled = false;
-    window.BOA_DB.loadManagerDayStatuses(60).then(rows => {
-      if (!cancelled) setMgrDayStatuses(rows || []);
-    });
+    window.BOA_DB.loadManagerDayStatuses(60)
+      .then(rows => { if (!cancelled) setMgrDayStatuses(rows || []); })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setMgrDayStatusesLoaded(true); });
     return () => { cancelled = true; };
   }, [tab]);
 
@@ -18064,6 +18072,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     if (tab !== "mgrclockins" && tab !== "mgrCoverage" && tab !== "attendance" && tab !== "overtime" && tab !== "dashboard") return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     let cancelled = false;
+    // Re-gate the dashboard reasons tile until this load (clock-ins + schedule
+    // + attendance caches for the whole cycle) finishes, so the count isn't
+    // shown half-built.
+    if (tab === "dashboard") setMgrDashCachesLoaded(false);
     (async () => {
       try {
         // Default look-back is mgrClockinDays. On the Attendance tab the user
@@ -18158,6 +18170,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           });
         }
       } catch (e) { console.error("mgr clockins load:", e); }
+      finally { if (!cancelled && tab === "dashboard") setMgrDashCachesLoaded(true); }
     })();
     return () => { cancelled = true; };
   }, [tab, mgrClockinSpanDays, attYM]);
@@ -21168,7 +21181,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           pending.push({ name: m.name, branch: m.branch, ymd });
                         });
                       }
-                      const haveData = (mgrClockinRows || []).length > 0 || Object.keys(mgrClockinSchedCache || {}).length > 0;
+                      // Only trust the count once BOTH the data that adds days
+                      // (clock-ins + schedule) AND the data that clears them
+                      // (tagged reasons + attendance caches) have loaded —
+                      // otherwise the tile shows a half-built count that drifts
+                      // as the async caches arrive. Until then show "…".
+                      const haveData = mgrDayStatusesLoaded && mgrDashCachesLoaded;
                       // Readable label for the cycle being scanned, e.g. "25 May → 24 Jun".
                       const _mAbbr = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
                       const _fmtCyc = (d) => d.getDate() + " " + _mAbbr[d.getMonth()];
