@@ -21080,9 +21080,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       // mgrClockinRows / manager-schedule caches, all of which
                       // are now loaded on the dashboard too (and reach back to
                       // the cycle's opening 25th).
-                      const taggedKeys = new Set((mgrDayStatuses || []).map(s => (s.staff_id || "") + "|" + s.date));
+                      // Tagged-reason keys: staff_id can come back as a string or
+                      // a number, so coerce both sides to String — a type-only
+                      // mismatch was silently dropping the row and re-surfacing a
+                      // day whose reason was already tagged.
+                      const taggedKeys = new Set((mgrDayStatuses || []).map(s => String(s.staff_id != null ? s.staff_id : "") + "|" + s.date));
                       const ecToStaffId = {};
-                      managers.forEach(m => { if (m.ec && (m._id || m.id)) ecToStaffId[m.ec] = m._id || m.id; });
+                      managers.forEach(m => {
+                        const sid = m._id || m.id;
+                        if (m.ec && sid != null) {
+                          ecToStaffId[m.ec] = String(sid);
+                          const t = String(m.ec).trim();
+                          if (!(t in ecToStaffId)) ecToStaffId[t] = String(sid);   // trimmed-key fallback
+                        }
+                      });
+                      // Fallback: resolve a manager's canonical staff_id from their
+                      // clock-in rows when the managers-list mapping missed it (no
+                      // record id, or an EC that doesn't line up after a code change
+                      // / stray space) — the same map the attendance sheet uses when
+                      // it saves the reason, so a reason tagged there still matches
+                      // here instead of the day reappearing on the dashboard.
+                      (mgrClockinRows || []).forEach(r => {
+                        if (!r || !r.staff) return;
+                        const ec = String(r.staff.employee_code || "").trim();
+                        const sid = r.staff_id != null ? r.staff_id : (r.staff.id != null ? r.staff.id : null);
+                        if (ec && sid != null && !(ec in ecToStaffId)) ecToStaffId[ec] = String(sid);
+                      });
                       // Build no-shows from cached clockin rows. If the cache is
                       // empty (data still loading) the tile defers — clicking
                       // still works.
@@ -21103,7 +21126,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       const since = new Date(); since.setHours(0, 0, 0, 0);
                       if (since.getDate() >= 25) { since.setDate(25); }
                       else { since.setMonth(since.getMonth() - 1); since.setDate(25); }
-                      for (let dt = new Date(since); dt < tdY && dt.toISOString().slice(0, 10) < _t0; dt.setDate(dt.getDate() + 1)) {
+                      // Compare in LOCAL time. The old `dt.toISOString().slice(0,10)`
+                      // bound used UTC, so at UTC+2 (South Africa) local midnight
+                      // resolved to the PREVIOUS day — today slipped past the
+                      // "< today" guard and every manager scheduled today who simply
+                      // hadn't clocked in YET was listed as needing a reason, so the
+                      // warning came back daily and could never be cleared.
+                      for (let dt = new Date(since); (dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0")) < _t0; dt.setDate(dt.getDate() + 1)) {
                         const ymd = dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
                         const dom = dt.getDate();
                         // Manager schedule uses START-month ym.
@@ -21134,7 +21163,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const _attGrid = mgrAttGridCache[(m.branch || "") + "|" + _attYm];
                           const _attCell = _attGrid && _attGrid[m.ec] && (_attGrid[m.ec][String(dom)] || _attGrid[m.ec][ymd]);
                           if (_attCell) return;
-                          const sid = ecToStaffId[m.ec];
+                          const sid = ecToStaffId[m.ec] || ecToStaffId[String(m.ec || "").trim()];
                           if (sid && taggedKeys.has(sid + "|" + ymd)) return;
                           pending.push({ name: m.name, branch: m.branch, ymd });
                         });
