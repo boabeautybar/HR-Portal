@@ -16237,6 +16237,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // mgrclockins and attendance tabs so the grid + dashboard tile + the
   // no-show banner all see the same data.
   const [mgrDayStatuses, setMgrDayStatuses] = useState([]);
+  // Have the manager clock-ins / day-status feeds loaded at least once?
+  // Both start as [] and arrive via async fetches, so the attendance grid
+  // can render before they land. While they're still empty-because-loading,
+  // the manager auto-absent rule must stay quiet — otherwise it briefly
+  // fabricates "Absent" over a real ROM "Sick + note", which in turn looks
+  // like the cell's confirmed review just expired. Gating on these flags
+  // keeps that flash from happening.
+  const [mgrClockinsLoaded, setMgrClockinsLoaded] = useState(false);
+  const [mgrDayStatusesLoaded, setMgrDayStatusesLoaded] = useState(false);
   // Modal state for the "Mark reason" flow. null when closed; otherwise
   // { staffId, ec, name, branch, date, existing? }.
   const [mgrReasonModal, setMgrReasonModal] = useState(null);
@@ -18335,7 +18344,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     if (tab !== "dashboard" && tab !== "mgrclockins" && tab !== "attendance" && tab !== "mgrCoverage") return;
     let cancelled = false;
     window.BOA_DB.loadManagerDayStatuses(60).then(rows => {
-      if (!cancelled) setMgrDayStatuses(rows || []);
+      if (!cancelled) { setMgrDayStatuses(rows || []); setMgrDayStatusesLoaded(true); }
     });
     return () => { cancelled = true; };
   }, [tab]);
@@ -18395,6 +18404,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const rows = await window.BOA_DB.listRecentManagerClockins(effDays);
         if (cancelled) return;
         setMgrClockinRows(rows || []);
+        setMgrClockinsLoaded(true);
         // Photo/GPS metadata is loaded per selected day (see the effect below)
         // so a wide load window doesn't eagerly pull every day's selfies.
         // ALSO load manager schedules for the cycles touched by the visible range,
@@ -27629,6 +27639,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // clock-in cache for.
         const _isMgrAutoAbsent = (ec, ymd, d) => {
           if (!_mgrEcToStaffId[ec]) return false;
+          // Wait for the ROM day-status and clock-in feeds before fabricating an
+          // Absent. Both load async from []; firing while they're still empty
+          // briefly stamps "Absent" over a real "Sick + note" (or a real
+          // clock-in) and makes the cell's confirmed review look expired until
+          // the data lands a moment later.
+          if (!mgrDayStatusesLoaded || !mgrClockinsLoaded) return false;
           if (ymd > _todayYmdAtt) return false;
           if (ymd < _mgrCheckinFromYmd) return false;
           if ((_onLeaveByEcYmd[String(ec).trim()] || {})[ymd]) return false; // on approved leave
