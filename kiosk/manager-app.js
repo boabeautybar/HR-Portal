@@ -19,6 +19,11 @@
   var cfg = window.APP_CONFIG || {};
   if (cfg._picker) return;     // branch picker showing — skip bootstrapping
 
+  // Who is doing a voucher lookup — verified by personal PIN at the gate in
+  // renderVoucherLookup, so every lookup is attributable. Held for the current
+  // visit to the Voucher Code screen and cleared on "← Back".
+  var _voucherWho = null;       // { ec, name } once verified
+
 
   // PWA Install Prompt handling
   var deferredInstallPrompt = window.globalDeferredPrompt || null;
@@ -1137,11 +1142,137 @@
   async function renderVoucherLookup() {
     setSublabel("Voucher Code");
     if (configMissing()) { setMain(configMissingHtml()); return; }
+    // Identity gate — every voucher lookup must be attributable to a person, so
+    // before the lookup form we require the manager to pick their name + enter
+    // their personal PIN (the same PINs as manager clock-in). The verified
+    // identity is held in _voucherWho for this visit and logged with each lookup.
+    if (!_voucherWho) { return renderVoucherIdentityGate(); }
+    renderVoucherForm();
+  }
+
+  async function renderVoucherIdentityGate() {
     setMain(
       '<section class="panel">' +
         '<div class="panel-head">' +
           '<h2>🎟️ Voucher Code Lookup</h2>' +
           '<button class="link-btn link-btn-dark" id="back-home">← Back</button>' +
+        '</div>' +
+        '<div id="vc-gate-body"><div style="padding:8px 0;color:#6b7280">Loading…</div></div>' +
+      '</section>'
+    );
+    document.getElementById("back-home").onclick = function () { _voucherWho = null; renderManagerLanding(); };
+
+    var mgrs = [], pins = {}, clockedInEcs = {};
+    try {
+      var loaded = await Promise.all([
+        window.APP_DATA.listAllManagers(),
+        window.APP_DATA.loadManagerPins(),
+        window.APP_DATA.listTodayManagerClockins ? window.APP_DATA.listTodayManagerClockins() : Promise.resolve([])
+      ]);
+      mgrs = loaded[0] || [];
+      pins = loaded[1] || {};
+      // Managers who have a clock-IN record today — voucher lookups are gated on
+      // being on shift (admin codes bypass this below).
+      (loaded[2] || []).forEach(function (r) {
+        if (r && r.type === "in" && r.staff && r.staff.employee_code) clockedInEcs[String(r.staff.employee_code).trim()] = true;
+      });
+    } catch (e) {
+      document.getElementById("vc-gate-body").innerHTML =
+        '<div class="warn">Could not load managers: ' + esc((e && e.message) || e) + '</div>' +
+        '<div class="btn-row" style="margin-top:12px"><button class="btn btn-primary" id="vc-gate-retry" type="button">Try again</button></div>';
+      var rb = document.getElementById("vc-gate-retry");
+      if (rb) rb.onclick = renderVoucherIdentityGate;
+      return;
+    }
+
+    var thisBranch = (cfg.branchName || "");
+    // Manager rows are keyed by employee_code (NOT `ec`) — mirror the clock-in
+    // screen, which also tries the raw value because some codes carry trailing
+    // whitespace. Keep only rows that actually have a code.
+    mgrs = (mgrs || []).filter(function (m) { return m && m.employee_code; });
+    mgrs.sort(function (a, b) {
+      var ah = a.branch === thisBranch ? 0 : 1, bh = b.branch === thisBranch ? 0 : 1;
+      if (ah !== bh) return ah - bh;
+      return String(a.name || "").localeCompare(String(b.name || ""));
+    });
+
+    var hasMgrs = mgrs.length > 0;
+    var opts = mgrs.map(function (m) {
+      var ec = String(m.employee_code).trim();
+      var label = esc(m.name || ("EC " + ec)) + (m.branch && m.branch !== thisBranch ? "  ·  " + esc(m.branch) : "");
+      return '<option value="' + esc(ec) + '" data-ecraw="' + esc(String(m.employee_code)) + '" data-name="' + esc(String(m.name || "")) + '">' + label + '</option>';
+    }).join("");
+
+    // Always render the PIN field so an owner/GM admin code can be entered even
+    // when no managers are listed for this store (e.g. on an admin device).
+    document.getElementById("vc-gate-body").innerHTML =
+      '<div style="font-size:13px;color:#6b7280;margin-bottom:14px;line-height:1.5">' +
+        (hasMgrs
+          ? 'Voucher lookups are logged. Select <strong>your name</strong> and enter your <strong>personal 6-digit PIN</strong> — you must be <strong>clocked in</strong> today. '
+          : 'No managers are listed for this store. ') +
+        'Owner/GM may enter their <strong>admin code</strong> instead — it works on any kiosk and is logged against that code.' +
+      '</div>' +
+      '<form id="vc-gate-form" autocomplete="off">' +
+        (hasMgrs
+          ? '<label class="lbl" for="vc-who">Your name</label>' +
+            '<select id="vc-who" class="input">' + opts + '</select>' +
+            '<label class="lbl" for="vc-pin" style="margin-top:12px">Your personal PIN</label>'
+          : '<label class="lbl" for="vc-pin">Admin code</label>') +
+        '<input id="vc-pin" class="input" type="password" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="' + (hasMgrs ? '6-digit PIN' : 'Admin code') + '">' +
+        '<div id="vc-gate-err" class="warn" style="display:none;margin-top:10px"></div>' +
+        '<div class="btn-row" style="margin-top:12px"><button class="btn btn-primary" id="vc-gate-go" type="submit">Continue</button></div>' +
+      '</form>';
+
+    var gateForm = document.getElementById("vc-gate-form");
+    var whoEl = document.getElementById("vc-who");   // null when no managers listed
+    var pinEl = document.getElementById("vc-pin");
+    var errEl = document.getElementById("vc-gate-err");
+    var showErr = function (msg) { errEl.textContent = msg; errEl.style.display = "block"; };
+
+    gateForm.addEventListener("submit", function (e) {
+      e.preventDefault();
+      var entered = (pinEl.value || "").trim();
+      // Admin override — the owner/GM codes (security.js) work on any kiosk and
+      // are logged against the code itself, so an admin lookup stays traceable.
+      // Checked first, so it works regardless of whether managers are listed.
+      if (window.BOA_IS_ADMIN_CODE && window.BOA_IS_ADMIN_CODE(entered)) {
+        // Attribute to the ROLE, never the raw code (0864 → Owner, 1478 → Ops).
+        // ec keeps the code for forensic traceability; only the role is shown.
+        var adminLabel = (window.BOA_ADMIN_LABEL && window.BOA_ADMIN_LABEL(entered)) || (entered === "1478" ? "Ops" : "Owner");
+        _voucherWho = { ec: "admin:" + entered, name: adminLabel };
+        renderVoucherForm();
+        return;
+      }
+      if (!whoEl) { showErr("No managers are set up here — enter an owner/GM admin code to continue."); return; }
+      var ec = whoEl.value;
+      var opt = whoEl.options[whoEl.selectedIndex];
+      var name = (opt && opt.getAttribute("data-name")) || "";
+      var ecRaw = (opt && opt.getAttribute("data-ecraw")) || ec;
+      if (!/^\d{6}$/.test(entered)) { showErr("Enter your 6-digit personal PIN (or an admin code)."); return; }
+      var want = pins[ec] || pins[ecRaw];
+      if (!want) { showErr("No personal PIN is set for " + (name || "this manager") + ". Ask HR to add one."); return; }
+      if (entered !== String(want)) { showErr("Wrong PIN. Try again."); return; }
+      if (!clockedInEcs[ec] && !clockedInEcs[String(ecRaw).trim()]) {
+        showErr((name || "You") + " must clock in on the kiosk today before looking up vouchers.");
+        return;
+      }
+      _voucherWho = { ec: String(ec), name: name };
+      renderVoucherForm();
+    });
+
+    setTimeout(function () { try { pinEl.focus(); } catch (_) {} }, 50);
+  }
+
+  function renderVoucherForm() {
+    setMain(
+      '<section class="panel">' +
+        '<div class="panel-head">' +
+          '<h2>🎟️ Voucher Code Lookup</h2>' +
+          '<button class="link-btn link-btn-dark" id="back-home">← Back</button>' +
+        '</div>' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:8px 12px;margin-bottom:14px">' +
+          '<span style="font-size:12px;color:#166534">Signed in as <strong>' + esc((_voucherWho && _voucherWho.name) || "—") + '</strong></span>' +
+          '<button type="button" id="vc-switch" class="link-btn link-btn-dark" style="font-size:12px">Switch</button>' +
         '</div>' +
         '<div style="font-size:13px;color:#6b7280;margin-bottom:14px;line-height:1.5">' +
           'Enter the client\'s <strong>full 16-character Shopify voucher code</strong> and the <strong>voucher amount</strong>, then press <strong>Find</strong>. ' +
@@ -1157,7 +1288,8 @@
         '<div id="vc-result" style="margin-top:16px"></div>' +
       '</section>'
     );
-    document.getElementById("back-home").onclick = renderManagerLanding;
+    document.getElementById("back-home").onclick = function () { _voucherWho = null; renderManagerLanding(); };
+    document.getElementById("vc-switch").onclick = function () { _voucherWho = null; renderVoucherIdentityGate(); };
 
     var input    = document.getElementById("vc-input");
     var amountEl = document.getElementById("vc-amount");
@@ -1181,6 +1313,13 @@
       });
     }
 
+    // Amber banner shown when the characters before the last 4 are all one
+    // repeated character — the 000…/111…/AAAA… shortcut. We still show the code
+    // (per policy) but the manager sees the warning and the lookup is flagged.
+    var PAD_WARN = '<div class="warn" style="background:#fffbeb;border-color:#fcd34d;color:#92400e">' +
+      '⚠️ <strong>This looks like a shortcut entry.</strong> The characters before the last 4 are all the same — please type the client\'s <strong>full</strong> code. This lookup has been logged.' +
+    '</div>';
+
     form.addEventListener("submit", async function (e) {
       e.preventDefault();
       var code = (input.value || "").trim();
@@ -1190,20 +1329,37 @@
       findBtn.disabled = true; findBtn.textContent = "Searching…";
       try {
         var r = await window.APP_DATA.lookupFreshaVoucher(code, amount);
+        var pad = (r.suspiciousPad && !r.tooShort) ? PAD_WARN : "";
         if (r.tooShort) {
           resEl.innerHTML = '<div class="warn">Enter the client\'s <strong>full</strong> voucher code (at least ' + r.minLen + ' characters).</div>';
         } else if (!r.found) {
-          resEl.innerHTML = '<div class="warn">No matching Fresha voucher found. Double-check the full code <strong>and the amount</strong> were entered correctly.</div>';
+          resEl.innerHTML = pad + '<div class="warn">No matching Fresha voucher found. Double-check the full code <strong>and the amount</strong> were entered correctly.</div>';
         } else if (r.matches.length === 1) {
-          resEl.innerHTML = _voucherCard(r.matches[0]);
+          resEl.innerHTML = pad + _voucherCard(r.matches[0]);
           wireCopies();
         } else {
-          resEl.innerHTML =
+          resEl.innerHTML = pad +
             '<div class="warn" style="background:#fef3c7;border-color:#fde68a;color:#92400e">' +
               '<strong>' + r.matches.length + ' vouchers end in those digits.</strong> Pick the one whose <strong>amount</strong> matches the client\'s voucher.' +
             '</div>' +
             r.matches.map(_voucherCard).join("");
           wireCopies();
+        }
+        // Best-effort audit log of this lookup (skip the "too short" non-attempt).
+        if (!r.tooShort && window.APP_DATA.logVoucherLookup) {
+          var single = (r.matches && r.matches.length === 1) ? r.matches[0] : null;
+          window.APP_DATA.logVoucherLookup({
+            managerEc:     _voucherWho && _voucherWho.ec,
+            managerName:   _voucherWho && _voucherWho.name,
+            typedCode:     code,
+            last4:         r.last4,
+            amount:        amount,
+            found:         !!r.found,
+            freshaCode:    single ? single.fresha : null,
+            matchCount:    r.matches ? r.matches.length : 0,
+            balanceAt:     single ? single.balance : null,
+            suspiciousPad: !!r.suspiciousPad
+          });
         }
       } catch (err) {
         resEl.innerHTML = '<div class="warn">Could not look that up: ' + esc((err && err.message) || err) + '</div>';

@@ -190,6 +190,14 @@
   // Accepts the owner code (0864) or the GM code (1478) — both grant identical
   // admin access on the kiosk.
   var ADMIN_CODES = ["0864", "1478"];
+  // Human ROLE label per admin code — shown instead of the raw code anywhere a
+  // lookup is attributed (e.g. the voucher gate's "Signed in as …"). The code
+  // itself is never displayed; only the role.
+  var ADMIN_LABELS = { "0864": "Owner", "1478": "Ops" };
+  // Expose a checker + label so other kiosk screens (e.g. the voucher-lookup
+  // identity gate) use the same owner/Ops codes from one source of truth.
+  window.BOA_IS_ADMIN_CODE = function (pin) { return ADMIN_CODES.indexOf(String(pin == null ? "" : pin).trim()) >= 0; };
+  window.BOA_ADMIN_LABEL = function (pin) { return ADMIN_LABELS[String(pin == null ? "" : pin).trim()] || null; };
   function bindAdmin(adminBtn) {
     if (!adminBtn) return;
     adminBtn.onclick = function () {
