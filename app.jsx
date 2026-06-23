@@ -7354,6 +7354,106 @@ function makeBlankVoucherRows(n) {
   for (let i = 0; i < n; i++) rows.push(blankVoucherRow());
   return rows;
 }
+
+// ─── Shared Voucher-Admin styling tokens ────────────────────────────────────
+// Modern "soft-glow + bold" look reused across VoucherEntryGrid / VoucherAdmin /
+// VoucherAuditPanel so the three surfaces stay consistent. Inline styles only
+// (matches the rest of app.jsx); :focus / :hover live in VA_STYLE below, scoped
+// under .va-root, so the 25-row entry grid doesn't need per-input React state.
+const VA = {
+  ink: "#831843", accent: "#BE185D", soft: "#FBCFE8", softer: "#FCE7F3", glow: "#F472B6",
+  glowShadow: "0 0 0 1px rgba(244,114,182,0.22), 0 0 16px rgba(244,114,182,0.13), 0 8px 22px rgba(190,24,93,0.08)",
+  hero: {
+    display: "flex", alignItems: "center", gap: 14, padding: "18px 22px", marginBottom: 16,
+    borderRadius: 18, border: "1px solid #FBCFE8",
+    background: "linear-gradient(135deg,#FDE7F1 0%,#FFF4F9 55%,#FFFFFF 100%)",
+    boxShadow: "0 0 0 1px rgba(244,114,182,0.18), 0 10px 26px rgba(190,24,93,0.10)"
+  },
+  heroBadge: {
+    flex: "0 0 auto", width: 52, height: 52, borderRadius: 15, display: "flex",
+    alignItems: "center", justifyContent: "center", fontSize: 26,
+    background: "linear-gradient(135deg,#BE185D,#F472B6)",
+    boxShadow: "0 6px 16px rgba(190,24,93,0.32), inset 0 1px 0 rgba(255,255,255,0.35)"
+  },
+  card: {
+    background: "linear-gradient(180deg,#ffffff,#fffafc)", border: "1px solid #FBCFE8",
+    borderRadius: 16, padding: "18px 20px", marginBottom: 16,
+    boxShadow: "0 0 0 1px rgba(244,114,182,0.22), 0 0 16px rgba(244,114,182,0.13), 0 8px 22px rgba(190,24,93,0.08)"
+  },
+  statTile: {
+    flex: "1 1 150px", background: "linear-gradient(180deg,#ffffff,#fff5fa)",
+    border: "1px solid #FBCFE8", borderRadius: 14, padding: "12px 16px",
+    boxShadow: "0 6px 16px rgba(190,24,93,0.06)"
+  },
+  badge: (g1, g2) => ({
+    flex: "0 0 auto", width: 34, height: 34, borderRadius: 10, display: "flex",
+    alignItems: "center", justifyContent: "center", fontSize: 17,
+    background: "linear-gradient(135deg," + (g1 || "#FCE7F3") + "," + (g2 || "#FBCFE8") + ")",
+    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.5)"
+  }),
+  primaryBtn: (disabled) => ({
+    background: disabled ? "#F3C6DA" : "linear-gradient(135deg,#BE185D,#E84B9B)",
+    color: "#fff", border: "none", borderRadius: 11, padding: "10px 20px",
+    cursor: disabled ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 800,
+    fontFamily: "inherit", letterSpacing: "0.02em",
+    boxShadow: disabled ? "none" : "0 6px 16px rgba(190,24,93,0.30)"
+  }),
+  ghostBtn: {
+    background: "#fff", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 11,
+    padding: "10px 18px", cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit"
+  },
+  tab: (active) => ({
+    flex: "0 0 auto", background: active ? "linear-gradient(135deg,#BE185D,#E84B9B)" : "#fff",
+    color: active ? "#fff" : "#831843", border: "1px solid " + (active ? "transparent" : "#FBCFE8"),
+    borderRadius: 999, padding: "9px 18px", cursor: "pointer", fontSize: 13, fontWeight: 700,
+    fontFamily: "inherit", boxShadow: active ? "0 0 0 1px #F472B6, 0 0 14px rgba(244,114,182,0.5)" : "none",
+    transition: "all 0.15s"
+  }),
+  input: {
+    width: "100%", padding: "9px 11px", fontSize: 13, border: "1.5px solid #F3D4E0",
+    borderRadius: 9, fontFamily: "inherit", color: "#831843", background: "#fff", boxSizing: "border-box"
+  },
+  th: { textAlign: "left", padding: "9px 12px", fontSize: 11, fontWeight: 800, color: "#9D2B62",
+    textTransform: "uppercase", letterSpacing: "0.05em", whiteSpace: "nowrap" },
+  td: { padding: "8px 12px", fontSize: 12.5, color: "#3f3f46", borderTop: "1px solid #FCE7F3" },
+  pill: (tone) => {
+    const t = {
+      pink: { bg: "#FCE7F3", fg: "#9D2B62", bd: "#FBCFE8" },
+      amber: { bg: "#FFF7ED", fg: "#B45309", bd: "#FDE68A" },
+      red: { bg: "#FEF2F2", fg: "#B91C1C", bd: "#FECACA" },
+      green: { bg: "#ECFDF5", fg: "#15803D", bd: "#A7F3D0" }
+    }[tone] || { bg: "#FCE7F3", fg: "#9D2B62", bd: "#FBCFE8" };
+    return { display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 11px",
+      borderRadius: 999, fontSize: 12, fontWeight: 700, background: t.bg, color: t.fg, border: "1px solid " + t.bd };
+  },
+  codeChip: { fontFamily: "ui-monospace,SFMono-Regular,Menlo,monospace", fontSize: 11.5, fontWeight: 700,
+    color: "#9D2B62", background: "#FCF0F6", border: "1px solid #FBCFE8", borderRadius: 6, padding: "1px 7px" }
+};
+// Section header: a small gradient icon badge + title (+ optional sub).
+function VaSectionHead({ icon, title, sub, g1, g2 }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: sub ? 10 : 12 }}>
+      <div style={VA.badge(g1, g2)}>{icon}</div>
+      <div>
+        <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontWeight: 800, fontSize: 15, color: VA.ink }}>{title}</div>
+        {sub ? <div style={{ fontSize: 12, color: "#9D7387", marginTop: 1 }}>{sub}</div> : null}
+      </div>
+    </div>
+  );
+}
+// One scoped <style> block (rendered once inside the .va-root wrapper) for the
+// interactive states inline styles can't express.
+const VA_STYLE = `
+.va-root .va-input { transition: border-color .15s, box-shadow .15s; }
+.va-root .va-input:focus { outline: none; border-color: #BE185D; box-shadow: 0 0 0 3px rgba(190,24,93,0.13); }
+.va-root .va-btn { transition: transform .12s, box-shadow .15s, filter .15s; }
+.va-root .va-btn:not(:disabled):hover { filter: brightness(1.04); transform: translateY(-1px); }
+.va-root .va-btn:not(:disabled):active { transform: translateY(0); }
+.va-root .va-tab { transition: all .15s; }
+.va-root .va-row:hover { background: #FFF7FB; }
+.va-root .va-drop:hover { border-color: #E84B9B; background: #FFF1F8; }
+`;
+
 // Shared voucher-entry spreadsheet grid. Captures last4 / Fresha code / amount /
 // expiry / order across blank rows and bulk-inserts the completed ones. Used both
 // by the restricted 6666 VoucherEntryApp and by the Voucher Admin tab.
@@ -7414,26 +7514,26 @@ function VoucherEntryGrid() {
     }
   };
 
-  const th = { textAlign: "left", fontSize: 11, fontWeight: 700, color: "#831843", textTransform: "uppercase", letterSpacing: "0.04em", padding: "8px 10px", borderBottom: "2px solid #FBCFE8", whiteSpace: "nowrap" };
-  const cellInput = { width: "100%", padding: "7px 8px", fontSize: 13, border: "1px solid #FBCFE8", borderRadius: 7, fontFamily: "inherit", color: "#831843", boxSizing: "border-box" };
+  const th = { ...VA.th, padding: "11px 12px" };
+  const cellInput = { ...VA.input, padding: "8px 9px" };
 
   return (
     <div>
-      <div style={{ fontSize: 13, color: "#6B7280", lineHeight: 1.5, marginBottom: 14 }}>
-        Enter the <strong>last 4 digits</strong> of the Shopify voucher code, the matching
-        <strong> Fresha code</strong>, the <strong>amount</strong> and the <strong>order number</strong>.
-        Expiry date is optional. Blank rows are ignored. Press <strong>Submit</strong> to save them all.
+      <div style={{ fontSize: 13, color: "#9D7387", lineHeight: 1.5, marginBottom: 14 }}>
+        Enter the <strong style={{ color: VA.ink }}>last 4 digits</strong> of the Shopify voucher code, the matching
+        <strong style={{ color: VA.ink }}> Fresha code</strong>, the <strong style={{ color: VA.ink }}>amount</strong> and the <strong style={{ color: VA.ink }}>order number</strong>.
+        Expiry date is optional. Blank rows are ignored. Press <strong style={{ color: VA.ink }}>Submit</strong> to save them all.
       </div>
 
-      <div style={{ overflowX: "auto", background: "#fff", border: "1px solid #FBCFE8", borderRadius: 12 }}>
+      <div style={{ overflowX: "auto", borderRadius: 16, border: "1px solid #FBCFE8", boxShadow: VA.glowShadow, background: "linear-gradient(180deg,#ffffff,#fffafc)" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
           <thead>
-            <tr>
+            <tr style={{ background: "linear-gradient(180deg,#FDEAF3,#FCE7F3)" }}>
               <th style={{ ...th, width: 40, textAlign: "center" }}>#</th>
               <th style={th}>Last 4</th>
               <th style={th}>Fresha Code</th>
               <th style={th}>Amount</th>
-              <th style={th}>Expiry <span style={{ color: "#9CA3AF", fontWeight: 600 }}>(optional)</span></th>
+              <th style={th}>Expiry <span style={{ color: "#C99", fontWeight: 600 }}>(optional)</span></th>
               <th style={th}>Order #</th>
             </tr>
           </thead>
@@ -7442,13 +7542,13 @@ function VoucherEntryGrid() {
               const isErr = errorRows.has(i);
               const errStyle = isErr ? { borderColor: "#dc2626", background: "#fff1f2" } : null;
               return (
-                <tr key={i} style={isErr ? { background: "#fff5f5" } : null}>
-                  <td style={{ padding: "5px 8px", textAlign: "center", color: "#9CA3AF", fontSize: 12 }}>{i + 1}</td>
-                  <td style={{ padding: "5px 8px" }}><input style={{ ...cellInput, ...errStyle }} value={r.last4} maxLength={8} onChange={e => setCell(i, "last4", e.target.value)} /></td>
-                  <td style={{ padding: "5px 8px" }}><input style={{ ...cellInput, ...errStyle }} value={r.fresha} onChange={e => setCell(i, "fresha", e.target.value)} /></td>
-                  <td style={{ padding: "5px 8px" }}><input style={{ ...cellInput, ...errStyle }} value={r.amount} inputMode="decimal" onChange={e => setCell(i, "amount", e.target.value)} /></td>
-                  <td style={{ padding: "5px 8px" }}><input style={{ ...cellInput }} type="date" value={r.expiry} onChange={e => setCell(i, "expiry", e.target.value)} /></td>
-                  <td style={{ padding: "5px 8px" }}><input style={{ ...cellInput, ...errStyle }} value={r.order} onChange={e => setCell(i, "order", e.target.value)} /></td>
+                <tr key={i} className="va-row" style={isErr ? { background: "#fff5f5" } : null}>
+                  <td style={{ padding: "5px 10px", textAlign: "center", color: "#C99", fontSize: 12, fontWeight: 700, borderTop: "1px solid #FCE7F3" }}>{i + 1}</td>
+                  <td style={{ padding: "5px 8px", borderTop: "1px solid #FCE7F3" }}><input className="va-input" style={{ ...cellInput, ...errStyle }} value={r.last4} maxLength={8} onChange={e => setCell(i, "last4", e.target.value)} /></td>
+                  <td style={{ padding: "5px 8px", borderTop: "1px solid #FCE7F3" }}><input className="va-input" style={{ ...cellInput, ...errStyle }} value={r.fresha} onChange={e => setCell(i, "fresha", e.target.value)} /></td>
+                  <td style={{ padding: "5px 8px", borderTop: "1px solid #FCE7F3" }}><input className="va-input" style={{ ...cellInput, ...errStyle }} value={r.amount} inputMode="decimal" onChange={e => setCell(i, "amount", e.target.value)} /></td>
+                  <td style={{ padding: "5px 8px", borderTop: "1px solid #FCE7F3" }}><input className="va-input" style={{ ...cellInput }} type="date" value={r.expiry} onChange={e => setCell(i, "expiry", e.target.value)} /></td>
+                  <td style={{ padding: "5px 8px", borderTop: "1px solid #FCE7F3" }}><input className="va-input" style={{ ...cellInput, ...errStyle }} value={r.order} onChange={e => setCell(i, "order", e.target.value)} /></td>
                 </tr>
               );
             })}
@@ -7456,21 +7556,19 @@ function VoucherEntryGrid() {
         </table>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 14, flexWrap: "wrap" }}>
-        <button onClick={addRow} disabled={saving}
-          style={{ background: "#fff", border: "1px solid #FBCFE8", color: "#831843", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16, flexWrap: "wrap" }}>
+        <button className="va-btn" onClick={addRow} disabled={saving} style={VA.ghostBtn}>
           + Add row
         </button>
-        <button onClick={submit} disabled={saving}
-          style={{ background: saving ? "#FBCFE8" : "#BE185D", color: saving ? "#9F1A4F" : "#fff", border: "none", borderRadius: 8, padding: "9px 22px", cursor: saving ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit", letterSpacing: "0.04em" }}>
-          {saving ? "Saving…" : "Submit"}
+        <button className="va-btn" onClick={submit} disabled={saving} style={VA.primaryBtn(saving)}>
+          {saving ? "Saving…" : "Submit vouchers"}
         </button>
       </div>
 
       {result && (
-        <div style={{ marginTop: 14, padding: "11px 14px", borderRadius: 9, fontSize: 13, fontWeight: 600,
-          background: result.ok ? "#dcfce7" : "#fef2f2", border: "1px solid " + (result.ok ? "#86efac" : "#fecaca"),
-          color: result.ok ? "#14532d" : "#991b1b" }}>
+        <div style={{ marginTop: 14, display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 16px", borderRadius: 12, fontSize: 13, fontWeight: 700,
+          background: result.ok ? "#ECFDF5" : "#FEF2F2", border: "1px solid " + (result.ok ? "#A7F3D0" : "#FECACA"),
+          color: result.ok ? "#15803D" : "#B91C1C" }}>
           {result.ok ? "✓ " : "⚠️ "}{result.msg}
         </div>
       )}
@@ -7481,19 +7579,27 @@ function VoucherEntryGrid() {
 // Restricted 6666 sign-in: full-page chrome around the shared voucher grid.
 function VoucherEntryApp({ user, onSignOut }) {
   return (
-    <div style={{ minHeight: "100vh", background: "#FFF5FA", fontFamily: "'Outfit',system-ui,sans-serif" }}>
-      <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "14px 20px", background: "#fff", borderBottom: "1px solid #FBCFE8", position: "sticky", top: 0, zIndex: 10 }}>
-        <div style={{ fontSize: 16, fontWeight: 800, color: "#831843" }}>🎟️ Voucher Entry</div>
+    <div className="va-root" style={{ minHeight: "100vh", background: "radial-gradient(120% 80% at 50% -10%, #FDE7F1 0%, #FFF4F9 45%, #FFF9FC 100%)", fontFamily: "'Outfit',system-ui,sans-serif" }}>
+      <style>{VA_STYLE}</style>
+      <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "13px 20px", background: "rgba(255,255,255,0.85)", WebkitBackdropFilter: "blur(8px)", backdropFilter: "blur(8px)", borderBottom: "1px solid #FBCFE8", position: "sticky", top: 0, zIndex: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+          <div style={{ ...VA.badge("#BE185D", "#F472B6"), color: "#fff" }}>🎟️</div>
+          <div style={{ fontSize: 17, fontWeight: 800, color: "#831843" }}>Voucher Entry</div>
+        </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ fontSize: 11, color: "#9F1A4F" }}>Signed in as {user && user.name}</span>
-          <button onClick={onSignOut}
-            style={{ background: "#fff", border: "1px solid #FBCFE8", color: "#831843", borderRadius: 7, padding: "5px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit" }}>
-            Sign out
-          </button>
+          <span style={{ fontSize: 12, color: "#9D7387" }}>Signed in as <strong style={{ color: "#831843" }}>{user && user.name}</strong></span>
+          <button className="va-btn" onClick={onSignOut} style={VA.ghostBtn}>Sign out</button>
         </div>
       </header>
 
-      <div style={{ maxWidth: 900, margin: "0 auto", padding: "20px 16px 60px" }}>
+      <div style={{ maxWidth: 900, margin: "0 auto", padding: "22px 16px 60px" }}>
+        <div style={VA.hero}>
+          <div style={VA.heroBadge}>🎟️</div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, fontWeight: 700, color: VA.ink, lineHeight: 1.1 }}>Enter Shopify → Fresha vouchers</div>
+            <div style={{ fontSize: 13, color: "#9D7387", marginTop: 3 }}>Capture last 4, Fresha code, amount &amp; order number</div>
+          </div>
+        </div>
         <VoucherEntryGrid />
       </div>
     </div>
@@ -7668,23 +7774,39 @@ function VoucherAdmin({ currentUser }) {
     }
   };
 
-  const card = { background: "#fff", border: "1px solid #FBCFE8", borderRadius: 12, padding: "18px 20px", marginBottom: 16 };
   const pct = progress && progress.total ? Math.round((progress.done / progress.total) * 100) : null;
-  const subTab = (active) => ({
-    background: active ? "#BE185D" : "#fff", color: active ? "#fff" : "#831843",
-    border: "1px solid " + (active ? "#BE185D" : "#FBCFE8"), borderRadius: 9,
-    padding: "8px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit"
-  });
+  const fmtUp = (d) => d ? new Date(d).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }) : "—";
 
   return (
-    <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", color: "#831843", maxWidth: 760 }}>
-      <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, fontWeight: 700, marginBottom: 12 }}>💳 Voucher Admin</div>
+    <div className="va-root" style={{ fontFamily: "'Outfit',system-ui,sans-serif", color: "#831843", width: "100%" }}>
+      <style>{VA_STYLE}</style>
+
+      <div style={VA.hero}>
+        <div style={VA.heroBadge}>💳</div>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 25, fontWeight: 700, color: VA.ink, lineHeight: 1.1 }}>Voucher Admin</div>
+          <div style={{ fontSize: 13, color: "#9D7387", marginTop: 3 }}>Codes · transaction uploads · lookup audits</div>
+        </div>
+      </div>
+
+      {stats && (
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+          <div style={VA.statTile}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: "#B86A8B", textTransform: "uppercase", letterSpacing: "0.05em" }}>Transactions stored</div>
+            <div style={{ fontFamily: "'Outfit',sans-serif", fontSize: 23, fontWeight: 800, color: VA.accent, marginTop: 3 }}>{(stats.count || 0).toLocaleString()}</div>
+          </div>
+          <div style={VA.statTile}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: "#B86A8B", textTransform: "uppercase", letterSpacing: "0.05em" }}>Latest transaction</div>
+            <div style={{ fontFamily: "'Outfit',sans-serif", fontSize: 23, fontWeight: 800, color: VA.accent, marginTop: 3 }}>{fmtUp(stats.lastPaymentDate)}</div>
+          </div>
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
-        <button onClick={() => setSub("uploads")} style={subTab(sub === "uploads")}>📤 Transaction Uploads</button>
-        <button onClick={() => setSub("entry")} style={subTab(sub === "entry")}>🎟️ Voucher Entry</button>
+        <button className="va-tab" onClick={() => setSub("uploads")} style={VA.tab(sub === "uploads")}>📤 Transaction Uploads</button>
+        <button className="va-tab" onClick={() => setSub("entry")} style={VA.tab(sub === "entry")}>🎟️ Voucher Entry</button>
         {currentUser?.isOwner && (
-          <button onClick={() => setSub("audit")} style={subTab(sub === "audit")}>🔍 Audit</button>
+          <button className="va-tab" onClick={() => setSub("audit")} style={VA.tab(sub === "audit")}>🔍 Audit</button>
         )}
       </div>
 
@@ -7697,50 +7819,50 @@ function VoucherAdmin({ currentUser }) {
       )}
 
       {sub === "uploads" && (<>
-      <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 16 }}>
-        Upload the Fresha “Gift Card Transactions” report to keep voucher balances up to date. Re-uploads only add new transactions.
-      </div>
-
-      <div style={card}>
-        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 4 }}>Upload Gift Card Transactions (CSV)</div>
-        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 12 }}>
-          Export from Fresha → Gift Card Transactions, then choose the CSV here. Existing transactions are skipped automatically.
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 16, marginBottom: 16, alignItems: "start" }}>
+      <div style={{ ...VA.card, marginBottom: 0 }}>
+        <VaSectionHead icon="📤" title="Upload Gift Card Transactions" sub="Keep voucher balances up to date" g1="#FCE7F3" g2="#FBCFE8" />
+        <div style={{ fontSize: 12.5, color: "#9D7387", marginBottom: 14, lineHeight: 1.5 }}>
+          Export from Fresha → Gift Card Transactions, then choose the CSV here. Existing transactions are skipped automatically — re-uploads only add new rows.
         </div>
-        <input ref={fileRef} type="file" accept=".csv,text/csv" disabled={busy} onChange={onFile}
-          style={{ fontSize: 13, fontFamily: "inherit" }} />
+        <label className="va-drop" style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", border: "1.5px dashed #F4A8CC", borderRadius: 13, background: "#FFF7FB", cursor: busy ? "not-allowed" : "pointer", transition: "all .15s" }}>
+          <span style={VA.badge("#FCE7F3", "#FBCFE8")}>⬆️</span>
+          <span style={{ fontSize: 13, fontWeight: 700, color: VA.ink }}>{busy ? "Working…" : "Choose CSV file…"}</span>
+          <input ref={fileRef} type="file" accept=".csv,text/csv" disabled={busy} onChange={onFile} style={{ display: "none" }} />
+        </label>
         {stats && (
-          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 12 }}>
-            Stored: <strong style={{ color: "#831843" }}>{(stats.count || 0).toLocaleString()}</strong> transactions
-            {stats.lastPaymentDate ? <> · latest payment <strong style={{ color: "#831843" }}>{new Date(stats.lastPaymentDate).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" })}</strong></> : null}
+          <div style={{ fontSize: 12, color: "#9D7387", marginTop: 12 }}>
+            Stored <strong style={{ color: VA.ink }}>{(stats.count || 0).toLocaleString()}</strong> transactions
+            {stats.lastPaymentDate ? <> · latest payment <strong style={{ color: VA.ink }}>{fmtUp(stats.lastPaymentDate)}</strong></> : null}
           </div>
         )}
       </div>
 
-      <div style={card}>
-        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 4 }}>Recompute balances</div>
-        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 12 }}>
-          Balances refresh automatically on upload and when vouchers are entered. Use this if you need to rebuild every voucher’s balance from scratch.
+      <div style={{ ...VA.card, marginBottom: 0 }}>
+        <VaSectionHead icon="♻️" title="Recompute balances" g1="#FCE7F3" g2="#FBCFE8" />
+        <div style={{ fontSize: 12.5, color: "#9D7387", marginBottom: 14, lineHeight: 1.5 }}>
+          Balances refresh automatically on upload and when vouchers are entered. Use this only if you need to rebuild every voucher's balance from scratch.
         </div>
-        <button onClick={recomputeAll} disabled={busy}
-          style={{ background: busy ? "#FBCFE8" : "#fff", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 8, padding: "9px 16px", cursor: busy ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit" }}>
+        <button className="va-btn" onClick={recomputeAll} disabled={busy} style={VA.ghostBtn}>
           Recompute all balances
         </button>
       </div>
+      </div>
 
       {progress && (
-        <div style={{ ...card, marginBottom: 12 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>{progress.phase}{pct != null ? " " + pct + "%" : ""}</div>
-          <div style={{ height: 8, background: "#FCE7F3", borderRadius: 6, overflow: "hidden" }}>
-            <div style={{ height: "100%", width: (pct != null ? pct : 100) + "%", background: "#BE185D", borderRadius: 6, transition: "width 0.2s", opacity: pct != null ? 1 : 0.5 }} />
+        <div style={VA.card}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, color: VA.ink }}>{progress.phase}{pct != null ? " · " + pct + "%" : ""}</div>
+          <div style={{ height: 10, background: "#FCE7F3", borderRadius: 999, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: (pct != null ? pct : 100) + "%", background: "linear-gradient(90deg,#BE185D,#F472B6)", borderRadius: 999, transition: "width 0.2s", opacity: pct != null ? 1 : 0.5 }} />
           </div>
-          {progress.total ? <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 6 }}>{progress.done.toLocaleString()} / {progress.total.toLocaleString()}</div> : null}
+          {progress.total ? <div style={{ fontSize: 11, color: "#B86A8B", marginTop: 7 }}>{progress.done.toLocaleString()} / {progress.total.toLocaleString()}</div> : null}
         </div>
       )}
 
       {result && (
-        <div style={{ padding: "11px 14px", borderRadius: 9, fontSize: 13, fontWeight: 600,
-          background: result.ok ? "#dcfce7" : "#fef2f2", border: "1px solid " + (result.ok ? "#86efac" : "#fecaca"),
-          color: result.ok ? "#14532d" : "#991b1b" }}>
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "11px 16px", borderRadius: 12, fontSize: 13, fontWeight: 700,
+          background: result.ok ? "#ECFDF5" : "#FEF2F2", border: "1px solid " + (result.ok ? "#A7F3D0" : "#FECACA"),
+          color: result.ok ? "#15803D" : "#B91C1C" }}>
           {result.ok ? "✓ " : "⚠️ "}{result.msg}
         </div>
       )}
@@ -7766,7 +7888,7 @@ function VoucherAuditPanel() {
   const [unredeemed, setUnredeemed] = React.useState(null);
   const [flagged, setFlagged] = React.useState(null);
 
-  const card = { background: "#fff", border: "1px solid #FBCFE8", borderRadius: 12, padding: "16px 18px", marginBottom: 16 };
+  const card = VA.card;
   const fmtMoney = (x) => { const n = Number(String(x == null ? "" : x).replace(/[^0-9.\-]/g, "")); return isNaN(n) ? "—" : "R" + n.toFixed(2); };
   const fmtDate = (x) => x ? new Date(x).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }) : "—";
   const fmtDateTime = (x) => x ? new Date(x).toLocaleString(undefined, { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
@@ -7809,52 +7931,56 @@ function VoucherAuditPanel() {
     finally { setBusy(""); }
   };
 
-  const th = { textAlign: "left", padding: "6px 8px", borderBottom: "1px solid #FBCFE8", fontSize: 11, color: "#831843", textTransform: "uppercase", letterSpacing: "0.04em" };
-  const td = { padding: "6px 8px", borderBottom: "1px solid #FCE7F3", fontSize: 12.5 };
-  const btn = (active) => ({ background: active ? "#FBCFE8" : "#BE185D", color: active ? "#831843" : "#fff", border: "none", borderRadius: 9, padding: "10px 16px", fontSize: 13, fontWeight: 700, fontFamily: "inherit", cursor: active ? "default" : "pointer" });
+  const th = { ...VA.th, padding: "9px 10px" };
+  const td = { ...VA.td };
+  const tableWrap = { overflowX: "auto", borderRadius: 12, border: "1px solid #FBCFE8", background: "linear-gradient(180deg,#ffffff,#fffafc)", boxShadow: "0 4px 14px rgba(190,24,93,0.05)" };
+  const theadRow = { background: "linear-gradient(180deg,#FDEAF3,#FCE7F3)" };
 
   return (
-    <div style={{ maxWidth: 880 }}>
-      <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 14 }}>
+    <div style={{ width: "100%" }}>
+      <div style={{ fontSize: 12.5, color: "#9D7387", marginBottom: 14, lineHeight: 1.5 }}>
         Audit kiosk gift-card lookups against Fresha redemptions. Results are only as fresh as the latest Gift Card Transactions upload.
       </div>
 
       <div style={card}>
-        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 10 }}>Lookup window</div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-          {[{ n: 1, l: "Today" }, { n: 7, l: "7 days" }, { n: 30, l: "30 days" }, { n: 90, l: "90 days" }, { n: 365, l: "1 year" }].map(p => (
-            <button key={p.n} onClick={() => setPreset(p.n)} style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{p.l}</button>
-          ))}
+        <VaSectionHead icon="🗓️" title="Lookup window" g1="#FCE7F3" g2="#FBCFE8" />
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+          {[{ n: 1, l: "Today" }, { n: 7, l: "7 days" }, { n: 30, l: "30 days" }, { n: 90, l: "90 days" }, { n: 365, l: "1 year" }].map(p => {
+            const active = toYmd === todayYmd() && fromYmd === daysAgoYmd(p.n);
+            return <button key={p.n} className="va-tab" onClick={() => setPreset(p.n)} style={VA.tab(active)}>{p.l}</button>;
+          })}
         </div>
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
-          <label style={{ fontSize: 12, color: "#831843" }}>From<br />
-            <input type="date" value={fromYmd} max={toYmd} onChange={e => setFromYmd(e.target.value)} style={{ marginTop: 4, padding: "6px 8px", border: "1px solid #FBCFE8", borderRadius: 8, fontFamily: "inherit", fontSize: 13 }} />
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <label style={{ fontSize: 11, fontWeight: 800, color: "#B86A8B", textTransform: "uppercase", letterSpacing: "0.05em" }}>From<br />
+            <input className="va-input" type="date" value={fromYmd} max={toYmd} onChange={e => setFromYmd(e.target.value)} style={{ ...VA.input, width: "auto", marginTop: 5 }} />
           </label>
-          <label style={{ fontSize: 12, color: "#831843" }}>To<br />
-            <input type="date" value={toYmd} min={fromYmd} max={todayYmd()} onChange={e => setToYmd(e.target.value)} style={{ marginTop: 4, padding: "6px 8px", border: "1px solid #FBCFE8", borderRadius: 8, fontFamily: "inherit", fontSize: 13 }} />
+          <label style={{ fontSize: 11, fontWeight: 800, color: "#B86A8B", textTransform: "uppercase", letterSpacing: "0.05em" }}>To<br />
+            <input className="va-input" type="date" value={toYmd} min={fromYmd} max={todayYmd()} onChange={e => setToYmd(e.target.value)} style={{ ...VA.input, width: "auto", marginTop: 5 }} />
           </label>
         </div>
       </div>
 
-      {error && (<div style={{ padding: "11px 14px", borderRadius: 9, fontSize: 13, fontWeight: 600, background: "#fef2f2", border: "1px solid #fecaca", color: "#991b1b", marginBottom: 16 }}>⚠️ {error}</div>)}
+      {error && (<div style={{ ...VA.pill("red"), padding: "11px 16px", borderRadius: 12, fontSize: 13, marginBottom: 16 }}>⚠️ {error}</div>)}
 
       <div style={card}>
-        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 4 }}>Looked up vs redeemed — day mismatch</div>
-        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 12 }}>Cards looked up in the window that were redeemed on a <strong>different day</strong> than the lookup. Returns the affected cards and their full transactions.</div>
-        <button onClick={runDayMatch} disabled={!!busy} style={btn(busy === "daymatch")}>{busy === "daymatch" ? "Auditing…" : "Run day-match audit"}</button>
+        <VaSectionHead icon="🗓️" title="Looked up vs redeemed — day mismatch" sub="Redeemed on a different day than the lookup" g1="#FCE7F3" g2="#FBCFE8" />
+        <div style={{ fontSize: 12.5, color: "#9D7387", marginBottom: 14, lineHeight: 1.5 }}>Cards looked up in the window that were redeemed on a <strong style={{ color: VA.ink }}>different day</strong> than the lookup. Returns the affected cards and their full transactions.</div>
+        <button className="va-btn" onClick={runDayMatch} disabled={!!busy} style={VA.primaryBtn(!!busy)}>{busy === "daymatch" ? "Auditing…" : "Run day-match audit"}</button>
         {dayMatch && (
-          <div style={{ marginTop: 14 }}>
-            <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 8 }}>{dayMatch.mismatches.length} mismatch{dayMatch.mismatches.length === 1 ? "" : "es"} · transactions latest: {fmtDate(dayMatch.lastPaymentDate)}</div>
-            {dayMatch.mismatches.length === 0 ? <div style={{ fontSize: 13, color: "#14532d" }}>✓ No day mismatches in this window.</div> : dayMatch.mismatches.map((m, i) => (
-              <div key={i} style={{ border: "1px solid #FCE7F3", borderRadius: 10, padding: 10, marginBottom: 10 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>•••• {m.lookup.last4} · {fmtMoney(m.lookup.amount)} · <code>{m.lookup.fresha_code}</code></div>
-                <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 6 }}>Looked up {fmtDateTime(m.lookup.looked_up_at)} by {m.lookup.manager_name || "—"} @ {m.lookup.branch || "—"}</div>
-                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead><tr><th style={th}>Redeemed</th><th style={th}>Branch</th><th style={th}>Client</th><th style={th}>Appt</th><th style={{ ...th, textAlign: "right" }}>Amount</th></tr></thead>
-                  <tbody>{m.txns.map((t, j) => (
-                    <tr key={j}><td style={td}>{fmtDateTime(t.payment_date)}</td><td style={td}>{t.location || "—"}</td><td style={td}>{t.client_name || "—"}</td><td style={td}><code>{t.appointment_ref || "—"}</code></td><td style={{ ...td, textAlign: "right" }}>{fmtMoney(t.amount)}</td></tr>
-                  ))}</tbody>
-                </table>
+          <div style={{ marginTop: 16 }}>
+            <div style={{ marginBottom: 10 }}><span style={VA.pill(dayMatch.mismatches.length ? "red" : "green")}>{dayMatch.mismatches.length} mismatch{dayMatch.mismatches.length === 1 ? "" : "es"}</span> <span style={{ fontSize: 12, color: "#9D7387", marginLeft: 6 }}>transactions latest {fmtDate(dayMatch.lastPaymentDate)}</span></div>
+            {dayMatch.mismatches.length === 0 ? <div style={{ fontSize: 13, color: "#15803D", fontWeight: 600 }}>✓ No day mismatches in this window.</div> : dayMatch.mismatches.map((m, i) => (
+              <div key={i} style={{ border: "1px solid #FCE7F3", borderRadius: 12, padding: 12, marginBottom: 10, background: "#FFFCFE" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: VA.ink, marginBottom: 2 }}>•••• {m.lookup.last4} · {fmtMoney(m.lookup.amount)} · <span style={VA.codeChip}>{m.lookup.fresha_code}</span></div>
+                <div style={{ fontSize: 12, color: "#9D7387", marginBottom: 8 }}>Looked up {fmtDateTime(m.lookup.looked_up_at)} by <strong style={{ color: VA.ink }}>{m.lookup.manager_name || "—"}</strong> @ {m.lookup.branch || "—"}</div>
+                <div style={tableWrap}>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead><tr style={theadRow}><th style={th}>Redeemed</th><th style={th}>Branch</th><th style={th}>Client</th><th style={th}>Appt</th><th style={{ ...th, textAlign: "right" }}>Amount</th></tr></thead>
+                    <tbody>{m.txns.map((t, j) => (
+                      <tr key={j} className="va-row"><td style={td}>{fmtDateTime(t.payment_date)}</td><td style={td}>{t.location || "—"}</td><td style={td}>{t.client_name || "—"}</td><td style={td}><span style={VA.codeChip}>{t.appointment_ref || "—"}</span></td><td style={{ ...td, textAlign: "right", fontWeight: 700, color: VA.ink }}>{fmtMoney(t.amount)}</td></tr>
+                    ))}</tbody>
+                  </table>
+                </div>
               </div>
             ))}
           </div>
@@ -7862,49 +7988,55 @@ function VoucherAuditPanel() {
       </div>
 
       <div style={card}>
-        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 4 }}>Looked up but not redeemed</div>
-        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 12 }}>Cards looked up in the window with <strong>no redemption</strong> on or after the lookup day. Repeated lookups of the same unused card show as a count.</div>
-        <button onClick={runUnredeemed} disabled={!!busy} style={btn(busy === "unredeemed")}>{busy === "unredeemed" ? "Auditing…" : "Find unredeemed lookups"}</button>
+        <VaSectionHead icon="🚦" title="Looked up but not redeemed" sub="No redemption on or after the lookup day" g1="#FCE7F3" g2="#FBCFE8" />
+        <div style={{ fontSize: 12.5, color: "#9D7387", marginBottom: 14, lineHeight: 1.5 }}>Cards looked up in the window with <strong style={{ color: VA.ink }}>no redemption</strong> on or after the lookup day. Repeated lookups of the same unused card show as a count.</div>
+        <button className="va-btn" onClick={runUnredeemed} disabled={!!busy} style={VA.primaryBtn(!!busy)}>{busy === "unredeemed" ? "Auditing…" : "Find unredeemed lookups"}</button>
         {unredeemed && (
-          <div style={{ marginTop: 14 }}>
-            <div style={{ fontSize: 12, color: "#b45309", marginBottom: 8 }}>⚠️ Accurate to the latest transaction upload — transactions last updated: <strong>{fmtDate(unredeemed.lastPaymentDate)}</strong>. A card may simply not be in the latest CSV yet.</div>
-            {unredeemed.cards.length === 0 ? <div style={{ fontSize: 13, color: "#14532d" }}>✓ Every looked-up card has a following redemption.</div> : (
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead><tr><th style={th}>Card</th><th style={th}>Amount</th><th style={{ ...th, textAlign: "center" }}>Lookups</th><th style={th}>Last looked up</th><th style={th}>By</th><th style={th}>Branch</th></tr></thead>
-                <tbody>{unredeemed.cards.map((c, i) => (
-                  <tr key={i}><td style={td}>•••• {c.last4} · <code>{c.fresha_code}</code></td><td style={td}>{fmtMoney(c.amount)}</td><td style={{ ...td, textAlign: "center", fontWeight: 700, color: c.lookupCount > 1 ? "#b91c1c" : "#831843" }}>{c.lookupCount}</td><td style={td}>{fmtDateTime(c.lastLookupAt)}</td><td style={td}>{c.lastBy || "—"}</td><td style={td}>{c.branch || "—"}</td></tr>
-                ))}</tbody>
-              </table>
+          <div style={{ marginTop: 16 }}>
+            <div style={{ ...VA.pill("amber"), marginBottom: 10, fontWeight: 600 }}>⚠️ Accurate to the latest upload — transactions last updated {fmtDate(unredeemed.lastPaymentDate)}. A card may simply not be in the latest CSV yet.</div>
+            {unredeemed.cards.length === 0 ? <div style={{ fontSize: 13, color: "#15803D", fontWeight: 600 }}>✓ Every looked-up card has a following redemption.</div> : (
+              <div style={tableWrap}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead><tr style={theadRow}><th style={th}>Card</th><th style={th}>Amount</th><th style={{ ...th, textAlign: "center" }}>Lookups</th><th style={th}>Last looked up</th><th style={th}>By</th><th style={th}>Branch</th></tr></thead>
+                  <tbody>{unredeemed.cards.map((c, i) => (
+                    <tr key={i} className="va-row"><td style={td}>•••• {c.last4} · <span style={VA.codeChip}>{c.fresha_code}</span></td><td style={td}>{fmtMoney(c.amount)}</td><td style={{ ...td, textAlign: "center", fontWeight: 800, color: c.lookupCount > 1 ? "#B91C1C" : VA.ink }}>{c.lookupCount}</td><td style={td}>{fmtDateTime(c.lastLookupAt)}</td><td style={td}>{c.lastBy || "—"}</td><td style={td}>{c.branch || "—"}</td></tr>
+                  ))}</tbody>
+                </table>
+              </div>
             )}
           </div>
         )}
       </div>
 
       <div style={card}>
-        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 4 }}>Flagged lookups</div>
-        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 12 }}>Shortcut/padded entries (the characters before the last 4 are all the same) and cards looked up with more than one distinct full code.</div>
-        <button onClick={runFlagged} disabled={!!busy} style={btn(busy === "flagged")}>{busy === "flagged" ? "Checking…" : "Show flagged lookups"}</button>
+        <VaSectionHead icon="⚑" title="Flagged lookups" sub="Padded entries + same card, different code" g1="#FCE7F3" g2="#FBCFE8" />
+        <div style={{ fontSize: 12.5, color: "#9D7387", marginBottom: 14, lineHeight: 1.5 }}>Shortcut/padded entries (the characters before the last 4 are all the same) and cards looked up with more than one distinct full code.</div>
+        <button className="va-btn" onClick={runFlagged} disabled={!!busy} style={VA.primaryBtn(!!busy)}>{busy === "flagged" ? "Checking…" : "Show flagged lookups"}</button>
         {flagged && (
-          <div style={{ marginTop: 14 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 6 }}>Padded / shortcut entries ({flagged.padded.length})</div>
-            {flagged.padded.length === 0 ? <div style={{ fontSize: 12, color: "#14532d", marginBottom: 12 }}>✓ None.</div> : (
-              <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 14 }}>
-                <thead><tr><th style={th}>When</th><th style={th}>By</th><th style={th}>Branch</th><th style={th}>Typed code</th><th style={th}>Amount</th><th style={{ ...th, textAlign: "center" }}>Found</th></tr></thead>
-                <tbody>{flagged.padded.map((l, i) => (
-                  <tr key={i}><td style={td}>{fmtDateTime(l.looked_up_at)}</td><td style={td}>{l.manager_name || "—"}</td><td style={td}>{l.branch || "—"}</td><td style={td}><code>{l.typed_code}</code></td><td style={td}>{fmtMoney(l.amount)}</td><td style={{ ...td, textAlign: "center" }}>{l.found ? "✓" : "✗"}</td></tr>
-                ))}</tbody>
-              </table>
-            )}
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 6 }}>Same card, different full code ({flagged.mismatches.length})</div>
-            {flagged.mismatches.length === 0 ? <div style={{ fontSize: 12, color: "#14532d" }}>✓ None.</div> : flagged.mismatches.map((m, i) => (
-              <div key={i} style={{ border: "1px solid #FCE7F3", borderRadius: 10, padding: 10, marginBottom: 10 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 6 }}><code>{m.fresha_code}</code> — {m.codes.length} distinct codes</div>
+          <div style={{ marginTop: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: VA.ink, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>Padded / shortcut entries <span style={VA.pill(flagged.padded.length ? "red" : "green")}>{flagged.padded.length}</span></div>
+            {flagged.padded.length === 0 ? <div style={{ fontSize: 12.5, color: "#15803D", marginBottom: 14, fontWeight: 600 }}>✓ None.</div> : (
+              <div style={{ ...tableWrap, marginBottom: 16 }}>
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead><tr><th style={th}>When</th><th style={th}>By</th><th style={th}>Typed code</th></tr></thead>
-                  <tbody>{m.lookups.map((l, j) => (
-                    <tr key={j}><td style={td}>{fmtDateTime(l.looked_up_at)}</td><td style={td}>{l.manager_name || "—"}</td><td style={td}><code>{l.typed_code}</code></td></tr>
+                  <thead><tr style={theadRow}><th style={th}>When</th><th style={th}>By</th><th style={th}>Branch</th><th style={th}>Typed code</th><th style={th}>Amount</th><th style={{ ...th, textAlign: "center" }}>Found</th></tr></thead>
+                  <tbody>{flagged.padded.map((l, i) => (
+                    <tr key={i} className="va-row"><td style={td}>{fmtDateTime(l.looked_up_at)}</td><td style={td}>{l.manager_name || "—"}</td><td style={td}>{l.branch || "—"}</td><td style={td}><span style={VA.codeChip}>{l.typed_code}</span></td><td style={td}>{fmtMoney(l.amount)}</td><td style={{ ...td, textAlign: "center" }}>{l.found ? "✓" : "✗"}</td></tr>
                   ))}</tbody>
                 </table>
+              </div>
+            )}
+            <div style={{ fontSize: 13, fontWeight: 800, color: VA.ink, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>Same card, different full code <span style={VA.pill(flagged.mismatches.length ? "red" : "green")}>{flagged.mismatches.length}</span></div>
+            {flagged.mismatches.length === 0 ? <div style={{ fontSize: 12.5, color: "#15803D", fontWeight: 600 }}>✓ None.</div> : flagged.mismatches.map((m, i) => (
+              <div key={i} style={{ border: "1px solid #FCE7F3", borderRadius: 12, padding: 12, marginBottom: 10, background: "#FFFCFE" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: VA.ink, marginBottom: 8 }}><span style={VA.codeChip}>{m.fresha_code}</span> — {m.codes.length} distinct codes</div>
+                <div style={tableWrap}>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead><tr style={theadRow}><th style={th}>When</th><th style={th}>By</th><th style={th}>Typed code</th></tr></thead>
+                    <tbody>{m.lookups.map((l, j) => (
+                      <tr key={j} className="va-row"><td style={td}>{fmtDateTime(l.looked_up_at)}</td><td style={td}>{l.manager_name || "—"}</td><td style={td}><span style={VA.codeChip}>{l.typed_code}</span></td></tr>
+                    ))}</tbody>
+                  </table>
+                </div>
               </div>
             ))}
           </div>
