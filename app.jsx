@@ -12503,7 +12503,12 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
 
   const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
   const _recent = (c) => { const t = Date.parse(c.promotedAt || c.updatedAt || c.addedAt || ""); return !!t && (Date.now() - t) < 45 * 86400000; };
-  const trialOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened);
+  // Only list a trial tech here once their in-store trial start date is
+  // CONFIRMED — i.e. HR clicked "Start in-store trial", moving them off
+  // Induction (status "induction") and onto trial_w1+. While still in
+  // Induction the start date is only a planned placeholder ("· since …" on
+  // the Trial tab), so opening them on Fresha would use an unconfirmed date.
+  const trialOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "induction" && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened);
   const monthOpen = (trialList || []).filter(c => _nt(c) && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c));
   // Trial window — the 10 Mon–Fri (non-public-holiday) working days counted
   // forward from the tech's in-store start date (same rule the Schedule grid
@@ -12759,9 +12764,9 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
                 <span style={{ marginLeft: "auto" }}>{openBtn("Mark opened on Fresha", () => setTrialFresha(c._id, "freshaTrialOpened", true))}</span>
               </div>
               <div style={{ marginTop: 6, fontSize: 12, color: "#6b21a8", fontWeight: 600 }}>
-                {tw
-                  ? <>🗓️ Open on Fresha for <strong>{fmtIncidentDate(tw.firstYmd)}</strong> → <strong>{fmtIncidentDate(tw.lastYmd)}</strong> <span style={{ color: "#9ca3af", fontWeight: 500 }}>· {tw.days} working day{tw.days === 1 ? "" : "s"} (Mon–Fri, excl. public holidays)</span></>
-                  : <span style={{ color: "#9ca3af", fontWeight: 500 }}>🗓️ No in-store start date set yet — add one to see the trial dates.</span>}
+                {c.startDate
+                  ? <>🗓️ Trial starts <strong>{fmtIncidentDate(c.startDate)}</strong>{tw ? <> → <strong>{fmtIncidentDate(tw.lastYmd)}</strong> <span style={{ color: "#9ca3af", fontWeight: 500 }}>· {tw.days} working day{tw.days === 1 ? "" : "s"} (Mon–Fri, excl. public holidays)</span></> : null} — open them on Fresha for these dates</>
+                  : <span style={{ color: "#9ca3af", fontWeight: 500 }}>🗓️ No in-store trial start date set yet — add one on the Trial tab to see the dates.</span>}
               </div>
             </div>
             );
@@ -20024,7 +20029,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const extraToOpen = (extraDayRequests || []).filter(r => r.status === "approved" && isTech(r.ec) && !isOpen(r.id)).length;
                     const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
                     const _recent = (c) => { const t = Date.parse(c.promotedAt || c.updatedAt || c.addedAt || ""); return !!t && (Date.now() - t) < 45 * 86400000; };
-                    const trialToOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened).length;
+                    const trialToOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "induction" && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened).length;
                     const monthToOpen = (trialList || []).filter(c => _nt(c) && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c)).length;
                     const isBlocked = (id) => !!(freshaBlocks && freshaBlocks[id] && freshaBlocks[id].blocked);
                     const sickBlk = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec)).map(r => ({ key: r.id, ec: r.ec, name: r.name, start_date: r.start_date, end_date: r.end_date, leave_type: r.leave_type }));
@@ -20738,7 +20743,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
                 // OPEN — trial techs whose trial start is imminent and not opened
                 const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
-                const urgentTrial = (trialList || []).filter(c => _nt(c) && c.startDate
+                const urgentTrial = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "induction"
                   && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened)
                   .map(c => ({ ...c, _d: daysUntil(c.startDate) }))
                   .filter(c => c._d !== null && c._d >= 0 && c._d < URGENT)
