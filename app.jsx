@@ -12503,8 +12503,37 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
 
   const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
   const _recent = (c) => { const t = Date.parse(c.promotedAt || c.updatedAt || c.addedAt || ""); return !!t && (Date.now() - t) < 45 * 86400000; };
-  const trialOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened);
+  // Only list a trial tech here once their in-store trial start date is
+  // CONFIRMED — i.e. HR clicked "Start in-store trial", moving them off
+  // Induction (status "induction") and onto trial_w1+. While still in
+  // Induction the start date is only a planned placeholder ("· since …" on
+  // the Trial tab), so opening them on Fresha would use an unconfirmed date.
+  const trialOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "induction" && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened);
   const monthOpen = (trialList || []).filter(c => _nt(c) && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c));
+  // Trial window — the 10 Mon–Fri (non-public-holiday) working days counted
+  // forward from the tech's in-store start date (same rule the Schedule grid
+  // paints). Surfaced on each trial card so whoever opens the profile on Fresha
+  // knows the exact date range to open them for, instead of guessing.
+  const _pad2 = (n) => String(n).padStart(2, "0");
+  const _trialWindow = (c) => {
+    if (!c || !c.startDate) return null;
+    const start = new Date(c.startDate + "T12:00:00");
+    if (isNaN(start)) return null;
+    let firstYmd = null, lastYmd = null, count = 0;
+    const cur = new Date(start);
+    for (let guard = 0; guard < 60 && count < 10; guard++) {
+      const y = cur.getFullYear(), m = cur.getMonth() + 1, dd = cur.getDate();
+      const ymd = y + "-" + _pad2(m) + "-" + _pad2(dd);
+      const dow = cur.getDay();
+      const isHol = !!(saHolidays(y) || {})[ymd];
+      if (dow !== 0 && dow !== 6 && !isHol) {
+        if (!firstYmd) firstYmd = ymd;
+        lastYmd = ymd; count++;
+      }
+      cur.setDate(cur.getDate() + 1);
+    }
+    return firstYmd ? { firstYmd, lastYmd, days: count } : null;
+  };
 
   // Manager profiles to create: a newly-onboarded manager (SSM/SM/AM) needs a
   // Fresha profile set up. Tracked on the onboarding record itself. Limited to
@@ -12724,7 +12753,9 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
         <div style={{ marginBottom: 22 }}>
           {secHead("🧪 Trial techs · " + (trialOpen.length + monthOpen.length) + " to open")}
           {secNote("Open trial techs on Fresha for their trial window, and again for the month once they pass.")}
-          {trialOpen.map(c => (
+          {trialOpen.map(c => {
+            const tw = _trialWindow(c);
+            return (
             <div key={"t-" + c._id} style={card}>
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                 <strong style={{ color: "#581c87", fontSize: 14 }}>{c.name}</strong>
@@ -12732,8 +12763,14 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
                 {chip("#ede9fe", "#6b21a8", "Trial opening")}
                 <span style={{ marginLeft: "auto" }}>{openBtn("Mark opened on Fresha", () => setTrialFresha(c._id, "freshaTrialOpened", true))}</span>
               </div>
+              <div style={{ marginTop: 6, fontSize: 12, color: "#6b21a8", fontWeight: 600 }}>
+                {c.startDate
+                  ? <>🗓️ Trial starts <strong>{fmtIncidentDate(c.startDate)}</strong>{tw ? <> → <strong>{fmtIncidentDate(tw.lastYmd)}</strong> <span style={{ color: "#9ca3af", fontWeight: 500 }}>· {tw.days} working day{tw.days === 1 ? "" : "s"} (Mon–Fri, excl. public holidays)</span></> : null} — open them on Fresha for these dates</>
+                  : <span style={{ color: "#9ca3af", fontWeight: 500 }}>🗓️ No in-store trial start date set yet — add one on the Trial tab to see the dates.</span>}
+              </div>
             </div>
-          ))}
+            );
+          })}
           {monthOpen.map(c => (
             <div key={"m-" + c._id} style={card}>
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -16237,6 +16274,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // mgrclockins and attendance tabs so the grid + dashboard tile + the
   // no-show banner all see the same data.
   const [mgrDayStatuses, setMgrDayStatuses] = useState([]);
+  // Have the manager clock-ins / day-status feeds loaded at least once?
+  // Both start as [] and arrive via async fetches, so the attendance grid
+  // can render before they land. While they're still empty-because-loading,
+  // the manager auto-absent rule must stay quiet — otherwise it briefly
+  // fabricates "Absent" over a real ROM "Sick + note", which in turn looks
+  // like the cell's confirmed review just expired. Gating on these flags
+  // keeps that flash from happening.
+  const [mgrClockinsLoaded, setMgrClockinsLoaded] = useState(false);
+  const [mgrDayStatusesLoaded, setMgrDayStatusesLoaded] = useState(false);
   // Modal state for the "Mark reason" flow. null when closed; otherwise
   // { staffId, ec, name, branch, date, existing? }.
   const [mgrReasonModal, setMgrReasonModal] = useState(null);
@@ -18335,7 +18381,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     if (tab !== "dashboard" && tab !== "mgrclockins" && tab !== "attendance" && tab !== "mgrCoverage") return;
     let cancelled = false;
     window.BOA_DB.loadManagerDayStatuses(60).then(rows => {
-      if (!cancelled) setMgrDayStatuses(rows || []);
+      if (!cancelled) { setMgrDayStatuses(rows || []); setMgrDayStatusesLoaded(true); }
     });
     return () => { cancelled = true; };
   }, [tab]);
@@ -18395,6 +18441,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const rows = await window.BOA_DB.listRecentManagerClockins(effDays);
         if (cancelled) return;
         setMgrClockinRows(rows || []);
+        setMgrClockinsLoaded(true);
         // Photo/GPS metadata is loaded per selected day (see the effect below)
         // so a wide load window doesn't eagerly pull every day's selfies.
         // ALSO load manager schedules for the cycles touched by the visible range,
@@ -19982,7 +20029,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const extraToOpen = (extraDayRequests || []).filter(r => r.status === "approved" && isTech(r.ec) && !isOpen(r.id)).length;
                     const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
                     const _recent = (c) => { const t = Date.parse(c.promotedAt || c.updatedAt || c.addedAt || ""); return !!t && (Date.now() - t) < 45 * 86400000; };
-                    const trialToOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened).length;
+                    const trialToOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "induction" && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened).length;
                     const monthToOpen = (trialList || []).filter(c => _nt(c) && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c)).length;
                     const isBlocked = (id) => !!(freshaBlocks && freshaBlocks[id] && freshaBlocks[id].blocked);
                     const sickBlk = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec)).map(r => ({ key: r.id, ec: r.ec, name: r.name, start_date: r.start_date, end_date: r.end_date, leave_type: r.leave_type }));
@@ -20696,7 +20743,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
                 // OPEN — trial techs whose trial start is imminent and not opened
                 const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
-                const urgentTrial = (trialList || []).filter(c => _nt(c) && c.startDate
+                const urgentTrial = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "induction"
                   && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened)
                   .map(c => ({ ...c, _d: daysUntil(c.startDate) }))
                   .filter(c => c._d !== null && c._d >= 0 && c._d < URGENT)
@@ -27629,6 +27676,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // clock-in cache for.
         const _isMgrAutoAbsent = (ec, ymd, d) => {
           if (!_mgrEcToStaffId[ec]) return false;
+          // Wait for the ROM day-status and clock-in feeds before fabricating an
+          // Absent. Both load async from []; firing while they're still empty
+          // briefly stamps "Absent" over a real "Sick + note" (or a real
+          // clock-in) and makes the cell's confirmed review look expired until
+          // the data lands a moment later.
+          if (!mgrDayStatusesLoaded || !mgrClockinsLoaded) return false;
           if (ymd > _todayYmdAtt) return false;
           if (ymd < _mgrCheckinFromYmd) return false;
           if ((_onLeaveByEcYmd[String(ec).trim()] || {})[ymd]) return false; // on approved leave
