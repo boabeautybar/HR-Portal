@@ -3275,7 +3275,13 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, onStar
               </select>
             </div>
             <div><label style={lbl}>Role</label>
-              <select style={inp} value={f.role} onChange={e => set("role", e.target.value)}>
+              {/* Placeholder for a blank/unset role. A bare <select> with an
+                  empty value silently displays its first option (SSM) without
+                  it being chosen, so a role-less manager looked like an SSM and
+                  saved back blank — making her vanish from the Locations tiers.
+                  The explicit empty option surfaces the missing role instead. */}
+              <select style={inp} value={f.role || ""} onChange={e => set("role", e.target.value)}>
+                <option value="" disabled>— Select role —</option>
                 <option value="SSM">💎 Senior Store Manager (SSM)</option>
                 <option value="SM">👑 Store Manager (SM)</option>
                 <option value="AM">⭐ Assistant Manager (AM)</option>
